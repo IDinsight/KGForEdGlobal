@@ -38,17 +38,8 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.ir.schemas import (
-    DocumentIR,
-    DocumentMetadataIR,
-    ExtractionRunIR,
-    HierarchyNodeIR,
-    PageIR,
-    ProvenancePointer,
-    StatementIR,
-)
+from skg.ir.schemas import DocumentIR, DocumentMetadataIR, PageIR, ProvenancePointer
 from skg.prompts.ir import extract_page_ir_info
-from skg.utils.constants import HierarchyNodeType, StatementRole
 from skg.utils.general import (
     compute_doc_key,
     encode_png_to_data_url,

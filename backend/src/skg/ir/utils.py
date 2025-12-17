@@ -25,7 +25,9 @@ def document_ir_json_schema(strict: bool = True) -> dict[str, Any]:
     return make_schema_strict(schema) if strict else schema
 
 
-def make_schema_strict(schema: dict[str, Any]) -> dict[str, Any]:
+def make_schema_strict(  # pylint:disable=too-complex
+    schema: dict[str, Any],
+) -> dict[str, Any]:
     """Recursively enforce `additionalProperties: false` for object schemas, without
     clobbering schemas that already specify additionalProperties (e.g., dict/map fields
     that intentionally allow arbitrary keys).
@@ -46,6 +48,19 @@ def make_schema_strict(schema: dict[str, Any]) -> dict[str, Any]:
     """
 
     def _walk(node: Any) -> Any:
+        """Recursively walk the schema node and enforce strictness.
+
+        Parameters
+        ----------
+        node
+            The current schema node.
+
+        Returns
+        -------
+        Any
+            The processed schema node.
+        """
+
         if isinstance(node, list):
             return [_walk(x) for x in node]
 

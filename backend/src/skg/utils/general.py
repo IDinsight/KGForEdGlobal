@@ -271,8 +271,8 @@ def validate_bcp47(code: str) -> str:
         if not lang.is_valid():
             raise ValueError(f"Invalid BCP-47 language tag: '{code}'")
         return lang.to_tag()
-    except langcodes.LanguageTagError:
-        raise ValueError(f"Unparseable language tag: '{code}'")
+    except langcodes.LanguageTagError as exc:
+        raise ValueError(f"Unparseable language tag: '{code}'") from exc
 
 
 def write_text(path: Path, text: str) -> None:

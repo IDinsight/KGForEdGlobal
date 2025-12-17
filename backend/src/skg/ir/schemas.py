@@ -105,14 +105,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
 # Third Party Library
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    ConfigDict,
-    Field,
-    conlist,
-    model_validator,
-)
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 # Package Library
 from skg.utils.constants import (
@@ -135,7 +128,7 @@ from skg.utils.constants import (
 from skg.utils.general import validate_bcp47
 
 # Common fields with descriptions.
-BBox = conlist(float, max_length=4, min_length=4)
+BBox = Annotated[list[float], Field(min_length=4, max_length=4)]
 BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
 DocKeyField = Annotated[
     str, Field(..., description="Deterministic document key (e.g., sha256 hex).")
@@ -1016,7 +1009,9 @@ class DocumentIR(ElementContainerIR):
         return self
 
     @model_validator(mode="after")
-    def validate_provenance_doc_identity(self) -> DocumentIR:
+    def validate_provenance_doc_identity(  # pylint:disable=too-complex
+        self,
+    ) -> DocumentIR:
         """Ensure all provenance pointers refer to this document's doc_key/pdf_name.
 
         Returns

@@ -10,12 +10,7 @@ from dotmap import DotMap
 
 
 def extract_page_ir_info() -> DotMap:
-    """Summarize the chat history.
-
-    Parameters
-    ----------
-    conversation
-        The conversation to summarize.
+    """Get the prompt messages for extracting PageIR information.
 
     Returns
     -------
