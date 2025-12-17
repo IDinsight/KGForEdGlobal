@@ -341,7 +341,7 @@ class SequenceIR(BaseIRModel):
     index: Optional[int] = Field(
         default=None, ge=0, description="0-based index within its kind (if known)."
     )
-    kind: SequenceKind = Field(default=SequenceKind.UNKNOWN)
+    kind: SequenceKind = Field(default=SequenceKind.OTHER)
     label: Optional[str] = Field(
         default=None, description="Human label like 'Term 2' or 'Week 5' (if present)."
     )
@@ -356,9 +356,88 @@ class TimeAllocationIR(BaseIRModel):
     headers.
     """
 
-    period: Optional[TimeAllocationPeriod] = Field(default=None)
-    unit: TimeAllocationUnit = Field(...)
-    value: float = Field(..., description="e.g. 3, 40")
+    period: Optional[TimeAllocationPeriod] = Field(
+        default=None,
+        description="Whether the allocation is per-week/term/day, or total.",
+    )
+    text_value: Optional[str] = Field(
+        default=None,
+        description="Raw/original time allocation text (e.g., '3–5 periods/week').",
+    )
+    unit: Optional[TimeAllocationUnit] = Field(
+        default=None,
+        description="Unit of the allocation (e.g., periods, minutes, hours).",
+    )
+    value: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Single numeric value if the allocation is not a range (e.g., 5).",
+    )
+    value_max: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Upper bound (inclusive) when the allocation is a range.",
+    )
+    value_min: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Lower bound (inclusive) when the allocation is a range.",
+    )
+
+    @model_validator(mode="after")
+    def validate_time_allocation(self) -> TimeAllocationIR:
+        """Validate that at least one of value, value_min/value_max, or text_value is
+        provided, and that the numeric values are consistent.
+
+        Returns
+        -------
+        TimeAllocationIR
+            The validated TimeAllocationIR instance.
+
+        Raises
+        ------
+        ValueError
+            If the validation checks fail.
+        """
+
+        has_numeric = (
+            self.value is not None
+            or self.value_max is not None
+            or self.value_min is not None
+        )
+        has_text = bool(self.text_value and self.text_value.strip())
+
+        if not has_numeric and not has_text:
+            raise ValueError(
+                "TimeAllocationIR requires at least one of: value, "
+                "value_min/value_max, or text_value."
+            )
+
+        if has_numeric and self.unit is None:
+            raise ValueError(
+                "TimeAllocationIR.unit is required when numeric values are provided."
+            )
+
+        if self.value_min is not None and self.value_max is not None:
+            if self.value_min > self.value_max:
+                raise ValueError(
+                    f"TimeAllocationIR value_min ({self.value_min}) cannot exceed "
+                    f"value_max ({self.value_max})."
+                )
+
+        if self.value is not None:
+            if self.value_min is not None and self.value < self.value_min:
+                raise ValueError(
+                    f"TimeAllocationIR value ({self.value}) cannot be less than "
+                    f"value_min ({self.value_min})."
+                )
+            if self.value_max is not None and self.value > self.value_max:
+                raise ValueError(
+                    f"TimeAllocationIR value ({self.value}) cannot exceed "
+                    f"value_max ({self.value_max})."
+                )
+
+        return self
 
 
 class GraphElementIR(StructuralElementIR):
@@ -371,12 +450,6 @@ class GraphElementIR(StructuralElementIR):
 
     confidence: Optional[float] = Field(
         default=None, ge=0.0, le=1.0, description="Extraction confidence score."
-    )
-    continues_ref: Optional[str] = Field(
-        default=None, description="ref of the element this continues (if known)."
-    )
-    extra: dict[str, Any] = Field(
-        default_factory=dict, description="Extensible metadata for this element."
     )
     grade_levels: list[str] = Field(
         default_factory=list,
@@ -757,7 +830,7 @@ class DocumentMetadataIR(BaseIRModel):
         default=None,
         description="Adoption status (e.g., 'adopted', 'draft') if known.",
     )
-    attribution: Optional[str] = Field(
+    attribution_statement: Optional[str] = Field(
         default=None, description="Attribution statement if required."
     )
     country: Optional[str] = Field(default=None)
@@ -940,6 +1013,88 @@ class DocumentIR(ElementContainerIR):
         dupes = [ref for ref, c in counts.items() if c > 1]
         if dupes:
             raise ValueError(f"Duplicate refs found: {sorted(dupes)[:20]}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_provenance_doc_identity(self) -> DocumentIR:
+        """Ensure all provenance pointers refer to this document's doc_key/pdf_name.
+
+        Returns
+        -------
+        DocumentIR
+            The validated DocumentIR instance.
+
+        Raises
+        ------
+        ValueError
+            If any provenance pointer has a mismatched doc_key or pdf_name.
+        """
+
+        def _check(ptr: ProvenancePointer, where: str) -> None:
+            """Check a single ProvenancePointer for doc_key/pdf_name consistency.
+
+            Parameters
+            ----------
+            ptr
+                The ProvenancePointer to check.
+            where
+                String describing the location of the pointer for error messages.
+
+            Raises
+            ------
+            ValueError
+                If the doc_key or pdf_name do not match.
+            """
+
+            if ptr.doc_key != self.doc_key:
+                raise ValueError(
+                    f"Provenance doc_key mismatch at {where}. Got {ptr.doc_key} "
+                    f"expected {self.doc_key}"
+                )
+            if ptr.pdf_name != self.pdf_name:
+                raise ValueError(
+                    f"Provenance pdf_name mismatch at {where}. Got {ptr.pdf_name} "
+                    f"expected {self.pdf_name}"
+                )
+
+        def _check_container(container: ElementContainerIR, prefix: str) -> None:
+            """Check all provenance pointers in an ElementContainerIR.
+
+            Parameters
+            ----------
+            container
+                The ElementContainerIR to check.
+            prefix
+                String prefix for error messages.
+            """
+
+            for el in (
+                container.nodes
+                + container.statements
+                + container.curriculum_elements
+                + container.tables
+                + container.diagrams
+            ):
+                for i, ptr in enumerate(el.provenance):
+                    _check(
+                        ptr,
+                        f"{prefix}.{el.__class__.__name__}[{el.ref}].provenance[{i}]",
+                    )
+            for rel in container.relationships:
+                for i, ptr in enumerate(rel.provenance):
+                    _check(ptr, f"{prefix}.RelationshipIR[{rel.ref}].provenance[{i}]")
+                for e_i, ev in enumerate(rel.evidence):
+                    for p_i, ptr in enumerate(ev.provenance):
+                        _check(
+                            ptr,
+                            f"{prefix}.RelationshipIR[{rel.ref}].evidence[{e_i}].provenance[{p_i}]",
+                        )
+
+        _check_container(self, prefix="document")
+
+        for page in self.pages:
+            _check_container(page, prefix=f"page[{page.page_index}]")
+
         return self
 
     @model_validator(mode="after")

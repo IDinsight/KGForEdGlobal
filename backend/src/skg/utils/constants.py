@@ -9,7 +9,7 @@ class AcademicSubject(str, Enum):
 
     ENGLISH_LANGUAGE_ARTS = "English Language Arts"
     MATHEMATICS = "Mathematics"
-    OTHER = "Other"
+    OTHER = "other"
     SCIENCE = "Science"
     SOCIAL_STUDIES = "Social Studies"
 
@@ -20,6 +20,7 @@ class AdoptionStatus(str, Enum):
     ADOPTED = "Adopted"
     DRAFT = "Draft"
     IMPLEMENTED = "Implemented"
+    OTHER = "other"
     PROPOSED = "Proposed"
     RETIRED = "Retired"
 
@@ -108,10 +109,10 @@ class SequenceKind(str, Enum):
 
     GRADE = "grade"
     LESSON = "lesson"
+    OTHER = "other"
     STAGE = "stage"
     TERM = "term"
     UNIT = "unit"
-    UNKNOWN = "unknown"
     WEEK = "week"
 
 
@@ -147,12 +148,14 @@ class TextFormat(str, Enum):
 
     LATEX = "latex"
     MARKDOWN = "markdown"
+    OTHER = "other"
     PLAIN = "plain"
 
 
 class TimeAllocationPeriod(str, Enum):
     """Enumeration of time allocation periods."""
 
+    OTHER = "other"
     PER_DAY = "per_day"
     PER_TERM = "per_term"
     PER_WEEK = "per_week"
@@ -164,6 +167,7 @@ class TimeAllocationUnit(str, Enum):
 
     HOURS = "hours"
     MINUTES = "minutes"
+    OTHER = "other"
     PERIODS = "periods"
     WEEKS = "weeks"
 
@@ -174,3 +178,4 @@ class TranslationMethod(str, Enum):
     HUMAN = "human"
     LLM = "llm"
     MT = "mt"
+    OTHER = "other"
