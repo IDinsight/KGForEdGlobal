@@ -116,6 +116,8 @@ from pydantic import (
 
 # Package Library
 from skg.utils.constants import (
+    AcademicSubject,
+    AdoptionStatus,
     BBoxKind,
     CurriculumElementType,
     EvidenceKind,
@@ -431,6 +433,10 @@ class CurriculumElementIR(GraphElementIR):
         ...,
         description="Type of curriculum element (activity, resource, assessment, etc.).",
     )
+    element_type_other: Optional[str] = Field(
+        default=None,
+        description="If element_type=='other', the raw/novel element type string (e.g., 'teaching_materials').",
+    )
     cross_references: list[str] = Field(
         default_factory=list,
         description="Explicit codes or references cited within the text (e.g. 'See 1.2').",
@@ -477,6 +483,37 @@ class CurriculumElementIR(GraphElementIR):
         default=None,
         description="Optional URL if the element references an external resource.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_element_type(cls, data: Any) -> Any:
+        """Allow novel element types while keeping a closed enum.
+
+        If `element_type` is not in CurriculumElementType, we downgrade to OTHER and
+        store the raw value in `element_type_other`.
+
+        Parameters
+        ----------
+        data
+            The input data dictionary.
+
+        Returns
+        -------
+        Any
+            The normalized data dictionary.
+        """
+
+        if not isinstance(data, dict):
+            return data
+
+        v = data.get("element_type")
+        if isinstance(v, str):
+            try:
+                CurriculumElementType(v)
+            except Exception:  # pylint: disable=broad-except
+                data.setdefault("element_type_other", v)
+                data["element_type"] = CurriculumElementType.OTHER
+        return data
 
 
 class HierarchyNodeIR(GraphElementIR):
@@ -528,6 +565,14 @@ class HierarchyNodeIR(GraphElementIR):
     node_type_other: Optional[str] = Field(
         default=None,
         description="If node_type=='other', the raw/novel node type string (e.g., 'sub-strand').",
+    )
+    original_label: Optional[str] = Field(
+        default=None,
+        description="Raw heading/column label used in the PDF for this grouping level (e.g., 'Sub-theme', 'Strand').",
+    )
+    source_field: Optional[str] = Field(
+        default=None,
+        description="Source column/field name when extracted from a table (e.g., 'Theme', 'Unit', 'Week').",
     )
     subject_tag: Optional[str] = Field(
         default=None,
@@ -700,10 +745,30 @@ class DocumentMetadataIR(BaseIRModel):
     1. extra: Allows for extensibility (e.g., custom fields not yet standardized).
     """
 
+    academic_subjects_normalized: list[AcademicSubject] = Field(
+        default_factory=list,
+        description="Normalized academic subjects using the Learning Commons controlled vocabulary (for export).",
+    )
+    academic_subject_primary: Optional[AcademicSubject] = Field(
+        default=None,
+        description="Primary Learning Commons academicSubject value for the framework when exporting (required by LC KG).",
+    )
+    adoption_status: Optional[AdoptionStatus] = Field(
+        default=None,
+        description="Adoption status (e.g., 'adopted', 'draft') if known.",
+    )
     attribution: Optional[str] = Field(
         default=None, description="Attribution statement if required."
     )
     country: Optional[str] = Field(default=None)
+    date_created: Optional[datetime] = Field(
+        default=None,
+        description="Document creation date if known (timezone-aware recommended).",
+    )
+    date_modified: Optional[datetime] = Field(
+        default=None,
+        description="Document last modified/published date if known (timezone-aware recommended).",
+    )
     document_kind: Optional[str] = Field(default=None)
     extra: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata fields."
@@ -737,6 +802,14 @@ class DocumentMetadataIR(BaseIRModel):
     normalized_grade_levels: list[str] = Field(
         default_factory=list,
         description="Normalized list of grades (e.g. ['01', '02']).",
+    )
+    primary_language: Optional[BCP47Str] = Field(
+        default=None,
+        description="Primary/dominant language of the document content (BCP-47).",
+    )
+    provider: Optional[str] = Field(
+        default=None,
+        description="Provider/organization responsible for publishing the framework, if known.",
     )
     publisher: Optional[str] = Field(default=None)
     publisher_en: Optional[str] = Field(
@@ -786,7 +859,7 @@ class ExtractionRunIR(BaseIRModel):
 
 
 class DocumentIR(ElementContainerIR):
-    """Pydantic model for the canonical Curriculum IR for a PDF.
+    """Pydantic model for the complete extracted document intermediate representation.
 
     This is the canonical Layer A output for a PDF. It gives us a clean, stable
     contract between extraction and mapping.

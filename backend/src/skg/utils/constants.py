@@ -4,6 +4,26 @@
 from enum import Enum
 
 
+class AcademicSubject(str, Enum):
+    """Enumeration of academic subjects."""
+
+    ENGLISH_LANGUAGE_ARTS = "English Language Arts"
+    MATHEMATICS = "Mathematics"
+    OTHER = "Other"
+    SCIENCE = "Science"
+    SOCIAL_STUDIES = "Social Studies"
+
+
+class AdoptionStatus(str, Enum):
+    """Enumeration of adoption statuses for standards."""
+
+    ADOPTED = "Adopted"
+    DRAFT = "Draft"
+    IMPLEMENTED = "Implemented"
+    PROPOSED = "Proposed"
+    RETIRED = "Retired"
+
+
 class BBoxKind(str, Enum):
     """Enumeration of bounding box kinds."""
 
