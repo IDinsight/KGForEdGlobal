@@ -62,6 +62,9 @@ Standards) rather than a tree of PDF objects.
         separates the physical/visual elements (tables/diagrams) from the "logical"
         (nodes/statements). Physical items have captions and pixels. Graph items have
         confidence scores and pedagogical tags.
+    - CurriculumElementIR: It represents an interpreted instructional/alignment object
+        (activity/resource/assessment/etc.) that we intend to carry forward as a
+        first-class semantic node and connect via hasEducationalAlignment edges.
     - HierarchyNodeIR: The scaffolding (Grade 2, Unit 4, Topic: Math).
     - StatementIR: The payload (The student must learn X).
     - RelationshipIR: The glue (Unit 4 contains Statement X).
@@ -97,11 +100,19 @@ Main takeaways:
 from __future__ import annotations
 
 # Standard Library
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
 # Third Party Library
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, conlist
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    conlist,
+    model_validator,
+)
 
 # Package Library
 from skg.utils.constants import (
@@ -189,7 +200,9 @@ class ProvenancePointer(SpatialIR):
         default=None, description="Nearest section/heading, if known."
     )
     table_col: Optional[int] = Field(default=None, ge=0)
-    table_ref: Optional[RefField] = Field(default=None)
+    table_ref: Optional[str] = Field(
+        default=None, description="ref of the table element"
+    )
     table_row: Optional[int] = Field(default=None, ge=0)
     text_quote: Optional[str] = Field(
         default=None, description="Exact snippet of text from the PDF for verification."
@@ -208,7 +221,7 @@ class StructuralElementIR(BaseIRModel):
         default=False,
         description="True if this element continues from a previous page/section.",
     )
-    parent_ref: Optional[RefField] = Field(
+    parent_ref: Optional[str] = Field(
         default=None, description="ref of the parent/scoping node."
     )
     provenance: list[ProvenancePointer] = Field(
@@ -249,8 +262,8 @@ class TranslationMetaIR(BaseIRModel):
     )
     translated_at: Optional[datetime] = Field(
         default=None,
-        description="ISO timestamp when translation was produced (optional).",
-        examples=[datetime.now(timezone.utc).isoformat()],
+        description="Timestamp when the translation was performed.",
+        examples=[datetime.now(timezone.utc)],
     )
 
 
@@ -363,6 +376,18 @@ class GraphElementIR(StructuralElementIR):
     extra: dict[str, Any] = Field(
         default_factory=dict, description="Extensible metadata for this element."
     )
+    grade_levels: list[str] = Field(
+        default_factory=list,
+        description="Normalized grade levels this element applies to (e.g., ['01','02']). Empty if unknown.",
+    )
+    grade_labels_raw: list[str] = Field(
+        default_factory=list,
+        description="Raw/local grade labels for this element (e.g., ['P1', 'Std I–II']).",
+    )
+    grade_span_raw: Optional[str] = Field(
+        default=None,
+        description="Raw grade band text, e.g. 'Std I–II' or 'Lower Primary'.",
+    )
     language: LanguageField
     local_code: Optional[str] = Field(
         default=None,
@@ -385,135 +410,6 @@ class GraphElementIR(StructuralElementIR):
     time_allocation: Optional[TimeAllocationIR] = Field(
         default=None,
         description="Explicit duration/pacing info (e.g. '5 periods per week').",
-    )
-
-
-class HierarchyNodeIR(GraphElementIR):
-    """Pydantic model for a grouping node in the curriculum hierarchy:
-    grade/stage/subject/theme/topic/unit/week/etc.
-
-    This is required to represent the hierarchical structure of the curriculum
-    as extracted from the document. It gives us a consistent way to build the
-    `hasChild` relationship, regardless of how the PDF is organized (tables, headings,
-    thematic tweaks, etc.). It also provides a stable anchor for attaching statements
-    (e.g., "This expectation belongs under Grade 2 -> Math -> Topic X"). This is
-    separate from statements because in many PDFs, grouping labels are not themselves
-    standards---they're just containers.
-
-    NB:
-    1. `ref` is a *local* stable reference within the extracted IR (unique within
-        document).
-    2. Later stages will create deterministic global KG IDs.
-    """
-
-    description: Optional[str] = Field(
-        default=None, description="Introductory text or summary of this grouping."
-    )
-    description_en: Optional[str] = Field(
-        default=None, description="English translation of description."
-    )
-    description_translation_meta: Optional[TranslationMetaIR] = Field(
-        default=None,
-        description="Translation metadata if description_en was produced via translation.",
-    )
-    label: str = Field(
-        ..., description="Original label text (language per `language`)."
-    )
-    label_en: Optional[str] = Field(
-        default=None, description="English translation of label, if needed."
-    )
-    label_translation_meta: Optional[TranslationMetaIR] = Field(
-        default=None,
-        description="Translation metadata if label_en was produced via translation.",
-    )
-    list_index: Optional[str] = Field(
-        default=None,
-        description="The numbering/lettering of this node (e.g., '1.2', 'Theme 3', 'A'). Useful when the label is just text.",
-    )
-    node_type: HierarchyNodeType = Field(
-        ...,
-        description="e.g., 'grade', 'stage', 'subject', 'theme', 'strand', 'topic', 'unit', 'week'",
-    )
-    subject_tag: Optional[str] = Field(
-        default=None,
-        description="Explicit subject label inherited from parent or section headers (e.g., 'Mathematics').",
-    )
-
-
-class StatementIR(GraphElementIR):
-    """Pydantic model for a statement attached to (or scoped by) a hierarchy node.
-
-    This is required to capture the actual instructional meaning, with an explicit
-    role. Statements represent the extracted text that actually matters: expectation
-    (normative outcomes/competences/objectives), performance descriptors
-    (indicators/expected standard/assessment criteria), and guidance
-    (activities/resources/teacher notes/exemplars). It gives us a clean separation of
-    "what students should learn" vs. "how to teach" vs. "how to assess. Statements
-    need independent provenance, IDs, and edges.
-
-    NB:
-    1. expectation: normative learning outcome/competence/objective/standard
-    2. performance_descriptor: indicators/benchmarks/expected standard/assessment
-        criteria
-    3. guidance: activities/resources/teacher notes/exemplars
-    4. parent_ref can point to a HierarchyNodeIR (normal) or another StatementIR
-        (nested bullets).
-    """
-
-    cross_references: list[str] = Field(
-        default_factory=list,
-        description="Explicit codes or references cited within the text (e.g. 'See 1.2').",
-    )
-    is_composite: bool = Field(
-        default=False,
-        description="True if this statement contains multiple distinct outcomes.",
-    )
-    list_marker: Optional[str] = Field(
-        default=None,
-        description="The bullet/number marker if extracted from a list (e.g., 'a)', '1.', '•').",
-    )
-    list_kind: Optional[ListKind] = Field(
-        default=None,
-        description="Normalized list kind for deterministic downstream splitting/alignment (e.g., numeric vs bullet).",
-    )
-    list_level: Optional[int] = Field(
-        default=None,
-        ge=0,
-        description="List nesting depth if extracted from a nested list (0 = top-level list item).",
-    )
-    list_path: Optional[list[str]] = Field(
-        default=None,
-        description="Full list marker path from outermost to this item (e.g., ['1.', 'a)']).",
-    )
-    original_label: Optional[str] = Field(
-        default=None,
-        description="The original column header or label, e.g., 'Specific Competence', 'Life Skills', 'Knowledge'.",
-    )
-    proposed_atomic_skills: Optional[list[str]] = Field(
-        default=None,
-        description="List of atomic skills if the statement is compound (for 'llm_atomic_skills' policy).",
-    )
-    role: StatementRole = Field(..., description="Statement role in Canonical IR.")
-    source_field: Optional[str] = Field(
-        default=None,
-        description="Where this text came from (e.g., table column/header like 'Learning Activities').",
-    )
-    source_field_role_hint: Optional[StatementRole] = Field(
-        default=None,
-        description="Optional hint: typical role for this source_field (helps later normalization).",
-    )
-    text: str = Field(
-        ..., description="Original statement text (language per `language`)."
-    )
-    text_en: Optional[str] = Field(
-        default=None, description="English translation of text, if needed."
-    )
-    text_format: TextFormat = Field(
-        default=TextFormat.PLAIN, description="Format of the text content."
-    )
-    translation_meta: Optional[TranslationMetaIR] = Field(
-        default=None,
-        description="Translation metadata if text_en was produced via translation.",
     )
 
 
@@ -580,6 +476,171 @@ class CurriculumElementIR(GraphElementIR):
     url: Optional[str] = Field(
         default=None,
         description="Optional URL if the element references an external resource.",
+    )
+
+
+class HierarchyNodeIR(GraphElementIR):
+    """Pydantic model for a grouping node in the curriculum hierarchy:
+    grade/stage/subject/theme/topic/unit/week/etc.
+
+    This is required to represent the hierarchical structure of the curriculum
+    as extracted from the document. It gives us a consistent way to build the
+    `hasChild` relationship, regardless of how the PDF is organized (tables, headings,
+    thematic tweaks, etc.). It also provides a stable anchor for attaching statements
+    (e.g., "This expectation belongs under Grade 2 -> Math -> Topic X"). This is
+    separate from statements because in many PDFs, grouping labels are not themselves
+    standards---they're just containers.
+
+    NB:
+    1. `ref` is a *local* stable reference within the extracted IR (unique within
+        document).
+    2. Later stages will create deterministic global KG IDs.
+    """
+
+    description: Optional[str] = Field(
+        default=None, description="Introductory text or summary of this grouping."
+    )
+    description_en: Optional[str] = Field(
+        default=None, description="English translation of description."
+    )
+    description_translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if description_en was produced via translation.",
+    )
+    label: str = Field(
+        ..., description="Original label text (language per `language`)."
+    )
+    label_en: Optional[str] = Field(
+        default=None, description="English translation of label, if needed."
+    )
+    label_translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if label_en was produced via translation.",
+    )
+    list_index: Optional[str] = Field(
+        default=None,
+        description="The numbering/lettering of this node (e.g., '1.2', 'Theme 3', 'A'). Useful when the label is just text.",
+    )
+    node_type: HierarchyNodeType = Field(
+        ...,
+        description="e.g., 'grade', 'stage', 'subject', 'theme', 'strand', 'topic', 'unit', 'week'",
+    )
+    node_type_other: Optional[str] = Field(
+        default=None,
+        description="If node_type=='other', the raw/novel node type string (e.g., 'sub-strand').",
+    )
+    subject_tag: Optional[str] = Field(
+        default=None,
+        description="Explicit subject label inherited from parent or section headers (e.g., 'Mathematics').",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_node_type(cls, data: Any) -> Any:
+        """Allow novel node types while keeping a closed enum.
+
+        If `node_type` is not in HierarchyNodeType, we downgrade to OTHER and store the
+        raw value in `node_type_other`.
+
+        Parameters
+        ----------
+        data
+            The input data dictionary.
+
+        Returns
+        -------
+            The normalized data dictionary.
+        """
+
+        if not isinstance(data, dict):
+            return data
+
+        v = data.get("node_type")
+        if isinstance(v, str):
+            try:
+                HierarchyNodeType(v)
+            except Exception:  # pylint: disable=broad-except
+                data.setdefault("node_type_other", v)
+                data["node_type"] = HierarchyNodeType.OTHER
+        return data
+
+
+class StatementIR(GraphElementIR):
+    """Pydantic model for a statement attached to (or scoped by) a hierarchy node.
+
+    This is required to capture the actual instructional meaning, with an explicit
+    role. Statements represent the extracted text that actually matters: expectation
+    (normative outcomes/competences/objectives), performance descriptors
+    (indicators/expected standard/assessment criteria), and guidance
+    (teacher notes / pedagogical guidance). Activities/resources/materials/examples
+    should be extracted as CurriculumElementIR and linked via hasEducationalAlignment.
+    It gives us a clean separation of "what students should learn" vs. "how to teach"
+    vs. "how to assess. Statements need independent provenance, IDs, and edges.
+
+    NB:
+    1. expectation: normative learning outcome/competence/objective/standard
+    2. performance_descriptor: indicators/benchmarks/expected standard/assessment
+        criteria
+    3. guidance: teacher notes/pedagogical guidance (activities/resources belong in
+        CurriculumElementIR)
+    4. parent_ref can point to a HierarchyNodeIR (normal) or another StatementIR
+        (nested bullets).
+    """
+
+    cross_references: list[str] = Field(
+        default_factory=list,
+        description="Explicit codes or references cited within the text (e.g. 'See 1.2').",
+    )
+    is_composite: bool = Field(
+        default=False,
+        description="True if this statement contains multiple distinct outcomes.",
+    )
+    list_marker: Optional[str] = Field(
+        default=None,
+        description="The bullet/number marker if extracted from a list (e.g., 'a)', '1.', '•').",
+    )
+    list_kind: Optional[ListKind] = Field(
+        default=None,
+        description="Normalized list kind for deterministic downstream splitting/alignment (e.g., numeric vs bullet).",
+    )
+    list_level: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="List nesting depth if extracted from a nested list (0 = top-level list item).",
+    )
+    list_path: Optional[list[str]] = Field(
+        default=None,
+        description="Full list marker path from outermost to this item (e.g., ['1.', 'a)']).",
+    )
+    original_label: Optional[str] = Field(
+        default=None,
+        description="The original column header or label, e.g., 'Specific Competence', 'Life Skills', 'Knowledge'.",
+    )
+    proposed_atomic_skills: Optional[list[str]] = Field(
+        default=None,
+        description="List of atomic skills if the statement is compound (for 'llm_atomic_skills' policy).",
+    )
+    role: StatementRole = Field(..., description="Statement role in Canonical IR.")
+    source_field: Optional[str] = Field(
+        default=None,
+        description="Where this text came from (e.g., table column/header like 'Learning Activities').",
+    )
+    source_field_role_hint: Optional[str] = Field(
+        default=None,
+        description="Optional hint about the source_field's typical semantic role (e.g., 'activity', 'resource', 'guidance').",
+    )
+    text: str = Field(
+        ..., description="Original statement text (language per `language`)."
+    )
+    text_en: Optional[str] = Field(
+        default=None, description="English translation of text, if needed."
+    )
+    text_format: TextFormat = Field(
+        default=TextFormat.PLAIN, description="Format of the text content."
+    )
+    translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if text_en was produced via translation.",
     )
 
 
@@ -732,7 +793,14 @@ class DocumentIR(ElementContainerIR):
 
     NB:
     1. pages: Retain page-level outputs for debugging/resume.
-    2. Inherits aggregated lists (nodes, statements, etc.) from ElementContainerIR.
+    2. root_node_refs: Explicit entry points into the intended top-level hierarchy for
+       this PDF (often one per subject/section, but can be multiple). This prevents
+       downstream mapping/export from guessing roots by `parent_ref is None`, which can
+       be noisy when extraction produces orphans or parallel trees (e.g., front-matter,
+       appendices, or separate subject sections). Exporters and mappers should start
+       hierarchy traversal from `root_node_refs` to build deterministic `hasChild`
+       structure and to avoid treating stray nodes as top-level roots.
+    3. Inherits aggregated lists (nodes, statements, etc.) from ElementContainerIR.
     """
 
     doc_key: DocKeyField
@@ -740,4 +808,99 @@ class DocumentIR(ElementContainerIR):
     metadata: DocumentMetadataIR = Field(default_factory=DocumentMetadataIR)
     pages: list[PageIR] = Field(default_factory=list)
     pdf_name: PdfNameField
+    root_node_refs: list[RefField] = Field(
+        default_factory=list,
+        description="refs of top-level HierarchyNodeIR roots (if multiple).",
+    )
     schema_version: Literal["0.1"] = Field(default="0.1")
+
+    @model_validator(mode="after")
+    def validate_roots(self) -> DocumentIR:
+        """Ensure that root_node_refs are valid and have no parent_ref.
+
+        Returns
+        -------
+        DocumentIR
+            The validated DocumentIR instance.
+
+        Raises
+        ------
+        ValueError
+            If any root_node_ref is unknown or has a parent_ref.
+        """
+
+        node_by_ref = {n.ref: n for n in self.nodes}
+        for r in self.root_node_refs:
+            if r not in node_by_ref:
+                raise ValueError(f"root_node_refs contains unknown ref: {r}")
+            if node_by_ref[r].parent_ref is not None:
+                raise ValueError(
+                    f"root node {r} has parent_ref={node_by_ref[r].parent_ref}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_refs(self) -> DocumentIR:
+        """Ensure that all refs across all elements are unique.
+
+        Returns
+        -------
+        DocumentIR
+            The validated DocumentIR instance.
+
+        Raises
+        ------
+        ValueError
+            If any duplicate refs are found across elements.
+        """
+
+        all_refs: list[str] = (
+            [n.ref for n in self.nodes]
+            + [s.ref for s in self.statements]
+            + [c.ref for c in self.curriculum_elements]
+            + [t.ref for t in self.tables]
+            + [d.ref for d in self.diagrams]
+            + [r.ref for r in self.relationships]
+        )
+
+        counts = Counter(all_refs)
+        dupes = [ref for ref, c in counts.items() if c > 1]
+        if dupes:
+            raise ValueError(f"Duplicate refs found: {sorted(dupes)[:20]}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_relationship_endpoints(self) -> DocumentIR:
+        """Ensure that all relationship endpoints refer to valid elements.
+
+        Returns
+        -------
+        DocumentIR
+            The validated DocumentIR instance.
+
+        Raises
+        ------
+        ValueError
+            If any relationship source_ref or target_ref is unknown.
+        """
+
+        valid = {
+            x.ref
+            for x in (
+                self.nodes
+                + self.statements
+                + self.curriculum_elements
+                + self.tables
+                + self.diagrams
+            )
+        }
+        for rel in self.relationships:
+            if rel.source_ref not in valid:
+                raise ValueError(
+                    f"Relationship {rel.ref} has unknown source_ref={rel.source_ref}"
+                )
+            if rel.target_ref not in valid:
+                raise ValueError(
+                    f"Relationship {rel.ref} has unknown target_ref={rel.target_ref}"
+                )
+        return self
