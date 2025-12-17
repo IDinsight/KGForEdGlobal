@@ -11,7 +11,6 @@ from __future__ import annotations
 
 # Standard Library
 import base64
-import hashlib
 import json
 import re
 
@@ -26,27 +25,6 @@ from loguru import logger
 
 # Package Library
 from skg.schemas import Valid
-
-
-def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
-    """Compute deterministic doc_key from PDF bytes (sha256 hex).
-
-    Parameters
-    ----------
-    n_hex
-        Number of hex characters to return. Defaults to 64 (full sha256).
-    pdf_fp
-        Path to the PDF file.
-
-    Returns
-    -------
-    str
-        The computed document key.
-    """
-
-    data = pdf_fp.read_bytes()
-    h = hashlib.sha256(data).hexdigest()
-    return h[:n_hex]
 
 
 def convert_to_list(x: Any) -> list[Any]:
