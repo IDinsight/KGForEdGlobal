@@ -4,8 +4,10 @@ Intermediate Representation (IR).
 High-level capabilities:
 
 1. Vision-first extraction: Renders PDF pages to images for LLM analysis.
-2. Structured outputs: Enforces the schemas.
-3. Context preservation: Passes hierarchy context between pages.
+2. Structured outputs: Enforces schemas via Pydantic and LLM JSON mode.
+3. Context preservation: Passes hierarchy context between pages to handle tables/lists
+    spanning page breaks.
+4. Config-driven: Adapts extraction hints per document type.
 
 Invoke from the backend directory via:
 
@@ -36,8 +38,17 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.ir.schemas import (
+    DocumentIR,
+    DocumentMetadataIR,
+    ExtractionRunIR,
+    HierarchyNodeIR,
+    PageIR,
+    ProvenancePointer,
+    StatementIR,
+)
 from skg.prompts.ir import extract_page_ir_info
-from skg.ir.schemas import DocumentIR, DocumentMetadataIR, PageIR, ProvenancePointer
+from skg.utils.constants import HierarchyNodeType, StatementRole
 from skg.utils.general import (
     compute_doc_key,
     encode_png_to_data_url,

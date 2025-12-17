@@ -371,6 +371,10 @@ class GraphElementIR(StructuralElementIR):
     order: Optional[float] = Field(
         default=None, description="Ordering hint within siblings."
     )
+    path: list[str] = Field(
+        default_factory=list,
+        description="Ordered list of ancestor refs from root to this element (including self) for debugging and deterministic ID construction.",
+    )
     sequence: Optional[SequenceIR] = Field(
         default=None, description="Optional structured sequencing hint."
     )
@@ -426,7 +430,7 @@ class HierarchyNodeIR(GraphElementIR):
         default=None,
         description="The numbering/lettering of this node (e.g., '1.2', 'Theme 3', 'A'). Useful when the label is just text.",
     )
-    node_type: str = Field(
+    node_type: HierarchyNodeType = Field(
         ...,
         description="e.g., 'grade', 'stage', 'subject', 'theme', 'strand', 'topic', 'unit', 'week'",
     )
@@ -513,6 +517,72 @@ class StatementIR(GraphElementIR):
     )
 
 
+class CurriculumElementIR(GraphElementIR):
+    """Pydantic model for an instructional curriculum element.
+
+    This represents things like activities, resources/materials, teacher notes, and
+    assessments as first-class nodes (instead of only embedding them as `guidance`
+    statements). These elements are intended to be linked to standards items or
+    expectations via RelationshipIR edges (e.g., export-time `hasEducationalAlignment`).
+
+    NB:
+    1. Use `element_type` to keep downstream mapping deterministic.
+    2. Use `text` as the primary payload (often extracted from a table cell or a
+        paragraph block).
+    """
+
+    element_type: CurriculumElementType = Field(
+        ...,
+        description="Type of curriculum element (activity, resource, assessment, etc.).",
+    )
+    cross_references: list[str] = Field(
+        default_factory=list,
+        description="Explicit codes or references cited within the text (e.g. 'See 1.2').",
+    )
+    list_marker: Optional[str] = Field(
+        default=None,
+        description="The bullet/number marker if extracted from a list (e.g., 'a)', '1.', '•').",
+    )
+    list_kind: Optional[ListKind] = Field(
+        default=None,
+        description="Normalized list kind for deterministic downstream splitting/alignment (e.g., numeric vs bullet).",
+    )
+    list_level: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="List nesting depth if extracted from a nested list (0 = top-level list item).",
+    )
+    list_path: Optional[list[str]] = Field(
+        default=None,
+        description="Full list marker path from outermost to this item (e.g., ['1.', 'a)']).",
+    )
+    original_label: Optional[str] = Field(
+        default=None,
+        description="The original column header or label, e.g., 'Learning Activities', 'Resources', 'Teaching Notes'.",
+    )
+    source_field: Optional[str] = Field(
+        default=None,
+        description="Where this element came from (e.g., table column/header like 'Learning Activities').",
+    )
+    text: str = Field(
+        ..., description="Original curriculum element text (language per `language`)."
+    )
+    text_en: Optional[str] = Field(
+        default=None, description="English translation of text, if needed."
+    )
+    text_format: TextFormat = Field(
+        default=TextFormat.PLAIN, description="Format of the text content."
+    )
+    translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if text_en was produced via translation.",
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description="Optional URL if the element references an external resource.",
+    )
+
+
 class RelationshipIR(BaseIRModel):
     """Pydantic model for a relationship between two GraphElementIRs."""
 
@@ -522,7 +592,7 @@ class RelationshipIR(BaseIRModel):
     inference_type: Optional[str] = Field(default=None)
     is_inferred: bool = Field(default=False)
     provenance: list[ProvenancePointer] = Field(default_factory=list)
-    ref: RefField = Field(default=None)
+    ref: RefField
     rel_type: RelationshipType
     source_ref: RefField
     target_ref: RefField
@@ -537,6 +607,7 @@ class ElementContainerIR(BaseIRModel):
     """
 
     diagrams: list[DiagramIR] = Field(default_factory=list)
+    curriculum_elements: list[CurriculumElementIR] = Field(default_factory=list)
     nodes: list[HierarchyNodeIR] = Field(default_factory=list)
     relationships: list[RelationshipIR] = Field(default_factory=list)
     statements: list[StatementIR] = Field(default_factory=list)
@@ -580,6 +651,10 @@ class DocumentMetadataIR(BaseIRModel):
         default=None,
         description="e.g., 'National Syllabus', 'Teacher Guide', 'Assessment Framework'.",
     )
+    grade_labels_raw: list[str] = Field(
+        default_factory=list,
+        description="Raw/local grade labels as written in the document (e.g., ['P1', 'Std I–II', 'Lower Primary']).",
+    )
     grade_range: Optional[str] = Field(
         default=None, description="e.g., 'Grade 1-3', 'Std I-VI'"
     )
@@ -591,11 +666,25 @@ class DocumentMetadataIR(BaseIRModel):
         default=None, description="License identifier/URL if known."
     )
     ministry_or_author: Optional[str] = Field(default=None)
+    ministry_or_author_en: Optional[str] = Field(
+        default=None, description="English translation of ministry/author, if needed."
+    )
+    ministry_or_author_translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if ministry_or_author_en was produced via translation.",
+    )
     normalized_grade_levels: list[str] = Field(
         default_factory=list,
         description="Normalized list of grades (e.g. ['01', '02']).",
     )
     publisher: Optional[str] = Field(default=None)
+    publisher_en: Optional[str] = Field(
+        default=None, description="English translation of publisher, if needed."
+    )
+    publisher_translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if publisher_en was produced via translation.",
+    )
     source_url: Optional[str] = Field(
         default=None, description="Canonical source URL if known."
     )
@@ -603,7 +692,22 @@ class DocumentMetadataIR(BaseIRModel):
         default_factory=list,
         description="List of distinct subjects identified in the doc (e.g., ['Math', 'Science']).",
     )
+    subject_areas_en: list[str] = Field(
+        default_factory=list,
+        description="English translations of subject_areas (if needed).",
+    )
+    subject_areas_translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if subject_areas_en was produced via translation.",
+    )
     title: Optional[str] = Field(default=None)
+    title_en: Optional[str] = Field(
+        default=None, description="English translation of title, if needed."
+    )
+    title_translation_meta: Optional[TranslationMetaIR] = Field(
+        default=None,
+        description="Translation metadata if title_en was produced via translation.",
+    )
     version: Optional[str] = Field(default=None)
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
 
@@ -611,13 +715,13 @@ class DocumentMetadataIR(BaseIRModel):
 class ExtractionRunIR(BaseIRModel):
     """Pydantic model for extraction run metadata."""
 
-    completed_at: Optional[str] = None
+    completed_at: Optional[datetime] = None
     config_hash: Optional[str] = None
     extra: dict[str, Any] = Field(default_factory=dict)
     models: list[str] = Field(default_factory=list)
     pipeline_version: Optional[str] = None
     run_id: str
-    started_at: Optional[str] = None
+    started_at: Optional[datetime] = None
 
 
 class DocumentIR(ElementContainerIR):

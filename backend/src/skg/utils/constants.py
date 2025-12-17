@@ -37,12 +37,8 @@ class EvidenceKind(str, Enum):
     TABLE_CELL = "table_cell"
 
 
-class HierarchyNodeType:
-    """Constants for common hierarchy node types.
-
-    NB: Not an Enum because extraction might yield novel types (e.g. 'sub-strand') that
-    we want to allow, but these are the standard targets.
-    """
+class HierarchyNodeType(str, Enum):
+    """Enumeration of common hierarchy node types."""
 
     COMPETENCY_AREA = "competency_area"
     DOMAIN = "domain"
@@ -99,13 +95,21 @@ class SequenceKind(str, Enum):
 
 
 class StatementRole(str, Enum):
-    """Enumeration of statement roles."""
+    """Enumeration of statement roles in the Canonical Curriculum IR.
 
-    ACTIVITY = "activity"  # Specific learning activities/exercises
-    EXPECTATION = "expectation"  # Standards/outcomes/competences
-    GUIDANCE = "guidance"  # Teacher notes/prerequisites
-    PERFORMANCE_DESCRIPTOR = "performance_descriptor"  # Assessment criteria
-    RESOURCE = "resource"  # Materials/textbooks listed
+    Canonical roles:
+      - expectation: normative outcomes/competences/objectives/standards
+      - performance_descriptor: indicators/benchmarks/expected standard/assessment
+        criteria
+      - guidance: teacher notes / pedagogical guidance (NOT activities/resources)
+
+    NB: Activities/resources/materials/examples should be represented as
+    CurriculumElementIR with an appropriate CurriculumElementType.
+    """
+
+    EXPECTATION = "expectation"
+    GUIDANCE = "guidance"
+    PERFORMANCE_DESCRIPTOR = "performance_descriptor"
     UNKNOWN = "unknown"
 
 
