@@ -72,6 +72,7 @@ class HierarchyNodeType(str, Enum):
     STRAND = "strand"
     SUBDOMAIN = "subdomain"
     SUBJECT = "subject"
+    SUBTHEME = "subtheme"
     SUBTOPIC = "subtopic"
     TERM = "term"
     THEME = "theme"
