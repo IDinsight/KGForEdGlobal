@@ -12,6 +12,19 @@ class BBoxKind(str, Enum):
     UNKNOWN = "unknown"
 
 
+class CurriculumElementType(str, Enum):
+    """Enumeration of curriculum element types."""
+
+    ACTIVITY = "activity"
+    ASSESSMENT = "assessment"
+    EXAMPLE = "example"
+    LESSON = "lesson"
+    MATERIAL = "material"
+    OTHER = "other"
+    RESOURCE = "resource"
+    TEACHER_NOTE = "teacher_note"
+
+
 class EvidenceKind(str, Enum):
     """Enumeration of evidence kinds."""
 
@@ -24,17 +37,27 @@ class EvidenceKind(str, Enum):
     TABLE_CELL = "table_cell"
 
 
-class HierarchyNodeTypes:
+class HierarchyNodeType:
     """Constants for common hierarchy node types.
 
     NB: Not an Enum because extraction might yield novel types (e.g. 'sub-strand') that
     we want to allow, but these are the standard targets.
     """
 
+    COMPETENCY_AREA = "competency_area"
+    DOMAIN = "domain"
     GRADE = "grade"
+    LEARNING_AREA = "learning_area"
+    MODULE = "module"
+    OTHER = "other"
+    QUARTER = "quarter"
+    SEMESTER = "semester"
     STAGE = "stage"
     STRAND = "strand"
+    SUBDOMAIN = "subdomain"
     SUBJECT = "subject"
+    SUBTOPIC = "subtopic"
+    TERM = "term"
     THEME = "theme"
     TOPIC = "topic"
     UNIT = "unit"

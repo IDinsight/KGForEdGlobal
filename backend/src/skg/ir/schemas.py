@@ -106,7 +106,9 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, conlist
 # Package Library
 from skg.utils.constants import (
     BBoxKind,
+    CurriculumElementType,
     EvidenceKind,
+    HierarchyNodeType,
     ListKind,
     RelationshipType,
     SequenceKind,
