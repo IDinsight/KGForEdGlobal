@@ -1,0 +1,73 @@
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0  # Use the revision sha / tag you want to point at
+  hooks:
+    - id: check-yaml
+      args: [ "--unsafe" ]
+    - id: end-of-file-fixer
+    - id: trailing-whitespace
+
+# Black
+-   repo: https://github.com/psf/black
+    rev: 25.9.0  # Use the revision sha / tag you want to point at
+    hooks:
+    - id: black
+      additional_dependencies: ["toml"]
+      files: ^(src|tests)/.*\.py$
+      language_version: python3.13
+
+# Detect secrets
+-   repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+    -   id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: '(frontend/pnpm-lock\.yaml|\.template\.env$)'
+
+# Env variables
+- repo: local
+  hooks:
+    -   id: env-template-sync
+        entry: python scripts/tools/check_env_template.py
+        name: Ensure .template.env and .env matches each other
+        language: python
+        pass_filenames: false
+
+# Isort
+-   repo: https://github.com/pycqa/isort
+    rev: 6.1.0  # Use the revision sha / tag you want to point at
+    hooks:
+    -   id: isort
+        args: ["--profile", "black"]
+        additional_dependencies: ["toml"]
+        files: ^(src|tests)/.*\.py$
+
+# Interrogate
+-   repo: https://github.com/econchick/interrogate
+    rev: 1.7.0 # Use the revision sha / tag you want to point at
+    hooks:
+      - id: interrogate
+        args: [--fail-under=100, -v]
+        exclude: (^|/)__init__\.py$
+        files: ^(src|tests)/.*\.py$
+
+# Mypy
+-   repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.18.2
+    hooks:
+    - id: mypy
+      additional_dependencies:
+        - pydantic[mypy]
+        - types-aiofiles
+        - types-pyyaml
+        - types-requests
+      args: [--explicit-package-bases, --ignore-missing-imports, --show-error-codes]
+      files: ^(src|tests)/.*\.py$
+
+# Ruff
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.13.3 # Use the revision sha / tag you want to point at
+  hooks:
+    - id: ruff
+      args: [--fix, --exit-non-zero-on-fix]
+      files: ^(src|tests)/.*\.py$

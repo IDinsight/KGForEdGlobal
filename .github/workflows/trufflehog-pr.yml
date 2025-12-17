@@ -1,0 +1,38 @@
+name: Secret Scan (TruffleHog) on PRs to Main
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+  pull-requests: write   # Lets the action annotate/comment on the PR
+
+jobs:
+  trufflehog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (full history so base/head comparison works)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # important for comparing against base branch history
+
+      - name: TruffleHog OSS
+        id: trufflehog
+        uses: trufflesecurity/trufflehog@v3.90.11
+        with:
+          # Scan only the commits in this PR: base..head
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          path: .
+          # Recommended flags: keep logs small and fail only on live/validated secrets.
+          extra_args: --only-verified
+
+        # Intentionally allow the step to continue since we control failure below.
+        continue-on-error: true
+
+      - name: Fail if secrets found
+        if: steps.trufflehog.outcome == 'failure'
+        run: exit 1

@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*$py.class
+examples/*.pkl
+
+# Caches
+.pytest_cache
+.vscode
+
+# Directories
+.husky/
+cicd/
+!cicd/requirements/requirements.txt
+dist/
+graveyard/
+scripts/
+
+# Environments
+.env*
+.venv
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# PyBuilder
+target/
+
+# pyenv
+.python-version
+
+# Pylint
+pylint.out
+
+# Pyre type checker
+.pyre/

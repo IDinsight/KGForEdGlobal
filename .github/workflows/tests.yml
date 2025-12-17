@@ -1,0 +1,111 @@
+name: Tests
+on:
+  workflow_dispatch:
+
+  pull_request:
+    branches: [ "**" ]
+    paths:
+      - ".github/workflows/tests.yml"
+      - "**.py"
+
+  push:
+    branches: ["**"]
+    paths:
+      - ".github/workflows/tests.yml"
+      - "**.py"
+
+env:
+  CHAT_ENV: testing
+  LOGFIRE_SEND_TO_LOGFIRE: false
+  LOGGING_LEVEL: DEBUG
+  OPENAI_API_KEY: sk-fake  # pragma: allowlist secret
+  POSTGRES_DB: postgres-pg-vector-test
+  POSTGRES_HOST: localhost
+  POSTGRES_PASSWORD: pg-vector-test-pw  # pragma: allowlist secret
+  POSTGRES_PORT: 5433
+  POSTGRES_USER: pg-vector-test-user
+  PROMETHEUS_MULTIPROC_DIR: /tmp
+  REDIS_PORT: 6381
+  REDIS_URL: redis://localhost:6381
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          # Define what is "backend" changes.
+          filters: |
+            backend:
+              - "**.py"
+
+  backend-tests:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+
+    runs-on: ubuntu-latest
+
+    defaults:
+      # All run steps execute from backend directory.
+      run:
+        shell: bash
+        working-directory: backend
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+      redis:
+        image: redis:8.2.2-alpine
+        options: >-
+          --health-cmd "redis-cli ping || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6381:6379
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Install uv and point it at backend directory so it finds the right pyproject.toml.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          version: latest
+          working-directory: backend
+
+      # Install the pinned tool versions.
+      - name: Sync dev dependencies
+        run: uv sync --extra dev
+
+      # Run Pytest with coverage for the backend.
+      - name: Run Pytest with coverage
+        run: |
+          uv run pytest -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests; code=$?; if [ $code -eq 5 ]; then echo "✅  Pytest collected no tests – treating as pass"; exit 0; else exit $code; fi
