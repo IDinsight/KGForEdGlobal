@@ -1,9 +1,9 @@
-"""This module contains the entry point for converting raw PDF pages into a structural
-Intermediate Representation (IR).
+"""This module contains the entry point for converting raw PDF pages into a structural,
+canonical Intermediate Representation (IR).
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_curriculum.py ../data/zambia/zambia.pdf -c Zambia -l en-US -o ../results --overwrite
+python src/skg/entries/extract_canonical_ir.py ../data/zambia/zambia.pdf -c Zambia -l en-US -o ../results
 """
 
 # Standard Library
