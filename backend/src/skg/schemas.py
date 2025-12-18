@@ -1,10 +1,25 @@
 """This module contains top-level Pydantic models."""
 
 # Standard Library
-from typing import Any, Callable, Literal
+from datetime import datetime
+from typing import Any, Callable, Literal, Optional
 
 # Third Party Library
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class ExtractionRunIR(BaseModel):
+    """Pydantic model for extraction run metadata."""
+
+    completed_at: Optional[datetime] = None
+    config_hash: Optional[str] = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+    models: list[str] = Field(default_factory=list)
+    pipeline_version: Optional[str] = None
+    run_id: str
+    started_at: Optional[datetime] = None
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
 
 
 class Limits(BaseModel):

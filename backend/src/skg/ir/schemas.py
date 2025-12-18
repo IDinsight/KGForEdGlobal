@@ -100,14 +100,24 @@ Main takeaways:
 from __future__ import annotations
 
 # Standard Library
+import json
+
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
 # Third Party Library
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 # Package Library
+from skg.schemas import ExtractionRunIR
 from skg.utils.constants import (
     AcademicSubject,
     AdoptionStatus,
@@ -150,6 +160,13 @@ class BaseIRModel(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
 
+class KeyValuePair(BaseIRModel):
+    """Pydantic model for a generic key-value pair."""
+
+    key: str
+    value: str
+
+
 class SpatialIR(BaseIRModel):
     """Mixin for elements that occupy a physical region on a page.
 
@@ -182,7 +199,7 @@ class ProvenancePointer(SpatialIR):
         default=None,
         description="e.g., 'vision', 'text', 'hybrid', 'manual', 'table-parser'",
     )
-    page_dimensions: Optional[tuple[float, float]] = Field(
+    page_dimensions: Optional[list[float]] = Field(
         default=None, description="Page width/height for normalizing PDF points."
     )
     page_index: int = Field(..., ge=0, description="0-based page index in the PDF.")
@@ -320,7 +337,7 @@ class EvidenceIR(BaseIRModel):
     GraphElementIRs.
     """
 
-    features: dict[str, Any] = Field(default_factory=dict)
+    features: list[KeyValuePair] = Field(default_factory=list)
     kind: EvidenceKind = Field(default=EvidenceKind.OTHER)
     provenance: list[ProvenancePointer] = Field(default_factory=list)
     text: Optional[str] = Field(default=None)
@@ -760,7 +777,9 @@ class RelationshipIR(BaseIRModel):
 
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence: list[EvidenceIR] = Field(default_factory=list)
-    extra: dict[str, Any] = Field(default_factory=dict)
+    extra: list[KeyValuePair] = Field(
+        default_factory=list, description="Additional metadata fields."
+    )
     inference_type: Optional[str] = Field(default=None)
     is_inferred: bool = Field(default=False)
     provenance: list[ProvenancePointer] = Field(default_factory=list)
@@ -836,8 +855,8 @@ class DocumentMetadataIR(BaseIRModel):
         description="Document last modified/published date if known (timezone-aware recommended).",
     )
     document_kind: Optional[str] = Field(default=None)
-    extra: dict[str, Any] = Field(
-        default_factory=dict, description="Additional metadata fields."
+    extra: list[KeyValuePair] = Field(
+        default_factory=list, description="Additional metadata fields."
     )
     framework_type: Optional[str] = Field(
         default=None,
@@ -911,17 +930,36 @@ class DocumentMetadataIR(BaseIRModel):
     version: Optional[str] = Field(default=None)
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
 
+    @field_validator("extra", mode="before")
+    @classmethod
+    def convert_dict_to_kv_list(cls, v: Any) -> Any:
+        """Allow Python code to pass a dict, but converts it to list[KeyValuePair] so
+        the model remains valid and Strict Mode compliant.
 
-class ExtractionRunIR(BaseIRModel):
-    """Pydantic model for extraction run metadata."""
+        Parameters
+        ----------
+        v
+            The input value for the `extra` field.
 
-    completed_at: Optional[datetime] = None
-    config_hash: Optional[str] = None
-    extra: dict[str, Any] = Field(default_factory=dict)
-    models: list[str] = Field(default_factory=list)
-    pipeline_version: Optional[str] = None
-    run_id: str
-    started_at: Optional[datetime] = None
+        Returns
+        -------
+        Any
+            The converted list of KeyValuePair dictionaries, or the original value if
+            it's not a dict.
+        """
+
+        if isinstance(v, dict):
+            converted = []
+            for key, val in v.items():
+                # Value must be a string for KeyValuePair. If it's complex (like the
+                # PyMuPDF dict), we serialize it to JSON.
+                if isinstance(val, (dict, list, bool, int, float)):
+                    val_str = json.dumps(val, default=str)
+                else:
+                    val_str = str(val)
+                converted.append({"key": key, "value": val_str})
+            return converted
+        return v
 
 
 class DocumentIR(ElementContainerIR):

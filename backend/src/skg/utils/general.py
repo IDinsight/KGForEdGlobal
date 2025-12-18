@@ -6,9 +6,6 @@ multiple modules, then it is a general utility and should be defined in this mod
 instead.
 """
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
 import base64
 import json
@@ -25,23 +22,6 @@ from loguru import logger
 
 # Package Library
 from skg.schemas import Valid
-
-
-def convert_to_list(x: Any) -> list[Any]:
-    """Wrap `x` in a list.
-
-    Parameters
-    ----------
-    x
-        Any object to wrap in a list.
-
-    Returns
-    -------
-    list[Any]
-        The passed in `x` wrapped in a list if it's not a list.
-    """
-
-    return [x] if not isinstance(x, list) else x
 
 
 def encode_png_to_data_url(png_fp: Path) -> str:
@@ -205,26 +185,6 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
-def remove_json_markdown(*, text: str) -> str:
-    """Remove JSON markdown from text.
-
-    Parameters
-    ----------
-    text
-        The text containing the JSON markdown.
-
-    Returns
-    -------
-    str
-        The text with the json markdown removed.
-    """
-
-    text = text.strip()
-    text = re.sub(r"```(json)?\n", "", text).rstrip("```")
-    text = text.replace(r"\{", "{").replace(r"\}", "}")
-    return text.strip()
-
-
 def validate_bcp47(code: str) -> str:
     """Validates that a string is a valid BCP-47 language tag.
 
@@ -251,23 +211,6 @@ def validate_bcp47(code: str) -> str:
         return lang.to_tag()
     except langcodes.LanguageTagError as exc:
         raise ValueError(f"Unparseable language tag: '{code}'") from exc
-
-
-def write_text(path: Path, text: str) -> None:
-    """Write text to a file.
-
-    Parameters
-    ----------
-    path
-        The file path to write the text to.
-    text
-        The text to write to the file.
-    """
-
-    logger.info(f"Writing text to file: {path}...")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    logger.success(f"Text written to file: {path}")
 
 
 def write_to_json(
