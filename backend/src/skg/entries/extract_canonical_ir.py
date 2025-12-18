@@ -137,7 +137,7 @@ def extract_page_irs(
         page_ir = normalize_provenance(
             doc_key=doc_key,
             extraction_method="vision+structured",
-            page_dimensions=dims,
+            page_dimensions=list(dims),  # Satisfy Pydantic schema
             page_index=page_index,
             page_ir=page_ir,
             pdf_name=pdf_fp.name,

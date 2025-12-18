@@ -699,7 +699,7 @@ def normalize_provenance(
     *,
     doc_key: str,
     extraction_method: str,
-    page_dimensions: Optional[tuple[float, float]] = None,
+    page_dimensions: Optional[list[float]] = None,
     page_index: int,
     page_ir: PageIR,
     pdf_name: str,
