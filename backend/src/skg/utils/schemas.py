@@ -6,6 +6,9 @@ from typing import Optional
 # Third Party Library
 from pydantic import BaseModel, ConfigDict, Field
 
+# Package Library
+from skg.ir.schemas import BCP47Str
+
 
 class TranslationIn(BaseModel):
     """Pydantic model for translation input."""
@@ -13,7 +16,7 @@ class TranslationIn(BaseModel):
     key: str = Field(
         ..., description="Stable identifier for the field being translated."
     )
-    source_language_hint: Optional[str] = Field(
+    source_language_hint: Optional[BCP47Str] = Field(
         default=None,
         description="BCP-47 language hint from extraction (may be 'und').",
     )
@@ -29,7 +32,7 @@ class TranslationOut(BaseModel):
         default=None, ge=0.0, le=1.0, description="Optional translation confidence."
     )
     key: str
-    detected_source_language: str = Field(
+    detected_source_language: BCP47Str = Field(
         ...,
         description="Detected BCP-47 language code of the input (e.g., 'en', 'sw').",
     )
