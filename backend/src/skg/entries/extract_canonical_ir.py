@@ -69,6 +69,44 @@ assert (
 cli = typer.Typer(no_args_is_help=True)
 
 
+def _format_continuity_context(state: ContinuityState) -> str | None:
+    """Format the active path context from the continuity state for inclusion in the
+    PageIR extraction prompt.
+
+    Parameters
+    ----------
+    state
+        The cross-page continuity state.
+
+    Returns
+    -------
+    str | None
+        The formatted active path context, or None if there is no active path.
+    """
+
+    if not state.active_path_ctx:
+        return None
+
+    lines = []
+
+    # active_path_ctx is a list of node snapshots (dictionaries or objects).
+    for node in state.active_path_ctx:
+        # Handle dict or object access safely.
+        label = (
+            node.get("label")
+            if isinstance(node, dict)
+            else getattr(node, "label", "Unknown")
+        )
+        node_type = (
+            node.get("node_type")
+            if isinstance(node, dict)
+            else getattr(node, "node_type", "node")
+        )
+        lines.append(f"- [{node_type}] {label}")
+
+    return "\n".join(lines)
+
+
 def extract_page_irs(
     *,
     continuity_state: ContinuityState,
@@ -134,8 +172,13 @@ def extract_page_irs(
                 render_page_to_png(
                     doc=doc, dpi=dpi, output_png_fp=png_fp, page_index=page_index
                 )
+
+            context_text = _format_continuity_context(continuity_state)
             page_ir = extract_page_ir_with_llm(
-                model=model, page_index=page_index, png_fp=png_fp
+                context_text=context_text,
+                model=model,
+                page_index=page_index,
+                png_fp=png_fp,
             )
 
         # If we loaded cached IR but the PNG is missing (common in resume runs), render

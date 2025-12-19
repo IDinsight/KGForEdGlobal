@@ -9,11 +9,13 @@ from textwrap import dedent
 from dotmap import DotMap
 
 
-def extract_page_ir_info(*, page_index: int) -> DotMap:
+def extract_page_ir_info(*, context_text: str | None = None, page_index: int) -> DotMap:
     """Generate the system and user messages for extracting PageIR from a page image.
 
     Parameters
     ----------
+    context_text
+        Optional additional context text to include in the prompt.
     page_index
         The 0-based page index to include in the prompt context.
 
@@ -22,6 +24,10 @@ def extract_page_ir_info(*, page_index: int) -> DotMap:
     DotMap
         A DotMap containing 'system_message' and 'user_message'.
     """
+
+    context_block = ""
+    if context_text:
+        context_block = f"\n\n## CONTEXT FROM PREVIOUS PAGE\nThe following hierarchy nodes were active at the end of the previous page. Use this to determine `parent_ref` for orphaned items:\n{context_text}"
 
     system_message = dedent(
         """You are an expert curriculum digitization system.
@@ -95,13 +101,13 @@ Return a valid PageIR JSON object now.
     """
     )
     user_message = dedent(
-        f"""Extract PageIR for page_index={page_index}.
+        f"""Extract PageIR for page_index={page_index}.{context_block}
 
 Reminders for this page:
-- If you see curriculum codes (e.g., 3.9.4.1 / MTH.1.2 / P1-ENG-02), capture them in `local_code` on the correct node/statement/element.
-- If this page is a table: emit a TableIR AND double-extract semantic items; use 0-based `table_row`/`table_col`.
-- Set correct `language` per item; for non-English text, include English translations in *_en fields (original must remain in the base field).
-- Don’t invent missing text; add a note to `warnings` if content is cut off/unreadable.
+- If you see curriculum codes (e.g., 3.9.4.1 / MTH.1.2), capture them in `local_code`.
+- If this page is a table: emit a TableIR AND double-extract semantic items.
+- Set correct `language` per item.
+- Don’t invent missing text.
     """
     )
 

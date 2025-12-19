@@ -162,7 +162,6 @@ def _validate_extraction(
         or bool(page_ir.diagrams)
         or bool(page_ir.curriculum_elements)
     )
-
     if not has_content:
         # Allow truly non-content pages if the model classified them as such (front
         # matter, TOC, etc.).
@@ -188,7 +187,27 @@ def _validate_extraction(
             "Not marked as non-content and not visually blank -> likely vision failure."
         )
 
-    # 2. Check for "Refusal" hallucinations. Sometimes models return valid JSON where
+    # 2. Enforce double extraction for tables. If the model extracted tables (physical)
+    # but zero semantic items (nodes/statements/elements), it likely failed to process
+    # the table content ("lazy" extraction). We exempt non-content pages (like TOCs)
+    # where tables might just be lists of page numbers.
+    semantic_count = (
+        len(page_ir.nodes or [])
+        + len(page_ir.statements or [])
+        + len(page_ir.curriculum_elements or [])
+    )
+    if (
+        page_ir.tables
+        and semantic_count == 0
+        and page_ir.page_kind
+        not in (PageKind.TOC, PageKind.LIST_OF_TABLES, PageKind.FRONT_MATTER)
+    ):
+        raise ExtractionQualityError(
+            f"Page {page_index} extracted {len(page_ir.tables)} tables but ZERO "
+            f"semantic items. Double extraction failed (LLM likely lazy). Retrying."
+        )
+
+    # 3. Check for "Refusal" hallucinations. Sometimes models return valid JSON where
     # the text fields say "I cannot read this".
     refusal_keywords = [
         "cannot read",
@@ -213,7 +232,9 @@ def _validate_extraction(
             )
 
 
-def extract_page_ir_with_llm(*, model: str, page_index: int, png_fp: Path) -> PageIR:
+def extract_page_ir_with_llm(
+    *, context_text: str | None = None, model: str, page_index: int, png_fp: Path
+) -> PageIR:
     """Extract PageIR from a page image using LLM + Vision + Structured Outputs. Uses
     OpenAI Responses API structured parsing into a Pydantic model. Image is passed as
     an input_image with a base64 data URL.
@@ -229,6 +250,8 @@ def extract_page_ir_with_llm(*, model: str, page_index: int, png_fp: Path) -> Pa
 
     Parameters
     ----------
+    context_text
+        Optional additional context text to include in the prompt.
     model
         The OpenAI model to use.
     page_index
@@ -250,7 +273,7 @@ def extract_page_ir_with_llm(*, model: str, page_index: int, png_fp: Path) -> Pa
     """
 
     image_url = encode_png_to_data_url(png_fp)
-    prompts = extract_page_ir_info(page_index=page_index)
+    prompts = extract_page_ir_info(context_text=context_text, page_index=page_index)
 
     # Initial context.
     instructions = prompts.system_message
