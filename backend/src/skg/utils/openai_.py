@@ -21,9 +21,10 @@ from tenacity import (
 )
 
 # Package Library
-from skg.ir.schemas import PageIR, PageKind
+from skg.ir.schemas import PageIR
 from skg.prompts.ir import extract_page_ir_info
 from skg.schemas import Limits
+from skg.utils.constants import PageKind
 from skg.utils.general import encode_png_to_data_url
 
 limits = Limits(max_retry_attempts=5)
