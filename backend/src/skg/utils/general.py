@@ -8,12 +8,13 @@ instead.
 
 # Standard Library
 import base64
+import hashlib
 import json
 import re
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Third Party Library
 import langcodes
@@ -183,6 +184,29 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
         )
 
     return record
+
+
+def stable_text_hash(text: Optional[str]) -> str:
+    """Return a deterministic SHA-256 hex digest of normalized text.
+
+    Normalization removes repeated whitespace and trims, so inconsequential formatting
+    changes don't change the hash.
+
+    Parameters
+    ----------
+    text
+        The input text to hash.
+
+    Returns
+    -------
+    str
+        The SHA-256 hex digest of the normalized text.
+    """
+
+    if text is None:
+        text = ""
+    norm = re.sub(r"\s+", " ", str(text)).strip()
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
 def validate_bcp47(code: str) -> str:

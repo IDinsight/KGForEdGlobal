@@ -39,6 +39,7 @@ class CurriculumElementType(str, Enum):
     ACTIVITY = "activity"
     ASSESSMENT = "assessment"
     EXAMPLE = "example"
+    GLOSSARY_ENTRY = "glossary_entry"
     LESSON = "lesson"
     MATERIAL = "material"
     OTHER = "other"
@@ -93,6 +94,23 @@ class ListKind(str, Enum):
     ROMAN = "roman"  # Ordered roman numerals like i), iv.
 
 
+class PageKind(str, Enum):
+    """Enumeration for high-level page classification for downstream filtering.
+
+    The extractor may set this directly; otherwise we infer it in post-processing.
+    """
+
+    ABBREVIATIONS = "abbreviations"
+    ACKNOWLEDGEMENTS = "acknowledgements"
+    APPENDIX = "appendix"
+    CONTENT = "content"
+    FRONT_MATTER = "front_matter"
+    LIST_OF_TABLES = "list_of_tables"
+    PREFACE = "preface"
+    TOC = "toc"
+    UNKNOWN = "unknown"
+
+
 class RelationshipType(str, Enum):
     """Enumeration of relationship types between statements."""
 
@@ -131,6 +149,7 @@ class StatementRole(str, Enum):
 
     EXPECTATION = "expectation"
     GUIDANCE = "guidance"
+    DOCUMENT_CONTEXT = "document_context"
     PERFORMANCE_DESCRIPTOR = "performance_descriptor"
     UNKNOWN = "unknown"
 

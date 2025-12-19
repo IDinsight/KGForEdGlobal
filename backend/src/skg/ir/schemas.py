@@ -126,6 +126,7 @@ from skg.utils.constants import (
     EvidenceKind,
     HierarchyNodeType,
     ListKind,
+    PageKind,
     RelationshipType,
     SequenceKind,
     StatementRole,
@@ -145,12 +146,38 @@ DocKeyField = Annotated[
 ]
 LanguageField = Annotated[
     BCP47Str,
-    Field(default="en", description="Strict BCP-47 language code (e.g., 'en', 'sw')."),
+    Field(
+        default="und",
+        description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown.",
+    ),
 ]
 PdfNameField = Annotated[str, Field(..., description="Source PDF filename (no path).")]
 RefField = Annotated[
     str, Field(..., description="Local unique reference for this element.")
 ]
+
+
+def needs_english_translation(language: str | None) -> bool:
+    """Check if we should require *_en fields as follows:
+
+    - English (en, en-US, ...) does NOT require translation.
+    - Unknown (und) does NOT hard-require translation (prevents brittle failures).
+    - All other languages DO require translation.
+
+    Parameters
+    ----------
+    language
+        The input language tag.
+
+    Returns
+    -------
+    bool
+        True if English translation is needed.
+    """
+
+    norm = "und" if not language else str(language).strip().lower().replace("_", "-")
+    pl = norm.split("-", 1)[0]
+    return pl not in {"en", "und"}
 
 
 # Schemas for primitives.
@@ -199,6 +226,10 @@ class ProvenancePointer(SpatialIR):
         default=None,
         description="e.g., 'vision', 'text', 'hybrid', 'manual', 'table-parser'",
     )
+    image_dimensions: Optional[list[int]] = Field(
+        default=None,
+        description="Rendered page image width/height in pixels when bbox_kind=image_pixels.",
+    )
     page_dimensions: Optional[list[float]] = Field(
         default=None, description="Page width/height for normalizing PDF points."
     )
@@ -208,6 +239,10 @@ class ProvenancePointer(SpatialIR):
         description="The human-readable page number printed on the page (e.g. 'iv', '12').",
     )
     pdf_name: PdfNameField
+    render_dpi: Optional[int] = Field(
+        default=None,
+        description="DPI used to render the page image when bbox_kind=image_pixels.",
+    )
     section: Optional[str] = Field(
         default=None, description="Nearest section/heading, if known."
     )
@@ -461,6 +496,10 @@ class GraphElementIR(StructuralElementIR):
     confidence: Optional[float] = Field(
         default=None, ge=0.0, le=1.0, description="Extraction confidence score."
     )
+    extra: list[KeyValuePair] = Field(
+        default_factory=list,
+        description="Additional metadata fields (e.g., inference breadcrumbs).",
+    )
     grade_levels: list[str] = Field(
         default_factory=list,
         description="Normalized grade levels this element applies to (e.g., ['01','02']). Empty if unknown.",
@@ -598,6 +637,29 @@ class CurriculumElementIR(GraphElementIR):
                 data["element_type"] = CurriculumElementType.OTHER
         return data
 
+    @model_validator(mode="after")
+    def require_en_translation_if_non_english(self) -> CurriculumElementIR:
+        """Ensure that if the element's language is not English, the English text is
+        provided.
+
+        Returns
+        -------
+        CurriculumElementIR
+            The validated CurriculumElementIR instance.
+
+        Raises
+        ------
+        ValueError
+            If the validation checks fail.
+        """
+
+        if needs_english_translation(self.language) and not self.text_en:
+            raise ValueError(
+                f"CurriculumElementIR {self.ref}: language={self.language} requires "
+                f"text_en."
+            )
+        return self
+
 
 class HierarchyNodeIR(GraphElementIR):
     """Pydantic model for a grouping node in the curriculum hierarchy:
@@ -692,6 +754,35 @@ class HierarchyNodeIR(GraphElementIR):
                 data["node_type"] = HierarchyNodeType.OTHER
         return data
 
+    @model_validator(mode="after")
+    def require_en_translation_if_non_english(self) -> HierarchyNodeIR:
+        """Ensure that if the node's language is not English, the English label (and
+        description, if present) are provided.
+
+        Returns
+        -------
+        HierarchyNodeIR
+            The validated HierarchyNodeIR instance.
+
+        Raises
+        ------
+        ValueError
+            If the validation checks fail.
+        """
+
+        if needs_english_translation(self.language):
+            if not self.label_en:
+                raise ValueError(
+                    f"HierarchyNodeIR {self.ref}: language={self.language} requires "
+                    f"label_en."
+                )
+            if self.description and not self.description_en:
+                raise ValueError(
+                    f"HierarchyNodeIR {self.ref}: language={self.language} requires "
+                    f"description_en when description is present."
+                )
+        return self
+
 
 class StatementIR(GraphElementIR):
     """Pydantic model for a statement attached to (or scoped by) a hierarchy node.
@@ -771,6 +862,28 @@ class StatementIR(GraphElementIR):
         description="Translation metadata if text_en was produced via translation.",
     )
 
+    @model_validator(mode="after")
+    def require_en_translation_if_non_english(self) -> StatementIR:
+        """Ensure that if the statement's language is not English, the English text is
+        provided.
+
+        Returns
+        -------
+        StatementIR
+            The validated StatementIR instance.
+
+        Raises
+        ------
+        ValueError
+            If the validation checks fail.
+        """
+
+        if needs_english_translation(self.language) and not self.text_en:
+            raise ValueError(
+                f"StatementIR {self.ref}: language={self.language} requires text_en."
+            )
+        return self
+
 
 class RelationshipIR(BaseIRModel):
     """Pydantic model for a relationship between two GraphElementIRs."""
@@ -816,6 +929,10 @@ class PageIR(ElementContainerIR):
     """
 
     page_index: int = Field(..., ge=0, description="0-based page index.")
+    page_kind: PageKind = Field(
+        default=PageKind.UNKNOWN,
+        description="High-level page classification (content vs front matter) for deterministic downstream filtering.",
+    )
     warnings: list[str] = Field(default_factory=list)
 
 

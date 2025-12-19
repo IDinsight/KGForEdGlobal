@@ -1,4 +1,4 @@
-""" "This module contains prompt templates for extracting intermediate representation
+"""This module contains prompt templates for extracting intermediate representation
 information from page images.
 """
 
@@ -24,90 +24,85 @@ def extract_page_ir_info(*, page_index: int) -> DotMap:
     """
 
     system_message = dedent(
-        f"""You are an expert curriculum digitization system.
-Your task: Convert the page image into a VALID PageIR JSON object that matches the provided schema EXACTLY.
+        """You are an expert curriculum digitization system.
 
-## 1. IDENTITY & REFS (CRITICAL)
-- Generate SIMPLE, short local IDs. Do NOT include page numbers or long prefixes.
+Your task: Convert the page image into a VALID PageIR JSON object that matches the provided schema EXACTLY.
+- Output ONLY valid JSON (no markdown, no commentary).
+- Do NOT invent content. If something is unclear, extract what you can and add a note in `warnings`.
+
+## 0) HARD RULES (DO NOT VIOLATE)
+- IDs/refs in this single JSON response must be unique.
   - Tables: "t1", "t2"...
   - Nodes: "n1", "n2"...
   - Statements: "s1", "s2"...
-  - Curriculum Elements: "e1", "e2"...
-- IDs must be unique within this JSON response.
-- `parent_ref`: If an item belongs to a container (e.g., a "Topic" node or "Table 1"), set this field.
+  - Curriculum elements: "e1", "e2"...
+- Use `parent_ref` to attach items under their container (node/table/statement), never by inventing hierarchy.
+- Preserve provenance. If you can point to a specific table cell, do it (table_ref/row/col + bbox when possible).
 
-## 2. PHYSICAL EXTRACTION (The "Container" Layer)
-Analyze the page layout. Is it a GRID (Table) or a FLOW (Document)?
+## 1) CURRICULUM CODES (CRITICAL FOR GENERALIZATION)
+Many curricula label items with stable codes (e.g., "3.9.4.1", "MTH.1.2", "P1-ENG-02", "STD1-MATH-LO3").
+When you see a code that *labels the item itself*:
+- Put the code verbatim in `local_code`.
+- Do NOT “hide” the code only in `text`/`label` if you can separate it cleanly.
+  - Example node label on page: "3.9.4.1 Measurement" → `local_code="3.9.4.1"`, `label="Measurement"`.
+  - Example statement: "3.9.4.1 Learners should..." → `local_code="3.9.4.1"` on that StatementIR.
+- If the text contains a reference to a *different* code (e.g., “See 3.9.4.1”), put that in `cross_references` (not `local_code`).
 
-### A. If GRID / TABLE (e.g., columns for "Topic", "Outcomes", "Activities"):
-1. Create a `TableIR` covering the full grid.
+## 2) PHYSICAL EXTRACTION ("CONTAINER" LAYER)
+First determine if the page is a GRID (table) or FLOW (document).
+
+### A) If GRID / TABLE
+1. Create a `TableIR` that represents the full grid.
 2. Extract EVERY cell into `TableIR.rows`.
-   - `table_kind`: "data" (if it holds curriculum content) or "layout".
-3. **Double Extraction**: For every semantic item found *inside* a cell, create a corresponding `StatementIR` or `CurriculumElementIR`.
-   - Link these items back to the table using `provenance.table_ref="t1"`, `table_row=X`, `table_col=Y`.
-   - This creates a bridge: Table (Physical) -> Statement (Semantic).
+3. **Double extraction (required):**
+   For each semantic item contained in a cell (headers, topics, competence/outcome statements, activities, expected standards):
+   - Create a corresponding `HierarchyNodeIR`, `StatementIR`, or `CurriculumElementIR`.
+   - Link it back to the cell via provenance:
+     - `provenance.table_ref = "<table_ref>"` (e.g., "t1")
+     - `provenance.table_row = <int>`
+     - `provenance.table_col = <int>`
 
-### B. If FLOW / DOCUMENT (e.g., Centered Headers, Paragraphs, Lists):
-1. Extract Headers/Titles as `HierarchyNodeIR`.
-   - Use `node_type` to classify (e.g., "theme", "topic", "grade", "subject").
-2. Extract Lists/Paragraphs under those headers as `StatementIR` or `CurriculumElementIR`.
-   - Set `parent_ref` to the nearest header's ID ("n1").
+**Indexing convention (MANDATORY):**
+- `page_index` is 0-based (already provided).
+- `table_row` and `table_col` MUST ALSO BE 0-based.
+  - They should refer to your emitted `TableIR.rows[table_row].cells[table_col]`.
 
-## 3. SEMANTIC CLASSIFICATION (The "Meaning" Layer)
-Decide what each extracted text block represents using these definitions:
+Column role guidance:
+- “Competence / Learning Outcomes / Specific Competences / Objectives / Expected Learning Outcomes” → usually `StatementIR(role="expectation")`
+- “Expected Standard / Indicator / Performance Criteria / Assessment” → `StatementIR(role="performance_descriptor")`
+- “Learning Activities / Suggested Activities / Resources / Materials / Teacher Notes / Guidance” → usually `CurriculumElementIR` (element_type="activity"/"resource"/"teacher_note"/etc.)
 
-### A. `HierarchyNodeIR` (Grouping)
-- Containers that structure the curriculum.
-- Examples: Grade, Stage, Subject, Theme, Strand, Topic, Unit, Week.
-- Action: Set `label` to the title.
+### B) If FLOW / DOCUMENT
+1. Extract headings as `HierarchyNodeIR` (grade/stage/subject/theme/topic/unit/week/etc.).
+2. Extract outcome/competence/standard text as `StatementIR(role="expectation")`.
+3. Extract guidance/notes as `StatementIR(role="guidance")`.
+4. Extract activities/resources/exemplars as `CurriculumElementIR` and keep them linkable via relationships.
 
-### B. `StatementIR` (Normative / "Must Learn")
-- The core requirements or standards.
-- Roles (Choose ONE):
-  - "expectation": The outcome, objective, competence, or standard.
-  - "performance_descriptor": How to assess it (indicators, criteria, benchmarks).
-  - "guidance": Pedagogical advice, teacher notes, prerequisites.
+## 3) LANGUAGE + TRANSLATION (MANDATORY)
+- Set each extracted item's `language` to the language of that item’s text.
+- If the page/item is NOT English:
+  - Put original text in `text` / `label` / `description`.
+  - Put English translation in `text_en` / `label_en` / `description_en`.
+- If you cannot confidently identify the language code, use "und" (undetermined) rather than defaulting to "en".
 
-### C. `CurriculumElementIR` (Instructional / "How to Teach")
-- Supporting materials, activities, or resources.
-- Types (Choose ONE):
-  - "activity": Learning activities, suggested tasks.
-  - "resource": Materials, books, tools.
-  - "assessment": Sample questions, tests.
-  - "example": Illustrative examples.
-  - "teacher_note": Tips for the teacher.
+## 4) FRONT MATTER
+If the page is table of contents, acknowledgements, abbreviations, foreword, etc.:
+- Set `page_kind` appropriately (front matter).
+- Prefer extracting as `TableIR` / `HierarchyNodeIR` only when it is structurally useful.
+- Do not fabricate curriculum expectations from front matter.
 
-## 4. LANGUAGE & TRANSLATION
-- **Original Text**: Extract the EXACT text from the page into `text` (for statements/elements) or `label` (for nodes). Preserve original language (e.g., Swahili, French).
-- **Translation**: If the content is NOT in English:
-  - Translate it into clear, standard English.
-  - Populate `text_en` (for statements/elements) or `label_en` (for nodes) with the translation.
-  - If the text is already English, leave `*_en` fields null.
-
-## 5. PROVENANCE & FIDELITY
-- `provenance`: REQUIRED for every item.
-  - `page_index`: {page_index}
-  - `bbox`: [x0, y0, x1, y1] (tightly bounding the text ink, in image pixels).
-  - `doc_key` / `pdf_name`: Leave as "UNKNOWN" (post-processing fixes this).
-- **Text**: Extract VERBATIM. Do not summarize. Preserve spelling/punctuation.
-- **Nulls**: If a field is not present (e.g. `confidence`, `sequence`), omit it or use null. Do not guess.
-
-Output strictly valid JSON matching the `PageIR` schema.
-"""
+Return a valid PageIR JSON object now.
+    """
     )
-
     user_message = dedent(
         f"""Extract PageIR for page_index={page_index}.
 
-### Layout Hints for this Page:
-- If you see columns like "Topic", "Sub-topic", "Competences" -> Extract as `TableIR` AND mapped `HierarchyNodeIR` / `StatementIR`.
-- If you see headers like "Theme 1:", "Sub-theme 2:" -> Extract as `HierarchyNodeIR`.
-- If you see lists of outcomes -> Extract as `StatementIR` (role="expectation").
-- If you see "Suggested Activities" -> Extract as `CurriculumElementIR` (type="activity").
-- **Language**: If the text is non-English, remember to populate `text` (original) and `text_en` (translation).
-
-Warning: Do not invent content. If the text is cut off or unreadable, extract what you can and add a note to `warnings`.
-"""
+Reminders for this page:
+- If you see curriculum codes (e.g., 3.9.4.1 / MTH.1.2 / P1-ENG-02), capture them in `local_code` on the correct node/statement/element.
+- If this page is a table: emit a TableIR AND double-extract semantic items; use 0-based `table_row`/`table_col`.
+- Set correct `language` per item; for non-English text, include English translations in *_en fields (original must remain in the base field).
+- Don’t invent missing text; add a note to `warnings` if content is cut off/unreadable.
+    """
     )
 
     return DotMap(

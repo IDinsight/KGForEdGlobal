@@ -73,6 +73,34 @@ def get_pdf_metadata(doc: pymupdf.Document) -> dict[str, Any]:
     return {k: v for k, v in md.items() if v}
 
 
+def read_png_dimensions(*, png_fp: Path) -> tuple[int, int]:
+    """Read PNG width/height without external dependencies.
+
+    Parameters
+    ----------
+    png_fp
+        Path to a rendered PNG.
+
+    Returns
+    -------
+    tuple[int, int]
+        (width_px, height_px)
+
+    Raises
+    ------
+    ValueError
+        If the file is not a valid PNG.
+    """
+
+    data = png_fp.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"Not a PNG file: {png_fp}")
+
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    return width, height
+
+
 def render_page_to_png(
     *,
     doc: pymupdf.Document,
