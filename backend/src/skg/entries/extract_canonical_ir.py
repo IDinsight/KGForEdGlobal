@@ -164,8 +164,7 @@ def extract_page_irs(
             render_dpi=dpi,
         )
 
-        # Update continuity state for next page (must happen after namespacing).
-        page_ir = apply_cross_page_continuity(page_ir, continuity_state)
+        # Build fallback provenance pointer (used by postprocess promotions).
         page_fallback_ptr = ProvenancePointer(
             bbox_kind=BBoxKind.UNKNOWN,
             doc_key=doc_key,
@@ -177,6 +176,9 @@ def extract_page_irs(
             render_dpi=dpi,
             section=None,
         )
+
+        # Postprocess first since this process may add nodes via row promotion,
+        # glossary conversion, etc.
         page_ir = postprocess_page_ir(
             doc_languages=doc_languages,
             fallback_base_ptr=page_fallback_ptr,
@@ -184,6 +186,11 @@ def extract_page_irs(
             llm_model=model,
             page_ir=page_ir,
         )
+
+        # Then apply continuity so that "page_has_nodes" reflects promoted nodes.
+        page_ir = apply_cross_page_continuity(page_ir, continuity_state)
+
+        # Validate and checkpoint continuity state.
         page_ir = validate_page_ir(page_ir)
         continuity_state = build_continuity_state_from_page(page_ir, continuity_state)
         save_continuity_state(extraction_dirs, continuity_state)
