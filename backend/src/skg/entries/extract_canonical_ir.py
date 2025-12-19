@@ -193,7 +193,7 @@ def extract_page_irs(
 
         # Ensure page refs won’t collide across pages.
         page_ir = ensure_namespace_page_refs(
-            on_duplicate="rename", page_ir=page_ir, prefix=f"p{page_index:04d}:"
+            on_duplicate="raise", page_ir=page_ir, prefix=f"p{page_index:04d}:"
         )
 
         # Ensure all elements have provenance + page dimensions.

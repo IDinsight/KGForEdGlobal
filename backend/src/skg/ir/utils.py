@@ -22,6 +22,7 @@ from skg.ir.processing.heuristics import (
     infer_page_kind,
     normalize_front_matter_roles,
     normalize_node_types,
+    promote_high_level_objectives,
     promote_learning_area_rows_to_nodes,
 )
 from skg.ir.schemas import PageIR, ProvenancePointer, TranslationMetaIR
@@ -341,6 +342,7 @@ def postprocess_page_ir(
 
     normalize_node_types(overrides=hc.get("node_type_overrides"), page_ir=page_ir)
     normalize_front_matter_roles(page_ir)
+    promote_high_level_objectives(page_ir)
     convert_abbreviation_tables_to_glossary(
         fallback_base_ptr=fallback_base_ptr, page_ir=page_ir
     )

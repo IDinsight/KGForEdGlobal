@@ -65,6 +65,7 @@ DEFAULT_ROW_PROMOTION_CONFIG: dict[str, Any] = {
         "domain",
         "learning area",
         "learning field",
+        "main competence",
         "strand",
         "sub-theme",
         "sub-topic",
@@ -515,6 +516,14 @@ def infer_page_kind(
                 blob_parts.append(str(getattr(cell, "text", "") or ""))
     text = "\n".join(blob_parts).lower()
 
+    # Strong signal override: Explicit structural headers (Section/Chapter) force
+    # CONTENT, overriding metatext keywords like "Introduction" or "Background".
+    if re.search(
+        r"\b(section|chapter)\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)",
+        text,
+    ):
+        return PageKind.CONTENT
+
     keywords = _merge_page_kind_keywords(
         keyword_packs_by_lang=keyword_packs_by_lang, languages=languages
     )
@@ -643,6 +652,57 @@ def normalize_node_types(
             n.node_type = HierarchyNodeType.OTHER
             n.node_type_other = "front_matter_heading"
             continue
+
+
+def promote_high_level_objectives(page_ir: PageIR) -> None:
+    """Promote statements under 'Objective'/'Competence' nodes from DOCUMENT_CONTEXT
+    to EXPECTATION.
+
+    Fixes common LLM conservatism where high-level broad outcomes are classified as
+    context rather than normative standards.
+
+    Parameters
+    ----------
+    page_ir
+        The PageIR to process.
+    """
+
+    if page_ir.page_kind != PageKind.CONTENT:
+        return
+
+    node_map = {n.ref: n for n in (page_ir.nodes or [])}
+
+    for s in page_ir.statements or []:
+        # Only target Document Context (don't demote existing expectations).
+        if getattr(s, "role", None) != StatementRole.DOCUMENT_CONTEXT:
+            continue
+
+        parent = node_map.get(getattr(s, "parent_ref", ""))
+        if not parent:
+            continue
+
+        # Check parent label for normative keywords.
+        p_label = (getattr(parent, "label", "") or "").lower()
+        if any(
+            term in p_label
+            for term in ["objective", "competence", "outcome", "standard"]
+        ):
+            s.role = StatementRole.EXPECTATION
+
+            # Tag the promotion for debugging.
+            tags = getattr(s, "tags", None)
+            if isinstance(tags, list):
+                tags.append("role_promoted:heuristic_objective")
+
+            # Add detailed reason to extra.
+            extra = getattr(s, "extra", None)
+            if isinstance(extra, list):
+                extra.append(
+                    KeyValuePair(
+                        key="role_promoted_reason",
+                        value=f"parent_label_match: {p_label}",
+                    )
+                )
 
 
 def promote_learning_area_rows_to_nodes(
