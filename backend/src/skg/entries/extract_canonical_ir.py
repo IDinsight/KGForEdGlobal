@@ -52,7 +52,7 @@ from skg.ir.utils import (
 from skg.schemas import ExtractionRunIR
 from skg.utils.constants import BBoxKind
 from skg.utils.general import write_to_json
-from skg.utils.openai_ import extract_page_ir_with_llm
+from skg.utils.openai_ import extract_page_ir_with_llm, translate_page_ir
 from skg.utils.pdf import (
     compute_doc_key,
     get_page_dimensions,
@@ -229,12 +229,16 @@ def extract_page_irs(
             doc_languages=doc_languages,
             fallback_base_ptr=page_fallback_ptr,
             heuristics_config=heuristics_config,
-            llm_model=model,
             page_ir=page_ir,
         )
 
         # Then apply continuity so that "page_has_nodes" reflects promoted nodes.
         page_ir = apply_cross_page_continuity(page_ir, continuity_state)
+
+        # Translate page IR (if applicable).
+        page_ir = translate_page_ir(
+            doc_languages=doc_languages, model=model, page_ir=page_ir
+        )
 
         # Validate and checkpoint continuity state.
         page_ir = validate_page_ir(page_ir)

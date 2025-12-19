@@ -7,7 +7,6 @@ import re
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +24,8 @@ from skg.ir.processing.heuristics import (
     promote_high_level_objectives,
     promote_learning_area_rows_to_nodes,
 )
-from skg.ir.schemas import PageIR, ProvenancePointer, TranslationMetaIR
-from skg.utils.constants import PageKind, TableKind, TranslationMethod
+from skg.ir.schemas import PageIR, ProvenancePointer
+from skg.utils.constants import PageKind, TableKind
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 META_WARNING_RE = re.compile(r"\b(doc_key|pdf_name)\b", re.IGNORECASE)
@@ -222,57 +221,6 @@ def create_extraction_dirs(*, doc_key: str, output_dir: Path) -> ExtractionDirs:
     )
 
 
-def inject_missing_translation_meta(*, llm_model: str | None, page_ir: PageIR) -> None:
-    """Injects missing translation metadata into PageIR elements.
-
-    Parameters
-    ----------
-    llm_model
-        The LLM model used for translation.
-    page_ir
-        The PageIR to inject translation metadata into.
-    """
-
-    now = datetime.now(timezone.utc)
-
-    def mk_meta(source_language: str) -> TranslationMetaIR:
-        """Helper to create TranslationMetaIR.
-
-        Parameters
-        ----------
-        source_language
-            The source language code.
-
-        Returns
-        -------
-        TranslationMetaIR
-            The created TranslationMetaIR.
-        """
-
-        return TranslationMetaIR(
-            method=TranslationMethod.LLM,
-            model=llm_model,
-            provider="OpenAI",
-            source_language=source_language or "und",
-            target_language="en",
-            translated_at=now,
-        )
-
-    for st in page_ir.statements:
-        if st.text_en and st.translation_meta is None:
-            st.translation_meta = mk_meta(st.language)
-
-    for el in page_ir.curriculum_elements:
-        if el.text_en and el.translation_meta is None:
-            el.translation_meta = mk_meta(el.language)
-
-    for n in page_ir.nodes:
-        if n.label_en and n.label_translation_meta is None:
-            n.label_translation_meta = mk_meta(n.language)
-        if n.description_en and n.description_translation_meta is None:
-            n.description_translation_meta = mk_meta(n.language)
-
-
 def load_continuity_state(extraction_dirs: ExtractionDirs) -> ContinuityState:
     """Load the continuity state from file.
 
@@ -298,7 +246,6 @@ def postprocess_page_ir(
     doc_languages: list[str] | None = None,
     fallback_base_ptr: ProvenancePointer | None = None,
     heuristics_config: dict[str, Any] | None = None,
-    llm_model: str | None,
     page_ir: PageIR,
 ) -> PageIR:
     """Deterministic per-page repairs with safe/reasonable defaults.
@@ -314,8 +261,6 @@ def postprocess_page_ir(
         Fallback provenance pointer to use when promoting rows to nodes.
     heuristics_config
         Configuration for heuristics.
-    llm_model
-        The LLM model used for translation.
     page_ir
         The PageIR to post-process.
 
@@ -330,7 +275,7 @@ def postprocess_page_ir(
 
     if page_ir.page_kind in (None, PageKind.UNKNOWN):
         page_ir.page_kind = infer_page_kind(
-            languages=doc_languages,
+            languages=doc_languages or [],
             keyword_packs_by_lang=hc.get("page_kind_keywords_by_lang"),
             page_ir=page_ir,
         )
@@ -351,7 +296,6 @@ def postprocess_page_ir(
         fallback_base_ptr=fallback_base_ptr,
         page_ir=page_ir,
     )
-    inject_missing_translation_meta(llm_model=llm_model, page_ir=page_ir)
 
     return page_ir
 

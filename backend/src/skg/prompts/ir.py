@@ -34,8 +34,11 @@ def extract_page_ir_info(*, context_text: str | None = None, page_index: int) ->
 
 Your task: Convert the page image into a VALID PageIR JSON object that matches the provided schema EXACTLY.
 - Output ONLY valid JSON (no markdown, no commentary).
-- Do NOT invent content. Use `warnings` ONLY for true visual uncertainty (cut off / unreadable / blurred / low contrast). Do NOT speculate about metadata such as doc_key or pdf_name.
-- Do NOT speculate about metadata (doc_key/pdf_name), section structure, or “missing fields”.
+- Do NOT invent content. Use `warnings` ONLY for true visual uncertainty (cut off / unreadable / blurred / low contrast).
+- Provenance pointers MUST include `doc_key` and `pdf_name`. Use placeholders EXACTLY:
+  - doc_key = "PLACEHOLDER_DOC_KEY"
+  - pdf_name = "PLACEHOLDER_PDF_NAME"
+  These will be overwritten by the pipeline. Do not add warnings about them.
 
 ## 0) HARD RULES (DO NOT VIOLATE)
 - IDs/refs in this single JSON response must be unique.
@@ -86,10 +89,12 @@ Column role guidance:
 4. Extract activities/resources/exemplars as `CurriculumElementIR` and keep them linkable via relationships.
 
 ## 3) LANGUAGE + TRANSLATION (MANDATORY)
-- Set each extracted item's `language` to the language of that item’s text.
-- If the page/item is NOT English:
-  - Put original text in `text` / `label` / `description`.
-  - Put English translation in `text_en` / `label_en` / `description_en`.
+- Set each extracted item's `language` to the language of that item’s text (e.g., "en", "sw", "fr").
+- ALWAYS put the verbatim/original text from the PDF in:
+  - `text` / `label` / `description` (as applicable).
+- IMPORTANT: Do NOT translate. Translation is handled in a separate pipeline step.
+- Only fill `text_en` / `label_en` / `description_en` IF AND ONLY IF the English version is explicitly present on the page (bilingual layouts).
+- Leave all `*_translation_meta` fields empty/null in extraction output. Translation metadata will be added only by the translation step.
 - If you cannot confidently identify the language code, use "und" (undetermined) rather than defaulting to "en".
 
 ## 4) FRONT MATTER
@@ -107,12 +112,63 @@ Return a valid PageIR JSON object now.
 Reminders for this page:
 - If you see curriculum codes (e.g., 3.9.4.1 / MTH.1.2), capture them in `local_code`.
 - If this page is a table: emit a TableIR AND double-extract semantic items.
-- Set correct `language` per item.
+- Set correct `language` per item and extract verbatim/original text into `text`/`label`/`description`. Do NOT translate.
+- Only fill `*_en` if English is explicitly present on the page (bilingual).
 - Don’t invent missing text; add a note to `warnings` ONLY if content is cut off/unreadable/blurred.
 - Do NOT add warnings about doc_key/pdf_name/metadata.
+- Leave `*_translation_meta` empty/null (added later by translation step).
     """
     )
 
     return DotMap(
         {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    )
+
+
+def translate_page_ir_info() -> DotMap:
+    """Generate the system and user messages for translating PageIR content.
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    system_message = dedent(
+        """You are a precise translator.
+
+You will be given JSON of the form:
+{
+  "items": [
+    {"key": "...", "text": "...", "source_language_hint": "sw|en|fr|und|..."},
+    ...
+  ]
+}
+
+Return JSON of the form:
+{
+  "items": [
+    {
+      "key": "...",
+      "translated_en": "...",
+      "detected_source_language": "en|sw|fr|...",
+      "confidence": null
+    },
+    ...
+  ]
+}
+
+Rules:
+- Preserve meaning; do not add commentary.
+- Preserve numbering, codes, punctuation, math symbols.
+- Keep formatting (line breaks, bullets) as best as possible.
+- Keep `key` EXACTLY the same as input so items can be matched.
+- Detect language and set `detected_source_language` as BCP-47.
+- If the text is already English: set detected_source_language="en" and translated_en equal to the original text.
+    """
+    )
+    user_message = None
+
+    return DotMap(
+        {"system_message": system_message.strip(), "user_message": user_message}
     )

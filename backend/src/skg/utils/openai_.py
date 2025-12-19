@@ -1,8 +1,12 @@
 """This module contains utilities for interacting with the OpenAI API."""
 
+# pylint: disable=R1260,R0912,R0915
 # Standard Library
+import json
+
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Optional
 
 # Third Party Library
 from openai import (
@@ -21,11 +25,12 @@ from tenacity import (
 )
 
 # Package Library
-from skg.ir.schemas import PageIR
-from skg.prompts.ir import extract_page_ir_info
+from skg.ir.schemas import PageIR, TranslationMetaIR
+from skg.prompts.ir import extract_page_ir_info, translate_page_ir_info
 from skg.schemas import Limits
-from skg.utils.constants import PageKind
+from skg.utils.constants import PageKind, TranslationMethod
 from skg.utils.general import encode_png_to_data_url
+from skg.utils.schemas import TranslationBatch, TranslationIn, TranslationOut
 
 limits = Limits(max_retry_attempts=5)
 openai_client = OpenAI()
@@ -91,6 +96,117 @@ def _call_openai_api(
     return parsed
 
 
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(
+        (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+    ),
+    stop=stop_after_attempt(limits.max_retry_attempts),
+    wait=wait_random_exponential(min=1, max=60),
+)
+def _call_openai_translation_api(
+    *, input_items: list[Any], instructions: str, model: str
+) -> TranslationBatch:
+    """Structured OpenAI call for batch translation.
+
+    Parameters
+    ----------
+    input_items
+        The list of messages to send to the OpenAI API.
+    instructions
+        The translation instructions to include.
+    model
+        The OpenAI model to use.
+
+    Returns
+    -------
+    TranslationBatch
+        The batch of translations.
+
+    Raises
+    ------
+    ExtractionQualityError
+        If the output could not be parsed.
+    """
+
+    response = openai_client.responses.parse(
+        input=input_items,
+        instructions=instructions,
+        model=model,
+        temperature=0,
+        text_format=TranslationBatch,  # Pydantic for structured output parsing
+        top_p=1,
+    )
+    parsed = getattr(response, "output_parsed", None)
+    if parsed is None:
+        output_text = getattr(response, "output_text", None)
+        raise ExtractionQualityError(
+            "Responses.parse returned no parsed output for translation."
+            + (f" output_text={output_text!r}" if output_text else "")
+        )
+
+    return parsed
+
+
+def _chunk_items(
+    *, items: list[TranslationIn], max_chars: int = 12000, max_items: int = 80
+) -> Iterator[list[TranslationIn]]:
+    """Simple chunker to keep requests bounded.
+
+    Parameters
+    ----------
+    items
+        The list of TranslationIn items to chunk.
+    max_chars
+        The maximum total character count per chunk.
+    max_items
+        The maximum number of items per chunk.
+
+    Yields
+    ------
+    Iterator[list[TranslationIn]]
+        Chunks of TranslationIn items.
+    """
+
+    chunk: list[TranslationIn] = []
+    size = 0
+    for it in items:
+        it_size = len(it.text) + len(it.key) + 20
+        if chunk and (len(chunk) >= max_items or size + it_size > max_chars):
+            yield chunk
+            chunk = []
+            size = 0
+        chunk.append(it)
+        size += it_size
+    if chunk:
+        yield chunk
+
+
+def _is_english(language: Optional[str]) -> bool:
+    """Check if the BCP-47 language code indicates English.
+
+    Parameters
+    ----------
+    language
+        The BCP-47 language code (e.g., 'en', 'en-US', 'sw', 'und', etc.).
+
+    Returns
+    -------
+    bool
+        True if the language is English, False otherwise.
+    """
+
+    return False if not language else language.lower().startswith("en")
+
+
 def _is_visually_blank_page(png_fp: Path) -> bool:
     """Check if the rendered page image is nearly blank (separator/intentional blank
     page). Uses grayscale histogram stats (no OCR).
@@ -131,6 +247,24 @@ def _is_visually_blank_page(png_fp: Path) -> bool:
     except Exception:  # pylint: disable=broad-except
         # If we can't read the image, don't treat it as blank.
         return False
+
+
+def _looks_nonlinguistic(text: str) -> bool:
+    """Skip translation for strings that are basically codes/numbers/punctuation.
+
+    Parameters
+    ----------
+    text
+        The text to evaluate.
+
+    Returns
+    -------
+    bool
+        True if the text looks non-linguistic, False otherwise.
+    """
+
+    # If fewer than 2 alphabetic characters, treat as non-linguistic.
+    return sum(ch.isalpha() for ch in text) < 2
 
 
 def _validate_extraction(
@@ -373,3 +507,234 @@ def extract_page_ir_with_llm(
         f"Extraction failed after {max_semantic_retries + 1} attempts for page "
         f"{page_index}."
     )
+
+
+def translate_page_ir(
+    *,
+    doc_languages: Optional[list[str]] = None,
+    model: str,
+    page_ir: PageIR,
+) -> PageIR:
+    """Fill English translations for PageIR text-bearing fields.
+
+    Rules:
+      - Only fill *_en fields if missing.
+      - Only attach TranslationMetaIR when detected source language is not English.
+      - If element language is 'en', copy original into *_en (no meta).
+      - If language is 'und' and document includes any non-English language, translate
+        (with model-side language detection to avoid unnecessary translation).
+
+    Parameters
+    ----------
+    doc_languages
+        Optional list of BCP-47 language codes detected in the document.
+    model
+        The OpenAI model to use for translation.
+    page_ir
+        The PageIR to translate.
+
+    Returns
+    -------
+    PageIR
+        The PageIR with English translations filled in.
+    """
+
+    doc_languages = doc_languages or []
+    doc_has_non_english = any(
+        (lang and not _is_english(lang) and lang.lower() != "und")
+        for lang in doc_languages
+    )
+
+    # 1. Fast path: copy English originals into *_en when missing (no API).
+    for n in page_ir.nodes or []:
+        if _is_english(getattr(n, "language", None)):
+            if not n.label_en and n.label:
+                n.label_en = n.label
+            if getattr(n, "description", None) and not getattr(
+                n, "description_en", None
+            ):
+                n.description_en = n.description
+    for s in page_ir.statements or []:
+        if _is_english(getattr(s, "language", None)) and not s.text_en and s.text:
+            s.text_en = s.text
+    for e in page_ir.curriculum_elements or []:
+        if _is_english(getattr(e, "language", None)) and not e.text_en and e.text:
+            e.text_en = e.text
+
+    # 2. Build translation batch for remaining fields.
+    to_translate: list[TranslationIn] = []
+
+    def should_translate(language: Optional[str], text: Optional[str]) -> bool:
+        """Determine if a given text should be translated based on its language and
+        content.
+
+        Parameters
+        ----------
+        language
+            The BCP-47 language code of the text.
+        text
+            The text to evaluate.
+
+        Returns
+        -------
+        bool
+            True if the text should be translated, False otherwise.
+        """
+
+        if not text or not text.strip():
+            return False
+        if _looks_nonlinguistic(text):
+            return False
+        if _is_english(language):
+            return False
+        if (language or "und").lower() == "und" and not doc_has_non_english:
+            # If the document appears English-only, treat 'und' as English-ish.
+            return False
+        return True
+
+    # Nodes: label, description.
+    for n in page_ir.nodes or []:
+        lang = getattr(n, "language", "und")
+        if not n.label_en and should_translate(lang, n.label):
+            to_translate.append(
+                TranslationIn(
+                    key=f"node:{n.ref}:label", source_language_hint=lang, text=n.label
+                )
+            )
+        desc = getattr(n, "description", None)
+        if (
+            desc
+            and not getattr(n, "description_en", None)
+            and should_translate(lang, desc)
+        ):
+            to_translate.append(
+                TranslationIn(
+                    key=f"node:{n.ref}:description",
+                    source_language_hint=lang,
+                    text=desc,
+                )
+            )
+
+    # Statements: text.
+    for s in page_ir.statements or []:
+        lang = getattr(s, "language", "und")
+        if not s.text_en and should_translate(lang, s.text):
+            to_translate.append(
+                TranslationIn(
+                    key=f"stmt:{s.ref}:text", source_language_hint=lang, text=s.text
+                )
+            )
+
+    # Curriculum elements: text.
+    for e in page_ir.curriculum_elements or []:
+        lang = getattr(e, "language", "und")
+        if not e.text_en and should_translate(lang, e.text):
+            to_translate.append(
+                TranslationIn(
+                    key=f"elem:{e.ref}:text", source_language_hint=lang, text=e.text
+                )
+            )
+
+    if not to_translate:
+        return page_ir
+
+    # 3. Call translation API in chunks, then apply results back to page_ir.
+    translated_map: dict[str, TranslationOut] = {}
+    for chunk in _chunk_items(items=to_translate):
+        payload = {"items": [c.model_dump() for c in chunk]}
+        input_items = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": json.dumps(payload, ensure_ascii=False),
+                    }
+                ],
+            }
+        ]
+        batch_out = _call_openai_translation_api(
+            input_items=input_items,
+            instructions=translate_page_ir_info().system_message,
+            model=model,
+        )
+        for item in batch_out.items:
+            translated_map[item.key] = item
+
+    now = datetime.now(timezone.utc)
+
+    def make_meta(source_lang: str, conf: Optional[float]) -> TranslationMetaIR:
+        """Helper to create TranslationMetaIR.
+
+        Parameters
+        ----------
+        source_lang
+            The detected source language.
+        conf
+            The confidence score.
+
+        Returns
+        -------
+        TranslationMetaIR
+            The constructed TranslationMetaIR.
+        """
+
+        return TranslationMetaIR(
+            confidence=conf,
+            method=TranslationMethod.LLM,
+            model=model,
+            provider="OpenAI",
+            source_language=source_lang or "und",
+            target_language="en",
+            translated_at=now,
+        )
+
+    # Apply to nodes.
+    for n in page_ir.nodes or []:
+        # Label.
+        k = f"node:{n.ref}:label"
+        if not n.label_en and k in translated_map:
+            out = translated_map[k]
+            n.label_en = out.translated_en
+            if not _is_english(out.detected_source_language):
+                n.label_translation_meta = make_meta(
+                    out.detected_source_language, out.confidence
+                )
+
+        # Description.
+        k = f"node:{n.ref}:description"
+        if (
+            getattr(n, "description", None)
+            and not getattr(n, "description_en", None)
+            and k in translated_map
+        ):
+            out = translated_map[k]
+            n.description_en = out.translated_en
+            if not _is_english(out.detected_source_language):
+                n.description_translation_meta = make_meta(
+                    out.detected_source_language, out.confidence
+                )
+
+    # Apply to statements.
+    for s in page_ir.statements or []:
+        k = f"stmt:{s.ref}:text"
+        if not s.text_en and k in translated_map:
+            out = translated_map[k]
+            s.text_en = out.translated_en
+            if not _is_english(out.detected_source_language):
+                s.translation_meta = make_meta(
+                    out.detected_source_language, out.confidence
+                )
+
+    # Apply to curriculum elements.
+    for e in page_ir.curriculum_elements or []:
+        k = f"elem:{e.ref}:text"
+        if not e.text_en and k in translated_map:
+            out = translated_map[k]
+            e.text_en = out.translated_en
+            if not _is_english(out.detected_source_language):
+                e.translation_meta = make_meta(
+                    out.detected_source_language, out.confidence
+                )
+
+    return page_ir
