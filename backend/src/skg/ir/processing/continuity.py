@@ -8,7 +8,7 @@ It handles:
 3. Resolving explicit references to IDs defined on previous pages.
 """
 
-# pylint:disable=R0911,R1260,R0915
+# pylint:disable=R0911,R1260,R0915,R0912
 # Standard Library
 import re
 
@@ -271,7 +271,24 @@ class ContinuityApplicator:
 
         # B. Apply Heuristics for Implicit Parenting
 
-        # 1. Explicit Continuation Flag.
+        # 1. Front-matter headings should be siblings under the document root, not
+        # chained under the previous front-matter heading.
+        if getattr(el, "node_type_other", None) == "front_matter_heading":
+            root_ref = None
+            if getattr(self.prev, "active_path_ctx", None):
+                # active_path_ctx is a list like [{"ref": "p0000:n1", ...}, ...]
+                root_ref = self.prev.active_path_ctx[0].get("ref")
+            if root_ref and getattr(el, "ref", None) != root_ref:
+                if getattr(el, "parent_ref", None) != root_ref:
+                    el.parent_ref = root_ref
+                    self._repair_path_from_parent(el)
+                    _record_parent_inference(
+                        el=el,
+                        parent_ref=root_ref,
+                        reason="continuity:front_matter_heading_under_root",
+                    )
+
+        # 2. Explicit Continuation Flag.
         if getattr(el, "is_continuation", False):
             if not getattr(el, "parent_ref", None) and self.prev.active_parent_ref:
                 el.parent_ref = self.prev.active_parent_ref
@@ -283,7 +300,7 @@ class ContinuityApplicator:
                 )
             return
 
-        # 2. Content-only spillover (no nodes on this page).
+        # 3. Content-only spillover (no nodes on this page).
         page_has_nodes = getattr(self, "_page_has_nodes", bool(self.page_ir.nodes))
         spillover_allowed = getattr(self, "_spillover_allowed", False)
         if (
@@ -301,7 +318,7 @@ class ContinuityApplicator:
             )
             return
 
-        # 3. Numbered-node sibling heuristic (e.g., Node "2.3" appears). If we see
+        # 4. Numbered-node sibling heuristic (e.g., Node "2.3" appears). If we see
         # "2.3", we try to find the parent of "2.2" in history, rather than making
         # "2.3" a root.
         if hasattr(el, "node_type") and not getattr(el, "parent_ref", None):

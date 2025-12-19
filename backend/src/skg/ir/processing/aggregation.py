@@ -187,6 +187,75 @@ def _dedupe_relationships(relationships: list[Any]) -> list[Any]:
     return merged
 
 
+def _sanitize_bbox(
+    *,
+    image_dimensions: Optional[list[int]],
+    page_dimensions: Optional[list[float]],
+    ptr: ProvenancePointer,
+) -> None:
+    """Sanitize and infer the kind of a ProvenancePointer's bounding box.
+
+    Parameters
+    ----------
+    image_dimensions
+        The (width, height) of the page image in pixels, if available.
+    page_dimensions
+        The (width, height) of the PDF page in points, if available.
+    ptr
+        The ProvenancePointer to sanitize.
+    """
+
+    bbox = getattr(ptr, "bbox", None)
+    if not bbox or not (isinstance(bbox, list) and len(bbox) == 4):
+        return
+
+    x0, y0, x1, y1 = bbox
+    bbox_to_set = bbox
+    kind_to_set: Optional[BBoxKind] = None
+
+    # Drop obvious placeholders.
+    if all(v == 0 for v in bbox):
+        bbox_to_set = None
+        kind_to_set = BBoxKind.UNKNOWN
+
+    # Drop invalid geometry.
+    elif x1 <= x0 or y1 <= y0:
+        bbox_to_set = None
+        kind_to_set = BBoxKind.UNKNOWN
+
+    # Infer kind if unknown/unset.
+    elif getattr(ptr, "bbox_kind", None) in (None, BBoxKind.UNKNOWN):
+
+        # 1. Try PDF points (highest priority).
+        if page_dimensions is not None and (
+            0 <= x0 <= page_dimensions[0]
+            and 0 <= x1 <= page_dimensions[0]
+            and 0 <= y0 <= page_dimensions[1]
+            and 0 <= y1 <= page_dimensions[1]
+        ):
+            kind_to_set = BBoxKind.PDF_POINTS
+
+        # 2. Try image pixels (only if PDF check failed).
+        elif image_dimensions is not None and (
+            0 <= x0 <= image_dimensions[0]
+            and 0 <= x1 <= image_dimensions[0]
+            and 0 <= y0 <= image_dimensions[1]
+            and 0 <= y1 <= image_dimensions[1]
+        ):
+            kind_to_set = BBoxKind.IMAGE_PIXELS
+
+        # 3. Fallback: Neither matched --> invalid.
+        else:
+            bbox_to_set = None
+            kind_to_set = BBoxKind.UNKNOWN
+
+    # Apply updates.
+    if bbox_to_set is None:
+        ptr.bbox = None
+    if kind_to_set is not None:
+        ptr.bbox_kind = kind_to_set
+
+
 def _stable_dump(obj: Any) -> Any:
     """Best-effort stable serialization for Pydantic models and plain objects.
 
@@ -749,6 +818,12 @@ def normalize_provenance(
                 ptr.render_dpi = render_dpi
             if getattr(ptr, "bbox_kind", None) is None:
                 ptr.bbox_kind = BBoxKind.UNKNOWN
+            _sanitize_bbox(
+                image_dimensions=image_dimensions,
+                page_dimensions=page_dimensions,
+                ptr=ptr,
+            )
+
         return ptrs
 
     # Patch provenance on all primary element lists in the page container.

@@ -34,7 +34,8 @@ def extract_page_ir_info(*, context_text: str | None = None, page_index: int) ->
 
 Your task: Convert the page image into a VALID PageIR JSON object that matches the provided schema EXACTLY.
 - Output ONLY valid JSON (no markdown, no commentary).
-- Do NOT invent content. If something is unclear, extract what you can and add a note in `warnings`.
+- Do NOT invent content. Use `warnings` ONLY for true visual uncertainty (cut off / unreadable / blurred / low contrast). Do NOT speculate about metadata such as doc_key or pdf_name.
+- Do NOT speculate about metadata (doc_key/pdf_name), section structure, or “missing fields”.
 
 ## 0) HARD RULES (DO NOT VIOLATE)
 - IDs/refs in this single JSON response must be unique.
@@ -107,7 +108,8 @@ Reminders for this page:
 - If you see curriculum codes (e.g., 3.9.4.1 / MTH.1.2), capture them in `local_code`.
 - If this page is a table: emit a TableIR AND double-extract semantic items.
 - Set correct `language` per item.
-- Don’t invent missing text.
+- Don’t invent missing text; add a note to `warnings` ONLY if content is cut off/unreadable/blurred.
+- Do NOT add warnings about doc_key/pdf_name/metadata.
     """
     )
 

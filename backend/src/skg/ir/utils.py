@@ -3,6 +3,8 @@ acts as a coordinator, delegating specific logic to the `processing` subpackage.
 """
 
 # Standard Library
+import re
+
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,9 +24,11 @@ from skg.ir.processing.heuristics import (
     normalize_node_types,
     promote_learning_area_rows_to_nodes,
 )
-from skg.ir.schemas import PageIR, PageKind, ProvenancePointer, TranslationMetaIR
-from skg.utils.constants import TranslationMethod
+from skg.ir.schemas import PageIR, ProvenancePointer, TranslationMetaIR
+from skg.utils.constants import PageKind, TableKind, TranslationMethod
 from skg.utils.general import make_dir, open_json_type, write_to_json
+
+META_WARNING_RE = re.compile(r"\b(doc_key|pdf_name)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -321,6 +325,7 @@ def postprocess_page_ir(
     """
 
     hc = heuristics_config or {}
+    sanitize_page_warnings(page_ir)
 
     if page_ir.page_kind in (None, PageKind.UNKNOWN):
         page_ir.page_kind = infer_page_kind(
@@ -328,6 +333,11 @@ def postprocess_page_ir(
             keyword_packs_by_lang=hc.get("page_kind_keywords_by_lang"),
             page_ir=page_ir,
         )
+
+    # Normalize layout front-matter tables so they never get “data-table parsed”.
+    if page_ir.page_kind in (PageKind.TOC, PageKind.LIST_OF_TABLES):
+        for t in page_ir.tables or []:
+            t.table_kind = TableKind.LAYOUT
 
     normalize_node_types(overrides=hc.get("node_type_overrides"), page_ir=page_ir)
     normalize_front_matter_roles(page_ir)
@@ -342,6 +352,20 @@ def postprocess_page_ir(
     inject_missing_translation_meta(llm_model=llm_model, page_ir=page_ir)
 
     return page_ir
+
+
+def sanitize_page_warnings(page_ir: PageIR) -> None:
+    """Removes non-actionable metadata-related warnings from PageIR.
+
+    Parameters
+    ----------
+    page_ir
+        The PageIR to sanitize warnings for.
+    """
+
+    if not page_ir.warnings:
+        return
+    page_ir.warnings = [w for w in page_ir.warnings if not META_WARNING_RE.search(w)]
 
 
 def save_continuity_state(
