@@ -88,10 +88,13 @@ def _format_continuity_context(state: ContinuityState) -> str | None:
         return None
 
     lines = []
-
-    # active_path_ctx is a list of node snapshots (dictionaries or objects).
     for node in state.active_path_ctx:
-        # Handle dict or object access safely.
+        # We must retrieve the 'ref' so the LLM can use it for parent_ref.
+        ref = (
+            node.get("ref")
+            if isinstance(node, dict)
+            else getattr(node, "ref", "unknown_ref")
+        )
         label = (
             node.get("label")
             if isinstance(node, dict)
@@ -102,7 +105,7 @@ def _format_continuity_context(state: ContinuityState) -> str | None:
             if isinstance(node, dict)
             else getattr(node, "node_type", "node")
         )
-        lines.append(f"- [{node_type}] {label}")
+        lines.append(f"{ref}: [{node_type}] {label}")
 
     return "\n".join(lines)
 
