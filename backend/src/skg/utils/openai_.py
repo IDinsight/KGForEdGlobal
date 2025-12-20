@@ -2,7 +2,7 @@
 
 # Standard Library
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Third Party Library
 from openai import (
@@ -107,19 +107,31 @@ def _call_openai_api(
     return parsed
 
 
-def extract_page_ir_with_llm(*, model: str, page_index: int, png_fp: Path) -> PageIR:
-    """Extract PageIR from a page image using LLM + Vision + Structured Outputs. Uses
-    OpenAI Responses API structured parsing into a Pydantic model. Image is passed as
-    an input_image with a base64 data URL.
+def extract_page_ir(
+    *,
+    country: str,
+    languages: list[str],
+    model: str,
+    page_index: int,
+    png_fp: Path,
+    year: Optional[int] = None,
+) -> PageIR:
+    """Extract PageIR from a page image using LLM + Vision + Structured Outputs.
 
     Parameters
     ----------
+    country
+        Country context for the prompt.
+    languages
+        Expected languages context for the prompt.
     model
         The OpenAI model to use.
     page_index
         The 0-based page index.
     png_fp
         The PNG file path of the page image.
+    year
+        Year context for the prompt.
 
     Returns
     -------
@@ -128,9 +140,9 @@ def extract_page_ir_with_llm(*, model: str, page_index: int, png_fp: Path) -> Pa
     """
 
     image_url = encode_png_to_data_url(png_fp)
-    prompts = stage1_extraction_prompts(page_index=page_index)
-
-    # Initial context.
+    prompts = stage1_extraction_prompts(
+        country=country, languages=languages, page_index=page_index, year=year
+    )
     instructions = prompts.system_message
     input_items = [
         {
@@ -145,11 +157,9 @@ def extract_page_ir_with_llm(*, model: str, page_index: int, png_fp: Path) -> Pa
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
-            page_ir = _call_openai_api(
+            return _call_openai_api(
                 input_items=input_items, instructions=instructions, model=model
             )
-            page_ir.page_index = page_index
-            return page_ir
         except ExtractionQualityError as e:
             if attempt == max_retries:
                 raise  # Re-raise the final quality error
@@ -160,7 +170,7 @@ def extract_page_ir_with_llm(*, model: str, page_index: int, png_fp: Path) -> Pa
                 input_items.append(
                     {
                         "role": "assistant",
-                        "content": [{"type": "text", "text": e.failed_content}],
+                        "content": [{"type": "input_text", "text": e.failed_content}],
                     }
                 )
 
