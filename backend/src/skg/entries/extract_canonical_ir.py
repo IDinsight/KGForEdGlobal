@@ -3,7 +3,10 @@ canonical Intermediate Representation (IR).
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_canonical_ir.py ../data/zambia/zambia.pdf -c Zambia -l en-US -o ../results
+python src/skg/entries/extract_canonical_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en-TZ -l sw-TZ -l fr -l zh-Hans -l ar -o ../results
+python src/skg/entries/extract_canonical_ir.py ../data/uganda/uganda.pdf -c Uganda -y 2016 -l en-US -o ../results
+python src/skg/entries/extract_canonical_ir.py ../data/zambia/zambia.pdf -c Zambia -y 2024 -l en-US -o ../results
+python src/skg/entries/extract_canonical_ir.py ../data/ghana/ghana.pdf -c Ghana -y 2019 -l en-US -o ../results
 """
 
 # Standard Library
@@ -31,35 +34,11 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.ir.processing.aggregation import (
-    merge_pages_to_document_ir,
-    normalize_provenance,
-)
-from skg.ir.processing.heuristics import build_heuristics_config
-from skg.ir.processing.id_management import ensure_namespace_page_refs
-from skg.ir.schemas import DocumentMetadataIR, KeyValuePair, PageIR, ProvenancePointer
-from skg.ir.utils import (
-    ContinuityState,
-    ExtractionDirs,
-    apply_cross_page_continuity,
-    build_continuity_state_from_page,
-    create_extraction_dirs,
-    load_continuity_state,
-    postprocess_page_ir,
-    save_continuity_state,
-    validate_page_ir,
-)
+from skg.ir.utils import ExtractionDirs, create_extraction_dirs
 from skg.schemas import ExtractionRunIR
-from skg.utils.constants import BBoxKind
 from skg.utils.general import write_to_json
-from skg.utils.openai_ import extract_page_ir_with_llm, translate_page_ir
-from skg.utils.pdf import (
-    compute_doc_key,
-    get_page_dimensions,
-    get_pdf_metadata,
-    read_png_dimensions,
-    render_page_to_png,
-)
+from skg.utils.openai_ import extract_page_ir_with_llm
+from skg.utils.pdf import compute_doc_key, render_page_to_png
 
 assert (
     sys.version_info.major >= 3 and sys.version_info.minor >= 13
@@ -69,253 +48,61 @@ assert (
 cli = typer.Typer(no_args_is_help=True)
 
 
-def _format_continuity_context(state: ContinuityState) -> str | None:
-    """Format the active path context from the continuity state for inclusion in the
-    PageIR extraction prompt.
-
-    Parameters
-    ----------
-    state
-        The cross-page continuity state.
-
-    Returns
-    -------
-    str | None
-        The formatted active path context, or None if there is no active path.
-    """
-
-    if not state.active_path_ctx:
-        return None
-
-    lines = []
-    for node in state.active_path_ctx:
-        # We must retrieve the 'ref' so the LLM can use it for parent_ref.
-        ref = (
-            node.get("ref")
-            if isinstance(node, dict)
-            else getattr(node, "ref", "unknown_ref")
-        )
-        label = (
-            node.get("label")
-            if isinstance(node, dict)
-            else getattr(node, "label", "Unknown")
-        )
-        node_type = (
-            node.get("node_type")
-            if isinstance(node, dict)
-            else getattr(node, "node_type", "node")
-        )
-        lines.append(f"{ref}: [{node_type}] {label}")
-
-    return "\n".join(lines)
-
-
-def extract_page_irs(
+def extract_stage_1(
     *,
-    continuity_state: ContinuityState,
     doc: pymupdf.Document,
-    doc_key: str,
-    doc_languages: list[str],
     dpi: int,
     end_page: int,
     extraction_dirs: ExtractionDirs,
-    heuristics_config: dict[str, object] | None = None,
     model: str,
     overwrite: bool,
-    pdf_fp: Path,
     start_page: int,
-) -> list[PageIR]:
-    """Extract per-page PageIRs from the PDF document.
+) -> None:
+    """Perform stage 1 extraction of PageIR components from the PDF document.
 
     Parameters
     ----------
-    continuity_state
-        The cross-page continuity state.
     doc
         The PyMuPDF document.
-    doc_key
-        The document key.
-    doc_languages
-        One or more languages associated with the PDF document.
     dpi
         Render DPI for page images.
     end_page
         0-based end page (exclusive).
     extraction_dirs
         The extraction directories.
-    heuristics_config
-        The heuristics configuration.
     model
         OpenAI model for page IR extraction.
     overwrite
         Overwrite existing per-page artifacts.
-    pdf_fp
-        The file path to the PDF document to extract curriculum data from.
     start_page
         0-based start page (inclusive).
-
-    Returns
-    -------
-    list[PageIR]
-        The list of extracted PageIRs.
     """
 
-    pages: list[PageIR] = []
     for page_index in range(start_page, end_page):
         page_ir_fp = extraction_dirs.page_ir / f"{page_index:04d}.json"
         png_fp = extraction_dirs.page_images / f"{page_index:04d}.png"
 
-        # Prefer cached PageIR whenever available (unless overwrite=True).
-        if page_ir_fp.exists() and not overwrite:
-            page_ir = PageIR.model_validate_json(page_ir_fp.read_text("utf-8"))
-            page_ir.page_index = page_index
-        else:
-            # Ensure we have a rendered image for extraction.
-            if not png_fp.exists() or overwrite:
-                render_page_to_png(
-                    doc=doc, dpi=dpi, output_png_fp=png_fp, page_index=page_index
-                )
-
-            context_text = _format_continuity_context(continuity_state)
-            page_ir = extract_page_ir_with_llm(
-                context_text=context_text,
-                model=model,
-                page_index=page_index,
-                png_fp=png_fp,
-            )
-
-        # If we loaded cached IR but the PNG is missing (common in resume runs), render
-        # now (needed for image_dimensions/provenance normalization).
-        if not png_fp.exists():
+        # Always ensure the PNG exists first. We render if the file is missing OR if we
+        # are overwriting (e.g. changed DPI).
+        if overwrite or not png_fp.exists():
             render_page_to_png(
                 doc=doc, dpi=dpi, output_png_fp=png_fp, page_index=page_index
             )
 
-        # Ensure page refs won’t collide across pages.
-        page_ir = ensure_namespace_page_refs(
-            on_duplicate="raise", page_ir=page_ir, prefix=f"p{page_index:04d}:"
+        # Check cache. If not overwriting and JSON exists, skip entirely.
+        if page_ir_fp.exists() and not overwrite:
+            logger.info(f"Skipping page {page_index} (cached).")
+            continue
+
+        # Perform stage 1 extraction.
+        logger.info(f"Extracting and saving page: {page_index}...")
+        page_ir = extract_page_ir_with_llm(
+            model=model, page_index=page_index, png_fp=png_fp
         )
 
-        # Ensure all elements have provenance + page dimensions.
-        dims = get_page_dimensions(doc, page_index)
-        image_dimensions = read_png_dimensions(png_fp=png_fp)
-        page_ir = normalize_provenance(
-            doc_key=doc_key,
-            extraction_method="vision+structured",
-            image_dimensions=list(image_dimensions),
-            page_dimensions=list(dims),  # PDF points
-            page_index=page_index,
-            page_ir=page_ir,
-            pdf_name=pdf_fp.name,
-            render_dpi=dpi,
-        )
-
-        # Build fallback provenance pointer (used by postprocess promotions).
-        page_fallback_ptr = ProvenancePointer(
-            bbox_kind=BBoxKind.UNKNOWN,
-            doc_key=doc_key,
-            extraction_method="postprocess-fallback",
-            image_dimensions=list(image_dimensions),
-            page_dimensions=list(dims),
-            page_index=page_index,
-            pdf_name=pdf_fp.name,
-            render_dpi=dpi,
-            section=None,
-        )
-
-        # Postprocess first since this process may add nodes via row promotion,
-        # glossary conversion, etc.
-        page_ir = postprocess_page_ir(
-            doc_languages=doc_languages,
-            fallback_base_ptr=page_fallback_ptr,
-            heuristics_config=heuristics_config,
-            page_ir=page_ir,
-        )
-
-        # Then apply continuity so that "page_has_nodes" reflects promoted nodes.
-        page_ir = apply_cross_page_continuity(page_ir, continuity_state)
-
-        # Translate page IR (if applicable).
-        page_ir = translate_page_ir(
-            doc_languages=doc_languages, model=model, page_ir=page_ir
-        )
-
-        # Validate and checkpoint continuity state.
-        page_ir = validate_page_ir(page_ir)
-        continuity_state = build_continuity_state_from_page(page_ir, continuity_state)
-        save_continuity_state(extraction_dirs, continuity_state)
-
-        # Persist the normalized version (namespaced refs + provenance).
-        write_to_json(page_ir_fp, json.loads(page_ir.model_dump_json(indent=2)))
-
-        pages.append(page_ir)
-    return pages
-
-
-def persist_updated_extraction_run_and_metadata(
-    *,
-    country: str,
-    doc: pymupdf.Document,
-    end_page: int,
-    extraction_dirs: ExtractionDirs,
-    extraction_run: ExtractionRunIR,
-    languages: list[str],
-    page_count: int,
-    year: Optional[int],
-) -> DocumentMetadataIR:
-    """Persist the updated extraction run and document metadata.
-
-    Parameters
-    ----------
-    country
-        The country associated with the PDF document.
-    doc
-        The PyMuPDF document.
-    end_page
-        The resolved 0-based end page (exclusive).
-    extraction_dirs
-        The extraction directories.
-    extraction_run
-        The extraction run record.
-    languages
-        One or more languages associated with the PDF document.
-    page_count
-        The document page count.
-    year
-        Document year (optional; overrides any inferred year).
-
-    Returns
-    -------
-    DocumentMetadataIR
-        The document metadata.
-    """
-
-    pdf_md = get_pdf_metadata(doc)
-    extraction_run.extra.update(  # The actual end page value used
-        {"page_count": page_count, "end_page_resolved": end_page}
-    )
-    extraction_run.extra["pymupdf_metadata"] = pdf_md
-    write_to_json(
-        extraction_dirs.root / "extraction_run.json",
-        json.loads(extraction_run.model_dump_json(indent=2)),
-    )
-    logger.info(f"PDF metadata: {pdf_md}")
-
-    metadata = DocumentMetadataIR(
-        country=country,
-        extra=[
-            KeyValuePair(key="pymupdf_metadata", value=json.dumps(pdf_md, default=str))
-        ],
-        languages=languages,
-        publisher=pdf_md.get("producer", pdf_md.get("creator", None)),
-        title=pdf_md.get("title", None),
-        year=year,
-    )
-    write_to_json(
-        extraction_dirs.root / "metadata.json",
-        json.loads(metadata.model_dump_json(indent=2)),
-    )
-    return metadata
+        # Save PageIR JSON.
+        write_to_json(page_ir_fp, page_ir.model_dump(mode="json"))
+        logger.success(f"Finished extracting and saving page: {page_index}!")
 
 
 def persist_extraction_run(
@@ -469,11 +256,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
 
     1. Persist extraction run metadata so we always have an extraction run record.
     2. Validate page range.
-    3. Persist the updated run record and the document metadata.
-    4. Load cross-page continuity state (if any).
-    5. Build heuristics config.
-    6. Extract per-page PageIRs from the PDF document.
-    7. Merge to DocumentIR and save.
+    3. ???
 
     Parameters
     ----------
@@ -524,51 +307,14 @@ def extract(  # pylint: disable=too-many-positional-arguments
             )
 
             # 3.
-            doc_metadata = persist_updated_extraction_run_and_metadata(
-                country=country,
+            extract_stage_1(
                 doc=doc,
-                end_page=end_page,
-                extraction_dirs=extraction_dirs,
-                extraction_run=extraction_run,
-                languages=languages,
-                page_count=page_count,
-                year=year,
-            )
-
-            # 4.
-            continuity_state = load_continuity_state(extraction_dirs)
-
-            # 5.
-            heuristics_config = build_heuristics_config(country=country)
-
-            # 6.
-            pages = extract_page_irs(
-                continuity_state=continuity_state,
-                doc=doc,
-                doc_key=doc_key,
-                doc_languages=list(doc_metadata.languages or []),
                 dpi=dpi,
                 end_page=end_page,
                 extraction_dirs=extraction_dirs,
-                heuristics_config=heuristics_config,
                 model=model,
                 overwrite=overwrite,
-                pdf_fp=pdf_fp,
                 start_page=start_page,
-            )
-
-            # 7.
-            extraction_run.completed_at = datetime.now(timezone.utc)
-            doc_ir = merge_pages_to_document_ir(
-                doc_key=doc_key,
-                extraction_run=extraction_run,
-                metadata=doc_metadata,
-                pages=pages,
-                pdf_name=pdf_fp.name,
-            )
-            write_to_json(
-                extraction_dirs.root / "canonical_ir.json",
-                json.loads(doc_ir.model_dump_json(indent=2)),
             )
 
         extraction_run.extra["status"] = "success"
@@ -576,9 +322,9 @@ def extract(  # pylint: disable=too-many-positional-arguments
     except Exception as e:  # pylint: disable=broad-except
         extraction_run.extra["status"] = "error"
         extraction_run.extra["error"] = {
-            "type": e.__class__.__name__,
             "message": str(e),
             "traceback": traceback.format_exc(limit=20),
+            "type": e.__class__.__name__,
         }
         raise
     finally:
