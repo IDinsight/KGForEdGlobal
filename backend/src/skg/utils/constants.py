@@ -34,6 +34,37 @@ PdfNameField = Annotated[str, Field(..., description="Source PDF filename (no pa
 
 
 # Enums for various constant types.
+class BlockType(str, Enum):
+    """The visual structural category of a content block."""
+
+    ARTIFACT = (
+        "artifact"  # Page numbers, running headers/footers (to be filtered later)
+    )
+    CAPTION = "caption"  # Text specifically describing a table or figure
+    HEADING = "heading"  # Visually distinct titles, section headers
+    KEY_VALUE = (
+        "key_value"  # Distinct "Label: Value" pairs (common in metadata sections)
+    )
+    LIST = "list"  # A group of items (bullets, numbers)
+    PARAGRAPH = "paragraph"  # Standard blocks of prose
+
+
+class ContentRole(str, Enum):
+    """The logical role of the content, used to aid stitching and semantic
+    classification.
+    """
+
+    CURRICULUM_CODE = "curriculum_code"  # Explicit codes standing alone (e.g. "3.1.2")
+    LIST_BODY = "list_body"  # A paragraph that is logically part of a list item (e.g., a continuation from prev page)
+    LIST_MARKER = "list_marker"  # The enumerator itself (e.g. "1.", "a)", "•")
+    LIST_ITEM = "list_item"  # A standard complete list item
+    REGULAR = "regular"  # Standard content
+    SECTION_HEADER = (
+        "section_header"  # Explicit section dividers (e.g. "Topic 1: Numbers")
+    )
+    TEACHER_GUIDANCE = "teacher_guidance"  # Text visually distinguished as instructions (italics/sidebars)
+
+
 class ItemBoundary(str, Enum):
     """Enumeration for item boundary states on a page."""
 
@@ -65,3 +96,4 @@ class TextStyle(str, Enum):
     BOLD = "bold"
     ITALIC = "italic"
     UNDERLINE = "underline"
+    UPPERCASE = "uppercase"

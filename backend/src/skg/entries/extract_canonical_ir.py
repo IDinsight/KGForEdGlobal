@@ -37,8 +37,8 @@ if __name__ == "__main__":
 from skg.ir.utils import ExtractionDirs, create_extraction_dirs
 from skg.schemas import ExtractionRunIR
 from skg.utils.general import write_to_json
-from skg.utils.openai_ import extract_page_ir_with_llm
-from skg.utils.pdf import compute_doc_key, render_page_to_png
+from skg.utils.openai_ import extract_page_ir
+from skg.utils.pdf import compute_doc_key, read_png_dimensions, render_page_to_png
 
 assert (
     sys.version_info.major >= 3 and sys.version_info.minor >= 13
@@ -50,32 +50,47 @@ cli = typer.Typer(no_args_is_help=True)
 
 def extract_stage_1(
     *,
+    country: str,
     doc: pymupdf.Document,
+    doc_key: str,
     dpi: int,
     end_page: int,
     extraction_dirs: ExtractionDirs,
+    languages: list[str],
     model: str,
     overwrite: bool,
+    pdf_name: str,
     start_page: int,
+    year: Optional[int],
 ) -> None:
     """Perform stage 1 extraction of PageIR components from the PDF document.
 
     Parameters
     ----------
+    country
+        The country associated with the PDF document.
     doc
         The PyMuPDF document.
+    doc_key
+        The document key.
     dpi
         Render DPI for page images.
     end_page
         0-based end page (exclusive).
     extraction_dirs
         The extraction directories.
+    languages
+        One or more languages associated with the PDF document.
     model
         OpenAI model for page IR extraction.
     overwrite
         Overwrite existing per-page artifacts.
+    pdf_name
+        The PDF filename.
     start_page
         0-based start page (inclusive).
+    year
+        Document year (optional; overrides any inferred year).
     """
 
     for page_index in range(start_page, end_page):
@@ -96,9 +111,22 @@ def extract_stage_1(
 
         # Perform stage 1 extraction.
         logger.info(f"Extracting and saving page: {page_index}...")
-        page_ir = extract_page_ir_with_llm(
-            model=model, page_index=page_index, png_fp=png_fp
+        page_ir = extract_page_ir(
+            country=country,
+            languages=languages,
+            model=model,
+            page_index=page_index,
+            png_fp=png_fp,
+            year=year,
         )
+        image_width, image_height = read_png_dimensions(png_fp=png_fp)
+        page_ir.coord_space = "px"
+        page_ir.doc_key = doc_key
+        page_ir.dpi = dpi
+        page_ir.image_height = image_height
+        page_ir.page_index = page_index
+        page_ir.pdf_name = pdf_name
+        page_ir.image_width = image_width
 
         # Save PageIR JSON.
         write_to_json(page_ir_fp, page_ir.model_dump(mode="json"))
@@ -308,13 +336,18 @@ def extract(  # pylint: disable=too-many-positional-arguments
 
             # 3.
             extract_stage_1(
+                country=country,
                 doc=doc,
+                doc_key=doc_key,
                 dpi=dpi,
                 end_page=end_page,
                 extraction_dirs=extraction_dirs,
+                languages=languages,
                 model=model,
                 overwrite=overwrite,
+                pdf_name=pdf_fp.name,
                 start_page=start_page,
+                year=year,
             )
 
         extraction_run.extra["status"] = "success"
@@ -331,7 +364,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
         extraction_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
             extraction_dirs.root / "extraction_run.json",
-            json.loads(extraction_run.model_dump_json(indent=2)),
+            extraction_run.model_dump(mode="json"),
         )
 
 

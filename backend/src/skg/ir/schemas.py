@@ -11,8 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field
 # Package Library
 from skg.utils.constants import (
     BBox,
+    BlockType,
+    ContentRole,
     ItemBoundary,
-    LinkType,
+    LanguageField,
     PageBoundaryState,
     TextStyle,
 )
@@ -27,15 +29,6 @@ class BaseIRModel(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
 
-class KeyValuePair(BaseIRModel):
-    """Pydantic model for a generic key-value pair. Used for metadata fields to avoid
-    loose 'dict' typing.
-    """
-
-    key: str = Field(..., description="The key name for the metadata item.")
-    value: str = Field(..., description="The string value for the metadata item.")
-
-
 # Schemas for component models.
 class TextUnit(BaseIRModel):
     """The atomic unit of text extraction. Represents a span of text with consistent
@@ -47,8 +40,8 @@ class TextUnit(BaseIRModel):
         True,
         description="True if the text ends with ., ?, or !. False if it ends with a hyphen or mid-sentence.",
     )
-    language: str = Field(
-        default="en",
+    language: LanguageField = Field(
+        default="unk",
         description="BCP-47 language code detected for this specific text block.",
     )
     styles: list[TextStyle] = Field(
@@ -88,16 +81,23 @@ class CurriculumTable(BaseIRModel):
         ItemBoundary.COMPLETE,
         description="Status of the table's vertical continuity. 'truncated' if bottom border is missing; 'resumed' if top border is missing.",
     )
-    has_header_row: bool = Field(
-        False,
-        description="True if the first row appears to be a header (e.g., bold text, shaded background).",
+    header_row_count: int = Field(
+        0,
+        ge=0,
+        description="Number of rows at the top that function as headers. 0 if none.",
     )
-    kind: Literal["table"] = "table"
+    kind: Literal["table"] = Field(
+        ..., description="Discriminator for ContentItem union. Must be 'table'."
+    )
     local_code: Optional[str] = Field(
         None, description="Explicit curriculum code if present (e.g., 'Table 1.2')."
     )
-    local_id: str = Field(
-        ..., description="Unique ID for this table on this page (e.g., 'p5_t1')."
+    repeats_header: Optional[bool] = Field(
+        None,
+        description=(
+            "For tables that continue from a previous page, indicates whether the "
+            "header rows are visibly repeated on this page. Null if unknown."
+        ),
     )
     rows: list[TableRow] = Field(
         ...,
@@ -119,30 +119,42 @@ class CurriculumBlock(BaseIRModel):
     """A grouping of text content (paragraph, heading, or list)."""
 
     bbox: Optional[BBox] = None
-    block_type: str = Field(
-        ..., description="Structural role: 'heading', 'paragraph', or 'list'."
-    )
+    block_type: BlockType = Field(..., description="The visual structure of the block.")
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
         description="Continuity status. 'truncated' if the text cuts off at the page margin.",
     )
-    kind: Literal["block"] = "block"
+    kind: Literal["block"] = Field(
+        ..., description="Discriminator for ContentItem union. Must be 'block'."
+    )
     list_items: Optional[list[ListItem]] = Field(
-        None, description="The items (for lists). Null for headings/paragraphs."
+        None,
+        description="The items (for lists). Null for headings/paragraphs. Must be null unless block_type indicates a list.",
     )
     local_code: Optional[str] = Field(
         None,
         description="Explicit curriculum code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim.",
     )
-    local_id: str = Field(
-        ..., description="Unique ID for this block on this page (e.g., 'p5_b1')."
+    role_hint: Optional[ContentRole] = Field(
+        None,
+        description=(
+            "Non-authoritative hint about the logical role of this block (e.g., 'section_header', "
+            "'teacher_guidance', 'list_item'). Leave null if unsure."
+        ),
+    )
+    role_confidence: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Confidence for role_hint in [0,1]. Null if role_hint is null.",
     )
     text: Optional[TextUnit] = Field(
-        None, description="The text content (for headings/paragraphs). Null for lists."
+        None,
+        description="The text content (for headings/paragraphs). Must be null when block_type indicates a list.",
     )
 
 
-# Schemas for top-leve IR models.
+# Schemas for top-level IR models.
 class PageIR(BaseIRModel):
     """Intermediate Representation of a single PDF page."""
 
@@ -150,27 +162,44 @@ class PageIR(BaseIRModel):
         ...,
         description="Overall continuity of the page. 'to_next' if content bleeds off bottom; 'from_prev' if it resumes at top.",
     )
-    image_height: int = Field(..., description="Height of the source image in pixels.")
-    image_width: int = Field(..., description="Width of the source image in pixels.")
+    coord_space: Literal["px"] = Field(
+        "px",
+        description=(
+            "Coordinate space used for all bounding boxes. 'px' indicates pixel coordinates "
+            "in the rendered page image with origin at the top-left."
+        ),
+    )
+    doc_key: Optional[str] = Field(
+        None,
+        description=(
+            "Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex). "
+            "This should be populated by the Python pipeline; it may be null during extraction."
+        ),
+    )
+    dpi: Optional[int] = Field(
+        default=None,
+        description="DPI used to render the page image that these pixel bboxes refer to. Populated by Python; may be null during extraction.",
+    )
+    image_height: Optional[int] = Field(
+        None,
+        description="Height of the source image in pixels. This should be populated by the Python pipeline; it may be null during extraction.",
+    )
+    image_width: Optional[int] = Field(
+        None,
+        description="Width of the source image in pixels. This should be populated by the Python pipeline; it may be null during extraction.",
+    )
     items: list[Union[CurriculumTable, CurriculumBlock]] = Field(
         ...,
-        description="Ordered list of content items found on the page, sorted top-to-bottom.",
+        description="Ordered list of content items found on the page, sorted by visual reading order (e.g., multi-column left-to-right, then down)",
     )
-    page_index: int = Field(..., description="0-based index of the page in the PDF.")
-
-
-class StitchLink(BaseIRModel):
-    """Represents a logical connection between two items on different pages."""
-
-    child_id: str = Field(
-        ...,
-        description="The 'local_id' of the item on the current page (the resumed child).",
+    page_index: Optional[int] = Field(
+        None,
+        description="0-based index of the page in the PDF. This should be populated by the Python pipeline; it may be null during extraction.",
     )
-    confidence: float = Field(ge=0, le=1, description="Model confidence in this link.")
-    link_type: LinkType = Field(
-        ..., description="The nature of the connection (merge table, join text, etc.)."
-    )
-    parent_id: str = Field(
-        ...,
-        description="The 'local_id' of the item on the previous page (the truncated parent).",
+    pdf_name: Optional[str] = Field(
+        None,
+        description=(
+            "Source PDF filename (no path). This should be populated by the Python pipeline; "
+            "it may be null during extraction."
+        ),
     )
