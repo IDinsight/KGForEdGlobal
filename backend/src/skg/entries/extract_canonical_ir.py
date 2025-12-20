@@ -118,6 +118,8 @@ def extract_stage_1(
 
         # Perform stage 1 extraction.
         logger.info(f"Extracting and saving page: {page_index}...")
+        image_width, image_height = read_png_dimensions(png_fp=png_fp)
+
         if is_mostly_blank(png_fp=png_fp):
             logger.warning(f"Page {page_index} looks blank; skipping model call.")
             page_ir = PageIR(
@@ -126,13 +128,14 @@ def extract_stage_1(
         else:
             page_ir = extract_page_ir(
                 country=country,
+                image_height=image_height,
+                image_width=image_width,
                 languages=languages,
                 model=model,
                 page_index=page_index,
                 png_fp=png_fp,
                 year=year,
             )
-        image_width, image_height = read_png_dimensions(png_fp=png_fp)
         page_ir.coord_space = "px"
         page_ir.doc_key = doc_key
         page_ir.dpi = dpi
