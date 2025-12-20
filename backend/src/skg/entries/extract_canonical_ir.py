@@ -34,11 +34,18 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.ir.schemas import PageIR
 from skg.ir.utils import ExtractionDirs, create_extraction_dirs
 from skg.schemas import ExtractionRunIR
+from skg.utils.constants import PageBoundaryState
 from skg.utils.general import write_to_json
 from skg.utils.openai_ import extract_page_ir
-from skg.utils.pdf import compute_doc_key, read_png_dimensions, render_page_to_png
+from skg.utils.pdf import (
+    compute_doc_key,
+    is_mostly_blank,
+    read_png_dimensions,
+    render_page_to_png,
+)
 
 assert (
     sys.version_info.major >= 3 and sys.version_info.minor >= 13
@@ -111,14 +118,20 @@ def extract_stage_1(
 
         # Perform stage 1 extraction.
         logger.info(f"Extracting and saving page: {page_index}...")
-        page_ir = extract_page_ir(
-            country=country,
-            languages=languages,
-            model=model,
-            page_index=page_index,
-            png_fp=png_fp,
-            year=year,
-        )
+        if is_mostly_blank(png_fp=png_fp):
+            logger.warning(f"Page {page_index} looks blank; skipping model call.")
+            page_ir = PageIR(
+                boundary_state=PageBoundaryState.STANDALONE, coord_space="px", items=[]
+            )
+        else:
+            page_ir = extract_page_ir(
+                country=country,
+                languages=languages,
+                model=model,
+                page_index=page_index,
+                png_fp=png_fp,
+                year=year,
+            )
         image_width, image_height = read_png_dimensions(png_fp=png_fp)
         page_ir.coord_space = "px"
         page_ir.doc_key = doc_key
