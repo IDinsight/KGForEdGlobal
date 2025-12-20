@@ -86,6 +86,8 @@ IMPORTANT:
 - If a list item has no explicit marker, set marker="" (empty string). Do not invent numbering.
 - `role_hint` is optional. Leave it null unless it is obvious.
 - If `role_hint` is null, `role_confidence` must be null.
+- Ignore crop marks/page frame lines.
+- Do not output CurriculumBlocks whose text is empty/whitespace.
 
 ## LAYOUT-SPECIFIC INSTRUCTIONS
 - TABLES: Preserve the exact grid structure. Count the header rows explicitly in `header_row_count`. Allow blank cells (use null text).
