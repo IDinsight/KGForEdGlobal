@@ -1,6 +1,7 @@
 """This module contains utilities for interacting with the OpenAI API."""
 
 # Standard Library
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
@@ -65,12 +66,21 @@ class ExtractionQualityError(Exception):
     wait=wait_random_exponential(min=1, max=60),
 )
 def _call_openai_api(
-    *, input_items: list[Any], instructions: str, model: str
+    *,
+    image_height: int,
+    image_width: int,
+    input_items: list[Any],
+    instructions: str,
+    model: str,
 ) -> PageIR:
     """Raw wrapper for the API call to handle network retries independently.
 
     Parameters
     ----------
+    image_height
+        The image height in pixels.
+    image_width
+        The image width in pixels.
     input_items
         The list of messages to send to the OpenAI API.
     instructions
@@ -104,12 +114,59 @@ def _call_openai_api(
             failed_content=output_text,  # Pass text back to caller
         )
 
+    # Even if parsing succeeded, enforce quality checks.
+    output_text = getattr(response, "output_text", None)
+    try:
+        validate_page_ir_quality(
+            image_height=image_height, image_width=image_width, page_ir=parsed
+        )
+    except ExtractionQualityError as e:
+        # Attach the raw output so the correction attempt can see what it wrote.
+        raise ExtractionQualityError(str(e), failed_content=output_text) from e
+
     return parsed
+
+
+def _validate_bbox(
+    *, bbox: list[float], image_height: int, image_width: int, tol: float, where_: str
+) -> None:
+    """Validate a single bbox.
+
+    Parameters
+    ----------
+    bbox
+        The bbox to validate.
+    image_height
+        The image height in pixels.
+    image_width
+        The image width in pixels.
+    where_
+        Description of where the bbox is located (for error messages).
+
+    Raises
+    ------
+    ExtractionQualityError
+        If the bbox is invalid.
+    """
+
+    if len(bbox) != 4:
+        raise ExtractionQualityError(f"Invalid bbox length at {where_}: {bbox}")
+
+    x0, y0, x1, y1 = bbox
+    if not (x1 > x0 and y1 > y0):
+        raise ExtractionQualityError(f"Inverted/degenerate bbox at {where_}: {bbox}")
+
+    if x0 < -tol or y0 < -tol or x1 > image_width + tol or y1 > image_height + tol:
+        raise ExtractionQualityError(
+            f"Out-of-bounds bbox at {where_} for {image_width}x{image_height}: {bbox}"
+        )
 
 
 def extract_page_ir(
     *,
     country: str,
+    image_height: int,
+    image_width: int,
     languages: list[str],
     model: str,
     page_index: int,
@@ -122,6 +179,10 @@ def extract_page_ir(
     ----------
     country
         Country context for the prompt.
+    image_height
+        The image height in pixels.
+    image_width
+        The image width in pixels.
     languages
         Expected languages context for the prompt.
     model
@@ -141,7 +202,12 @@ def extract_page_ir(
 
     image_url = encode_png_to_data_url(png_fp)
     prompts = stage1_extraction_prompts(
-        country=country, languages=languages, page_index=page_index, year=year
+        country=country,
+        image_height=image_height,
+        image_width=image_width,
+        languages=languages,
+        page_index=page_index,
+        year=year,
     )
     instructions = prompts.system_message
     input_items = [
@@ -158,7 +224,11 @@ def extract_page_ir(
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api(
-                input_items=input_items, instructions=instructions, model=model
+                image_height=image_height,
+                image_width=image_width,
+                input_items=input_items,
+                instructions=instructions,
+                model=model,
             )
         except ExtractionQualityError as e:
             if attempt == max_retries:
@@ -238,3 +308,137 @@ def extract_page_ir(
     raise ExtractionQualityError(
         f"Extraction failed after {max_retries + 1} attempts for page " f"{page_index}."
     )
+
+
+def validate_page_ir_quality(  # pylint: disable=R0912,R1260
+    *, image_height: int, image_width: int, page_ir: PageIR
+) -> None:
+    """Validate semantic quality of a parsed PageIR.
+
+    This is intentionally *not* a schema validator. Instead, it catches common failure
+    modes that still parse:
+        - whitespace-only blocks
+        - bboxes out of bounds / inverted
+        - repeated/placeholder bboxes (e.g., many items sharing the same [0,0,*,*])
+
+    Parameters
+    ----------
+    image_height
+        The image height in pixels.
+    image_width
+        The image width in pixels.
+    page_ir
+        The PageIR to validate.
+
+    Raises
+    ------
+    ExtractionQualityError
+        If any quality checks fail.
+    """
+
+    if image_width <= 0 or image_height <= 0:
+        raise ExtractionQualityError(
+            f"Invalid image dimensions: {image_width}x{image_height}."
+        )
+
+    tol = 2.0  # Small tolerance for rounding
+
+    items = page_ir.items or []
+
+    # 1. No whitespace-only text blocks.
+    for i, item in enumerate(items):
+        if getattr(item, "kind", None) == "block":
+            text_unit = getattr(item, "text", None)
+            if (
+                text_unit is not None
+                and isinstance(text_unit.text, str)
+                and text_unit.text.strip() == ""
+            ):
+                raise ExtractionQualityError(
+                    f"Whitespace-only block text at items[{i}].text; remove this "
+                    f"block."
+                )
+
+    # 2. Validate bboxes (top-level items + nested text/cells).
+    top_level_bboxes = []
+    for i, item in enumerate(items):
+        bbox = getattr(item, "bbox", None)
+        if bbox is not None:
+            _validate_bbox(
+                bbox=bbox,
+                image_height=image_height,
+                image_width=image_width,
+                tol=tol,
+                where_=f"items[{i}].bbox",
+            )
+            top_level_bboxes.append(tuple(map(float, bbox)))
+
+        if getattr(item, "kind", None) == "block":
+            text_unit = getattr(item, "text", None)
+            if text_unit is not None and getattr(text_unit, "bbox", None) is not None:
+                _validate_bbox(
+                    bbox=text_unit.bbox,
+                    image_height=image_height,
+                    image_width=image_width,
+                    tol=tol,
+                    where_=f"items[{i}].text.bbox",
+                )
+
+            list_items = getattr(item, "list_items", None)
+            if list_items:
+                for j, li in enumerate(list_items):
+                    if li.text and li.text.bbox is not None:
+                        _validate_bbox(
+                            bbox=li.text.bbox,
+                            image_height=image_height,
+                            image_width=image_width,
+                            tol=tol,
+                            where_=f"items[{i}].list_items[{j}].text.bbox",
+                        )
+
+        if getattr(item, "kind", None) == "table":
+            rows = getattr(item, "rows", None) or []
+            for r, row in enumerate(rows):
+                for c, cell in enumerate(getattr(row, "cells", None) or []):
+                    if cell.bbox is not None:
+                        _validate_bbox(
+                            bbox=cell.bbox,
+                            image_height=image_height,
+                            image_width=image_width,
+                            tol=tol,
+                            where_=f"items[{i}].rows[{r}].cells[{c}].bbox",
+                        )
+                    if cell.text is not None and cell.text.bbox is not None:
+                        _validate_bbox(
+                            bbox=cell.text.bbox,
+                            image_height=image_height,
+                            image_width=image_width,
+                            tol=tol,
+                            where_=f"items[{i}].rows[{r}].cells[{c}].text.bbox",
+                        )
+
+    # 3. Detect placeholder bboxes: many items sharing the exact same box.
+    if len(top_level_bboxes) >= 6:
+        counts = Counter(top_level_bboxes)
+        (most_common_bbox, most_common_count) = counts.most_common(1)[0]
+        frac = most_common_count / max(1, len(top_level_bboxes))
+
+        x0, y0, x1, y1 = most_common_bbox
+        starts_at_origin = abs(x0) <= tol and abs(y0) <= tol
+        area = max(0.0, (x1 - x0)) * max(0.0, (y1 - y0))
+        page_area = float(image_width) * float(image_height)
+        area_frac = area / page_area if page_area > 0 else 0.0
+
+        if frac >= 0.30 and starts_at_origin:
+            raise ExtractionQualityError(
+                "Too many items share the same origin-anchored bbox "
+                f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}). "
+                "This looks like a placeholder; set bbox=null when unsure."
+            )
+
+        if frac >= 0.20 and area_frac >= 0.85:
+            raise ExtractionQualityError(
+                "Too many items share a near-full-page bbox "
+                f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}, area_frac={area_frac:.2f}). "
+                "Do not use full-page bboxes as placeholders; use bbox=null when unsure."
+            )

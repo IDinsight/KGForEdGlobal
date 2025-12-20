@@ -13,6 +13,8 @@ from dotmap import DotMap
 def stage1_extraction_prompts(
     *,
     country: str,
+    image_height: int,
+    image_width: int,
     languages: list[str],
     page_index: int,
     year: Optional[int] = None,
@@ -23,6 +25,10 @@ def stage1_extraction_prompts(
     ----------
     country
         The country of origin for the document.
+    image_height
+        The height of the image in pixels.
+    image_width
+        The width of the image in pixels.
     languages
         List of expected languages (e.g., ['en', 'sw']).
     page_index
@@ -79,7 +85,17 @@ For every CurriculumBlock, you MUST set `block_type` to exactly one of:
 - **list**: bulleted/numbered outlines. Use `list_items` and set `text=null`.
 - **paragraph**: standard prose blocks. Use `text` and set `list_items=null`.
 
-IMPORTANT:
+## LAYOUT-SPECIFIC INSTRUCTIONS
+- TABLES: Preserve the exact grid structure. Count the header rows explicitly in `header_row_count`. Allow blank cells (use null text).
+- STYLES: Note BOLD / ITALIC / UPPERCASE in `TextUnit.styles` when visually present.
+- CODES: Extract explicit curriculum/section numbering (e.g., “3.9.4.1”) into `local_code` when it is visibly present.
+
+## IMAGE GEOMETRY:
+- The input image is exactly {image_width}×{image_height} pixels.
+- All bbox values MUST be in this pixel coordinate space with origin at top-left.
+- Never use a full-page or repeated placeholder bbox; if unsure, set bbox=null.
+
+## IMPORTANT:
 - If the content is a running header/footer/page number, classify it as **artifact** even if it looks like a heading.
 - Do NOT mix `text` and `list_items`: for lists use only `list_items`; for non-lists use only `text`.
 - For ANY non-list CurriculumBlock (artifact/caption/heading/key_value/paragraph), set `text` and set `list_items=null`.
@@ -88,11 +104,6 @@ IMPORTANT:
 - If `role_hint` is null, `role_confidence` must be null.
 - Ignore crop marks/page frame lines.
 - Do not output CurriculumBlocks whose text is empty/whitespace.
-
-## LAYOUT-SPECIFIC INSTRUCTIONS
-- TABLES: Preserve the exact grid structure. Count the header rows explicitly in `header_row_count`. Allow blank cells (use null text).
-- STYLES: Note BOLD / ITALIC / UPPERCASE in `TextUnit.styles` when visually present.
-- CODES: Extract explicit curriculum/section numbering (e.g., “3.9.4.1”) into `local_code` when it is visibly present.
     """
     )
 
