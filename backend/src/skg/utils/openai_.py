@@ -240,7 +240,7 @@ def extract_page_ir(
                 input_items.append(
                     {
                         "role": "assistant",
-                        "content": [{"type": "input_text", "text": e.failed_content}],
+                        "content": [{"type": "output_text", "text": e.failed_content}],
                     }
                 )
 
