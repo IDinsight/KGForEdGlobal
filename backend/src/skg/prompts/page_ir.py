@@ -75,7 +75,7 @@ def extract_page_ir_from_pdf_age(
 8. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
 
 ## BLOCK CLASSIFICATION
-- **artifact**: Headers, footers, page numbers.
+- **artifact**: Headers, footers, page numbers; certificates/ISBN/publisher blocks etc. are paragraphs
 - **caption**: Labels for tables/figures (e.g., "Table 1").
 - **heading**: Section titles.
 - **list**: Bulleted/numbered items (use `list_items`, set `text=null`).

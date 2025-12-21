@@ -120,8 +120,18 @@ def extract_page_by_page(
         # Perform stage 1 extraction.
         logger.info(f"Extracting and saving page: {page_index}...")
         image_width, image_height = read_png_dimensions(png_fp=png_fp)
+        text_layer_hints = (
+            extract_text_layer_hints(
+                doc=doc,
+                image_height=image_height,
+                image_width=image_width,
+                page_index=page_index,
+            )
+            if use_text_layer_hints
+            else None
+        )
 
-        if is_mostly_blank(png_fp=png_fp):
+        if is_mostly_blank(png_fp=png_fp) and text_layer_hints is None:
             logger.warning(f"Page {page_index} looks blank; skipping model call.")
             page_ir = PageIR(boundary_state=PageBoundaryState.STANDALONE, items=[])
         else:
@@ -133,16 +143,7 @@ def extract_page_by_page(
                 model=model,
                 page_index=page_index,
                 png_fp=png_fp,
-                text_layer_hints=(
-                    extract_text_layer_hints(
-                        doc=doc,
-                        image_height=image_height,
-                        image_width=image_width,
-                        page_index=page_index,
-                    )
-                    if use_text_layer_hints
-                    else None
-                ),
+                text_layer_hints=text_layer_hints,
                 year=year,
             )
         page_ir.coord_space = "px"
