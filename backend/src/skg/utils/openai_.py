@@ -21,9 +21,10 @@ from tenacity import (
 )
 
 # Package Library
-from skg.ir.schemas import PageIR
-from skg.prompts.ir import stage1_extraction_prompts
+from skg.page_ir.schemas import PageIR
+from skg.prompts.page_ir import extract_page_ir_from_pdf_age
 from skg.schemas import Limits
+from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 from skg.utils.general import encode_png_to_data_url
 
 limits = Limits(max_retry_attempts=5)
@@ -171,6 +172,7 @@ def extract_page_ir(
     model: str,
     page_index: int,
     png_fp: Path,
+    text_layer_hints: Optional[str] = None,
     year: Optional[int] = None,
 ) -> PageIR:
     """Extract PageIR from a page image using LLM + Vision + Structured Outputs.
@@ -191,6 +193,8 @@ def extract_page_ir(
         The 0-based page index.
     png_fp
         The PNG file path of the page image.
+    text_layer_hints
+        Optional text layer hints from the PDF.
     year
         Year context for the prompt.
 
@@ -201,12 +205,13 @@ def extract_page_ir(
     """
 
     image_url = encode_png_to_data_url(png_fp)
-    prompts = stage1_extraction_prompts(
+    prompts = extract_page_ir_from_pdf_age(
         country=country,
         image_height=image_height,
         image_width=image_width,
         languages=languages,
         page_index=page_index,
+        text_layer_hints=text_layer_hints,
         year=year,
     )
     instructions = prompts.system_message
@@ -310,25 +315,29 @@ def extract_page_ir(
     )
 
 
-def validate_page_ir_quality(  # pylint: disable=R0912,R1260
+def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
     *, image_height: int, image_width: int, page_ir: PageIR
 ) -> None:
-    """Validate semantic quality of a parsed PageIR.
+    """Validate *quality* (not schema) of a parsed PageIR.
 
-    This is intentionally *not* a schema validator. Instead, it catches common failure
-    modes that still parse:
-        - whitespace-only blocks
-        - bboxes out of bounds / inverted
-        - repeated/placeholder bboxes (e.g., many items sharing the same [0,0,*,*])
+    This validator is designed for the *stitching step* (Document IR creation). It
+    enforces non-negotiables:
+      - Item-level bboxes exist and are sane
+      - No whitespace-only blocks
+      - Basic table integrity (no empty tables)
+      - Continuity signals are internally consistent (page boundary_state vs. item
+            boundaries)
+      - Gross reading-order violations are caught (without overfitting to 1- or
+            2-column pages)
 
     Parameters
     ----------
     image_height
-        The image height in pixels.
+        Rendered page image height in pixels.
     image_width
-        The image width in pixels.
+        Rendered page image width in pixels.
     page_ir
-        The PageIR to validate.
+        Parsed PageIR object.
 
     Raises
     ------
@@ -342,85 +351,207 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R1260
         )
 
     tol = 2.0  # Small tolerance for rounding
-
     items = page_ir.items or []
+    boundary_state = getattr(page_ir, "boundary_state", PageBoundaryState.STANDALONE)
 
-    # 1. No whitespace-only text blocks.
+    def _boundary_str(item: Any) -> str:
+        """Get the boundary string of an item.
+
+        Parameters
+        ----------
+        item
+            The item to get the boundary string from.
+
+        Returns
+        -------
+        str
+            The boundary string, or empty string if not set.
+        """
+
+        b = getattr(item, "boundary", None)
+        return "" if b is None else b.value if hasattr(b, "value") else str(b)
+
+    def _is_artifact(item: Any) -> bool:
+        """Check if an item is an artifact block.
+
+        Parameters
+        ----------
+        item
+            The item to check.
+
+        Returns
+        -------
+        bool
+            True if the item is an artifact block, False otherwise.
+        """
+
+        if getattr(item, "kind", None) != "block":
+            return False
+        return getattr(item, "block_type", None) == BlockType.ARTIFACT
+
+    def _is_resumed(boundary: str) -> bool:
+        """Check if a boundary string indicates a resumed item.
+
+        Parameters
+        ----------
+        boundary
+            The boundary string to check.
+
+        Returns
+        -------
+        bool
+            True if the boundary indicates a resumed item, False otherwise.
+        """
+
+        return boundary == ItemBoundary.RESUMED.value
+
+    def _is_truncated(boundary: str) -> bool:
+        """Check if a boundary string indicates a truncated item.
+
+        Parameters
+        ----------
+        boundary
+            The boundary string to check.
+
+        Returns
+        -------
+        bool
+            True if the boundary indicates a truncated item, False otherwise.
+        """
+
+        return boundary == ItemBoundary.TRUNCATED.value
+
+    # 1. No whitespace-only text blocks (and list items).
     for i, item in enumerate(items):
-        if getattr(item, "kind", None) == "block":
-            text_unit = getattr(item, "text", None)
-            if (
-                text_unit is not None
-                and isinstance(text_unit.text, str)
-                and text_unit.text.strip() == ""
-            ):
+        if getattr(item, "kind", None) != "block":
+            continue
+
+        text_unit = getattr(item, "text", None)
+        if text_unit is not None:
+            txt = getattr(text_unit, "text", None)
+            if isinstance(txt, str) and txt.strip() == "":
                 raise ExtractionQualityError(
-                    f"Whitespace-only block text at items[{i}].text; remove this "
-                    f"block."
+                    f"Whitespace-only block text at items[{i}].text; remove this block."
                 )
 
-    # 2. Validate bboxes (top-level items + nested text/cells).
+        list_items = getattr(item, "list_items", None) or []
+        for j, li in enumerate(list_items):
+            li_text = getattr(li, "text", None)
+            if li_text is None:
+                continue
+            txt = getattr(li_text, "text", None)
+            if isinstance(txt, str) and txt.strip() == "":
+                raise ExtractionQualityError(
+                    f"Whitespace-only list item text at items[{i}].list_items[{j}].text; "
+                    "remove this list item."
+                )
+
+    # 2. Item-level bbox is REQUIRED and must be in-bounds.
     top_level_bboxes = []
     for i, item in enumerate(items):
         bbox = getattr(item, "bbox", None)
-        if bbox is not None:
-            _validate_bbox(
-                bbox=bbox,
-                image_height=image_height,
-                image_width=image_width,
-                tol=tol,
-                where_=f"items[{i}].bbox",
+        if bbox is None:
+            raise ExtractionQualityError(
+                f"Missing required item bbox at items[{i}].bbox. "
+                "Every block/table must have an item-level bbox."
             )
-            top_level_bboxes.append(tuple(map(float, bbox)))
 
-        if getattr(item, "kind", None) == "block":
-            text_unit = getattr(item, "text", None)
-            if text_unit is not None and getattr(text_unit, "bbox", None) is not None:
-                _validate_bbox(
-                    bbox=text_unit.bbox,
-                    image_height=image_height,
-                    image_width=image_width,
-                    tol=tol,
-                    where_=f"items[{i}].text.bbox",
+        _validate_bbox(
+            bbox=bbox,
+            image_height=image_height,
+            image_width=image_width,
+            tol=tol,
+            where_=f"items[{i}].bbox",
+        )
+        top_level_bboxes.append(tuple(map(float, bbox)))
+
+    # 3. Basic block invariants (lightweight, avoids semantic guesswork).
+    for i, item in enumerate(items):
+        if getattr(item, "kind", None) != "block":
+            continue
+
+        block_type = getattr(item, "block_type", None)
+        text_unit = getattr(item, "text", None)
+        list_items = getattr(item, "list_items", None) or []
+
+        if block_type == BlockType.LIST:
+            # Lists should be represented via list_items; text should be null.
+            if text_unit is not None:
+                raise ExtractionQualityError(
+                    f"List block must have text=null at items[{i}].text."
                 )
+            if not list_items:
+                raise ExtractionQualityError(
+                    f"List block must have non-empty list_items at items[{i}].list_items."
+                )
+            for j, li in enumerate(list_items):
+                # If marker is empty and text is short, it's likely a misclassification.
+                if not li.marker.strip() and len(li.text.text.strip()) < 3:
+                    raise ExtractionQualityError(
+                        f"List item at items[{i}].list_items[{j}] has no marker and "
+                        "insufficient text. This should likely be a paragraph."
+                    )
+        elif list_items:
+            # Non-list blocks should not carry list_items.
+            raise ExtractionQualityError(
+                f"Non-list block must have list_items=[] at items[{i}].list_items."
+            )
 
-            list_items = getattr(item, "list_items", None)
-            if list_items:
-                for j, li in enumerate(list_items):
-                    if li.text and li.text.bbox is not None:
-                        _validate_bbox(
-                            bbox=li.text.bbox,
-                            image_height=image_height,
-                            image_width=image_width,
-                            tol=tol,
-                            where_=f"items[{i}].list_items[{j}].text.bbox",
-                        )
+    # 4. Table integrity (non-negotiable for deterministic stitching).
+    for i, item in enumerate(items):
+        if getattr(item, "kind", None) != "table":
+            continue
 
-        if getattr(item, "kind", None) == "table":
-            rows = getattr(item, "rows", None) or []
-            for r, row in enumerate(rows):
-                for c, cell in enumerate(getattr(row, "cells", None) or []):
-                    if cell.bbox is not None:
-                        _validate_bbox(
-                            bbox=cell.bbox,
-                            image_height=image_height,
-                            image_width=image_width,
-                            tol=tol,
-                            where_=f"items[{i}].rows[{r}].cells[{c}].bbox",
-                        )
-                    if cell.text is not None and cell.text.bbox is not None:
-                        _validate_bbox(
-                            bbox=cell.text.bbox,
-                            image_height=image_height,
-                            image_width=image_width,
-                            tol=tol,
-                            where_=f"items[{i}].rows[{r}].cells[{c}].text.bbox",
-                        )
+        rows = getattr(item, "rows", None) or []
+        if len(rows) == 0:
+            raise ExtractionQualityError(
+                f"Empty table (rows=[]) at items[{i}].rows. Do not emit empty tables."
+            )
 
-    # 3. Detect placeholder bboxes: many items sharing the exact same box.
+        header_row_count = int(getattr(item, "header_row_count", 0) or 0)
+        if header_row_count < 0:
+            raise ExtractionQualityError(
+                f"Invalid header_row_count={header_row_count} at "
+                f"items[{i}].header_row_count."
+            )
+        if header_row_count > len(rows):
+            raise ExtractionQualityError(
+                f"header_row_count={header_row_count} exceeds total rows={len(rows)} "
+                f"at items[{i}].header_row_count."
+            )
+
+        for r, row in enumerate(rows):
+            cells = getattr(row, "cells", None) or []
+            if len(cells) == 0:
+                raise ExtractionQualityError(
+                    f"Table row with zero cells at items[{i}].rows[{r}].cells."
+                )
+            for c, cell in enumerate(cells):
+                # Spans should be >= 1; schema should already enforce, but keep a guard.
+                col_span = int(getattr(cell, "col_span", 1) or 1)
+                row_span = int(getattr(cell, "row_span", 1) or 1)
+                if col_span < 1 or row_span < 1:
+                    raise ExtractionQualityError(
+                        f"Invalid span at items[{i}].rows[{r}].cells[{c}] "
+                        f"(col_span={col_span}, row_span={row_span})."
+                    )
+
+        # Deep table content check.
+        any_content_in_table = False
+        for r, row in enumerate(rows):
+            for c, cell in enumerate(row.cells):
+                if cell.text and cell.text.text.strip():
+                    any_content_in_table = True
+                    break
+        if not any_content_in_table:
+            raise ExtractionQualityError(
+                f"Table at items[{i}] contains no text content."
+            )
+
+    # 5. Placeholder bbox detection (item bboxes are required).
     if len(top_level_bboxes) >= 6:
         counts = Counter(top_level_bboxes)
-        (most_common_bbox, most_common_count) = counts.most_common(1)[0]
+        most_common_bbox, most_common_count = counts.most_common(1)[0]
         frac = most_common_count / max(1, len(top_level_bboxes))
 
         x0, y0, x1, y1 = most_common_bbox
@@ -433,12 +564,103 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R1260
             raise ExtractionQualityError(
                 "Too many items share the same origin-anchored bbox "
                 f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}). "
-                "This looks like a placeholder; set bbox=null when unsure."
+                "This looks like a placeholder; bboxes must be localized to each item."
             )
 
         if frac >= 0.20 and area_frac >= 0.85:
             raise ExtractionQualityError(
                 "Too many items share a near-full-page bbox "
                 f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}, area_frac={area_frac:.2f}). "
-                "Do not use full-page bboxes as placeholders; use bbox=null when unsure."
+                "Do not use near-full-page bboxes as placeholders; bboxes must be localized."
             )
+
+    # 6. Continuity consistency: page boundary_state vs. item boundary markers.
+    bs = (
+        boundary_state.value
+        if hasattr(boundary_state, "value")
+        else str(boundary_state)
+    )
+    states_requiring_prev = {
+        PageBoundaryState.CONTINUES_FROM_PREV.value,
+        PageBoundaryState.BOTH.value,
+    }
+    states_requiring_next = {
+        PageBoundaryState.CONTINUES_TO_NEXT.value,
+        PageBoundaryState.BOTH.value,
+    }
+    needs_from_prev = bs in states_requiring_prev
+    needs_to_next = bs in states_requiring_next
+
+    # Only consider non-artifact items for continuity checks.
+    non_artifact_items = [(i, it) for i, it in enumerate(items) if not _is_artifact(it)]
+
+    if needs_from_prev:
+        if not non_artifact_items:
+            raise ExtractionQualityError(
+                f"boundary_state='{boundary_state}' implies content continues from "
+                f"previous page, but there are no non-artifact items."
+            )
+        first_idx, first_item = non_artifact_items[0]
+        if not _is_resumed(_boundary_str(first_item)):
+            raise ExtractionQualityError(
+                f"boundary_state='{boundary_state}' implies content continues from "
+                f"previous page, but first non-artifact item items[{first_idx}] is not "
+                f"boundary='{ItemBoundary.RESUMED.value}'."
+            )
+
+    if needs_to_next:
+        if not non_artifact_items:
+            raise ExtractionQualityError(
+                f"boundary_state='{boundary_state}' implies content continues to next "
+                "page, but there are no non-artifact items."
+            )
+        last_idx, last_item = non_artifact_items[-1]
+        if not _is_truncated(_boundary_str(last_item)):
+            raise ExtractionQualityError(
+                f"boundary_state='{boundary_state}' implies content continues to next "
+                f"page, but last non-artifact item items[{last_idx}] is not "
+                f"boundary='{ItemBoundary.TRUNCATED.value}'."
+            )
+
+    if bs == PageBoundaryState.STANDALONE.value:
+        # Standalone pages should not claim resumed/truncated content (excluding
+        # artifacts).
+        any_resumed_or_truncated = any(
+            _is_resumed(_boundary_str(it)) or _is_truncated(_boundary_str(it))
+            for _, it in non_artifact_items
+        )
+        if any_resumed_or_truncated:
+            raise ExtractionQualityError(
+                f"boundary_state='{PageBoundaryState.STANDALONE.value}' but found "
+                "resumed/truncated boundaries on non-artifact items."
+            )
+
+    # 7. Gross reading-order sanity check (avoid overfitting to 2-column pages). We
+    # only flag big backward jumps *within roughly the same column*.
+    non_artifact_items = [(i, it) for i, it in enumerate(items) if not _is_artifact(it)]
+    if len(non_artifact_items) >= 3:
+        prev_bbox = getattr(non_artifact_items[0][1], "bbox", [0.0, 0.0, 0.0, 0.0])
+        prev_x0, prev_y0 = float(prev_bbox[0]), float(prev_bbox[1])
+
+        max_y_backjump = 0.15 * float(image_height)  # Big jump threshold
+        same_col_dx = 0.20 * float(image_width)  # "Same column" threshold
+
+        for idx, it in non_artifact_items[1:]:
+            bbox = getattr(it, "bbox", None)
+            if bbox is None:
+                continue
+
+            x0, y0 = float(bbox[0]), float(bbox[1])
+            y_backjump = prev_y0 - y0
+            x_diff = x0 - prev_x0  # Pos means moved right, neg means moved left
+
+            # Only flag if we jumped UP and moved LEFT (back to start of a new
+            # column/line) or if we jumped UP and stayed in the same horizontal lane.
+            if y_backjump > max_y_backjump:
+                if x_diff < -same_col_dx or abs(x_diff) < same_col_dx:
+                    raise ExtractionQualityError(
+                        f"Likely reading-order violation at items[{idx}]. "
+                        "Items jump upwards significantly without a clear column shift."
+                    )
+
+            prev_x0, prev_y0 = x0, y0

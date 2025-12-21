@@ -1,6 +1,4 @@
-"""This module contains utility functions for Intermediate Representations (IRs). It
-acts as a coordinator, delegating specific logic to the `processing` subpackage.
-"""
+"""This module contains utility functions for page Intermediate Representations (IRs)."""
 
 # Standard Library
 from dataclasses import dataclass
@@ -11,8 +9,8 @@ from skg.utils.general import make_dir
 
 
 @dataclass(frozen=True)
-class ExtractionDirs:
-    """Dataclass for extraction directories."""
+class PageIRExtractionDirs:
+    """Dataclass for page IR extraction directories."""
 
     root: Path
     artifacts: Path
@@ -20,8 +18,10 @@ class ExtractionDirs:
     page_ir: Path
 
 
-def create_extraction_dirs(*, doc_key: str, output_dir: Path) -> ExtractionDirs:
-    """Create extraction directories for a given document key.
+def create_page_ir_extraction_dirs(
+    *, doc_key: str, output_dir: Path
+) -> PageIRExtractionDirs:
+    """Create page IR extraction directories for a given document key.
 
     Parameters
     ----------
@@ -32,8 +32,8 @@ def create_extraction_dirs(*, doc_key: str, output_dir: Path) -> ExtractionDirs:
 
     Returns
     -------
-    ExtractionDirs
-        The created extraction directories.
+    PageIRExtractionDirs
+        The created page IR extraction directories.
     """
 
     root = output_dir / doc_key
@@ -44,6 +44,6 @@ def create_extraction_dirs(*, doc_key: str, output_dir: Path) -> ExtractionDirs:
     for p in [root, page_images, page_ir, artifacts]:
         make_dir(p)
 
-    return ExtractionDirs(
+    return PageIRExtractionDirs(
         root=root, artifacts=artifacts, page_images=page_images, page_ir=page_ir
     )

@@ -228,13 +228,9 @@ def validate_bcp47(code: str) -> str:
         If the language tag is invalid or unparseable.
     """
 
-    code = (code or "").strip()
-    if not code:
-        return "unk"
-    if code == "unk":
+    code = (code or "und").strip().replace("_", "-")
+    if code in {"und", "mul"}:
         return code
-
-    code = code.replace("_", "-")
 
     try:
         lang = langcodes.Language.get(code)
