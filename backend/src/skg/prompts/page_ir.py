@@ -48,7 +48,9 @@ def extract_page_ir_from_pdf_age(
     doc_context = f"from {country}" + (f" ({year})" if year else "")
     lang_context = ", ".join(languages)
     text_layer_context = (
-        "" if not text_layer_hints else f"## TEXT LAYER HINTS\n{text_layer_hints}"
+        ""
+        if not text_layer_hints
+        else f"## TEXT LAYER HINTS\n{text_layer_hints}\nNB: Text layer hints are only hints and they may be incomplete."
     )
 
     system_message = dedent(
@@ -69,8 +71,7 @@ def extract_page_ir_from_pdf_age(
 4. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
 5. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
 6. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it.
-7. Every item MUST include a non-null bbox localized to that item (no full-page placeholders).
-8. Do not output empty tables; if you see a table, it must have at least one row.
+7. Do not output empty tables; if you see a table, it must have at least one row.
 
 ## BLOCK CLASSIFICATION
 - **artifact**: Headers, footers, page numbers.
