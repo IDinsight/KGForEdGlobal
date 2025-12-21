@@ -84,6 +84,7 @@ def extract_page_ir_from_pdf_age(
 ## BOUNDARIES
 - Item `boundary`: Use "resumed" (top missing), "truncated" (bottom missing), or "complete".
 - Page `boundary_state`: Use "from_prev", "to_next", "both", or "standalone".
+- If the first content block begins without capitalization/begins mid-sentence or as a continuation list, mark boundary_state=from_prev and set the first block boundary to resumed.
         """
     )
 
