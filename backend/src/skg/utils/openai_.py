@@ -637,8 +637,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
             )
 
     if bs == PageBoundaryState.STANDALONE.value:
-        # Standalone pages should not claim resumed/truncated content (excluding
-        # artifacts).
+        # Standalone pages should not claim resumed/truncated content (excluding artifacts).
         any_resumed_or_truncated = any(
             _is_resumed(_boundary_str(it)) or _is_truncated(_boundary_str(it))
             for _, it in non_artifact_items
@@ -651,7 +650,6 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
 
     # 7. Gross reading-order sanity check (avoid overfitting to 2-column pages). We
     # only flag big backward jumps *within roughly the same column*.
-    non_artifact_items = [(i, it) for i, it in enumerate(items) if not _is_artifact(it)]
     if len(non_artifact_items) >= 3:
         prev_bbox = getattr(non_artifact_items[0][1], "bbox", [0.0, 0.0, 0.0, 0.0])
         prev_x0, prev_y0 = float(prev_bbox[0]), float(prev_bbox[1])
