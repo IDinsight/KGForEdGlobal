@@ -70,13 +70,13 @@ def extract_page_ir_from_pdf_age(
 3. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
 4. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
 5. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
-6. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it.
+6. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
 7. Do not output empty tables; if you see a table, it must have at least one row.
 8. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
 9. Do NOT create blocks that represent the whole page or background. Every block/table must correspond to actual visible content (text or table grid).
 10. Do not emit any block that contains no content. A block must contain text OR list_items OR local_code.
 11. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
-12. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts; treat them as paragraph/heading/caption.
+12. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts; treat them as paragraph/heading/caption. Section titles like ‘Table of Contents’, ‘Preface’, chapter titles, etc. are NOT artifacts; they are headings.
 13. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
 
 ## BLOCK CLASSIFICATION
