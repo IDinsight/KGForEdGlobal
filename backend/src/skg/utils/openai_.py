@@ -421,30 +421,44 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
 
         return boundary == ItemBoundary.TRUNCATED.value
 
-    # 1. No whitespace-only text blocks (and list items).
+    # 1. No whitespace-only text blocks, list items, or local codes.
     for i, item in enumerate(items):
         if getattr(item, "kind", None) != "block":
             continue
 
         text_unit = getattr(item, "text", None)
-        if text_unit is not None:
-            txt = getattr(text_unit, "text", None)
-            if isinstance(txt, str) and txt.strip() == "":
+        raw_text = getattr(text_unit, "text", None) if text_unit else None
+        list_items = getattr(item, "list_items", None) or []
+        local_code = getattr(item, "local_code", None)
+
+        # Check for whitespace-only main text. We define has_text as: exists, is
+        # string, and is not empty.
+        has_text = False
+        if isinstance(raw_text, str):
+            if not raw_text.strip():
                 raise ExtractionQualityError(
                     f"Whitespace-only block text at items[{i}].text; remove this block."
                 )
+            has_text = True
 
-        list_items = getattr(item, "list_items", None) or []
+        # Check for whitespace-only list items.
         for j, li in enumerate(list_items):
-            li_text = getattr(li, "text", None)
-            if li_text is None:
-                continue
-            txt = getattr(li_text, "text", None)
-            if isinstance(txt, str) and txt.strip() == "":
+            li_unit = getattr(li, "text", None)
+            li_raw = getattr(li_unit, "text", None) if li_unit else None
+            if isinstance(li_raw, str) and not li_raw.strip():
                 raise ExtractionQualityError(
                     f"Whitespace-only list item text at items[{i}].list_items[{j}].text; "
                     "remove this list item."
                 )
+
+        # Check for empty blocks (no payload at all).
+        has_list = len(list_items) > 0
+        has_code = isinstance(local_code, str) and bool(local_code.strip())
+        if not (has_text or has_list or has_code):
+            raise ExtractionQualityError(
+                f"Empty block at items[{i}]: text, list_items, and local_code are all "
+                f"null/empty. Do not emit placeholder blocks (e.g., full-page artifacts)."
+            )
 
     # 2. Item-level bbox is REQUIRED and must be in-bounds.
     top_level_bboxes = []
