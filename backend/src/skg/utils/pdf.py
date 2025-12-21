@@ -131,9 +131,7 @@ def extract_text_layer_hints(
 
     # Collect line items: (y0, x0, max_font_size, text).
     lines: list[tuple[float, float, float, str]] = []
-    for b in blocks:
-        if b.get("type") != 0:  # 0 = text block
-            continue
+    for b in (b for b in blocks if b.get("type") == 0):
         for ln in b.get("lines", []):
             spans = ln.get("spans", [])
 
@@ -167,7 +165,9 @@ def extract_text_layer_hints(
     # Column x-peaks (optional): helps multi-column reading order.
     col_peaks: list[float] = []
     words = page.get_text("words") or []
-    if words:
+
+    # Only compute peaks if we have enough signal.
+    if len(words) >= 80 or len(lines) >= 20:
         # words: (x0, y0, x1, y1, "word", block_no, line_no, word_no).
         bin_w = 20.0
         xs = [float(w[0]) for w in words if len(w) >= 1]
@@ -210,22 +210,34 @@ def extract_text_layer_hints(
         sx=sx,
         sy=sy,
     )
-    _add_section_for_text_layer_hint(
-        items=body[:max_lines_per_section],
-        limit=max_lines_per_section,
-        out=out,
-        title="TOP_BODY_LINES",
-        sx=sx,
-        sy=sy,
-    )
-    _add_section_for_text_layer_hint(
-        items=body[-max_lines_per_section:],
-        limit=max_lines_per_section,
-        out=out,
-        title="BOTTOM_BODY_LINES",
-        sx=sx,
-        sy=sy,
-    )
+
+    # Body lines: avoid duplicate TOP/BOTTOM on short pages.
+    if len(body) <= max_lines_per_section:
+        _add_section_for_text_layer_hint(
+            items=body,
+            limit=max_lines_per_section,
+            out=out,
+            title="BODY_LINES",
+            sx=sx,
+            sy=sy,
+        )
+    else:
+        _add_section_for_text_layer_hint(
+            items=body[:max_lines_per_section],
+            limit=max_lines_per_section,
+            out=out,
+            title="TOP_BODY_LINES",
+            sx=sx,
+            sy=sy,
+        )
+        _add_section_for_text_layer_hint(
+            items=body[-max_lines_per_section:],
+            limit=max_lines_per_section,
+            out=out,
+            title="BOTTOM_BODY_LINES",
+            sx=sx,
+            sy=sy,
+        )
 
     # Small raw excerpt fallback (kept short).
     if raw := (page.get_text("text") or "").strip():
