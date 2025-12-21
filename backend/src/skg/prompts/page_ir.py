@@ -73,6 +73,7 @@ def extract_page_ir_from_pdf_age(
 6. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it.
 7. Do not output empty tables; if you see a table, it must have at least one row.
 8. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
+9. Do NOT create blocks that represent the whole page or background. Every block/table must correspond to actual visible content (text or table grid).
 
 ## BLOCK CLASSIFICATION
 - **artifact**: Headers, footers, page numbers; certificates/ISBN/publisher blocks etc. are paragraphs
