@@ -2,14 +2,53 @@
 
 # Standard Library
 import hashlib
+import re
 
+from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Third Party Library
 import pymupdf
 
 from PIL import Image
+
+
+def _add_section_for_text_layer_hint(
+    *,
+    out: list[str],
+    title: str,
+    items: list[tuple[float, float, float, str]],
+    limit: int,
+    sx: float,
+    sy: float,
+) -> None:
+    """Helper to add a section to the text layer hint output.
+
+    Parameters
+    ----------
+    out
+        The output list to append to.
+    title
+        The section title.
+    items
+        The list of items (y0, x0, size, text).
+    limit
+        Maximum number of items to include.
+    sx
+        Scale factor for x coordinates.
+    sy
+        Scale factor for y coordinates.
+    """
+
+    if not items:
+        return
+    out.append(f"## {title}")
+    for y0, x0, size, txt in items[:limit]:
+        # Truncate individual lines to keep digest compact.
+        if len(txt) > 220:
+            txt = txt[:220].rstrip() + "…"
+        out.append(f"[x={x0 * sx:.1f} y={y0 * sy:.1f} sz={size:.1f}] {txt}")
 
 
 def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
@@ -31,6 +70,176 @@ def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
     data = pdf_fp.read_bytes()
     h = hashlib.sha256(data).hexdigest()
     return h[:n_hex]
+
+
+def extract_text_layer_hints(
+    *,
+    doc: pymupdf.Document,
+    image_height: int,
+    image_width: int,
+    max_chars: int = 2500,
+    max_lines_per_section: int = 25,
+    page_index: int,
+) -> str | None:
+    """Extract layout-aware text layer hints from a PDF page.
+
+    NB:
+      - Uses get_text("dict") for per-line positions and font sizes
+      - Converts PDF coordinates to rendered PNG pixel coords using image dims
+      - Produces a compact digest: headings/header/footer/top/bottom body
+      - Adds optional column x-peaks from word positions
+
+    Parameters
+    ----------
+    doc
+        The PyMuPDF document.
+    image_height
+        The rendered image height in pixels.
+    image_width
+        The rendered image width in pixels.
+    max_chars
+        Maximum number of characters to extract.
+    max_lines_per_section
+        Maximum number of lines to keep per section (heading, header, footer, body).
+    page_index
+        The 0-based page index.
+
+    Returns
+    -------
+    str | None
+        The extracted text layer hints, or None if no text found.
+    """
+
+    page = doc.load_page(page_index)
+
+    # Pull structured text.
+    d = page.get_text("dict")
+    blocks = d.get("blocks") if isinstance(d, dict) else None
+    if not blocks:
+        # Fallback: try plain text.
+        fallback = (page.get_text("text") or "").strip()
+        return (
+            fallback[:max_chars]
+            + ("\n...[truncated]" if len(fallback) > max_chars else "")
+            if fallback
+            else None
+        )
+
+    # Coordinate conversion helpers (PDF units to pixels).
+    page_w, page_h = float(page.rect.width), float(page.rect.height)
+    sx, sy = float(image_width) / page_w, float(image_height) / page_h
+
+    # Collect line items: (y0, x0, max_font_size, text).
+    lines: list[tuple[float, float, float, str]] = []
+    for b in blocks:
+        if b.get("type") != 0:  # 0 = text block
+            continue
+        for ln in b.get("lines", []):
+            spans = ln.get("spans", [])
+
+            # Join span texts in order.
+            text = " ".join("".join(s.get("text", "") for s in spans).split())
+            if not text:
+                continue
+
+            # Font size heuristic: take max span size in the line.
+            max_size = max((float(s.get("size", 0.0)) for s in spans), default=0.0)
+            bbox = ln.get("bbox") or b.get("bbox")
+            x0, y0 = (float(bbox[0]), float(bbox[1])) if bbox else (0.0, 0.0)
+            lines.append((y0, x0, max_size, text))
+
+    if not lines:
+        return None
+
+    # Stable visual order.
+    lines.sort(key=lambda t: (t[0], t[1]))
+
+    # Identify regions by y band (in PDF coordinates).
+    header_y, footer_y = 0.08 * page_h, 0.92 * page_h
+    header = [t for t in lines if t[0] <= header_y]
+    footer = [t for t in lines if t[0] >= footer_y]
+    body = [t for t in lines if header_y < t[0] < footer_y]
+
+    # Heading candidates: pick top font sizes (percentile-ish) without heavy heuristics.
+    sizes = sorted([t[2] for t in lines if t[2] > 0.0])
+    p90 = sizes[int(0.90 * (len(sizes) - 1))] if sizes else 0.0
+
+    # Column x-peaks (optional): helps multi-column reading order.
+    col_peaks: list[float] = []
+    words = page.get_text("words") or []
+    if words:
+        # words: (x0, y0, x1, y1, "word", block_no, line_no, word_no).
+        bin_w = 20.0
+        xs = [float(w[0]) for w in words if len(w) >= 1]
+        bins = [int(x // bin_w) for x in xs]
+        top_bins = [b for b, _ in Counter(bins).most_common(3)]
+        col_peaks = [b * bin_w for b in top_bins]
+
+    out = [
+        f"PAGE_TEXT_LAYER_DIGEST dims={image_width}x{image_height}px lines={len(lines)}"
+    ]
+    if col_peaks:
+        out.append(
+            f"COLUMN_X0_PEAKS_PX={', '.join(f'{p:.1f}' for p in [p * sx for p in col_peaks])}"
+        )
+
+    _add_section_for_text_layer_hint(
+        items=sorted(
+            [t for t in lines if t[2] >= max(p90, 11.5)],
+            key=lambda t: (-t[2], t[0], t[1]),
+        ),
+        limit=min(12, max_lines_per_section),
+        out=out,
+        title="HEADINGS_CANDIDATES",
+        sx=sx,
+        sy=sy,
+    )
+    _add_section_for_text_layer_hint(
+        items=header,
+        limit=min(10, max_lines_per_section),
+        out=out,
+        title="HEADER_CANDIDATES",
+        sx=sx,
+        sy=sy,
+    )
+    _add_section_for_text_layer_hint(
+        items=footer,
+        limit=min(10, max_lines_per_section),
+        out=out,
+        title="FOOTER_CANDIDATES",
+        sx=sx,
+        sy=sy,
+    )
+    _add_section_for_text_layer_hint(
+        items=body[:max_lines_per_section],
+        limit=max_lines_per_section,
+        out=out,
+        title="TOP_BODY_LINES",
+        sx=sx,
+        sy=sy,
+    )
+    _add_section_for_text_layer_hint(
+        items=body[-max_lines_per_section:],
+        limit=max_lines_per_section,
+        out=out,
+        title="BOTTOM_BODY_LINES",
+        sx=sx,
+        sy=sy,
+    )
+
+    # Small raw excerpt fallback (kept short).
+    if raw := (page.get_text("text") or "").strip():
+        raw = re.sub(r"[ \t]+", " ", raw)
+        raw = re.sub(r"\n{3,}", "\n\n", raw)
+        out.append("## RAW_TEXT_EXCERPT")
+        out.append(raw[:600].rstrip() + ("\n...[truncated]" if len(raw) > 600 else ""))
+
+    hint = "\n".join(out).strip()
+    return (
+        hint[:max_chars].rstrip() + "\n...[truncated]"
+        if len(hint) > max_chars
+        else hint
+    )
 
 
 def get_page_dimensions(doc: pymupdf.Document, page_index: int) -> tuple[float, float]:
@@ -206,3 +415,38 @@ def render_page_to_png(
     pix.set_dpi(dpi, dpi)
     output_png_fp.parent.mkdir(parents=True, exist_ok=True)
     pix.save(str(output_png_fp))
+
+
+def validate_page_count(
+    *, doc: pymupdf.Document, end_page: Optional[int], start_page: int
+) -> tuple[int, int]:
+    """Validate start and end page against document page count.
+
+    Parameters
+    ----------
+    doc
+        The PyMuPDF document.
+    end_page
+        0-based end page (exclusive).
+    start_page
+        0-based start page (inclusive).
+
+    Returns
+    -------
+    tuple[int, int]
+        The document page count and resolved end page.
+
+    Raises
+    ------
+    ValueError
+        If start_page or end_page are out of bounds.
+    """
+
+    page_count = doc.page_count
+    if end_page is None:
+        end_page = page_count
+    if not 0 <= start_page <= page_count:
+        raise ValueError(f"start_page must be in [0, {page_count}]")
+    if not (0 <= end_page <= page_count) or end_page < start_page:
+        raise ValueError(f"end_page must be in [start_page, {page_count}]")
+    return page_count, end_page

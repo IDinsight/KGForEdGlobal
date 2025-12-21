@@ -1,12 +1,12 @@
-"""This module contains the entry point for converting raw PDF pages into a structural,
-canonical Intermediate Representation (IR).
+"""This module contains the entry point for extracting structural page Intermediate
+Representations (IRs) from raw PDF pages.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_canonical_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en-TZ -l sw-TZ -l fr -l zh-Hans -l ar -o ../results
-python src/skg/entries/extract_canonical_ir.py ../data/uganda/uganda.pdf -c Uganda -y 2016 -l en-US -o ../results
-python src/skg/entries/extract_canonical_ir.py ../data/zambia/zambia.pdf -c Zambia -y 2024 -l en-US -o ../results
-python src/skg/entries/extract_canonical_ir.py ../data/ghana/ghana.pdf -c Ghana -y 2019 -l en-US -o ../results
+python src/skg/entries/extract_page_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en-TZ -l sw-TZ -l fr -l zh-Hans -l ar -o ../results
+python src/skg/entries/extract_page_ir.py ../data/uganda/uganda.pdf -c Uganda -y 2016 -l en-US -o ../results
+python src/skg/entries/extract_page_ir.py ../data/zambia/zambia.pdf -c Zambia -y 2024 -l en-US -o ../results
+python src/skg/entries/extract_page_ir.py ../data/ghana/ghana.pdf -c Ghana -y 2019 -l en-US -o ../results
 """
 
 # Standard Library
@@ -34,43 +34,42 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.ir.schemas import PageIR
-from skg.ir.utils import ExtractionDirs, create_extraction_dirs
+from skg.page_ir.schemas import PageIR
+from skg.page_ir.utils import PageIRExtractionDirs, create_page_ir_extraction_dirs
 from skg.schemas import ExtractionRunIR
 from skg.utils.constants import PageBoundaryState
 from skg.utils.general import write_to_json
 from skg.utils.openai_ import extract_page_ir
 from skg.utils.pdf import (
     compute_doc_key,
+    extract_text_layer_hints,
     is_mostly_blank,
     read_png_dimensions,
     render_page_to_png,
+    validate_page_count,
 )
-
-assert (
-    sys.version_info.major >= 3 and sys.version_info.minor >= 13
-), "SenegalKG requires at least Python 3.13!"
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
 
 
-def extract_stage_1(
+def extract_page_by_page(
     *,
     country: str,
     doc: pymupdf.Document,
     doc_key: str,
     dpi: int,
     end_page: int,
-    extraction_dirs: ExtractionDirs,
+    extraction_dirs: PageIRExtractionDirs,
     languages: list[str],
     model: str,
     overwrite: bool,
     pdf_name: str,
     start_page: int,
+    use_text_layer_hints: bool,
     year: Optional[int],
 ) -> None:
-    """Perform stage 1 extraction of PageIR components from the PDF document.
+    """Perform page-by-page extraction of PageIR components from the PDF document.
 
     Parameters
     ----------
@@ -96,6 +95,8 @@ def extract_stage_1(
         The PDF filename.
     start_page
         0-based start page (inclusive).
+    use_text_layer_hints
+        Whether to extract and use text layer hints from the PDF during extraction.
     year
         Document year (optional; overrides any inferred year).
     """
@@ -134,6 +135,16 @@ def extract_stage_1(
                 model=model,
                 page_index=page_index,
                 png_fp=png_fp,
+                text_layer_hints=(
+                    extract_text_layer_hints(
+                        doc=doc,
+                        image_height=image_height,
+                        image_width=image_width,
+                        page_index=page_index,
+                    )
+                    if use_text_layer_hints
+                    else None
+                ),
                 year=year,
             )
         page_ir.coord_space = "px"
@@ -158,8 +169,10 @@ def persist_extraction_run(
     languages: list[str],
     model: str,
     output_dir: Path,
+    overwrite: bool,
     start_page: int,
-) -> tuple[str, ExtractionDirs, ExtractionRunIR]:
+    use_text_layer_hints: bool,
+) -> tuple[str, PageIRExtractionDirs, ExtractionRunIR]:
     """Persist extraction run metadata.
 
     Parameters
@@ -178,8 +191,12 @@ def persist_extraction_run(
         OpenAI model for page IR extraction.
     output_dir
         Output directory root.
+    overwrite
+        Specifies whether to overwrite existing per-page artifacts.
     start_page
         0-based start page (inclusive).
+    use_text_layer_hints
+        Whether to extract and use text layer hints from the PDF during extraction.
 
     Returns
     -------
@@ -188,7 +205,9 @@ def persist_extraction_run(
     """
 
     doc_key = compute_doc_key(n_hex=64, pdf_fp=pdf_fp)
-    extraction_dirs = create_extraction_dirs(doc_key=doc_key, output_dir=output_dir)
+    extraction_dirs = create_page_ir_extraction_dirs(
+        doc_key=doc_key, output_dir=output_dir
+    )
     extraction_run = ExtractionRunIR(
         extra={
             "country": country,
@@ -197,7 +216,9 @@ def persist_extraction_run(
             "end_page_cli": end_page,  # Keep original CLI value (may be None)
             "languages": languages,
             "pdf_name": pdf_fp.name,
+            "overwrite": overwrite,
             "start_page": start_page,
+            "use_text_layer_hints": use_text_layer_hints,
         },
         models=[model],
         pipeline_version="0.1",
@@ -211,41 +232,6 @@ def persist_extraction_run(
     logger.info(f"Extraction directory: {extraction_dirs.root}")
 
     return doc_key, extraction_dirs, extraction_run
-
-
-def validate_page_count(
-    *, doc: pymupdf.Document, end_page: Optional[int], start_page: int
-) -> tuple[int, int]:
-    """Validate start and end page against document page count.
-
-    Parameters
-    ----------
-    doc
-        The PyMuPDF document.
-    end_page
-        0-based end page (exclusive).
-    start_page
-        0-based start page (inclusive).
-
-    Returns
-    -------
-    tuple[int, int]
-        The document page count and resolved end page.
-
-    Raises
-    ------
-    ValueError
-        If start_page or end_page are out of bounds.
-    """
-
-    page_count = doc.page_count
-    if end_page is None:
-        end_page = page_count
-    if not 0 <= start_page <= page_count:
-        raise ValueError(f"start_page must be in [0, {page_count}]")
-    if not (0 <= end_page <= page_count) or end_page < start_page:
-        raise ValueError(f"end_page must be in [start_page, {page_count}]")
-    return page_count, end_page
 
 
 @cli.command()
@@ -262,7 +248,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
     country: str = typer.Option(
         ..., "--country", "-c", help="The country associated with the PDF document."
     ),
-    dpi: int = typer.Option(200, "--dpi", help="Render DPI for page images."),
+    dpi: int = typer.Option(250, "--dpi", help="Render DPI for page images."),
     languages: list[str] = typer.Option(
         ...,
         "--language",
@@ -276,16 +262,21 @@ def extract(  # pylint: disable=too-many-positional-arguments
         help="OpenAI model for page IR extraction.",
     ),
     output_dir: Path = typer.Option(
-        Path("./results"), "--output_dir", "-o", help="Output directory root."
+        Path("./results"), "--output-dir", "-o", help="Output directory root."
     ),
     start_page: int = typer.Option(
-        0, "--start_page", "-s", help="0-based start page (inclusive)."
+        0, "--start-page", "-s", help="0-based start page (inclusive)."
     ),
     end_page: Optional[int] = typer.Option(
-        None, "--end_page", "-e", help="0-based end page (exclusive). Default: to end."
+        None, "--end-page", "-e", help="0-based end page (exclusive). Default: to end."
     ),
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Overwrite existing per-page artifacts."
+    ),
+    use_text_layer_hints: bool = typer.Option(
+        False,
+        "--use-text-layer-hints",
+        help="Whether to extract and use text layer hints from the PDF during extraction.",
     ),
     year: Optional[int] = typer.Option(
         None,
@@ -294,13 +285,14 @@ def extract(  # pylint: disable=too-many-positional-arguments
         help="Document year (optional; overrides any inferred year).",
     ),
 ) -> None:
-    """Extract canonical curriculum intermediate representation (Layer A) from a PDF.
+    """Extract structured page-by-page IRs from raw PDF pages.
 
     The process is as follows:
 
     1. Persist extraction run metadata so we always have an extraction run record.
     2. Validate page range.
-    3. ???
+    3. Extract page-by-page IR components.
+    4. Finalize extraction run record.
 
     Parameters
     ----------
@@ -322,6 +314,8 @@ def extract(  # pylint: disable=too-many-positional-arguments
         0-based end page (exclusive). Default: to end.
     overwrite
         Overwrite existing per-page artifacts.
+    use_text_layer_hints
+        Whether to extract and use text layer hints from the PDF during extraction.
     year
         Document year (optional; overrides any inferred year).
     """
@@ -339,8 +333,10 @@ def extract(  # pylint: disable=too-many-positional-arguments
         languages=languages,
         model=model,
         output_dir=output_dir,
+        overwrite=overwrite,
         pdf_fp=pdf_fp,
         start_page=start_page,
+        use_text_layer_hints=use_text_layer_hints,
     )
 
     try:
@@ -351,7 +347,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
             )
 
             # 3.
-            extract_stage_1(
+            extract_page_by_page(
                 country=country,
                 doc=doc,
                 doc_key=doc_key,
@@ -363,9 +359,9 @@ def extract(  # pylint: disable=too-many-positional-arguments
                 overwrite=overwrite,
                 pdf_name=pdf_fp.name,
                 start_page=start_page,
+                use_text_layer_hints=use_text_layer_hints,
                 year=year,
             )
-
         extraction_run.extra["status"] = "success"
         logger.success("IR extraction completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
@@ -377,6 +373,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
         }
         raise
     finally:
+        # 4.
         extraction_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
             extraction_dirs.root / "extraction_run.json",

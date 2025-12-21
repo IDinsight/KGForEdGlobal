@@ -1,27 +1,37 @@
-"""This module contains schemas used for the Intermediate Representation (IR) of
-the document extraction process.
+"""This module contains schemas used for extracting page Intermediate Representations
+(IRs).
 """
 
 # Standard Library
-from typing import Literal, Optional, Union
+from typing import Annotated, Literal, Optional, Union
 
 # Third Party Library
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 # Package Library
-from skg.utils.constants import (
-    BBox,
-    BlockType,
-    ContentRole,
-    ItemBoundary,
-    LanguageField,
-    PageBoundaryState,
-    TextStyle,
-)
+from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.utils.general import validate_bcp47
+
+# Common fields with descriptions.
+BBox = Annotated[
+    list[float],
+    Field(
+        min_length=4,
+        max_length=4,
+        description="Bounding box [x0, y0, x1, y1] in absolute pixels (px) relative to the image dimensions.",
+    ),
+]
+BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
+LanguageField = Annotated[
+    BCP47Str,
+    Field(
+        description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
+    ),
+]
 
 
 # Schemas for primitives.
-class BaseIRModel(BaseModel):
+class BaseModelPageIR(BaseModel):
     """Base model that enforces 'additionalProperties: false' in JSON schema for
     compatibility with OpenAI Structured Outputs.
     """
@@ -30,42 +40,33 @@ class BaseIRModel(BaseModel):
 
 
 # Schemas for component models.
-class TextUnit(BaseIRModel):
+class TextUnit(BaseModelPageIR):
     """The atomic unit of text extraction. Represents a span of text with consistent
     styling.
     """
 
-    bbox: Optional[BBox] = None
-    ends_with_terminal_punctuation: bool = Field(
-        True,
-        description="True if the text ends with ., ?, or !. False if it ends with a hyphen or mid-sentence.",
-    )
-    language: LanguageField = Field(
-        default="unk",
-        description="BCP-47 language code detected for this specific text block.",
-    )
-    styles: list[TextStyle] = Field(
-        default_factory=list,
-        description="Visual styles applied to this text. Use 'bold' for headers/emphasis.",
-    )
+    language: LanguageField = Field(..., description="BCP-47 language code.")
     text: str = Field(
         ...,
-        description="Verbatim text content from the page. Do NOT fix typos or complete cut-off sentences.",
+        description="Verbatim text content. Do NOT fix typos or complete cut-off sentences.",
+    )
+    text_en: Optional[str] = Field(
+        default=None,
+        description="English translation of the text content. This is populated by a later translation pass and should be null during extraction.",
     )
 
 
-class TableCell(BaseIRModel):
+class TableCell(BaseModelPageIR):
     """A single cell within a table grid."""
 
-    bbox: Optional[BBox] = None
     col_span: int = Field(1, ge=1, description="Number of columns this cell spans.")
     row_span: int = Field(1, ge=1, description="Number of rows this cell spans.")
     text: Optional[TextUnit] = Field(
-        None, description="The content of the cell. Null if empty."
+        None, description="The content of the cell. Null if visually empty."
     )
 
 
-class TableRow(BaseIRModel):
+class TableRow(BaseModelPageIR):
     """A single horizontal row in a table."""
 
     cells: list[TableCell] = Field(
@@ -73,10 +74,10 @@ class TableRow(BaseIRModel):
     )
 
 
-class CurriculumTable(BaseIRModel):
+class CurriculumTable(BaseModelPageIR):
     """Represents a tabular grid extracted from the page."""
 
-    bbox: Optional[BBox] = None
+    bbox: BBox
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
         description="Status of the table's vertical continuity. 'truncated' if bottom border is missing; 'resumed' if top border is missing.",
@@ -105,7 +106,7 @@ class CurriculumTable(BaseIRModel):
     )
 
 
-class ListItem(BaseIRModel):
+class ListItem(BaseModelPageIR):
     """A single item in a list or outline."""
 
     marker: str = Field(
@@ -115,10 +116,10 @@ class ListItem(BaseIRModel):
     text: TextUnit = Field(..., description="The content of the list item.")
 
 
-class CurriculumBlock(BaseIRModel):
+class CurriculumBlock(BaseModelPageIR):
     """A grouping of text content (paragraph, heading, or list)."""
 
-    bbox: Optional[BBox] = None
+    bbox: BBox
     block_type: BlockType = Field(..., description="The visual structure of the block.")
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
@@ -135,27 +136,14 @@ class CurriculumBlock(BaseIRModel):
         None,
         description="Explicit curriculum code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim.",
     )
-    role_hint: Optional[ContentRole] = Field(
-        None,
-        description=(
-            "Non-authoritative hint about the logical role of this block (e.g., 'section_header', "
-            "'teacher_guidance', 'list_item'). Leave null if unsure."
-        ),
-    )
-    role_confidence: Optional[float] = Field(
-        None,
-        ge=0.0,
-        le=1.0,
-        description="Confidence for role_hint in [0,1]. Null if role_hint is null.",
-    )
     text: Optional[TextUnit] = Field(
         None,
         description="The text content (for headings/paragraphs). Must be null when block_type indicates a list.",
     )
 
 
-# Schemas for top-level IR models.
-class PageIR(BaseIRModel):
+# Main schema.
+class PageIR(BaseModelPageIR):
     """Intermediate Representation of a single PDF page."""
 
     boundary_state: PageBoundaryState = Field(
