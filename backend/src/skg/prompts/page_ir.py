@@ -74,9 +74,13 @@ def extract_page_ir_from_pdf_age(
 7. Do not output empty tables; if you see a table, it must have at least one row.
 8. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
 9. Do NOT create blocks that represent the whole page or background. Every block/table must correspond to actual visible content (text or table grid).
+10. Do not emit any block that contains no content. A block must contain text OR list_items OR local_code.
+11. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
+12. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts; treat them as paragraph/heading/caption.
+13. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
 
 ## BLOCK CLASSIFICATION
-- **artifact**: Headers, footers, page numbers; certificates/ISBN/publisher blocks etc. are paragraphs
+- **artifact**: Headers, footers, page numbers;
 - **caption**: Labels for tables/figures (e.g., "Table 1").
 - **heading**: Section titles.
 - **list**: Bulleted/numbered items (use `list_items`, set `text=null`).
