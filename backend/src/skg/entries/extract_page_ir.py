@@ -123,9 +123,7 @@ def extract_page_by_page(
 
         if is_mostly_blank(png_fp=png_fp):
             logger.warning(f"Page {page_index} looks blank; skipping model call.")
-            page_ir = PageIR(
-                boundary_state=PageBoundaryState.STANDALONE, coord_space="px", items=[]
-            )
+            page_ir = PageIR(boundary_state=PageBoundaryState.STANDALONE, items=[])
         else:
             page_ir = extract_page_ir(
                 country=country,
@@ -151,9 +149,9 @@ def extract_page_by_page(
         page_ir.doc_key = doc_key
         page_ir.dpi = dpi
         page_ir.image_height = image_height
+        page_ir.image_width = image_width
         page_ir.page_index = page_index
         page_ir.pdf_name = pdf_name
-        page_ir.image_width = image_width
 
         # Save PageIR JSON.
         write_to_json(page_ir_fp, page_ir.model_dump(mode="json"))
