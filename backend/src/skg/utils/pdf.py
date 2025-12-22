@@ -72,6 +72,223 @@ def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
     return h[:n_hex]
 
 
+def crop_pdf_to_bottom(
+    *,
+    bbox: list[float],
+    desired_padding_inches: float = 0.25,
+    doc: pymupdf.Document,
+    min_height_px: int = 400,
+    page_index: int,
+    output_png_fp: Path,
+    render_dpi: int,
+    return_cropped_image: bool = False,
+) -> Optional[Image.Image]:
+    """Crops a PDF page from a pixel y0 coordinate down to the bottom, ensuring a
+    minimum crop height.
+
+    The process is as follows:
+
+    1. Load the page and calculate dimensions in pixels.
+    2. Determine the crop start (y0) in pixels, applying padding.
+    3. Enforce the minimum height constraint --> If the crop is too short, push the y0
+        start point up.
+    4. Convert coordinates to PDF points.
+    5. Render and save.
+
+    Parameters
+    ----------
+    bbox
+        The bbox [x0, y0, x1, y1] in pixel units from the vision model.
+    desired_padding_inches
+        Amount of extra padding (in inches) to add to the top of the crop.
+    doc
+        The opened PDF document.
+    min_height_px
+        Minimum height of the cropped image in pixels. NB: For text continuity checks,
+        300 - 500 px is usually plenty at 150 - 250 DPI. For table continuity checks,
+        something like 700 - 1000 px is recommended because we often need to see
+        repeated header rows, at least 2 - 3 body rows, the tail of a multi-line cell,
+        etc.
+    page_index
+        0-based index of the page.
+    output_png_fp
+        Path to save the resulting PNG crop.
+    render_dpi
+        The DPI used to generate the PNG the vision model saw.
+    return_cropped_image
+        Whether to return the cropped image object.
+
+    Returns
+    -------
+    Optional[Image.Image]
+        The cropped PIL Image if requested, else None.
+
+    Raises
+    ------
+    ValueError
+        If the computed crop height is invalid.
+    """
+
+    # 1.
+    page = doc.load_page(page_index)
+    page_rect = page.rect
+    px_to_pt = 72.0 / render_dpi
+    pt_to_px = render_dpi / 72.0
+    page_height_px = page_rect.height * pt_to_px
+
+    # 2. We subtract padding because we are moving "up" the page.
+    padding_px = int(desired_padding_inches * render_dpi)
+    y0_px = bbox[1] - padding_px
+
+    # 3. We want the crop (from y0 to bottom) to be at least min_height_px. Therefore,
+    # y0 must not be lower than (page_height - min_height).
+    # Logic: y0_px = min(y0_px, image_h_px - min_height_px)
+    max_allowed_y0 = page_height_px - min_height_px
+    y0_px = min(y0_px, max_allowed_y0)
+
+    # Clamp to 0 to ensure we don't go off the top of the page.
+    y0_px = max(0.0, y0_px)
+
+    # 4.
+    y0_pt = y0_px * px_to_pt
+
+    # Define crop rect: (0, y0_pt, full_width, full_height).  NB: We use
+    # page_rect.height for y1 to go to the very bottom.
+    crop_rect = pymupdf.Rect(0, y0_pt, page_rect.width, page_rect.height)
+
+    # Validation: Ensure y0 isn't below the physical bottom of the page.
+    if y0_pt >= page_rect.height:
+        raise ValueError(
+            f"y0 ({y0_pt}pt) is beyond page height ({page_rect.height}pt)."
+        )
+
+    # 5.
+    scale = render_dpi / 72.0
+    mat = pymupdf.Matrix(scale, scale)
+    pix = page.get_pixmap(matrix=mat, clip=crop_rect, alpha=False)
+
+    # 6.
+    output_png_fp.parent.mkdir(parents=True, exist_ok=True)
+    pix.save(str(output_png_fp))
+
+    # 7.
+    if return_cropped_image:
+        if pix.n < 4:
+            mode = "RGB" if pix.n == 3 else "L"
+        else:
+            mode = "RGBA"
+        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+        return img
+
+    return None
+
+
+def crop_pdf_to_top(
+    *,
+    bbox: list[float],
+    desired_padding_inches: float = 0.25,
+    doc: pymupdf.Document,
+    min_height_px: int = 400,
+    page_index: int,
+    output_png_fp: Path,
+    render_dpi: int,
+    return_cropped_image: bool = False,
+) -> Optional[Image.Image]:
+    """Crops a PDF page from the top down to a pixel y1 coordinate, ensuring a
+    minimum crop height.
+
+    The process is as follows:
+
+    1. Load the page and calculate dimensions in pixels.
+    2. Determine the crop end (y1) in pixels, applying padding.
+    3. Enforce the minimum height constraint:
+       If the crop is too short, push the y1 end point down.
+    4. Convert coordinates to PDF points.
+    5. Render and save.
+
+    Parameters
+    ----------
+    bbox
+        The bbox [x0, y0, x1, y1] in pixel units from the vision model.
+    desired_padding_inches
+        Amount of extra padding (in inches) to add to the bottom of the crop.
+    doc
+        The opened PDF document.
+    min_height_px
+        Minimum height of the cropped image in pixels. NB: For text continuity checks,
+        300 - 500 px is usually plenty at 150 - 250 DPI. For table continuity checks,
+        something like 700 - 1000 px is recommended because we often need to see
+        repeated header rows, at least 2 - 3 body rows, the tail of a multi-line cell,
+        etc.
+    page_index
+        0-based index of the page.
+    output_png_fp
+        Path to save the resulting PNG crop.
+    render_dpi
+        The DPI used to generate the PNG the vision model saw.
+    return_cropped_image
+        Whether to return the cropped image object.
+
+    Returns
+    -------
+    Optional[Image.Image]
+        The cropped PIL Image if requested, else None.
+
+    Raises
+    ------
+    ValueError
+        If the computed y1 is invalid.
+    """
+
+    # 1.
+    page = doc.load_page(page_index)
+    page_rect = page.rect
+    px_to_pt = 72.0 / render_dpi
+    pt_to_px = render_dpi / 72.0
+    page_height_px = page_rect.height * pt_to_px
+
+    # 2. We add padding because we are moving "down" the page.
+    padding_px = int(desired_padding_inches * render_dpi)
+    y1_px = bbox[3] + padding_px
+
+    # 3. We want the crop (from 0 to y1) to be at least min_height_px.
+    # Logic: y1_px = max(y1_px, min_height_px)
+    y1_px = max(y1_px, min_height_px)
+
+    # Clamp to page height so we don't try to crop off the bottom
+    y1_px = min(y1_px, page_height_px)
+
+    # 4.
+    y1_pt = y1_px * px_to_pt
+
+    # Define crop rect: (0, 0, full_width, y1_pt).
+    crop_rect = pymupdf.Rect(0, 0, page_rect.width, y1_pt)
+
+    # Validation: Ensure y1 is positive and actually captures content.
+    if y1_pt <= 0:
+        raise ValueError(f"y1 ({y1_pt}pt) must be > 0. Skipping crop.")
+
+    # 5.
+    scale = render_dpi / 72.0
+    mat = pymupdf.Matrix(scale, scale)
+    pix = page.get_pixmap(matrix=mat, clip=crop_rect, alpha=False)
+
+    # 6.
+    output_png_fp.parent.mkdir(parents=True, exist_ok=True)
+    pix.save(str(output_png_fp))
+
+    # 7.
+    if return_cropped_image:
+        if pix.n < 4:
+            mode = "RGB" if pix.n == 3 else "L"
+        else:
+            mode = "RGBA"
+        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+        return img
+
+    return None
+
+
 def extract_text_layer_hints(
     *,
     doc: pymupdf.Document,
@@ -395,7 +612,7 @@ def read_png_dimensions(*, png_fp: Path) -> tuple[int, int]:
 def render_page_to_png(
     *,
     doc: pymupdf.Document,
-    dpi: int = 200,
+    dpi: int,
     page_index: int,
     output_png_fp: Path,
 ) -> None:
