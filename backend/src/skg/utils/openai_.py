@@ -406,7 +406,9 @@ def extract_page_ir(
     )
 
 
-def validate_continuity_verdict(verdict: PageIRContinuityVerdict) -> None:
+def validate_continuity_verdict(  # pylint: disable=R1260
+    verdict: PageIRContinuityVerdict,
+) -> None:
     """Validate the semantic consistency of a continuity verdict.
 
     Parameters
@@ -453,6 +455,31 @@ def validate_continuity_verdict(verdict: PageIRContinuityVerdict) -> None:
         # Allow 'unclear' when false, but table/text is usually inconsistent.
         raise QualityError("is_continuation=false but continuation_kind is table/text.")
 
+    # 2b. If this is NOT a continuation, it makes no sense to suggest
+    # 'truncated'/'resumed' boundaries on the boundary items.
+    if not verdict.is_continuation and (
+        verdict.set_prev_item_boundary in (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED)
+        or verdict.set_next_item_boundary
+        in (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED)
+    ):
+        raise QualityError(
+            "is_continuation=false but verdict suggests truncated/resumed item boundaries."
+        )
+
+    # 2c. If this IS a text continuation and the model proposes explicit item boundaries,
+    # they should not both be COMPLETE.
+    if (
+        verdict.is_continuation
+        and verdict.continuation_kind == PageContinuationKind.TEXT
+        and verdict.set_prev_item_boundary is not None
+        and verdict.set_next_item_boundary is not None
+        and verdict.set_prev_item_boundary == ItemBoundary.COMPLETE
+        and verdict.set_next_item_boundary == ItemBoundary.COMPLETE
+    ):
+        raise QualityError(
+            "Verdict claims text continuation but suggests setting both boundaries to COMPLETE."
+        )
+
     # 3. Logic: If continuation_kind is TABLE, we generally expect boundaries to be
     # modified.
     if (
@@ -470,30 +497,19 @@ def validate_continuity_verdict(verdict: PageIRContinuityVerdict) -> None:
             "'truncated'/'resumed' boundaries."
         )
 
-    # 4. Pairwise-safe boundary_state suggestions.
-    if verdict.set_prev_boundary_state and verdict.set_prev_boundary_state not in (
-        PageBoundaryState.STANDALONE,
-        PageBoundaryState.CONTINUES_TO_NEXT,
-    ):
+    # 4. Pairwise-safe boundary_state suggestions. NB: Verification outputs may type
+    # these as strings (Literal) or Enums; handle both.
+    if verdict.set_prev_boundary_state is not None and getattr(
+        verdict.set_prev_boundary_state, "value", verdict.set_prev_boundary_state
+    ) not in ("standalone", "to_next"):
         raise QualityError(
             "set_prev_boundary_state must be standalone or to_next (pairwise-safe)."
         )
-    if verdict.set_next_boundary_state and verdict.set_next_boundary_state not in (
-        PageBoundaryState.STANDALONE,
-        PageBoundaryState.CONTINUES_FROM_PREV,
-    ):
+    if verdict.set_next_boundary_state is not None and getattr(
+        verdict.set_next_boundary_state, "value", verdict.set_next_boundary_state
+    ) not in ("standalone", "from_prev"):
         raise QualityError(
             "set_next_boundary_state must be standalone or from_prev (pairwise-safe)."
-        )
-
-    # 5. repeats_header only makes sense for table continuations.
-    if verdict.set_next_table_repeats_header is not None and not (
-        verdict.is_continuation
-        and verdict.continuation_kind == PageContinuationKind.TABLE
-    ):
-        raise QualityError(
-            "set_next_table_repeats_header provided but verdict is not a table "
-            "continuation."
         )
 
 

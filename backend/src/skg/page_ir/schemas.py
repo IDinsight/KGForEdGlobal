@@ -33,6 +33,8 @@ LanguageField = Annotated[
         description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
     ),
 ]
+NextBoundaryStateSuggestion = Literal["standalone", "from_prev"]
+PrevBoundaryStateSuggestion = Literal["standalone", "to_next"]
 
 
 # Schemas for primitives.
@@ -230,10 +232,10 @@ class PageIRContinuityVerdict(BaseModelPageIR):
     rationale: str = Field(..., description="Explanation for the verdict.")
 
     # Minimal suggested edits (null means leave as-is).
-    set_prev_boundary_state: Optional[PageBoundaryState] = Field(
+    set_prev_boundary_state: Optional[PrevBoundaryStateSuggestion] = Field(
         None, description="Suggested page boundary state for the previous page."
     )
-    set_next_boundary_state: Optional[PageBoundaryState] = Field(
+    set_next_boundary_state: Optional[NextBoundaryStateSuggestion] = Field(
         None, description="Suggested page boundary state for the next page."
     )
     set_prev_item_boundary: Optional[ItemBoundary] = Field(
