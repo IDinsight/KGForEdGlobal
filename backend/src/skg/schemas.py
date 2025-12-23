@@ -12,7 +12,19 @@ class ExtractionRunIR(BaseModel):
     """Pydantic model for extraction run metadata."""
 
     completed_at: Optional[datetime] = None
-    config_hash: Optional[str] = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+    models: list[str] = Field(default_factory=list)
+    pipeline_version: Optional[str] = None
+    run_id: str
+    started_at: Optional[datetime] = None
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+
+class VerificationRunIR(BaseModel):
+    """Pydantic model for verification run metadata."""
+
+    completed_at: Optional[datetime] = None
     extra: dict[str, Any] = Field(default_factory=dict)
     models: list[str] = Field(default_factory=list)
     pipeline_version: Optional[str] = None

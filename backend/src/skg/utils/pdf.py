@@ -138,7 +138,7 @@ def crop_pdf_to_bottom(
 
     # 2. We subtract padding because we are moving "up" the page.
     padding_px = int(desired_padding_inches * render_dpi)
-    y0_px = bbox[1] - padding_px
+    y0_px = bbox[3] - padding_px
 
     # 3. We want the crop (from y0 to bottom) to be at least min_height_px. Therefore,
     # y0 must not be lower than (page_height - min_height).
@@ -249,7 +249,7 @@ def crop_pdf_to_top(
 
     # 2. We add padding because we are moving "down" the page.
     padding_px = int(desired_padding_inches * render_dpi)
-    y1_px = bbox[3] + padding_px
+    y1_px = bbox[1] + padding_px
 
     # 3. We want the crop (from 0 to y1) to be at least min_height_px.
     # Logic: y1_px = max(y1_px, min_height_px)

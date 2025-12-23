@@ -1,5 +1,5 @@
 """This module contains the entry point for extracting structural page Intermediate
-Representations (IRs) from raw PDF pages.
+Representations (IRs) from raw PDF pages. This is step 1.
 
 Invoke from the backend directory via:
 
@@ -102,7 +102,7 @@ def extract_page_by_page(
     """
 
     for page_index in range(start_page, end_page):
-        page_ir_fp = extraction_dirs.page_ir / f"{page_index:04d}.json"
+        page_ir_fp = extraction_dirs.page_irs / f"{page_index:04d}.json"
         png_fp = extraction_dirs.page_images / f"{page_index:04d}.png"
 
         # Always ensure the PNG exists first. We render if the file is missing OR if we
@@ -320,9 +320,9 @@ def extract(  # pylint: disable=too-many-positional-arguments
     """
 
     pdf_fp = pdf_fp.resolve()
-    output_dir = output_dir.resolve()
-    logger.info(f"Starting IR extraction process for: {pdf_fp}...")
-    logger.info(f"Outputting results to: {output_dir}")
+    extraction_dir = output_dir.resolve() / "extraction"
+    logger.info(f"Starting page IR extraction process for: {pdf_fp}...")
+    logger.info(f"Outputting extraction results to: {extraction_dir}")
 
     # 1.
     doc_key, extraction_dirs, extraction_run = persist_extraction_run(
@@ -341,7 +341,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
     try:
         with pymupdf.open(str(pdf_fp)) as doc:
             # 2.
-            page_count, end_page = validate_page_count(
+            _, end_page = validate_page_count(
                 doc=doc, end_page=end_page, start_page=start_page
             )
 
@@ -362,7 +362,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
                 year=year,
             )
         extraction_run.extra["status"] = "success"
-        logger.success("IR extraction completed successfully!")
+        logger.success("Page IR extraction completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
         extraction_run.extra["status"] = "error"
         extraction_run.extra["error"] = {

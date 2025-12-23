@@ -3,14 +3,16 @@ information from page images.
 """
 
 # Standard Library
+import json
+
 from textwrap import dedent
-from typing import Optional
+from typing import Any, Optional
 
 # Third Party Library
 from dotmap import DotMap
 
 
-def extract_page_ir_from_pdf_age(
+def extract_page_ir_from_pdf_page(
     *,
     country: str,
     image_height: int,
@@ -102,6 +104,93 @@ Requirements:
 3. Use "und" for unknown languages.
 4. If a table continues from a previous page and shows its headers again, set "repeats_header": true.
         """
+    )
+
+    return DotMap(
+        {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    )
+
+
+def verify_page_ir_pairs_from_extraction(
+    *,
+    next_item_excerpt: dict[str, Any],
+    next_page_index: int,
+    prev_item_excerpt: dict[str, Any],
+    prev_page_index: int,
+) -> DotMap:
+    """Generate the prompts for verifying PageIR pairs from the extraction step.
+
+    Parameters
+    ----------
+    next_item_excerpt
+        Excerpt of a candidate item near the TOP of page N+1 JSON.
+    next_page_index
+        The 0-based page index of the next page (N+1).
+    prev_item_excerpt
+        Excerpt of a candidate item near the BOTTOM of page N JSON.
+    prev_page_index
+        The 0-based page index of the previous page (N).
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    system_message = dedent(
+        """You are a strict PageIR continuity verifier.
+
+You will be given:
+- bottom crop of page N
+- top crop of page N+1
+- excerpt of a candidate item near the bottom of page N (from the PageIR JSON)
+- excerpt of a candidate item near the top of page N+1 (from the PageIR JSON)
+
+Task:
+1) Decide whether content continues from page N to page N+1.
+2) Propose MINIMAL continuity-metadata edits if (and only if) the existing metadata is wrong.
+
+Allowed edits (metadata only):
+- page boundary_state for each page (standalone|to_next|from_prev|both)
+- item boundary on the referenced bottom/top items (complete|truncated|resumed)
+- repeats_header on the next page table if (and only if) headers are repeated on the continuation page
+
+Rules:
+- DO NOT rewrite, move, merge, or complete text/table cells across pages.
+- DO NOT invent missing content.
+- Only change continuity metadata fields. If everything is already correct, leave all set_* fields null.
+- Return ONLY a JSON object matching the required schema. No prose.
+
+Pairwise safety rules (important):
+- You are ONLY judging the boundary between N and N+1. You cannot know about other neighbors.
+- Therefore:
+  - set_prev_boundary_state MUST be either "standalone" or "to_next" (do NOT use "both" or "from_prev").
+  - set_next_boundary_state MUST be either "standalone" or "from_prev" (do NOT use "both" or "to_next").
+
+Decision guidance:
+- Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.
+- TABLE continuation signals: same table grid continues, row text cut off at bottom then resumes at top, repeated header row (often same column labels).
+- TEXT continuation signals: sentence continues mid-thought, list numbering/bullets continue, paragraph starts mid-sentence at top.
+
+When is_continuation=true:
+- If the excerpt boundaries are NOT already correct, you should usually set:
+  - set_prev_item_boundary="truncated"
+  - set_next_item_boundary="resumed"
+- If the excerpt already shows those boundaries correctly, leave them null.
+
+When unsure, set is_continuation=false, confidence low, and leave set_* fields null.
+        """
+    )
+
+    user_message = json.dumps(
+        {
+            "prev_page_index": prev_page_index,
+            "next_page_index": next_page_index,
+            "prev_candidate_item_excerpt": prev_item_excerpt,
+            "next_candidate_item_excerpt": next_item_excerpt,
+        },
+        ensure_ascii=False,
+        indent=2,
     )
 
     return DotMap(
