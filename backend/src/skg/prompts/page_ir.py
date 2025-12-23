@@ -70,18 +70,19 @@ def extract_page_ir_from_pdf_page(
    - Correct: `"text": {{"text": "content", "language": "en"}}`
    - Incorrect: `"text": "content"`
    - Empty: If a cell is blank, set `"text": null`.
-4. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
-5. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
-6. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
-7. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
-8. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
-9. Do not output empty tables; if you see a table, it must have at least one row.
-10. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
-11. Do NOT create blocks that represent the whole page or background. Every block/table must correspond to actual visible content (text or table grid).
-12. Do not emit any block that contains no content. A block must contain text OR list_items OR local_code.
-13. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
-14. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts; treat them as paragraph/heading/caption. Section titles like ‘Table of Contents’, ‘Preface’, chapter titles, etc. are NOT artifacts; they are headings.
-15. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
+4. **TABLE COLUMN COUNT (optional)**: If you can clearly infer the number of visual columns in the table grid (from ruling/grid and headers), set `CurriculumTable.n_cols` to that integer. If unsure, omit it or set it to null.
+5. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
+6. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
+7. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
+8. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
+9. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
+10. Do not output empty tables; if you see a table, it must have at least one row.
+11. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
+12. Do NOT create blocks that represent the whole page or background. Every block/table must correspond to actual visible content (text or table grid).
+13. Do not emit any block that contains no content. A block must contain text OR list_items OR local_code.
+14. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
+15. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts; treat them as paragraph/heading/caption. Section titles like ‘Table of Contents’, ‘Preface’, chapter titles, etc. are NOT artifacts; they are headings.
+16. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
 
 ## BLOCK CLASSIFICATION
 - **artifact**: Headers, footers, page numbers;
@@ -106,6 +107,7 @@ Requirements:
 2. Set "kind": "block" or "kind": "table" for every entry.
 3. Use "und" for unknown languages.
 4. If a table continues from a previous page and shows its headers again, set "repeats_header": true. Otherwise omit it or set false.
+5. If you can confidently count the table's columns, set "n_cols".
         """
     )
 

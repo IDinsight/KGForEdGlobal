@@ -98,6 +98,14 @@ class CurriculumTable(BaseModelPageIR):
     local_code: Optional[str] = Field(
         None, description="Explicit curriculum code if present (e.g., 'Table 1.2')."
     )
+    n_cols: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Intended number of visual columns in the table grid if clearly inferable "
+            "from the ruling/grid. Omit or set null if unsure."
+        ),
+    )
     repeats_header: Optional[bool] = Field(
         None,
         description=(

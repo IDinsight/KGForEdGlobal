@@ -765,6 +765,63 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                         f"(col_span={col_span}, row_span={row_span})."
                     )
 
+        # Lightweight column-count sanity checks (ignore spans).
+        raw_widths = [len(getattr(rw, "cells", []) or []) for rw in rows]
+        raw_widths = [w for w in raw_widths if w > 0]
+        if raw_widths:
+            max_raw = max(raw_widths)
+
+            # If the model provided n_cols, ensure it can accommodate the widest row.
+            n_cols = getattr(item, "n_cols", None)
+            if n_cols is not None:
+                if not isinstance(n_cols, int):
+                    raise QualityError(
+                        f"n_cols must be an int or null at items[{i}].n_cols; "
+                        f"got {type(n_cols)}"
+                    )
+                if n_cols < 1 or n_cols > 50:
+                    raise QualityError(
+                        f"Suspicious n_cols={n_cols} at items[{i}].n_cols "
+                        f"(expected 1..50 or null)."
+                    )
+                if max_raw > n_cols:
+                    raise QualityError(
+                        f"Table at items[{i}] has a row with {max_raw} cells but "
+                        f"n_cols={n_cols}. Either increase n_cols or split/merge cells "
+                        f"to match the visual grid."
+                    )
+
+            # Detect likely collapse: header shows multiple columns but body is mostly
+            # 1 cell.
+            if 0 < header_row_count < len(raw_widths):
+                header_max = max(raw_widths[:header_row_count])
+                body_widths = raw_widths[header_row_count:]
+                if body_widths:
+                    body_sorted = sorted(body_widths)
+                    body_median = body_sorted[len(body_sorted) // 2]
+                    frac_single = sum(w == 1 for w in body_widths) / len(body_widths)
+
+                    # Strong guard against false positives (spanning label rows).
+                    if header_max >= 3 and body_median <= 1 and frac_single >= 0.60:
+                        raise QualityError(
+                            f"Table at items[{i}] likely collapsed: header shows "
+                            f"{header_max} columns, but {frac_single:.0%} of body rows "
+                            f"have 1 cell (raw widths, spans ignored). "
+                            "Split body rows into separate cells per visible column."
+                        )
+
+            # Catch wildly inconsistent widths overall (spans ignored).
+            if max_raw >= 4:
+                mode_raw, _ = Counter(raw_widths).most_common(1)[0]
+                frac_single_all = sum(w == 1 for w in raw_widths) / len(raw_widths)
+                if mode_raw == 1 and frac_single_all >= 0.70:
+                    raise QualityError(
+                        f"Table at items[{i}] appears mostly single-cell rows "
+                        f"({frac_single_all:.0%} of rows have 1 cell). This often "
+                        f"indicates the table grid was collapsed. Represent each "
+                        f"visible column as a separate cell."
+                    )
+
         # Deep table content check.
         any_content_in_table = False
         for r, row in enumerate(rows):
