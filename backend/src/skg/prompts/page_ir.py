@@ -73,13 +73,14 @@ def extract_page_ir_from_pdf_page(
 4. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
 5. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
 6. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
-7. Do not output empty tables; if you see a table, it must have at least one row.
-8. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
-9. Do NOT create blocks that represent the whole page or background. Every block/table must correspond to actual visible content (text or table grid).
-10. Do not emit any block that contains no content. A block must contain text OR list_items OR local_code.
-11. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
-12. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts; treat them as paragraph/heading/caption. Section titles like ‘Table of Contents’, ‘Preface’, chapter titles, etc. are NOT artifacts; they are headings.
-13. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
+7. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
+8. Do not output empty tables; if you see a table, it must have at least one row.
+9. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
+10. Do NOT create blocks that represent the whole page or background. Every block/table must correspond to actual visible content (text or table grid).
+11. Do not emit any block that contains no content. A block must contain text OR list_items OR local_code.
+12. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
+13. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts; treat them as paragraph/heading/caption. Section titles like ‘Table of Contents’, ‘Preface’, chapter titles, etc. are NOT artifacts; they are headings.
+14. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
 
 ## BLOCK CLASSIFICATION
 - **artifact**: Headers, footers, page numbers;
@@ -91,7 +92,8 @@ def extract_page_ir_from_pdf_page(
 ## BOUNDARIES
 - Item `boundary`: Use "resumed" (top missing), "truncated" (bottom missing), or "complete".
 - Page `boundary_state`: Use "from_prev", "to_next", "both", or "standalone".
-- If the first content block begins without capitalization/begins mid-sentence or as a continuation list, mark boundary_state=from_prev and set the first block boundary to resumed.
+- If the top-most content clearly starts mid-sentence/mid-row/mid-list (e.g., begins with punctuation, trailing clause, continued numbering), set boundary_state="from_prev" and that item's boundary="resumed".
+- If the bottom-most content is clearly cut off at the page bottom (mid-sentence, mid-cell, list continues), set boundary_state="to_next" and that item's boundary="truncated".
         """
     )
 
@@ -102,7 +104,7 @@ Requirements:
 1. Identify blocks and tables from the {image_width}x{image_height} image.
 2. Set "kind": "block" or "kind": "table" for every entry.
 3. Use "und" for unknown languages.
-4. If a table continues from a previous page and shows its headers again, set "repeats_header": true.
+4. If a table continues from a previous page and shows its headers again, set "repeats_header": true. Otherwise omit it or set false.
         """
     )
 
@@ -151,15 +153,19 @@ Task:
 2) Propose MINIMAL continuity-metadata edits if (and only if) the existing metadata is wrong.
 
 Allowed edits (metadata only):
-- page boundary_state for each page (standalone|to_next|from_prev|both)
+- set_prev_boundary_state: (standalone|to_next)
+- set_next_boundary_state: (standalone|from_prev)
 - item boundary on the referenced bottom/top items (complete|truncated|resumed)
 - repeats_header on the next page table if (and only if) headers are repeated on the continuation page
 
 Rules:
 - DO NOT rewrite, move, merge, or complete text/table cells across pages.
 - DO NOT invent missing content.
+- Do NOT set repeats_header=true unless it is the SAME table continuing across the boundary.
 - Only change continuity metadata fields. If everything is already correct, leave all set_* fields null.
 - Return ONLY a JSON object matching the required schema. No prose.
+- Always include a short rationale string.
+- Use continuation_kind="unclear" when uncertain.
 
 Pairwise safety rules (important):
 - You are ONLY judging the boundary between N and N+1. You cannot know about other neighbors.
@@ -178,7 +184,7 @@ When is_continuation=true:
   - set_next_item_boundary="resumed"
 - If the excerpt already shows those boundaries correctly, leave them null.
 
-When unsure, set is_continuation=false, confidence low, and leave set_* fields null.
+When unsure, set is_continuation=false, confidence low, and leave set_* fields null (unless the existing metadata is obviously wrong).
         """
     )
 
