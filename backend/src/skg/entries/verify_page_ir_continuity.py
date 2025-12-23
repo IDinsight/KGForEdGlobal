@@ -439,13 +439,6 @@ def verify(  # pylint: disable=too-many-positional-arguments
     extraction_run_config = open_json_type(extraction_config_fp)
     verification_results_dir = extraction_run_results_dir.parent / "verification"
 
-    logger.info(
-        f"Starting page IR continuity verification process using directories: "
-        f"{page_images_dir} and {page_irs_dir}"
-    )
-    logger.info(f"Loaded extraction run config: {extraction_run_config}")
-    logger.info(f"Outputting verification results to: {verification_results_dir}")
-
     # 1.
     assert compare_directories(page_images_dir, page_irs_dir)
 
@@ -458,6 +451,13 @@ def verify(  # pylint: disable=too-many-positional-arguments
         start_page=start_page,
         **extraction_run_config,
     )
+
+    logger.info(
+        f"Starting page IR continuity verification process using directories: "
+        f"{page_images_dir} and {page_irs_dir}"
+    )
+    logger.info(f"Loaded extraction run config: {extraction_run_config}")
+    logger.info(f"Outputting verification results to: {verification_results_dir}")
 
     try:
         with pymupdf.open(str(pdf_fp)) as doc:
