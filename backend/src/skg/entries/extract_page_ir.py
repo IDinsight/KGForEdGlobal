@@ -320,9 +320,6 @@ def extract(  # pylint: disable=too-many-positional-arguments
     """
 
     pdf_fp = pdf_fp.resolve()
-    extraction_dir = output_dir.resolve() / "extraction"
-    logger.info(f"Starting page IR extraction process for: {pdf_fp}...")
-    logger.info(f"Outputting extraction results to: {extraction_dir}")
 
     # 1.
     doc_key, extraction_dirs, extraction_run = persist_extraction_run(
@@ -337,6 +334,9 @@ def extract(  # pylint: disable=too-many-positional-arguments
         start_page=start_page,
         use_text_layer_hints=use_text_layer_hints,
     )
+
+    logger.info(f"Starting page IR extraction process for: {pdf_fp}...")
+    logger.info(f"Outputting extraction results to: {extraction_dirs.root}")
 
     try:
         with pymupdf.open(str(pdf_fp)) as doc:
