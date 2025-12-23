@@ -34,7 +34,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.page_ir.schemas import PageIRContinuityVerdict
+from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
 from skg.page_ir.utils import (
     PageIRVerificationDirs,
     bottommost_continuity_candidate,
@@ -274,7 +274,10 @@ def verify_page_ir_continuity(
 
     # Load all page IR JSONs so that we can apply edits and then write once.
     page_irs: dict[int, dict[str, Any]] = {
-        i: open_json_type(page_irs_dir / f"{i:04}.json") for i in range(start, stop)
+        i: PageIR.model_validate(
+            open_json_type(page_irs_dir / f"{i:04}.json")
+        ).model_dump(mode="json")
+        for i in range(start, stop)
     }
 
     # Iterate in pairs.
@@ -286,12 +289,29 @@ def verify_page_ir_continuity(
         assert (
             i in page_irs and (i + 1) in page_irs
         ), f"Missing page IR for pages {i} or {i + 1}"
+
         prev_page_ir, next_page_ir = page_irs[i], page_irs[i + 1]
         prev_page_items = prev_page_ir.get("items", [])
         next_page_items = next_page_ir.get("items", [])
-        assert (
-            prev_page_items and next_page_items
-        ), f"Missing items on pages {i} or {i + 1}"
+
+        if not prev_page_items or not next_page_items:
+            logger.warning(
+                f"Skipping continuity check for pages {i}-{i + 1}: "
+                f"prev_items={len(prev_page_items)} next_items={len(next_page_items)}"
+            )
+            # Conservative: assume no continuation across an empty page boundary.
+            set_boundary_flag(
+                page_ir=prev_page_ir,
+                flag=PageBoundaryState.CONTINUES_TO_NEXT.value,
+                value=False,
+            )
+            set_boundary_flag(
+                page_ir=next_page_ir,
+                flag=PageBoundaryState.CONTINUES_FROM_PREV.value,
+                value=False,
+            )
+            continue
+
         prev_idx, prev_item = bottommost_continuity_candidate(
             image_height=prev_page_ir["image_height"], items=prev_page_items
         )
