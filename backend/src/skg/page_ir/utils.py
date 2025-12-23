@@ -71,6 +71,54 @@ def bottommost_continuity_candidate(
     if not candidates:
         raise ValueError("No non-artifact items found.")
 
+    # 1. Prefer boundary-marked items when they exist (strict-continuity helper).
+    def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
+        """Check if the item has the specified boundary flag.
+
+        Parameters
+        it
+            The item to check.
+        b
+            The boundary flag to check for.
+
+        Returns
+        -------
+        bool
+            True if the item has the specified boundary flag, False otherwise.
+        """
+
+        v = it.get("boundary")
+        return v == b or v == b.value
+
+    # Look at the last ~5 candidates by vertical position (closest to bottom). If any
+    # are explicitly marked as truncated, prefer those (tables first).
+    last_n = 5
+    bottom_sorted = sorted(
+        candidates, key=lambda p: (float(p[1]["bbox"][3]), p[0]), reverse=True
+    )
+    bottom_slice = bottom_sorted[: min(last_n, len(bottom_sorted))]
+    truncated = [
+        (i, it) for (i, it) in bottom_slice if _has_boundary(it, ItemBoundary.TRUNCATED)
+    ]
+    if truncated:
+        truncated_tables = [
+            (i, it) for (i, it) in truncated if it.get("kind") == "table"
+        ]
+        chosen_trunc = truncated_tables if truncated_tables else truncated
+        return max(chosen_trunc, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
+
+    # 2. Table-in-bottom-band override (bottom 20%), when edge-most is not a table.
+    edge_item = max(candidates, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
+    if edge_item[1].get("kind") != "table":
+        bottom_band_y = 0.80 * image_height
+        tables_in_band = [
+            (i, it)
+            for (i, it) in candidates
+            if it.get("kind") == "table" and float(it["bbox"][3]) >= bottom_band_y
+        ]
+        if tables_in_band:
+            return max(tables_in_band, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
+
     # Edge-first: find the max y1, then consider items close to that edge.
     max_y1 = max(it["bbox"][3] for _, it in candidates)
     edge_slop = min(200.0, max(80.0, 0.04 * image_height))
@@ -488,6 +536,51 @@ def topmost_continuity_candidate(
     ]
     if not candidates:
         raise ValueError("No non-artifact items found.")
+
+    # 1. Prefer boundary-marked items when they exist (strict-continuity helper).
+    def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
+        """Check if the item has the specified boundary flag.
+
+        Parameters
+        ----------
+        it
+            The item to check.
+        b
+            The boundary flag to check for.
+
+        Returns
+        -------
+        bool
+            True if the item has the specified boundary flag, False otherwise.
+        """
+
+        v = it.get("boundary")
+        return v == b or v == b.value
+
+    # Look at the first ~5 candidates by vertical position (closest to top). If any are
+    # explicitly marked as resumed, prefer those (tables first).
+    first_n = 5
+    top_sorted = sorted(candidates, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+    top_slice = top_sorted[: min(first_n, len(top_sorted))]
+    resumed = [
+        (i, it) for (i, it) in top_slice if _has_boundary(it, ItemBoundary.RESUMED)
+    ]
+    if resumed:
+        resumed_tables = [(i, it) for (i, it) in resumed if it.get("kind") == "table"]
+        chosen_res = resumed_tables if resumed_tables else resumed
+        return min(chosen_res, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+
+    # 2. Table-in-top-band override (top 20%), when edge-most is not a table.
+    edge_item = min(candidates, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+    if edge_item[1].get("kind") != "table":
+        top_band_y = 0.20 * image_height
+        tables_in_band = [
+            (i, it)
+            for (i, it) in candidates
+            if it.get("kind") == "table" and float(it["bbox"][1]) <= top_band_y
+        ]
+        if tables_in_band:
+            return min(tables_in_band, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
 
     # Edge-first: find the min y0, then consider items close to that edge.
     min_y0 = min(it["bbox"][1] for _, it in candidates)
