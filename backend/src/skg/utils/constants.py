@@ -50,3 +50,12 @@ class PageBoundaryState(str, Enum):
     CONTINUES_FROM_PREV = "from_prev"  # Visual break at the top
     CONTINUES_TO_NEXT = "to_next"  # Visual break at the bottom
     STANDALONE = "standalone"  # Page starts and ends cleanly
+
+
+class PageContinuationKind(str, Enum):
+    """The type of content continuity detected between pages."""
+
+    NONE = "none"
+    TABLE = "table"
+    TEXT = "text"
+    UNCLEAR = "unclear"

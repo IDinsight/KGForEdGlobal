@@ -9,7 +9,12 @@ from typing import Annotated, Literal, Optional, Union
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 # Package Library
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.utils.constants import (
+    BlockType,
+    ItemBoundary,
+    PageBoundaryState,
+    PageContinuationKind,
+)
 from skg.utils.general import validate_bcp47
 
 # Common fields with descriptions.
@@ -142,7 +147,7 @@ class CurriculumBlock(BaseModelPageIR):
     )
 
 
-# Main schema.
+# Schemas for extraction.
 class PageIR(BaseModelPageIR):
     """Intermediate Representation of a single PDF page."""
 
@@ -191,3 +196,42 @@ class PageIR(BaseModelPageIR):
             "it may be null during extraction."
         ),
     )
+
+
+# Schemas for verification.
+class PageIRContinuityVerdict(BaseModelPageIR):
+    """Model for page IR continuity verification between two pages."""
+
+    prev_page_index: int = Field(..., description="0-based index of the previous page.")
+    next_page_index: int = Field(..., description="0-based index of the next page.")
+
+    # What the model thinks.
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Page continuation confidence score (0.0 to 1.0).",
+    )
+    continuation_kind: PageContinuationKind = Field(
+        ..., description="Type of content continuing across the break."
+    )
+    is_continuation: bool = Field(
+        ...,
+        description="True if content clearly continues from prev page to next page.",
+    )
+    rationale: str = Field(..., description="Explanation for the verdict.")
+
+    # Minimal suggested edits (null means leave as-is).
+    set_prev_boundary_state: Optional[PageBoundaryState] = Field(
+        None, description="Suggested page boundary state for the previous page."
+    )
+    set_next_boundary_state: Optional[PageBoundaryState] = Field(
+        None, description="Suggested page boundary state for the next page."
+    )
+    set_prev_item_boundary: Optional[ItemBoundary] = Field(
+        None, description="Boundary state for the last item on the previous page."
+    )
+    set_next_item_boundary: Optional[ItemBoundary] = Field(
+        None, description="Boundary state for the first item on the next page."
+    )
+    set_next_table_repeats_header: Optional[bool] = None

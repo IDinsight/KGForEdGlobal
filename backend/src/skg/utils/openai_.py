@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # Third Party Library
+from loguru import logger
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -21,17 +22,25 @@ from tenacity import (
 )
 
 # Package Library
-from skg.page_ir.schemas import PageIR
-from skg.prompts.page_ir import extract_page_ir_from_pdf_age
+from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
+from skg.prompts.page_ir import (
+    extract_page_ir_from_pdf_page,
+    verify_page_ir_pairs_from_extraction,
+)
 from skg.schemas import Limits
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.utils.constants import (
+    BlockType,
+    ItemBoundary,
+    PageBoundaryState,
+    PageContinuationKind,
+)
 from skg.utils.general import encode_png_to_data_url
 
 limits = Limits(max_retry_attempts=5)
 openai_client = OpenAI()
 
 
-class ExtractionQualityError(Exception):
+class QualityError(Exception):
     """Raised when the LLM returns valid JSON that is semantically poor."""
 
     def __init__(self, message: str, failed_content: str | None = None):
@@ -66,7 +75,7 @@ class ExtractionQualityError(Exception):
     stop=stop_after_attempt(limits.max_retry_attempts),
     wait=wait_random_exponential(min=1, max=60),
 )
-def _call_openai_api(
+def _call_openai_api_for_page_ir_extraction(
     *,
     image_height: int,
     image_width: int,
@@ -74,7 +83,7 @@ def _call_openai_api(
     instructions: str,
     model: str,
 ) -> PageIR:
-    """Raw wrapper for the API call to handle network retries independently.
+    """Wrapper for extraction API calls with retries.
 
     Parameters
     ----------
@@ -93,6 +102,11 @@ def _call_openai_api(
     -------
     PageIR
         The extracted PageIR.
+
+    Raises
+    ------
+    QualityError
+        If the response could not be parsed or failed quality checks.
     """
 
     response = openai_client.responses.parse(
@@ -109,7 +123,7 @@ def _call_openai_api(
     # Capture the raw text if parsing/validation fails.
     if parsed is None:
         output_text = getattr(response, "output_text", None)
-        raise ExtractionQualityError(
+        raise QualityError(
             "Responses.parse returned no parsed output."
             + (f" output_text={output_text!r}" if output_text else ""),
             failed_content=output_text,  # Pass text back to caller
@@ -118,12 +132,79 @@ def _call_openai_api(
     # Even if parsing succeeded, enforce quality checks.
     output_text = getattr(response, "output_text", None)
     try:
-        validate_page_ir_quality(
+        validate_page_ir_extraction_quality(
             image_height=image_height, image_width=image_width, page_ir=parsed
         )
-    except ExtractionQualityError as e:
+    except QualityError as e:
         # Attach the raw output so the correction attempt can see what it wrote.
-        raise ExtractionQualityError(str(e), failed_content=output_text) from e
+        raise QualityError(str(e), failed_content=output_text) from e
+
+    return parsed
+
+
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(
+        (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+    ),
+    stop=stop_after_attempt(limits.max_retry_attempts),
+    wait=wait_random_exponential(min=1, max=60),
+)
+def _call_openai_api_for_page_ir_verification(
+    *, input_items: list[Any], instructions: str, model: str
+) -> PageIRContinuityVerdict:
+    """Wrapper for verification API calls with retries.
+
+    Parameters
+    ----------
+    input_items
+        The list of messages to send to the OpenAI API.
+    instructions
+        The verification instructions to include.
+    model
+        The OpenAI model to use.
+
+    Returns
+    -------
+    PageIRContinuityVerdict
+        The extracted PageIRContinuityVerdict.
+
+    Raises
+    ------
+    QualityError
+        If the response could not be parsed or failed quality checks.
+    """
+
+    response = openai_client.responses.parse(
+        model=model,
+        instructions=instructions,
+        input=input_items,
+        temperature=0,
+        top_p=1,
+        text_format=PageIRContinuityVerdict,
+    )
+
+    parsed = getattr(response, "output_parsed", None)
+    output_text = getattr(response, "output_text", None)
+
+    if parsed is None:
+        raise QualityError(
+            "Continuity verification returned no parsed output.",
+            failed_content=output_text,
+        )
+
+    try:
+        validate_continuity_verdict(parsed)
+    except QualityError as e:
+        raise QualityError(str(e), failed_content=output_text) from e
 
     return parsed
 
@@ -146,19 +227,19 @@ def _validate_bbox(
 
     Raises
     ------
-    ExtractionQualityError
+    QualityError
         If the bbox is invalid.
     """
 
     if len(bbox) != 4:
-        raise ExtractionQualityError(f"Invalid bbox length at {where_}: {bbox}")
+        raise QualityError(f"Invalid bbox length at {where_}: {bbox}")
 
     x0, y0, x1, y1 = bbox
     if not (x1 > x0 and y1 > y0):
-        raise ExtractionQualityError(f"Inverted/degenerate bbox at {where_}: {bbox}")
+        raise QualityError(f"Inverted/degenerate bbox at {where_}: {bbox}")
 
     if x0 < -tol or y0 < -tol or x1 > image_width + tol or y1 > image_height + tol:
-        raise ExtractionQualityError(
+        raise QualityError(
             f"Out-of-bounds bbox at {where_} for {image_width}x{image_height}: {bbox}"
         )
 
@@ -202,10 +283,17 @@ def extract_page_ir(
     -------
     PageIR
         The extracted PageIR.
+
+    Raises
+    ------
+    Exception
+        For transient API errors.
+    QualityError
+        If extraction fails after retries.
     """
 
     image_url = encode_png_to_data_url(png_fp)
-    prompts = extract_page_ir_from_pdf_age(
+    prompts = extract_page_ir_from_pdf_page(
         country=country,
         image_height=image_height,
         image_width=image_width,
@@ -228,14 +316,14 @@ def extract_page_ir(
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
-            return _call_openai_api(
+            return _call_openai_api_for_page_ir_extraction(
                 image_height=image_height,
                 image_width=image_width,
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
             )
-        except ExtractionQualityError as e:
+        except QualityError as e:
             if attempt == max_retries:
                 raise  # Re-raise the final quality error
 
@@ -283,7 +371,7 @@ def extract_page_ir(
 
             # Handle general exceptions (like Pydantic ValidationErrors) that bubble up
             # from the API call but might not have attached text.
-            last_error = ExtractionQualityError(
+            last_error = QualityError(
                 f"Structured parse/validation failed on page {page_index}: {e}"
             )
 
@@ -310,12 +398,103 @@ def extract_page_ir(
             )
             continue
 
-    raise ExtractionQualityError(
+    raise QualityError(
         f"Extraction failed after {max_retries + 1} attempts for page " f"{page_index}."
     )
 
 
-def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
+def validate_continuity_verdict(verdict: PageIRContinuityVerdict) -> None:
+    """Validate the semantic consistency of a continuity verdict.
+
+    Parameters
+    ----------
+    verdict
+        The PageIRContinuityVerdict to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    # 1. Consistency: If is_continuation is True, we usually expect high confidence.
+    if verdict.is_continuation and verdict.confidence < 0.5:
+        # This is a soft check, but often indicates hallucination. We might not raise
+        # an error, but logging it is wise.
+        logger.warning(
+            f"Low confidence ({verdict.confidence}) for continuation verdict."
+        )
+
+    # 2. Sanity: indices should be ordered.
+    if verdict.prev_page_index >= verdict.next_page_index:
+        raise QualityError(
+            f"Invalid page index order: prev={verdict.prev_page_index} "
+            f"next={verdict.next_page_index}"
+        )
+    if verdict.next_page_index - verdict.prev_page_index != 1:
+        logger.warning(
+            "Non-adjacent page indices in verdict "
+            f"({verdict.prev_page_index}->{verdict.next_page_index}); expected adjacency."
+        )
+
+    # Kind consistency.
+    if (
+        verdict.is_continuation
+        and verdict.continuation_kind == PageContinuationKind.NONE
+    ):
+        raise QualityError("is_continuation=true but continuation_kind=none.")
+    if (not verdict.is_continuation) and verdict.continuation_kind in (
+        PageContinuationKind.TABLE,
+        PageContinuationKind.TEXT,
+    ):
+        # Allow 'unclear' when false, but table/text is usually inconsistent.
+        raise QualityError("is_continuation=false but continuation_kind is table/text.")
+
+    # 3. Logic: If continuation_kind is TABLE, we generally expect boundaries to be
+    # modified.
+    if (
+        verdict.is_continuation
+        and verdict.continuation_kind == PageContinuationKind.TABLE
+    ) and (
+        verdict.set_prev_item_boundary is not None
+        and verdict.set_next_item_boundary is not None
+        and verdict.set_prev_item_boundary == ItemBoundary.COMPLETE
+        and verdict.set_next_item_boundary == ItemBoundary.COMPLETE
+    ):
+        raise QualityError(
+            "Verdict claims Table continuation but suggests setting boundaries to "
+            "COMPLETE. Tables continuing across pages usually require "
+            "'truncated'/'resumed' boundaries."
+        )
+
+    # 4. Pairwise-safe boundary_state suggestions.
+    if verdict.set_prev_boundary_state and verdict.set_prev_boundary_state not in (
+        PageBoundaryState.STANDALONE,
+        PageBoundaryState.CONTINUES_TO_NEXT,
+    ):
+        raise QualityError(
+            "set_prev_boundary_state must be standalone or to_next (pairwise-safe)."
+        )
+    if verdict.set_next_boundary_state and verdict.set_next_boundary_state not in (
+        PageBoundaryState.STANDALONE,
+        PageBoundaryState.CONTINUES_FROM_PREV,
+    ):
+        raise QualityError(
+            "set_next_boundary_state must be standalone or from_prev (pairwise-safe)."
+        )
+
+    # 5. repeats_header only makes sense for table continuations.
+    if verdict.set_next_table_repeats_header is not None and not (
+        verdict.is_continuation
+        and verdict.continuation_kind == PageContinuationKind.TABLE
+    ):
+        raise QualityError(
+            "set_next_table_repeats_header provided but verdict is not a table "
+            "continuation."
+        )
+
+
+def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
     *, image_height: int, image_width: int, page_ir: PageIR
 ) -> None:
     """Validate *quality* (not schema) of a parsed PageIR.
@@ -341,14 +520,12 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
 
     Raises
     ------
-    ExtractionQualityError
+    QualityError
         If any quality checks fail.
     """
 
     if image_width <= 0 or image_height <= 0:
-        raise ExtractionQualityError(
-            f"Invalid image dimensions: {image_width}x{image_height}."
-        )
+        raise QualityError(f"Invalid image dimensions: {image_width}x{image_height}.")
 
     tol = 2.0  # Small tolerance for rounding
     items = page_ir.items or []
@@ -436,7 +613,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
         has_text = False
         if isinstance(raw_text, str):
             if not raw_text.strip():
-                raise ExtractionQualityError(
+                raise QualityError(
                     f"Whitespace-only block text at items[{i}].text; remove this block."
                 )
             has_text = True
@@ -446,7 +623,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
             li_unit = getattr(li, "text", None)
             li_raw = getattr(li_unit, "text", None) if li_unit else None
             if isinstance(li_raw, str) and not li_raw.strip():
-                raise ExtractionQualityError(
+                raise QualityError(
                     f"Whitespace-only list item text at items[{i}].list_items[{j}].text; "
                     "remove this list item."
                 )
@@ -455,7 +632,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
         has_list = len(list_items) > 0
         has_code = isinstance(local_code, str) and bool(local_code.strip())
         if not (has_text or has_list or has_code):
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"Empty block at items[{i}]: text, list_items, and local_code are all "
                 f"null/empty. Do not emit placeholder blocks (e.g., full-page artifacts)."
             )
@@ -465,7 +642,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
     for i, item in enumerate(items):
         bbox = getattr(item, "bbox", None)
         if bbox is None:
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"Missing required item bbox at items[{i}].bbox. "
                 "Every block/table must have an item-level bbox."
             )
@@ -491,23 +668,23 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
         if block_type == BlockType.LIST:
             # Lists should be represented via list_items; text should be null.
             if text_unit is not None:
-                raise ExtractionQualityError(
+                raise QualityError(
                     f"List block must have text=null at items[{i}].text."
                 )
             if not list_items:
-                raise ExtractionQualityError(
+                raise QualityError(
                     f"List block must have non-empty list_items at items[{i}].list_items."
                 )
             for j, li in enumerate(list_items):
                 # If marker is empty and text is short, it's likely a misclassification.
                 if not li.marker.strip() and len(li.text.text.strip()) < 3:
-                    raise ExtractionQualityError(
+                    raise QualityError(
                         f"List item at items[{i}].list_items[{j}] has no marker and "
                         "insufficient text. This should likely be a paragraph."
                     )
         elif list_items:
             # Non-list blocks should not carry list_items.
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"Non-list block must have list_items=[] at items[{i}].list_items."
             )
 
@@ -518,18 +695,18 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
 
         rows = getattr(item, "rows", None) or []
         if len(rows) == 0:
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"Empty table (rows=[]) at items[{i}].rows. Do not emit empty tables."
             )
 
         header_row_count = int(getattr(item, "header_row_count", 0) or 0)
         if header_row_count < 0:
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"Invalid header_row_count={header_row_count} at "
                 f"items[{i}].header_row_count."
             )
         if header_row_count > len(rows):
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"header_row_count={header_row_count} exceeds total rows={len(rows)} "
                 f"at items[{i}].header_row_count."
             )
@@ -537,7 +714,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
         for r, row in enumerate(rows):
             cells = getattr(row, "cells", None) or []
             if len(cells) == 0:
-                raise ExtractionQualityError(
+                raise QualityError(
                     f"Table row with zero cells at items[{i}].rows[{r}].cells."
                 )
             for c, cell in enumerate(cells):
@@ -545,7 +722,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
                 col_span = int(getattr(cell, "col_span", 1) or 1)
                 row_span = int(getattr(cell, "row_span", 1) or 1)
                 if col_span < 1 or row_span < 1:
-                    raise ExtractionQualityError(
+                    raise QualityError(
                         f"Invalid span at items[{i}].rows[{r}].cells[{c}] "
                         f"(col_span={col_span}, row_span={row_span})."
                     )
@@ -558,9 +735,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
                     any_content_in_table = True
                     break
         if not any_content_in_table:
-            raise ExtractionQualityError(
-                f"Table at items[{i}] contains no text content."
-            )
+            raise QualityError(f"Table at items[{i}] contains no text content.")
 
     # 5. Placeholder bbox detection (item bboxes are required).
     if len(top_level_bboxes) >= 6:
@@ -575,14 +750,14 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
         area_frac = area / page_area if page_area > 0 else 0.0
 
         if frac >= 0.30 and starts_at_origin:
-            raise ExtractionQualityError(
+            raise QualityError(
                 "Too many items share the same origin-anchored bbox "
                 f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}). "
                 "This looks like a placeholder; bboxes must be localized to each item."
             )
 
         if frac >= 0.20 and area_frac >= 0.85:
-            raise ExtractionQualityError(
+            raise QualityError(
                 "Too many items share a near-full-page bbox "
                 f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}, area_frac={area_frac:.2f}). "
                 "Do not use near-full-page bboxes as placeholders; bboxes must be localized."
@@ -610,30 +785,34 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
 
     if needs_from_prev:
         if not non_artifact_items:
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"boundary_state='{boundary_state}' implies content continues from "
                 f"previous page, but there are no non-artifact items."
             )
-        first_idx, first_item = non_artifact_items[0]
-        if not _is_resumed(_boundary_str(first_item)):
-            raise ExtractionQualityError(
+
+        # Look in the first few non-artifact items for a resumed marker.
+        window = [it for _, it in non_artifact_items[:5]]
+        if not any(_is_resumed(_boundary_str(it)) for it in window):
+            raise QualityError(
                 f"boundary_state='{boundary_state}' implies content continues from "
-                f"previous page, but first non-artifact item items[{first_idx}] is not "
-                f"boundary='{ItemBoundary.RESUMED.value}'."
+                f" previous page, but no resumed boundary found in first few "
+                f"non-artifact items."
             )
 
     if needs_to_next:
         if not non_artifact_items:
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"boundary_state='{boundary_state}' implies content continues to next "
                 "page, but there are no non-artifact items."
             )
-        last_idx, last_item = non_artifact_items[-1]
-        if not _is_truncated(_boundary_str(last_item)):
-            raise ExtractionQualityError(
-                f"boundary_state='{boundary_state}' implies content continues to next "
-                f"page, but last non-artifact item items[{last_idx}] is not "
-                f"boundary='{ItemBoundary.TRUNCATED.value}'."
+
+        # Look in the last few non-artifact items for a truncated marker.
+        window = [it for _, it in non_artifact_items[-5:]]
+        if not any(_is_truncated(_boundary_str(it)) for it in window):
+            raise QualityError(
+                f"boundary_state='{boundary_state}' implies content continues to "
+                f" next page, but no truncated boundary found in last few non-artifact "
+                f"items."
             )
 
     if bs == PageBoundaryState.STANDALONE.value:
@@ -643,7 +822,7 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
             for _, it in non_artifact_items
         )
         if any_resumed_or_truncated:
-            raise ExtractionQualityError(
+            raise QualityError(
                 f"boundary_state='{PageBoundaryState.STANDALONE.value}' but found "
                 "resumed/truncated boundaries on non-artifact items."
             )
@@ -670,9 +849,126 @@ def validate_page_ir_quality(  # pylint: disable=R0912,R0915,R1260
             # column/line) or if we jumped UP and stayed in the same horizontal lane.
             if y_backjump > max_y_backjump:
                 if x_diff < -same_col_dx or abs(x_diff) < same_col_dx:
-                    raise ExtractionQualityError(
+                    raise QualityError(
                         f"Likely reading-order violation at items[{idx}]. "
                         "Items jump upwards significantly without a clear column shift."
                     )
 
             prev_x0, prev_y0 = x0, y0
+
+
+def verify_page_ir_pairs(
+    *,
+    model: str,
+    next_page_index: int,
+    next_item_excerpt: dict[str, Any],
+    next_top_png: Path,
+    prev_bottom_png: Path,
+    prev_item_excerpt: dict[str, Any],
+    prev_page_index: int,
+) -> PageIRContinuityVerdict:
+    """Verify continuity between two PageIR excerpts using LLM.
+
+    Parameters
+    ----------
+    model
+        The OpenAI model to use.
+    next_page_index
+        The 0-based index of the next page (N+1).
+    next_item_excerpt
+        Excerpt of the candidate near top item from page N+1 JSON.
+    next_top_png
+        The PNG file path of the top crop of page N+1.
+    prev_bottom_png
+        The PNG file path of the bottom crop of page N.
+    prev_item_excerpt
+        Excerpt of the candidate near bottom item from page N JSON.
+    prev_page_index
+        The 0-based index of the previous page (N).
+
+    Returns
+    -------
+    PageIRContinuityVerdict
+        The continuity verdict between the two pages.
+
+    Raises
+    ------
+    QualityError
+        If the LLM returns invalid or poor-quality output.
+    """
+
+    prev_bottom_image_url = encode_png_to_data_url(prev_bottom_png)
+    next_top_image_url = encode_png_to_data_url(next_top_png)
+    prompts = verify_page_ir_pairs_from_extraction(
+        next_item_excerpt=next_item_excerpt,
+        next_page_index=next_page_index,
+        prev_item_excerpt=prev_item_excerpt,
+        prev_page_index=prev_page_index,
+    )
+    instructions = prompts.system_message
+    input_items: list[Any] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": prompts.user_message},
+                {"type": "input_image", "image_url": prev_bottom_image_url},
+                {"type": "input_image", "image_url": next_top_image_url},
+            ],
+        }
+    ]
+
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            return _call_openai_api_for_page_ir_verification(
+                input_items=input_items,
+                instructions=instructions,
+                model=model,
+            )
+        except QualityError as e:
+            if attempt == max_retries:
+                logger.warning(
+                    f"Verification failed after retries for pages "
+                    f"{prev_page_index}->{next_page_index}. Using default False verdict."
+                )
+                # Fallback: Return a 'safe' negative verdict rather than crashing the
+                # whole pipeline.
+                return PageIRContinuityVerdict(
+                    prev_page_index=prev_page_index,
+                    next_page_index=next_page_index,
+                    confidence=0.0,
+                    continuation_kind=PageContinuationKind.NONE,
+                    is_continuation=False,
+                    rationale=f"Automatic failure after retries: {str(e)}",
+                )
+
+            # Add feedback to history.
+            if e.failed_content:
+                input_items.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": e.failed_content}],
+                    }
+                )
+
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": f"Your previous verdict was logically inconsistent: {str(e)}. Please correct it.",
+                        }
+                    ],
+                }
+            )
+            continue
+
+    return PageIRContinuityVerdict(
+        prev_page_index=prev_page_index,
+        next_page_index=next_page_index,
+        confidence=0.0,
+        continuation_kind=PageContinuationKind.NONE,
+        is_continuation=False,
+        rationale="Fallback.",
+    )

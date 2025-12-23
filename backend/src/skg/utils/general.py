@@ -25,6 +25,78 @@ from loguru import logger
 from skg.schemas import Valid
 
 
+def clamp(x: float, *, low: float, high: float) -> int:
+    """Clamp a floating-point number to be within a specified range and convert to an
+    integer.
+
+    Parameters
+    ----------
+    x
+        The floating-point number to clamp.
+    low
+        The lower bound of the range.
+    high
+        The upper bound of the range.
+
+    Returns
+    -------
+    int
+        The clamped integer value.
+    """
+
+    return int(max(low, min(high, x)))
+
+
+def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
+    """Compare two directories to see if they contain the same files (ignoring file
+    extensions).
+
+    Parameters
+    ----------
+    dir1_path
+        Path to the first directory.
+    dir2_path
+        Path to the second directory.
+
+    Returns
+    -------
+    bool
+        True if the directories contain the same files (ignoring extensions), False
+        otherwise.
+    """
+
+    p1 = Path(dir1_path)
+    p2 = Path(dir2_path)
+
+    # Use f.is_file() to ensure we don't accidentally count folders.
+    files1 = [f for f in p1.iterdir() if f.is_file()]
+    files2 = [f for f in p2.iterdir() if f.is_file()]
+
+    # Check if file counts are different.
+    if len(files1) != len(files2):
+        logger.warning(
+            f"Mismatch: Directory 1 ({dir1_path}) has {len(files1)} files, "
+            f"Directory 2 ({dir2_path}) has {len(files2)} files."
+        )
+        return False
+
+    # Extract "stems" (filenames without suffixes) and sort them so that we can ensure
+    # ['a', 'b'] matches ['b', 'a'].
+    stems1 = sorted([f.stem for f in files1])
+    stems2 = sorted([f.stem for f in files2])
+
+    if stems1 == stems2:
+        logger.info("Success: Directories match!")
+        return True
+
+    set1, set2 = set(stems1), set(stems2)
+    logger.error("Mismatch: The file counts are the same, but the names differ.")
+    logger.error(f"Unique to Dir 1 ({dir1_path}): {set1 - set2}")
+    logger.error(f"Unique to Dir 2 ({dir2_path}): {set2 - set1}")
+
+    return False
+
+
 def encode_png_to_data_url(png_fp: Path) -> str:
     """Encode a PNG file to a base64 data URL.
 
@@ -83,6 +155,27 @@ def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
         Path.mkdir(dir_, exist_ok=True, mode=mode, parents=True)
         if verbose:
             logger.success(f"Created directory: {dir_}")
+
+
+def near(a: float, b: float, *, tol: float) -> bool:
+    """Check if two floating-point numbers are near each other within a tolerance.
+
+    Parameters
+    ----------
+    a
+        The first floating-point number.
+    b
+        The second floating-point number.
+    tol
+        The tolerance within which the two numbers are considered "near".
+
+    Returns
+    -------
+    bool
+        True if the two numbers are within the specified tolerance, False otherwise.
+    """
+
+    return abs(a - b) <= tol
 
 
 def open_json_type(filepath: str | Path) -> Any:
