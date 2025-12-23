@@ -222,6 +222,8 @@ def _validate_bbox(
         The image height in pixels.
     image_width
         The image width in pixels.
+    tol
+        Tolerance for out-of-bounds checks.
     where_
         Description of where the bbox is located (for error messages).
 
@@ -598,6 +600,38 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
 
         return boundary == ItemBoundary.TRUNCATED.value
 
+    def _safe_str(v: Any) -> str:
+        """Convert None/non-str to a safe string ('') and keep strings as-is.
+
+        Parameters
+        ----------
+        v
+            The value to convert.
+
+        Returns
+        -------
+        str
+            The safe string.
+        """
+
+        return v if isinstance(v, str) else ""
+
+    def _textunit_text(tu: Any) -> str:
+        """Safely extract tu.text from a TextUnit-like object.
+
+        Parameters
+        ----------
+        tu
+            The TextUnit-like object.
+
+        Returns
+        -------
+        str
+            The text content, or empty string if not available.
+        """
+
+        return "" if tu is None else _safe_str(getattr(tu, "text", None))
+
     # 1. No whitespace-only text blocks, list items, or local codes.
     for i, item in enumerate(items):
         if getattr(item, "kind", None) != "block":
@@ -677,7 +711,10 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                 )
             for j, li in enumerate(list_items):
                 # If marker is empty and text is short, it's likely a misclassification.
-                if not li.marker.strip() and len(li.text.text.strip()) < 3:
+                marker = _safe_str(getattr(li, "marker", None))
+                li_text = _textunit_text(getattr(li, "text", None))
+
+                if not marker.strip() and len(li_text.strip()) < 3:
                     raise QualityError(
                         f"List item at items[{i}].list_items[{j}] has no marker and "
                         "insufficient text. This should likely be a paragraph."
@@ -731,7 +768,8 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         any_content_in_table = False
         for r, row in enumerate(rows):
             for c, cell in enumerate(row.cells):
-                if cell.text and cell.text.text.strip():
+                t = _textunit_text(getattr(cell, "text", None))
+                if t.strip():
                     any_content_in_table = True
                     break
         if not any_content_in_table:
@@ -911,7 +949,15 @@ def verify_page_ir_pairs(
             "role": "user",
             "content": [
                 {"type": "input_text", "text": prompts.user_message},
+                {
+                    "type": "input_text",
+                    "text": "IMAGE A: bottom crop of page N (prev page).",
+                },
                 {"type": "input_image", "image_url": prev_bottom_image_url},
+                {
+                    "type": "input_text",
+                    "text": "IMAGE B: top crop of page N+1 (next page).",
+                },
                 {"type": "input_image", "image_url": next_top_image_url},
             ],
         }

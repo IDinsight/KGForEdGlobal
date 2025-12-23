@@ -72,6 +72,161 @@ def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
     return h[:n_hex]
 
 
+def crop_image_to_bottom(
+    *,
+    bbox: list[float],
+    desired_padding_inches: float = 0.25,
+    input_png_fp: Path,
+    min_height_px: int = 400,
+    output_png_fp: Path,
+    render_dpi: int,
+    return_cropped_image: bool = False,
+) -> Optional[Image.Image]:
+    """Crop a rendered page image from just above the candidate bbox down to the bottom.
+
+    This mirrors `crop_pdf_to_bottom()`, but operates directly on the extracted page
+    PNG (the same coordinate space as PageIR bboxes).
+
+    Parameters
+    ----------
+    bbox
+        [x0, y0, x1, y1] in *pixel units* of the rendered PNG (PageIR coordinate space).
+        Only y1 is used for the crop start (bottom-candidate).
+    desired_padding_inches
+        Extra padding (in inches) to include above the crop start.
+    input_png_fp
+        Full-page PNG path (the extraction-time rendered page image).
+    min_height_px
+        Minimum crop height (pixels).
+    output_png_fp
+        Where to write the cropped PNG.
+    render_dpi
+        DPI used to interpret `desired_padding_inches` as pixels. This should be the
+        same DPI used to render the extraction PNG.
+    return_cropped_image
+        If True, return the cropped PIL Image as well.
+
+    Returns
+    -------
+    Optional[Image.Image]
+        Cropped image if requested; otherwise None.
+
+    Raises
+    ------
+    ValueError
+        If the computed crop start is invalid.
+    """
+
+    img = Image.open(input_png_fp)
+
+    w, h = img.size
+    if h <= 0 or w <= 0:
+        raise ValueError(f"Invalid image size: {img.size} for {input_png_fp}")
+
+    padding_px = int(desired_padding_inches * render_dpi)
+
+    # Start just above the bottom edge of the candidate item.
+    y0_px = float(bbox[3]) - float(padding_px)
+
+    # Enforce minimum height: y0 must not be below (h - min_height).
+    max_allowed_y0 = float(h - min_height_px)
+    y0_px = min(y0_px, max_allowed_y0)
+
+    # Clamp to top.
+    y0_px = max(0.0, y0_px)
+
+    # Convert to integer pixel index for PIL crop (floor is safer: includes more
+    # context).
+    y0 = int(y0_px)
+
+    if y0 >= h:
+        raise ValueError(f"y0 ({y0}px) is beyond image height ({h}px).")
+
+    crop = img.crop((0, y0, w, h))
+
+    output_png_fp.parent.mkdir(parents=True, exist_ok=True)
+    crop.save(output_png_fp)
+
+    return crop if return_cropped_image else None
+
+
+def crop_image_to_top(
+    *,
+    bbox: list[float],
+    desired_padding_inches: float = 0.25,
+    input_png_fp: Path,
+    min_height_px: int = 400,
+    output_png_fp: Path,
+    render_dpi: int,
+    return_cropped_image: bool = False,
+) -> Optional[Image.Image]:
+    """Crop a rendered page image from the top down to just below the candidate bbox.
+
+    This mirrors `crop_pdf_to_top()`, but operates directly on the extracted page PNG
+    (the same coordinate space as PageIR bboxes).
+
+    Parameters
+    ----------
+    bbox
+        [x0, y0, x1, y1] in *pixel units* of the rendered PNG (PageIR coordinate space).
+        Only y0 is used for the crop end (top-candidate).
+    desired_padding_inches
+        Extra padding (in inches) to include below the crop end.
+    input_png_fp
+        Full-page PNG path (the extraction-time rendered page image).
+    min_height_px
+        Minimum crop height (pixels).
+    output_png_fp
+        Where to write the cropped PNG.
+    render_dpi
+        DPI used to interpret `desired_padding_inches` as pixels. This should be the
+        same DPI used to render the extraction PNG.
+    return_cropped_image
+        If True, return the cropped PIL Image as well.
+
+    Returns
+    -------
+    Optional[Image.Image]
+        Cropped image if requested; otherwise None.
+
+    Raises
+    ------
+    ValueError
+        If the computed crop end is invalid.
+    """
+
+    img = Image.open(input_png_fp)
+
+    w, h = img.size
+    if h <= 0 or w <= 0:
+        raise ValueError(f"Invalid image size: {img.size} for {input_png_fp}")
+
+    padding_px = int(desired_padding_inches * render_dpi)
+
+    # End just below the top edge of the candidate item.
+    y1_px = float(bbox[1]) + float(padding_px)
+
+    # Enforce minimum height: y1 must be at least min_height_px.
+    y1_px = max(y1_px, float(min_height_px))
+
+    # Clamp to bottom.
+    y1_px = min(y1_px, float(h))
+
+    # Convert to integer pixel index (ceil is safer: includes more context).
+    y1 = int(y1_px) if y1_px.is_integer() else int(y1_px) + 1
+    y1 = min(y1, h)
+
+    if y1 <= 0:
+        raise ValueError(f"y1 ({y1}px) must be > 0.")
+
+    crop = img.crop((0, 0, w, y1))
+
+    output_png_fp.parent.mkdir(parents=True, exist_ok=True)
+    crop.save(output_png_fp)
+
+    return crop if return_cropped_image else None
+
+
 def crop_pdf_to_bottom(
     *,
     bbox: list[float],

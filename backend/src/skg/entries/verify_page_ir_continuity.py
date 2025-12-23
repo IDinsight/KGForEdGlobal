@@ -50,7 +50,7 @@ from skg.schemas import VerificationRunIR
 from skg.utils.constants import ItemBoundary, PageBoundaryState
 from skg.utils.general import compare_directories, open_json_type, write_to_json
 from skg.utils.openai_ import validate_continuity_verdict, verify_page_ir_pairs
-from skg.utils.pdf import crop_pdf_to_bottom, crop_pdf_to_top, validate_page_count
+from skg.utils.pdf import crop_image_to_bottom, crop_image_to_top, validate_page_count
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
@@ -233,6 +233,7 @@ def verify_page_ir_continuity(
     verification_dirs: PageIRVerificationDirs,
     model: str,
     overwrite: bool,
+    page_images_dir: Path,
     page_irs_dir: Path,
     render_dpi: int,
     start_page: int,
@@ -251,6 +252,8 @@ def verify_page_ir_continuity(
         OpenAI model for page IR verification.
     overwrite
         Overwrite existing per-page artifacts.
+    page_images_dir
+        Directory containing the page images.
     page_irs_dir
         Directory containing the page IR JSONs.
     render_dpi
@@ -258,8 +261,6 @@ def verify_page_ir_continuity(
     start_page
         0-based start page (inclusive).
     """
-
-    scale = render_dpi / 72.0
 
     # Load all page IR indices (0000.json style).
     json_fps = sorted(page_irs_dir.glob("*.json"))
@@ -306,14 +307,15 @@ def verify_page_ir_continuity(
         else:
             logger.info(f"Verifying continuity between pages {i} and {i + 1}...")
 
+            prev_image_full = page_images_dir / f"{i:04}.png"
+            next_image_full = page_images_dir / f"{i + 1:04}.png"
+
             # Crop bottom of prev and top of next based on non-artifact bboxes.
             prev_crop_fp = verification_dirs.page_irs_pair_crops / f"{i:04}_bottom.png"
             next_crop_fp = verification_dirs.page_irs_pair_crops / f"{i + 1:04}_top.png"
 
-            page_prev = doc.load_page(i)
-            page_next = doc.load_page(i + 1)
-            prev_page_h_px = int(page_prev.rect.height * scale)
-            next_page_h_px = int(page_next.rect.height * scale)
+            prev_page_h_px = int(prev_page_ir["image_height"])
+            next_page_h_px = int(next_page_ir["image_height"])
             prev_min_h = min_crop_height_px(
                 page_h_px=prev_page_h_px, kind=prev_item.get("kind", "block")
             )
@@ -321,21 +323,19 @@ def verify_page_ir_continuity(
                 page_h_px=next_page_h_px, kind=next_item.get("kind", "block")
             )
 
-            crop_pdf_to_bottom(
+            crop_image_to_bottom(
                 bbox=prev_item["bbox"],
-                doc=doc,
-                page_index=i,
+                input_png_fp=prev_image_full,
+                min_height_px=prev_min_h,
                 output_png_fp=prev_crop_fp,
                 render_dpi=render_dpi,
-                min_height_px=prev_min_h,
             )
-            crop_pdf_to_top(
+            crop_image_to_top(
                 bbox=next_item["bbox"],
-                doc=doc,
-                page_index=i + 1,
+                input_png_fp=next_image_full,
+                min_height_px=next_min_h,
                 output_png_fp=next_crop_fp,
                 render_dpi=render_dpi,
-                min_height_px=next_min_h,
             )
 
             # Invoke the model to verify the pair.
@@ -474,6 +474,7 @@ def verify(  # pylint: disable=too-many-positional-arguments
                 verification_dirs=verification_dirs,
                 model=model,
                 overwrite=overwrite,
+                page_images_dir=page_images_dir,
                 page_irs_dir=page_irs_dir,
                 render_dpi=verification_run.extra["dpi"],
                 start_page=start_page,
