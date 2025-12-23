@@ -1,0 +1,107 @@
+{
+	"age_group": "two_months_to_five_years",
+	"chat_id": "da4e2b7d-6779-49e3-a170-f5ac7174f808",
+	"created_datetime_utc": "2025-02-26T14:25:18.418067",
+	"message": "I have 1 year old toddler who has seizure what should I do?",
+	"user_id": 2,
+	"is_applicable": true,
+	"VERY SEVERE DISEASE": {
+		"age_group": "2 Months - 5 Years",
+		"gt_observations": [
+			"Unable to drink or breastfeed",
+			"Unconscious",
+			"Had Convulsions",
+			"Convulsing now",
+			"Vomits everything",
+			"Lethargic"
+		],
+		"gt_treatments": {
+			"Urgent pre-referral": {
+				"AND": [
+					"Give diazepam if convulsing now",
+					"Quickly complete the assessment",
+					"Give appropriate pre-referral treatment immediately, based on other severe classifications",
+					"Treat to prevent low blood sugar",
+					"Keep the child warm",
+					"Refer URGENTLY"
+				]
+			},
+			"Other": null
+		}
+	},
+	"VERY SEVERE FEBRILE DISEASE": {
+		"age_group": "2 Months - 5 Years",
+		"gt_observations": [
+			"Unable to drink or breastfeed",
+			"Other obvious cause of fever present",
+			"Stiff neck",
+			"Bulging fontanels (< 1 yr)",
+			"Unconscious",
+			"Had Convulsions",
+			"Convulsing now",
+			"Vomits everything",
+			"Lethargic",
+			"Negative blood film"
+		],
+		"gt_treatments": {
+			"Urgent pre-referral": {
+				"AND": [
+					"Give first dose of IV/IM Ampicillin and Gentamicin",
+					"Treat the child to prevent low blood sugar",
+					"Give Paracetamol in health facility for high fever (\u226538.5\u00b0C)",
+					"Refer URGENTLY to hospital"
+				]
+			},
+			"Other": null
+		}
+	},
+	"SEVERE COMPLICATED MEASLES": {
+		"age_group": "2 Months - 5 Years",
+		"gt_observations": [
+			"Unable to drink or breastfeed",
+			"Unconscious",
+			"Had Convulsions",
+			"Convulsing now",
+			"Clouding of cornea",
+			"Deep or extensive mouth ulcers",
+			"Vomits everything",
+			"Lethargic"
+		],
+		"gt_treatments": {
+			"Urgent pre-referral": {
+				"AND": [
+					"Give Vitamin A, first dose",
+					"Give first dose of IV/IM Ampicillin and Gentamicin",
+					{
+						"OR": [
+							{
+								"IF": {
+									"Clouding of the cornea": {
+										"AND": [
+											"Apply Tetracycline eye ointment"
+										]
+									}
+								}
+							},
+							{
+								"IF": {
+									"Pus draining from the eye": {
+										"AND": [
+											"Apply Tetracycline eye ointment"
+										]
+									}
+								}
+							}
+						]
+					},
+					"Refer URGENTLY to hospital"
+				]
+			},
+			"Other": {
+				"AND": [
+					"See footnote A."
+				]
+			}
+		}
+	}
+}

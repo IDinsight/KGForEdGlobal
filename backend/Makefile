@@ -1,7 +1,7 @@
 #!make
 
 .DEFAULT_GOAL := help
-.PHONY: clean clean-docker clean-docker-container fresh-env help install lint test test-alembic uv-check-updates uv-lock uv-sync uv-update-deps
+.PHONY: clean clean-docker clean-docker-container fresh-env help install lint test uv-check-updates uv-lock uv-sync uv-update-deps
 
 # Put it first so that "make" without argument is like "make help".
 help: ## Display available commands
@@ -137,26 +137,8 @@ clean-docker-container = \
 
 ########## TEST SETUP ##########
 test: up-test run-tests down-test  ## Run backend tests
-test-alembic: up-test run-tests-alembic down-test  ## Run alembic tests
 
-up-test: up-pgvector up-redis
-
-up-pgvector: ## Set up pg-vector container
-	$(call clean-docker-container,pg-vector-test)
-	@sleep 2
-	@echo "$(GREEN)Starting a new pg-vector container...$(RESET)"
-	@$(export-test-env) \
-	docker run \
-		--name pg-vector-test \
-		-p $$POSTGRES_PORT:5432 \
-		-e POSTGRES_PASSWORD \
-		-e POSTGRES_USER \
-		-e POSTGRES_DB \
-		-d $(DOCKER_PG_VECTOR_IMAGE)
-	@sleep 2
-	@echo "$(GREEN)Running database migrations...$(RESET)"
-	@$(export-test-env) \
-	uv run alembic upgrade head
+up-test: up-redis
 
 up-redis:
 	$(call clean-docker-container,redis-test)
@@ -172,17 +154,8 @@ run-tests:
 	@$(export-test-env) \
 	$(UV) run pytest -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests
 
-# NB: `pytest-alembic` requires the DB engine to point an empty database. Thus, alembic
-# tests should be run in isolation from other tests that may populate the DB.
-run-tests-alembic:
-	@$(export-test-env) \
-	python -m pytest -rPQ -m "alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests/test_alembic_migrations.py
-
 ########## TEST TEARDOWN ##########
-down-test: down-pgvector down-redis ## Tear down all local test containers
-
-down-pgvector: ## Tear down pg-vector container
-	$(call clean-docker-container,pg-vector-test)
+down-test: down-redis ## Tear down all local test containers
 
 down-redis:
 	$(call clean-docker-container,redis-test)
