@@ -101,7 +101,7 @@ def create_page_ir_extraction_dirs(
         The created page IR extraction directories.
     """
 
-    root = output_dir / doc_key
+    root = output_dir / doc_key / "extraction"
     artifacts = root / "artifacts"
     page_images = root / "page_images"
     page_irs = root / "page_irs"
