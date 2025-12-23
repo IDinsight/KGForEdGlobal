@@ -208,7 +208,6 @@ def persist_verification_run(
         }
     )
     extra.pop("status", None)
-    extra.pop("use_text_layer_hints", None)
     verification_dirs = create_page_ir_verification_dirs(output_dir=output_dir)
     verification_run = VerificationRunIR(
         models=[model],
