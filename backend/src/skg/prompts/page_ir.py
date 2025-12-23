@@ -180,6 +180,7 @@ Decision guidance:
 - Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.
 - TABLE continuation signals: same table grid continues, row text cut off at bottom then resumes at top, repeated header row (often same column labels).
 - TEXT continuation signals: sentence continues mid-thought, list numbering/bullets continue, paragraph starts mid-sentence at top.
+- If is_continuation=false and you are confident, set continuation_kind="none".
 
 When is_continuation=true:
 - If the excerpt boundaries are NOT already correct, you should usually set:

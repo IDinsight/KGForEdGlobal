@@ -109,6 +109,21 @@ def bottommost_continuity_candidate(
 
     # 2. Table-in-bottom-band override (bottom 20%), when edge-most is not a table.
     edge_item = max(candidates, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
+
+    # If the edge-most item is a small "minor" block (e.g., footnote-ish), but there's
+    # a table close to the bottom, prefer the table as the continuity anchor.
+    if edge_item[1].get("kind") != "table" and is_minor_edge_block(
+        image_height=image_height, item=edge_item[1]
+    ):
+        tables = [(i, it) for (i, it) in candidates if it.get("kind") == "table"]
+        if tables:
+            # Bottom-most table by y1.
+            best_table = max(tables, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
+
+            # Use a slightly wider band than 20% (tables often end above the margin).
+            if float(best_table[1]["bbox"][3]) >= 0.70 * image_height:
+                return best_table
+
     if edge_item[1].get("kind") != "table":
         bottom_band_y = 0.80 * image_height
         tables_in_band = [
@@ -318,6 +333,48 @@ def is_artifact(item: dict[str, Any]) -> bool:
     return item.get("kind") == "block" and item.get("block_type") == "artifact"
 
 
+def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
+    """Return True for small, low-information blocks near an edge that often sit
+    below/above the real continuation content (e.g., short notes, tiny captions).
+
+    NB: Keep this conservative to avoid suppressing real content.
+
+    Parameters
+    ----------
+    image_height
+        The height of the page image in pixels.
+    item
+        The item to check.
+
+    Returns
+    -------
+    bool
+        True if the item is a minor edge block, False otherwise.
+    """
+
+    if item.get("kind") != "block":
+        return False
+
+    bt = item.get("block_type")
+
+    # Headings/captions are usually meaningful context; do not treat as "minor".
+    if bt in ("heading", "caption"):
+        return False
+
+    text = (extract_text(item.get("text")) or "").strip()
+    if not text:
+        return False
+
+    _, y0, _, y1 = map(float, item["bbox"])
+    box_h = y1 - y0
+
+    # "minor" if it's short AND visually small.
+    if len(text) <= 80 and box_h <= max(120.0, 0.06 * image_height):
+        return True
+
+    return False
+
+
 def is_probable_header_footer_noise(
     *,
     image_height: float,
@@ -411,6 +468,7 @@ def item_snippet(*, item: dict[str, Any], max_len: int = 260) -> dict[str, Any]:
         out["header_row_count"] = item.get("header_row_count")
         out["repeats_header"] = item.get("repeats_header")
         out["n_cols"] = item.get("n_cols")
+        out["n_rows"] = len(item.get("rows") or [])
         rows = item.get("rows") or []
 
         # Show up to 2 header rows + 1 first body row + last 2 rows.
@@ -576,6 +634,20 @@ def topmost_continuity_candidate(
 
     # 2. Table-in-top-band override (top 20%), when edge-most is not a table.
     edge_item = min(candidates, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+
+    # If the edge-most item is a small "minor" block (short note), but a continuation
+    # table starts near the top, prefer the table.
+    if edge_item[1].get("kind") != "table" and is_minor_edge_block(
+        image_height=image_height, item=edge_item[1]
+    ):
+        tables = [(i, it) for (i, it) in candidates if it.get("kind") == "table"]
+        if tables:
+            best_table = min(tables, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+
+            # Wider band than 20% (tables can start below a small header line).
+            if float(best_table[1]["bbox"][1]) <= 0.30 * image_height:
+                return best_table
+
     if edge_item[1].get("kind") != "table":
         top_band_y = 0.20 * image_height
         tables_in_band = [
