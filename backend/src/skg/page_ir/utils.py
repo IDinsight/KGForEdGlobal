@@ -120,15 +120,17 @@ def bottommost_continuity_candidate(
             return max(tables_in_band, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
 
     # Edge-first: find the max y1, then consider items close to that edge.
-    max_y1 = max(it["bbox"][3] for _, it in candidates)
+    max_y1 = max(float(it["bbox"][3]) for _, it in candidates)
     edge_slop = min(200.0, max(80.0, 0.04 * image_height))
     near_edge = [
-        (i, it) for i, it in candidates if near(it["bbox"][3], max_y1, tol=edge_slop)
+        (i, it)
+        for i, it in candidates
+        if near(float(it["bbox"][3]), max_y1, tol=edge_slop)
     ]
     table_near_edge = [(i, it) for i, it in near_edge if it.get("kind") == "table"]
     chosen = table_near_edge if table_near_edge else near_edge
 
-    return max(chosen, key=lambda p: (p[1]["bbox"][3], p[0]))
+    return max(chosen, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
 
 
 def create_page_ir_extraction_dirs(
@@ -336,7 +338,7 @@ def is_probable_header_footer_noise(
         True if the item is likely header/footer noise, False otherwise.
     """
 
-    text = (extract_text(item) or "").strip()
+    text = (extract_text(item.get("text")) or "").strip()
 
     if item.get("kind") != "block" or not text:
         return False
@@ -408,6 +410,7 @@ def item_snippet(*, item: dict[str, Any], max_len: int = 260) -> dict[str, Any]:
     else:
         out["header_row_count"] = item.get("header_row_count")
         out["repeats_header"] = item.get("repeats_header")
+        out["n_cols"] = item.get("n_cols")
         rows = item.get("rows") or []
 
         # Show up to 2 header rows + 1 first body row + last 2 rows.
@@ -468,7 +471,8 @@ def min_crop_height_px(*, kind: str, page_h_px: int) -> int:
 
 def set_boundary_flag(*, flag: str, page_ir: dict[str, Any], value: bool) -> None:
     """Set exactly one direction flag on page_ir["boundary_state"] without clobbering
-    the other. flag must be "from_prev" or "to_next".
+    the other. `flag` must be one of: "from_prev" or "to_next" (i.e.,
+    PageBoundaryState.CONTINUES_FROM_PREV.value / CONTINUES_TO_NEXT.value).
 
     Parameters
     ----------
@@ -583,12 +587,14 @@ def topmost_continuity_candidate(
             return min(tables_in_band, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
 
     # Edge-first: find the min y0, then consider items close to that edge.
-    min_y0 = min(it["bbox"][1] for _, it in candidates)
+    min_y0 = min(float(it["bbox"][1]) for _, it in candidates)
     edge_slop = min(200.0, max(80.0, 0.04 * image_height))
     near_edge = [
-        (i, it) for i, it in candidates if near(it["bbox"][1], min_y0, tol=edge_slop)
+        (i, it)
+        for i, it in candidates
+        if near(float(it["bbox"][1]), min_y0, tol=edge_slop)
     ]
     table_near_edge = [(i, it) for i, it in near_edge if it.get("kind") == "table"]
     chosen = table_near_edge if table_near_edge else near_edge
 
-    return min(chosen, key=lambda p: (p[1]["bbox"][1], p[0]))
+    return min(chosen, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
