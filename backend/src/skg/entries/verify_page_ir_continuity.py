@@ -39,7 +39,6 @@ from skg.page_ir.utils import (
     PageIRVerificationDirs,
     bottommost_continuity_candidate,
     create_page_ir_verification_dirs,
-    decode_boundary_state,
     ensure_boundary,
     item_snippet,
     min_crop_height_px,
@@ -89,37 +88,62 @@ def apply_continuity_edits(
         The continuity verdict from the model.
     """
 
-    # 1. Update page-level boundary states. We decode the suggestion (e.g., "both") but
-    # only apply the relevant half (to_next/from_prev) to avoid clobbering the other
-    # side of the page.
-    prev_val = (
+    # 1. Update page-level boundary states (pairwise-safe, only one direction each).
+    # If the model suggests an explicit boundary state, apply it directly.
+    # Otherwise, default to verdict.is_continuation.
+    prev_to_next = (
         verdict.is_continuation
-        if not verdict.set_prev_boundary_state
-        else decode_boundary_state(verdict.set_prev_boundary_state)[1]
+        if verdict.set_prev_boundary_state is None
+        else (
+            getattr(
+                verdict.set_prev_boundary_state,
+                "value",
+                verdict.set_prev_boundary_state,
+            )
+            == "to_next"
+        )
+    )
+    next_from_prev = (
+        verdict.is_continuation
+        if verdict.set_next_boundary_state is None
+        else (
+            getattr(
+                verdict.set_next_boundary_state,
+                "value",
+                verdict.set_next_boundary_state,
+            )
+            == "from_prev"
+        )
     )
     set_boundary_flag(
         page_ir=prev_page_ir,
         flag=PageBoundaryState.CONTINUES_TO_NEXT.value,
-        value=prev_val,
-    )
-
-    next_val = (
-        verdict.is_continuation
-        if not verdict.set_next_boundary_state
-        else decode_boundary_state(verdict.set_next_boundary_state)[0]
+        value=prev_to_next,
     )
     set_boundary_flag(
         page_ir=next_page_ir,
         flag=PageBoundaryState.CONTINUES_FROM_PREV.value,
-        value=next_val,
+        value=next_from_prev,
     )
 
     # 2. Update item-level boundaries (explicit edits from model).
-    if verdict.set_prev_item_boundary:
-        prev_page_items[prev_idx]["boundary"] = verdict.set_prev_item_boundary
+    if verdict.set_prev_item_boundary is not None:
+        ensure_boundary(
+            desired=getattr(
+                verdict.set_prev_item_boundary, "value", verdict.set_prev_item_boundary
+            ),
+            items=prev_page_items,
+            index=prev_idx,
+        )
 
-    if verdict.set_next_item_boundary:
-        next_page_items[next_idx]["boundary"] = verdict.set_next_item_boundary
+    if verdict.set_next_item_boundary is not None:
+        ensure_boundary(
+            desired=getattr(
+                verdict.set_next_item_boundary, "value", verdict.set_next_item_boundary
+            ),
+            items=next_page_items,
+            index=next_idx,
+        )
 
     # 3. Enforce item-level consistency (implicit edits).
     if verdict.is_continuation:
@@ -161,6 +185,9 @@ def apply_continuity_edits(
     if (
         verdict.set_next_table_repeats_header is not None
         and next_item.get("kind") == "table"
+        and verdict.is_continuation
+        and getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+        == "table"
     ):
         next_page_items[next_idx][
             "repeats_header"
@@ -373,7 +400,9 @@ def verify_page_ir_continuity(
 
         # Apply minimal edits for both loaded and new verdicts (only if model is
         # confident enough).
-        if verdict.confidence >= 0.70:
+        kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+        threshold = 0.80 if kind == "table" else 0.70
+        if verdict.confidence >= threshold:
             apply_continuity_edits(
                 next_idx=next_idx,
                 next_item=next_item,

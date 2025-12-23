@@ -125,8 +125,9 @@ def crop_image_to_bottom(
 
     padding_px = int(desired_padding_inches * render_dpi)
 
-    # Start just above the bottom edge of the candidate item.
-    y0_px = float(bbox[3]) - float(padding_px)
+    # Start just above the TOP edge of the candidate item. This includes the candidate
+    # itself (important for detecting truncated rows/sentences).
+    y0_px = float(bbox[1]) - float(padding_px)
 
     # Enforce minimum height: y0 must not be below (h - min_height).
     max_allowed_y0 = float(h - min_height_px)
@@ -203,8 +204,9 @@ def crop_image_to_top(
 
     padding_px = int(desired_padding_inches * render_dpi)
 
-    # End just below the top edge of the candidate item.
-    y1_px = float(bbox[1]) + float(padding_px)
+    # End just below the BOTTOM edge of the candidate item. This includes the candidate
+    # itself (important for detecting resumed content).
+    y1_px = float(bbox[3]) + float(padding_px)
 
     # Enforce minimum height: y1 must be at least min_height_px.
     y1_px = max(y1_px, float(min_height_px))
