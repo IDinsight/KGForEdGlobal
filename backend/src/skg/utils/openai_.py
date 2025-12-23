@@ -332,6 +332,7 @@ def extract_page_ir(
             # Append the Assistant's failed attempt to history first. Without this, the
             # model doesn't know what it's correcting.
             if e.failed_content:
+                logger.error(f"Extraction failed content: {e.failed_content}")
                 input_items.append(
                     {
                         "role": "assistant",
@@ -990,6 +991,7 @@ def verify_page_ir_pairs(
 
             # Add feedback to history.
             if e.failed_content:
+                logger.error(f"Verification failed content: {e.failed_content}")
                 input_items.append(
                     {
                         "role": "assistant",
