@@ -40,8 +40,10 @@ from skg.page_ir.utils import (
     bottommost_continuity_candidate,
     create_page_ir_verification_dirs,
     ensure_boundary,
+    is_figure_block,
     item_snippet,
     min_crop_height_px,
+    pad_inches,
     set_boundary_flag,
     topmost_continuity_candidate,
 )
@@ -192,6 +194,50 @@ def apply_continuity_edits(
         next_page_items[next_idx][
             "repeats_header"
         ] = verdict.set_next_table_repeats_header
+
+
+def get_threshold_based_on_kind(
+    *,
+    next_item: dict[str, Any],
+    prev_item: dict[str, Any],
+    verdict: PageIRContinuityVerdict,
+) -> float:
+    """Get confidence threshold based on continuation kind.
+
+    Parameters
+    ----------
+    next_item
+        The actual item dictionary for the next page candidate.
+    prev_item
+        The actual item dictionary for the previous page candidate.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    float
+        The confidence threshold for applying implicit edits.
+    """
+
+    # Apply minimal edits for both loaded and new verdicts (only if model is confident
+    # enough).
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+
+    # NB: "unclear" should almost never trigger implicit edits. Only exception we
+    # allow is for true figure continuations (rare) and require high confidence.
+    is_fig_pair = is_figure_block(prev_item) or is_figure_block(next_item)
+    if kind == "table":
+        threshold = 0.80
+    elif kind == "text":
+        threshold = 0.70
+    elif kind == "none":
+        threshold = 0.75  # Slightly higher than text; optional
+    # Only apply if this is a figure continuation; otherwise skip edits entirely.
+    elif not (verdict.is_continuation and is_fig_pair):
+        threshold = 1.1  # Impossible threshold --> no edits
+    else:
+        threshold = 0.90
+    return threshold
 
 
 def persist_verification_run(
@@ -362,15 +408,21 @@ def verify_page_ir_continuity(
 
             prev_page_h_px = int(prev_page_ir["image_height"])
             next_page_h_px = int(next_page_ir["image_height"])
-            prev_min_h = min_crop_height_px(
-                page_h_px=prev_page_h_px, kind=prev_item.get("kind", "block")
-            )
-            next_min_h = min_crop_height_px(
-                page_h_px=next_page_h_px, kind=next_item.get("kind", "block")
-            )
+
+            prev_kind = prev_item.get("kind", "block")
+            if prev_kind == "block" and is_figure_block(prev_item):
+                prev_kind = "figure"
+
+            next_kind = next_item.get("kind", "block")
+            if next_kind == "block" and is_figure_block(next_item):
+                next_kind = "figure"
+
+            prev_min_h = min_crop_height_px(page_h_px=prev_page_h_px, kind=prev_kind)
+            next_min_h = min_crop_height_px(page_h_px=next_page_h_px, kind=next_kind)
 
             crop_image_to_bottom(
                 bbox=prev_item["bbox"],
+                desired_padding_inches=pad_inches(prev_kind),
                 input_png_fp=prev_image_full,
                 min_height_px=prev_min_h,
                 output_png_fp=prev_crop_fp,
@@ -378,6 +430,7 @@ def verify_page_ir_continuity(
             )
             crop_image_to_top(
                 bbox=next_item["bbox"],
+                desired_padding_inches=pad_inches(next_kind),
                 input_png_fp=next_image_full,
                 min_height_px=next_min_h,
                 output_png_fp=next_crop_fp,
@@ -398,10 +451,9 @@ def verify_page_ir_continuity(
             # Persist the verdict.
             write_to_json(report_fp, verdict.model_dump(mode="json"))
 
-        # Apply minimal edits for both loaded and new verdicts (only if model is
-        # confident enough).
-        kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
-        threshold = 0.80 if kind == "table" else 0.70
+        threshold = get_threshold_based_on_kind(
+            next_item=next_item, prev_item=prev_item, verdict=verdict
+        )
         if verdict.confidence >= threshold:
             apply_continuity_edits(
                 next_idx=next_idx,

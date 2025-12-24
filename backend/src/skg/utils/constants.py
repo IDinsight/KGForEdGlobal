@@ -22,9 +22,27 @@ class BlockType(str, Enum):
         "artifact"  # Page numbers, running headers/footers (to be filtered later)
     )
     CAPTION = "caption"  # Text specifically describing a table or figure
+    FIGURE = (
+        "figure"  # Diagrams/figures/illustrations/flowcharts (boxed visual regions)
+    )
     HEADING = "heading"  # Visually distinct titles, section headers
     LIST = "list"  # A group of items (bullets, numbers)
     PARAGRAPH = "paragraph"  # Standard blocks of prose
+
+
+class FigureKind(str, Enum):
+    """Classification of figure/diagram type (non-semantic)."""
+
+    CHART = "chart"
+    DIAGRAM = "diagram"
+    FLOWCHART = "flowchart"
+    GRAPH = "graph"
+    ILLUSTRATION = "illustration"
+    IMAGE = "image"
+    MAP = "map"
+    SCHEMATIC = "schematic"
+    TIMELINE = "timeline"
+    UNKNOWN = "unknown"
 
 
 class ItemBoundary(str, Enum):
@@ -55,6 +73,7 @@ class PageBoundaryState(str, Enum):
 class PageContinuationKind(str, Enum):
     """The type of content continuity detected between pages."""
 
+    FIGURE = "figure"
     NONE = "none"
     TABLE = "table"
     TEXT = "text"

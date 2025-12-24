@@ -451,9 +451,11 @@ def validate_continuity_verdict(  # pylint: disable=R1260
     if (not verdict.is_continuation) and verdict.continuation_kind in (
         PageContinuationKind.TABLE,
         PageContinuationKind.TEXT,
+        PageContinuationKind.FIGURE,
     ):
-        # Allow 'unclear' when false, but table/text is usually inconsistent.
-        raise QualityError("is_continuation=false but continuation_kind is table/text.")
+        raise QualityError(
+            "is_continuation=false but continuation_kind is table/text/figure."
+        )
 
     # 2b. If this is NOT a continuation, it makes no sense to suggest
     # 'truncated'/'resumed' boundaries on the boundary items.
@@ -480,22 +482,19 @@ def validate_continuity_verdict(  # pylint: disable=R1260
             "Verdict claims text continuation but suggests setting both boundaries to COMPLETE."
         )
 
-    # 3. Logic: If continuation_kind is TABLE, we generally expect boundaries to be
-    # modified.
-    if (
-        verdict.is_continuation
-        and verdict.continuation_kind == PageContinuationKind.TABLE
-    ) and (
-        verdict.set_prev_item_boundary is not None
-        and verdict.set_next_item_boundary is not None
-        and verdict.set_prev_item_boundary == ItemBoundary.COMPLETE
-        and verdict.set_next_item_boundary == ItemBoundary.COMPLETE
-    ):
-        raise QualityError(
-            "Verdict claims Table continuation but suggests setting boundaries to "
-            "COMPLETE. Tables continuing across pages usually require "
-            "'truncated'/'resumed' boundaries."
-        )
+    # 3. Logic: if it's a continuation, it's never correct to *set* either side to
+    # COMPLETE (if no change is needed, leave set_* null.)
+    if verdict.is_continuation:
+        if verdict.set_prev_item_boundary == ItemBoundary.COMPLETE:
+            raise QualityError(
+                "is_continuation=true but set_prev_item_boundary=COMPLETE. "
+                "Use 'truncated' (or leave null if already correct)."
+            )
+        if verdict.set_next_item_boundary == ItemBoundary.COMPLETE:
+            raise QualityError(
+                "is_continuation=true but set_next_item_boundary=COMPLETE. "
+                "Use 'resumed' (or leave null if already correct)."
+            )
 
     # 4. Pairwise-safe boundary_state suggestions. NB: Verification outputs may type
     # these as strings (Literal) or Enums; handle both.
@@ -654,10 +653,12 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         if getattr(item, "kind", None) != "block":
             continue
 
+        block_type = getattr(item, "block_type", None)
         text_unit = getattr(item, "text", None)
         raw_text = getattr(text_unit, "text", None) if text_unit else None
         list_items = getattr(item, "list_items", None) or []
         local_code = getattr(item, "local_code", None)
+        fig = getattr(item, "figure", None)
 
         # Check for whitespace-only main text. We define has_text as: exists, is
         # string, and is not empty.
@@ -682,10 +683,11 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         # Check for empty blocks (no payload at all).
         has_list = len(list_items) > 0
         has_code = isinstance(local_code, str) and bool(local_code.strip())
-        if not (has_text or has_list or has_code):
+        has_figure = (block_type == BlockType.FIGURE) and (fig is not None)
+        if not (has_text or has_list or has_code or has_figure):
             raise QualityError(
                 f"Empty block at items[{i}]: text, list_items, and local_code are all "
-                f"null/empty. Do not emit placeholder blocks (e.g., full-page artifacts)."
+                f"null/empty (and figure is null). Do not emit placeholder blocks."
             )
 
     # 2. Item-level bbox is REQUIRED and must be in-bounds.
@@ -715,12 +717,23 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         block_type = getattr(item, "block_type", None)
         text_unit = getattr(item, "text", None)
         list_items = getattr(item, "list_items", None) or []
+        fig = getattr(item, "figure", None)
+
+        # Non-figure blocks must not carry figure metadata.
+        if block_type != BlockType.FIGURE and fig is not None:
+            raise QualityError(
+                f"Non-figure block must have figure=null at items[{i}].figure."
+            )
 
         if block_type == BlockType.LIST:
             # Lists should be represented via list_items; text should be null.
             if text_unit is not None:
                 raise QualityError(
                     f"List block must have text=null at items[{i}].text."
+                )
+            if fig is not None:
+                raise QualityError(
+                    f"List block must have figure=null at items[{i}].figure."
                 )
             if not list_items:
                 raise QualityError(
@@ -736,6 +749,34 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                         f"List item at items[{i}].list_items[{j}] has no marker and "
                         "insufficient text. This should likely be a paragraph."
                     )
+        elif block_type == BlockType.FIGURE:
+            # Figure blocks: no text, no list_items, must have figure metadata.
+            if text_unit is not None:
+                raise QualityError(
+                    f"Figure block must have text=null at items[{i}].text."
+                )
+            if list_items:
+                raise QualityError(
+                    f"Figure block must have list_items=[] at items[{i}].list_items."
+                )
+            if fig is None:
+                raise QualityError(
+                    f"Figure block must have non-null figure at items[{i}].figure."
+                )
+
+            # If alt_text is present, it must not be whitespace-only.
+            alt = getattr(fig, "alt_text", None)
+            if isinstance(alt, str) and not alt.strip():
+                raise QualityError(
+                    f"Whitespace-only figure.alt_text at items[{i}].figure.alt_text."
+                )
+
+            # If caption is present, it must not be whitespace-only.
+            cap = getattr(fig, "caption", None)
+            if cap is not None and not _textunit_text(cap).strip():
+                raise QualityError(
+                    f"Whitespace-only figure.caption at items[{i}].figure.caption."
+                )
         elif list_items:
             # Non-list blocks should not carry list_items.
             raise QualityError(
