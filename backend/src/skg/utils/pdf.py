@@ -90,8 +90,9 @@ def crop_image_to_bottom(
     Parameters
     ----------
     bbox
-        [x0, y0, x1, y1] in *pixel units* of the rendered PNG (PageIR coordinate space).
-        Only y1 is used for the crop start (bottom-candidate).
+        [x0, y0, x1, y1] in *pixel units* of the rendered PNG (PageIR coordinate
+        space). Only y0 (bbox[1]) is used for the crop start (we start above the TOP
+        edge so the crop includes the candidate).
     desired_padding_inches
         Extra padding (in inches) to include above the crop start.
     input_png_fp
@@ -169,8 +170,9 @@ def crop_image_to_top(
     Parameters
     ----------
     bbox
-        [x0, y0, x1, y1] in *pixel units* of the rendered PNG (PageIR coordinate space).
-        Only y0 is used for the crop end (top-candidate).
+        [x0, y0, x1, y1] in *pixel units* of the rendered PNG (PageIR coordinate
+        space). Only y1 (bbox[3]) is used for the crop end (we end below the BOTTOM
+        edge so the crop includes the candidate).
     desired_padding_inches
         Extra padding (in inches) to include below the crop end.
     input_png_fp

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # Package Library
-from skg.utils.constants import ItemBoundary, PageBoundaryState
+from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 from skg.utils.general import clamp, make_dir, near
 
 
@@ -101,10 +101,12 @@ def bottommost_continuity_candidate(
         (i, it) for (i, it) in bottom_slice if _has_boundary(it, ItemBoundary.TRUNCATED)
     ]
     if truncated:
-        truncated_tables = [
-            (i, it) for (i, it) in truncated if it.get("kind") == "table"
+        truncated_non_fig = [
+            (i, it) for (i, it) in truncated if not is_figure_block(it)
         ]
-        chosen_trunc = truncated_tables if truncated_tables else truncated
+        base = truncated_non_fig if truncated_non_fig else truncated
+        truncated_tables = [(i, it) for (i, it) in base if it.get("kind") == "table"]
+        chosen_trunc = truncated_tables if truncated_tables else base
         return max(chosen_trunc, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
 
     # 2. Table-in-bottom-band override (bottom 20%), when edge-most is not a table.
@@ -143,7 +145,11 @@ def bottommost_continuity_candidate(
         if near(float(it["bbox"][3]), max_y1, tol=edge_slop)
     ]
     table_near_edge = [(i, it) for i, it in near_edge if it.get("kind") == "table"]
-    chosen = table_near_edge if table_near_edge else near_edge
+    if table_near_edge:
+        chosen = table_near_edge
+    else:
+        non_fig = [(i, it) for (i, it) in near_edge if not is_figure_block(it)]
+        chosen = non_fig if non_fig else near_edge
 
     return max(chosen, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
 
@@ -333,6 +339,27 @@ def is_artifact(item: dict[str, Any]) -> bool:
     return item.get("kind") == "block" and item.get("block_type") == "artifact"
 
 
+def is_figure_block(item: dict[str, Any]) -> bool:
+    """Check if an item is a figure/diagram block.
+
+    Parameters
+    ----------
+    item
+        The item to check.
+
+    Returns
+    -------
+    bool
+        True if the item is a figure block, False otherwise.
+    """
+
+    if item.get("kind") != "block":
+        return False
+
+    bt = item.get("block_type")
+    return bt == "figure" or bt == getattr(BlockType.FIGURE, "value", "figure")
+
+
 def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
     """Return True for small, low-information blocks near an edge that often sit
     below/above the real continuation content (e.g., short notes, tiny captions).
@@ -360,6 +387,14 @@ def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
     # Headings/captions are usually meaningful context; do not treat as "minor".
     if bt in ("heading", "caption"):
         return False
+
+    # Figures/diagrams often appear as small isolated blocks near the edge (icons,
+    # stamps, small illustrations). For continuity anchoring, treat *small* figures as
+    # "minor" so they don't steal the anchor from a nearby table/text.
+    if bt == "figure" or bt == getattr(BlockType.FIGURE, "value", "figure"):
+        _, y0, _, y1 = map(float, item["bbox"])
+        box_h = y1 - y0
+        return box_h <= max(180.0, 0.10 * image_height)
 
     text = (extract_text(item.get("text")) or "").strip()
     if not text:
@@ -460,10 +495,25 @@ def item_snippet(*, item: dict[str, Any], max_len: int = 260) -> dict[str, Any]:
             out["list_items"] = [
                 {
                     "marker": (li.get("marker") or ""),
-                    "text": (extract_text(li) or "")[:120],
+                    "text": (extract_text(li.get("text")) or "")[:120],
                 }
                 for li in lis[:6]
             ]
+
+        # Include lightweight metadata so the verifier isn't looking at an "empty"
+        # excerpt for figures.
+        if is_figure_block(item):
+            fig = item.get("figure") or {}
+            cap = fig.get("caption")
+            out["figure"] = {
+                "figure_kind": fig.get("figure_kind"),
+                "contains_text": fig.get("contains_text"),
+                "alt_text": (fig.get("alt_text") or "")[:200],
+                "caption": (extract_text(cap) or "")[:max_len],
+                "caption_language": (
+                    (cap or {}).get("language") if isinstance(cap, dict) else None
+                ),
+            }
     else:
         out["header_row_count"] = item.get("header_row_count")
         out["repeats_header"] = item.get("repeats_header")
@@ -509,6 +559,11 @@ def item_snippet(*, item: dict[str, Any], max_len: int = 260) -> dict[str, Any]:
 def min_crop_height_px(*, kind: str, page_h_px: int) -> int:
     """Get the minimum crop height in pixels for continuity candidate extraction.
 
+    kind:
+      - "table": show more (tables need extra rows)
+      - "figure": show more (figures need more visual context)
+      - default: text-ish blocks
+
     Parameters
     ----------
     kind
@@ -524,7 +579,33 @@ def min_crop_height_px(*, kind: str, page_h_px: int) -> int:
 
     if kind == "table":
         return clamp(0.33 * page_h_px, low=900, high=1600)
+
+    if kind == "figure":
+        # Bigger than text blocks so the verifier sees enough context/continuation cues.
+        return clamp(0.28 * page_h_px, low=750, high=1500)
+
     return clamp(0.16 * page_h_px, low=450, high=1000)
+
+
+def pad_inches(kind: str) -> float:
+    """Get the padding in inches for continuity candidate extraction.
+
+    Parameters
+    ----------
+    kind
+        The kind of item ("table" or other).
+
+    Returns
+    -------
+    float
+        The padding in inches.
+    """
+
+    if kind == "table":
+        return 0.35
+    if kind == "figure":
+        return 0.50
+    return 0.25
 
 
 def set_boundary_flag(*, flag: str, page_ir: dict[str, Any], value: bool) -> None:
@@ -628,8 +709,10 @@ def topmost_continuity_candidate(
         (i, it) for (i, it) in top_slice if _has_boundary(it, ItemBoundary.RESUMED)
     ]
     if resumed:
-        resumed_tables = [(i, it) for (i, it) in resumed if it.get("kind") == "table"]
-        chosen_res = resumed_tables if resumed_tables else resumed
+        resumed_non_fig = [(i, it) for (i, it) in resumed if not is_figure_block(it)]
+        base = resumed_non_fig if resumed_non_fig else resumed
+        resumed_tables = [(i, it) for (i, it) in base if it.get("kind") == "table"]
+        chosen_res = resumed_tables if resumed_tables else base
         return min(chosen_res, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
 
     # 2. Table-in-top-band override (top 20%), when edge-most is not a table.
@@ -667,6 +750,10 @@ def topmost_continuity_candidate(
         if near(float(it["bbox"][1]), min_y0, tol=edge_slop)
     ]
     table_near_edge = [(i, it) for i, it in near_edge if it.get("kind") == "table"]
-    chosen = table_near_edge if table_near_edge else near_edge
+    if table_near_edge:
+        chosen = table_near_edge
+    else:
+        non_fig = [(i, it) for (i, it) in near_edge if not is_figure_block(it)]
+        chosen = non_fig if non_fig else near_edge
 
     return min(chosen, key=lambda p: (float(p[1]["bbox"][1]), p[0]))

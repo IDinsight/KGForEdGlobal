@@ -11,6 +11,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 # Package Library
 from skg.utils.constants import (
     BlockType,
+    FigureKind,
     ItemBoundary,
     PageBoundaryState,
     PageContinuationKind,
@@ -131,6 +132,47 @@ class ListItem(BaseModelPageIR):
     text: TextUnit = Field(..., description="The content of the list item.")
 
 
+class FigureUnit(BaseModelPageIR):
+    """Non-semantic metadata about a diagram/figure region.
+
+    NB: This is NOT a full diagram parse. It is only enough to:
+        - preserve the presence of the figure,
+        - support later optional diagram interpretation,
+        - keep strong provenance via bbox.
+    """
+
+    alt_text: Optional[str] = Field(
+        None,
+        description=(
+            "Very short, non-semantic description of what the figure is "
+            "(e.g., 'flowchart with arrows', 'pyramid diagram'). "
+            "Do NOT interpret meaning. Null if unknown."
+        ),
+        max_length=200,
+    )
+    caption: Optional[TextUnit] = Field(
+        None,
+        description=(
+            "Caption text if it is clearly attached to this figure "
+            "(e.g., 'Figure 2: ...'). Prefer to extract captions as separate CAPTION "
+            "blocks; only populate here when unambiguous."
+        ),
+    )
+    contains_text: Optional[bool] = Field(
+        None,
+        description=(
+            "True if there is visible text inside the figure region (not including nearby captions). "
+            "Null if unknown."
+        ),
+    )
+    figure_kind: FigureKind = Field(
+        FigureKind.UNKNOWN,
+        description=(
+            "Coarse type label for the figure region. Keep conservative; use 'unknown' if unsure."
+        ),
+    )
+
+
 class CurriculumBlock(BaseModelPageIR):
     """A grouping of text content (paragraph, heading, or list)."""
 
@@ -139,6 +181,14 @@ class CurriculumBlock(BaseModelPageIR):
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
         description="Continuity status. 'truncated' if the text cuts off at the page margin.",
+    )
+    figure: Optional[FigureUnit] = Field(
+        None,
+        description=(
+            "Figure/diagram metadata. Must be null unless block_type='figure'. This "
+            "does NOT parse internal structure; it only preserves the region and light "
+            "hints."
+        ),
     )
     kind: Literal["block"] = Field(
         ..., description="Discriminator for ContentItem union. Must be 'block'."
@@ -153,7 +203,7 @@ class CurriculumBlock(BaseModelPageIR):
     )
     text: Optional[TextUnit] = Field(
         None,
-        description="The text content (for headings/paragraphs). Must be null when block_type indicates a list.",
+        description="The text content (for headings/paragraphs/captions). Must be null when block_type indicates a list or a figure.",
     )
 
 
