@@ -223,8 +223,8 @@ def get_threshold_based_on_kind(
     # enough).
     kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
 
-    # NB: "unclear" should almost never trigger implicit edits. Only exception we
-    # allow is for true figure continuations (rare) and require high confidence.
+    # NB: "unclear" should never appear with is_continuation=true. Figure continuations
+    # should use continuation_kind="figure" and require high confidence.
     is_fig_pair = is_figure_block(prev_item) or is_figure_block(next_item)
     if kind == "table":
         threshold = 0.80

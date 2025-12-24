@@ -406,7 +406,7 @@ def extract_page_ir(
     )
 
 
-def validate_continuity_verdict(  # pylint: disable=R1260
+def validate_continuity_verdict(  # pylint: disable=R0912,R1260
     verdict: PageIRContinuityVerdict,
 ) -> None:
     """Validate the semantic consistency of a continuity verdict.
@@ -448,6 +448,15 @@ def validate_continuity_verdict(  # pylint: disable=R1260
         and verdict.continuation_kind == PageContinuationKind.NONE
     ):
         raise QualityError("is_continuation=true but continuation_kind=none.")
+
+    if (
+        verdict.is_continuation
+        and verdict.continuation_kind == PageContinuationKind.UNCLEAR
+    ):
+        raise QualityError(
+            "is_continuation=true but continuation_kind=unclear. Use text/table/figure."
+        )
+
     if (not verdict.is_continuation) and verdict.continuation_kind in (
         PageContinuationKind.TABLE,
         PageContinuationKind.TEXT,
@@ -616,6 +625,30 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
 
         return boundary == ItemBoundary.TRUNCATED.value
 
+    def _ensure_text_en_none(tu: Any, where_: str) -> None:
+        """Enforce that extraction does not populate English translations.
+
+        Parameters
+        ----------
+        tu
+            The TextUnit-like object.
+        where_
+            Description of where the TextUnit is located (for error messages).
+
+        Raises
+        ------
+        QualityError
+            If text_en is populated during extraction.
+        """
+
+        if tu is None:
+            return
+
+        # TextUnit.text_en must be null/omitted during extraction; translation happens
+        # later.
+        if getattr(tu, "text_en", None) is not None:
+            raise QualityError(f"text_en must be null during extraction at {where_}.")
+
     def _safe_str(v: Any) -> str:
         """Convert None/non-str to a safe string ('') and keep strings as-is.
 
@@ -653,12 +686,20 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         if getattr(item, "kind", None) != "block":
             continue
 
-        block_type = getattr(item, "block_type", None)
         text_unit = getattr(item, "text", None)
+        _ensure_text_en_none(text_unit, f"items[{i}].text")
+
+        block_type = getattr(item, "block_type", None)
         raw_text = getattr(text_unit, "text", None) if text_unit else None
         list_items = getattr(item, "list_items", None) or []
         local_code = getattr(item, "local_code", None)
         fig = getattr(item, "figure", None)
+
+        # Figure captions are also TextUnits.
+        if fig is not None:
+            _ensure_text_en_none(
+                getattr(fig, "caption", None), f"items[{i}].figure.caption"
+            )
 
         # Check for whitespace-only main text. We define has_text as: exists, is
         # string, and is not empty.
@@ -743,7 +784,9 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                 # If marker is empty and text is short, it's likely a misclassification.
                 marker = _safe_str(getattr(li, "marker", None))
                 li_text = _textunit_text(getattr(li, "text", None))
-
+                _ensure_text_en_none(
+                    getattr(li, "text", None), f"items[{i}].list_items[{j}].text"
+                )
                 if not marker.strip() and len(li_text.strip()) < 3:
                     raise QualityError(
                         f"List item at items[{i}].list_items[{j}] has no marker and "
@@ -813,6 +856,10 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                     f"Table row with zero cells at items[{i}].rows[{r}].cells."
                 )
             for c, cell in enumerate(cells):
+                _ensure_text_en_none(
+                    getattr(cell, "text", None), f"items[{i}].rows[{r}].cells[{c}].text"
+                )
+
                 # Spans should be >= 1; schema should already enforce, but keep a guard.
                 col_span = int(getattr(cell, "col_span", 1) or 1)
                 row_span = int(getattr(cell, "row_span", 1) or 1)

@@ -74,19 +74,31 @@ def extract_page_ir_from_pdf_page(
 5. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
 6. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
 7. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
-8. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
-9. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
-10. Do not output empty tables; if you see a table, it must have at least one row.
-11. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
-12. Do NOT create blocks that represent the whole page or background. Every block/table/figure must correspond to actual visible content. Full-page bbox is allowed ONLY when the page is dominated by a single full-page figure/diagram.
-13. Do not emit any block that contains no content.
+8. **NO TRANSLATION**:
+   - Do NOT translate, paraphrase, or “helpfully” rewrite any text.
+   - For every `TextUnit`, `text_en` MUST be null or omitted. (A later translation pass fills it.)
+9. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
+   - The following PageIR fields are filled/overwritten by the Python pipeline and MUST be null or omitted:
+     - doc_key
+     - pdf_name
+     - page_index
+     - dpi
+     - image_width
+     - image_height
+   - You may omit `coord_space`; if you include it, it MUST be exactly "px".
+10. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
+11. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
+12. Do not output empty tables; if you see a table, it must have at least one row.
+13. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
+14. Do NOT create blocks that represent the whole page or background. Every block/table/figure must correspond to actual visible content. Full-page bbox is allowed ONLY when the page is dominated by a single full-page figure/diagram.
+15. Do not emit any block that contains no content.
  - For block_type in {{paragraph, heading, caption}}: block must have non-empty `text`.
  - For block_type=list: block must have non-empty `list_items` and `text=null`.
  - For block_type=figure: block must have a non-null `figure` object and `text=null` and `list_items=null`.
-14. If block_type != "figure", then `figure` MUST be null or omitted.
-15. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
-16. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
-17. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
+16. If block_type != "figure", then `figure` MUST be null or omitted.
+17. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
+18. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
+19. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
 
 ## BLOCK CLASSIFICATION
 - **artifact**: Headers, footers, page numbers;
@@ -134,10 +146,11 @@ def extract_page_ir_from_pdf_page(
 Requirements:
 1. Identify blocks (including figure blocks) and tables from the {image_width}x{image_height} image.
 2. Set "kind": "block" or "kind": "table" for every entry.
-3. Use "und" for unknown languages.
-4. If a table continues from a previous page and shows its headers again, set "repeats_header": true. Otherwise omit it or set null.
-5. If you can confidently count the table's columns, set "n_cols".
-6. If you see a diagram/figure (not a table), output a block_type="figure" block with a `figure` object and tight bbox.
+3. Do NOT translate. `TextUnit.text_en` must be null/omitted. Leave doc_key/pdf_name/page_index/dpi/image_* null/omitted.
+4. Use "und" for unknown languages.
+5. If a table continues from a previous page and shows its headers again, set "repeats_header": true. Otherwise omit it or set null.
+6. If you can confidently count the table's columns, set "n_cols".
+7. If you see a diagram/figure (not a table), output a block_type="figure" block with a `figure` object and tight bbox.
         """
     )
 
@@ -219,9 +232,11 @@ Decision guidance:
 
 continuation_kind rules:
 - If is_continuation=false and you are confident, set continuation_kind="none".
+- If is_continuation=false and you are uncertain, set continuation_kind="unclear".
+- If is_continuation=true, continuation_kind MUST be one of: "table", "text", "figure" (never "none" or "unclear").
 - Use continuation_kind="table" only for table continuations.
 - Use continuation_kind="text" only for text/list continuations.
-- If a FIGURE clearly continues, set continuation_kind="unclear" (since there is no "figure" kind in the schema).
+- Use continuation_kind="figure" only for figure/diagram continuations (same figure is cut off and resumes on next page).
 
 Boundary rules:
 - When is_continuation=true, the prev candidate should be truncated and the next candidate should be resumed.
