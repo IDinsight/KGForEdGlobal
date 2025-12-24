@@ -11,6 +11,15 @@ from typing import Any, Optional
 # Third Party Library
 from dotmap import DotMap
 
+# Package Library
+from skg.utils.constants import (
+    BlockType,
+    FigureKind,
+    ItemBoundary,
+    PageBoundaryState,
+    PageContinuationKind,
+)
+
 
 def extract_page_ir_from_pdf_page(
     *,
@@ -47,6 +56,10 @@ def extract_page_ir_from_pdf_page(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
+    allowed_block_types = json.dumps([bt.value for bt in BlockType], ensure_ascii=False)
+    allowed_figure_kinds = json.dumps(
+        [fk.value for fk in FigureKind], ensure_ascii=False
+    )
     doc_context = f"from {country}" + (f" ({year})" if year else "")
     lang_context = ", ".join(languages)
     text_layer_context = (
@@ -101,12 +114,15 @@ def extract_page_ir_from_pdf_page(
 19. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
 
 ## BLOCK CLASSIFICATION
-- **artifact**: Headers, footers, page numbers;
-- **caption**: Labels for tables/figures (e.g., "Table 1").
-- **heading**: Section titles.
-- **list**: Bulleted/numbered items (use `list_items`, set `text=null`).
-- **paragraph**: Prose (use `text`, set `list_items=null`).
-- **figure**: Diagrams/figures/illustrations/charts/flowcharts (use `figure`, set `text=null`, `list_items=null`).
+
+Valid block_type values: {allowed_block_types}
+
+- **{BlockType.ARTIFACT.value}**: Headers, footers, page numbers;
+- **{BlockType.CAPTION.value}**: Labels for tables/figures (e.g., "Table 1").
+- **{BlockType.FIGURE.value}**: Diagrams/figures/illustrations/charts/flowcharts (use `figure`, set `text=null`, `list_items=null`).
+- **{BlockType.HEADING.value}**: Section titles.
+- **{BlockType.LIST.value}**: Bulleted/numbered items (use `list_items`, set `text=null`).
+- **{BlockType.PARAGRAPH.value}**: Prose (use `text`, set `list_items=null`).
 
 ## FIGURES / DIAGRAMS
 - If the page contains a diagram/figure/illustration/chart/flowchart that is NOT a table grid, emit a block with:
@@ -116,7 +132,7 @@ def extract_page_ir_from_pdf_page(
   - text=null
   - list_items=null
   - figure = {{
-      "figure_kind": one of ["unknown","flowchart","chart","diagram","illustration","map","timeline"],
+      "figure_kind": one of {allowed_figure_kinds},
       "contains_text": true/false/null,
       "alt_text": VERY short non-semantic description (<=200 chars), e.g. "flowchart with arrows", "pyramid diagram"
       "caption": null OR a TextUnit object ({"language": "...", "text": "...", "text_en": null}) ONLY if the caption is clearly inside the figure bbox
@@ -185,8 +201,31 @@ def verify_page_ir_pairs_from_extraction(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
+    cont_true_allowed = json.dumps(
+        [
+            PageContinuationKind.TABLE.value,
+            PageContinuationKind.TEXT.value,
+            PageContinuationKind.FIGURE.value,
+        ],
+        ensure_ascii=False,
+    )
+    item_boundary_allowed = json.dumps(
+        [b.value for b in ItemBoundary], ensure_ascii=False
+    )
+    next_boundary_allowed = json.dumps(
+        [
+            PageBoundaryState.STANDALONE.value,
+            PageBoundaryState.CONTINUES_FROM_PREV.value,
+        ],
+        ensure_ascii=False,
+    )
+    prev_boundary_allowed = json.dumps(
+        [PageBoundaryState.STANDALONE.value, PageBoundaryState.CONTINUES_TO_NEXT.value],
+        ensure_ascii=False,
+    )
+
     system_message = dedent(
-        """You are a strict PageIR continuity verifier.
+        f"""You are a strict PageIR continuity verifier.
 
 You will be given:
 - bottom crop of page N (IMAGE A)
@@ -202,11 +241,9 @@ Task:
 2) Propose MINIMAL continuity-metadata edits if (and only if) the existing metadata is wrong.
 
 Allowed edits (metadata only):
-- set_prev_boundary_state: (standalone|to_next)
-- set_next_boundary_state: (standalone|from_prev)
-- set_prev_item_boundary / set_next_item_boundary:
-  - if is_continuation=true: use (truncated/resumed) ONLY (or leave null)
-  - if is_continuation=false: use (complete) ONLY (or leave null)
+- set_prev_boundary_state: one of {prev_boundary_allowed}
+- set_next_boundary_state: one of {next_boundary_allowed}
+- set_prev_item_boundary / set_next_item_boundary: one of {item_boundary_allowed}
 - set_next_table_repeats_header: only if the NEXT candidate item is a table AND it is the same table continuing AND the header is repeated
 
 Rules:
@@ -221,8 +258,8 @@ Rules:
 Pairwise safety rules (important):
 - You are ONLY judging the boundary between N and N+1. You cannot know about other neighbors.
 - Therefore:
-  - set_prev_boundary_state MUST be either "standalone" or "to_next" (do NOT use "both" or "from_prev").
-  - set_next_boundary_state MUST be either "standalone" or "from_prev" (do NOT use "both" or "to_next").
+  - set_prev_boundary_state MUST be one of {prev_boundary_allowed}.
+  - set_next_boundary_state MUST be one of {next_boundary_allowed}.
 
 Decision guidance:
 - Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.
@@ -233,7 +270,8 @@ Decision guidance:
 continuation_kind rules:
 - If is_continuation=false and you are confident, set continuation_kind="none".
 - If is_continuation=false and you are uncertain, set continuation_kind="unclear".
-- If is_continuation=true, continuation_kind MUST be one of: "table", "text", "figure" (never "none" or "unclear").
+- If is_continuation=true, continuation_kind MUST be one of: {cont_true_allowed} (never "none" or "unclear").
+- If is_continuation=false, continuation_kind MUST be one of: ["none","unclear"].
 - Use continuation_kind="table" only for table continuations.
 - Use continuation_kind="text" only for text/list continuations.
 - Use continuation_kind="figure" only for figure/diagram continuations (same figure is cut off and resumes on next page).

@@ -575,6 +575,46 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         b = getattr(item, "boundary", None)
         return "" if b is None else b.value if hasattr(b, "value") else str(b)
 
+    def _effective_row_width(row: Any) -> int:
+        """Determine the effective row width of a row (sum of col_spans).
+
+        Parameters
+        ----------
+        row
+            The row to check.
+
+        Returns
+        -------
+        int
+            The effective row width.
+        """
+
+        return sum(int(getattr(c, "col_span", 1) or 1) for c in (row.cells or []))
+
+    def _ensure_text_en_none(tu: Any, where_: str) -> None:
+        """Enforce that extraction does not populate English translations.
+
+        Parameters
+        ----------
+        tu
+            The TextUnit-like object.
+        where_
+            Description of where the TextUnit is located (for error messages).
+
+        Raises
+        ------
+        QualityError
+            If text_en is populated during extraction.
+        """
+
+        if tu is None:
+            return
+
+        # TextUnit.text_en must be null/omitted during extraction; translation happens
+        # later.
+        if getattr(tu, "text_en", None) is not None:
+            raise QualityError(f"text_en must be null during extraction at {where_}.")
+
     def _is_artifact(item: Any) -> bool:
         """Check if an item is an artifact block.
 
@@ -624,30 +664,6 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         """
 
         return boundary == ItemBoundary.TRUNCATED.value
-
-    def _ensure_text_en_none(tu: Any, where_: str) -> None:
-        """Enforce that extraction does not populate English translations.
-
-        Parameters
-        ----------
-        tu
-            The TextUnit-like object.
-        where_
-            Description of where the TextUnit is located (for error messages).
-
-        Raises
-        ------
-        QualityError
-            If text_en is populated during extraction.
-        """
-
-        if tu is None:
-            return
-
-        # TextUnit.text_en must be null/omitted during extraction; translation happens
-        # later.
-        if getattr(tu, "text_en", None) is not None:
-            raise QualityError(f"text_en must be null during extraction at {where_}.")
 
     def _safe_str(v: Any) -> str:
         """Convert None/non-str to a safe string ('') and keep strings as-is.
@@ -869,11 +885,16 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                         f"(col_span={col_span}, row_span={row_span})."
                     )
 
-        # Lightweight column-count sanity checks (ignore spans).
-        raw_widths = [len(getattr(rw, "cells", []) or []) for rw in rows]
-        raw_widths = [w for w in raw_widths if w > 0]
-        if raw_widths:
-            max_raw = max(raw_widths)
+        # Lightweight column-count sanity checks (span-aware).
+        #
+        # NB: We must account for col_span when assessing whether a table has
+        # "collapsed" into single-cell rows. Many curricula tables use spanning
+        # header/label cells, so ignoring spans causes false positives.
+        cell_counts = [len(getattr(rw, "cells", []) or []) for rw in rows]
+        eff_widths = [_effective_row_width(rw) for rw in rows]
+        eff_widths = [w for w in eff_widths if w > 0]
+        if eff_widths:
+            max_eff = max(eff_widths)
 
             # If the model provided n_cols, ensure it can accommodate the widest row.
             n_cols = getattr(item, "n_cols", None)
@@ -888,42 +909,46 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                         f"Suspicious n_cols={n_cols} at items[{i}].n_cols "
                         f"(expected 1..50 or null)."
                     )
-                if max_raw > n_cols:
+                if max_eff > n_cols:
                     raise QualityError(
-                        f"Table at items[{i}] has a row with {max_raw} cells but "
-                        f"n_cols={n_cols}. Either increase n_cols or split/merge cells "
-                        f"to match the visual grid."
+                        f"Table at items[{i}] has a row with effective width {max_eff} "
+                        f"(sum of col_span) but n_cols={n_cols}. Either increase n_cols "
+                        "or adjust/split/merge cells to match the visual grid."
                     )
 
             # Detect likely collapse: header shows multiple columns but body is mostly
-            # 1 cell.
-            if 0 < header_row_count < len(raw_widths):
-                header_max = max(raw_widths[:header_row_count])
-                body_widths = raw_widths[header_row_count:]
+            # 1 column in effective width.
+            if 0 < header_row_count < len(eff_widths):
+                header_max = max(eff_widths[:header_row_count])
+                body_widths = eff_widths[header_row_count:]
                 if body_widths:
                     body_sorted = sorted(body_widths)
                     body_median = body_sorted[len(body_sorted) // 2]
                     frac_single = sum(w == 1 for w in body_widths) / len(body_widths)
 
-                    # Strong guard against false positives (spanning label rows).
                     if header_max >= 3 and body_median <= 1 and frac_single >= 0.60:
+                        # Include raw cell counts for debugging.
+                        header_cell_max = max(cell_counts[:header_row_count])
                         raise QualityError(
                             f"Table at items[{i}] likely collapsed: header shows "
-                            f"{header_max} columns, but {frac_single:.0%} of body rows "
-                            f"have 1 cell (raw widths, spans ignored). "
-                            "Split body rows into separate cells per visible column."
+                            f"{header_max} columns (effective, spans-aware; raw max "
+                            f"cells={header_cell_max}), but {frac_single:.0%} of body "
+                            f"rows have effective width 1. Split body rows into "
+                            f"separate cells per visible column (or set correct "
+                            f"col_span values)."
                         )
 
-            # Catch wildly inconsistent widths overall (spans ignored).
-            if max_raw >= 4:
-                mode_raw, _ = Counter(raw_widths).most_common(1)[0]
-                frac_single_all = sum(w == 1 for w in raw_widths) / len(raw_widths)
-                if mode_raw == 1 and frac_single_all >= 0.70:
+            # Catch wildly inconsistent widths overall (span-aware).
+            if max_eff >= 4:
+                mode_eff, _ = Counter(eff_widths).most_common(1)[0]
+                frac_single_all = sum(w == 1 for w in eff_widths) / len(eff_widths)
+                if mode_eff == 1 and frac_single_all >= 0.70:
                     raise QualityError(
-                        f"Table at items[{i}] appears mostly single-cell rows "
-                        f"({frac_single_all:.0%} of rows have 1 cell). This often "
-                        f"indicates the table grid was collapsed. Represent each "
-                        f"visible column as a separate cell."
+                        f"Table at items[{i}] appears mostly single-column rows "
+                        f"({frac_single_all:.0%} of rows have effective width 1). This "
+                        f"often indicates the table grid was collapsed. Represent each "
+                        f"visible column as a separate cell (or set correct col_span "
+                        f"values)."
                     )
 
         # Deep table content check.

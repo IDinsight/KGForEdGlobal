@@ -364,8 +364,9 @@ def verify_page_ir_continuity(
         ), f"Missing page IR for pages {i} or {i + 1}"
 
         prev_page_ir, next_page_ir = page_irs[i], page_irs[i + 1]
-        prev_page_items = prev_page_ir.get("items", [])
-        next_page_items = next_page_ir.get("items", [])
+        prev_page_items, next_page_items = prev_page_ir.get(
+            "items", []
+        ), next_page_ir.get("items", [])
 
         if not prev_page_items or not next_page_items:
             logger.warning(
@@ -392,9 +393,18 @@ def verify_page_ir_continuity(
             image_height=next_page_ir["image_height"], items=next_page_items
         )
 
+        # Candidate selection provenance (for debugging).
+        candidate_selection = {
+            "prev_candidate_index": prev_idx,
+            "next_candidate_index": next_idx,
+            "prev_candidate_bbox": prev_item.get("bbox"),
+            "next_candidate_bbox": next_item.get("bbox"),
+        }
+
         if report_fp.exists() and not overwrite:
             logger.info(f"Report exists for {i}-{i + 1}; loading (overwrite=False).")
-            verdict = PageIRContinuityVerdict.model_validate(open_json_type(report_fp))
+            report_data = open_json_type(report_fp)
+            verdict = PageIRContinuityVerdict.model_validate(report_data["verdict"])
             validate_continuity_verdict(verdict)
         else:
             logger.info(f"Verifying continuity between pages {i} and {i + 1}...")
@@ -449,7 +459,13 @@ def verify_page_ir_continuity(
             )
 
             # Persist the verdict.
-            write_to_json(report_fp, verdict.model_dump(mode="json"))
+            write_to_json(
+                report_fp,
+                {
+                    "candidate_selection": candidate_selection,
+                    "verdict": verdict.model_dump(mode="json"),
+                },
+            )
 
         threshold = get_threshold_based_on_kind(
             next_item=next_item, prev_item=prev_item, verdict=verdict
