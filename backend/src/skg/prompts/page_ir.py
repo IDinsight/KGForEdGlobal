@@ -135,7 +135,7 @@ Valid block_type values: {allowed_block_types}
       "figure_kind": one of {allowed_figure_kinds},
       "contains_text": true/false/null,
       "alt_text": VERY short non-semantic description (<=200 chars), e.g. "flowchart with arrows", "pyramid diagram"
-      "caption": null OR a TextUnit object ({"language": "...", "text": "...", "text_en": null}) ONLY if the caption is clearly inside the figure bbox
+      "caption": null OR a TextUnit object ({{"language": "...", "text": "...", "text_en": null}}) ONLY if the caption is clearly inside the figure bbox
     }}
 - Do NOT emit a figure for tiny decorative elements (small logos/ornaments) unless they are central content.
 
