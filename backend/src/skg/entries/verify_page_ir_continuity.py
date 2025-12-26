@@ -298,7 +298,7 @@ def persist_verification_run(
     return verification_dirs, verification_run
 
 
-def verify_page_ir_continuity(
+def verify_page_ir_continuity(  # pylint:disable=R0915,R1260
     *,
     doc: pymupdf.Document,
     end_page: int | None,
@@ -384,6 +384,36 @@ def verify_page_ir_continuity(
                 flag=PageBoundaryState.CONTINUES_FROM_PREV.value,
                 value=False,
             )
+
+            # Keep item-level and page-level continuity consistent when one side is
+            # empty. If the previous page has items but the next page is empty, there
+            # is no continuation, so clear a stale "truncated" marker on the bottom
+            # candidate (if present).
+            if prev_page_items and not next_page_items:
+                prev_idx, prev_item = bottommost_continuity_candidate(
+                    image_height=prev_page_ir["image_height"], items=prev_page_items
+                )
+                if prev_item.get("boundary") == ItemBoundary.TRUNCATED.value:
+                    ensure_boundary(
+                        desired=ItemBoundary.COMPLETE.value,
+                        items=prev_page_items,
+                        index=prev_idx,
+                    )
+
+            # If the next page has items but the previous page is empty, there is no
+            # continuation, so clear a stale "resumed" marker on the top candidate (if
+            # present).
+            if next_page_items and not prev_page_items:
+                next_idx, next_item = topmost_continuity_candidate(
+                    image_height=next_page_ir["image_height"], items=next_page_items
+                )
+                if next_item.get("boundary") == ItemBoundary.RESUMED.value:
+                    ensure_boundary(
+                        desired=ItemBoundary.COMPLETE.value,
+                        items=next_page_items,
+                        index=next_idx,
+                    )
+
             continue
 
         prev_idx, prev_item = bottommost_continuity_candidate(
@@ -467,10 +497,9 @@ def verify_page_ir_continuity(
                 },
             )
 
-        threshold = get_threshold_based_on_kind(
+        if verdict.confidence >= get_threshold_based_on_kind(
             next_item=next_item, prev_item=prev_item, verdict=verdict
-        )
-        if verdict.confidence >= threshold:
+        ):
             apply_continuity_edits(
                 next_idx=next_idx,
                 next_item=next_item,

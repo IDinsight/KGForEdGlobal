@@ -2,11 +2,14 @@
 (IRs).
 """
 
+# Future Library
+from __future__ import annotations
+
 # Standard Library
 from typing import Annotated, Literal, Optional, Union
 
 # Third Party Library
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 # Package Library
 from skg.utils.constants import (
@@ -205,6 +208,71 @@ class CurriculumBlock(BaseModelPageIR):
         None,
         description="The text content (for headings/paragraphs/captions). Must be null when block_type indicates a list or a figure.",
     )
+
+    @model_validator(mode="after")
+    def validate_cross_field_invariants(  # pylint:disable=R1260
+        self,
+    ) -> CurriculumBlock:
+        """Validate cross-field variants.
+
+        Returns
+        -------
+        CurriculumBlock
+            The passed in CurriculumBlock.
+
+        Raises
+        ------
+        ValueError
+            If a cross-field validation fails.
+        """
+
+        bt = self.block_type
+
+        # List blocks: list_items required; text/figure must be null.
+        if bt == BlockType.LIST:
+            if not self.list_items:
+                raise ValueError(
+                    "CurriculumBlock block_type='list' requires non-empty list_items."
+                )
+            if self.text is not None:
+                raise ValueError(
+                    "CurriculumBlock block_type='list' requires text=null."
+                )
+            if self.figure is not None:
+                raise ValueError(
+                    "CurriculumBlock block_type='list' requires figure=null."
+                )
+            return self
+
+        # Figure blocks: figure required; text/list_items must be null.
+        if bt == BlockType.FIGURE:
+            if self.figure is None:
+                raise ValueError(
+                    "CurriculumBlock block_type='figure' requires figure metadata."
+                )
+            if self.text is not None:
+                raise ValueError(
+                    "CurriculumBlock block_type='figure' requires text=null."
+                )
+            if self.list_items is not None:
+                raise ValueError(
+                    "CurriculumBlock block_type='figure' requires list_items=null."
+                )
+            return self
+
+        # All other block types: text required; list_items/figure must be null.
+        if self.text is None or not self.text.text.strip():
+            raise ValueError(
+                f"CurriculumBlock block_type='{bt}' requires non-empty text."
+            )
+        if self.list_items is not None:
+            raise ValueError(
+                f"CurriculumBlock block_type='{bt}' requires list_items=null."
+            )
+        if self.figure is not None:
+            raise ValueError(f"CurriculumBlock block_type='{bt}' requires figure=null.")
+
+        return self
 
 
 # Schemas for extraction.
