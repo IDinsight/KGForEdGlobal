@@ -51,7 +51,12 @@ from skg.schemas import VerificationRunIR
 from skg.utils.constants import ItemBoundary, PageBoundaryState
 from skg.utils.general import compare_directories, open_json_type, write_to_json
 from skg.utils.openai_ import validate_continuity_verdict, verify_page_ir_pairs
-from skg.utils.pdf import crop_image_to_bottom, crop_image_to_top, validate_page_count
+from skg.utils.pdf import (
+    compute_doc_key,
+    crop_image_to_bottom,
+    crop_image_to_top,
+    validate_page_count,
+)
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
@@ -540,7 +545,7 @@ def verify(  # pylint: disable=too-many-positional-arguments
         "gpt-5.2-2025-12-11",
         "--model",
         "-m",
-        help="OpenAI model for page IR extraction.",
+        help="OpenAI model for page IR verification.",
     ),
     start_page: int = typer.Option(
         0, "--start-page", "-s", help="0-based start page (inclusive)."
@@ -576,6 +581,13 @@ def verify(  # pylint: disable=too-many-positional-arguments
         0-based end page (exclusive). Default: to end.
     overwrite
         Overwrite existing per-page artifacts.
+
+    Raises
+    ------
+    Exception
+        If any part of the verification fails.
+    ValueError
+        If the expected doc_key does not match the computed doc key.
     """
 
     extraction_run_results_dir = extraction_run_results_dir.resolve()
@@ -597,6 +609,19 @@ def verify(  # pylint: disable=too-many-positional-arguments
         start_page=start_page,
         **extraction_run_config,
     )
+
+    expected_doc_key = extraction_run_config.get("extra", {}).get("doc_key")
+    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=pdf_fp)
+
+    if computed_doc_key != expected_doc_key:
+        raise ValueError(
+            f"PDF doc_key mismatch.\n"
+            f"  PDF provided to verify(): {pdf_fp}\n"
+            f"  computed doc_key:         {computed_doc_key}\n"
+            f"  extraction_run.json key:  {expected_doc_key}\n"
+            f"You are likely verifying against a different PDF than the one used for "
+            f"extraction. Pass the same PDF used in step 1 or re-run extraction."
+        )
 
     logger.info(
         f"Starting page IR continuity verification process using directories: "
