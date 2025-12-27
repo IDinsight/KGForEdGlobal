@@ -24,6 +24,7 @@ import pymupdf
 import typer
 
 from loguru import logger
+from pydantic import ValidationError
 
 # Append the framework path. NB: This is required if this entry point is invoked from
 # the command line. However, it is not necessary if it is imported from a pip install.
@@ -50,7 +51,11 @@ from skg.page_ir.utils import (
 from skg.schemas import VerificationRunIR
 from skg.utils.constants import ItemBoundary, PageBoundaryState
 from skg.utils.general import compare_directories, open_json_type, write_to_json
-from skg.utils.openai_ import validate_continuity_verdict, verify_page_ir_pairs
+from skg.utils.openai_ import (
+    QualityError,
+    validate_continuity_verdict,
+    verify_page_ir_pairs,
+)
 from skg.utils.pdf import (
     compute_doc_key,
     crop_image_to_bottom,
@@ -303,7 +308,7 @@ def persist_verification_run(
     return verification_dirs, verification_run
 
 
-def verify_page_ir_continuity(  # pylint:disable=R0915,R1260
+def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
     *,
     doc: pymupdf.Document,
     end_page: int | None,
@@ -428,20 +433,57 @@ def verify_page_ir_continuity(  # pylint:disable=R0915,R1260
             image_height=next_page_ir["image_height"], items=next_page_items
         )
 
-        # Candidate selection provenance (for debugging).
+        # Candidate selection provenance (for debugging). NB: cached pair reports are
+        # only safe to reuse if they refer to the same candidate items. Candidate
+        # selection can change when extraction improves, heuristics change, or page IRs
+        # are edited.
         candidate_selection = {
             "prev_candidate_index": prev_idx,
             "next_candidate_index": next_idx,
             "prev_candidate_bbox": prev_item.get("bbox"),
             "next_candidate_bbox": next_item.get("bbox"),
+            # Excerpts let us detect "same index but different content" when rerunning.
+            "prev_candidate_excerpt": item_snippet(item=prev_item),
+            "next_candidate_excerpt": item_snippet(item=next_item),
         }
 
+        verdict = None
         if report_fp.exists() and not overwrite:
             logger.info(f"Report exists for {i}-{i + 1}; loading (overwrite=False).")
             report_data = open_json_type(report_fp)
-            verdict = PageIRContinuityVerdict.model_validate(report_data["verdict"])
-            validate_continuity_verdict(verdict)
-        else:
+            prior_selection = report_data.get("candidate_selection", {})
+
+            indices_match = (
+                prior_selection.get("prev_candidate_index") == prev_idx
+                and prior_selection.get("next_candidate_index") == next_idx
+            )
+            excerpts_match = prior_selection.get("prev_candidate_excerpt") in (
+                None,
+                candidate_selection["prev_candidate_excerpt"],
+            ) and prior_selection.get("next_candidate_excerpt") in (
+                None,
+                candidate_selection["next_candidate_excerpt"],
+            )
+
+            if indices_match and excerpts_match and "verdict" in report_data:
+                try:
+                    verdict = PageIRContinuityVerdict.model_validate(
+                        report_data["verdict"]
+                    )
+                    validate_continuity_verdict(verdict)
+                except (QualityError, ValidationError):
+                    logger.warning(
+                        f"Cached verdict for {i}-{i + 1} is invalid; re-verifying.",
+                        exc_info=True,
+                    )
+                    verdict = None
+            else:
+                logger.info(
+                    f"Ignoring cached report for {i}-{i + 1}: candidate selection "
+                    f"changed; re-verifying."
+                )
+
+        if verdict is None:
             logger.info(f"Verifying continuity between pages {i} and {i + 1}...")
 
             prev_image_full = page_images_dir / f"{i:04}.png"
