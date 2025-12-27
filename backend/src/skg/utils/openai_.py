@@ -520,6 +520,35 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
             "set_next_boundary_state must be standalone or from_prev (pairwise-safe)."
         )
 
+    # Consistency with is_continuation: if the model claims the boundary IS a
+    # continuation, it must not suggest "standalone" for either side since that would
+    # contradict the claim.
+    prev_state = (
+        getattr(
+            verdict.set_prev_boundary_state, "value", verdict.set_prev_boundary_state
+        )
+        if verdict.set_prev_boundary_state is not None
+        else None
+    )
+    next_state = (
+        getattr(
+            verdict.set_next_boundary_state, "value", verdict.set_next_boundary_state
+        )
+        if verdict.set_next_boundary_state is not None
+        else None
+    )
+    if verdict.is_continuation:
+        if prev_state == "standalone":
+            raise QualityError(
+                "is_continuation=true but set_prev_boundary_state=standalone. "
+                "Use 'to_next' (or leave null if already correct)."
+            )
+        if next_state == "standalone":
+            raise QualityError(
+                "is_continuation=true but set_next_boundary_state=standalone. "
+                "Use 'from_prev' (or leave null if already correct)."
+            )
+
 
 def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
     *, image_height: int, image_width: int, page_ir: PageIR
