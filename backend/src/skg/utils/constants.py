@@ -48,6 +48,7 @@ class FigureKind(str, Enum):
 class ItemBoundary(str, Enum):
     """Enumeration for item boundary states on a page."""
 
+    BOTH = "both"  # Item continues from prev page AND to next page
     COMPLETE = "complete"  # Item is fully contained on this page
     RESUMED = "resumed"  # Item is a continuation from top
     TRUNCATED = "truncated"  # Item is cut off at the bottom

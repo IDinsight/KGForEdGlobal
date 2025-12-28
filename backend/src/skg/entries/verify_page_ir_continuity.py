@@ -175,7 +175,9 @@ def apply_continuity_edits(
             )
     else:
         # If confident NOT a continuation, clear stray "truncated"/"resumed" flags on
-        # these specific candidates.
+        # these specific candidates. NB: Do NOT clear "both" here. A single pairwise
+        # check (N,N+1) cannot safely conclude the item is not also connected to the
+        # other neighbor (N-1).
         if not verdict.set_prev_item_boundary and prev_page_items[prev_idx].get(
             "boundary"
         ) in (ItemBoundary.TRUNCATED.value, ItemBoundary.RESUMED.value):
@@ -631,8 +633,7 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
 def veto_verdict(
     *, reason: str, verdict: PageIRContinuityVerdict
 ) -> PageIRContinuityVerdict:
-    """Veto a verdict by forcing is_continuation=False and continuation_kind = None
-    with high confidence.
+    """Veto a verdict by forcing is_continuation=False with low confidence.
 
     Parameters
     ----------
@@ -648,8 +649,12 @@ def veto_verdict(
     """
 
     verdict.is_continuation = False
-    verdict.confidence = max(0.90, min(float(verdict.confidence), 0.99))
-    verdict.continuation_kind = PageContinuationKind.NONE
+
+    # Candidate mismatch means we can't trust the continuation claim between THESE two
+    # items, not "there is definitely no continuation anywhere". Keep this UNCLEAR and
+    # low-confidence so downstream edit-application thresholds will not apply.
+    verdict.confidence = min(float(verdict.confidence), 0.49)
+    verdict.continuation_kind = PageContinuationKind.UNCLEAR
     verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
 
     # NB: Never apply edits if we veto the continuation claim.
