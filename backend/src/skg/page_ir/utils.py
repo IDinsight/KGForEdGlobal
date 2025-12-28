@@ -32,6 +32,31 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
+    """Check if the item has the specified boundary flag.
+
+    Parameters
+    it
+        The item to check.
+    b
+        The boundary flag to check for.
+
+    Returns
+    -------
+    bool
+        True if the item has the specified boundary flag, False otherwise.
+    """
+
+    v = it.get("boundary")
+
+    # Treat "both" as matching resumed/truncated for candidate selection.
+    if v == b or v == getattr(b, "value", b):
+        return True
+    if v == ItemBoundary.BOTH.value:
+        return b in (ItemBoundary.RESUMED, ItemBoundary.TRUNCATED)
+    return False
+
+
 def bottommost_continuity_candidate(
     *,
     image_height: float,
@@ -71,26 +96,7 @@ def bottommost_continuity_candidate(
     if not candidates:
         raise ValueError("No non-artifact items found.")
 
-    # 1. Prefer boundary-marked items when they exist (strict-continuity helper).
-    def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
-        """Check if the item has the specified boundary flag.
-
-        Parameters
-        it
-            The item to check.
-        b
-            The boundary flag to check for.
-
-        Returns
-        -------
-        bool
-            True if the item has the specified boundary flag, False otherwise.
-        """
-
-        v = it.get("boundary")
-        return v == b or v == b.value
-
-    # Look at the last ~5 candidates by vertical position (closest to bottom). If any
+    # Look at the last 5 candidates by vertical position (closest to bottom). If any
     # are explicitly marked as truncated, prefer those (tables first).
     last_n = 5
     bottom_sorted = sorted(
@@ -281,14 +287,33 @@ def ensure_boundary(*, desired: str, items: list[dict[str, Any]], index: int) ->
         If an invalid boundary flag is provided.
     """
 
-    target_boundary = ItemBoundary(desired)
+    target_boundary: ItemBoundary = ItemBoundary(desired)
 
     current_val = items[index].get("boundary")
     current_boundary = (
         ItemBoundary(current_val) if current_val else ItemBoundary.COMPLETE
     )
 
-    # 3. Update: Only change if different
+    # Merge rule: if we already know the item is cut off on one side and we know it's
+    # also cut off on the other side, promote to BOTH instead of overwriting.
+    if (
+        target_boundary == ItemBoundary.TRUNCATED
+        and current_boundary == ItemBoundary.RESUMED
+    ):
+        target_boundary = ItemBoundary.BOTH
+    elif (
+        target_boundary == ItemBoundary.RESUMED
+        and current_boundary == ItemBoundary.TRUNCATED
+    ):
+        target_boundary = ItemBoundary.BOTH
+    elif current_boundary == ItemBoundary.BOTH and target_boundary in (
+        ItemBoundary.RESUMED,
+        ItemBoundary.TRUNCATED,
+    ):
+        # Never downgrade BOTH based on a single-sided update.
+        target_boundary = ItemBoundary.BOTH
+
+    # 3. Update: only change if different.
     if current_boundary != target_boundary:
         # Since ItemBoundary inherits from str, we can assign the Enum directly
         items[index]["boundary"] = target_boundary
@@ -687,26 +712,6 @@ def topmost_continuity_candidate(
     ]
     if not candidates:
         raise ValueError("No non-artifact items found.")
-
-    # 1. Prefer boundary-marked items when they exist (strict-continuity helper).
-    def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
-        """Check if the item has the specified boundary flag.
-
-        Parameters
-        ----------
-        it
-            The item to check.
-        b
-            The boundary flag to check for.
-
-        Returns
-        -------
-        bool
-            True if the item has the specified boundary flag, False otherwise.
-        """
-
-        v = it.get("boundary")
-        return v == b or v == b.value
 
     # Look at the first ~5 candidates by vertical position (closest to top). If any are
     # explicitly marked as resumed, prefer those (tables first).

@@ -183,7 +183,7 @@ class CurriculumBlock(BaseModelPageIR):
     block_type: BlockType = Field(..., description="The visual structure of the block.")
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
-        description="Continuity status. 'truncated' if the text cuts off at the page margin.",
+        description="Continuity status. 'truncated' if bottom cuts off; 'resumed' if top continues; 'both' if cut off at both top and bottom.",
     )
     figure: Optional[FigureUnit] = Field(
         None,

@@ -148,10 +148,15 @@ Valid block_type values: {allowed_block_types}
 - Do NOT misclassify tables as figures. If there is a ruled grid with cells, it must be a table.
 
 ## BOUNDARIES
-- Item `boundary`: Use "resumed" (top missing), "truncated" (bottom missing), or "complete".
+- Item `boundary`: Use:
+  - "resumed" (top missing / continues from previous page)
+  - "truncated" (bottom missing / continues to next page)
+  - "both" (continues from previous page AND to next page; e.g., middle page of a long table)
+  - "complete" (fully contained on this page)
 - Page `boundary_state`: Use "from_prev", "to_next", "both", or "standalone".
 - If the top-most content clearly starts mid-sentence/mid-row/mid-list (e.g., begins with punctuation, trailing clause, continued numbering), set boundary_state="from_prev" and that item's boundary="resumed".
 - If the bottom-most content is clearly cut off at the page bottom (mid-sentence, mid-cell, list continues), set boundary_state="to_next" and that item's boundary="truncated".
+- If the SAME item is clearly cut off at BOTH the top and bottom (common for long tables), set that item's boundary="both" and page boundary_state="both".
 - For block_type="figure": default boundary="complete" unless the figure is visibly cut off by the page edge.
         """
     )

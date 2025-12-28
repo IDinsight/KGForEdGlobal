@@ -469,9 +469,10 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
     # 2b. If this is NOT a continuation, it makes no sense to suggest
     # 'truncated'/'resumed' boundaries on the boundary items.
     if not verdict.is_continuation and (
-        verdict.set_prev_item_boundary in (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED)
+        verdict.set_prev_item_boundary
+        in (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED, ItemBoundary.BOTH)
         or verdict.set_next_item_boundary
-        in (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED)
+        in (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED, ItemBoundary.BOTH)
     ):
         raise QualityError(
             "is_continuation=false but verdict suggests truncated/resumed item boundaries."
@@ -663,7 +664,7 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         return getattr(item, "block_type", None) == BlockType.ARTIFACT
 
     def _is_resumed(boundary: str) -> bool:
-        """Check if a boundary string indicates a resumed item.
+        """Check if a boundary string indicates a resumed or both item.
 
         Parameters
         ----------
@@ -673,13 +674,13 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         Returns
         -------
         bool
-            True if the boundary indicates a resumed item, False otherwise.
+            True if the boundary indicates a resumed or both item, False otherwise.
         """
 
-        return boundary == ItemBoundary.RESUMED.value
+        return boundary in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
 
     def _is_truncated(boundary: str) -> bool:
-        """Check if a boundary string indicates a truncated item.
+        """Check if a boundary string indicates a truncated or both item.
 
         Parameters
         ----------
@@ -689,10 +690,10 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         Returns
         -------
         bool
-            True if the boundary indicates a truncated item, False otherwise.
+            True if the boundary indicates a truncated or both item, False otherwise.
         """
 
-        return boundary == ItemBoundary.TRUNCATED.value
+        return boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
 
     def _safe_str(v: Any) -> str:
         """Convert None/non-str to a safe string ('') and keep strings as-is.
