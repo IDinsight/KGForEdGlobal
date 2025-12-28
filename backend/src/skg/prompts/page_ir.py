@@ -264,7 +264,19 @@ Pairwise safety rules (important):
 Decision guidance:
 - Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.
 - TABLE continuation signals: same table grid continues, row text cut off at bottom then resumes at top, repeated header row (often same column labels).
-- TEXT continuation signals: sentence continues mid-thought, list numbering/bullets continue, paragraph starts mid-sentence at top.
+- TEXT continuation signals (STRONG EVIDENCE REQUIRED):
+  Only choose continuation_kind="text" when you can see strong truncation in IMAGE A and a clear resumption in IMAGE B.
+  Strong truncation cues include at least one of:
+   - The last visible line ends with a dangling comma/semicolon/colon/ellipsis (",", ";", ":", "…")
+   - A word is visibly cut with a hyphen/dash at the end of the line ("-", "–", "—")
+   - Unmatched open bracket/paren/quote in the visible text near the end
+   - A list item/numbering clearly continues (e.g., 1., 2., 3. or bullets) and IMAGE B continues the same list
+   - The top of IMAGE B starts mid-sentence (lowercase continuation, no new heading/caption) and matches the tail of IMAGE A
+  Hard negatives (DO NOT mark text continuation even if topic is related):
+   - "Table N shows/illustrates/indicates ..." at end of page N followed by a new page starting with "Table N:" or a table/caption. This is a layout handoff to a table/caption, NOT a text continuation.
+   - "Figure N shows ..." at end of page N followed by "Figure N:" or a figure/caption at top of page N+1.
+   - If the bottom text clearly ends a complete sentence (ends with ".", "!" or "?"), do NOT mark as text continuation.
+   - If the next candidate begins with a table/figure caption label ("Table", "Figure"), do NOT mark as text continuation.
 - FIGURE candidates: most figures do NOT continue across pages. Only mark continuation if the SAME figure is clearly cut off and resumes on the next page.
 
 continuation_kind rules:

@@ -49,7 +49,7 @@ from skg.page_ir.utils import (
     topmost_continuity_candidate,
 )
 from skg.schemas import VerificationRunIR
-from skg.utils.constants import ItemBoundary, PageBoundaryState
+from skg.utils.constants import ItemBoundary, PageBoundaryState, PageContinuationKind
 from skg.utils.general import compare_directories, open_json_type, write_to_json
 from skg.utils.openai_ import (
     QualityError,
@@ -308,6 +308,64 @@ def persist_verification_run(
     return verification_dirs, verification_run
 
 
+def sanitize_verdict_for_candidate_kinds(
+    *,
+    next_item: dict[str, Any],
+    prev_item: dict[str, Any],
+    verdict: PageIRContinuityVerdict,
+) -> PageIRContinuityVerdict:
+    """Drop (veto) continuations that are structurally impossible for the chosen
+    candidates.
+
+    Parameters
+    ----------
+    next_item
+        The actual item dictionary for the next page candidate.
+    prev_item
+        The actual item dictionary for the previous page candidate.
+    verdict
+        The continuation verdict from the model.
+
+    Returns
+    -------
+    PageIRContinuityVerdict
+        The created verification directories and persisted verification run metadata.
+    """
+
+    if not verdict.is_continuation:
+        return verdict
+
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+
+    prev_kind = prev_item.get("kind")
+    next_kind = next_item.get("kind")
+
+    # Text continuations must be block-to-block (never into/from a table)
+    if kind == "text" and (prev_kind != "block" or next_kind != "block"):
+        return veto_verdict(
+            reason="continuation_kind=text requires both candidates to be block items",
+            verdict=verdict,
+        )
+
+    # Table continuations must be table-to-table.
+    if kind == "table" and (prev_kind != "table" or next_kind != "table"):
+        return veto_verdict(
+            reason="continuation_kind=table requires both candidates to be table items",
+            verdict=verdict,
+        )
+
+    # Figure continuations must be figure-to-figure blocks.
+    if kind == "figure" and (
+        not (is_figure_block(prev_item) and is_figure_block(next_item))
+    ):
+        return veto_verdict(
+            reason="continuation_kind=figure requires both candidates to be figure blocks",
+            verdict=verdict,
+        )
+
+    return verdict
+
+
 def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
     *,
     doc: pymupdf.Document,
@@ -471,6 +529,9 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                         report_data["verdict"]
                     )
                     validate_continuity_verdict(verdict)
+                    verdict = sanitize_verdict_for_candidate_kinds(
+                        next_item=next_item, prev_item=prev_item, verdict=verdict
+                    )
                 except (QualityError, ValidationError):
                     logger.warning(
                         f"Cached verdict for {i}-{i + 1} is invalid; re-verifying.",
@@ -534,6 +595,9 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 prev_item_excerpt=item_snippet(item=prev_item),
                 next_item_excerpt=item_snippet(item=next_item),
             )
+            verdict = sanitize_verdict_for_candidate_kinds(
+                next_item=next_item, prev_item=prev_item, verdict=verdict
+            )
 
             # Persist the verdict.
             write_to_json(
@@ -562,6 +626,39 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
     for i, page_ir in page_irs.items():
         write_to_json(verification_dirs.page_irs_verified / f"{i:04}.json", page_ir)
     logger.success("All verified page IR JSONs written successfully!")
+
+
+def veto_verdict(
+    *, reason: str, verdict: PageIRContinuityVerdict
+) -> PageIRContinuityVerdict:
+    """Veto a verdict by forcing is_continuation=False with low confidence.
+
+    Parameters
+    ----------
+    reason
+        The reason for vetoing the verdict.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    PageIRContinuityVerdict
+        The modified verdict with the veto applied.
+    """
+
+    verdict.is_continuation = False
+    verdict.confidence = max(0.90, min(float(verdict.confidence), 0.99))
+    verdict.continuation_kind = PageContinuationKind.NONE
+    verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
+
+    # NB: Never apply edits if we veto the continuation claim.
+    verdict.set_prev_boundary_state = None
+    verdict.set_next_boundary_state = None
+    verdict.set_prev_item_boundary = None
+    verdict.set_next_item_boundary = None
+    verdict.set_next_table_repeats_header = None
+
+    return verdict
 
 
 @cli.command()
