@@ -379,13 +379,11 @@ def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
         True if the item is a minor edge block, False otherwise.
     """
 
-    if item.get("kind") != "block":
-        return False
-
     bt = item.get("block_type")
 
-    # Headings/captions are usually meaningful context; do not treat as "minor".
-    if bt in ("heading", "caption"):
+    # If not a block then it's never "minor". In addition, headings/captions are
+    # usually meaningful context; do not treat as "minor".
+    if item.get("kind") != "block" or bt in ("heading", "caption"):
         return False
 
     # Figures/diagrams often appear as small isolated blocks near the edge (icons,
@@ -402,6 +400,16 @@ def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
 
     _, y0, _, y1 = map(float, item["bbox"])
     box_h = y1 - y0
+
+    # Captions are often the first/last thing near the edge ("e.g., Table 2: ..."), and
+    # we usually want the *table* (or main text) as the continuity anchor. Treat
+    # caption blocks as minor based on visual size, not character length.
+    if (
+        item.get("kind") == "block"
+        and item.get("block_type") == "caption"
+        and box_h <= max(180.0, 0.08 * image_height)
+    ):
+        return True
 
     # "minor" if it's short AND visually small.
     if len(text) <= 80 and box_h <= max(120.0, 0.06 * image_height):
