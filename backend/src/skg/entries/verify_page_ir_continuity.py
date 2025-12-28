@@ -631,7 +631,8 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
 def veto_verdict(
     *, reason: str, verdict: PageIRContinuityVerdict
 ) -> PageIRContinuityVerdict:
-    """Veto a verdict by forcing is_continuation=False with low confidence.
+    """Veto a verdict by forcing is_continuation=False and continuation_kind = None
+    with high confidence.
 
     Parameters
     ----------
