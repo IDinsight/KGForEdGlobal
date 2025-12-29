@@ -331,7 +331,7 @@ def sanitize_verdict_for_candidate_kinds(
     Returns
     -------
     PageIRContinuityVerdict
-        The created verification directories and persisted verification run metadata.
+        The sanitized verdict.
     """
 
     if not verdict.is_continuation:
