@@ -285,10 +285,9 @@ Decision guidance:
 - FIGURE candidates: most figures do NOT continue across pages. Only mark continuation if the SAME figure is clearly cut off and resumes on the next page.
 
 continuation_kind rules:
-- If is_continuation=false and you are confident, set continuation_kind="none".
-- If is_continuation=false and you are uncertain, set continuation_kind="unclear".
+- If is_continuation=false, set continuation_kind="none".
 - If is_continuation=true, continuation_kind MUST be one of: {cont_true_allowed} (never "none" or "unclear").
-- If is_continuation=false, continuation_kind MUST be one of: ["none","unclear"].
+- If is_continuation=false, continuation_kind MUST be "none".
 - Use continuation_kind="table" only for table continuations.
 - Use continuation_kind="text" only for text/list continuations.
 - Use continuation_kind="figure" only for figure/diagram continuations (same figure is cut off and resumes on next page).
@@ -300,11 +299,11 @@ Boundary rules:
 
 Candidate mismatch safety:
 - If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items,
-  then set is_continuation=false, continuation_kind="unclear", confidence low, and leave all set_* fields null.
+  then set is_continuation=false, continuation_kind="none", confidence low, and leave all set_* fields null.
   (This avoids forcing wrong edits onto the wrong anchor items.)
 
 When unsure:
-- Prefer is_continuation=false, continuation_kind="unclear", low confidence, and leave set_* fields null (unless existing metadata is obviously wrong on the candidates).
+- Prefer is_continuation=false, continuation_kind="none", confi...(unless existing metadata is obviously wrong on the candidates).
     """
     )
 
