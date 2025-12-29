@@ -1,5 +1,14 @@
 """This module contains the entry point for verifying the continuity of the extracted
-page IR JSONs from step 1. This is step 2
+page IR JSONs from step 1. This is step 2.
+
+Step 2 reads per-page PageIR JSONs from Step 1, runs pairwise (N, N+1) continuity
+verification on selected boundary-candidate items, and writes corrected PageIR JSONs
+to the verification output directory.
+
+Key guarantee for Step 3:
+    - Item boundary markers ("truncated"/"resumed"/"both") are adjusted
+      deterministically so that stitching decisions can be driven by item boundaries
+      without accidental cross-page merges due to extraction noise.
 
 Invoke from the backend directory via:
 
@@ -100,33 +109,40 @@ def apply_continuity_edits(
         The continuity verdict from the model.
     """
 
-    # 1. Update page-level boundary states (pairwise-safe, only one direction each).
-    # If the model suggests an explicit boundary state, apply it directly.
-    # Otherwise, default to verdict.is_continuation.
-    prev_to_next = (
-        verdict.is_continuation
-        if verdict.set_prev_boundary_state is None
-        else (
-            getattr(
-                verdict.set_prev_boundary_state,
-                "value",
-                verdict.set_prev_boundary_state,
+    # 1. Update page-level boundary states (pairwise-safe, only one direction each). If
+    # is_continuation=True and the model suggests an explicit boundary state, apply it.
+    # Otherwise (no explicit override), default to True for this pair. If
+    # is_continuation=False, force both directions to False (ignore
+    # set_*_boundary_state).
+    if verdict.is_continuation:
+        prev_to_next = (
+            True
+            if verdict.set_prev_boundary_state is None
+            else (
+                getattr(
+                    verdict.set_prev_boundary_state,
+                    "value",
+                    verdict.set_prev_boundary_state,
+                )
+                == "to_next"
             )
-            == "to_next"
         )
-    )
-    next_from_prev = (
-        verdict.is_continuation
-        if verdict.set_next_boundary_state is None
-        else (
-            getattr(
-                verdict.set_next_boundary_state,
-                "value",
-                verdict.set_next_boundary_state,
+        next_from_prev = (
+            True
+            if verdict.set_next_boundary_state is None
+            else (
+                getattr(
+                    verdict.set_next_boundary_state,
+                    "value",
+                    verdict.set_next_boundary_state,
+                )
+                == "from_prev"
             )
-            == "from_prev"
         )
-    )
+    else:
+        prev_to_next = False
+        next_from_prev = False
+
     set_boundary_flag(
         page_ir=prev_page_ir,
         flag=PageBoundaryState.CONTINUES_TO_NEXT.value,
@@ -137,6 +153,19 @@ def apply_continuity_edits(
         flag=PageBoundaryState.CONTINUES_FROM_PREV.value,
         value=next_from_prev,
     )
+
+    # If this pair is NOT a continuation, we still need to make item boundaries safe
+    # for stage-3 stitching (which uses item boundaries). We do this deterministically
+    # by removing ONLY the seam facet, while preserving possible connections to the
+    # other neighbor (N-1 or N+2).
+    if not verdict.is_continuation:
+        disconnect_candidates(
+            next_idx=next_idx,
+            next_items=next_page_items,
+            prev_idx=prev_idx,
+            prev_items=prev_page_items,
+        )
+        return
 
     # 2. Update item-level boundaries (explicit edits from model).
     if verdict.set_prev_item_boundary is not None:
@@ -157,43 +186,20 @@ def apply_continuity_edits(
             index=next_idx,
         )
 
-    # 3. Enforce item-level consistency (implicit edits).
-    if verdict.is_continuation:
-        # If model verified continuity but didn't explicitly set boundaries, force
-        # defaults.
-        if not verdict.set_prev_item_boundary:
-            ensure_boundary(
-                desired=ItemBoundary.TRUNCATED.value,
-                items=prev_page_items,
-                index=prev_idx,
-            )
-        if not verdict.set_next_item_boundary:
-            ensure_boundary(
-                desired=ItemBoundary.RESUMED.value,
-                items=next_page_items,
-                index=next_idx,
-            )
-    else:
-        # If confident NOT a continuation, clear stray "truncated"/"resumed" flags on
-        # these specific candidates. NB: Do NOT clear "both" here. A single pairwise
-        # check (N,N+1) cannot safely conclude the item is not also connected to the
-        # other neighbor (N-1).
-        if not verdict.set_prev_item_boundary and prev_page_items[prev_idx].get(
-            "boundary"
-        ) in (ItemBoundary.TRUNCATED.value, ItemBoundary.RESUMED.value):
-            ensure_boundary(
-                desired=ItemBoundary.COMPLETE.value,
-                items=prev_page_items,
-                index=prev_idx,
-            )
-        if not verdict.set_next_item_boundary and next_page_items[next_idx].get(
-            "boundary"
-        ) in (ItemBoundary.TRUNCATED.value, ItemBoundary.RESUMED.value):
-            ensure_boundary(
-                desired=ItemBoundary.COMPLETE.value,
-                items=next_page_items,
-                index=next_idx,
-            )
+    # 3. Enforce item-level consistency (implicit edits). If model verified continuity
+    # but didn't explicitly set boundaries, force defaults.
+    if verdict.set_prev_item_boundary is None:
+        ensure_boundary(
+            desired=ItemBoundary.TRUNCATED.value,
+            items=prev_page_items,
+            index=prev_idx,
+        )
+    if verdict.set_next_item_boundary is None:
+        ensure_boundary(
+            desired=ItemBoundary.RESUMED.value,
+            items=next_page_items,
+            index=next_idx,
+        )
 
     # 4. Table header updates.
     if (
@@ -206,6 +212,55 @@ def apply_continuity_edits(
         next_page_items[next_idx][
             "repeats_header"
         ] = verdict.set_next_table_repeats_header
+
+
+def disconnect_candidates(
+    *,
+    next_idx: int,
+    next_items: list[dict[str, Any]],
+    prev_idx: int,
+    prev_items: list[dict[str, Any]],
+) -> None:
+    """Remove connecting facets when continuity is rejected.
+
+    Parameters
+    ----------
+    next_idx
+        Index of the continuity candidate item on the next page.
+    next_items
+        The list of items on the next page.
+    prev_idx
+        Index of the continuity candidate item on the previous page.
+    prev_items
+        The list of items on the previous page.
+    """
+
+    prev_boundary = prev_items[prev_idx].get("boundary")
+    next_boundary = next_items[next_idx].get("boundary")
+
+    # Prev candidate (page N): remove "to_next" facet.
+    # - TRUNCATED --> COMPLETE
+    # - BOTH --> RESUMED (may still connect to N-1).
+    if prev_boundary == ItemBoundary.TRUNCATED.value:
+        ensure_boundary(
+            desired=ItemBoundary.COMPLETE.value, items=prev_items, index=prev_idx
+        )
+    elif prev_boundary == ItemBoundary.BOTH.value:
+        ensure_boundary(
+            desired=ItemBoundary.RESUMED.value, items=prev_items, index=prev_idx
+        )
+
+    # Next candidate (page N+1): remove "from_prev" facet.
+    # - RESUMED --> COMPLETE
+    # - BOTH --> TRUNCATED (may still connect to N+2.)
+    if next_boundary == ItemBoundary.RESUMED.value:
+        ensure_boundary(
+            desired=ItemBoundary.COMPLETE.value, items=next_items, index=next_idx
+        )
+    elif next_boundary == ItemBoundary.BOTH.value:
+        ensure_boundary(
+            desired=ItemBoundary.TRUNCATED.value, items=next_items, index=next_idx
+        )
 
 
 def get_threshold_based_on_kind(
@@ -459,8 +514,8 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
 
             # Keep item-level and page-level continuity consistent when one side is
             # empty. If the previous page has items but the next page is empty, there
-            # is no continuation, so clear a stale "truncated" marker on the bottom
-            # candidate (if present).
+            # is no continuation, so remove the seam facet on the bottom candidate
+            # (TRUNCATED->COMPLETE, BOTH->RESUMED) if present.
             if prev_page_items and not next_page_items:
                 prev_idx, prev_item = bottommost_continuity_candidate(
                     image_height=prev_page_ir["image_height"], items=prev_page_items
@@ -471,10 +526,16 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                         items=prev_page_items,
                         index=prev_idx,
                     )
+                elif prev_item.get("boundary") == ItemBoundary.BOTH.value:
+                    ensure_boundary(
+                        desired=ItemBoundary.RESUMED.value,
+                        items=prev_page_items,
+                        index=prev_idx,
+                    )
 
             # If the next page has items but the previous page is empty, there is no
-            # continuation, so clear a stale "resumed" marker on the top candidate (if
-            # present).
+            # continuation, so remove the seam facet on the top candidate
+            # (RESUMED->COMPLETE, BOTH->TRUNCATED) if present.
             if next_page_items and not prev_page_items:
                 next_idx, next_item = topmost_continuity_candidate(
                     image_height=next_page_ir["image_height"], items=next_page_items
@@ -482,6 +543,12 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 if next_item.get("boundary") == ItemBoundary.RESUMED.value:
                     ensure_boundary(
                         desired=ItemBoundary.COMPLETE.value,
+                        items=next_page_items,
+                        index=next_idx,
+                    )
+                elif next_item.get("boundary") == ItemBoundary.BOTH.value:
+                    ensure_boundary(
+                        desired=ItemBoundary.TRUNCATED.value,
                         items=next_page_items,
                         index=next_idx,
                     )
@@ -653,8 +720,9 @@ def veto_verdict(
     verdict.is_continuation = False
 
     # Candidate mismatch means we can't trust the continuation claim between THESE two
-    # items, not "there is definitely no continuation anywhere". Keep this None and
-    # low-confidence so downstream edit-application thresholds will not apply.
+    # items, not "there is definitely no continuation anywhere". Keep this
+    # continuation_kind="none" and low-confidence so downstream edit-application
+    # thresholds will not apply.
     verdict.confidence = min(float(verdict.confidence), 0.49)
     verdict.continuation_kind = PageContinuationKind.NONE
     verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
@@ -711,8 +779,9 @@ def verify(  # pylint: disable=too-many-positional-arguments
     1. Check that the page images and page IR directories have matching files.
     2. Persist verification run metadata.
     3. Validate page range.
-    4. For each page in the specified range:
-    5. Finalize verification run record.
+    4. Run pairwise continuity verification across (N, N+1) in the selected page
+        range.
+    5. Write verified PageIR JSONs and finalize the verification run record.
 
     Parameters
     ----------
