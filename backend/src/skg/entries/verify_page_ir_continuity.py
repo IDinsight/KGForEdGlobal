@@ -480,6 +480,21 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         for i in range(start, stop)
     }
 
+    # Delete extraction noise so that verification becomes the source of truth for
+    # boundaries.
+    for page_ir in page_irs.values():
+        # Reset page-level continuity.
+        page_ir["boundary_state"] = PageBoundaryState.STANDALONE.value
+
+        # Reset item-level continuity.
+        for it in page_ir.get("items", []):
+            it["boundary"] = ItemBoundary.COMPLETE.value
+
+            # Start table header-repeat as unknown/false and only set repeats_header
+            # when a table seam is verified.
+            if it.get("kind") == "table":
+                it["repeats_header"] = None
+
     # Iterate in pairs.
     for i in range(start, stop - 1):
         report_fp = verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json"
