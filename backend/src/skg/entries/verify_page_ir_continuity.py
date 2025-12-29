@@ -335,6 +335,8 @@ def sanitize_verdict_for_candidate_kinds(
     """
 
     if not verdict.is_continuation:
+        # When there is no continuation between these candidates, use kind="none".
+        verdict.continuation_kind = PageContinuationKind.NONE
         return verdict
 
     kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
@@ -651,10 +653,10 @@ def veto_verdict(
     verdict.is_continuation = False
 
     # Candidate mismatch means we can't trust the continuation claim between THESE two
-    # items, not "there is definitely no continuation anywhere". Keep this UNCLEAR and
+    # items, not "there is definitely no continuation anywhere". Keep this None and
     # low-confidence so downstream edit-application thresholds will not apply.
     verdict.confidence = min(float(verdict.confidence), 0.49)
-    verdict.continuation_kind = PageContinuationKind.UNCLEAR
+    verdict.continuation_kind = PageContinuationKind.NONE
     verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
 
     # NB: Never apply edits if we veto the continuation claim.
