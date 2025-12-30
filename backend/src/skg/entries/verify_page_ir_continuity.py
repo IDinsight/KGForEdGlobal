@@ -196,7 +196,10 @@ def disconnect_candidates(
         )
     elif prev_boundary == ItemBoundary.BOTH.value:
         ensure_boundary(
-            desired=ItemBoundary.RESUMED.value, items=prev_items, index=prev_idx
+            allow_downgrade_both=True,
+            desired=ItemBoundary.RESUMED.value,
+            items=prev_items,
+            index=prev_idx,
         )
 
     # Next candidate (page N+1): remove "from_prev" facet.
@@ -208,7 +211,10 @@ def disconnect_candidates(
         )
     elif next_boundary == ItemBoundary.BOTH.value:
         ensure_boundary(
-            desired=ItemBoundary.TRUNCATED.value, items=next_items, index=next_idx
+            allow_downgrade_both=True,
+            desired=ItemBoundary.TRUNCATED.value,
+            items=next_items,
+            index=next_idx,
         )
 
 
@@ -600,17 +606,11 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 },
             )
 
-        if not verdict.is_continuation:
-            apply_continuity_edits(
-                next_idx=next_idx,
-                next_item=next_item,
-                next_page_items=next_page_items,
-                prev_idx=prev_idx,
-                prev_page_items=prev_page_items,
-                verdict=verdict,
+        if (not verdict.is_continuation) or (
+            verdict.confidence
+            >= get_threshold_based_on_kind(
+                next_item=next_item, prev_item=prev_item, verdict=verdict
             )
-        elif verdict.confidence >= get_threshold_based_on_kind(
-            next_item=next_item, prev_item=prev_item, verdict=verdict
         ):
             apply_continuity_edits(
                 next_idx=next_idx,

@@ -16,7 +16,6 @@ from skg.utils.constants import (
     BlockType,
     FigureKind,
     ItemBoundary,
-    PageBoundaryState,
     PageContinuationKind,
 )
 
@@ -84,18 +83,17 @@ def extract_page_ir_from_pdf_page(
    - Incorrect: `"text": "content"`
    - Empty: If a cell is blank, set `"text": null`.
 4. **TABLE COLUMN COUNT (optional)**: If you can clearly infer the number of visual columns in the table grid (from ruling/grid and headers), set `CurriculumTable.n_cols` to that integer. If unsure, omit it or set it to null.
-4b. **TABLE HEADER ROWS**:
+5. **TABLE HEADER ROWS**:
    - If the table has header rows at the top, set `header_row_count` to the number of header rows.
    - Keep header rows INSIDE `rows`; do not split headers into a separate field.
    - If unsure, leave it at 0 / omit it.
-5. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
-6. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
-6b. If the table has header rows, set "header_row_count".
-7. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
-8. **NO TRANSLATION**:
+6. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
+7. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
+8. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
+9. **NO TRANSLATION**:
    - Do NOT translate, paraphrase, or “helpfully” rewrite any text.
    - For every `TextUnit`, `text_en` MUST be null or omitted. (A later translation pass fills it.)
-9. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
+10. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
    - The following PageIR fields are filled/overwritten by the Python pipeline and MUST be null or omitted:
      - doc_key
      - pdf_name
@@ -104,26 +102,26 @@ def extract_page_ir_from_pdf_page(
      - image_width
      - image_height
    - You may omit `coord_space`; if you include it, it MUST be exactly "px".
-10. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
-11. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
-12. Do not output empty tables; if you see a table, it must have at least one row.
-13. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
-14. Do NOT create blocks that represent the whole page or background. Every block/table/figure must correspond to actual visible content. Full-page bbox is allowed ONLY when the page is dominated by a single full-page figure/diagram.
-15. Do not emit any block that contains no content.
+11. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
+12. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
+13. Do not output empty tables; if you see a table, it must have at least one row.
+14. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
+15. Do NOT create blocks that represent the whole page or background. Every block/table/figure must correspond to actual visible content. Full-page bbox is allowed ONLY when the page is dominated by a single full-page figure/diagram.
+16. Do not emit any block that contains no content.
  - For block_type in {{paragraph, heading, caption}}: block must have non-empty `text`.
  - For block_type=list: block must have non-empty `list_items` and `text=null`.
  - For block_type=figure: block must have a non-null `figure` object and `text=null` and `list_items=null`.
-16. If block_type != "figure", then `figure` MUST be null or omitted.
-17. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
-18. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
-19. LANGUAGE TAGGING (IMPORTANT):
+17. If block_type != "figure", then `figure` MUST be null or omitted.
+18. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
+19. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
+20. LANGUAGE TAGGING (IMPORTANT):
    - Use the BEST-MATCH BCP-47 language for the visible text, even if it is NOT in Expected Languages.
    - Expected Languages are only hints (common in Tanzania PDFs to include tables with fr/zh/ar in addition to en/sw).
    - Use "und" only if you genuinely cannot tell.
    - Use "mul" only if multiple languages appear in the SAME TextUnit (e.g., bilingual French+English in one cell).
-20. For any non-list block (including figure), list_items MUST be null or omitted (never []).
-21. MIXED LANGUAGE IN ONE TEXTUNIT: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
-22. GRID-TRUE ROWS ONLY: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
+21. For any non-list block (including figure), list_items MUST be null or omitted (never []).
+22. MIXED LANGUAGE IN ONE TEXTUNIT: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
+23. GRID-TRUE ROWS ONLY: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
 
 ## BLOCK CLASSIFICATION
 
@@ -230,17 +228,6 @@ def verify_page_ir_pairs_from_extraction(
     item_boundary_allowed = json.dumps(
         [b.value for b in ItemBoundary], ensure_ascii=False
     )
-    next_boundary_allowed = json.dumps(
-        [
-            PageBoundaryState.STANDALONE.value,
-            PageBoundaryState.CONTINUES_FROM_PREV.value,
-        ],
-        ensure_ascii=False,
-    )
-    prev_boundary_allowed = json.dumps(
-        [PageBoundaryState.STANDALONE.value, PageBoundaryState.CONTINUES_TO_NEXT.value],
-        ensure_ascii=False,
-    )
 
     system_message = dedent(
         f"""You are a strict PageIR continuity verifier.
@@ -271,12 +258,6 @@ Rules:
 - Return ONLY a JSON object matching the required schema. No prose.
 - Always include a short rationale string.
 - If uncertain, set is_continuation=false, continuation_kind="none", low confidence, and leave all set_* null.
-
-Pairwise safety rules (important):
-- You are ONLY judging the boundary between N and N+1. You cannot know about other neighbors.
-- Therefore:
-  - If you set set_prev_boundary_state, it MUST be one of {prev_boundary_allowed}. Otherwise leave it null.
-  - If you set set_next_boundary_state, it MUST be one of {next_boundary_allowed}. Otherwise leave it null.
 
 Decision guidance:
 - Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.

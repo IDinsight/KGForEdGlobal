@@ -64,12 +64,13 @@ def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
         True if the item has the specified boundary flag, False otherwise.
     """
 
-    # In Step 2 we wipe "boundary" to COMPLETE, but preserve the extraction hint under
-    # "_orig_boundary" for candidate selection.
-    v = it.get("_orig_boundary", it.get("boundary"))
+    v = it.get("boundary")
+    if v in (None, ItemBoundary.COMPLETE.value):
+        v = it.get("_orig_boundary")
 
-    # Treat "both" as matching resumed/truncated for candidate selection.
-    if v == b or v == getattr(b, "value", b):
+    v = getattr(v, "value", v)
+
+    if v == getattr(b, "value", b):
         return True
     if v == ItemBoundary.BOTH.value:
         return b in (ItemBoundary.RESUMED, ItemBoundary.TRUNCATED)
@@ -240,29 +241,6 @@ def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationD
     )
 
 
-def decode_boundary_state(state: str | PageBoundaryState) -> tuple[bool, bool]:
-    """Decode a boundary_state string/enum into (from_prev, to_next) boolean flags.
-
-    Parameters
-    ----------
-    state
-        The boundary_state string or Enum member.
-
-    Returns
-    -------
-    tuple[bool, bool]
-        A tuple of (from_prev, to_next) boolean flags.
-    """
-
-    if isinstance(state, str):
-        state = PageBoundaryState(state)
-
-    return (
-        state in (PageBoundaryState.CONTINUES_FROM_PREV, PageBoundaryState.BOTH),
-        state in (PageBoundaryState.CONTINUES_TO_NEXT, PageBoundaryState.BOTH),
-    )
-
-
 def derive_page_boundary_state(*, page_ir: dict[str, Any]) -> PageBoundaryState:
     """Derive page-level boundary_state from verified item boundaries.
 
@@ -331,13 +309,21 @@ def encode_boundary_state(from_prev: bool, to_next: bool) -> PageBoundaryState:
     return PageBoundaryState.STANDALONE
 
 
-def ensure_boundary(*, desired: str, items: list[dict[str, Any]], index: int) -> None:
+def ensure_boundary(
+    *,
+    allow_downgrade_both: bool = False,
+    desired: str,
+    items: list[dict[str, Any]],
+    index: int,
+) -> None:
     """Ensure that the item at the given index has the desired boundary flag.
 
     Parameters
     ----------
+    allow_downgrade_both
+        If True, allow downgrading BOTH to a single-sided boundary.
     desired
-        Desired boundary flag ("complete", "truncated", or "resumed").
+        Desired boundary flag ("complete", "truncated", "resumed", or "both").
     items
         List of PageIR items.
     index
@@ -352,12 +338,8 @@ def ensure_boundary(*, desired: str, items: list[dict[str, Any]], index: int) ->
     target_boundary: ItemBoundary = ItemBoundary(desired)
 
     current_val = items[index].get("boundary")
-    current_boundary = (
-        ItemBoundary(current_val) if current_val else ItemBoundary.COMPLETE
-    )
+    current_boundary = ItemBoundary(_boundary_val(current_val))
 
-    # Merge rule: if we already know the item is cut off on one side and we know it's
-    # also cut off on the other side, promote to BOTH instead of overwriting.
     if (
         target_boundary == ItemBoundary.TRUNCATED
         and current_boundary == ItemBoundary.RESUMED
@@ -368,17 +350,15 @@ def ensure_boundary(*, desired: str, items: list[dict[str, Any]], index: int) ->
         and current_boundary == ItemBoundary.TRUNCATED
     ):
         target_boundary = ItemBoundary.BOTH
-    elif current_boundary == ItemBoundary.BOTH and target_boundary in (
-        ItemBoundary.RESUMED,
-        ItemBoundary.TRUNCATED,
+    elif (
+        (not allow_downgrade_both)
+        and current_boundary == ItemBoundary.BOTH
+        and target_boundary in (ItemBoundary.RESUMED, ItemBoundary.TRUNCATED)
     ):
-        # Never downgrade BOTH based on a single-sided update.
         target_boundary = ItemBoundary.BOTH
 
-    # 3. Update: only change if different.
     if current_boundary != target_boundary:
-        # Since ItemBoundary inherits from str, we can assign the Enum directly
-        items[index]["boundary"] = target_boundary
+        items[index]["boundary"] = target_boundary.value
 
 
 def extract_text(v: Any) -> Optional[str]:
