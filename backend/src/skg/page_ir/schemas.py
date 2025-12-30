@@ -21,9 +21,47 @@ from skg.utils.constants import (
 )
 from skg.utils.general import validate_bcp47
 
+
+def validate_bbox_order(bbox: list[float]) -> list[float]:
+    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
+
+    Parameters
+    ----------
+    bbox
+        The bounding box to validate.
+
+    Returns
+    -------
+    list[float]
+        The validated bounding box.
+
+    Raises
+    ------
+    ValueError
+        If the bbox is not well-ordered.
+    """
+
+    if len(bbox) != 4:
+        raise ValueError("bbox must have exactly 4 numbers: [x0, y0, x1, y1].")
+
+    x0, y0, x1, y1 = bbox
+
+    for v in (x0, y0, x1, y1):
+        if v < 0:
+            raise ValueError(f"Invalid bbox: negative coordinate in {bbox}.")
+
+    if x0 >= x1 or y0 >= y1:
+        raise ValueError(
+            f"Invalid bbox order: expected x0 < x1 and y0 < y1, got {bbox}."
+        )
+
+    return bbox
+
+
 # Common fields with descriptions.
 BBox = Annotated[
     list[float],
+    AfterValidator(validate_bbox_order),
     Field(
         min_length=4,
         max_length=4,
@@ -37,8 +75,6 @@ LanguageField = Annotated[
         description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
     ),
 ]
-NextBoundaryStateSuggestion = Literal["standalone", "from_prev"]
-PrevBoundaryStateSuggestion = Literal["standalone", "to_next"]
 
 
 # Schemas for primitives.
@@ -123,6 +159,54 @@ class CurriculumTable(BaseModelPageIR):
         ...,
         description="All visual rows. Do NOT separate headers; extract the grid exactly as seen.",
     )
+
+    @model_validator(mode="after")
+    def validate_header_row_count(self) -> CurriculumTable:
+        """Validate that header_row_count does not exceed number of rows.
+
+        Returns
+        -------
+        CurriculumTable
+            The passed in CurriculumTable.
+
+        Raises
+        ------
+        ValueError
+            If header_row_count exceeds number of rows.
+        """
+
+        if self.header_row_count > len(self.rows):
+            raise ValueError(
+                f"header_row_count ({self.header_row_count}) cannot exceed number of "
+                f"rows ({len(self.rows)})."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_repeats_header_consistency(self) -> CurriculumTable:
+        """Validate that repeats_header is only set when boundary is resumed/both.
+
+        Returns
+        -------
+        CurriculumTable
+            The passed in CurriculumTable.
+
+        Raises
+        ------
+        ValueError
+            If repeats_header is True when boundary is not resumed/both.
+        """
+
+        if self.repeats_header is True and self.boundary not in {
+            ItemBoundary.RESUMED,
+            ItemBoundary.BOTH,
+        }:
+            raise ValueError(
+                "repeats_header=true only allowed when table.boundary is resumed/both."
+            )
+
+        return self
 
 
 class ListItem(BaseModelPageIR):
@@ -280,8 +364,8 @@ class PageIR(BaseModelPageIR):
     """Intermediate Representation of a single PDF page."""
 
     boundary_state: PageBoundaryState = Field(
-        ...,
-        description="Overall continuity of the page. 'to_next' if content bleeds off bottom; 'from_prev' if it resumes at top.",
+        default=PageBoundaryState.STANDALONE,
+        description="Overall continuity of the page. Derived from item boundaries in Python.",
     )
     coord_space: Literal["px"] = Field(
         "px",
@@ -325,6 +409,33 @@ class PageIR(BaseModelPageIR):
         ),
     )
 
+    @model_validator(mode="after")
+    def validate_bboxes_within_image(self) -> PageIR:
+        """Validate that all item bboxes fit within the image dimensions.
+
+        Returns
+        -------
+        PageIR
+            The passed in PageIR.
+
+        Raises
+        ------
+        ValueError
+            If any item bbox exceeds the image dimensions.
+        """
+
+        if self.image_width is None or self.image_height is None:
+            return self
+
+        for item in self.items:
+            _, _, x1, y1 = item.bbox
+            if x1 > self.image_width or y1 > self.image_height:
+                raise ValueError(
+                    f"Item bbox {item.bbox} exceeds image bounds "
+                    f"{self.image_width}x{self.image_height}."
+                )
+        return self
+
 
 # Schemas for verification.
 class PageIRContinuityVerdict(BaseModelPageIR):
@@ -350,16 +461,94 @@ class PageIRContinuityVerdict(BaseModelPageIR):
     rationale: str = Field(..., description="Explanation for the verdict.")
 
     # Minimal suggested edits (null means leave as-is).
-    set_prev_boundary_state: Optional[PrevBoundaryStateSuggestion] = Field(
-        None, description="Suggested page boundary state for the previous page."
-    )
-    set_next_boundary_state: Optional[NextBoundaryStateSuggestion] = Field(
-        None, description="Suggested page boundary state for the next page."
-    )
     set_prev_item_boundary: Optional[ItemBoundary] = Field(
         None, description="Boundary state for the last item on the previous page."
     )
     set_next_item_boundary: Optional[ItemBoundary] = Field(
         None, description="Boundary state for the first item on the next page."
     )
-    set_next_table_repeats_header: Optional[bool] = None
+    set_next_table_repeats_header: Optional[bool] = Field(
+        None,
+        description=(
+            "If the continuation_kind is 'table' and the next page contains a repeated header, "
+            "set this to true. Set to false if the header is not repeated. Null means leave as-is."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_boundary_edit_consistency(self) -> PageIRContinuityVerdict:
+        """Validate consistency of suggested boundary edits with is_continuation.
+
+        Returns
+        -------
+        PageIRContinuityVerdict
+            The passed in PageIRContinuityVerdict.
+
+        Raises
+        ------
+        ValueError
+            If the suggested edits are inconsistent with is_continuation.
+        """
+
+        if self.is_continuation:
+            # If continuing, suggested item boundaries (if provided) must be compatible.
+            if self.set_prev_item_boundary in {
+                ItemBoundary.COMPLETE,
+                ItemBoundary.RESUMED,
+            }:
+                raise ValueError(
+                    "When continuation=true, prev item cannot be complete/resumed."
+                )
+            if self.set_next_item_boundary in {
+                ItemBoundary.COMPLETE,
+                ItemBoundary.TRUNCATED,
+            }:
+                raise ValueError(
+                    "When continuation=true, next item cannot be complete/truncated."
+                )
+            if (
+                self.continuation_kind != PageContinuationKind.TABLE
+                and self.set_next_table_repeats_header is not None
+            ):
+                raise ValueError(
+                    "set_next_table_repeats_header only allowed for table continuations."
+                )
+        # If not continuing, don't set table header repetition.
+        elif self.set_next_table_repeats_header is not None:
+            raise ValueError(
+                "set_next_table_repeats_header must be null when continuation=false."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_continuation_consistency(self) -> PageIRContinuityVerdict:
+        """Validate consistency between is_continuation and continuation_kind.
+
+        Returns
+        -------
+        PageIRContinuityVerdict
+            The passed in PageIRContinuityVerdict.
+
+        Raises
+        ------
+        ValueError
+            If the continuation fields are inconsistent.
+        """
+
+        # If not a continuation, kind must be NONE.
+        if (
+            not self.is_continuation
+            and self.continuation_kind != PageContinuationKind.NONE
+        ):
+            raise ValueError(
+                "If is_continuation=false, continuation_kind must be 'none'."
+            )
+
+        # If it is a continuation, kind must not be NONE.
+        if self.is_continuation and self.continuation_kind == PageContinuationKind.NONE:
+            raise ValueError(
+                "If is_continuation=true, continuation_kind must not be 'none'."
+            )
+
+        return self
