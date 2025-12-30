@@ -442,30 +442,6 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
             f"({verdict.prev_page_index}->{verdict.next_page_index}); expected adjacency."
         )
 
-    # Kind consistency.
-    if (
-        verdict.is_continuation
-        and verdict.continuation_kind == PageContinuationKind.NONE
-    ):
-        raise QualityError("is_continuation=true but continuation_kind=none.")
-
-    if (
-        verdict.is_continuation
-        and verdict.continuation_kind == PageContinuationKind.UNCLEAR
-    ):
-        raise QualityError(
-            "is_continuation=true but continuation_kind=unclear. Use text/table/figure."
-        )
-
-    if (not verdict.is_continuation) and verdict.continuation_kind in (
-        PageContinuationKind.TABLE,
-        PageContinuationKind.TEXT,
-        PageContinuationKind.FIGURE,
-    ):
-        raise QualityError(
-            "is_continuation=false but continuation_kind is table/text/figure."
-        )
-
     # 2b. If this is NOT a continuation, it makes no sense to suggest
     # 'truncated'/'resumed' boundaries on the boundary items.
     if not verdict.is_continuation and (
@@ -476,20 +452,6 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
     ):
         raise QualityError(
             "is_continuation=false but verdict suggests truncated/resumed item boundaries."
-        )
-
-    # 2c. If this IS a text continuation and the model proposes explicit item boundaries,
-    # they should not both be COMPLETE.
-    if (
-        verdict.is_continuation
-        and verdict.continuation_kind == PageContinuationKind.TEXT
-        and verdict.set_prev_item_boundary is not None
-        and verdict.set_next_item_boundary is not None
-        and verdict.set_prev_item_boundary == ItemBoundary.COMPLETE
-        and verdict.set_next_item_boundary == ItemBoundary.COMPLETE
-    ):
-        raise QualityError(
-            "Verdict claims text continuation but suggests setting both boundaries to COMPLETE."
         )
 
     # 3. Logic: if it's a continuation, it's never correct to *set* either side to
@@ -506,49 +468,15 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
                 "Use 'resumed' (or leave null if already correct)."
             )
 
-    # 4. Pairwise-safe boundary_state suggestions. NB: Verification outputs may type
-    # these as strings (Literal) or Enums; handle both.
-    if verdict.set_prev_boundary_state is not None and getattr(
-        verdict.set_prev_boundary_state, "value", verdict.set_prev_boundary_state
-    ) not in ("standalone", "to_next"):
+    # 4. Table-specific checks.
+    if (
+        verdict.set_next_table_repeats_header is not None
+        and (not verdict.is_continuation)
+        or verdict.continuation_kind != PageContinuationKind.TABLE
+    ):
         raise QualityError(
-            "set_prev_boundary_state must be standalone or to_next (pairwise-safe)."
+            "set_next_table_repeats_header is only valid for table continuations."
         )
-    if verdict.set_next_boundary_state is not None and getattr(
-        verdict.set_next_boundary_state, "value", verdict.set_next_boundary_state
-    ) not in ("standalone", "from_prev"):
-        raise QualityError(
-            "set_next_boundary_state must be standalone or from_prev (pairwise-safe)."
-        )
-
-    # Consistency with is_continuation: if the model claims the boundary IS a
-    # continuation, it must not suggest "standalone" for either side since that would
-    # contradict the claim.
-    prev_state = (
-        getattr(
-            verdict.set_prev_boundary_state, "value", verdict.set_prev_boundary_state
-        )
-        if verdict.set_prev_boundary_state is not None
-        else None
-    )
-    next_state = (
-        getattr(
-            verdict.set_next_boundary_state, "value", verdict.set_next_boundary_state
-        )
-        if verdict.set_next_boundary_state is not None
-        else None
-    )
-    if verdict.is_continuation:
-        if prev_state == "standalone":
-            raise QualityError(
-                "is_continuation=true but set_prev_boundary_state=standalone. "
-                "Use 'to_next' (or leave null if already correct)."
-            )
-        if next_state == "standalone":
-            raise QualityError(
-                "is_continuation=true but set_next_boundary_state=standalone. "
-                "Use 'from_prev' (or leave null if already correct)."
-            )
 
 
 def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260

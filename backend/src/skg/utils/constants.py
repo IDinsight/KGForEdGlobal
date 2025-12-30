@@ -2,16 +2,6 @@
 
 # Standard Library
 from enum import Enum
-from typing import Annotated
-
-# Third Party Library
-from pydantic import Field
-
-# Common fields with descriptions.
-DocKeyField = Annotated[
-    str, Field(..., description="Deterministic document key (e.g., sha256 hex).")
-]
-PdfNameField = Annotated[str, Field(..., description="Source PDF filename (no path).")]
 
 
 # Enums for various constant types.
@@ -40,6 +30,7 @@ class FigureKind(str, Enum):
     ILLUSTRATION = "illustration"
     IMAGE = "image"
     MAP = "map"
+    OTHER = "other"
     SCHEMATIC = "schematic"
     TIMELINE = "timeline"
     UNKNOWN = "unknown"
@@ -52,14 +43,6 @@ class ItemBoundary(str, Enum):
     COMPLETE = "complete"  # Item is fully contained on this page
     RESUMED = "resumed"  # Item is a continuation from top
     TRUNCATED = "truncated"  # Item is cut off at the bottom
-
-
-class LinkType(str, Enum):
-    """Enumeration of link types between items on different pages."""
-
-    CONTINUE_LIST = "continue_list"
-    JOIN_TEXT = "join_text"
-    MERGE_TABLE = "merge_table"
 
 
 class PageBoundaryState(str, Enum):
@@ -78,4 +61,3 @@ class PageContinuationKind(str, Enum):
     NONE = "none"
     TABLE = "table"
     TEXT = "text"
-    UNCLEAR = "unclear"

@@ -32,6 +32,23 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _boundary_val(v: Any) -> str:
+    """Normalize boundary enum/string to string.
+
+    Parameters
+    ----------
+    v
+        The boundary value (enum or string).
+
+    Returns
+    -------
+    str
+        The normalized boundary string.
+    """
+
+    return getattr(v, "value", v) if v is not None else ItemBoundary.COMPLETE.value
+
+
 def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
     """Check if the item has the specified boundary flag.
 
@@ -47,7 +64,9 @@ def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
         True if the item has the specified boundary flag, False otherwise.
     """
 
-    v = it.get("boundary")
+    # In Step 2 we wipe "boundary" to COMPLETE, but preserve the extraction hint under
+    # "_orig_boundary" for candidate selection.
+    v = it.get("_orig_boundary", it.get("boundary"))
 
     # Treat "both" as matching resumed/truncated for candidate selection.
     if v == b or v == getattr(b, "value", b):
@@ -244,6 +263,49 @@ def decode_boundary_state(state: str | PageBoundaryState) -> tuple[bool, bool]:
     )
 
 
+def derive_page_boundary_state(*, page_ir: dict[str, Any]) -> PageBoundaryState:
+    """Derive page-level boundary_state from verified item boundaries.
+
+    Uses the top-most and bottom-most NON-artifact/non-header-footer-noise items.
+
+    Parameters
+    ----------
+    page_ir
+        The page IR dictionary.
+
+    Returns
+    -------
+    PageBoundaryState
+        The derived page-level boundary state.
+    """
+
+    items = page_ir.get("items") or []
+    image_h = float(page_ir.get("image_height") or 0.0)
+
+    candidates = [
+        it
+        for it in items
+        if (not is_artifact(it))
+        and (not is_probable_header_footer_noise(image_height=image_h, item=it))
+        and isinstance(it.get("bbox"), list)
+        and len(it["bbox"]) == 4
+    ]
+
+    if not candidates:
+        return PageBoundaryState.STANDALONE
+
+    top_item = min(candidates, key=lambda it: float(it["bbox"][1]))
+    bot_item = max(candidates, key=lambda it: float(it["bbox"][3]))
+
+    top_b = ItemBoundary(_boundary_val(top_item.get("boundary")))
+    bot_b = ItemBoundary(_boundary_val(bot_item.get("boundary")))
+
+    from_prev = top_b in (ItemBoundary.RESUMED, ItemBoundary.BOTH)
+    to_next = bot_b in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
+
+    return encode_boundary_state(from_prev, to_next)
+
+
 def encode_boundary_state(from_prev: bool, to_next: bool) -> PageBoundaryState:
     """Encode (from_prev, to_next) boolean flags into a PageBoundaryState enum.
 
@@ -406,9 +468,9 @@ def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
 
     bt = item.get("block_type")
 
-    # If not a block then it's never "minor". In addition, headings/captions are
-    # usually meaningful context; do not treat as "minor".
-    if item.get("kind") != "block" or bt in ("heading", "caption"):
+    # If not a block then it's never "minor". In addition, headings are usually
+    # meaningful context; do not treat as "minor".
+    if item.get("kind") != "block" or bt == "heading":
         return False
 
     # Figures/diagrams often appear as small isolated blocks near the edge (icons,
@@ -639,39 +701,6 @@ def pad_inches(kind: str) -> float:
     if kind == "figure":
         return 0.50
     return 0.25
-
-
-def set_boundary_flag(*, flag: str, page_ir: dict[str, Any], value: bool) -> None:
-    """Set exactly one direction flag on page_ir["boundary_state"] without clobbering
-    the other. `flag` must be one of: "from_prev" or "to_next" (i.e.,
-    PageBoundaryState.CONTINUES_FROM_PREV.value / CONTINUES_TO_NEXT.value).
-
-    Parameters
-    ----------
-    flag
-        The flag to set ("from_prev" or "to_next").
-    page_ir
-        The page IR dictionary.
-    value
-        The boolean value to set for the flag.
-
-    Raises
-    ------
-    ValueError
-        If an unknown flag is provided.
-    """
-
-    cur = page_ir.get("boundary_state", "standalone")
-    from_prev, to_next = decode_boundary_state(cur)
-
-    if flag == "from_prev":
-        from_prev = value
-    elif flag == "to_next":
-        to_next = value
-    else:
-        raise ValueError(f"Unknown flag: {flag}")
-
-    page_ir["boundary_state"] = encode_boundary_state(from_prev, to_next).value
 
 
 def topmost_continuity_candidate(

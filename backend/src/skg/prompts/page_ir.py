@@ -84,8 +84,13 @@ def extract_page_ir_from_pdf_page(
    - Incorrect: `"text": "content"`
    - Empty: If a cell is blank, set `"text": null`.
 4. **TABLE COLUMN COUNT (optional)**: If you can clearly infer the number of visual columns in the table grid (from ruling/grid and headers), set `CurriculumTable.n_cols` to that integer. If unsure, omit it or set it to null.
+4b. **TABLE HEADER ROWS**:
+   - If the table has header rows at the top, set `header_row_count` to the number of header rows.
+   - Keep header rows INSIDE `rows`; do not split headers into a separate field.
+   - If unsure, leave it at 0 / omit it.
 5. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
 6. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
+6b. If the table has header rows, set "header_row_count".
 7. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
 8. **NO TRANSLATION**:
    - Do NOT translate, paraphrase, or “helpfully” rewrite any text.
@@ -111,7 +116,14 @@ def extract_page_ir_from_pdf_page(
 16. If block_type != "figure", then `figure` MUST be null or omitted.
 17. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
 18. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
-19. For each TextUnit, choose the most specific language from Expected Languages when possible. Use und only if you genuinely cannot tell. Use mul only if multiple languages appear in the same TextUnit.
+19. LANGUAGE TAGGING (IMPORTANT):
+   - Use the BEST-MATCH BCP-47 language for the visible text, even if it is NOT in Expected Languages.
+   - Expected Languages are only hints (common in Tanzania PDFs to include tables with fr/zh/ar in addition to en/sw).
+   - Use "und" only if you genuinely cannot tell.
+   - Use "mul" only if multiple languages appear in the SAME TextUnit (e.g., bilingual French+English in one cell).
+20. For any non-list block (including figure), list_items MUST be null or omitted (never []).
+21. MIXED LANGUAGE IN ONE TEXTUNIT: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
+22. GRID-TRUE ROWS ONLY: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
 
 ## BLOCK CLASSIFICATION
 
@@ -162,13 +174,14 @@ Valid block_type values: {allowed_block_types}
     )
 
     user_message = dedent(
-        f"""Extract PageIR for page_index={page_index}.
+        f"""Extract PageIR for the provided image (context: this is page_index={page_index} in the PDF).
+IMPORTANT: Do NOT set the PageIR.page_index field; it must be null or omitted.
 
 Requirements:
 1. Identify blocks (including figure blocks) and tables from the {image_width}x{image_height} image.
 2. Set "kind": "block" or "kind": "table" for every entry.
 3. Do NOT translate. `TextUnit.text_en` must be null/omitted. Leave doc_key/pdf_name/page_index/dpi/image_* null/omitted.
-4. Use "und" for unknown languages.
+4. Use the best-match BCP-47 language code for the visible text (not limited to Expected Languages). Use "und" if unknown.
 5. If a table continues from a previous page and shows its headers again, set "repeats_header": true. Otherwise omit it or set null.
 6. If you can confidently count the table's columns, set "n_cols".
 7. If you see a diagram/figure (not a table), output a block_type="figure" block with a `figure` object and tight bbox.
@@ -246,10 +259,9 @@ Task:
 2) Propose MINIMAL continuity-metadata edits if (and only if) the existing metadata is wrong.
 
 Allowed edits (metadata only):
-- set_prev_boundary_state: one of {prev_boundary_allowed}
-- set_next_boundary_state: one of {next_boundary_allowed}
 - set_prev_item_boundary / set_next_item_boundary: one of {item_boundary_allowed}
-- set_next_table_repeats_header: only if the NEXT candidate item is a table AND it is the same table continuing AND the header is repeated
+- set_next_table_repeats_header: only if NEXT candidate is a table AND it is the same table continuing AND header is repeated
+- Always leave set_prev_boundary_state and set_next_boundary_state as null.
 
 Rules:
 - DO NOT rewrite, move, merge, or complete text/table cells across pages.
@@ -258,13 +270,13 @@ Rules:
 - Only change continuity metadata fields. If everything is already correct, leave all set_* fields null.
 - Return ONLY a JSON object matching the required schema. No prose.
 - Always include a short rationale string.
-- If uncertain, set is_continuation=false, continuation_kind="unclear", low confidence, and leave all set_* null.
+- If uncertain, set is_continuation=false, continuation_kind="none", low confidence, and leave all set_* null.
 
 Pairwise safety rules (important):
 - You are ONLY judging the boundary between N and N+1. You cannot know about other neighbors.
 - Therefore:
-  - set_prev_boundary_state MUST be one of {prev_boundary_allowed}.
-  - set_next_boundary_state MUST be one of {next_boundary_allowed}.
+  - If you set set_prev_boundary_state, it MUST be one of {prev_boundary_allowed}. Otherwise leave it null.
+  - If you set set_next_boundary_state, it MUST be one of {next_boundary_allowed}. Otherwise leave it null.
 
 Decision guidance:
 - Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.
@@ -286,16 +298,22 @@ Decision guidance:
 
 continuation_kind rules:
 - If is_continuation=false, set continuation_kind="none".
-- If is_continuation=true, continuation_kind MUST be one of: {cont_true_allowed} (never "none" or "unclear").
-- If is_continuation=false, continuation_kind MUST be "none".
+- If is_continuation=true, continuation_kind MUST be one of: {cont_true_allowed} (never "none").
 - Use continuation_kind="table" only for table continuations.
 - Use continuation_kind="text" only for text/list continuations.
 - Use continuation_kind="figure" only for figure/diagram continuations (same figure is cut off and resumes on next page).
 
 Boundary rules:
-- When is_continuation=true, the prev candidate should be truncated and the next candidate should be resumed.
-- When is_continuation=true, NEVER set set_prev_item_boundary or set_next_item_boundary to "complete".
-- When is_continuation=false, do not suggest truncated/resumed; you may suggest "complete" only if the candidate item is incorrectly marked.
+- When is_continuation=true, the prev candidate must indicate it continues to next (TRUNCATED or BOTH),
+  and the next candidate must indicate it continues from prev (RESUMED or BOTH).
+
+PAIRWISE LIMITATION (CRITICAL, common in long tables):
+- You only see the bottom of page N and the top of page N+1.
+- Therefore, DO NOT try to decide TRUNCATED vs BOTH (or RESUMED vs BOTH).
+  Only correct boundaries when they are clearly incompatible:
+   * If continuation=true and prev is marked COMPLETE (or RESUMED), suggest set_prev_item_boundary="truncated".
+   * If continuation=true and next is marked COMPLETE (or TRUNCATED), suggest set_next_item_boundary="resumed".
+  Otherwise leave set_* null.
 
 Candidate mismatch safety:
 - If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items,
@@ -303,7 +321,7 @@ Candidate mismatch safety:
   (This avoids forcing wrong edits onto the wrong anchor items.)
 
 When unsure:
-- Prefer is_continuation=false, continuation_kind="none", confi...(unless existing metadata is obviously wrong on the candidates).
+- Set is_continuation=false, continuation_kind="none", confidence <= 0.49, and leave all set_* fields null.
     """
     )
 
