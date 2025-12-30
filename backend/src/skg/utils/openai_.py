@@ -457,22 +457,52 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
     # 3. Logic: if it's a continuation, it's never correct to *set* either side to
     # COMPLETE (if no change is needed, leave set_* null.)
     if verdict.is_continuation:
-        if verdict.set_prev_item_boundary == ItemBoundary.COMPLETE:
+        # Step-2 pairwise rule: only correct clearly incompatible boundaries. Do NOT
+        # set BOTH; we can't infer that from just N bottom + N+1 top.
+        if (
+            verdict.set_prev_item_boundary is not None
+            and verdict.set_prev_item_boundary != ItemBoundary.TRUNCATED
+        ):
             raise QualityError(
-                "is_continuation=true but set_prev_item_boundary=COMPLETE. "
-                "Use 'truncated' (or leave null if already correct)."
-            )
-        if verdict.set_next_item_boundary == ItemBoundary.COMPLETE:
-            raise QualityError(
-                "is_continuation=true but set_next_item_boundary=COMPLETE. "
-                "Use 'resumed' (or leave null if already correct)."
+                "For continuation=true (Step 2), set_prev_item_boundary must be TRUNCATED "
+                "(or null). Do not set BOTH in pairwise verification."
             )
 
-    # 4. Table-specific checks.
+        if (
+            verdict.set_next_item_boundary is not None
+            and verdict.set_next_item_boundary != ItemBoundary.RESUMED
+        ):
+            raise QualityError(
+                "For continuation=true (Step 2), set_next_item_boundary must be RESUMED "
+                "(or null). Do not set BOTH in pairwise verification."
+            )
+
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+
+    # continuation_kind must match is_continuation.
+    if verdict.is_continuation and kind == PageContinuationKind.NONE.value:
+        raise QualityError("is_continuation=true requires continuation_kind != 'none'.")
+    if not verdict.is_continuation and kind != PageContinuationKind.NONE.value:
+        raise QualityError("is_continuation=false requires continuation_kind='none'.")
+
+    # Pairwise rule: do not set page boundary states in Step 2.
     if (
-        verdict.set_next_table_repeats_header is not None
-        and (not verdict.is_continuation)
-        or verdict.continuation_kind != PageContinuationKind.TABLE
+        getattr(verdict, "set_prev_boundary_state", None) is not None
+        or getattr(verdict, "set_next_boundary_state", None) is not None
+    ):
+        raise QualityError("Step-2 verdict must not set page boundary_state fields.")
+
+    # If not a continuation, Step-2 must not suggest ANY edits (pairwise limitation).
+    if not verdict.is_continuation and (
+        verdict.set_prev_item_boundary is not None
+        or verdict.set_next_item_boundary is not None
+        or verdict.set_next_table_repeats_header is not None
+    ):
+        raise QualityError("is_continuation=false must leave all set_* fields null.")
+
+    # 4. Table-specific checks.
+    if verdict.set_next_table_repeats_header is not None and not (
+        verdict.is_continuation and kind == PageContinuationKind.TABLE.value
     ):
         raise QualityError(
             "set_next_table_repeats_header is only valid for table continuations."
