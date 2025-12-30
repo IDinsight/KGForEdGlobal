@@ -37,21 +37,35 @@ class FigureKind(str, Enum):
 
 
 class ItemBoundary(str, Enum):
-    """Enumeration for item boundary states on a page."""
+    """Enumeration for item boundary states on a page.
 
-    BOTH = "both"  # Item continues from prev page AND to next page
-    COMPLETE = "complete"  # Item is fully contained on this page
-    RESUMED = "resumed"  # Item is a continuation from top
-    TRUNCATED = "truncated"  # Item is cut off at the bottom
+    NB: These are semantic continuity flags (not "missing borders"):
+        - both: item continues from prev AND onto next (middle slice of a long item)
+        - complete: item is fully contained on this page
+        - resumed: item continues from the previous page
+        - truncated: item continues onto the next page
+    """
+
+    BOTH = "both"
+    COMPLETE = "complete"
+    RESUMED = "resumed"
+    TRUNCATED = "truncated"
 
 
 class PageBoundaryState(str, Enum):
-    """Enumeration for page boundary states of items."""
+    """Enumeration for page boundary states of items.
 
-    BOTH = "both"  # Breaks at both top and bottom
-    CONTINUES_FROM_PREV = "from_prev"  # Visual break at the top
-    CONTINUES_TO_NEXT = "to_next"  # Visual break at the bottom
-    STANDALONE = "standalone"  # Page starts and ends cleanly
+    NB: These are semantic continuity flags (not "missing borders"):
+        - both: item continues from prev AND onto next (middle slice of a long item)
+        - from_prev: item continues from the previous page
+        - to_next: item continues onto the next page
+        - standalone: item is fully contained on this page
+    """
+
+    BOTH = "both"
+    CONTINUES_FROM_PREV = "from_prev"
+    CONTINUES_TO_NEXT = "to_next"
+    STANDALONE = "standalone"
 
 
 class PageContinuationKind(str, Enum):

@@ -46,16 +46,20 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
 
     x0, y0, x1, y1 = bbox
 
-    for v in (x0, y0, x1, y1):
-        if v < 0:
-            raise ValueError(f"Invalid bbox: negative coordinate in {bbox}.")
+    # Auto-correct inverted or zero-dimension axes.
+    if x0 >= x1:
+        # If inverted (x0 > x1), swap. If equal, add 1 px.
+        if x0 > x1:
+            x0, x1 = x1, x0
+        else:
+            x1 = x0 + 1.0
+    if y0 >= y1:
+        if y0 > y1:
+            y0, y1 = y1, y0
+        else:
+            y1 = y0 + 1.0
 
-    if x0 >= x1 or y0 >= y1:
-        raise ValueError(
-            f"Invalid bbox order: expected x0 < x1 and y0 < y1, got {bbox}."
-        )
-
-    return bbox
+    return [x0, y0, x1, y1]
 
 
 # Common fields with descriptions.
@@ -127,7 +131,14 @@ class CurriculumTable(BaseModelPageIR):
     bbox: BBox
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
-        description="Status of the table's vertical continuity. 'truncated' if bottom border is missing; 'resumed' if top border is missing.",
+        description=(
+            "Semantic continuity of this table across page boundaries. "
+            "'resumed' if this table is a continuation from the previous page; "
+            "'truncated' if it continues onto the next page; "
+            "'both' if it continues from prev and to next; "
+            "'complete' if fully contained on this page. "
+            "Do NOT rely on whether borders are drawn—many PDFs repeat headers/borders on continuation pages."
+        ),
     )
     header_row_count: int = Field(
         0,
@@ -158,6 +169,7 @@ class CurriculumTable(BaseModelPageIR):
     rows: list[TableRow] = Field(
         ...,
         description="All visual rows. Do NOT separate headers; extract the grid exactly as seen.",
+        min_length=1,  # Enforce at least one row to avoid empty table hallucinations
     )
 
     @model_validator(mode="after")
@@ -198,12 +210,12 @@ class CurriculumTable(BaseModelPageIR):
             If repeats_header is True when boundary is not resumed/both.
         """
 
-        if self.repeats_header is True and self.boundary not in {
+        if self.repeats_header is not None and self.boundary not in {
             ItemBoundary.RESUMED,
             ItemBoundary.BOTH,
         }:
             raise ValueError(
-                "repeats_header=true only allowed when table.boundary is resumed/both."
+                "repeats_header is only allowed when table.boundary is resumed/both."
             )
 
         return self
@@ -267,7 +279,12 @@ class CurriculumBlock(BaseModelPageIR):
     block_type: BlockType = Field(..., description="The visual structure of the block.")
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
-        description="Continuity status. 'truncated' if bottom cuts off; 'resumed' if top continues; 'both' if cut off at both top and bottom.",
+        description=(
+            "Semantic continuity of this block across page boundaries. "
+            "'resumed' if it continues from the previous page; "
+            "'truncated' if it continues onto the next page; "
+            "'both' if both; otherwise 'complete'."
+        ),
     )
     figure: Optional[FigureUnit] = Field(
         None,
@@ -294,7 +311,7 @@ class CurriculumBlock(BaseModelPageIR):
     )
 
     @model_validator(mode="after")
-    def validate_cross_field_invariants(  # pylint:disable=R1260
+    def validate_cross_field_invariants(  # pylint:disable=R0912,R1260
         self,
     ) -> CurriculumBlock:
         """Validate cross-field variants.
@@ -341,6 +358,18 @@ class CurriculumBlock(BaseModelPageIR):
             if self.list_items is not None:
                 raise ValueError(
                     "CurriculumBlock block_type='figure' requires list_items=null."
+                )
+            return self
+
+        # Artifact blocks: allow empty/null text; list_items/figure must be null.
+        if bt == BlockType.ARTIFACT:
+            if self.list_items is not None:
+                raise ValueError(
+                    "CurriculumBlock block_type='artifact' requires list_items=null."
+                )
+            if self.figure is not None:
+                raise ValueError(
+                    "CurriculumBlock block_type='artifact' requires figure=null."
                 )
             return self
 
@@ -410,30 +439,39 @@ class PageIR(BaseModelPageIR):
     )
 
     @model_validator(mode="after")
-    def validate_bboxes_within_image(self) -> PageIR:
-        """Validate that all item bboxes fit within the image dimensions.
+    def clamp_bboxes_within_image(self) -> PageIR:
+        """Clamp item bboxes into image bounds. Vision bboxes often drift by a few
+        pixels; clamping makes extraction robust while still preserving usable
+        provenance.
 
         Returns
         -------
         PageIR
-            The passed in PageIR.
-
-        Raises
-        ------
-        ValueError
-            If any item bbox exceeds the image dimensions.
+            The passed in PageIR with clamped bboxes.
         """
 
         if self.image_width is None or self.image_height is None:
             return self
 
+        image_width = float(self.image_width)
+        image_height = float(self.image_height)
+
         for item in self.items:
-            _, _, x1, y1 = item.bbox
-            if x1 > self.image_width or y1 > self.image_height:
-                raise ValueError(
-                    f"Item bbox {item.bbox} exceeds image bounds "
-                    f"{self.image_width}x{self.image_height}."
-                )
+            x0, y0, x1, y1 = item.bbox
+
+            x0 = max(0.0, min(float(x0), image_width))
+            y0 = max(0.0, min(float(y0), image_height))
+            x1 = max(0.0, min(float(x1), image_width))
+            y1 = max(0.0, min(float(y1), image_height))
+
+            # Keep bbox well-ordered after clamping (rare edge cases).
+            if x1 <= x0:
+                x1 = min(image_width, x0 + 1.0)
+            if y1 <= y0:
+                y1 = min(image_height, y0 + 1.0)
+
+            item.bbox = [x0, y0, x1, y1]
+
         return self
 
 
@@ -513,11 +551,25 @@ class PageIRContinuityVerdict(BaseModelPageIR):
                 raise ValueError(
                     "set_next_table_repeats_header only allowed for table continuations."
                 )
-        # If not continuing, don't set table header repetition.
-        elif self.set_next_table_repeats_header is not None:
-            raise ValueError(
-                "set_next_table_repeats_header must be null when continuation=false."
-            )
+        else:
+            if (
+                self.set_prev_item_boundary is not None
+                and self.set_prev_item_boundary != ItemBoundary.COMPLETE
+            ):
+                raise ValueError(
+                    "When is_continuation=false, set_prev_item_boundary (if provided) must be 'complete'."
+                )
+            if (
+                self.set_next_item_boundary is not None
+                and self.set_next_item_boundary != ItemBoundary.COMPLETE
+            ):
+                raise ValueError(
+                    "When is_continuation=false, set_next_item_boundary (if provided) must be 'complete'."
+                )
+            if self.set_next_table_repeats_header is not None:
+                raise ValueError(
+                    "set_next_table_repeats_header must be null when is_continuation=false."
+                )
 
         return self
 

@@ -265,6 +265,7 @@ def derive_page_boundary_state(*, page_ir: dict[str, Any]) -> PageBoundaryState:
         for it in items
         if (not is_artifact(it))
         and (not is_probable_header_footer_noise(image_height=image_h, item=it))
+        and (not is_minor_edge_block(image_height=image_h, item=it))
         and isinstance(it.get("bbox"), list)
         and len(it["bbox"]) == 4
     ]
@@ -356,6 +357,12 @@ def ensure_boundary(
         and target_boundary in (ItemBoundary.RESUMED, ItemBoundary.TRUNCATED)
     ):
         target_boundary = ItemBoundary.BOTH
+    elif (
+        (not allow_downgrade_both)
+        and current_boundary == ItemBoundary.BOTH
+        and target_boundary == ItemBoundary.COMPLETE
+    ):
+        target_boundary = ItemBoundary.BOTH
 
     if current_boundary != target_boundary:
         items[index]["boundary"] = target_boundary.value
@@ -424,7 +431,7 @@ def is_figure_block(item: dict[str, Any]) -> bool:
         return False
 
     bt = item.get("block_type")
-    return bt == "figure" or bt == getattr(BlockType.FIGURE, "value", "figure")
+    return bt == "figure" or bt == BlockType.FIGURE
 
 
 def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
@@ -779,3 +786,77 @@ def topmost_continuity_candidate(
         chosen = non_fig if non_fig else near_edge
 
     return min(chosen, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+
+
+def topmost_continuity_candidate_paired(
+    *, image_height: float, items: list[dict[str, Any]], prev_item: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    """Pick the best next-page candidate *conditioned on* the chosen previous page
+    candidate. Falls back to `topmost_continuity_candidate` if no good match is found.
+
+    Motivation:
+    - If the prev candidate is a table, we should strongly prefer the first real table
+      near the top of the next page (even if there are headings above it).
+    - If the prev candidate is a block, we should strongly prefer a block near the top,
+      avoiding selecting a table just because it starts near the edge.
+
+    Parameters
+    ----------
+    image_height
+        The height of the page image in pixels.
+    items
+        List of items to search.
+    prev_item
+        The chosen previous page candidate item.
+
+    Returns
+    -------
+    tuple[int, dict[str, Any]]
+        The index and the chosen item.
+
+    Raises
+    ------
+    ValueError
+        If no non-artifact items are found.
+    """
+
+    preferred_kind = prev_item.get("kind")
+
+    # Use the same base candidate filtering as the unpaired selector.
+    candidates = [
+        (i, it)
+        for i, it in enumerate(items)
+        if (not is_artifact(it))
+        and (not is_probable_header_footer_noise(image_height=image_height, item=it))
+    ]
+
+    if not candidates:
+        raise ValueError("No non-artifact items found.")
+
+    # Prefer table when the previous item is a table.
+    if preferred_kind == "table":
+        tables = [(i, it) for (i, it) in candidates if it.get("kind") == "table"]
+        if tables:
+            # If any table is explicitly RESUMED, pick the top-most resumed table.
+            resumed_tables = [
+                (i, it) for (i, it) in tables if _has_boundary(it, ItemBoundary.RESUMED)
+            ]
+            if resumed_tables:
+                return min(resumed_tables, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+
+            # Otherwise pick the top-most table, but only if it's not absurdly far down.
+            best_table = min(tables, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+            if float(best_table[1]["bbox"][1]) <= 0.65 * image_height:
+                return best_table
+
+    # Prefer block when the previous item is a block.
+    if preferred_kind == "block":
+        blocks = [(i, it) for (i, it) in candidates if it.get("kind") != "table"]
+        if blocks:
+            # Prefer non-figure blocks if possible.
+            non_fig = [(i, it) for (i, it) in blocks if not is_figure_block(it)]
+            chosen = non_fig if non_fig else blocks
+            return min(chosen, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+
+    # Fallback to unpaired logic.
+    return topmost_continuity_candidate(image_height=image_height, items=items)

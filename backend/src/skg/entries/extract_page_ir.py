@@ -133,7 +133,17 @@ def extract_page_by_page(
 
         if is_mostly_blank(png_fp=png_fp) and text_layer_hints is None:
             logger.warning(f"Page {page_index} looks blank; skipping model call.")
-            page_ir = PageIR(boundary_state=PageBoundaryState.STANDALONE, items=[])
+            page_ir = PageIR(
+                boundary_state=PageBoundaryState.STANDALONE,
+                coord_space="px",
+                doc_key=doc_key,
+                dpi=dpi,
+                image_height=image_height,
+                image_width=image_width,
+                items=[],
+                page_index=page_index,
+                pdf_name=pdf_name,
+            )
         else:
             page_ir = extract_page_ir(
                 country=country,
@@ -146,13 +156,16 @@ def extract_page_by_page(
                 text_layer_hints=text_layer_hints,
                 year=year,
             )
-        page_ir.coord_space = "px"
-        page_ir.doc_key = doc_key
-        page_ir.dpi = dpi
-        page_ir.image_height = image_height
-        page_ir.image_width = image_width
-        page_ir.page_index = page_index
-        page_ir.pdf_name = pdf_name
+            page_ir.coord_space = "px"
+            page_ir.doc_key = doc_key
+            page_ir.dpi = dpi
+            page_ir.image_height = image_height
+            page_ir.image_width = image_width
+            page_ir.page_index = page_index
+            page_ir.pdf_name = pdf_name
+
+        # Re-validate after schema validators.
+        page_ir = PageIR.model_validate(page_ir.model_dump(mode="python"))
 
         # Save PageIR JSON.
         write_to_json(page_ir_fp, page_ir.model_dump(mode="json"))

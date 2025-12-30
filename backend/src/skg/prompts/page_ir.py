@@ -12,12 +12,7 @@ from typing import Any, Optional
 from dotmap import DotMap
 
 # Package Library
-from skg.utils.constants import (
-    BlockType,
-    FigureKind,
-    ItemBoundary,
-    PageContinuationKind,
-)
+from skg.utils.constants import BlockType, FigureKind, ItemBoundary
 
 
 def extract_page_ir_from_pdf_page(
@@ -79,7 +74,7 @@ def extract_page_ir_from_pdf_page(
 1. **If text-layer hints contradict the image, trust the image.**
 2. **KIND DISCRIMINATOR**: Every item in the `items` list MUST have a `"kind"` field set to either `"block"` or `"table"`.
 3. **TABLE CELL STRUCTURE**: The `text` field inside a `TableCell` is an OBJECT (TextUnit).
-   - Correct: `"text": {{"text": "content", "language": "en"}}`
+   - Correct: `"text": {{"text": "content", "language": "en", "text_en": null}}`
    - Incorrect: `"text": "content"`
    - Empty: If a cell is blank, set `"text": null`.
 4. **TABLE COLUMN COUNT (optional)**: If you can clearly infer the number of visual columns in the table grid (from ruling/grid and headers), set `CurriculumTable.n_cols` to that integer. If unsure, omit it or set it to null.
@@ -158,16 +153,16 @@ Valid block_type values: {allowed_block_types}
 - Do NOT misclassify tables as figures. If there is a ruled grid with cells, it must be a table.
 
 ## BOUNDARIES
-- Item `boundary`: Use:
-  - "resumed" (top missing / continues from previous page)
-  - "truncated" (bottom missing / continues to next page)
-  - "both" (continues from previous page AND to next page; e.g., middle page of a long table)
-  - "complete" (fully contained on this page)
-- Page `boundary_state`: Use "from_prev", "to_next", "both", or "standalone".
-- If the top-most content clearly starts mid-sentence/mid-row/mid-list (e.g., begins with punctuation, trailing clause, continued numbering), set boundary_state="from_prev" and that item's boundary="resumed".
-- If the bottom-most content is clearly cut off at the page bottom (mid-sentence, mid-cell, list continues), set boundary_state="to_next" and that item's boundary="truncated".
-- If the SAME item is clearly cut off at BOTH the top and bottom (common for long tables), set that item's boundary="both" and page boundary_state="both".
-- For block_type="figure": default boundary="complete" unless the figure is visibly cut off by the page edge.
+- Item `boundary` is SEMANTIC continuity (not “missing borders”):
+  - "resumed"  = this item is a continuation from the previous page
+  - "truncated" = this item continues onto the next page
+  - "both" = continuation from prev AND to next (middle slice of a long item)
+  - "complete" = fully contained on this page
+- DO NOT rely on whether table borders are drawn. Many PDFs repeat gridlines and headers on continuation pages.
+
+- Page `boundary_state` is derived by Python from item boundaries. You may omit it.
+- Focus on setting each item's `boundary` correctly (resumed/truncated/both/complete) based on visible continuation cues.
+- For block_type="figure": default boundary="complete" unless the same figure is visibly cut off by the page edge.
         """
     )
 
@@ -180,7 +175,7 @@ Requirements:
 2. Set "kind": "block" or "kind": "table" for every entry.
 3. Do NOT translate. `TextUnit.text_en` must be null/omitted. Leave doc_key/pdf_name/page_index/dpi/image_* null/omitted.
 4. Use the best-match BCP-47 language code for the visible text (not limited to Expected Languages). Use "und" if unknown.
-5. If a table continues from a previous page and shows its headers again, set "repeats_header": true. Otherwise omit it or set null.
+5. Only set repeats_header when the table is resumed/both (i.e., continuing from previous page). Never set it for complete tables.
 6. If you can confidently count the table's columns, set "n_cols".
 7. If you see a diagram/figure (not a table), output a block_type="figure" block with a `figure` object and tight bbox.
         """
@@ -217,17 +212,10 @@ def verify_page_ir_pairs_from_extraction(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
-    cont_true_allowed = json.dumps(
-        [
-            PageContinuationKind.TABLE.value,
-            PageContinuationKind.TEXT.value,
-            PageContinuationKind.FIGURE.value,
-        ],
-        ensure_ascii=False,
+    prev_boundary_allowed = json.dumps(
+        [ItemBoundary.TRUNCATED.value], ensure_ascii=False
     )
-    item_boundary_allowed = json.dumps(
-        [b.value for b in ItemBoundary], ensure_ascii=False
-    )
+    next_boundary_allowed = json.dumps([ItemBoundary.RESUMED.value], ensure_ascii=False)
 
     system_message = dedent(
         f"""You are a strict PageIR continuity verifier.
@@ -246,9 +234,13 @@ Task:
 2) Propose MINIMAL continuity-metadata edits if (and only if) the existing metadata is wrong.
 
 Allowed edits (metadata only):
-- set_prev_item_boundary / set_next_item_boundary: one of {item_boundary_allowed}
-- set_next_table_repeats_header: only if NEXT candidate is a table AND it is the same table continuing AND header is repeated
-- Always leave set_prev_boundary_state and set_next_boundary_state as null.
+- set_prev_item_boundary: one of {prev_boundary_allowed} (or null)
+- set_next_item_boundary: one of {next_boundary_allowed} (or null)
+- set_next_table_repeats_header:
+    - Only when NEXT candidate is a table AND it is the SAME table continuing.
+    - Set to true if the header rows are visibly repeated on page N+1.
+    - Set to false ONLY if the excerpt explicitly shows repeats_header=true but IMAGE B clearly does NOT repeat headers. Otherwise leave it null.
+    - Null means “leave as-is”.
 
 Rules:
 - DO NOT rewrite, move, merge, or complete text/table cells across pages.
@@ -279,7 +271,7 @@ Decision guidance:
 
 continuation_kind rules:
 - If is_continuation=false, set continuation_kind="none".
-- If is_continuation=true, continuation_kind MUST be one of: {cont_true_allowed} (never "none").
+- If is_continuation=true and continuation_kind='table', ALWAYS set set_next_table_repeats_header to true/false (never null).
 - Use continuation_kind="table" only for table continuations.
 - Use continuation_kind="text" only for text/list continuations.
 - Use continuation_kind="figure" only for figure/diagram continuations (same figure is cut off and resumes on next page).
