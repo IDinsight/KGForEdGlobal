@@ -129,7 +129,14 @@ def _call_openai_api_for_page_ir_extraction(
             failed_content=output_text,  # Pass text back to caller
         )
 
-    # Even if parsing succeeded, enforce quality checks.
+    # Even if parsing succeeded, enforce quality checks. NB: populate image dims so
+    # PageIR's clamp validator can run.
+    parsed.image_width = image_width
+    parsed.image_height = image_height
+
+    # Clamp any slightly out-of-bounds bboxes now that dims are known.
+    parsed.clamp_bboxes_within_image()
+
     output_text = getattr(response, "output_text", None)
     try:
         validate_page_ir_extraction_quality(
@@ -501,9 +508,21 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
         raise QualityError("is_continuation=false must leave all set_* fields null.")
 
     # 4. Table-specific checks.
-    if verdict.set_next_table_repeats_header is not None and not (
-        verdict.is_continuation and kind == PageContinuationKind.TABLE.value
-    ):
+    is_table_cont = verdict.is_continuation and kind == PageContinuationKind.TABLE.value
+
+    if is_table_cont:
+        # For deterministic stitching, the verifier must always decide this.
+        if verdict.set_next_table_repeats_header is None:
+            raise QualityError(
+                "For table continuations, set_next_table_repeats_header must be "
+                "explicitly true/false (not null)."
+            )
+        if not isinstance(verdict.set_next_table_repeats_header, bool):
+            raise QualityError(
+                "set_next_table_repeats_header must be a boolean when provided."
+            )
+    elif verdict.set_next_table_repeats_header is not None:
+        # Not a table continuation --> must not touch repeats_header.
         raise QualityError(
             "set_next_table_repeats_header is only valid for table continuations."
         )
@@ -546,6 +565,14 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
     items = page_ir.items or []
     boundary_state = getattr(page_ir, "boundary_state", PageBoundaryState.STANDALONE)
 
+    # Only consider non-artifact items for continuity checks.
+    non_artifact_items = [
+        (i, it)
+        for i, it in enumerate(items)
+        if getattr(it, "kind", None) != "block"
+        or getattr(it, "block_type", None) != BlockType.ARTIFACT
+    ]
+
     def _boundary_str(item: Any) -> str:
         """Get the boundary string of an item.
 
@@ -562,6 +589,32 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
 
         b = getattr(item, "boundary", None)
         return "" if b is None else b.value if hasattr(b, "value") else str(b)
+
+    def _derive_boundary_state_from_items() -> PageBoundaryState:
+        """Derive the page boundary state from item boundaries.
+
+        Returns
+        -------
+        PageBoundaryState
+            The derived page boundary state.
+        """
+
+        # Only consider non-artifact items for continuity.
+        non_artifact = [it for _, it in non_artifact_items]
+
+        if not non_artifact:
+            return PageBoundaryState.STANDALONE
+
+        any_from_prev = any(_is_resumed(_boundary_str(it)) for it in non_artifact)
+        any_to_next = any(_is_truncated(_boundary_str(it)) for it in non_artifact)
+
+        if any_from_prev and any_to_next:
+            return PageBoundaryState.BOTH
+        if any_from_prev:
+            return PageBoundaryState.CONTINUES_FROM_PREV
+        if any_to_next:
+            return PageBoundaryState.CONTINUES_TO_NEXT
+        return PageBoundaryState.STANDALONE
 
     def _effective_row_width(row: Any) -> int:
         """Determine the effective row width of a row (sum of col_spans).
@@ -602,24 +655,6 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         # later.
         if getattr(tu, "text_en", None) is not None:
             raise QualityError(f"text_en must be null during extraction at {where_}.")
-
-    def _is_artifact(item: Any) -> bool:
-        """Check if an item is an artifact block.
-
-        Parameters
-        ----------
-        item
-            The item to check.
-
-        Returns
-        -------
-        bool
-            True if the item is an artifact block, False otherwise.
-        """
-
-        if getattr(item, "kind", None) != "block":
-            return False
-        return getattr(item, "block_type", None) == BlockType.ARTIFACT
 
     def _is_resumed(boundary: str) -> bool:
         """Check if a boundary string indicates a resumed or both item.
@@ -804,7 +839,7 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                 )
             if list_items:
                 raise QualityError(
-                    f"Figure block must have list_items=[] at items[{i}].list_items."
+                    f"Figure block must have list_items=null/omitted at items[{i}].list_items."
                 )
             if fig is None:
                 raise QualityError(
@@ -977,6 +1012,16 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
             )
 
     # 6. Continuity consistency: page boundary_state vs. item boundary markers.
+    expected_bs = _derive_boundary_state_from_items()
+
+    if boundary_state != expected_bs:
+        logger.warning(
+            f"boundary_state mismatch on page {getattr(page_ir, 'page_index', None)}: "
+            f"got={boundary_state} expected={expected_bs}. Overwriting."
+        )
+        page_ir.boundary_state = expected_bs
+        boundary_state = expected_bs
+
     bs = (
         boundary_state.value
         if hasattr(boundary_state, "value")
@@ -992,9 +1037,6 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
     }
     needs_from_prev = bs in states_requiring_prev
     needs_to_next = bs in states_requiring_next
-
-    # Only consider non-artifact items for continuity checks.
-    non_artifact_items = [(i, it) for i, it in enumerate(items) if not _is_artifact(it)]
 
     if needs_from_prev:
         if not non_artifact_items:

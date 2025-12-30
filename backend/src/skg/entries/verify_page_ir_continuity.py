@@ -55,7 +55,7 @@ from skg.page_ir.utils import (
     item_snippet,
     min_crop_height_px,
     pad_inches,
-    topmost_continuity_candidate,
+    topmost_continuity_candidate_paired,
 )
 from skg.schemas import VerificationRunIR
 from skg.utils.constants import ItemBoundary, PageContinuationKind
@@ -103,17 +103,8 @@ def apply_continuity_edits(
         The continuity verdict from the model.
     """
 
-    # If this pair is NOT a continuation, we still need to make item boundaries safe
-    # for stage-3 stitching (which uses item boundaries). We do this deterministically
-    # by removing ONLY the seam facet, while preserving possible connections to the
-    # other neighbor (N-1 or N+2).
+    # If this pair is NOT a continuation, then there are no continuity edits to apply.
     if not verdict.is_continuation:
-        disconnect_candidates(
-            next_idx=next_idx,
-            next_items=next_page_items,
-            prev_idx=prev_idx,
-            prev_items=prev_page_items,
-        )
         return
 
     # Update item-level boundaries (explicit edits from model).
@@ -150,72 +141,14 @@ def apply_continuity_edits(
             index=next_idx,
         )
 
-    # Table header updates.
-    if (
-        verdict.set_next_table_repeats_header is not None
-        and next_item.get("kind") == "table"
-        and verdict.is_continuation
-        and getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
-        == "table"
-    ):
-        next_page_items[next_idx][
-            "repeats_header"
-        ] = verdict.set_next_table_repeats_header
-
-
-def disconnect_candidates(
-    *,
-    next_idx: int,
-    next_items: list[dict[str, Any]],
-    prev_idx: int,
-    prev_items: list[dict[str, Any]],
-) -> None:
-    """Remove connecting facets when continuity is rejected.
-
-    Parameters
-    ----------
-    next_idx
-        Index of the continuity candidate item on the next page.
-    next_items
-        The list of items on the next page.
-    prev_idx
-        Index of the continuity candidate item on the previous page.
-    prev_items
-        The list of items on the previous page.
-    """
-
-    prev_boundary = prev_items[prev_idx].get("boundary")
-    next_boundary = next_items[next_idx].get("boundary")
-
-    # Prev candidate (page N): remove "to_next" facet.
-    # - TRUNCATED --> COMPLETE
-    # - BOTH --> RESUMED (may still connect to N-1).
-    if prev_boundary == ItemBoundary.TRUNCATED.value:
-        ensure_boundary(
-            desired=ItemBoundary.COMPLETE.value, items=prev_items, index=prev_idx
-        )
-    elif prev_boundary == ItemBoundary.BOTH.value:
-        ensure_boundary(
-            allow_downgrade_both=True,
-            desired=ItemBoundary.RESUMED.value,
-            items=prev_items,
-            index=prev_idx,
-        )
-
-    # Next candidate (page N+1): remove "from_prev" facet.
-    # - RESUMED --> COMPLETE
-    # - BOTH --> TRUNCATED (may still connect to N+2.)
-    if next_boundary == ItemBoundary.RESUMED.value:
-        ensure_boundary(
-            desired=ItemBoundary.COMPLETE.value, items=next_items, index=next_idx
-        )
-    elif next_boundary == ItemBoundary.BOTH.value:
-        ensure_boundary(
-            allow_downgrade_both=True,
-            desired=ItemBoundary.TRUNCATED.value,
-            items=next_items,
-            index=next_idx,
-        )
+    # Table header repetition: always produce a boolean for verified table
+    # continuations.
+    header_setting = verdict.set_next_table_repeats_header
+    is_next_table = next_item.get("kind") == "table"
+    kind_val = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+    is_table_continuation = verdict.is_continuation and kind_val == "table"
+    if header_setting is not None and is_next_table and is_table_continuation:
+        next_page_items[next_idx]["repeats_header"] = header_setting
 
 
 def get_threshold_based_on_kind(
@@ -354,6 +287,9 @@ def sanitize_verdict_for_candidate_kinds(
 
     if (not verdict.is_continuation) and kind != "none":
         verdict.continuation_kind = PageContinuationKind.NONE
+        verdict.set_prev_item_boundary = None
+        verdict.set_next_item_boundary = None
+        verdict.set_next_table_repeats_header = None
         return verdict
 
     prev_kind = prev_item.get("kind")
@@ -451,8 +387,9 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
 
             it["boundary"] = ItemBoundary.COMPLETE.value
 
-            # Start table header-repeat as unknown/false and only set repeats_header
-            # when a table seam is verified.
+            # Header repetition is only meaningful for tables that continue from a
+            # previous page (boundary resumed/both). Keep unknown until we verify a
+            # table continuation seam.
             if it.get("kind") == "table":
                 it["repeats_header"] = None
 
@@ -481,8 +418,10 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         prev_idx, prev_item = bottommost_continuity_candidate(
             image_height=prev_page_ir["image_height"], items=prev_page_items
         )
-        next_idx, next_item = topmost_continuity_candidate(
-            image_height=next_page_ir["image_height"], items=next_page_items
+        next_idx, next_item = topmost_continuity_candidate_paired(
+            image_height=next_page_ir["image_height"],
+            items=next_page_items,
+            prev_item=prev_item,
         )
 
         # Candidate selection provenance (for debugging). NB: cached pair reports are
@@ -530,6 +469,7 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                     verdict = sanitize_verdict_for_candidate_kinds(
                         next_item=next_item, prev_item=prev_item, verdict=verdict
                     )
+                    validate_continuity_verdict(verdict)
                 except (QualityError, ValidationError):
                     logger.warning(
                         f"Cached verdict for {i}-{i + 1} is invalid; re-verifying.",
@@ -596,6 +536,16 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
             verdict = sanitize_verdict_for_candidate_kinds(
                 next_item=next_item, prev_item=prev_item, verdict=verdict
             )
+            validate_continuity_verdict(verdict)
+            threshold = get_threshold_based_on_kind(
+                next_item=next_item, prev_item=prev_item, verdict=verdict
+            )
+            if verdict.is_continuation and float(verdict.confidence) < threshold:
+                verdict = veto_verdict(
+                    reason=f"confidence {float(verdict.confidence):.2f} < threshold {threshold:.2f}",
+                    verdict=verdict,
+                )
+            validate_continuity_verdict(verdict)
 
             # Persist the verdict.
             write_to_json(
@@ -606,12 +556,10 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 },
             )
 
-        if (not verdict.is_continuation) or (
-            verdict.confidence
-            >= get_threshold_based_on_kind(
-                next_item=next_item, prev_item=prev_item, verdict=verdict
-            )
-        ):
+        threshold = get_threshold_based_on_kind(
+            next_item=next_item, prev_item=prev_item, verdict=verdict
+        )
+        if verdict.is_continuation and float(verdict.confidence) >= threshold:
             apply_continuity_edits(
                 next_idx=next_idx,
                 next_item=next_item,
