@@ -5,10 +5,8 @@ Step 2 reads per-page PageIR JSONs from Step 1, runs pairwise (N, N+1) continuit
 verification on selected boundary-candidate items, and writes corrected PageIR JSONs
 to the verification output directory.
 
-Key guarantee for Step 3:
-    - Item boundary markers ("truncated"/"resumed"/"both") are adjusted
-      deterministically so that stitching decisions can be driven by item boundaries
-      without accidental cross-page merges due to extraction noise.
+Key guarantee for Step 3: boundaries are patched when confidence is high; otherwise
+extractor boundaries are preserved.
 
 Invoke from the backend directory via:
 
@@ -141,14 +139,96 @@ def apply_continuity_edits(
             index=next_idx,
         )
 
-    # Table header repetition: always produce a boolean for verified table
-    # continuations.
+    # Table header repetition: set repeats_header only when the model provides it for a
+    # verified table continuation.
     header_setting = verdict.set_next_table_repeats_header
     is_next_table = next_item.get("kind") == "table"
     kind_val = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
     is_table_continuation = verdict.is_continuation and kind_val == "table"
     if header_setting is not None and is_next_table and is_table_continuation:
         next_page_items[next_idx]["repeats_header"] = header_setting
+
+
+def apply_non_continuity_edits(
+    *,
+    next_idx: int,
+    next_item: dict[str, Any],
+    next_page_items: list[dict[str, Any]],
+    prev_idx: int,
+    prev_page_items: list[dict[str, Any]],
+) -> None:
+    """If the model is VERY confident there is no continuation between these two
+    candidates, clear seam-level continuity flags on just these items.
+
+    This is a 'patch' for extractor false-positives (e.g., a table marked resumed when
+    it's actually a new table).
+
+    Parameters
+    ----------
+    next_idx
+        Index of the continuity candidate item on the next page.
+    next_item
+        The actual item dictionary for the next page candidate.
+    next_page_items
+        The list of items on the next page.
+    prev_idx
+        Index of the continuity candidate item on the previous page.
+    prev_page_items
+        The list of items on the previous page.
+    """
+
+    # Clear prev boundary if it was suggesting continuation.
+    prev_b = prev_page_items[prev_idx].get("boundary") or ItemBoundary.COMPLETE.value
+    if prev_b != ItemBoundary.COMPLETE.value:
+        ensure_boundary(
+            allow_downgrade_both=True,
+            desired=ItemBoundary.COMPLETE.value,
+            index=prev_idx,
+            items=prev_page_items,
+        )
+
+    # Clear next boundary if it was suggesting continuation.
+    next_b = next_page_items[next_idx].get("boundary") or ItemBoundary.COMPLETE.value
+    if next_b != ItemBoundary.COMPLETE.value:
+        ensure_boundary(
+            allow_downgrade_both=True,
+            desired=ItemBoundary.COMPLETE.value,
+            index=next_idx,
+            items=next_page_items,
+        )
+
+    # repeats_header only has meaning for resumed/both table continuations.
+    if next_item.get("kind") == "table":
+        next_page_items[next_idx]["repeats_header"] = None
+
+
+def get_negative_threshold(
+    *, next_item: dict[str, Any], prev_item: dict[str, Any]
+) -> float:
+    """Confidence threshold for applying "no-continuation" patches.
+
+    We require VERY high confidence because clearing boundaries can remove useful
+    extractor signal. Tables/figures are easier to judge visually, so allow a slightly
+    lower threshold than plain text.
+    """
+
+    prev_kind = prev_item.get("kind")
+    next_kind = next_item.get("kind")
+
+    # Table to table and figure to figure are usually visually obvious.
+    if prev_kind == "table" and next_kind == "table":
+        return 0.85
+
+    if (
+        prev_kind == "block"
+        and next_kind == "block"
+        and is_figure_block(prev_item)
+        and is_figure_block(next_item)
+    ):
+        return 0.85
+
+    # Text is more ambiguous so be stricter.
+    return 0.90
 
 
 def get_threshold_based_on_kind(
@@ -376,22 +456,11 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         for i in range(start, stop)
     }
 
-    # Delete extraction noise so that verification becomes the source of truth for
-    # boundaries.
+    # Preserve extraction hints (internal-only) so reports can show what the extractor
+    # believed. Verification will PATCH only when confidence is high.
     for page_ir in page_irs.values():
-        # Reset item-level continuity.
         for it in page_ir.get("items", []):
-            # Preserve extraction hints for candidate selection (internal-only).
-            # These must NOT be written to verified JSONs.
             it["_orig_boundary"] = it.get("boundary")
-
-            it["boundary"] = ItemBoundary.COMPLETE.value
-
-            # Header repetition is only meaningful for tables that continue from a
-            # previous page (boundary resumed/both). Keep unknown until we verify a
-            # table continuation seam.
-            if it.get("kind") == "table":
-                it["repeats_header"] = None
 
     # Iterate in pairs.
     for i in range(start, stop - 1):
@@ -567,6 +636,16 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 prev_idx=prev_idx,
                 prev_page_items=prev_page_items,
                 verdict=verdict,
+            )
+
+        neg_threshold = get_negative_threshold(next_item=next_item, prev_item=prev_item)
+        if (not verdict.is_continuation) and float(verdict.confidence) >= neg_threshold:
+            apply_non_continuity_edits(
+                next_idx=next_idx,
+                next_item=next_item,
+                next_page_items=next_page_items,
+                prev_idx=prev_idx,
+                prev_page_items=prev_page_items,
             )
 
     # Remove internal-only fields before writing outputs (schema forbids extras).
