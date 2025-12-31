@@ -592,6 +592,19 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 render_dpi=render_dpi,
             )
 
+            prev_excerpt = item_snippet(item=prev_item)
+            next_excerpt = item_snippet(item=next_item)
+
+            # Don't bias the verifier with extractor continuity guesses.
+            prev_excerpt["boundary"] = None
+            next_excerpt["boundary"] = None
+
+            # Also don't bias table decisions with any extractor repeats_header.
+            if next_excerpt.get("kind") == "table":
+                next_excerpt["repeats_header"] = None
+            if prev_excerpt.get("kind") == "table":
+                prev_excerpt["repeats_header"] = None
+
             # Invoke the model to verify the pair.
             verdict = verify_page_ir_pairs(
                 model=model,
@@ -599,8 +612,8 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 next_top_png=next_crop_fp,
                 prev_bottom_png=prev_crop_fp,
                 prev_page_index=i,
-                prev_item_excerpt=item_snippet(item=prev_item),
-                next_item_excerpt=item_snippet(item=next_item),
+                prev_item_excerpt=prev_excerpt,
+                next_item_excerpt=next_excerpt,
             )
             verdict = sanitize_verdict_for_candidate_kinds(
                 next_item=next_item, prev_item=prev_item, verdict=verdict

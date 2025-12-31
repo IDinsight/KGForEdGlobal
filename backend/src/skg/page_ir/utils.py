@@ -65,8 +65,12 @@ def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
     """
 
     v = it.get("boundary")
-    if v in (None, ItemBoundary.COMPLETE.value):
+
+    if v is None:
         v = it.get("_orig_boundary")
+
+    if v is None:
+        v = ItemBoundary.COMPLETE.value
 
     v = getattr(v, "value", v)
 
