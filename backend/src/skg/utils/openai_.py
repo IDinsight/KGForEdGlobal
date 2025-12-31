@@ -559,6 +559,7 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
     tol = 2.0  # Small tolerance for rounding
     items = page_ir.items or []
     boundary_state = getattr(page_ir, "boundary_state", PageBoundaryState.STANDALONE)
+    page_bbox = (0.0, 0.0, float(image_width), float(image_height))
 
     # Only consider non-artifact items for continuity checks.
     non_artifact_items = [
@@ -650,6 +651,29 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         # later.
         if getattr(tu, "text_en", None) is not None:
             raise QualityError(f"text_en must be null during extraction at {where_}.")
+
+    def _is_full_page_bbox(bb: tuple[float, ...]) -> bool:
+        """Check if a bbox is effectively full-page within tolerance.
+
+        Parameters
+        ----------
+        bb
+            The bbox to check.
+
+        Returns
+        -------
+        bool
+            True if the bbox is full-page within tolerance, False otherwise.
+        """
+
+        x0, y0, x1, y1 = bb
+
+        return (
+            abs(x0 - page_bbox[0]) <= tol
+            and abs(y0 - page_bbox[1]) <= tol
+            and abs(x1 - page_bbox[2]) <= tol
+            and abs(y1 - page_bbox[3]) <= tol
+        )
 
     def _is_resumed(boundary: str) -> bool:
         """Check if a boundary string indicates a resumed or both item.
@@ -784,7 +808,24 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         )
         top_level_bboxes.append(tuple(map(float, bbox)))
 
-    # 3. Basic block invariants (lightweight, avoids semantic guesswork).
+    # 3. Reject full-page bboxes unless the page truly is a single full-page figure.
+    full_page_idxs = [
+        i for i, bb in enumerate(top_level_bboxes) if _is_full_page_bbox(bb)
+    ]
+    if full_page_idxs:
+        # Only allow if it's literally one item and it's a figure.
+        if not (
+            len(items) == 1
+            and getattr(items[0], "kind", None) == "block"
+            and getattr(items[0], "block_type", None) == BlockType.FIGURE
+        ):
+            raise QualityError(
+                f"Full-page bbox used as a placeholder for items {full_page_idxs}. "
+                "BBoxes must be tight to each item. Full-page bbox is only allowed for "
+                "a single full-page figure."
+            )
+
+    # 4. Basic block invariants (lightweight, avoids semantic guesswork).
     for i, item in enumerate(items):
         if getattr(item, "kind", None) != "block":
             continue
@@ -860,7 +901,7 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                 f"Non-list block must have list_items=null/omitted at items[{i}].list_items."
             )
 
-    # 4. Table integrity (non-negotiable for deterministic stitching).
+    # 5. Table integrity (non-negotiable for deterministic stitching).
     for i, item in enumerate(items):
         if getattr(item, "kind", None) != "table":
             continue
@@ -980,8 +1021,8 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
         if not any_content_in_table:
             raise QualityError(f"Table at items[{i}] contains no text content.")
 
-    # 5. Placeholder bbox detection (item bboxes are required).
-    if len(top_level_bboxes) >= 6:
+    # 6. Placeholder bbox detection (item bboxes are required).
+    if len(top_level_bboxes) >= 3:
         counts = Counter(top_level_bboxes)
         most_common_bbox, most_common_count = counts.most_common(1)[0]
         frac = most_common_count / max(1, len(top_level_bboxes))
@@ -1006,7 +1047,7 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                 "Do not use near-full-page bboxes as placeholders; bboxes must be localized."
             )
 
-    # 6. Continuity consistency: page boundary_state vs. item boundary markers.
+    # 7. Continuity consistency: page boundary_state vs. item boundary markers.
     expected_bs = _derive_boundary_state_from_items()
 
     if boundary_state != expected_bs:
@@ -1077,7 +1118,7 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                 "resumed/truncated boundaries on non-artifact items."
             )
 
-    # 7. Gross reading-order sanity check (avoid overfitting to 2-column pages). We
+    # 8. Gross reading-order sanity check (avoid overfitting to 2-column pages). We
     # only flag big backward jumps *within roughly the same column*.
     if len(non_artifact_items) >= 3:
         prev_bbox = getattr(non_artifact_items[0][1], "bbox", [0.0, 0.0, 0.0, 0.0])
