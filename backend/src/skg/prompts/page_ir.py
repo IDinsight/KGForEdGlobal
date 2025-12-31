@@ -99,24 +99,26 @@ def extract_page_ir_from_pdf_page(
    - You may omit `coord_space`; if you include it, it MUST be exactly "px".
 11. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
 12. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
-13. Do not output empty tables; if you see a table, it must have at least one row.
-14. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
-15. Do NOT create blocks that represent the whole page or background. Every block/table/figure must correspond to actual visible content. Full-page bbox is allowed ONLY when the page is dominated by a single full-page figure/diagram.
-16. Do not emit any block that contains no content.
+13. NO PLACEHOLDER / REUSED BBOXES: Never use the same bbox for multiple items. Never copy the page bbox into items. Each item bbox must tightly wrap only that item’s visible pixels. If unsure, err slightly smaller than too large—never full-page.
+14. Do not output empty tables; if you see a table, it must have at least one row.
+15. Do a final scan of the bottom 10% of the page before finishing; do not stop early.
+16. Full-page bbox is allowed ONLY when the output contains exactly ONE item and that item is kind="block", block_type="figure" (a true full-page figure page). Otherwise, full-page bbox is never allowed.
+17. Do not emit any block that contains no content.
  - For block_type in {{paragraph, heading, caption}}: block must have non-empty `text`.
  - For block_type=list: block must have non-empty `list_items` and `text=null`.
  - For block_type=figure: block must have a non-null `figure` object and `text=null` and `list_items=null`.
-17. If block_type != "figure", then `figure` MUST be null or omitted.
-18. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
-19. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
-20. LANGUAGE TAGGING (IMPORTANT):
+18. If block_type != "figure", then `figure` MUST be null or omitted.
+19. Do NOT output a full-page “artifact” or “background” block. Only output artifacts when you see actual header/footer/page-number text.
+20. Ignore page border lines / decorative frames. Do not emit blocks/tables for borders or background. Page numbers must be a small ARTIFACT bbox around the digits/roman numerals only. Signatures/logos are FIGURE only if you include them, with tight bbox around the graphic only (not margins).
+21. artifact = running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
+22. LANGUAGE TAGGING (IMPORTANT):
    - Use the BEST-MATCH BCP-47 language for the visible text, even if it is NOT in Expected Languages.
    - Expected Languages are only hints (common in Tanzania PDFs to include tables with fr/zh/ar in addition to en/sw).
    - Use "und" only if you genuinely cannot tell.
    - Use "mul" only if multiple languages appear in the SAME TextUnit (e.g., bilingual French+English in one cell).
-21. For any non-list block (including figure), list_items MUST be null or omitted (never []).
-22. MIXED LANGUAGE IN ONE TEXTUNIT: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
-23. GRID-TRUE ROWS ONLY: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
+23. For any non-list block (including figure), list_items MUST be null or omitted (never []).
+24. MIXED LANGUAGE IN ONE TEXTUNIT: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
+25. GRID-TRUE ROWS ONLY: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
 
 ## BLOCK CLASSIFICATION
 
@@ -178,6 +180,8 @@ Requirements:
 5. Only set repeats_header when the table is resumed/both (i.e., continuing from previous page). Never set it for complete tables.
 6. If you can confidently count the table's columns, set "n_cols".
 7. If you see a diagram/figure (not a table), output a block_type="figure" block with a `figure` object and tight bbox.
+
+Final check before output: no item bbox may be full-page or reused across items (except the single full-page figure case).
         """
     )
 
