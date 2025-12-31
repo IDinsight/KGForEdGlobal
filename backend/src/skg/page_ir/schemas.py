@@ -311,7 +311,7 @@ class CurriculumBlock(BaseModelPageIR):
     )
 
     @model_validator(mode="after")
-    def validate_cross_field_invariants(  # pylint:disable=R0912,R1260
+    def validate_cross_field_invariants(  # pylint:disable=R1260
         self,
     ) -> CurriculumBlock:
         """Validate cross-field variants.
@@ -343,6 +343,10 @@ class CurriculumBlock(BaseModelPageIR):
                 raise ValueError(
                     "CurriculumBlock block_type='list' requires figure=null."
                 )
+            if self.figure is not None:
+                raise ValueError(
+                    "CurriculumBlock block_type='list' requires figure=null."
+                )
             return self
 
         # Figure blocks: figure required; text/list_items must be null.
@@ -361,19 +365,8 @@ class CurriculumBlock(BaseModelPageIR):
                 )
             return self
 
-        # Artifact blocks: allow empty/null text; list_items/figure must be null.
-        if bt == BlockType.ARTIFACT:
-            if self.list_items is not None:
-                raise ValueError(
-                    "CurriculumBlock block_type='artifact' requires list_items=null."
-                )
-            if self.figure is not None:
-                raise ValueError(
-                    "CurriculumBlock block_type='artifact' requires figure=null."
-                )
-            return self
-
-        # All other block types: text required; list_items/figure must be null.
+        # Everything else (artifact/caption/heading/paragraph): text required;
+        # list_items/figure must be null.
         if self.text is None or not self.text.text.strip():
             raise ValueError(
                 f"CurriculumBlock block_type='{bt}' requires non-empty text."
