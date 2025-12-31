@@ -238,9 +238,11 @@ Allowed edits (metadata only):
 - set_next_item_boundary: one of {next_boundary_allowed} (or null)
 - set_next_table_repeats_header:
     - Only when NEXT candidate is a table AND it is the SAME table continuing.
+    - Decide using IMAGE B (and IMAGE A), not the excerpt fields.
     - Set to true if the header rows are visibly repeated on page N+1.
-    - Set to false ONLY if the excerpt explicitly shows repeats_header=true but IMAGE B clearly does NOT repeat headers. Otherwise leave it null.
-    - Null means “leave as-is”.
+    - Set to false if the same table continues but headers are visibly NOT repeated.
+    - If you cannot confidently tell, set it to null (do not guess).
+    - Null means “leave as-is / do not patch”.
 
 Rules:
 - DO NOT rewrite, move, merge, or complete text/table cells across pages.
@@ -268,10 +270,11 @@ Decision guidance:
    - If the bottom text clearly ends a complete sentence (ends with ".", "!" or "?"), do NOT mark as text continuation.
    - If the next candidate begins with a table/figure caption label ("Table", "Figure"), do NOT mark as text continuation.
 - FIGURE candidates: most figures do NOT continue across pages. Only mark continuation if the SAME figure is clearly cut off and resumes on the next page.
+- Excerpt metadata fields like boundary/repeats_header may be null/unreliable; do not treat null as evidence of "complete".
 
 continuation_kind rules:
 - If is_continuation=false, set continuation_kind="none".
-- If is_continuation=true and continuation_kind='table', ALWAYS set set_next_table_repeats_header to true/false (never null).
+- If is_continuation=true and continuation_kind='table', set set_next_table_repeats_header to true/false ONLY when you can confidently see whether headers repeat; otherwise leave it null.
 - Use continuation_kind="table" only for table continuations.
 - Use continuation_kind="text" only for text/list continuations.
 - Use continuation_kind="figure" only for figure/diagram continuations (same figure is cut off and resumes on next page).

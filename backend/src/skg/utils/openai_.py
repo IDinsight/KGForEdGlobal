@@ -511,18 +511,13 @@ def validate_continuity_verdict(  # pylint: disable=R0912,R1260
     is_table_cont = verdict.is_continuation and kind == PageContinuationKind.TABLE.value
 
     if is_table_cont:
-        # For deterministic stitching, the verifier must always decide this.
-        if verdict.set_next_table_repeats_header is None:
-            raise QualityError(
-                "For table continuations, set_next_table_repeats_header must be "
-                "explicitly true/false (not null)."
-            )
-        if not isinstance(verdict.set_next_table_repeats_header, bool):
+        if verdict.set_next_table_repeats_header is not None and not isinstance(
+            verdict.set_next_table_repeats_header, bool
+        ):
             raise QualityError(
                 "set_next_table_repeats_header must be a boolean when provided."
             )
     elif verdict.set_next_table_repeats_header is not None:
-        # Not a table continuation --> must not touch repeats_header.
         raise QualityError(
             "set_next_table_repeats_header is only valid for table continuations."
         )
@@ -796,7 +791,8 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
 
         block_type = getattr(item, "block_type", None)
         text_unit = getattr(item, "text", None)
-        list_items = getattr(item, "list_items", None) or []
+        raw_list_items = getattr(item, "list_items", None)
+        list_items = raw_list_items or []
         fig = getattr(item, "figure", None)
 
         # Non-figure blocks must not carry figure metadata.
@@ -859,10 +855,9 @@ def validate_page_ir_extraction_quality(  # pylint: disable=R0912,R0915,R1260
                 raise QualityError(
                     f"Whitespace-only figure.caption at items[{i}].figure.caption."
                 )
-        elif list_items:
-            # Non-list blocks should not carry list_items.
+        elif raw_list_items is not None:
             raise QualityError(
-                f"Non-list block must have list_items=[] at items[{i}].list_items."
+                f"Non-list block must have list_items=null/omitted at items[{i}].list_items."
             )
 
     # 4. Table integrity (non-negotiable for deterministic stitching).
@@ -1203,6 +1198,9 @@ def verify_page_ir_pairs(
                     continuation_kind=PageContinuationKind.NONE,
                     is_continuation=False,
                     rationale=f"Automatic failure after retries: {str(e)}",
+                    set_next_item_boundary=None,
+                    set_next_table_repeats_header=None,
+                    set_prev_item_boundary=None,
                 )
 
             # Add feedback to history.
@@ -1235,4 +1233,7 @@ def verify_page_ir_pairs(
         continuation_kind=PageContinuationKind.NONE,
         is_continuation=False,
         rationale="Fallback.",
+        set_next_item_boundary=None,
+        set_next_table_repeats_header=None,
+        set_prev_item_boundary=None,
     )
