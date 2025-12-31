@@ -6,18 +6,23 @@ from enum import Enum
 
 # Enums for various constant types.
 class BlockType(str, Enum):
-    """The visual structural category of a content block."""
+    """The visual structural category of a content block.
 
-    ARTIFACT = (
-        "artifact"  # Page numbers, running headers/footers (to be filtered later)
-    )
-    CAPTION = "caption"  # Text specifically describing a table or figure
-    FIGURE = (
-        "figure"  # Diagrams/figures/illustrations/flowcharts (boxed visual regions)
-    )
-    HEADING = "heading"  # Visually distinct titles, section headers
-    LIST = "list"  # A group of items (bullets, numbers)
-    PARAGRAPH = "paragraph"  # Standard blocks of prose
+    Types include:
+        - artifact: Page numbers, running headers/footers (to be filtered later)
+        - caption: Text specifically describing a table or figure
+        - figure: Diagrams/figures/illustrations/flowcharts (boxed visual regions)
+        - heading: Visually distinct titles, section headers
+        - list: A group of items (bullets, numbers)
+        - paragraph: Standard blocks of prose
+    """
+
+    ARTIFACT = "artifact"
+    CAPTION = "caption"
+    FIGURE = "figure"
+    HEADING = "heading"
+    LIST = "list"
+    PARAGRAPH = "paragraph"
 
 
 class FigureKind(str, Enum):
@@ -40,10 +45,11 @@ class ItemBoundary(str, Enum):
     """Enumeration for item boundary states on a page.
 
     NB: These are semantic continuity flags (not "missing borders"):
-        - both: item continues from prev AND onto next (middle slice of a long item)
-        - complete: item is fully contained on this page
-        - resumed: item continues from the previous page
-        - truncated: item continues onto the next page
+        - both: Item continues from previous page AND onto next page (middle slice of a
+            long item)
+        - complete: Item is fully contained on this page
+        - resumed: Item continues from the previous page
+        - truncated: Item continues onto the next page
     """
 
     BOTH = "both"
@@ -56,10 +62,11 @@ class PageBoundaryState(str, Enum):
     """Enumeration for page boundary states of items.
 
     NB: These are semantic continuity flags (not "missing borders"):
-        - both: item continues from prev AND onto next (middle slice of a long item)
-        - from_prev: item continues from the previous page
-        - to_next: item continues onto the next page
-        - standalone: item is fully contained on this page
+        - both: Item continues from previous page AND onto next page (middle slice of a
+            long item)
+        - from_prev: Item continues from the previous page
+        - to_next: Item continues onto the next page
+        - standalone: Item is fully contained on this page
     """
 
     BOTH = "both"

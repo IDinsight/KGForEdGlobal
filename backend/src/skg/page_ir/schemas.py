@@ -42,13 +42,14 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
     """
 
     if len(bbox) != 4:
-        raise ValueError("bbox must have exactly 4 numbers: [x0, y0, x1, y1].")
+        raise ValueError(
+            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
+        )
 
     x0, y0, x1, y1 = bbox
 
-    # Auto-correct inverted or zero-dimension axes.
+    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
     if x0 >= x1:
-        # If inverted (x0 > x1), swap. If equal, add 1 px.
         if x0 > x1:
             x0, x1 = x1, x0
         else:
@@ -67,9 +68,9 @@ BBox = Annotated[
     list[float],
     AfterValidator(validate_bbox_order),
     Field(
-        min_length=4,
-        max_length=4,
         description="Bounding box [x0, y0, x1, y1] in absolute pixels (px) relative to the image dimensions.",
+        max_length=4,
+        min_length=4,
     ),
 ]
 BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
@@ -110,8 +111,8 @@ class TextUnit(BaseModelPageIR):
 class TableCell(BaseModelPageIR):
     """A single cell within a table grid."""
 
-    col_span: int = Field(1, ge=1, description="Number of columns this cell spans.")
-    row_span: int = Field(1, ge=1, description="Number of rows this cell spans.")
+    col_span: int = Field(1, description="Number of columns this cell spans.", ge=1)
+    row_span: int = Field(1, description="Number of rows this cell spans.", ge=1)
     text: Optional[TextUnit] = Field(
         None, description="The content of the cell. Null if visually empty."
     )
@@ -132,39 +133,31 @@ class CurriculumTable(BaseModelPageIR):
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
         description=(
-            "Semantic continuity of this table across page boundaries. "
-            "'resumed' if this table is a continuation from the previous page; "
-            "'truncated' if it continues onto the next page; "
-            "'both' if it continues from prev and to next; "
-            "'complete' if fully contained on this page. "
-            "Do NOT rely on whether borders are drawn—many PDFs repeat headers/borders on continuation pages."
+            f"Semantic continuity of this table across page boundaries: "
+            f"'{ItemBoundary.RESUMED}' if this table is a continuation from the previous page; "
+            f"'{ItemBoundary.TRUNCATED}' if it continues onto the next page; "
+            f"'{ItemBoundary.BOTH}' if it continues from prev and to next; "
+            f"'{ItemBoundary.COMPLETE}' if fully contained on this page. "
+            f"DO NOT rely on whether table borders are drawn. Many PDFs repeat gridlines and headers on continuation pages."
         ),
     )
     header_row_count: int = Field(
         0,
-        ge=0,
         description="Number of rows at the top that function as headers. 0 if none.",
+        ge=0,
     )
-    kind: Literal["table"] = Field(
-        ..., description="Discriminator for ContentItem union. Must be 'table'."
-    )
+    kind: Literal["table"] = Field(..., description="Must be 'table'.")
     local_code: Optional[str] = Field(
         None, description="Explicit curriculum code if present (e.g., 'Table 1.2')."
     )
     n_cols: Optional[int] = Field(
         default=None,
+        description="Intended number of visual columns in the table grid if clearly inferable from the ruling/grid. Omit or set null if unsure.",
         ge=1,
-        description=(
-            "Intended number of visual columns in the table grid if clearly inferable "
-            "from the ruling/grid. Omit or set null if unsure."
-        ),
     )
     repeats_header: Optional[bool] = Field(
         None,
-        description=(
-            "For tables that continue from a previous page, indicates whether the "
-            "header rows are visibly repeated on this page. Null if unknown."
-        ),
+        description="For tables that continue from a previous page, indicates whether the header rows are visibly repeated on this page. Null if unknown.",
     )
     rows: list[TableRow] = Field(
         ...,
@@ -215,7 +208,8 @@ class CurriculumTable(BaseModelPageIR):
             ItemBoundary.BOTH,
         }:
             raise ValueError(
-                "repeats_header is only allowed when table.boundary is resumed/both."
+                f"repeats_header is only allowed when boundary is "
+                f"{ItemBoundary.RESUMED}/{ItemBoundary.BOTH}."
             )
 
         return self
@@ -235,68 +229,49 @@ class FigureUnit(BaseModelPageIR):
     """Non-semantic metadata about a diagram/figure region.
 
     NB: This is NOT a full diagram parse. It is only enough to:
-        - preserve the presence of the figure,
-        - support later optional diagram interpretation,
-        - keep strong provenance via bbox.
+        - Preserve the presence of the figure,
+        - Support later optional diagram interpretation,
+        - Keep strong provenance via bbox.
     """
 
     alt_text: Optional[str] = Field(
         None,
-        description=(
-            "Very short, non-semantic description of what the figure is "
-            "(e.g., 'flowchart with arrows', 'pyramid diagram'). "
-            "Do NOT interpret meaning. Null if unknown."
-        ),
+        description="Very short, non-semantic description of what the figure is (e.g., 'flowchart with arrows', 'pyramid diagram'). Do NOT interpret meaning. Null if unknown.",
         max_length=200,
     )
     caption: Optional[TextUnit] = Field(
         None,
-        description=(
-            "Caption text if it is clearly attached to this figure "
-            "(e.g., 'Figure 2: ...'). Prefer to extract captions as separate CAPTION "
-            "blocks; only populate here when unambiguous."
-        ),
+        description="Caption text if it is clearly attached to this figure (e.g., 'Figure 2: ...'). Prefer to extract captions as separate CAPTION blocks; only populate here when unambiguous.",
     )
     contains_text: Optional[bool] = Field(
         None,
-        description=(
-            "True if there is visible text inside the figure region (not including nearby captions). "
-            "Null if unknown."
-        ),
+        description="True if there is visible text inside the figure region (not including nearby captions). Null if unknown.",
     )
     figure_kind: FigureKind = Field(
         FigureKind.UNKNOWN,
-        description=(
-            "Coarse type label for the figure region. Keep conservative; use 'unknown' if unsure."
-        ),
+        description=f"Coarse type label for the figure region. Keep conservative; use '{FigureKind.UNKNOWN}' if unsure.",
     )
 
 
 class CurriculumBlock(BaseModelPageIR):
-    """A grouping of text content (paragraph, heading, or list)."""
+    """A grouping of text content (paragraph, heading, list, etc.)."""
 
     bbox: BBox
     block_type: BlockType = Field(..., description="The visual structure of the block.")
     boundary: ItemBoundary = Field(
         ItemBoundary.COMPLETE,
         description=(
-            "Semantic continuity of this block across page boundaries. "
-            "'resumed' if it continues from the previous page; "
-            "'truncated' if it continues onto the next page; "
-            "'both' if both; otherwise 'complete'."
+            f"Semantic continuity of this block across page boundaries: "
+            f"'{ItemBoundary.RESUMED}' if it continues from the previous page; "
+            f"'{ItemBoundary.TRUNCATED}' if it continues onto the next page; "
+            f"'{ItemBoundary.BOTH}' if both; otherwise '{ItemBoundary.COMPLETE}'."
         ),
     )
     figure: Optional[FigureUnit] = Field(
         None,
-        description=(
-            "Figure/diagram metadata. Must be null unless block_type='figure'. This "
-            "does NOT parse internal structure; it only preserves the region and light "
-            "hints."
-        ),
+        description=f"Figure/diagram metadata. Must be null unless block_type='{BlockType.FIGURE}'. This does NOT parse internal structure; it only preserves the region and light hints.",
     )
-    kind: Literal["block"] = Field(
-        ..., description="Discriminator for ContentItem union. Must be 'block'."
-    )
+    kind: Literal["block"] = Field(..., description="Must be 'block'.")
     list_items: Optional[list[ListItem]] = Field(
         None,
         description="The items (for lists). Null for headings/paragraphs. Must be null unless block_type indicates a list.",
@@ -311,10 +286,8 @@ class CurriculumBlock(BaseModelPageIR):
     )
 
     @model_validator(mode="after")
-    def validate_cross_field_invariants(  # pylint:disable=R1260
-        self,
-    ) -> CurriculumBlock:
-        """Validate cross-field variants.
+    def validate_block_type_figure(self) -> CurriculumBlock:
+        """Validate figure block types.
 
         Returns
         -------
@@ -324,7 +297,41 @@ class CurriculumBlock(BaseModelPageIR):
         Raises
         ------
         ValueError
-            If a cross-field validation fails.
+            If validation fails.
+        """
+
+        bt = self.block_type
+
+        # Figure blocks: figure required; text/list_items must be null.
+        if bt == BlockType.FIGURE:
+            if self.figure is None:
+                raise ValueError(
+                    f"CurriculumBlock block_type='{bt}' requires figure metadata."
+                )
+            if self.text is not None:
+                raise ValueError(
+                    f"CurriculumBlock block_type='{bt}' requires text=null."
+                )
+            if self.list_items is not None:
+                raise ValueError(
+                    f"CurriculumBlock block_type='{bt}' requires list_items=null."
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_block_type_list(self) -> CurriculumBlock:
+        """Validate list block types.
+
+        Returns
+        -------
+        CurriculumBlock
+            The passed in CurriculumBlock.
+
+        Raises
+        ------
+        ValueError
+            If validation fails.
         """
 
         bt = self.block_type
@@ -333,36 +340,37 @@ class CurriculumBlock(BaseModelPageIR):
         if bt == BlockType.LIST:
             if not self.list_items:
                 raise ValueError(
-                    "CurriculumBlock block_type='list' requires non-empty list_items."
+                    f"CurriculumBlock block_type='{bt}' requires non-empty list_items."
                 )
             if self.text is not None:
                 raise ValueError(
-                    "CurriculumBlock block_type='list' requires text=null."
+                    f"CurriculumBlock block_type='{bt}' requires text=null."
                 )
             if self.figure is not None:
                 raise ValueError(
-                    "CurriculumBlock block_type='list' requires figure=null."
+                    f"CurriculumBlock block_type='{bt}' requires figure=null."
                 )
-            if self.figure is not None:
-                raise ValueError(
-                    "CurriculumBlock block_type='list' requires figure=null."
-                )
-            return self
 
-        # Figure blocks: figure required; text/list_items must be null.
-        if bt == BlockType.FIGURE:
-            if self.figure is None:
-                raise ValueError(
-                    "CurriculumBlock block_type='figure' requires figure metadata."
-                )
-            if self.text is not None:
-                raise ValueError(
-                    "CurriculumBlock block_type='figure' requires text=null."
-                )
-            if self.list_items is not None:
-                raise ValueError(
-                    "CurriculumBlock block_type='figure' requires list_items=null."
-                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_block_type_other(self) -> CurriculumBlock:
+        """Validate other block types.
+
+        Returns
+        -------
+        CurriculumBlock
+            The passed in CurriculumBlock.
+
+        Raises
+        ------
+        ValueError
+            If validation fails.
+        """
+
+        bt = self.block_type
+
+        if bt in (BlockType.FIGURE, BlockType.LIST):
             return self
 
         # Everything else (artifact/caption/heading/paragraph): text required;
@@ -391,17 +399,11 @@ class PageIR(BaseModelPageIR):
     )
     coord_space: Literal["px"] = Field(
         "px",
-        description=(
-            "Coordinate space used for all bounding boxes. 'px' indicates pixel coordinates "
-            "in the rendered page image with origin at the top-left."
-        ),
+        description="Coordinate space used for all bounding boxes. 'px' indicates pixel coordinates in the rendered page image with origin at the top-left.",
     )
     doc_key: Optional[str] = Field(
         None,
-        description=(
-            "Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex). "
-            "This should be populated by the Python pipeline; it may be null during extraction."
-        ),
+        description="Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex). This should be populated by the Python pipeline; it may be null during extraction.",
     )
     dpi: Optional[int] = Field(
         default=None,
@@ -425,17 +427,14 @@ class PageIR(BaseModelPageIR):
     )
     pdf_name: Optional[str] = Field(
         None,
-        description=(
-            "Source PDF filename (no path). This should be populated by the Python pipeline; "
-            "it may be null during extraction."
-        ),
+        description="Source PDF filename (no path). This should be populated by the Python pipeline; it may be null during extraction.",
     )
 
     @model_validator(mode="after")
     def clamp_bboxes_within_image(self) -> PageIR:
-        """Clamp item bboxes into image bounds. Vision bboxes often drift by a few
-        pixels; clamping makes extraction robust while still preserving usable
-        provenance.
+        """Clamp item bounding boxes into image bounds. Bounding boxes from vision
+        models often drift by a few pixels; clamping makes extraction reliable while
+        still preserving usable provenance.
 
         Returns
         -------
@@ -470,17 +469,17 @@ class PageIR(BaseModelPageIR):
 
 # Schemas for verification.
 class PageIRContinuityVerdict(BaseModelPageIR):
-    """Model for page IR continuity verification between two pages."""
+    """Schema for page IR continuity verification between two pages."""
 
-    prev_page_index: int = Field(..., description="0-based index of the previous page.")
     next_page_index: int = Field(..., description="0-based index of the next page.")
+    prev_page_index: int = Field(..., description="0-based index of the previous page.")
 
     # What the model thinks.
     confidence: float = Field(
         ...,
+        description="Page continuation confidence score (0.0 to 1.0).",
         ge=0.0,
         le=1.0,
-        description="Page continuation confidence score (0.0 to 1.0).",
     )
     continuation_kind: PageContinuationKind = Field(
         ..., description="Type of content continuing across the break."
@@ -492,18 +491,15 @@ class PageIRContinuityVerdict(BaseModelPageIR):
     rationale: str = Field(..., description="Explanation for the verdict.")
 
     # Minimal suggested edits (null means leave as-is).
-    set_prev_item_boundary: Optional[ItemBoundary] = Field(
-        None, description="Boundary state for the last item on the previous page."
-    )
     set_next_item_boundary: Optional[ItemBoundary] = Field(
         None, description="Boundary state for the first item on the next page."
     )
     set_next_table_repeats_header: Optional[bool] = Field(
         None,
-        description=(
-            "If the continuation_kind is 'table' and the next page contains a repeated header, "
-            "set this to true. Set to false if the header is not repeated. Null means leave as-is."
-        ),
+        description="If continuation_kind is 'table' and the next page contains a repeated header, set this to true. Set to false if the header is not repeated. Null means leave as-is.",
+    )
+    set_prev_item_boundary: Optional[ItemBoundary] = Field(
+        None, description="Boundary state for the last item on the previous page."
     )
 
     @model_validator(mode="after")
@@ -528,14 +524,16 @@ class PageIRContinuityVerdict(BaseModelPageIR):
                 ItemBoundary.RESUMED,
             }:
                 raise ValueError(
-                    "When continuation=true, prev item cannot be complete/resumed."
+                    f"When is_continuation=true, set_prev_item_boundary cannot be "
+                    f"{ItemBoundary.COMPLETE}/{ItemBoundary.RESUMED}."
                 )
             if self.set_next_item_boundary in {
                 ItemBoundary.COMPLETE,
                 ItemBoundary.TRUNCATED,
             }:
                 raise ValueError(
-                    "When continuation=true, next item cannot be complete/truncated."
+                    f"When is_continuation=true, set_next_item_boundary cannot be "
+                    f"{ItemBoundary.COMPLETE}/{ItemBoundary.TRUNCATED}."
                 )
             if (
                 self.continuation_kind != PageContinuationKind.TABLE
@@ -550,14 +548,16 @@ class PageIRContinuityVerdict(BaseModelPageIR):
                 and self.set_prev_item_boundary != ItemBoundary.COMPLETE
             ):
                 raise ValueError(
-                    "When is_continuation=false, set_prev_item_boundary (if provided) must be 'complete'."
+                    f"When is_continuation=false, set_prev_item_boundary (if provided) "
+                    f"must be '{ItemBoundary.COMPLETE}'."
                 )
             if (
                 self.set_next_item_boundary is not None
                 and self.set_next_item_boundary != ItemBoundary.COMPLETE
             ):
                 raise ValueError(
-                    "When is_continuation=false, set_next_item_boundary (if provided) must be 'complete'."
+                    f"When is_continuation=false, set_next_item_boundary (if provided) "
+                    f"must be '{ItemBoundary.COMPLETE}'."
                 )
             if self.set_next_table_repeats_header is not None:
                 raise ValueError(
