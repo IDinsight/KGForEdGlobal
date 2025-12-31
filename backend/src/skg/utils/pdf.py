@@ -16,38 +16,40 @@ from PIL import Image
 
 def _add_section_for_text_layer_hint(
     *,
-    out: list[str],
-    title: str,
     items: list[tuple[float, float, float, str]],
     limit: int,
+    out: list[str],
     sx: float,
     sy: float,
+    title: str,
 ) -> None:
-    """Helper to add a section to the text layer hint output.
+    """Add a section to the text layer hint output.
 
     Parameters
     ----------
-    out
-        The output list to append to.
-    title
-        The section title.
     items
         The list of items (y0, x0, size, text).
     limit
         Maximum number of items to include.
+    out
+        The output list to append to.
     sx
         Scale factor for x coordinates.
     sy
         Scale factor for y coordinates.
+    title
+        The section title.
     """
 
     if not items:
         return
+
     out.append(f"## {title}")
+
     for y0, x0, size, txt in items[:limit]:
         # Truncate individual lines to keep digest compact.
         if len(txt) > 220:
-            txt = txt[:220].rstrip() + "…"
+            txt = txt[:220].rstrip() + "..."
         out.append(f"[x={x0 * sx:.1f} y={y0 * sy:.1f} sz={size:.1f}] {txt}")
 
 
@@ -69,6 +71,7 @@ def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
 
     data = pdf_fp.read_bytes()
     h = hashlib.sha256(data).hexdigest()
+
     return h[:n_hex]
 
 
@@ -83,9 +86,6 @@ def crop_image_to_bottom(
     return_cropped_image: bool = False,
 ) -> Optional[Image.Image]:
     """Crop a rendered page image from just above the candidate bbox down to the bottom.
-
-    This mirrors `crop_pdf_to_bottom()`, but operates directly on the extracted page
-    PNG (the same coordinate space as PageIR bboxes).
 
     Parameters
     ----------
@@ -120,6 +120,7 @@ def crop_image_to_bottom(
 
     with Image.open(input_png_fp) as img:
         w, h = img.size
+
         if h <= 0 or w <= 0:
             raise ValueError(f"Invalid image size: {img.size} for {input_png_fp}")
 
@@ -137,8 +138,8 @@ def crop_image_to_bottom(
         # Clamp to top.
         y0_px = max(0.0, y0_px)
 
-        # Convert to integer pixel index for PIL crop (floor is safer: includes more
-        # context).
+        # Convert to integer pixel index for PIL crop (floor is safer since it will
+        # include more context).
         y0 = int(y0_px)
 
         if y0 >= h:
@@ -164,15 +165,12 @@ def crop_image_to_top(
 ) -> Optional[Image.Image]:
     """Crop a rendered page image from the top down to just below the candidate bbox.
 
-    This mirrors `crop_pdf_to_top()`, but operates directly on the extracted page PNG
-    (the same coordinate space as PageIR bboxes).
-
     Parameters
     ----------
     bbox
         [x0, y0, x1, y1] in *pixel units* of the rendered PNG (PageIR coordinate
-        space). Only y0 (bbox[1]) is used for the crop end (we end below the TOP
-        edge so the crop includes the start of the candidate near the boundary).
+        space). Only y0 (bbox[1]) is used for the crop end (we end below the TOP edge
+        so the crop includes the start of the candidate near the boundary).
     desired_padding_inches
         Extra padding (in inches) to include below the crop end.
     input_png_fp
@@ -200,6 +198,7 @@ def crop_image_to_top(
 
     with Image.open(input_png_fp) as img:
         w, h = img.size
+
         if h <= 0 or w <= 0:
             raise ValueError(f"Invalid image size: {img.size} for {input_png_fp}")
 
@@ -216,7 +215,8 @@ def crop_image_to_top(
         # Clamp to bottom.
         y1_px = min(y1_px, float(h))
 
-        # Convert to integer pixel index (ceil is safer: includes more context).
+        # Convert to integer pixel index (ceil is safer since it will include more
+        # context).
         y1 = int(y1_px) if y1_px.is_integer() else int(y1_px) + 1
         y1 = min(y1, h)
 
@@ -274,8 +274,9 @@ def extract_text_layer_hints(
     # Pull structured text.
     d = page.get_text("dict")
     blocks = d.get("blocks") if isinstance(d, dict) else None
+
+    # Try plain text as fallback.
     if not blocks:
-        # Fallback: try plain text.
         fallback = (page.get_text("text") or "").strip()
         return (
             fallback[:max_chars]
@@ -284,7 +285,7 @@ def extract_text_layer_hints(
             else None
         )
 
-    # Coordinate conversion helpers (PDF units to pixels).
+    # Coordinate conversion from PDF units to pixels.
     page_w, page_h = float(page.rect.width), float(page.rect.height)
     sx, sy = float(image_width) / page_w, float(image_height) / page_h
 
@@ -296,6 +297,7 @@ def extract_text_layer_hints(
 
             # Join span texts in order.
             text = " ".join("".join(s.get("text", "") for s in spans).split())
+
             if not text:
                 continue
 
@@ -349,25 +351,25 @@ def extract_text_layer_hints(
         ),
         limit=min(12, max_lines_per_section),
         out=out,
-        title="HEADINGS_CANDIDATES",
         sx=sx,
         sy=sy,
+        title="HEADINGS_CANDIDATES",
     )
     _add_section_for_text_layer_hint(
         items=header,
         limit=min(10, max_lines_per_section),
         out=out,
-        title="HEADER_CANDIDATES",
         sx=sx,
         sy=sy,
+        title="HEADER_CANDIDATES",
     )
     _add_section_for_text_layer_hint(
         items=footer,
         limit=min(10, max_lines_per_section),
         out=out,
-        title="FOOTER_CANDIDATES",
         sx=sx,
         sy=sy,
+        title="FOOTER_CANDIDATES",
     )
 
     # Body lines: avoid duplicate TOP/BOTTOM on short pages.
@@ -376,26 +378,26 @@ def extract_text_layer_hints(
             items=body,
             limit=max_lines_per_section,
             out=out,
-            title="BODY_LINES",
             sx=sx,
             sy=sy,
+            title="BODY_LINES",
         )
     else:
         _add_section_for_text_layer_hint(
             items=body[:max_lines_per_section],
             limit=max_lines_per_section,
             out=out,
-            title="TOP_BODY_LINES",
             sx=sx,
             sy=sy,
+            title="TOP_BODY_LINES",
         )
         _add_section_for_text_layer_hint(
             items=body[-max_lines_per_section:],
             limit=max_lines_per_section,
             out=out,
-            title="BOTTOM_BODY_LINES",
             sx=sx,
             sy=sy,
+            title="BOTTOM_BODY_LINES",
         )
 
     # Small raw excerpt fallback (kept short).
@@ -406,6 +408,7 @@ def extract_text_layer_hints(
         out.append(raw[:600].rstrip() + ("\n...[truncated]" if len(raw) > 600 else ""))
 
     hint = "\n".join(out).strip()
+
     return (
         hint[:max_chars].rstrip() + "\n...[truncated]"
         if len(hint) > max_chars
@@ -415,11 +418,10 @@ def extract_text_layer_hints(
 
 def is_mostly_blank(*, png_fp: Path) -> bool:
     """Check if the rendered page image is nearly blank (separator/intentional blank
-    page). Uses grayscale histogram stats (no OCR).
+    page). Uses grayscale histogram statistics (no OCR).
 
-    This version is robust to:
-      - crop marks / page frame lines near edges
-      - page-number footer boxes near the bottom
+    NB: If we cannot read the image properly, then the default behavior is to NOT treat
+    the image as blank.
 
     Parameters
     ----------
@@ -438,7 +440,7 @@ def is_mostly_blank(*, png_fp: Path) -> bool:
             w, h = im.size
 
             # Ignore outer border where crop marks/page frame lines live. 3% is usually
-            # enough at 200 DPI; keep it small to avoid skipping real content.
+            # enough at 200 DPI; use small values to avoid skipping real content.
             pad_x = int(w * 0.03)
             pad_y = int(h * 0.03)
             x0 = min(max(pad_x, 0), w - 1)
@@ -501,11 +503,13 @@ def read_png_dimensions(*, png_fp: Path) -> tuple[int, int]:
     """
 
     data = png_fp.read_bytes()
+
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError(f"Not a PNG file: {png_fp}")
 
     width = int.from_bytes(data[16:20], "big")
     height = int.from_bytes(data[20:24], "big")
+
     return width, height
 
 
@@ -574,8 +578,10 @@ def validate_page_count(
     page_count = doc.page_count
     if end_page is None:
         end_page = page_count
+
     if not 0 <= start_page <= page_count:
         raise ValueError(f"start_page must be in [0, {page_count}]")
     if not (0 <= end_page <= page_count) or end_page < start_page:
         raise ValueError(f"end_page must be in [start_page, {page_count}]")
+
     return page_count, end_page
