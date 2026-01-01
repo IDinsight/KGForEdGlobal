@@ -38,7 +38,7 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
     Raises
     ------
     ValueError
-        If the bbox is not well-ordered.
+        If the bounding box does not have exactly 4 numbers.
     """
 
     if len(bbox) != 4:

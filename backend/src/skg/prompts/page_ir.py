@@ -77,7 +77,17 @@ def extract_page_ir_from_pdf_page(
 2. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
 3. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
 4. **KIND DISCRIMINATOR**: Every item in the `items` list MUST have a `"kind"` field set to either `"block"` or `"table"`.
-5. **Do a final scan of the bottom 10% of the page before finishing; do not stop early.**
+5. **NO HALLUCINATION**: Do not add rows/cells/text that are not visible. If a cell is blank, set text: null.
+6. **Do a final scan of the bottom 10% of the page before finishing; do not stop early.**
+7. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
+  - The following PageIR fields are filled/overwritten by the Python pipeline and MUST be null or omitted:
+    - doc_key
+    - pdf_name
+    - page_index
+    - dpi
+    - image_width
+    - image_height
+  - You may omit `coord_space`; if you include it, it MUST be exactly "px".
 
 ## BOUNDING BOXES
 1. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
@@ -111,6 +121,7 @@ def extract_page_ir_from_pdf_page(
   - For block_type in ({BlockType.PARAGRAPH, BlockType.HEADING, BlockType.CAPTION}): block must have non-empty `text`.
   - For block_type={BlockType.LIST}: block must have non-empty `list_items` and `text=null`.
   - For block_type={BlockType.FIGURE}: block must have a non-null `figure` object and `text=null` and `list_items=null`.
+  - For block_type="{BlockType.ARTIFACT}": must have non-empty text (page number/running header/footer), never full-page.
 2. If block_type != "{BlockType.FIGURE}", then `figure` MUST be null or omitted.
 3. Do NOT output a full-page “{BlockType.ARTIFACT}” block. Only output artifacts when you see actual header/footer/page-number text.
 4. Ignore page border lines/decorative frames. Do not emit blocks/tables for borders or background. Page numbers must be a small ARTIFACT bbox around the digits/roman numerals only. Signatures/logos are FIGURE only if you include them, with tight bbox around the graphic only (not margins).
@@ -137,10 +148,14 @@ def extract_page_ir_from_pdf_page(
   - If the table has header rows at the top, set `header_row_count` to the number of header rows.
   - Keep header rows INSIDE `rows`; do not split headers into a separate field.
   - If unsure, leave it at 0/omit it.
-4. Do not output empty tables; if you see a table, it must have at least one row.
-5. GRID-TRUE ROWS ONLY: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
-6. MIXED LANGUAGE IN ONE TEXTUNIT: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
-7. Do NOT misclassify tables as figures. If there is a ruled grid with cells, it must be a table.
+4. **MERGED CELLS**: If a cell clearly spans multiple rows/columns in the visible grid, set row_span/col_span accordingly; otherwise keep them as 1.
+5. **GRID-TRUE ROWS ONLY**: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
+6. **MIXED LANGUAGE IN ONE TEXTUNIT**: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
+7. Do not output empty tables; if you see a table, it must have at least one row.
+8. Do NOT misclassify tables as figures. If there is a ruled grid with cells, it must be a table.
+
+## LIST
+1. For each list item, populate marker with the visible bullet/numbering (e.g., “•”, “1.”, “a)”) and put the remaining content in text.
 
 ## FIGURES/DIAGRAMS
 1. If the page contains a diagram/figure/illustration/chart/flowchart that is NOT a table grid, emit a block with:
@@ -211,9 +226,11 @@ def verify_page_ir_pairs_from_extraction(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
-    next_boundary_allowed = json.dumps([ItemBoundary.RESUMED.value], ensure_ascii=False)
     prev_boundary_allowed = json.dumps(
-        [ItemBoundary.TRUNCATED.value], ensure_ascii=False
+        [ItemBoundary.TRUNCATED.value, ItemBoundary.COMPLETE.value], ensure_ascii=False
+    )
+    next_boundary_allowed = json.dumps(
+        [ItemBoundary.RESUMED.value, ItemBoundary.COMPLETE.value], ensure_ascii=False
     )
 
     system_message = dedent(
@@ -238,18 +255,20 @@ You will be given:
 6. Only change continuity metadata fields. If everything is already correct, leave all set_* fields null.
 7. Return ONLY a JSON object matching the required schema. No prose.
 8. Always include a short rationale string.
-9. If uncertain, set is_continuation=false, continuation_kind="none", low confidence, and leave all set_* null.
+9. If uncertain, set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", low confidence, and leave all set_* null.
+10. If is_continuation=false, do not set boundaries to {ItemBoundary.RESUMED} or {ItemBoundary.TRUNCATED}. Only suggest {ItemBoundary.COMPLETE} (or null).
 
-## ALLOWED EDITS (METADATA ONLY):
+## ALLOWED EDITS (METADATA ONLY)
 1. set_prev_item_boundary: one of {prev_boundary_allowed} (or null)
 2. set_next_item_boundary: one of {next_boundary_allowed} (or null)
 3. set_next_table_repeats_header:
-  - Only when NEXT candidate is a table AND it is the SAME table continuing.
+  - Only set this when is_continuation=true AND continuation_kind="table" AND the NEXT candidate is a table AND it is the SAME table continuing.
   - Decide using IMAGE B (and IMAGE A), not the excerpt fields.
   - Set to true if the header rows are visibly repeated on page N+1.
   - Set to false if the same table continues but headers are visibly NOT repeated.
   - If you cannot confidently tell, set it to null (do not guess).
   - Null means “leave as-is/do not patch”.
+  - If the JSON excerpt’s repeats_header already matches what you see in the images, leave it null.
 
 ## DECISION GUIDANCE
 1. Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.
@@ -276,16 +295,25 @@ You will be given:
 3. Use continuation_kind="{PageContinuationKind.TABLE}" only for table continuations.
 4. Use continuation_kind="{PageContinuationKind.TEXT}" only for text/list continuations.
 5. Use continuation_kind="{PageContinuationKind.FIGURE}" only for figure/diagram continuations (same figure is cut off and resumes on next page).
-6. When is_continuation=true, the previous candidate must indicate it continues to next (TRUNCATED or BOTH), and the next candidate must indicate it continues from previous (RESUMED or BOTH).
+6. When is_continuation=true, the previous candidate should be compatible with continuing to next (TRUNCATED or BOTH), and the next candidate should be compatible with continuing from previous (RESUMED or BOTH). If incompatible, propose minimal boundary edits as allowed.
 7. Candidate mismatch safety: If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence low, and leave all set_* fields null. (This avoids forcing wrong edits onto the wrong anchor items.)
 8. When unsure, set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence <= 0.49, and leave all set_* fields null.
 
-## PAIRWISE LIMITATION (CRITICAL, COMMON IN LONG TABLES):
+## PAIRWISE LIMITATION (CRITICAL, COMMON IN LONG TABLES)
 1. You only see the bottom of page N and the top of page N+1.
   - Therefore, DO NOT try to decide TRUNCATED vs. BOTH (or RESUMED vs. BOTH).
+  - Never set boundaries to "{ItemBoundary.BOTH}" in this step. Leave BOTH decisions to Python/global stitching.
+  - If a candidate boundary is already "{ItemBoundary.BOTH}", that is compatible with continuation; do not change it.
   - Only correct boundaries when they are clearly incompatible:
-    - If continuation=true and previous is marked COMPLETE (or RESUMED), suggest set_prev_item_boundary="{ItemBoundary.TRUNCATED}".
-    - If continuation=true and next is marked COMPLETE (or TRUNCATED), suggest set_next_item_boundary="{ItemBoundary.RESUMED}".
+    - If continuation=true and previous is marked {ItemBoundary.COMPLETE} (or {ItemBoundary.RESUMED}), suggest set_prev_item_boundary="{ItemBoundary.TRUNCATED}".
+    - If continuation=true and next is marked {ItemBoundary.COMPLETE} (or {ItemBoundary.TRUNCATED}), suggest set_next_item_boundary="{ItemBoundary.RESUMED}".
+2. If is_continuation=false and the previous candidate is marked {ItemBoundary.TRUNCATED}/{ItemBoundary.BOTH}, suggest set_prev_item_boundary="{ItemBoundary.COMPLETE}" only if the crop shows a clean end (sentence ends cleanly/table ends cleanly).
+3. If is_continuation=false and the next candidate is marked {ItemBoundary.RESUMED}/{ItemBoundary.BOTH}, suggest set_next_item_boundary="{ItemBoundary.COMPLETE}" only if the crop shows a clean start (new heading/table start, etc.).
+
+## CONFIDENCE CALIBRATION RULES
+1. Use confidence ≥ 0.75 only when continuation is visually obvious (clear cut/resume).
+2. Use 0.50–0.74 for plausible but not definitive.
+3. Use ≤0.49 when uncertain/no continuation.
     """
     )
 
