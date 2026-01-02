@@ -316,68 +316,6 @@ def validate_basic_block_invariants(
         validate_non_list_block_has_no_list_items(i=i, raw_list_items=raw_list_items)
 
 
-def validate_bbox(
-    *, bbox: list[float], image_height: int, image_width: int, tol: float, where_: str
-) -> None:
-    """Validate a single bbox.
-
-    Parameters
-    ----------
-    bbox
-        The bbox to validate.
-    image_height
-        The image height in pixels.
-    image_width
-        The image width in pixels.
-    tol
-        Tolerance for out-of-bounds checks.
-    where_
-        Description of where the bbox is located (for error messages).
-
-    Raises
-    ------
-    QualityError
-        If the bbox is invalid.
-    """
-
-    if len(bbox) != 4:
-        raise QualityError(f"Invalid bbox length at {where_}: {bbox}")
-
-    x0, y0, x1, y1 = bbox
-
-    if not (x1 > x0 and y1 > y0):
-        raise QualityError(f"Inverted/degenerate bbox at {where_}: {bbox}")
-
-    if x0 < -tol or y0 < -tol or x1 > image_width + tol or y1 > image_height + tol:
-        raise QualityError(
-            f"Out-of-bounds bbox at {where_} for {image_width}x{image_height}: {bbox}"
-        )
-
-
-def validate_continuity_does_not_set_page_boundary_state(
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Validate that Step-2 verdict does not set page boundary_state fields.
-
-    Parameters
-    ----------
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    # Pairwise rule: do not set page boundary states in Step 2.
-    if (
-        getattr(verdict, "set_prev_boundary_state", None) is not None
-        or getattr(verdict, "set_next_boundary_state", None) is not None
-    ):
-        raise QualityError("Verdict must not set page boundary_state fields.")
-
-
 def validate_figure_block(
     *,
     fig: Any,
@@ -557,6 +495,7 @@ def validate_item_bboxes_required_and_in_bounds(
     """
 
     ctx.top_level_bboxes = []
+
     for i, item in enumerate(ctx.items):
         bbox = getattr(item, "bbox", None)
 
@@ -566,15 +505,18 @@ def validate_item_bboxes_required_and_in_bounds(
                 "Every block/table must have an item-level bbox."
             )
 
-        validate_bbox(
-            bbox=bbox,
-            image_height=ctx.image_height,
-            image_width=ctx.image_width,
-            tol=ctx.tol,
-            where_=f"items[{i}].bbox",
-        )
-
         x0, y0, x1, y1 = bbox
+        if (
+            x0 < -ctx.tol
+            or y0 < -ctx.tol
+            or x1 > ctx.image_width + ctx.tol
+            or y1 > ctx.image_height + ctx.tol
+        ):
+            raise QualityError(
+                f"Out-of-bounds bbox at items[{i}].bbox for "
+                f"{ctx.image_width}x{ctx.image_height}: {bbox}"
+            )
+
         ctx.top_level_bboxes.append((float(x0), float(y0), float(x1), float(y1)))
 
 
@@ -810,16 +752,8 @@ def validate_one_table(*, i: int, item: Any) -> None:
 
     rows = getattr(item, "rows", None) or []
     validate_table_rows_nonempty(i=i, rows=rows)
-
-    header_row_count = int(getattr(item, "header_row_count", 0) or 0)
-    validate_table_header_row_count(
-        i=i, header_row_count=header_row_count, rows_len=len(rows)
-    )
-
     validate_table_cells_and_spans(i=i, rows=rows)
-
     stats = compute_table_width_stats(rows=rows)
-
     if stats is not None:
         validate_table_n_cols(
             i=i, max_eff=stats.max_eff, n_cols=getattr(item, "n_cols", None)
@@ -827,13 +761,12 @@ def validate_one_table(*, i: int, item: Any) -> None:
         validate_table_collapse_by_header_body(
             cell_counts=stats.cell_counts,
             eff_widths=stats.eff_widths,
-            header_row_count=header_row_count,
+            header_row_count=int(getattr(item, "header_row_count", 0) or 0),
             i=i,
         )
         validate_table_inconsistent_widths(
             eff_widths=stats.eff_widths, i=i, max_eff=stats.max_eff
         )
-
     validate_table_has_any_text(i=i, rows=rows)
 
 
@@ -1063,37 +996,6 @@ def validate_table_has_any_text(*, i: int, rows: list[Any]) -> None:
             if t.strip():
                 return
     raise QualityError(f"Table at items[{i}] contains no text content.")
-
-
-def validate_table_header_row_count(
-    *, i: int, header_row_count: int, rows_len: int
-) -> None:
-    """Validate that table header_row_count is valid.
-
-    Parameters
-    ----------
-    i
-        The index of the table in items.
-    header_row_count
-        The header_row_count of the table.
-    rows_len
-        The total number of rows in the table.
-
-    Raises
-    ------
-    QualityError
-        If header_row_count is negative or exceeds total rows.
-    """
-
-    if header_row_count < 0:
-        raise QualityError(
-            f"Invalid header_row_count={header_row_count} at items[{i}].header_row_count."
-        )
-    if header_row_count > rows_len:
-        raise QualityError(
-            f"header_row_count={header_row_count} exceeds total rows={rows_len} "
-            f"at items[{i}].header_row_count."
-        )
 
 
 def validate_table_inconsistent_widths(

@@ -27,7 +27,6 @@ from skg.page_ir.validators import (
     build_page_ir_extraction_quality_ctx,
     validate_and_reconcile_continuity_for_extraction,
     validate_basic_block_invariants,
-    validate_continuity_does_not_set_page_boundary_state,
     validate_full_page_bboxes,
     validate_gross_reading_order,
     validate_image_dimensions,
@@ -407,9 +406,7 @@ def verify_page_ir_continuity_verdict(
     kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
     validate_kind_matches_is_continuation(kind=kind, verdict=verdict)
 
-    validate_continuity_does_not_set_page_boundary_state(verdict)
     validate_non_continuation_suggests_no_edits(verdict)
-
     validate_table_specific_fields(kind=kind, verdict=verdict)
 
 
