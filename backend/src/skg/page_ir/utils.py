@@ -31,6 +31,24 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _boundary_str(item: Any) -> str:
+    """Get the boundary string of an item.
+
+    Parameters
+    ----------
+    item
+        The item to get the boundary string from.
+
+    Returns
+    -------
+    str
+        The boundary string, or empty string if not set.
+    """
+
+    b = getattr(item, "boundary", None)
+    return "" if b is None else b.value if hasattr(b, "value") else str(b)
+
+
 def _boundary_val(v: Any) -> str:
     """Normalize boundary enum/string to string.
 
@@ -46,6 +64,40 @@ def _boundary_val(v: Any) -> str:
     """
 
     return getattr(v, "value", v) if v is not None else ItemBoundary.COMPLETE.value
+
+
+def _derive_boundary_state_from_items(
+    non_artifact_items: list[tuple[int, Any]],
+) -> PageBoundaryState:
+    """Derive the page boundary state from item boundaries.
+
+    Parameters
+    ----------
+    non_artifact_items
+        The list of non-artifact items with their indices.
+
+    Returns
+    -------
+    PageBoundaryState
+        The derived page boundary state.
+    """
+
+    # Only consider non-artifact items for continuity.
+    non_artifact = [it for _, it in non_artifact_items]
+
+    if not non_artifact:
+        return PageBoundaryState.STANDALONE
+
+    any_from_prev = any(is_resumed(_boundary_str(it)) for it in non_artifact)
+    any_to_next = any(is_truncated(_boundary_str(it)) for it in non_artifact)
+
+    if any_from_prev and any_to_next:
+        return PageBoundaryState.BOTH
+    if any_from_prev:
+        return PageBoundaryState.CONTINUES_FROM_PREV
+    if any_to_next:
+        return PageBoundaryState.CONTINUES_TO_NEXT
+    return PageBoundaryState.STANDALONE
 
 
 def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
@@ -491,6 +543,36 @@ def is_figure_block(item: dict[str, Any]) -> bool:
     return bt == "figure" or bt == BlockType.FIGURE
 
 
+def is_full_page_bbox(
+    *, bb: tuple[float, ...], page_bbox: tuple[float, ...], tol: float
+) -> bool:
+    """Check if a bbox is effectively full-page within tolerance.
+
+    Parameters
+    ----------
+    bb
+        The bbox to check.
+    page_bbox
+        The page bbox.
+    tol
+        The tolerance for comparison.
+
+    Returns
+    -------
+    bool
+        True if the bbox is full-page within tolerance, False otherwise.
+    """
+
+    x0, y0, x1, y1 = bb
+
+    return (
+        abs(x0 - page_bbox[0]) <= tol
+        and abs(y0 - page_bbox[1]) <= tol
+        and abs(x1 - page_bbox[2]) <= tol
+        and abs(y1 - page_bbox[3]) <= tol
+    )
+
+
 def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
     """Return True for small, low-information blocks near an edge that often sit
     below/above the real continuation content (e.g., short notes, tiny captions).
@@ -596,6 +678,40 @@ def is_probable_header_footer_noise(
         return True
 
     return False
+
+
+def is_resumed(boundary: str) -> bool:
+    """Check if a boundary string indicates a resumed or both item.
+
+    Parameters
+    ----------
+    boundary
+        The boundary string to check.
+
+    Returns
+    -------
+    bool
+        True if the boundary indicates a resumed or both item, False otherwise.
+    """
+
+    return boundary in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
+
+
+def is_truncated(boundary: str) -> bool:
+    """Check if a boundary string indicates a truncated or both item.
+
+    Parameters
+    ----------
+    boundary
+        The boundary string to check.
+
+    Returns
+    -------
+    bool
+        True if the boundary indicates a truncated or both item, False otherwise.
+    """
+
+    return boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
 
 
 def item_snippet(
@@ -754,6 +870,27 @@ def pad_inches(kind: str) -> float:
     if kind == "figure":
         return 0.50
     return 0.25
+
+
+def textunit_text(tu: Any) -> str:
+    """Safely extract tu.text from a TextUnit-like object.
+
+    Parameters
+    ----------
+    tu
+        The TextUnit-like object.
+
+    Returns
+    -------
+    str
+        The text content, or empty string if not available.
+    """
+
+    if tu is None:
+        return ""
+
+    value = getattr(tu, "text", None)
+    return value if isinstance(value, str) else ""
 
 
 def topmost_continuity_candidate(

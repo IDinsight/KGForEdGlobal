@@ -34,12 +34,12 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.page_ir.llm import extract_page_ir
 from skg.page_ir.schemas import PageIR
 from skg.page_ir.utils import PageIRExtractionDirs, create_page_ir_extraction_dirs
 from skg.schemas import ExtractionRunIR
 from skg.utils.constants import PageBoundaryState
 from skg.utils.general import write_to_json
-from skg.utils.openai_ import extract_page_ir
 from skg.utils.pdf import (
     compute_doc_key,
     extract_text_layer_hints,

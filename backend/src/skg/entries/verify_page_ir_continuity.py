@@ -42,6 +42,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.page_ir.llm import verify_page_ir_continuity_verdict, verify_page_ir_pairs
 from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
 from skg.page_ir.utils import (
     PageIRVerificationDirs,
@@ -55,14 +56,10 @@ from skg.page_ir.utils import (
     pad_inches,
     topmost_continuity_candidate_paired,
 )
+from skg.page_ir.validators import QualityError
 from skg.schemas import VerificationRunIR
 from skg.utils.constants import ItemBoundary, PageContinuationKind
 from skg.utils.general import compare_directories, open_json_type, write_to_json
-from skg.utils.openai_ import (
-    QualityError,
-    validate_continuity_verdict,
-    verify_page_ir_pairs,
-)
 from skg.utils.pdf import (
     compute_doc_key,
     crop_image_to_bottom,
@@ -539,11 +536,11 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                     verdict = PageIRContinuityVerdict.model_validate(
                         report_data["verdict"]
                     )
-                    validate_continuity_verdict(verdict)
+                    verify_page_ir_continuity_verdict(verdict)
                     verdict = sanitize_verdict_for_candidate_kinds(
                         next_item=next_item, prev_item=prev_item, verdict=verdict
                     )
-                    validate_continuity_verdict(verdict)
+                    verify_page_ir_continuity_verdict(verdict)
                 except (QualityError, ValidationError):
                     logger.warning(
                         f"Cached verdict for {i}-{i + 1} is invalid; re-verifying.",
@@ -623,7 +620,7 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
             verdict = sanitize_verdict_for_candidate_kinds(
                 next_item=next_item, prev_item=prev_item, verdict=verdict
             )
-            validate_continuity_verdict(verdict)
+            verify_page_ir_continuity_verdict(verdict)
             threshold = get_threshold_based_on_kind(
                 next_item=next_item, prev_item=prev_item, verdict=verdict
             )
@@ -635,7 +632,7 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                     reason=f"confidence {float(verdict.clamped_confidence):.2f} < threshold {threshold:.2f}",
                     verdict=verdict,
                 )
-            validate_continuity_verdict(verdict)
+            verify_page_ir_continuity_verdict(verdict)
 
             # Persist the verdict.
             write_to_json(
