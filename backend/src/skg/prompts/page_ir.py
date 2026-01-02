@@ -247,16 +247,17 @@ You will be given:
 ## HARD RULES
 1. Your decision must be about whether THESE TWO CANDIDATE ITEMS are a continuation across the boundary.
 2. You are not verifying the whole pages globally; you are verifying the chosen boundary-anchor items.
-3. DO NOT rewrite, move, merge, or complete text/table cells across pages.
-4. DO NOT invent missing content.
-5. Do NOT set repeats_header=true unless it is the SAME table continuing across the boundary.
-6. Only change continuity metadata fields. If everything is already correct, leave all set_* fields null.
-7. Return ONLY a JSON object matching the required schema. No prose.
-8. Always include a short rationale string.
-9. If uncertain:
+3. For TABLE candidates, “continuation” means the TABLE OBJECT continues onto the next page (same table grid/header), NOT that the last row on page N continues into the first row on page N+1.
+4. DO NOT rewrite, move, merge, or complete text/table cells across pages.
+5. DO NOT invent missing content.
+6. Do NOT set repeats_header=true unless it is the SAME table continuing across the boundary.
+7. Only change continuity metadata fields. If everything is already correct, leave all set_* fields null.
+8. Return ONLY a JSON object matching the required schema. No prose.
+9. Always include a short rationale string.
+10. If uncertain:
   - For TEXT/FIGURE: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence <= 0.49, and leave all set_* null.
   - For TABLE candidates (both candidates are tables): if headers/grid/layout clearly match and there is NO new-table caption/title marker visible, prefer is_continuation=true with continuation_kind="{PageContinuationKind.TABLE}" and moderate confidence.
-10. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
+11. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
 
 ## ALLOWED EDITS (METADATA ONLY)
 1. set_prev_item_boundary: one of {prev_boundary_allowed} (or null)
@@ -308,7 +309,7 @@ You will be given:
 4. Use continuation_kind="{PageContinuationKind.TEXT}" only for text/list continuations.
 5. Use continuation_kind="{PageContinuationKind.FIGURE}" only for figure/diagram continuations (same figure is cut off and resumes on next page).
 6. When is_continuation=true, the previous candidate should be compatible with continuing to next (TRUNCATED or BOTH), and the next candidate should be compatible with continuing from previous (RESUMED or BOTH). If incompatible, propose minimal boundary edits as allowed.
-7. Candidate mismatch safety: If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence low, and leave all set_* fields null. (This avoids forcing wrong edits onto the wrong anchor items.)
+7. Candidate mismatch safety: This rule does NOT apply when BOTH candidates are tables (table-to-table is the anchor case). If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence low, and leave all set_* fields null.
 8. When unsure, set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence <= 0.49, and leave all set_* fields null.
 
 ## PAIRWISE LIMITATION (CRITICAL, COMMON IN LONG TABLES)
