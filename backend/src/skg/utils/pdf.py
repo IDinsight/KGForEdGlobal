@@ -658,8 +658,7 @@ def validate_page_count(
     """
 
     page_count = doc.page_count
-    if end_page is None:
-        end_page = page_count
+    end_page = end_page or page_count
 
     if not 0 <= start_page <= page_count:
         raise ValueError(f"start_page must be in [0, {page_count}]")

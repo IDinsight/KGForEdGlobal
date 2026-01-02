@@ -117,7 +117,7 @@ def extract_page_by_page(
             logger.info(f"Skipping page {page_index} (cached).")
             continue
 
-        # Perform stage 1 extraction.
+        # Extract information from the page image.
         logger.info(f"Extracting and saving page: {page_index}...")
         image_width, image_height = read_png_dimensions(png_fp=png_fp)
         text_layer_hints = (
@@ -347,8 +347,8 @@ def extract(  # pylint: disable=too-many-positional-arguments
         use_text_layer_hints=use_text_layer_hints,
     )
 
-    logger.info(f"Starting page IR extraction process for: {pdf_fp}...")
-    logger.info(f"Outputting extraction results to: {extraction_dirs.root}")
+    logger.info(f"Starting page IR extraction process for: {pdf_fp}")
+    logger.info(f"Saving extraction results to: {extraction_dirs.root}")
 
     try:
         with pymupdf.open(str(pdf_fp)) as doc:
