@@ -263,9 +263,9 @@ def get_threshold_based_on_kind(
     # confidence.
     is_fig_pair = is_figure_block(prev_item) or is_figure_block(next_item)
     if kind == "table":
-        threshold = 0.80
+        threshold = 0.90
     elif kind == "text":
-        threshold = 0.85
+        threshold = 0.90
     elif kind == "none":
         threshold = 0.75  # Slightly higher than text; optional
     # Only apply if this is a figure continuation; otherwise skip edits entirely.
