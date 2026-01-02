@@ -481,7 +481,13 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         prev_page_items, next_page_items = prev_page_ir.get(
             "items", []
         ), next_page_ir.get("items", [])
-        assert prev_page_items and next_page_items, f"No items on pages {i} or {i + 1}."
+
+        if not prev_page_items or not next_page_items:
+            logger.warning(
+                f"Skipping continuity check for pages {i}-{i + 1}: "
+                f"prev_items={len(prev_page_items)} next_items={len(next_page_items)}"
+            )
+            continue
 
         prev_idx, prev_item = bottommost_continuity_candidate(
             image_height=prev_page_ir["image_height"], items=prev_page_items
