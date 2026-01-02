@@ -61,6 +61,10 @@ def extract_page_ir_from_pdf_page(
     )
     doc_context = f"from {country}" + (f" ({year})" if year else "")
     lang_context = ", ".join(languages)
+    text_block_types = json.dumps(
+        [BlockType.PARAGRAPH.value, BlockType.HEADING.value, BlockType.CAPTION.value],
+        ensure_ascii=False,
+    )
     text_layer_context = (
         ""
         if not text_layer_hints
@@ -79,14 +83,11 @@ def extract_page_ir_from_pdf_page(
 4. **KIND DISCRIMINATOR**: Every item in the `items` list MUST have a `"kind"` field set to either `"block"` or `"table"`.
 5. **NO HALLUCINATION**: Do not add rows/cells/text that are not visible. If a cell is blank, set text: null.
 6. **Do a final scan of the bottom 10% of the page before finishing; do not stop early.**
-7. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
-  - The following PageIR fields are filled/overwritten by the Python pipeline and MUST be null or omitted:
-    - doc_key
-    - pdf_name
-    - page_index
-    - dpi
-    - image_width
-    - image_height
+7. If you see an explicit curriculum code/section code/table number associated with a block or table, put it in `local_code` verbatim.
+8. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
+  - The following PageIR fields are filled/overwritten by the Python pipeline:
+    - boundary_state MUST be omitted (do not include it at all).
+    - doc_key, pdf_name, page_index, dpi, image_width, image_height MUST be null or omitted.
   - You may omit `coord_space`; if you include it, it MUST be exactly "px".
 
 ## BOUNDING BOXES
@@ -94,18 +95,18 @@ def extract_page_ir_from_pdf_page(
 2. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
 3. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
 4. **NO PLACEHOLDER/REUSED BBOXES**: Never use the same bbox for multiple items. Never copy the page bbox into items. Each item bbox must tightly wrap only that item’s visible pixels. If unsure, err slightly smaller than too large—never full-page.
-5. Full-page bbox is allowed ONLY when the output contains exactly ONE item and that item is kind="block", block_type="{BlockType.FIGURE}" (a true full-page figure page). Otherwise, full-page bbox is never allowed.
+5. Full-page bbox is allowed ONLY when the output contains exactly ONE item and that item is kind="block", block_type="{BlockType.FIGURE.value}" (a true full-page figure page). Otherwise, full-page bbox is never allowed.
 
 ## BOUNDARIES
 1. Item `boundary` is SEMANTIC continuity (not “missing borders”):
-  - "{ItemBoundary.RESUMED}": This item is a continuation from the previous page
-  - "{ItemBoundary.TRUNCATED}": This item continues onto the next page
-  - "{ItemBoundary.BOTH}": Continuation from previous page AND to next page (middle slice of a long item)
-  - "{ItemBoundary.COMPLETE}": Fully contained on this page
-2. Focus on setting each item's `boundary` correctly ({ItemBoundary.RESUMED}/{ItemBoundary.TRUNCATED}/{ItemBoundary.BOTH}/{ItemBoundary.COMPLETE}) based on visible continuation cues.
+  - "{ItemBoundary.RESUMED.value}": This item is a continuation from the previous page
+  - "{ItemBoundary.TRUNCATED.value}": This item continues onto the next page
+  - "{ItemBoundary.BOTH.value}": Continuation from previous page AND to next page (middle slice of a long item)
+  - "{ItemBoundary.COMPLETE.value}": Fully contained on this page
+2. Focus on setting each item's `boundary` correctly ({ItemBoundary.RESUMED.value}/{ItemBoundary.TRUNCATED.value}/{ItemBoundary.BOTH.value}/{ItemBoundary.COMPLETE.value}) based on visible continuation cues.
 3. DO NOT rely on whether table borders are drawn. Many PDFs repeat gridlines and headers on continuation pages.
 4. Page `boundary_state` is derived by Python from item boundaries. You may omit it.
-5. For block_type="{BlockType.FIGURE}": default boundary="{ItemBoundary.COMPLETE}" unless the same figure is visibly cut off by the page edge.
+5. For block_type={BlockType.FIGURE.value}: default boundary="{ItemBoundary.COMPLETE.value}" unless the same figure is visibly cut off by the page edge.
 
 ## BLOCK CLASSIFICATIONS
 1. Valid block_type values: {allowed_block_types}
@@ -118,12 +119,12 @@ def extract_page_ir_from_pdf_page(
 
 ## BLOCK TYPES
 1. Do not emit any block that contains no content.
-  - For block_type in ({BlockType.PARAGRAPH, BlockType.HEADING, BlockType.CAPTION}): block must have non-empty `text`.
-  - For block_type={BlockType.LIST}: block must have non-empty `list_items` and `text=null`.
-  - For block_type={BlockType.FIGURE}: block must have a non-null `figure` object and `text=null` and `list_items=null`.
-  - For block_type="{BlockType.ARTIFACT}": must have non-empty text (page number/running header/footer), never full-page.
-2. If block_type != "{BlockType.FIGURE}", then `figure` MUST be null or omitted.
-3. Do NOT output a full-page “{BlockType.ARTIFACT}” block. Only output artifacts when you see actual header/footer/page-number text.
+  - For block_type in {text_block_types}: block must have non-empty `text`.
+  - For block_type={BlockType.LIST.value}: block must have non-empty `list_items` and `text=null`.
+  - For block_type={BlockType.FIGURE.value}: block must have a non-null `figure` object and `text=null` and `list_items=null`.
+  - For block_type="{BlockType.ARTIFACT.value}": must have non-empty text (page number/running header/footer), never full-page.
+2. If block_type != "{BlockType.FIGURE.value}", then `figure` MUST be null or omitted.
+3. Do NOT output a full-page “{BlockType.ARTIFACT.value}” block. Only output artifacts when you see actual header/footer/page-number text.
 4. Ignore page border lines/decorative frames. Do not emit blocks/tables for borders or background. Page numbers must be a small ARTIFACT bbox around the digits/roman numerals only. Signatures/logos are FIGURE only if you include them, with tight bbox around the graphic only (not margins).
 5. Artifacts means running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
 6. For any non-list block (including figure), list_items MUST be null or omitted (never []).
@@ -160,7 +161,7 @@ def extract_page_ir_from_pdf_page(
 ## FIGURES/DIAGRAMS
 1. If the page contains a diagram/figure/illustration/chart/flowchart that is NOT a table grid, emit a block with:
   - kind="block"
-  - block_type="{BlockType.FIGURE}"
+  - block_type="{BlockType.FIGURE.value}"
   - bbox tightly around the figure region (include axes/arrows/labels inside the region)
   - text=null
   - list_items=null
@@ -187,9 +188,9 @@ Reminders:
 2. Set "kind": "block" or "kind": "table" for every entry.
 3. Do NOT translate. `TextUnit.text_en` must be null/omitted.
 4. Use the best-match BCP-47 language code for the visible text (not limited to Expected Languages). Use "und" if unknown. Use "mul" if mixed languages are present.
-5. Only set repeats_header when the table is {ItemBoundary.RESUMED}/{ItemBoundary.BOTH} (i.e., continuing from previous page). Never set it for {ItemBoundary.COMPLETE} tables.
+5. Only set repeats_header when the table is {ItemBoundary.RESUMED.value}/{ItemBoundary.BOTH.value} (i.e., continuing from previous page). Never set it for {ItemBoundary.COMPLETE.value} tables.
 6. If you can confidently count the table's columns, set "n_cols".
-7. If you see a diagram/figure (not a table), output a block_type="{BlockType.FIGURE}" block with a `figure` object and tight bbox.
+7. If you see a diagram/figure (not a table), output a block_type="{BlockType.FIGURE.value}" block with a `figure` object and tight bbox.
 
 Final check before output: no item bbox may be full-page or reused across items (except the single full-page figure case).
         """
@@ -255,8 +256,8 @@ You will be given:
 8. Return ONLY a JSON object matching the required schema. No prose.
 9. Always include a short rationale string.
 10. If uncertain:
-  - For TEXT/FIGURE: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence <= 0.49, and leave all set_* null.
-  - For TABLE candidates (both candidates are tables): if headers/grid/layout clearly match and there is NO new-table caption/title marker visible, prefer is_continuation=true with continuation_kind="{PageContinuationKind.TABLE}" and moderate confidence.
+  - For TEXT/FIGURE: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
+  - For TABLE candidates (both candidates are tables): if headers/grid/layout clearly match and there is NO new-table caption/title marker visible, prefer is_continuation=true with continuation_kind="{PageContinuationKind.TABLE.value}" and moderate confidence.
 11. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
 
 ## ALLOWED EDITS (METADATA ONLY)
@@ -303,23 +304,21 @@ You will be given:
 5. Excerpt metadata fields like boundary/repeats_header may be null/unreliable; do not treat null as evidence of "complete".
 
 ## CONTINUATION KIND RULES
-1. If is_continuation=false, set continuation_kind="{PageContinuationKind.NONE}".
-2. If is_continuation=true and continuation_kind='{PageContinuationKind.TABLE}', set set_next_table_repeats_header to true/false ONLY when you can confidently see whether headers repeat; otherwise leave it null.
-3. Use continuation_kind="{PageContinuationKind.TABLE}" only for table continuations.
-4. Use continuation_kind="{PageContinuationKind.TEXT}" only for text/list continuations.
-5. Use continuation_kind="{PageContinuationKind.FIGURE}" only for figure/diagram continuations (same figure is cut off and resumes on next page).
+1. If is_continuation=false, set continuation_kind="{PageContinuationKind.NONE.value}".
+2. If is_continuation=true and continuation_kind='{PageContinuationKind.TABLE.value}', set set_next_table_repeats_header to true/false ONLY when you can confidently see whether headers repeat; otherwise leave it null.
+3. Use continuation_kind="{PageContinuationKind.TABLE.value}" only for table continuations.
+4. Use continuation_kind="{PageContinuationKind.TEXT.value}" only for text/list continuations.
+5. Use continuation_kind="{PageContinuationKind.FIGURE.value}" only for figure/diagram continuations (same figure is cut off and resumes on next page).
 6. When is_continuation=true, the previous candidate should be compatible with continuing to next (TRUNCATED or BOTH), and the next candidate should be compatible with continuing from previous (RESUMED or BOTH). If incompatible, propose minimal boundary edits as allowed.
-7. Candidate mismatch safety: This rule does NOT apply when BOTH candidates are tables (table-to-table is the anchor case). If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence low, and leave all set_* fields null.
-8. When unsure, set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence <= 0.49, and leave all set_* fields null.
+7. Candidate mismatch safety: This rule does NOT apply when BOTH candidates are tables (table-to-table is the anchor case). If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence low, and leave all set_* fields null.
+8. When unsure, set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* fields null.
 
 ## PAIRWISE LIMITATION (CRITICAL, COMMON IN LONG TABLES)
 1. You only see the bottom of page N and the top of page N+1.
-  - Therefore, DO NOT try to decide TRUNCATED vs. BOTH (or RESUMED vs. BOTH).
-  - Never set boundaries to "{ItemBoundary.BOTH}" in this step. Leave BOTH decisions to Python/global stitching.
-  - If a candidate boundary is already "{ItemBoundary.BOTH}", that is compatible with continuation; do not change it.
-  - Only correct boundaries when they are clearly incompatible:
-    - If continuation=true and previous is marked {ItemBoundary.COMPLETE} (or {ItemBoundary.RESUMED}), suggest set_prev_item_boundary="{ItemBoundary.TRUNCATED}".
-    - If continuation=true and next is marked {ItemBoundary.COMPLETE} (or {ItemBoundary.TRUNCATED}), suggest set_next_item_boundary="{ItemBoundary.RESUMED}".
+  - Therefore, DO NOT propose set_* boundaries of "{ItemBoundary.BOTH.value}" in this step.
+  - Only propose set_prev_item_boundary="truncated" (or null) and set_next_item_boundary="resumed" (or null).
+  - Note: the Python pipeline MAY end up with item.boundary="{ItemBoundary.BOTH.value}" if the item already had the opposite boundary (e.g., extractor marked RESUMED and verification adds TRUNCATED). That upgrade is handled in Python.
+  - If a candidate boundary is already "{ItemBoundary.BOTH.value}", that is compatible with continuation; do not change it.
 
 ## CONFIDENCE CALIBRATION RULES
 1. Use confidence ≥ 0.75 only when continuation is visually obvious (clear cut/resume).

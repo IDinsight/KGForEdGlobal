@@ -680,6 +680,7 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
 
     # Write verified JSONs.
     for i, page_ir in page_irs.items():
+        PageIR.model_validate(page_ir)  # Raise early if an edit broke the schema
         write_to_json(verification_dirs.page_irs_verified / f"{i:04}.json", page_ir)
     logger.success("All verified page IR JSONs written successfully!")
 

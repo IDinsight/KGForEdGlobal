@@ -134,10 +134,10 @@ class CurriculumTable(BaseModelPageIR):
         ItemBoundary.COMPLETE,
         description=(
             f"Semantic continuity of this table across page boundaries: "
-            f"'{ItemBoundary.RESUMED}' if this table is a continuation from the previous page; "
-            f"'{ItemBoundary.TRUNCATED}' if it continues onto the next page; "
-            f"'{ItemBoundary.BOTH}' if it continues from prev and to next; "
-            f"'{ItemBoundary.COMPLETE}' if fully contained on this page. "
+            f"'{ItemBoundary.RESUMED.value}' if this table is a continuation from the previous page; "
+            f"'{ItemBoundary.TRUNCATED.value}' if it continues onto the next page; "
+            f"'{ItemBoundary.BOTH.value}' if it continues from prev and to next; "
+            f"'{ItemBoundary.COMPLETE.value}' if fully contained on this page. "
             f"DO NOT rely on whether table borders are drawn. Many PDFs repeat gridlines and headers on continuation pages."
         ),
     )
@@ -180,6 +180,10 @@ class CurriculumTable(BaseModelPageIR):
             If header_row_count exceeds number of rows.
         """
 
+        if self.header_row_count < 0:
+            raise ValueError(
+                f"header_row_count ({self.header_row_count}) cannot be negative."
+            )
         if self.header_row_count > len(self.rows):
             raise ValueError(
                 f"header_row_count ({self.header_row_count}) cannot exceed number of "
@@ -209,7 +213,7 @@ class CurriculumTable(BaseModelPageIR):
         }:
             raise ValueError(
                 f"repeats_header is only allowed when boundary is "
-                f"{ItemBoundary.RESUMED}/{ItemBoundary.BOTH}."
+                f"{ItemBoundary.RESUMED.value}/{ItemBoundary.BOTH.value}."
             )
 
         return self
@@ -249,7 +253,7 @@ class FigureUnit(BaseModelPageIR):
     )
     figure_kind: FigureKind = Field(
         FigureKind.UNKNOWN,
-        description=f"Coarse type label for the figure region. Keep conservative; use '{FigureKind.UNKNOWN}' if unsure.",
+        description=f"Coarse type label for the figure region. Keep conservative; use '{FigureKind.UNKNOWN.value}' if unsure.",
     )
 
 
@@ -262,14 +266,14 @@ class CurriculumBlock(BaseModelPageIR):
         ItemBoundary.COMPLETE,
         description=(
             f"Semantic continuity of this block across page boundaries: "
-            f"'{ItemBoundary.RESUMED}' if it continues from the previous page; "
-            f"'{ItemBoundary.TRUNCATED}' if it continues onto the next page; "
-            f"'{ItemBoundary.BOTH}' if both; otherwise '{ItemBoundary.COMPLETE}'."
+            f"'{ItemBoundary.RESUMED.value}' if it continues from the previous page; "
+            f"'{ItemBoundary.TRUNCATED.value}' if it continues onto the next page; "
+            f"'{ItemBoundary.BOTH.value}' if both; otherwise '{ItemBoundary.COMPLETE.value}'."
         ),
     )
     figure: Optional[FigureUnit] = Field(
         None,
-        description=f"Figure/diagram metadata. Must be null unless block_type='{BlockType.FIGURE}'. This does NOT parse internal structure; it only preserves the region and light hints.",
+        description=f"Figure/diagram metadata. Must be null unless block_type='{BlockType.FIGURE.value}'. This does NOT parse internal structure; it only preserves the region and light hints.",
     )
     kind: Literal["block"] = Field(..., description="Must be 'block'.")
     list_items: Optional[list[ListItem]] = Field(
@@ -498,14 +502,16 @@ class PageIRContinuityVerdict(BaseModelPageIR):
 
     # Minimal suggested edits (null means leave as-is).
     set_next_item_boundary: Optional[ItemBoundary] = Field(
-        None, description="Boundary state for the first item on the next page."
+        None,
+        description="Boundary state for the first item on the next page. In pairwise verification, do not set 'both'—only 'resumed' (or null).",
     )
     set_next_table_repeats_header: Optional[bool] = Field(
         None,
         description="If continuation_kind is 'table' and the next page contains a repeated header, set this to true. Set to false if the header is not repeated. Null means leave as-is.",
     )
     set_prev_item_boundary: Optional[ItemBoundary] = Field(
-        None, description="Boundary state for the last item on the previous page."
+        None,
+        description="Boundary state for the last item on the previous page. In pairwise verification, do not set 'both'—only 'truncated' (or null).",
     )
 
     @model_validator(mode="after")
@@ -544,19 +550,21 @@ class PageIRContinuityVerdict(BaseModelPageIR):
             # If continuing, suggested item boundaries (if provided) must be compatible.
             if self.set_prev_item_boundary in {
                 ItemBoundary.COMPLETE,
+                ItemBoundary.BOTH,
                 ItemBoundary.RESUMED,
             }:
                 raise ValueError(
                     f"When is_continuation=true, set_prev_item_boundary cannot be "
-                    f"{ItemBoundary.COMPLETE}/{ItemBoundary.RESUMED}."
+                    f"{ItemBoundary.COMPLETE.value}/{ItemBoundary.RESUMED.value}/{ItemBoundary.BOTH.value}."
                 )
             if self.set_next_item_boundary in {
                 ItemBoundary.COMPLETE,
+                ItemBoundary.BOTH,
                 ItemBoundary.TRUNCATED,
             }:
                 raise ValueError(
                     f"When is_continuation=true, set_next_item_boundary cannot be "
-                    f"{ItemBoundary.COMPLETE}/{ItemBoundary.TRUNCATED}."
+                    f"{ItemBoundary.COMPLETE.value}/{ItemBoundary.TRUNCATED.value}/{ItemBoundary.BOTH.value}."
                 )
             if (
                 self.continuation_kind != PageContinuationKind.TABLE

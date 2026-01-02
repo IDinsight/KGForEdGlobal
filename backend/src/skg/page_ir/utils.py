@@ -31,6 +31,23 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _block_type_val(v: Any) -> str:
+    """Normalize block type enum/string to string.
+
+    Parameters
+    ----------
+    v
+        The block type value (enum or string).
+
+    Returns
+    -------
+    str
+        The normalized block type string.
+    """
+
+    return getattr(v, "value", v) if v is not None else ""
+
+
 def _boundary_str(item: Any) -> str:
     """Get the boundary string of an item.
 
@@ -519,7 +536,9 @@ def is_artifact(item: dict[str, Any]) -> bool:
         True if the item is an artifact, False otherwise.
     """
 
-    return item.get("kind") == "block" and item.get("block_type") == BlockType.ARTIFACT
+    if item.get("kind") != "block":
+        return False
+    return _block_type_val(item.get("block_type")) == BlockType.ARTIFACT.value
 
 
 def is_figure_block(item: dict[str, Any]) -> bool:
@@ -538,9 +557,7 @@ def is_figure_block(item: dict[str, Any]) -> bool:
 
     if item.get("kind") != "block":
         return False
-
-    bt = item.get("block_type")
-    return bt == "figure" or bt == BlockType.FIGURE
+    return _block_type_val(item.get("block_type")) == BlockType.FIGURE.value
 
 
 def is_full_page_bbox(
@@ -592,17 +609,17 @@ def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
         True if the item is a minor edge block, False otherwise.
     """
 
-    bt = item.get("block_type")
+    bt = _block_type_val(item.get("block_type"))
 
     # If not a block then it's never "minor". In addition, headings are usually
     # meaningful context; do not treat as "minor".
-    if item.get("kind") != "block" or bt == "heading":
+    if item.get("kind") != "block" or bt == BlockType.HEADING.value:
         return False
 
     # Figures/diagrams often appear as small isolated blocks near the edge (icons,
     # stamps, small illustrations). For continuity anchoring, treat *small* figures as
     # "minor" so they don't steal the anchor from a nearby table/text.
-    if bt == "figure" or bt == getattr(BlockType.FIGURE, "value", "figure"):
+    if bt == BlockType.FIGURE.value:
         _, y0, _, y1 = map(float, item["bbox"])
         box_h = y1 - y0
         return box_h <= max(180.0, 0.10 * image_height)
@@ -617,11 +634,7 @@ def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
     # Captions are often the first/last thing near the edge ("e.g., Table 2: ..."), and
     # we usually want the *table* (or main text) as the continuity anchor. Treat
     # caption blocks as minor based on visual size, not character length.
-    if (
-        item.get("kind") == "block"
-        and item.get("block_type") == "caption"
-        and box_h <= max(180.0, 0.08 * image_height)
-    ):
+    if bt == BlockType.CAPTION.value and box_h <= max(180.0, 0.08 * image_height):
         return True
 
     # "minor" if it's short AND visually small.
@@ -744,7 +757,8 @@ def item_snippet(
     }
 
     if kind == "block":
-        out["block_type"] = item.get("block_type")
+        bt = _block_type_val(item.get("block_type"))
+        out["block_type"] = bt
         out["language"] = (item.get("text") or {}).get("language")
         text = (item.get("text") or {}).get("text")
         if isinstance(text, str):
@@ -754,7 +768,7 @@ def item_snippet(
             out["text"] = snippet
             out["text_was_truncated"] = was_truncated
             out["text_snippet_mode"] = text_mode
-        if item.get("block_type") == "list":
+        if bt == BlockType.LIST.value:
             lis = item.get("list_items") or []
             out["list_items"] = [
                 {
