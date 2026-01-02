@@ -233,7 +233,6 @@ def persist_extraction_run(
             "use_text_layer_hints": use_text_layer_hints,
         },
         models=[model],
-        pipeline_version="0.1",
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
     )

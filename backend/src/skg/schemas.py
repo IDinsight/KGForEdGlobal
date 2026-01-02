@@ -14,7 +14,6 @@ class ExtractionRunIR(BaseModel):
     completed_at: Optional[datetime] = None
     extra: dict[str, Any] = Field(default_factory=dict)
     models: list[str] = Field(default_factory=list)
-    pipeline_version: Optional[str] = None
     run_id: str
     started_at: Optional[datetime] = None
 
