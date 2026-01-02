@@ -81,6 +81,62 @@ def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
     return False
 
 
+def _truncate_text_word_boundary(
+    *, max_len: int, mode: str, text: str
+) -> tuple[str, bool]:
+    """Truncate text without cutting mid-word.
+
+    Valid modes are:
+      - "head": Keep the beginning.
+      - "tail": Keep the end.
+
+    Parameters
+    ----------
+    max_len
+        Maximum length of the returned text.
+    mode
+        Truncation mode ("head" or "tail").
+    text
+        The text to truncate.
+
+    Returns
+    -------
+    tuple[str, bool]
+        The truncated text and a boolean indicating if truncation occurred.
+    """
+
+    assert mode in (
+        "head",
+        "tail",
+    ), f"Invalid mode: {mode}. Valid modes are: 'head' or 'tail'"
+
+    if not isinstance(text, str):
+        return "", False
+
+    # Normalize whitespace so length comparisons are stable.
+    t = re.sub(r"\s+", " ", text).strip()
+
+    if len(t) <= max_len:
+        return t, False
+
+    if max_len <= 12:
+        # Degenerate case; just slice.
+        return (t[:max_len] if mode == "head" else t[-max_len:]), True
+
+    if mode == "head":
+        chunk = t[:max_len]
+        if " " in chunk:
+            chunk = chunk.rsplit(" ", 1)[0]
+        return chunk + "...", True
+
+    chunk = t[-max_len:]
+
+    # If we started mid-word, drop the partial first word.
+    if " " in chunk:
+        chunk = chunk.split(" ", 1)[1]
+    return "..." + chunk, True
+
+
 def bottommost_continuity_candidate(
     *,
     image_height: float,
@@ -248,7 +304,9 @@ def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationD
 def derive_page_boundary_state(*, page_ir: dict[str, Any]) -> PageBoundaryState:
     """Derive page-level boundary_state from verified item boundaries.
 
-    Uses the top-most and bottom-most NON-artifact/non-header-footer-noise items.
+    Scan all non-artifact, non-header/footer-noise items:
+      - from_prev if ANY item is resumed/both
+      - to_next if ANY item is truncated/both
 
     Parameters
     ----------
@@ -262,29 +320,28 @@ def derive_page_boundary_state(*, page_ir: dict[str, Any]) -> PageBoundaryState:
     """
 
     items = page_ir.get("items") or []
-    image_h = float(page_ir.get("image_height") or 0.0)
+    image_height = float(page_ir.get("image_height") or 0.0)
 
     candidates = [
         it
         for it in items
-        if (not is_artifact(it))
-        and (not is_probable_header_footer_noise(image_height=image_h, item=it))
-        and (not is_minor_edge_block(image_height=image_h, item=it))
-        and isinstance(it.get("bbox"), list)
-        and len(it["bbox"]) == 4
+        if not is_artifact(it)
+        and not is_probable_header_footer_noise(image_height=image_height, item=it)
     ]
 
     if not candidates:
         return PageBoundaryState.STANDALONE
 
-    top_item = min(candidates, key=lambda it: float(it["bbox"][1]))
-    bot_item = max(candidates, key=lambda it: float(it["bbox"][3]))
-
-    top_b = ItemBoundary(_boundary_val(top_item.get("boundary")))
-    bot_b = ItemBoundary(_boundary_val(bot_item.get("boundary")))
-
-    from_prev = top_b in (ItemBoundary.RESUMED, ItemBoundary.BOTH)
-    to_next = bot_b in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
+    from_prev = any(
+        _boundary_val(it.get("boundary"))
+        in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
+        for it in candidates
+    )
+    to_next = any(
+        _boundary_val(it.get("boundary"))
+        in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
+        for it in candidates
+    )
 
     return encode_boundary_state(from_prev, to_next)
 
@@ -414,7 +471,7 @@ def is_artifact(item: dict[str, Any]) -> bool:
         True if the item is an artifact, False otherwise.
     """
 
-    return item.get("kind") == "block" and item.get("block_type") == "artifact"
+    return item.get("kind") == "block" and item.get("block_type") == BlockType.ARTIFACT
 
 
 def is_figure_block(item: dict[str, Any]) -> bool:
@@ -545,7 +602,9 @@ def is_probable_header_footer_noise(
     return False
 
 
-def item_snippet(*, item: dict[str, Any], max_len: int = 260) -> dict[str, Any]:
+def item_snippet(
+    *, item: dict[str, Any], max_len: int = 260, text_mode: str = "head"
+) -> dict[str, Any]:
     """Create a small, stable representation of an item to show the verifier model.
 
     Parameters
@@ -554,6 +613,8 @@ def item_snippet(*, item: dict[str, Any], max_len: int = 260) -> dict[str, Any]:
         The item to create a snippet for.
     max_len
         Maximum length of text fields.
+    text_mode
+        Text truncation mode ("head" or "tail").
 
     Returns
     -------
@@ -575,7 +636,12 @@ def item_snippet(*, item: dict[str, Any], max_len: int = 260) -> dict[str, Any]:
         out["language"] = (item.get("text") or {}).get("language")
         text = (item.get("text") or {}).get("text")
         if isinstance(text, str):
-            out["text"] = text[:max_len]
+            snippet, was_truncated = _truncate_text_word_boundary(
+                max_len=max_len, mode=text_mode, text=text
+            )
+            out["text"] = snippet
+            out["text_was_truncated"] = was_truncated
+            out["text_snippet_mode"] = text_mode
         if item.get("block_type") == "list":
             lis = item.get("list_items") or []
             out["list_items"] = [
@@ -857,6 +923,16 @@ def topmost_continuity_candidate_paired(
     if preferred_kind == "block":
         blocks = [(i, it) for (i, it) in candidates if it.get("kind") != "table"]
         if blocks:
+            # if we have any non-minor blocks near the top, drop minor edge blocks
+            # (e.g., short captions like "Table 2: ...") so they don't become the
+            # anchor.
+            non_minor = [
+                (i, it)
+                for (i, it) in blocks
+                if not is_minor_edge_block(image_height=image_height, item=it)
+            ]
+            blocks = non_minor or blocks
+
             # Prefer non-figure blocks if possible.
             non_fig = [(i, it) for (i, it) in blocks if not is_figure_block(it)]
             chosen = non_fig if non_fig else blocks

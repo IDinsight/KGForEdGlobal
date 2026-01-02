@@ -226,11 +226,9 @@ def verify_page_ir_pairs_from_extraction(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
+    next_boundary_allowed = json.dumps([ItemBoundary.RESUMED.value], ensure_ascii=False)
     prev_boundary_allowed = json.dumps(
-        [ItemBoundary.TRUNCATED.value, ItemBoundary.COMPLETE.value], ensure_ascii=False
-    )
-    next_boundary_allowed = json.dumps(
-        [ItemBoundary.RESUMED.value, ItemBoundary.COMPLETE.value], ensure_ascii=False
+        [ItemBoundary.TRUNCATED.value], ensure_ascii=False
     )
 
     system_message = dedent(
@@ -255,8 +253,10 @@ You will be given:
 6. Only change continuity metadata fields. If everything is already correct, leave all set_* fields null.
 7. Return ONLY a JSON object matching the required schema. No prose.
 8. Always include a short rationale string.
-9. If uncertain, set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", low confidence, and leave all set_* null.
-10. If is_continuation=false, do not set boundaries to {ItemBoundary.RESUMED} or {ItemBoundary.TRUNCATED}. Only suggest {ItemBoundary.COMPLETE} (or null).
+9. If uncertain:
+  - For TEXT/FIGURE: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE}", confidence <= 0.49, and leave all set_* null.
+  - For TABLE candidates (both candidates are tables): if headers/grid/layout clearly match and there is NO new-table caption/title marker visible, prefer is_continuation=true with continuation_kind="{PageContinuationKind.TABLE}" and moderate confidence.
+10. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
 
 ## ALLOWED EDITS (METADATA ONLY)
 1. set_prev_item_boundary: one of {prev_boundary_allowed} (or null)
@@ -272,7 +272,19 @@ You will be given:
 
 ## DECISION GUIDANCE
 1. Use the IMAGES as source of truth. Excerpts may be wrong/incomplete.
-2. TABLE continuation signals: same table grid continues, row text cut off at bottom then resumes at top, repeated header row (often same column labels).
+2. TABLE continuation signals (DEFAULT ASSUME CONTINUATION):
+  - Treat table-to-table across the boundary as a continuation UNLESS you see a clear new-table marker (see "New table signals" below).
+  - Continuation DOES NOT require a row/cell to be cut off mid-text. A page break BETWEEN complete rows is still a continuation.
+  - Strong continuation cues:
+    - Same column count and same column labels/header row (often repeated at the top of IMAGE B)
+    - Same grid style/lines and same table layout
+    - Header row repeats at the top of IMAGE B (very strong signal)
+  - New table signals (ONLY THEN set is_continuation=false):
+    - A new caption/title appears at the boundary, e.g. "Table 5:"/"Table X:"/"TABLE X" (either at the bottom of IMAGE A or the top of IMAGE B)
+    - A caption-like title row spanning the table width appears at the top of IMAGE B (e.g., a full-width merged cell that says "Table ...")
+    - Column count/labels/layout changes clearly
+    - An explicit "End of table"/"continued" marker indicates a break/new table
+  - IMPORTANT: Changes in row content/numbering are NORMAL within a long table and do NOT imply a new table.
 3. TEXT continuation signals (STRONG EVIDENCE REQUIRED):
   - Only choose continuation_kind="text" when you can see strong truncation in IMAGE A and a clear resumption in IMAGE B.
   - Strong truncation cues include at least one of:
@@ -307,8 +319,6 @@ You will be given:
   - Only correct boundaries when they are clearly incompatible:
     - If continuation=true and previous is marked {ItemBoundary.COMPLETE} (or {ItemBoundary.RESUMED}), suggest set_prev_item_boundary="{ItemBoundary.TRUNCATED}".
     - If continuation=true and next is marked {ItemBoundary.COMPLETE} (or {ItemBoundary.TRUNCATED}), suggest set_next_item_boundary="{ItemBoundary.RESUMED}".
-2. If is_continuation=false and the previous candidate is marked {ItemBoundary.TRUNCATED}/{ItemBoundary.BOTH}, suggest set_prev_item_boundary="{ItemBoundary.COMPLETE}" only if the crop shows a clean end (sentence ends cleanly/table ends cleanly).
-3. If is_continuation=false and the next candidate is marked {ItemBoundary.RESUMED}/{ItemBoundary.BOTH}, suggest set_next_item_boundary="{ItemBoundary.COMPLETE}" only if the crop shows a clean start (new heading/table start, etc.).
 
 ## CONFIDENCE CALIBRATION RULES
 1. Use confidence ≥ 0.75 only when continuation is visually obvious (clear cut/resume).

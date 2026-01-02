@@ -119,10 +119,10 @@ def _call_openai_api_for_page_ir_extraction(
     )
 
     parsed = getattr(response, "output_parsed", None)
+    output_text = getattr(response, "output_text", None)
 
     # Capture the raw text if parsing/validation fails.
     if parsed is None:
-        output_text = getattr(response, "output_text", None)
         raise QualityError(
             "Responses.parse returned no parsed output."
             + (f" output_text={output_text!r}" if output_text else ""),
@@ -134,10 +134,9 @@ def _call_openai_api_for_page_ir_extraction(
     parsed.image_width = image_width
     parsed.image_height = image_height
 
-    # Clamp any slightly out-of-bounds bboxes now that dims are known.
+    # Clamp any slightly out-of-bounds bboxes now that dimensions are known.
     parsed.clamp_bboxes_within_image()
 
-    output_text = getattr(response, "output_text", None)
     try:
         validate_page_ir_extraction_quality(
             image_height=image_height, image_width=image_width, page_ir=parsed
@@ -191,12 +190,12 @@ def _call_openai_api_for_page_ir_verification(
     """
 
     response = openai_client.responses.parse(
-        model=model,
-        instructions=instructions,
         input=input_items,
+        instructions=instructions,
+        model=model,
         temperature=0,
-        top_p=1,
         text_format=PageIRContinuityVerdict,
+        top_p=1,
     )
 
     parsed = getattr(response, "output_parsed", None)
@@ -211,6 +210,7 @@ def _call_openai_api_for_page_ir_verification(
     try:
         validate_continuity_verdict(parsed)
     except QualityError as e:
+        # Attach the raw output so the correction attempt can see what it wrote.
         raise QualityError(str(e), failed_content=output_text) from e
 
     return parsed
@@ -244,6 +244,7 @@ def _validate_bbox(
         raise QualityError(f"Invalid bbox length at {where_}: {bbox}")
 
     x0, y0, x1, y1 = bbox
+
     if not (x1 > x0 and y1 > y0):
         raise QualityError(f"Inverted/degenerate bbox at {where_}: {bbox}")
 
@@ -354,9 +355,9 @@ def extract_page_ir(
                         {
                             "type": "input_text",
                             "text": (
-                                "Your previous output had issues and must be corrected.\n"
+                                f"Your previous output had issues and must be corrected.\n"
                                 f"ERROR: {str(e)}\n\n"
-                                "Return a complete PageIR that matches the schema and fixes the issue."
+                                f"Return a complete PageIR that matches the schema and fixes the issue."
                             ),
                         }
                     ],
@@ -390,7 +391,8 @@ def extract_page_ir(
 
             # If possible, we should try to add the assistant's context here too, but
             # standard Python Exceptions won't carry the model output unless we wrap
-            # them in _call_openai_api. For now, we proceed with the Error feedback.
+            # them in _call_openai_api_for_page_ir_extraction. For now, we proceed with
+            # the Error feedback.
             input_items.append(
                 {
                     "role": "user",
@@ -398,9 +400,9 @@ def extract_page_ir(
                         {
                             "type": "input_text",
                             "text": (
-                                "The previous response failed structured parsing/validation.\n"
+                                f"The previous response failed structured parsing/validation.\n"
                                 f"ERROR: {e.__class__.__name__}: {e}\n\n"
-                                "Return a complete PageIR that matches the schema exactly."
+                                f"Return a complete PageIR that matches the schema exactly."
                             ),
                         }
                     ],

@@ -61,6 +61,7 @@ from skg.utils.general import compare_directories, open_json_type, write_to_json
 from skg.utils.openai_ import (
     QualityError,
     validate_continuity_verdict,
+    validate_page_ir_extraction_quality,
     verify_page_ir_pairs,
 )
 from skg.utils.pdf import (
@@ -264,7 +265,7 @@ def get_threshold_based_on_kind(
     if kind == "table":
         threshold = 0.80
     elif kind == "text":
-        threshold = 0.70
+        threshold = 0.85
     elif kind == "none":
         threshold = 0.75  # Slightly higher than text; optional
     # Only apply if this is a figure continuation; otherwise skip edits entirely.
@@ -435,6 +436,11 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         The render DPI for the page images during the extraction stage.
     start_page
         0-based start page (inclusive).
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
     """
 
     # Load all page IR indices (0000.json style).
@@ -503,8 +509,8 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
             "prev_candidate_bbox": prev_item.get("bbox"),
             "next_candidate_bbox": next_item.get("bbox"),
             # Excerpts let us detect "same index but different content" when rerunning.
-            "prev_candidate_excerpt": item_snippet(item=prev_item),
-            "next_candidate_excerpt": item_snippet(item=next_item),
+            "prev_candidate_excerpt": item_snippet(item=prev_item, text_mode="tail"),
+            "next_candidate_excerpt": item_snippet(item=next_item, text_mode="head"),
             # Debug: what extraction thought at this seam (not shown to model, but
             # useful in reports).
             "prev_candidate_extraction_boundary": prev_item.get("_orig_boundary"),
@@ -592,8 +598,8 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
                 render_dpi=render_dpi,
             )
 
-            prev_excerpt = item_snippet(item=prev_item)
-            next_excerpt = item_snippet(item=next_item)
+            prev_excerpt = item_snippet(item=prev_item, text_mode="tail")
+            next_excerpt = item_snippet(item=next_item, text_mode="head")
 
             # Don't bias the verifier with extractor continuity guesses.
             prev_excerpt["boundary"] = None
@@ -622,9 +628,12 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
             threshold = get_threshold_based_on_kind(
                 next_item=next_item, prev_item=prev_item, verdict=verdict
             )
-            if verdict.is_continuation and float(verdict.confidence) < threshold:
+            if (
+                verdict.is_continuation
+                and float(verdict.clamped_confidence) < threshold
+            ):
                 verdict = veto_verdict(
-                    reason=f"confidence {float(verdict.confidence):.2f} < threshold {threshold:.2f}",
+                    reason=f"confidence {float(verdict.clamped_confidence):.2f} < threshold {threshold:.2f}",
                     verdict=verdict,
                 )
             validate_continuity_verdict(verdict)
@@ -641,7 +650,7 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         threshold = get_threshold_based_on_kind(
             next_item=next_item, prev_item=prev_item, verdict=verdict
         )
-        if verdict.is_continuation and float(verdict.confidence) >= threshold:
+        if verdict.is_continuation and float(verdict.clamped_confidence) >= threshold:
             apply_continuity_edits(
                 next_idx=next_idx,
                 next_item=next_item,
@@ -652,7 +661,9 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
             )
 
         neg_threshold = get_negative_threshold(next_item=next_item, prev_item=prev_item)
-        if (not verdict.is_continuation) and float(verdict.confidence) >= neg_threshold:
+        if (not verdict.is_continuation) and float(
+            verdict.clamped_confidence
+        ) >= neg_threshold:
             apply_non_continuity_edits(
                 next_idx=next_idx,
                 next_item=next_item,
@@ -670,6 +681,25 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
     # truth).
     for page_ir in page_irs.values():
         page_ir["boundary_state"] = derive_page_boundary_state(page_ir=page_ir).value
+
+    # Re-validate verified PageIRs before writing outputs.
+    for i, page_ir_dict in page_irs.items():
+        try:
+            parsed = PageIR.model_validate(page_ir_dict)
+        except ValidationError as e:
+            raise QualityError(
+                f"Verified PageIR failed schema validation on page {i}: {e}"
+            ) from e
+
+        validate_page_ir_extraction_quality(
+            image_height=int(parsed.image_height),
+            image_width=int(parsed.image_width),
+            page_ir=parsed,
+        )
+
+        # Normalize back to a JSON-ready dict (and capture any boundary_state
+        # overwrites).
+        page_irs[i] = parsed.model_dump(mode="json")
 
     # Write verified JSONs.
     for i, page_ir in page_irs.items():
@@ -701,7 +731,7 @@ def veto_verdict(
     # items, not "there is definitely no continuation anywhere". Keep this
     # continuation_kind="none" and low-confidence so downstream edit-application
     # thresholds will not apply.
-    verdict.confidence = min(float(verdict.confidence), 0.49)
+    verdict.clamped_confidence = min(float(verdict.confidence), 0.49)
     verdict.continuation_kind = PageContinuationKind.NONE
     verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
 
