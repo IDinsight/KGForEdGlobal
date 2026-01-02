@@ -61,7 +61,6 @@ from skg.utils.general import compare_directories, open_json_type, write_to_json
 from skg.utils.openai_ import (
     QualityError,
     validate_continuity_verdict,
-    validate_page_ir_extraction_quality,
     verify_page_ir_pairs,
 )
 from skg.utils.pdf import (
@@ -482,13 +481,7 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         prev_page_items, next_page_items = prev_page_ir.get(
             "items", []
         ), next_page_ir.get("items", [])
-
-        if not prev_page_items or not next_page_items:
-            logger.warning(
-                f"Skipping continuity check for pages {i}-{i + 1}: "
-                f"prev_items={len(prev_page_items)} next_items={len(next_page_items)}"
-            )
-            continue
+        assert prev_page_items and next_page_items, f"No items on pages {i} or {i + 1}."
 
         prev_idx, prev_item = bottommost_continuity_candidate(
             image_height=prev_page_ir["image_height"], items=prev_page_items
@@ -506,8 +499,8 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         candidate_selection = {
             "prev_candidate_index": prev_idx,
             "next_candidate_index": next_idx,
-            "prev_candidate_bbox": prev_item.get("bbox"),
-            "next_candidate_bbox": next_item.get("bbox"),
+            "prev_candidate_bbox": prev_item["bbox"],
+            "next_candidate_bbox": next_item["bbox"],
             # Excerpts let us detect "same index but different content" when rerunning.
             "prev_candidate_excerpt": item_snippet(item=prev_item, text_mode="tail"),
             "next_candidate_excerpt": item_snippet(item=next_item, text_mode="head"),
@@ -681,25 +674,6 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
     # truth).
     for page_ir in page_irs.values():
         page_ir["boundary_state"] = derive_page_boundary_state(page_ir=page_ir).value
-
-    # Re-validate verified PageIRs before writing outputs.
-    for i, page_ir_dict in page_irs.items():
-        try:
-            parsed = PageIR.model_validate(page_ir_dict)
-        except ValidationError as e:
-            raise QualityError(
-                f"Verified PageIR failed schema validation on page {i}: {e}"
-            ) from e
-
-        validate_page_ir_extraction_quality(
-            image_height=int(parsed.image_height),
-            image_width=int(parsed.image_width),
-            page_ir=parsed,
-        )
-
-        # Normalize back to a JSON-ready dict (and capture any boundary_state
-        # overwrites).
-        page_irs[i] = parsed.model_dump(mode="json")
 
     # Write verified JSONs.
     for i, page_ir in page_irs.items():

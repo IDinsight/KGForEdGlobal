@@ -17,7 +17,6 @@ class PageIRExtractionDirs:
     """Dataclass for page IR extraction directories."""
 
     root: Path
-    artifacts: Path
     page_images: Path
     page_irs: Path
 
@@ -259,16 +258,13 @@ def create_page_ir_extraction_dirs(
     """
 
     root = output_dir / doc_key / "extraction"
-    artifacts = root / "artifacts"
     page_images = root / "page_images"
     page_irs = root / "page_irs"
 
-    for p in [root, page_images, page_irs, artifacts]:
+    for p in [root, page_images, page_irs]:
         make_dir(p)
 
-    return PageIRExtractionDirs(
-        root=root, artifacts=artifacts, page_images=page_images, page_irs=page_irs
-    )
+    return PageIRExtractionDirs(root=root, page_images=page_images, page_irs=page_irs)
 
 
 def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationDirs:
