@@ -471,6 +471,12 @@ class PageIR(BaseModelPageIR):
 class PageIRContinuityVerdict(BaseModelPageIR):
     """Schema for page IR continuity verification between two pages."""
 
+    clamped_confidence: float | None = Field(
+        None,
+        description="Postprocess/effective confidence used for applying edits. If omitted, defaults to `confidence` (clamped to [0, 1]).",
+        ge=0.0,
+        le=1.0,
+    )
     next_page_index: int = Field(..., description="0-based index of the next page.")
     prev_page_index: int = Field(..., description="0-based index of the previous page.")
 
@@ -501,6 +507,23 @@ class PageIRContinuityVerdict(BaseModelPageIR):
     set_prev_item_boundary: Optional[ItemBoundary] = Field(
         None, description="Boundary state for the last item on the previous page."
     )
+
+    @model_validator(mode="after")
+    def inject_default_clamped_confidence(self) -> PageIRContinuityVerdict:
+        """Inject default clamped confidence if not provided. Here, we just hard clamp
+        into [0, 1] (this is just range-safety, not the veto clamp) so that it is
+        always populated for reports and consistent downstream comparisons.
+
+        Returns
+        -------
+        PageIRContinuityVerdict
+            The passed in PageIRContinuityVerdict with clamped_confidence populated.
+        """
+
+        if self.clamped_confidence is None:
+            self.clamped_confidence = max(0.0, min(1.0, float(self.confidence)))
+
+        return self
 
     @model_validator(mode="after")
     def validate_boundary_edit_consistency(self) -> PageIRContinuityVerdict:
@@ -542,27 +565,14 @@ class PageIRContinuityVerdict(BaseModelPageIR):
                 raise ValueError(
                     "set_next_table_repeats_header only allowed for table continuations."
                 )
-        else:
-            if (
-                self.set_prev_item_boundary is not None
-                and self.set_prev_item_boundary != ItemBoundary.COMPLETE
-            ):
-                raise ValueError(
-                    f"When is_continuation=false, set_prev_item_boundary (if provided) "
-                    f"must be '{ItemBoundary.COMPLETE}'."
-                )
-            if (
-                self.set_next_item_boundary is not None
-                and self.set_next_item_boundary != ItemBoundary.COMPLETE
-            ):
-                raise ValueError(
-                    f"When is_continuation=false, set_next_item_boundary (if provided) "
-                    f"must be '{ItemBoundary.COMPLETE}'."
-                )
-            if self.set_next_table_repeats_header is not None:
-                raise ValueError(
-                    "set_next_table_repeats_header must be null when is_continuation=false."
-                )
+        elif (
+            self.set_prev_item_boundary is not None
+            or self.set_next_item_boundary is not None
+            or self.set_next_table_repeats_header is not None
+        ):
+            raise ValueError(
+                "When is_continuation=false, all set_* fields must be null."
+            )
 
         return self
 
