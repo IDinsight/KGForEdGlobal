@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 # Standard Library
+import re
+
 from typing import Annotated, Literal, Optional, Union
 
 # Third Party Library
@@ -480,6 +482,55 @@ class PageIR(BaseModelPageIR):
                 y1 = min(image_height, y0 + 1.0)
 
             item.bbox = [x0, y0, x1, y1]
+
+        return self
+
+    @model_validator(mode="after")
+    def propagate_table_codes(self) -> PageIR:
+        """Propagate table codes from caption blocks to the subsequent table if
+        missing.
+
+        Returns
+        -------
+        PageIR
+            The passed in PageIR with propagated table codes.
+        """
+
+        # If a caption block carries a Table code (e.g., "Table 5") and the next
+        # non-artifact item is a table, copy that code onto the table itself.
+        table_code_re = re.compile(r"(?i)^\s*table\s+\d+(?:\.\d+)*\b")
+
+        for i, cur in enumerate(self.items):
+            if (
+                not isinstance(cur, CurriculumBlock)
+                or cur.block_type != BlockType.CAPTION
+            ):
+                continue
+
+            code = (cur.local_code or "").strip()
+            if not code or not table_code_re.match(code):
+                continue
+
+            # Look ahead to the next non-artifact item (sometimes a page number sits
+            # between).
+            j = i + 1
+            while j < len(self.items):
+                nxt = self.items[j]
+                if (
+                    isinstance(nxt, CurriculumBlock)
+                    and nxt.block_type == BlockType.ARTIFACT
+                ):
+                    j += 1
+                    continue
+                break
+
+            if j >= len(self.items):
+                continue
+
+            nxt = self.items[j]
+            if isinstance(nxt, CurriculumTable):
+                if not (nxt.local_code or "").strip():
+                    nxt.local_code = code
 
         return self
 
