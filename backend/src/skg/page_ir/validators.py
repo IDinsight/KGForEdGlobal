@@ -18,7 +18,7 @@ from skg.page_ir.utils import (
     is_truncated,
     textunit_text,
 )
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
 
 
 @dataclass
@@ -173,7 +173,85 @@ def ensure_text_en_none(tu: Any, where_: str) -> None:
         raise QualityError(f"text_en must be null during extraction at {where_}.")
 
 
-def validate_and_reconcile_continuity_for_extraction(
+# Extraction validators.
+def _validate_one_table(*, i: int, item: Any) -> None:
+    """Validate a single table's integrity.
+
+    Parameters
+    ----------
+    i
+        The index of the table in items.
+    item
+        The table item.
+    """
+
+    rows = getattr(item, "rows", None) or []
+    validate_table_rows_nonempty(i=i, rows=rows)
+    validate_table_cells_and_spans(i=i, rows=rows)
+    stats = compute_table_width_stats(rows=rows)
+    if stats is not None:
+        validate_table_n_cols(
+            i=i, max_eff=stats.max_eff, n_cols=getattr(item, "n_cols", None)
+        )
+        validate_table_collapse_by_header_body(
+            cell_counts=stats.cell_counts,
+            eff_widths=stats.eff_widths,
+            header_row_count=int(getattr(item, "header_row_count", 0) or 0),
+            i=i,
+        )
+        validate_table_inconsistent_widths(
+            eff_widths=stats.eff_widths, i=i, max_eff=stats.max_eff
+        )
+    validate_table_has_any_text(i=i, rows=rows)
+
+
+def validate_basic_block_invariants(
+    ctx: PageIRExtractionQualityCtx,
+) -> None:
+    """Validate basic block invariants.
+
+    Parameters
+    ----------
+    ctx
+        The PageIR extraction quality context.
+
+    Raises
+    ------
+    QualityError
+        If any basic block invariant is violated.
+    """
+
+    for i, item in enumerate(ctx.items):
+        if getattr(item, "kind", None) != "block":
+            continue
+
+        block_type = getattr(item, "block_type", None)
+        list_items = getattr(item, "list_items", None) or []
+        fig = getattr(item, "figure", None)
+
+        # Non-figure blocks must not carry figure metadata.
+        if block_type != BlockType.FIGURE and fig is not None:
+            raise QualityError(
+                f"Non-figure block must have figure=null at items[{i}].figure."
+            )
+
+        if block_type == BlockType.LIST:
+            for j, li in enumerate(list_items):
+                # If marker is empty and text is short, it's likely a misclassification.
+                raw_marker = getattr(li, "marker", None)
+                marker = raw_marker if isinstance(raw_marker, str) else ""
+                li_text = textunit_text(getattr(li, "text", None))
+                ensure_text_en_none(
+                    getattr(li, "text", None), f"items[{i}].list_items[{j}].text"
+                )
+                if not marker.strip() and len(li_text.strip()) < 3:
+                    raise QualityError(
+                        f"List item at items[{i}].list_items[{j}] has no marker and "
+                        "insufficient text. This should likely be a paragraph."
+                    )
+
+
+def validate_continuity_for_extraction(
     ctx: PageIRExtractionQualityCtx,
 ) -> None:
     """Validate and reconcile page/item continuity signals.
@@ -191,7 +269,6 @@ def validate_and_reconcile_continuity_for_extraction(
 
     page_ir = ctx.page_ir
     boundary_state = ctx.boundary_state
-
     expected_bs = _derive_boundary_state_from_items(ctx.non_artifact_items)
 
     if boundary_state != expected_bs:
@@ -201,8 +278,7 @@ def validate_and_reconcile_continuity_for_extraction(
         )
         page_ir.boundary_state = expected_bs
         boundary_state = expected_bs
-
-    ctx.boundary_state = boundary_state
+        ctx.boundary_state = boundary_state
 
     bs = (
         boundary_state.value
@@ -264,41 +340,6 @@ def validate_and_reconcile_continuity_for_extraction(
         )
 
 
-def validate_basic_block_invariants(
-    ctx: PageIRExtractionQualityCtx,
-) -> None:
-    """Validate basic block invariants.
-
-    Parameters
-    ----------
-    ctx
-        The PageIR extraction quality context.
-
-    Raises
-    ------
-    QualityError
-        If any basic block invariant is violated.
-    """
-
-    for i, item in enumerate(ctx.items):
-        if getattr(item, "kind", None) != "block":
-            continue
-
-        block_type = getattr(item, "block_type", None)
-        list_items = getattr(item, "list_items", [])
-        fig = getattr(item, "figure", None)
-
-        # Non-figure blocks must not carry figure metadata.
-        if block_type != BlockType.FIGURE and fig is not None:
-            raise QualityError(
-                f"Non-figure block must have figure=null at items[{i}].figure."
-            )
-
-        if block_type == BlockType.LIST:
-            validate_list_block(i=i, list_items=list_items)
-            continue
-
-
 def validate_full_page_bboxes(
     ctx: PageIRExtractionQualityCtx,
 ) -> None:
@@ -323,16 +364,30 @@ def validate_full_page_bboxes(
     if not full_page_idxs:
         return
 
-    items = ctx.items
+    # Only allow if it's literally one item and it's a figure.
     if not (
-        len(items) == 1
-        and getattr(items[0], "kind", None) == "block"
-        and getattr(items[0], "block_type", None) == BlockType.FIGURE
+        len(ctx.items) == 1
+        and getattr(ctx.items[0], "kind", None) == "block"
+        and getattr(ctx.items[0], "block_type", None) == BlockType.FIGURE
     ):
         raise QualityError(
             f"Full-page bbox used as a placeholder for items {full_page_idxs}. BBoxes "
             f"must be tight to each item. Full-page bbox is only allowed for a single "
             f"full-page figure."
+        )
+
+    fig = getattr(ctx.items[0], "figure", None)
+    if fig is None:
+        raise QualityError("Full-page figure block must include figure metadata.")
+    if getattr(fig, "figure_kind", None) in (None, FigureKind.UNKNOWN):
+        raise QualityError(
+            "Full-page bbox is not allowed for figure_kind='unknown'. "
+            "If this is a text page, extract blocks. If it's a real figure, set figure_kind."
+        )
+    if getattr(fig, "contains_text", None) is True:
+        raise QualityError(
+            "Full-page bbox is not allowed for contains_text=true. "
+            "This usually indicates a text page being misclassified as a figure."
         )
 
 
@@ -424,8 +479,6 @@ def validate_item_bboxes_required_and_in_bounds(
         If any item-level bbox is missing or invalid.
     """
 
-    ctx.top_level_bboxes = []
-
     for i, item in enumerate(ctx.items):
         bbox = getattr(item, "bbox", None)
 
@@ -450,37 +503,6 @@ def validate_item_bboxes_required_and_in_bounds(
         ctx.top_level_bboxes.append((float(x0), float(y0), float(x1), float(y1)))
 
 
-def validate_list_block(*, i: int, list_items: list[Any]) -> None:
-    """Validate a list block's invariants.
-
-    Parameters
-    ----------
-    i
-        The index of the block in items.
-    list_items
-        The list items of the block.
-
-    Raises
-    ------
-    QualityError
-        If any list block invariant is violated.
-    """
-
-    for j, li in enumerate(list_items):
-        # If marker is empty and text is short, it's likely a misclassification.
-        raw_marker = getattr(li, "marker", None)
-        marker = raw_marker if isinstance(raw_marker, str) else ""
-        li_text = textunit_text(getattr(li, "text", None))
-        ensure_text_en_none(
-            getattr(li, "text", None), f"items[{i}].list_items[{j}].text"
-        )
-        if not marker.strip() and len(li_text.strip()) < 3:
-            raise QualityError(
-                f"List item at items[{i}].list_items[{j}] has no marker and "
-                "insufficient text. This should likely be a paragraph."
-            )
-
-
 def validate_no_whitespace_or_empty_blocks(
     ctx: PageIRExtractionQualityCtx,
 ) -> None:
@@ -497,8 +519,7 @@ def validate_no_whitespace_or_empty_blocks(
         If any whitespace-only or empty blocks are found.
     """
 
-    items = ctx.items
-    for i, item in enumerate(items):
+    for i, item in enumerate(ctx.items):
         if getattr(item, "kind", None) != "block":
             continue
 
@@ -548,94 +569,6 @@ def validate_no_whitespace_or_empty_blocks(
             )
 
 
-def validate_non_continuation_has_no_resumed_truncated_boundaries(
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Validate that a non-continuation verdict has no resumed/truncated boundaries.
-
-    Parameters
-    ----------
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If the non-continuation verdict suggests resumed/truncated boundaries.
-    """
-
-    if verdict.is_continuation:
-        return
-
-    # If this is NOT a continuation, it makes no sense to suggest 'truncated'/'resumed'
-    # boundaries on the boundary items.
-    invalid = (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED, ItemBoundary.BOTH)
-    if (
-        verdict.set_prev_item_boundary in invalid
-        or verdict.set_next_item_boundary in invalid
-    ):
-        raise QualityError(
-            "is_continuation=false but verdict suggests truncated/resumed item boundaries."
-        )
-
-
-def validate_one_table(*, i: int, item: Any) -> None:
-    """Validate a single table's integrity.
-
-    Parameters
-    ----------
-    i
-        The index of the table in items.
-    item
-        The table item.
-    """
-
-    rows = getattr(item, "rows", None) or []
-    validate_table_rows_nonempty(i=i, rows=rows)
-    validate_table_cells_and_spans(i=i, rows=rows)
-    stats = compute_table_width_stats(rows=rows)
-    if stats is not None:
-        validate_table_n_cols(
-            i=i, max_eff=stats.max_eff, n_cols=getattr(item, "n_cols", None)
-        )
-        validate_table_collapse_by_header_body(
-            cell_counts=stats.cell_counts,
-            eff_widths=stats.eff_widths,
-            header_row_count=int(getattr(item, "header_row_count", 0) or 0),
-            i=i,
-        )
-        validate_table_inconsistent_widths(
-            eff_widths=stats.eff_widths, i=i, max_eff=stats.max_eff
-        )
-    validate_table_has_any_text(i=i, rows=rows)
-
-
-def validate_page_indices(verdict: PageIRContinuityVerdict) -> None:
-    """Validate the page indices in a continuity verdict.
-
-    Parameters
-    ----------
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    if verdict.prev_page_index >= verdict.next_page_index:
-        raise QualityError(
-            f"Invalid page index order: prev={verdict.prev_page_index} "
-            f"next={verdict.next_page_index}"
-        )
-    if verdict.next_page_index - verdict.prev_page_index != 1:
-        logger.warning(
-            f"Non-adjacent page indices in verdict "
-            f"({verdict.prev_page_index}->{verdict.next_page_index}); expected adjacency."
-        )
-
-
 def validate_placeholder_bboxes(
     ctx: PageIRExtractionQualityCtx,
 ) -> None:
@@ -652,34 +585,30 @@ def validate_placeholder_bboxes(
         If too many items share a placeholder bbox.
     """
 
-    top_level_bboxes = ctx.top_level_bboxes
+    if len(ctx.top_level_bboxes) >= 3:
+        counts = Counter(ctx.top_level_bboxes)
+        most_common_bbox, most_common_count = counts.most_common(1)[0]
+        frac = most_common_count / max(1, len(ctx.top_level_bboxes))
 
-    if len(top_level_bboxes) < 3:
-        return
+        x0, y0, x1, y1 = most_common_bbox
+        starts_at_origin = abs(x0) <= ctx.tol and abs(y0) <= ctx.tol
+        area = max(0.0, (x1 - x0)) * max(0.0, (y1 - y0))
+        page_area = float(ctx.image_width) * float(ctx.image_height)
+        area_frac = area / page_area if page_area > 0 else 0.0
 
-    counts = Counter(top_level_bboxes)
-    most_common_bbox, most_common_count = counts.most_common(1)[0]
-    frac = most_common_count / max(1, len(top_level_bboxes))
+        if frac >= 0.30 and starts_at_origin:
+            raise QualityError(
+                "Too many items share the same origin-anchored bbox "
+                f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}). "
+                "This looks like a placeholder; bboxes must be localized to each item."
+            )
 
-    x0, y0, x1, y1 = most_common_bbox
-    starts_at_origin = abs(x0) <= ctx.tol and abs(y0) <= ctx.tol
-    area = max(0.0, (x1 - x0)) * max(0.0, (y1 - y0))
-    page_area = float(ctx.image_width) * float(ctx.image_height)
-    area_frac = area / page_area if page_area > 0 else 0.0
-
-    if frac >= 0.30 and starts_at_origin:
-        raise QualityError(
-            f"Too many items share the same origin-anchored bbox "
-            f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}). "
-            f"This looks like a placeholder; bboxes must be localized to each item."
-        )
-
-    if frac >= 0.20 and area_frac >= 0.85:
-        raise QualityError(
-            f"Too many items share a near-full-page bbox "
-            f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}, area_frac={area_frac:.2f}). "
-            f"Do not use near-full-page bboxes as placeholders; bboxes must be localized."
-        )
+        if frac >= 0.20 and area_frac >= 0.85:
+            raise QualityError(
+                "Too many items share a near-full-page bbox "
+                f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}, area_frac={area_frac:.2f}). "
+                "Do not use near-full-page bboxes as placeholders; bboxes must be localized."
+            )
 
 
 def validate_table_cells_and_spans(*, i: int, rows: list[Any]) -> None:
@@ -700,11 +629,10 @@ def validate_table_cells_and_spans(*, i: int, rows: list[Any]) -> None:
 
     for r, row in enumerate(rows):
         cells = getattr(row, "cells", None) or []
-        if not cells:
+        if len(cells) == 0:
             raise QualityError(
                 f"Table row with zero cells at items[{i}].rows[{r}].cells."
             )
-
         for c, cell in enumerate(cells):
             ensure_text_en_none(
                 getattr(cell, "text", None), f"items[{i}].rows[{r}].cells[{c}].text"
@@ -839,7 +767,7 @@ def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
     for i, item in enumerate(ctx.items):
         if getattr(item, "kind", None) != "table":
             continue
-        validate_one_table(i=i, item=item)
+        _validate_one_table(i=i, item=item)
 
 
 def validate_table_n_cols(*, i: int, max_eff: int, n_cols: Any) -> None:
@@ -896,7 +824,65 @@ def validate_table_rows_nonempty(*, i: int, rows: list[Any]) -> None:
         If the table has no rows.
     """
 
-    if not rows:
+    if len(rows) == 0:
         raise QualityError(
             f"Empty table (rows=[]) at items[{i}].rows. Do not emit empty tables."
+        )
+
+
+# Verification validators.
+def validate_non_continuation_has_no_resumed_truncated_boundaries(
+    verdict: PageIRContinuityVerdict,
+) -> None:
+    """Validate that a non-continuation verdict has no resumed/truncated boundaries.
+
+    Parameters
+    ----------
+    verdict
+        The PageIRContinuityVerdict to validate.
+
+    Raises
+    ------
+    QualityError
+        If the non-continuation verdict suggests resumed/truncated boundaries.
+    """
+
+    if verdict.is_continuation:
+        return
+
+    # If this is NOT a continuation, it makes no sense to suggest 'truncated'/'resumed'
+    # boundaries on the boundary items.
+    invalid = (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED, ItemBoundary.BOTH)
+    if (
+        verdict.set_prev_item_boundary in invalid
+        or verdict.set_next_item_boundary in invalid
+    ):
+        raise QualityError(
+            "is_continuation=false but verdict suggests truncated/resumed item boundaries."
+        )
+
+
+def validate_page_indices(verdict: PageIRContinuityVerdict) -> None:
+    """Validate the page indices in a continuity verdict.
+
+    Parameters
+    ----------
+    verdict
+        The PageIRContinuityVerdict to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if verdict.prev_page_index >= verdict.next_page_index:
+        raise QualityError(
+            f"Invalid page index order: prev={verdict.prev_page_index} "
+            f"next={verdict.next_page_index}"
+        )
+    if verdict.next_page_index - verdict.prev_page_index != 1:
+        logger.warning(
+            f"Non-adjacent page indices in verdict "
+            f"({verdict.prev_page_index}->{verdict.next_page_index}); expected adjacency."
         )

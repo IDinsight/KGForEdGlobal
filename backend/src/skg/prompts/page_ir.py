@@ -68,7 +68,7 @@ def extract_page_ir_from_pdf_page(
     text_layer_context = (
         ""
         if not text_layer_hints
-        else f"## TEXT LAYER HINTS\n{text_layer_hints}\nNB: Text layer hints are only hints and they may be incomplete."
+        else f"## TEXT LAYER HINTS\n{text_layer_hints}\nNB: Text layer hints are only hints and they may be incomplete. If TEXT LAYER HINTS contain multiple lines of non-header text (paragraph-like), treat the page as a text page unless the image clearly shows the text layer is wrong (e.g., OCR garbage not matching the visible page)."
     )
 
     system_message = dedent(
@@ -84,7 +84,11 @@ def extract_page_ir_from_pdf_page(
 5. **NO HALLUCINATION**: Do not add rows/cells/text that are not visible. If a cell is blank, set text: null.
 6. **Do a final scan of the bottom 10% of the page before finishing; do not stop early.**
 7. If you see an explicit curriculum code/section code/table number associated with a block or table, put it in `local_code` verbatim.
-8. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
+8. **ANTI-FULL-PAGE FAILSAFE (CRITICAL)**:
+  - If the page contains substantial readable text (e.g., more than ~2 lines of body text, a TOC/list of entries, paragraphs like "Acknowledgements", or any multi-line section content), you MUST NOT output a single full-page FIGURE item.
+  - In those cases, extract the text into HEADING / PARAGRAPH / LIST blocks (and TABLE items if there is a grid).
+  - The “single full-page FIGURE page” exception is ONLY for pages that are visually dominated by a non-table graphic or scanned image with at most ~1–2 short text lines total (typical: cover image, certificate scan, photo page).
+9. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
   - The following PageIR fields are filled/overwritten by the Python pipeline:
     - boundary_state MUST be omitted (do not include it at all).
     - doc_key, pdf_name, page_index, dpi, image_width, image_height MUST be null or omitted.
@@ -95,7 +99,14 @@ def extract_page_ir_from_pdf_page(
 2. **BBOX REQUIRED**: Every block/table MUST include a localized bbox [x0,y0,x1,y1]. Never omit it. BBoxes must be tight to the content. Never use a full-page bbox except for genuinely full-page images (rare).
 3. **BBOX VALIDITY**: Every bbox must satisfy 0<=x0<x1<=image_width and 0<=y0<y1<=image_height.
 4. **NO PLACEHOLDER/REUSED BBOXES**: Never use the same bbox for multiple items. Never copy the page bbox into items. Each item bbox must tightly wrap only that item’s visible pixels. If unsure, err slightly smaller than too large—never full-page.
-5. Full-page bbox is allowed ONLY when the output contains exactly ONE item and that item is kind="block", block_type="{BlockType.FIGURE.value}" (a true full-page figure page). Otherwise, full-page bbox is never allowed.
+5. **FULL-PAGE BBOX EXCEPTION (EXTREMELY STRICT)**:
+  - A full-page bbox is allowed ONLY if ALL are true:
+    - The output contains exactly ONE item.
+    - That item is kind="block" and block_type="figure".
+    - The page is visually dominated by a non-table graphic or scanned image (NOT primarily text).
+    - The page has no paragraph/list-like body text beyond ~1–2 short lines.
+    - figure.figure_kind MUST NOT be "unknown". If you cannot classify the figure kind, you MUST NOT use the full-page exception.
+  - If ANY condition is not met, you must split the page into multiple localized bboxes.
 
 ## BOUNDARIES
 1. Item `boundary` is SEMANTIC continuity (not “missing borders”):
@@ -192,7 +203,10 @@ Reminders:
 6. If you can confidently count the table's columns, set "n_cols".
 7. If you see a diagram/figure (not a table), output a block_type="{BlockType.FIGURE.value}" block with a `figure` object and tight bbox.
 
-Final check before output: no item bbox may be full-page or reused across items (except the single full-page figure case).
+Final check before output:
+- If you are outputting exactly ONE item, stop and re-evaluate: is the page truly a full-page graphic/scan with ~no text?
+  - If NO: split into multiple blocks/tables with tight bboxes.
+- No item bbox may be full-page or reused across items (except the strict single full-page figure case above).
         """
     )
 
