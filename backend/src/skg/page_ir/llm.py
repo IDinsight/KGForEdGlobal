@@ -447,8 +447,8 @@ def verify_page_ir_pairs(
     *,
     max_retries: int = 2,
     model: str,
-    next_page_index: int,
     next_item_excerpt: dict[str, Any],
+    next_page_index: int,
     next_top_png: Path,
     prev_bottom_png: Path,
     prev_item_excerpt: dict[str, Any],
@@ -462,10 +462,10 @@ def verify_page_ir_pairs(
         Maximum number of retries for quality errors.
     model
         The OpenAI model to use.
-    next_page_index
-        The 0-based index of the next page (N+1).
     next_item_excerpt
         Excerpt of the candidate near top item from page N+1 JSON.
+    next_page_index
+        The 0-based index of the next page (N+1).
     next_top_png
         The PNG file path of the top crop of page N+1.
     prev_bottom_png

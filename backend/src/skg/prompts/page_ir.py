@@ -78,7 +78,7 @@ def extract_page_ir_from_pdf_page(
 
 ## HARD RULES
 1. **If text-layer hints contradict the image, trust the image.**
-2. **READING ORDER**: Populate `items` in visual reading order (left-to-right columns, then down).
+2. **READING ORDER**: Populate `items` in visual reading order: left-to-right columns, then down. For multi-column pages: read top-to-bottom within the left column first, then move to the next column on the right.
 3. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
 4. **KIND DISCRIMINATOR**: Every item in the `items` list MUST have a `"kind"` field set to either `"block"` or `"table"`.
 5. **NO HALLUCINATION**: Do not add rows/cells/text that are not visible. If a cell is blank, set text: null.
