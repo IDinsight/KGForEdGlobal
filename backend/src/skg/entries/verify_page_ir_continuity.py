@@ -418,9 +418,8 @@ def postpass_enforce_seam_consistency(
         # Case A: previous claims it continues, but next does NOT resume --> downgrade
         # previous.
         if prev_to_next and not next_from_prev:
-            # BOTH --> RESUMED (keep from_prev, remove to_next)
-            # TRUNCATED --> COMPLETE
             if prev_boundary == ItemBoundary.BOTH.value:
+                # BOTH --> RESUMED.
                 ensure_boundary(
                     allow_downgrade_both=True,
                     desired=ItemBoundary.RESUMED.value,
@@ -429,6 +428,7 @@ def postpass_enforce_seam_consistency(
                 )
                 new_prev_boundary = ItemBoundary.RESUMED.value
             else:
+                # TRUNCATED --> COMPLETE.
                 ensure_boundary(
                     desired=ItemBoundary.COMPLETE.value,
                     items=prev_items,
