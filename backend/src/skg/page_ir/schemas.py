@@ -320,6 +320,19 @@ class CurriculumBlock(BaseModelPageIR):
                 raise ValueError(
                     f"CurriculumBlock block_type='{bt}' requires list_items=null."
                 )
+            if (
+                isinstance(self.figure.alt_text, str)
+                and not self.figure.alt_text.strip()
+            ):
+                raise ValueError(
+                    f"CurriculumBlock block_type='{bt}' has figure.alt_text that is an "
+                    f"empty string (or whitespace only)."
+                )
+            if self.figure.caption is not None and not self.figure.caption.text.strip():
+                raise ValueError(
+                    f"CurriculumBlock block_type='{bt}' has figure.caption.text that "
+                    f"is an empty string (or whitespace only)."
+                )
 
         return self
 
