@@ -405,14 +405,8 @@ def save_verified_page_irs(
         # Derive page-level boundary_state from verified item boundaries.
         page_ir["boundary_state"] = derive_page_boundary_state(page_ir=page_ir).value
 
-        # Re-validate and model dump to ensure schema-correct outputs and run PageIR
-        # after-validators (bbox clamp, propagate_table_codes, etc.).
-        page_ir_clean = PageIR.model_validate(page_ir).model_dump(mode="json")
-
         # Write verified JSON.
-        write_to_json(
-            verification_dirs.page_irs_verified / f"{i:04}.json", page_ir_clean
-        )
+        write_to_json(verification_dirs.page_irs_verified / f"{i:04}.json", page_ir)
 
     logger.success("All verified page IR JSONs saved successfully!")
 
