@@ -42,7 +42,6 @@ from skg.prompts.page_ir import (
     verify_page_ir_pairs_from_extraction,
 )
 from skg.schemas import Limits
-from skg.utils.constants import PageContinuationKind
 from skg.utils.general import encode_png_to_data_url
 
 limits = Limits(max_retry_attempts=5)
@@ -292,6 +291,7 @@ def extract_page_ir(
             )
         except QualityError as e:
             if attempt == max_retries:
+                logger.error("Extraction failed after retries.")
                 raise  # Re-raise the final quality error
 
             # Append the assistant's failed attempt to history first. Without this, the
@@ -445,6 +445,7 @@ def verify_page_ir_extraction_quality(
 
 def verify_page_ir_pairs(
     *,
+    max_retries: int = 2,
     model: str,
     next_page_index: int,
     next_item_excerpt: dict[str, Any],
@@ -457,6 +458,8 @@ def verify_page_ir_pairs(
 
     Parameters
     ----------
+    max_retries
+        Maximum number of retries for quality errors.
     model
         The OpenAI model to use.
     next_page_index
@@ -479,6 +482,8 @@ def verify_page_ir_pairs(
 
     Raises
     ------
+    Exception
+        For transient API errors.
     QualityError
         If the LLM returns invalid or poor-quality output.
     """
@@ -511,7 +516,6 @@ def verify_page_ir_pairs(
         }
     ]
 
-    max_retries = 2
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api_for_page_ir_verification(
@@ -521,26 +525,14 @@ def verify_page_ir_pairs(
             )
         except QualityError as e:
             if attempt == max_retries:
-                logger.warning(
+                logger.error(
                     f"Verification failed after retries for pages "
                     f"{prev_page_index}->{next_page_index}. Using default False verdict."
                 )
-                # Fallback: Return a 'safe' negative verdict rather than crashing the
-                # whole pipeline.
-                return PageIRContinuityVerdict(
-                    clamped_confidence=0.0,
-                    prev_page_index=prev_page_index,
-                    next_page_index=next_page_index,
-                    confidence=0.0,
-                    continuation_kind=PageContinuationKind.NONE,
-                    is_continuation=False,
-                    rationale=f"Automatic failure after retries: {str(e)}",
-                    set_next_item_boundary=None,
-                    set_next_table_repeats_header=None,
-                    set_prev_item_boundary=None,
-                )
+                raise  # Re-raise the final quality error
 
-            # Add feedback to history.
+            # Append the assistant's failed attempt to history first. Without this, the
+            # model doesn't know what it's correcting.
             if e.failed_content:
                 logger.error(f"Verification failed content: {e.failed_content}")
                 input_items.append(
@@ -562,16 +554,48 @@ def verify_page_ir_pairs(
                 }
             )
             continue
+        except Exception as e:  # pylint: disable=broad-except
+            # Let transient errors propagate (tenacity should cover most of these).
+            if isinstance(
+                e,
+                (
+                    TimeoutError,
+                    ConnectionError,
+                    OSError,
+                    APIConnectionError,
+                    APITimeoutError,
+                    RateLimitError,
+                    InternalServerError,
+                ),
+            ):
+                raise
 
-    return PageIRContinuityVerdict(
-        clamped_confidence=0.0,
-        prev_page_index=prev_page_index,
-        next_page_index=next_page_index,
-        confidence=0.0,
-        continuation_kind=PageContinuationKind.NONE,
-        is_continuation=False,
-        rationale="Fallback.",
-        set_next_item_boundary=None,
-        set_next_table_repeats_header=None,
-        set_prev_item_boundary=None,
-    )
+            # Handle general exceptions (like Pydantic ValidationErrors) that bubble up
+            # from the API call but might not have attached text.
+            last_error = QualityError(f"Structured parse/validation failed: {e}")
+
+            if attempt >= max_retries:
+                raise last_error from e
+
+            # If possible, we should try to add the assistant's context here too, but
+            # standard Python Exceptions won't carry the model output unless we wrap
+            # them in _call_openai_api_for_page_ir_extraction. For now, we proceed with
+            # the Error feedback.
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"The previous response failed structured parsing/validation.\n"
+                                f"ERROR: {e.__class__.__name__}: {e}\n\n"
+                                f"Return a complete PageIRContinuityVerdict that matches the schema exactly."
+                            ),
+                        }
+                    ],
+                }
+            )
+            continue
+
+    raise QualityError(f"Verification failed after {max_retries + 1} attempts.")
