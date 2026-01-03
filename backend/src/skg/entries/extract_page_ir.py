@@ -37,7 +37,7 @@ if __name__ == "__main__":
 from skg.page_ir.llm import extract_page_ir
 from skg.page_ir.schemas import PageIR
 from skg.page_ir.utils import PageIRExtractionDirs, create_page_ir_extraction_dirs
-from skg.schemas import ExtractionRunIR
+from skg.schemas import RunCtx
 from skg.utils.constants import PageBoundaryState
 from skg.utils.general import write_to_json
 from skg.utils.pdf import (
@@ -184,7 +184,7 @@ def persist_extraction_run(
     overwrite: bool,
     start_page: int,
     use_text_layer_hints: bool,
-) -> tuple[str, PageIRExtractionDirs, ExtractionRunIR]:
+) -> tuple[str, PageIRExtractionDirs, RunCtx]:
     """Persist extraction run metadata.
 
     Parameters
@@ -212,7 +212,7 @@ def persist_extraction_run(
 
     Returns
     -------
-    tuple[str, ExtractionDirs, ExtractionRunIR]
+    tuple[str, ExtractionDirs, RunCtx]
         The document key, extraction directories, and extraction run record.
     """
 
@@ -220,7 +220,7 @@ def persist_extraction_run(
     extraction_dirs = create_page_ir_extraction_dirs(
         doc_key=doc_key, output_dir=output_dir
     )
-    extraction_run = ExtractionRunIR(
+    extraction_run = RunCtx(
         extra={
             "country": country,
             "doc_key": doc_key,

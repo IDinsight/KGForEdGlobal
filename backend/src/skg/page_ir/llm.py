@@ -504,7 +504,7 @@ def verify_page_ir_pairs(
                 {"type": "input_text", "text": prompts.user_message},
                 {
                     "type": "input_text",
-                    "text": "IMAGE A: bottom crop of page N (prev page).",
+                    "text": "IMAGE A: bottom crop of page N (previous page).",
                 },
                 {"type": "input_image", "image_url": prev_bottom_image_url},
                 {

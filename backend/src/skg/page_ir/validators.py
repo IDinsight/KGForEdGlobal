@@ -878,8 +878,8 @@ def validate_page_indices(verdict: PageIRContinuityVerdict) -> None:
 
     if verdict.prev_page_index >= verdict.next_page_index:
         raise QualityError(
-            f"Invalid page index order: prev={verdict.prev_page_index} "
-            f"next={verdict.next_page_index}"
+            f"Invalid page index order: previous page index={verdict.prev_page_index} "
+            f"next page index={verdict.next_page_index}"
         )
     if verdict.next_page_index - verdict.prev_page_index != 1:
         logger.warning(
