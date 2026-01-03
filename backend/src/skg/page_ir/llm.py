@@ -25,8 +25,8 @@ from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
 from skg.page_ir.validators import (
     QualityError,
     build_page_ir_extraction_quality_ctx,
-    validate_and_reconcile_continuity_for_extraction,
     validate_basic_block_invariants,
+    validate_continuity_for_extraction,
     validate_full_page_bboxes,
     validate_gross_reading_order,
     validate_image_dimensions,
@@ -439,7 +439,7 @@ def verify_page_ir_extraction_quality(
     validate_basic_block_invariants(ctx)
     validate_table_integrity(ctx)
     validate_placeholder_bboxes(ctx)
-    validate_and_reconcile_continuity_for_extraction(ctx)
+    validate_continuity_for_extraction(ctx)
     validate_gross_reading_order(ctx)
 
 
