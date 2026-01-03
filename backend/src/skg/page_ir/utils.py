@@ -7,8 +7,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.page_ir.llm import verify_page_ir_continuity_verdict
+from skg.page_ir.schemas import PageIRContinuityVerdict
+from skg.utils.constants import (
+    BlockType,
+    ItemBoundary,
+    PageBoundaryState,
+    PageContinuationKind,
+)
 from skg.utils.general import clamp, make_dir, near
 
 
@@ -1087,3 +1097,42 @@ def topmost_continuity_candidate_paired(
 
     # Fallback to unpaired logic.
     return topmost_continuity_candidate(image_height=image_height, items=items)
+
+
+def veto_continuation(
+    *, reason: str, verdict: PageIRContinuityVerdict
+) -> PageIRContinuityVerdict:
+    """Veto a continuation claim by forcing is_continuation=False with low confidence.
+
+    Parameters
+    ----------
+    reason
+        The reason for vetoing the verdict.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    PageIRContinuityVerdict
+        The modified verdict with the veto applied.
+    """
+
+    logger.warning(f"Vetoing continuation due to: {reason}")
+
+    verdict.is_continuation = False
+
+    # Candidate mismatch means we can't trust the continuation claim between THESE two
+    # items, not "there is definitely no continuation anywhere". Keep this
+    # continuation_kind="none" and low-confidence so downstream edit-application
+    # thresholds will not apply.
+    verdict.clamped_confidence = min(float(verdict.confidence), 0.49)
+    verdict.continuation_kind = PageContinuationKind.NONE
+    verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
+
+    # NB: Never apply edits if we veto the continuation claim.
+    verdict.set_prev_item_boundary = None
+    verdict.set_next_item_boundary = None
+    verdict.set_next_table_repeats_header = None
+
+    verify_page_ir_continuity_verdict(verdict)
+    return verdict

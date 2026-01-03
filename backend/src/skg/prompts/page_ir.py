@@ -84,11 +84,12 @@ def extract_page_ir_from_pdf_page(
 5. **NO HALLUCINATION**: Do not add rows/cells/text that are not visible. If a cell is blank, set text: null.
 6. **Do a final scan of the bottom 10% of the page before finishing; do not stop early.**
 7. If you see an explicit curriculum code/section code/table number associated with a block or table, put it in `local_code` verbatim.
-8. **ANTI-FULL-PAGE FAILSAFE (CRITICAL)**:
+8. If you set local_code, do not include that code in text.
+9. **ANTI-FULL-PAGE FAILSAFE (CRITICAL)**:
   - If the page contains substantial readable text (e.g., more than ~2 lines of body text, a TOC/list of entries, paragraphs like "Acknowledgements", or any multi-line section content), you MUST NOT output a single full-page FIGURE item.
   - In those cases, extract the text into HEADING / PARAGRAPH / LIST blocks (and TABLE items if there is a grid).
   - The “single full-page FIGURE page” exception is ONLY for pages that are visually dominated by a non-table graphic or scanned image with at most ~1–2 short text lines total (typical: cover image, certificate scan, photo page).
-9. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
+10. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
   - The following PageIR fields are filled/overwritten by the Python pipeline:
     - boundary_state MUST be omitted (do not include it at all).
     - doc_key, pdf_name, page_index, dpi, image_width, image_height MUST be null or omitted.

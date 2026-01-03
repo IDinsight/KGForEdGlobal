@@ -384,7 +384,15 @@ def validate_full_page_bboxes(
             "Full-page bbox is not allowed for figure_kind='unknown'. "
             "If this is a text page, extract blocks. If it's a real figure, set figure_kind."
         )
-    if getattr(fig, "contains_text", None) is True:
+
+    contains_text = getattr(fig, "contains_text", None)
+    if contains_text is None:
+        raise QualityError(
+            "Full-page bbox is only allowed when figure.contains_text is explicitly "
+            "set to true/false (not null). If this page has body text, extract it into "
+            "HEADING/PARAGRAPH/LIST blocks instead of a full-page figure."
+        )
+    if contains_text is True:
         raise QualityError(
             "Full-page bbox is not allowed for contains_text=true. "
             "This usually indicates a text page being misclassified as a figure."
