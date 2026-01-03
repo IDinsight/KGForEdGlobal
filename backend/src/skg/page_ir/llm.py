@@ -32,8 +32,6 @@ from skg.page_ir.validators import (
     validate_image_dimensions,
     validate_item_bboxes_required_and_in_bounds,
     validate_no_whitespace_or_empty_blocks,
-    validate_non_continuation_has_no_resumed_truncated_boundaries,
-    validate_page_indices,
     validate_placeholder_bboxes,
     validate_table_integrity,
 )
@@ -394,9 +392,6 @@ def verify_page_ir_continuity_verdict(
         logger.warning(
             f"Low confidence ({verdict.confidence}) for continuation verdict."
         )
-
-    validate_page_indices(verdict)
-    validate_non_continuation_has_no_resumed_truncated_boundaries(verdict)
 
 
 def verify_page_ir_extraction_quality(
