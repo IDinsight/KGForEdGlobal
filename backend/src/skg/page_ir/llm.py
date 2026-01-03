@@ -527,7 +527,7 @@ def verify_page_ir_pairs(
             if attempt == max_retries:
                 logger.error(
                     f"Verification failed after retries for pages "
-                    f"{prev_page_index}->{next_page_index}. Using default False verdict."
+                    f"{prev_page_index}-{next_page_index}."
                 )
                 raise  # Re-raise the final quality error
 
