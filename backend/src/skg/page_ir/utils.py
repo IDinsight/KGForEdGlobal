@@ -11,7 +11,6 @@ from typing import Any, Optional
 from loguru import logger
 
 # Package Library
-from skg.page_ir.llm import verify_page_ir_continuity_verdict
 from skg.page_ir.schemas import PageIRContinuityVerdict
 from skg.utils.constants import (
     BlockType,
@@ -530,6 +529,49 @@ def extract_text(v: Any) -> Optional[str]:
             inner2 = inner.get("text")
             return inner2 if isinstance(inner2, str) else None
     return None
+
+
+def get_threshold_based_on_kind(
+    *,
+    next_item: dict[str, Any],
+    prev_item: dict[str, Any],
+    verdict: PageIRContinuityVerdict,
+) -> float:
+    """Get confidence threshold based on continuation kind.
+
+    Parameters
+    ----------
+    next_item
+        The actual item dictionary for the next page candidate.
+    prev_item
+        The actual item dictionary for the previous page candidate.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    float
+        The confidence threshold for applying implicit edits.
+    """
+
+    kind = verdict.continuation_kind.value
+
+    # NB: Figure continuations should use continuation_kind="figure" and require high
+    # confidence.
+    is_fig_pair = is_figure_block(prev_item) or is_figure_block(next_item)
+
+    if kind == "table":
+        threshold = 0.80
+    elif kind == "text":
+        threshold = 0.90
+    elif kind == "none":
+        threshold = 0.75
+    elif not (verdict.is_continuation and is_fig_pair):
+        threshold = 1.1  # Impossible threshold --> no downstream edits
+    else:
+        threshold = 0.90
+
+    return threshold
 
 
 def is_artifact(item: dict[str, Any]) -> bool:
@@ -1134,5 +1176,4 @@ def veto_continuation(
     verdict.set_next_item_boundary = None
     verdict.set_next_table_repeats_header = None
 
-    verify_page_ir_continuity_verdict(verdict)
     return verdict
