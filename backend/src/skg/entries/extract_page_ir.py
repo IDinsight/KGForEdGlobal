@@ -3,10 +3,10 @@ Representations (IRs) from raw PDF pages. This is step 1.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_page_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en-TZ -l sw-TZ -l fr -l zh-Hans -l ar -o ../results
-python src/skg/entries/extract_page_ir.py ../data/uganda/uganda.pdf -c Uganda -y 2016 -l en-US -o ../results
-python src/skg/entries/extract_page_ir.py ../data/zambia/zambia.pdf -c Zambia -y 2024 -l en-US -o ../results
-python src/skg/entries/extract_page_ir.py ../data/ghana/ghana.pdf -c Ghana -y 2019 -l en-US -o ../results
+python src/skg/entries/extract_page_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en-TZ -l sw-TZ -l fr -l zh-Hans -l ar -o ../results --use-text-layer-hints
+python src/skg/entries/extract_page_ir.py ../data/uganda/uganda.pdf -c Uganda -y 2016 -l en-US -o ../results --use-text-layer-hints
+python src/skg/entries/extract_page_ir.py ../data/zambia/zambia.pdf -c Zambia -y 2024 -l en-US -o ../results --use-text-layer-hints
+python src/skg/entries/extract_page_ir.py ../data/ghana/ghana.pdf -c Ghana -y 2019 -l en-US -o ../results --use-text-layer-hints
 """
 
 # Standard Library
