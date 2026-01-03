@@ -10,10 +10,10 @@ extractor boundaries are preserved.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/verify_page_ir_continuity.py ../data/ghana/ghana.pdf /path/to/extraction_run_results
 python src/skg/entries/verify_page_ir_continuity.py ../data/tanzania/tanzania.pdf /path/to/extraction_run_results
-python src/skg/entries/verify_page_ir_continuity.py ../data/uganda/uganda.pdf /path/to/extraction_run_results
 python src/skg/entries/verify_page_ir_continuity.py ../data/zambia/zambia.pdf /path/to/extraction_run_results
+python src/skg/entries/verify_page_ir_continuity.py ../data/uganda/uganda.pdf /path/to/extraction_run_results
+python src/skg/entries/verify_page_ir_continuity.py ../data/ghana/ghana.pdf /path/to/extraction_run_results
 """
 
 # Standard Library
@@ -31,7 +31,6 @@ import pymupdf
 import typer
 
 from loguru import logger
-from pydantic import ValidationError
 
 # Append the framework path. NB: This is required if this entry point is invoked from
 # the command line. However, it is not necessary if it is imported from a pip install.
@@ -50,14 +49,15 @@ from skg.page_ir.utils import (
     create_page_ir_verification_dirs,
     derive_page_boundary_state,
     ensure_boundary,
+    get_negative_threshold_based_on_kind,
+    get_threshold_based_on_kind,
     is_figure_block,
     item_snippet,
     min_crop_height_px,
     pad_inches,
     topmost_continuity_candidate_paired,
 )
-from skg.page_ir.validators import QualityError
-from skg.schemas import VerificationRunIR
+from skg.schemas import RunCtx
 from skg.utils.constants import ItemBoundary, PageContinuationKind
 from skg.utils.general import compare_directories, open_json_type, write_to_json
 from skg.utils.pdf import (
@@ -77,10 +77,11 @@ def apply_continuity_edits(
     next_item: dict[str, Any],
     next_page_items: list[dict[str, Any]],
     prev_idx: int,
+    prev_item: dict[str, Any],
     prev_page_items: list[dict[str, Any]],
     verdict: PageIRContinuityVerdict,
 ) -> None:
-    """Apply minimal edits to page IRs based on the continuity verdict.
+    """Apply minimal edits to the extracted page IRs based on the continuity verdict.
 
     Parameters
     ----------
@@ -92,14 +93,20 @@ def apply_continuity_edits(
         The list of items on the next page.
     prev_idx
         Index of the continuity candidate item on the previous page.
+    prev_item
+        The actual item dictionary for the previous page candidate.
     prev_page_items
         The list of items on the previous page.
     verdict
         The continuity verdict from the model.
     """
 
-    # If this pair is NOT a continuation, then there are no continuity edits to apply.
-    if not verdict.is_continuation:
+    # If this pair is NOT a continuation or confidence is below the threshold, then
+    # there are no continuity edits to apply.
+    threshold = get_threshold_based_on_kind(
+        next_item=next_item, prev_item=prev_item, verdict=verdict
+    )
+    if not verdict.is_continuation or float(verdict.clamped_confidence) < threshold:
         return
 
     # Update item-level boundaries (explicit edits from model).
@@ -125,23 +132,20 @@ def apply_continuity_edits(
     # didn't explicitly set boundaries, force defaults.
     if verdict.set_prev_item_boundary is None:
         ensure_boundary(
-            desired=ItemBoundary.TRUNCATED.value,
-            items=prev_page_items,
-            index=prev_idx,
+            desired=ItemBoundary.TRUNCATED.value, index=prev_idx, items=prev_page_items
         )
     if verdict.set_next_item_boundary is None:
         ensure_boundary(
-            desired=ItemBoundary.RESUMED.value,
-            items=next_page_items,
-            index=next_idx,
+            desired=ItemBoundary.RESUMED.value, index=next_idx, items=next_page_items
         )
 
     # Table header repetition: set repeats_header only when the model provides it for a
     # verified table continuation.
     header_setting = verdict.set_next_table_repeats_header
     is_next_table = next_item.get("kind") == "table"
-    kind_val = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
-    is_table_continuation = verdict.is_continuation and kind_val == "table"
+    is_table_continuation = (
+        verdict.is_continuation and verdict.continuation_kind.value == "table"
+    )
     if header_setting is not None and is_next_table and is_table_continuation:
         next_page_items[next_idx]["repeats_header"] = header_setting
 
@@ -152,7 +156,9 @@ def apply_non_continuity_edits(
     next_item: dict[str, Any],
     next_page_items: list[dict[str, Any]],
     prev_idx: int,
+    prev_item: dict[str, Any],
     prev_page_items: list[dict[str, Any]],
+    verdict: PageIRContinuityVerdict,
 ) -> None:
     """If the model is VERY confident there is no continuation between these two
     candidates, clear seam-level continuity flags on just these items.
@@ -170,13 +176,27 @@ def apply_non_continuity_edits(
         The list of items on the next page.
     prev_idx
         Index of the continuity candidate item on the previous page.
+    prev_item
+        The actual item dictionary for the previous page candidate.
     prev_page_items
         The list of items on the previous page.
+    verdict
+        The continuity verdict from the model.
     """
 
-    # Clear prev boundary if it was suggesting continuation.
-    prev_b = prev_page_items[prev_idx].get("boundary") or ItemBoundary.COMPLETE.value
-    if prev_b != ItemBoundary.COMPLETE.value:
+    # If this pair IS a continuation or confidence is below the negative threshold,
+    # then there are no non-continuity edits to apply.
+    neg_threshold = get_negative_threshold_based_on_kind(
+        next_item=next_item, prev_item=prev_item
+    )
+    if verdict.is_continuation or float(verdict.clamped_confidence) < neg_threshold:
+        return
+
+    # Clear previous boundary if it was suggesting continuation.
+    prev_boundary = (
+        prev_page_items[prev_idx].get("boundary") or ItemBoundary.COMPLETE.value
+    )
+    if prev_boundary != ItemBoundary.COMPLETE.value:
         ensure_boundary(
             allow_downgrade_both=True,
             desired=ItemBoundary.COMPLETE.value,
@@ -185,8 +205,10 @@ def apply_non_continuity_edits(
         )
 
     # Clear next boundary if it was suggesting continuation.
-    next_b = next_page_items[next_idx].get("boundary") or ItemBoundary.COMPLETE.value
-    if next_b != ItemBoundary.COMPLETE.value:
+    next_boundary = (
+        next_page_items[next_idx].get("boundary") or ItemBoundary.COMPLETE.value
+    )
+    if next_boundary != ItemBoundary.COMPLETE.value:
         ensure_boundary(
             allow_downgrade_both=True,
             desired=ItemBoundary.COMPLETE.value,
@@ -199,77 +221,40 @@ def apply_non_continuity_edits(
         next_page_items[next_idx]["repeats_header"] = None
 
 
-def get_negative_threshold(
-    *, next_item: dict[str, Any], prev_item: dict[str, Any]
-) -> float:
-    """Confidence threshold for applying "no-continuation" patches.
-
-    We require VERY high confidence because clearing boundaries can remove useful
-    extractor signal. Tables/figures are easier to judge visually, so allow a slightly
-    lower threshold than plain text.
-    """
-
-    prev_kind = prev_item.get("kind")
-    next_kind = next_item.get("kind")
-
-    # Table to table and figure to figure are usually visually obvious.
-    if prev_kind == "table" and next_kind == "table":
-        return 0.85
-
-    if (
-        prev_kind == "block"
-        and next_kind == "block"
-        and is_figure_block(prev_item)
-        and is_figure_block(next_item)
-    ):
-        return 0.85
-
-    # Text is more ambiguous so be stricter.
-    return 0.90
-
-
-def get_threshold_based_on_kind(
-    *,
-    next_item: dict[str, Any],
-    prev_item: dict[str, Any],
-    verdict: PageIRContinuityVerdict,
-) -> float:
-    """Get confidence threshold based on continuation kind.
+def load_page_irs_from_extraction(
+    *, end_page: int, page_irs_dir: Path, start_page: int
+) -> dict[int, dict[str, Any]]:
+    """Load page IR JSONs from the extraction output directory.
 
     Parameters
     ----------
-    next_item
-        The actual item dictionary for the next page candidate.
-    prev_item
-        The actual item dictionary for the previous page candidate.
-    verdict
-        The continuity verdict from the model.
+    end_page
+        0-based end page (exclusive).
+    page_irs_dir
+        Directory containing the page IR JSONs.
+    start_page
+        0-based start page (inclusive).
 
     Returns
     -------
-    float
-        The confidence threshold for applying implicit edits.
+    dict[int, dict[str, Any]]
+        The dictionary of page IRs by page index.
     """
 
-    # Apply minimal edits for both loaded and new verdicts (only if model is confident
-    # enough).
-    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+    page_irs: dict[int, dict[str, Any]] = {
+        i: PageIR.model_validate(
+            open_json_type(page_irs_dir / f"{i:04}.json")
+        ).model_dump(mode="json")
+        for i in range(start_page, end_page)
+    }
 
-    # NB: Figure continuations should use continuation_kind="figure" and require high
-    # confidence.
-    is_fig_pair = is_figure_block(prev_item) or is_figure_block(next_item)
-    if kind == "table":
-        threshold = 0.80
-    elif kind == "text":
-        threshold = 0.90
-    elif kind == "none":
-        threshold = 0.75  # Slightly higher than text; optional
-    # Only apply if this is a figure continuation; otherwise skip edits entirely.
-    elif not (verdict.is_continuation and is_fig_pair):
-        threshold = 1.1  # Impossible threshold --> no edits
-    else:
-        threshold = 0.90
-    return threshold
+    # Preserve extraction hints (internal-only) so reports can show what the extractor
+    # believed. Verification will PATCH only when confidence is high.
+    for page_ir in page_irs.values():
+        for item in page_ir.get("items", []):
+            item["_orig_boundary"] = item.get("boundary")
+
+    return page_irs
 
 
 def persist_verification_run(
@@ -277,10 +262,9 @@ def persist_verification_run(
     end_page: Optional[int],
     model: str,
     output_dir: Path,
-    overwrite: bool,
     start_page: int,
     **kwargs: dict[str, Any],
-) -> tuple[PageIRVerificationDirs, VerificationRunIR]:
+) -> tuple[PageIRVerificationDirs, RunCtx]:
     """Persist verification run metadata.
 
     Parameters
@@ -291,8 +275,6 @@ def persist_verification_run(
         OpenAI model for page IR continuity verification.
     output_dir
         The output directory for the verified page IR JSONs.
-    overwrite
-        Specifies whether to overwrite existing per-page artifacts.
     start_page
         0-based start page (inclusive).
     kwargs
@@ -300,7 +282,7 @@ def persist_verification_run(
 
     Returns
     -------
-    tuple[PageIRVerificationDirs, VerificationRunIR]
+    tuple[PageIRVerificationDirs, RunCtx]
         The created verification directories and persisted verification run metadata.
     """
 
@@ -308,18 +290,16 @@ def persist_verification_run(
     extra.update(
         {
             "end_page_cli": end_page,  # Keep original CLI value (may be None)
-            "overwrite": overwrite,
             "start_page_cli": start_page,
         }
     )
     extra.pop("status", None)
     verification_dirs = create_page_ir_verification_dirs(output_dir=output_dir)
-    verification_run = VerificationRunIR(
+    verification_run = RunCtx(
+        extra=extra,
         models=[model],
-        pipeline_version="0.1",
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
-        extra=extra,
     )
     write_to_json(
         output_dir / "verification_run.json",
@@ -356,13 +336,13 @@ def sanitize_verdict_for_candidate_kinds(
 
     kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
 
-    if verdict.is_continuation and kind == "none":
-        return veto_verdict(
-            reason="continuation_kind=none is incompatible with is_continuation=true",
+    if verdict.is_continuation and kind == PageContinuationKind.NONE.value:
+        return veto_continuation(
+            reason=f"continuation_kind={PageContinuationKind.NONE.value} is incompatible with is_continuation=true",
             verdict=verdict,
         )
 
-    if (not verdict.is_continuation) and kind != "none":
+    if (not verdict.is_continuation) and kind != PageContinuationKind.NONE.value:
         verdict.continuation_kind = PageContinuationKind.NONE
         verdict.set_prev_item_boundary = None
         verdict.set_next_item_boundary = None
@@ -372,16 +352,16 @@ def sanitize_verdict_for_candidate_kinds(
     prev_kind = prev_item.get("kind")
     next_kind = next_item.get("kind")
 
-    # Text continuations must be block-to-block (never into/from a table)
+    # Text continuations must be block-to-block (never into/from a table).
     if kind == "text" and (prev_kind != "block" or next_kind != "block"):
-        return veto_verdict(
+        return veto_continuation(
             reason="continuation_kind=text requires both candidates to be block items",
             verdict=verdict,
         )
 
     # Table continuations must be table-to-table.
     if kind == "table" and (prev_kind != "table" or next_kind != "table"):
-        return veto_verdict(
+        return veto_continuation(
             reason="continuation_kind=table requires both candidates to be table items",
             verdict=verdict,
         )
@@ -390,7 +370,7 @@ def sanitize_verdict_for_candidate_kinds(
     if kind == "figure" and (
         not (is_figure_block(prev_item) and is_figure_block(next_item))
     ):
-        return veto_verdict(
+        return veto_continuation(
             reason="continuation_kind=figure requires both candidates to be figure blocks",
             verdict=verdict,
         )
@@ -398,13 +378,51 @@ def sanitize_verdict_for_candidate_kinds(
     return verdict
 
 
-def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
+def save_verified_page_irs(
+    *, page_irs: dict[int, dict[str, Any]], verification_dirs: PageIRVerificationDirs
+) -> None:
+    """Save verified page IRs to the verified directory.
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+    verification_dirs
+        The verification directories.
+    """
+
+    logger.info(
+        f"Saving all verified page IR JSONs to: {verification_dirs.page_irs_verified}"
+    )
+
+    for i in sorted(page_irs.keys()):
+        page_ir = page_irs[i]
+
+        # Remove internal-only fields before writing outputs (schema forbids extras).
+        for it in page_ir.get("items", []):
+            it.pop("_orig_boundary", None)
+
+        # Derive page-level boundary_state from verified item boundaries.
+        page_ir["boundary_state"] = derive_page_boundary_state(page_ir=page_ir).value
+
+        # Re-validate and model dump to ensure schema-correct outputs and run PageIR
+        # after-validators (bbox clamp, propagate_table_codes, etc.).
+        page_ir_clean = PageIR.model_validate(page_ir).model_dump(mode="json")
+
+        # Write verified JSON.
+        write_to_json(
+            verification_dirs.page_irs_verified / f"{i:04}.json", page_ir_clean
+        )
+
+    logger.success("All verified page IR JSONs saved successfully!")
+
+
+def verify_page_ir_continuity(
     *,
     doc: pymupdf.Document,
     end_page: int | None,
     verification_dirs: PageIRVerificationDirs,
     model: str,
-    overwrite: bool,
     page_images_dir: Path,
     page_irs_dir: Path,
     render_dpi: int,
@@ -422,8 +440,6 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
         The verification directories.
     model
         OpenAI model for page IR verification.
-    overwrite
-        Overwrite existing per-page artifacts.
     page_images_dir
         Directory containing the page images.
     page_irs_dir
@@ -443,49 +459,32 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
     json_fps = sorted(page_irs_dir.glob("*.json"))
     page_indices = sorted(int(fp.stem) for fp in json_fps if fp.stem.isdigit())
     assert page_indices, f"No page IR JSONs found in: {page_irs_dir}"
-
-    doc_page_count = doc.page_count
     start = max(start_page, page_indices[0])
-    stop = (
-        end_page if end_page is not None else min(doc_page_count, page_indices[-1] + 1)
-    )
+    stop = min(doc.page_count, page_indices[-1] + 1) if end_page is None else end_page
 
     # Load all page IR JSONs so that we can apply edits and then write once.
-    page_irs: dict[int, dict[str, Any]] = {
-        i: PageIR.model_validate(
-            open_json_type(page_irs_dir / f"{i:04}.json")
-        ).model_dump(mode="json")
-        for i in range(start, stop)
-    }
-
-    # Preserve extraction hints (internal-only) so reports can show what the extractor
-    # believed. Verification will PATCH only when confidence is high.
-    for page_ir in page_irs.values():
-        for it in page_ir.get("items", []):
-            it["_orig_boundary"] = it.get("boundary")
+    page_irs = load_page_irs_from_extraction(
+        end_page=stop, page_irs_dir=page_irs_dir, start_page=start
+    )
 
     # Iterate in pairs.
     for i in range(start, stop - 1):
-        report_fp = verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json"
-
-        # Always load the pair and choose candidates (needed whether we call the model
-        # or load report).
         assert (
             i in page_irs and (i + 1) in page_irs
         ), f"Missing page IR for pages {i} or {i + 1}"
 
         prev_page_ir, next_page_ir = page_irs[i], page_irs[i + 1]
-        prev_page_items, next_page_items = prev_page_ir.get(
-            "items", []
-        ), next_page_ir.get("items", [])
+        prev_page_items = prev_page_ir.get("items", [])
+        next_page_items = next_page_ir.get("items", [])
 
-        if not prev_page_items or not next_page_items:
+        if not (prev_page_items and next_page_items):
             logger.warning(
                 f"Skipping continuity check for pages {i}-{i + 1}: "
                 f"prev_items={len(prev_page_items)} next_items={len(next_page_items)}"
             )
             continue
 
+        # Get bottommost and topmost continuity candidates using paired logic.
         prev_idx, prev_item = bottommost_continuity_candidate(
             image_height=prev_page_ir["image_height"], items=prev_page_items
         )
@@ -495,199 +494,127 @@ def verify_page_ir_continuity(  # pylint:disable=R0912,R0915,R1260
             prev_item=prev_item,
         )
 
-        # Candidate selection provenance (for debugging). NB: cached pair reports are
-        # only safe to reuse if they refer to the same candidate items. Candidate
-        # selection can change when extraction improves, heuristics change, or page IRs
-        # are edited.
-        candidate_selection = {
-            "prev_candidate_index": prev_idx,
-            "next_candidate_index": next_idx,
-            "prev_candidate_bbox": prev_item["bbox"],
-            "next_candidate_bbox": next_item["bbox"],
-            # Excerpts let us detect "same index but different content" when rerunning.
-            "prev_candidate_excerpt": item_snippet(item=prev_item, text_mode="tail"),
-            "next_candidate_excerpt": item_snippet(item=next_item, text_mode="head"),
-            # Debug: what extraction thought at this seam (not shown to model, but
-            # useful in reports).
-            "prev_candidate_extraction_boundary": prev_item.get("_orig_boundary"),
-            "next_candidate_extraction_boundary": next_item.get("_orig_boundary"),
-        }
+        # Crop bottom of previous and top of next based on non-artifact bboxes.
+        prev_kind = prev_item.get("kind", "block")
+        if prev_kind == "block" and is_figure_block(prev_item):
+            prev_kind = "figure"
+        next_kind = next_item.get("kind", "block")
+        if next_kind == "block" and is_figure_block(next_item):
+            next_kind = "figure"
+        prev_min_h = min_crop_height_px(
+            kind=prev_kind, page_h_px=int(prev_page_ir["image_height"])
+        )
+        next_min_h = min_crop_height_px(
+            kind=next_kind, page_h_px=int(next_page_ir["image_height"])
+        )
+        prev_crop_fp = verification_dirs.page_irs_pair_crops / f"{i:04}_bottom.png"
+        next_crop_fp = verification_dirs.page_irs_pair_crops / f"{i + 1:04}_top.png"
+        crop_image_to_bottom(
+            bbox=prev_item["bbox"],
+            desired_padding_inches=pad_inches(prev_kind),
+            input_png_fp=page_images_dir / f"{i:04}.png",
+            min_height_px=prev_min_h,
+            output_png_fp=prev_crop_fp,
+            render_dpi=render_dpi,
+        )
+        crop_image_to_top(
+            bbox=next_item["bbox"],
+            desired_padding_inches=pad_inches(next_kind),
+            input_png_fp=page_images_dir / f"{i + 1:04}.png",
+            min_height_px=next_min_h,
+            output_png_fp=next_crop_fp,
+            render_dpi=render_dpi,
+        )
 
-        verdict = None
-        if report_fp.exists() and not overwrite:
-            logger.info(f"Report exists for {i}-{i + 1}; loading (overwrite=False).")
-            report_data = open_json_type(report_fp)
-            prior_selection = report_data.get("candidate_selection", {})
+        # Get item excerpts for the verifier.
+        prev_excerpt = item_snippet(item=prev_item, text_mode="tail")
+        next_excerpt = item_snippet(item=next_item, text_mode="head")
 
-            indices_match = (
-                prior_selection.get("prev_candidate_index") == prev_idx
-                and prior_selection.get("next_candidate_index") == next_idx
-            )
-            excerpts_match = prior_selection.get("prev_candidate_excerpt") in (
-                None,
-                candidate_selection["prev_candidate_excerpt"],
-            ) and prior_selection.get("next_candidate_excerpt") in (
-                None,
-                candidate_selection["next_candidate_excerpt"],
-            )
+        # Don't bias the verifier with extractor continuity guesses.
+        prev_excerpt["boundary"], next_excerpt["boundary"] = None, None
+        if next_excerpt.get("kind") == "table":
+            next_excerpt["repeats_header"] = None
+        if prev_excerpt.get("kind") == "table":
+            prev_excerpt["repeats_header"] = None
 
-            if indices_match and excerpts_match and "verdict" in report_data:
-                try:
-                    verdict = PageIRContinuityVerdict.model_validate(
-                        report_data["verdict"]
-                    )
-                    verify_page_ir_continuity_verdict(verdict)
-                    verdict = sanitize_verdict_for_candidate_kinds(
-                        next_item=next_item, prev_item=prev_item, verdict=verdict
-                    )
-                    verify_page_ir_continuity_verdict(verdict)
-                except (QualityError, ValidationError):
-                    logger.warning(
-                        f"Cached verdict for {i}-{i + 1} is invalid; re-verifying.",
-                        exc_info=True,
-                    )
-                    verdict = None
-            else:
-                logger.info(
-                    f"Ignoring cached report for {i}-{i + 1}: candidate selection "
-                    f"changed; re-verifying."
-                )
+        # Invoke the model to verify the pair.
+        logger.info(f"Verifying continuity between pages {i} and {i + 1}...")
 
-        if verdict is None:
-            logger.info(f"Verifying continuity between pages {i} and {i + 1}...")
-
-            prev_image_full = page_images_dir / f"{i:04}.png"
-            next_image_full = page_images_dir / f"{i + 1:04}.png"
-
-            # Crop bottom of prev and top of next based on non-artifact bboxes.
-            prev_crop_fp = verification_dirs.page_irs_pair_crops / f"{i:04}_bottom.png"
-            next_crop_fp = verification_dirs.page_irs_pair_crops / f"{i + 1:04}_top.png"
-
-            prev_page_h_px = int(prev_page_ir["image_height"])
-            next_page_h_px = int(next_page_ir["image_height"])
-
-            prev_kind = prev_item.get("kind", "block")
-            if prev_kind == "block" and is_figure_block(prev_item):
-                prev_kind = "figure"
-
-            next_kind = next_item.get("kind", "block")
-            if next_kind == "block" and is_figure_block(next_item):
-                next_kind = "figure"
-
-            prev_min_h = min_crop_height_px(page_h_px=prev_page_h_px, kind=prev_kind)
-            next_min_h = min_crop_height_px(page_h_px=next_page_h_px, kind=next_kind)
-
-            crop_image_to_bottom(
-                bbox=prev_item["bbox"],
-                desired_padding_inches=pad_inches(prev_kind),
-                input_png_fp=prev_image_full,
-                min_height_px=prev_min_h,
-                output_png_fp=prev_crop_fp,
-                render_dpi=render_dpi,
-            )
-            crop_image_to_top(
-                bbox=next_item["bbox"],
-                desired_padding_inches=pad_inches(next_kind),
-                input_png_fp=next_image_full,
-                min_height_px=next_min_h,
-                output_png_fp=next_crop_fp,
-                render_dpi=render_dpi,
-            )
-
-            prev_excerpt = item_snippet(item=prev_item, text_mode="tail")
-            next_excerpt = item_snippet(item=next_item, text_mode="head")
-
-            # Don't bias the verifier with extractor continuity guesses.
-            prev_excerpt["boundary"] = None
-            next_excerpt["boundary"] = None
-
-            # Also don't bias table decisions with any extractor repeats_header.
-            if next_excerpt.get("kind") == "table":
-                next_excerpt["repeats_header"] = None
-            if prev_excerpt.get("kind") == "table":
-                prev_excerpt["repeats_header"] = None
-
-            # Invoke the model to verify the pair.
-            verdict = verify_page_ir_pairs(
-                model=model,
-                next_page_index=i + 1,
-                next_top_png=next_crop_fp,
-                prev_bottom_png=prev_crop_fp,
-                prev_page_index=i,
-                prev_item_excerpt=prev_excerpt,
-                next_item_excerpt=next_excerpt,
-            )
-            verdict = sanitize_verdict_for_candidate_kinds(
-                next_item=next_item, prev_item=prev_item, verdict=verdict
-            )
-            verify_page_ir_continuity_verdict(verdict)
-            threshold = get_threshold_based_on_kind(
-                next_item=next_item, prev_item=prev_item, verdict=verdict
-            )
-            if (
-                verdict.is_continuation
-                and float(verdict.clamped_confidence) < threshold
-            ):
-                verdict = veto_verdict(
-                    reason=f"confidence {float(verdict.clamped_confidence):.2f} < threshold {threshold:.2f}",
-                    verdict=verdict,
-                )
-            verify_page_ir_continuity_verdict(verdict)
-
-            # Persist the verdict.
-            write_to_json(
-                report_fp,
-                {
-                    "candidate_selection": candidate_selection,
-                    "verdict": verdict.model_dump(mode="json"),
-                },
-            )
-
+        verdict = verify_page_ir_pairs(
+            model=model,
+            next_item_excerpt=next_excerpt,
+            next_page_index=i + 1,
+            next_top_png=next_crop_fp,
+            prev_bottom_png=prev_crop_fp,
+            prev_page_index=i,
+            prev_item_excerpt=prev_excerpt,
+        )
+        verdict = sanitize_verdict_for_candidate_kinds(
+            next_item=next_item, prev_item=prev_item, verdict=verdict
+        )
+        verify_page_ir_continuity_verdict(verdict)
         threshold = get_threshold_based_on_kind(
             next_item=next_item, prev_item=prev_item, verdict=verdict
         )
-        if verdict.is_continuation and float(verdict.clamped_confidence) >= threshold:
-            apply_continuity_edits(
-                next_idx=next_idx,
-                next_item=next_item,
-                next_page_items=next_page_items,
-                prev_idx=prev_idx,
-                prev_page_items=prev_page_items,
+        if verdict.is_continuation and float(verdict.clamped_confidence) < threshold:
+            verdict = veto_continuation(
+                reason=f"confidence {float(verdict.clamped_confidence):.2f} < threshold {threshold:.2f}",
                 verdict=verdict,
             )
+            verify_page_ir_continuity_verdict(verdict)
 
-        neg_threshold = get_negative_threshold(next_item=next_item, prev_item=prev_item)
-        if (not verdict.is_continuation) and float(
-            verdict.clamped_confidence
-        ) >= neg_threshold:
-            apply_non_continuity_edits(
-                next_idx=next_idx,
-                next_item=next_item,
-                next_page_items=next_page_items,
-                prev_idx=prev_idx,
-                prev_page_items=prev_page_items,
-            )
+        # Persist the verdict.
+        write_to_json(
+            verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json",
+            {
+                # Candidate selection provenance (for debugging). NB: cached pair
+                # reports are only safe to reuse if they refer to the same candidate
+                # items. Candidate selection can change when extraction improves,
+                # heuristics change, or page IRs are edited.
+                "candidate_selection": {
+                    "prev_candidate_index": prev_idx,
+                    "next_candidate_index": next_idx,
+                    "prev_candidate_bbox": prev_item["bbox"],
+                    "next_candidate_bbox": next_item["bbox"],
+                    "prev_candidate_extraction_boundary": prev_item["_orig_boundary"],
+                    "next_candidate_extraction_boundary": next_item["_orig_boundary"],
+                },
+                "verdict": verdict.model_dump(mode="json"),
+            },
+        )
 
-    # Remove internal-only fields before writing outputs (schema forbids extras).
-    for page_ir in page_irs.values():
-        for it in page_ir.get("items", []):
-            it.pop("_orig_boundary", None)
+        # Apply continuity edits based on the verdict.
+        apply_continuity_edits(
+            next_idx=next_idx,
+            next_item=next_item,
+            next_page_items=next_page_items,
+            prev_idx=prev_idx,
+            prev_item=prev_item,
+            prev_page_items=prev_page_items,
+            verdict=verdict,
+        )
 
-    # Derive page-level boundary_state from verified item boundaries (single source of
-    # truth).
-    for page_ir in page_irs.values():
-        page_ir["boundary_state"] = derive_page_boundary_state(page_ir=page_ir).value
+        # Apply non-continuity edits if VERY confident there is no continuation.
+        apply_non_continuity_edits(
+            next_idx=next_idx,
+            next_item=next_item,
+            next_page_items=next_page_items,
+            prev_idx=prev_idx,
+            prev_item=prev_item,
+            prev_page_items=prev_page_items,
+            verdict=verdict,
+        )
 
-    # Write verified JSONs.
-    for i, page_ir in page_irs.items():
-        write_to_json(verification_dirs.page_irs_verified / f"{i:04}.json", page_ir)
-    logger.success("All verified page IR JSONs written successfully!")
+        logger.success(f"Finished verifying continuity between pages {i} and {i + 1}!")
+
+    # Write verified page IRs after all edits have been applied.
+    save_verified_page_irs(page_irs=page_irs, verification_dirs=verification_dirs)
 
 
-def veto_verdict(
+def veto_continuation(
     *, reason: str, verdict: PageIRContinuityVerdict
 ) -> PageIRContinuityVerdict:
-    """Veto a verdict by forcing is_continuation=False with low confidence.
+    """Veto a continuation claim by forcing is_continuation=False with low confidence.
 
     Parameters
     ----------
@@ -701,6 +628,8 @@ def veto_verdict(
     PageIRContinuityVerdict
         The modified verdict with the veto applied.
     """
+
+    logger.warning(f"Vetoing continuation due to: {reason}")
 
     verdict.is_continuation = False
 
@@ -721,7 +650,7 @@ def veto_verdict(
 
 
 @cli.command()
-def verify(  # pylint: disable=too-many-positional-arguments
+def verify(
     pdf_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
@@ -751,9 +680,6 @@ def verify(  # pylint: disable=too-many-positional-arguments
     end_page: Optional[int] = typer.Option(
         None, "--end-page", "-e", help="0-based end page (exclusive). Default: to end."
     ),
-    overwrite: bool = typer.Option(
-        False, "--overwrite", help="Overwrite existing per-page artifacts."
-    ),
 ) -> None:
     """Verify page IR JSON continuity from the extraction step.
 
@@ -778,8 +704,6 @@ def verify(  # pylint: disable=too-many-positional-arguments
         0-based start page (inclusive).
     end_page
         0-based end page (exclusive). Default: to end.
-    overwrite
-        Overwrite existing per-page artifacts.
 
     Raises
     ------
@@ -804,7 +728,6 @@ def verify(  # pylint: disable=too-many-positional-arguments
         end_page=end_page,
         model=model,
         output_dir=verification_results_dir,
-        overwrite=overwrite,
         start_page=start_page,
         **extraction_run_config,
     )
@@ -827,7 +750,7 @@ def verify(  # pylint: disable=too-many-positional-arguments
         f"{page_images_dir} and {page_irs_dir}"
     )
     logger.info(f"Loaded extraction run config: {extraction_run_config}")
-    logger.info(f"Outputting verification results to: {verification_results_dir}")
+    logger.info(f"Saving verification results to: {verification_results_dir}")
 
     try:
         with pymupdf.open(str(pdf_fp)) as doc:
@@ -842,7 +765,6 @@ def verify(  # pylint: disable=too-many-positional-arguments
                 end_page=end_page,
                 verification_dirs=verification_dirs,
                 model=model,
-                overwrite=overwrite,
                 page_images_dir=page_images_dir,
                 page_irs_dir=page_irs_dir,
                 render_dpi=verification_run.extra["dpi"],
