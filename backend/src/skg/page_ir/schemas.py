@@ -253,10 +253,40 @@ class FigureUnit(BaseModelPageIR):
         None,
         description="True if there is visible text inside the figure region (not including nearby captions). Null if unknown.",
     )
+    embedded_text: Optional[TextUnit] = Field(
+        None,
+        description="Best-effort verbatim text visible INSIDE the figure region (excluding nearby captions). Populate when contains_text=true; null otherwise.",
+    )
     figure_kind: FigureKind = Field(
         FigureKind.UNKNOWN,
         description=f"Coarse type label for the figure region. Keep conservative; use '{FigureKind.UNKNOWN.value}' if unsure.",
     )
+
+    @model_validator(mode="after")
+    def validate_contains_text_requires_embedded_text(self) -> FigureUnit:
+        """Validate consistency between contains_text and embedded_text.
+
+        Returns
+        -------
+        FigureUnit
+            The passed in FigureUnit.
+
+        Raises
+        ------
+        ValueError
+            If validation fails.
+        """
+
+        if self.contains_text is True and self.embedded_text is None:
+            raise ValueError(
+                "figure.contains_text=true requires figure.embedded_text (best-effort transcription)."
+            )
+        if self.contains_text is False and self.embedded_text is not None:
+            raise ValueError(
+                "figure.contains_text=false requires figure.embedded_text=null."
+            )
+
+        return self
 
 
 class CurriculumBlock(BaseModelPageIR):

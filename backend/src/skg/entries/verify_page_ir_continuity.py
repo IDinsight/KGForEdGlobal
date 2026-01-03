@@ -45,10 +45,12 @@ from skg.page_ir.llm import verify_page_ir_continuity_verdict, verify_page_ir_pa
 from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
 from skg.page_ir.utils import (
     PageIRVerificationDirs,
+    _boundary_val,
     bottommost_continuity_candidate,
     create_page_ir_verification_dirs,
     derive_page_boundary_state,
     ensure_boundary,
+    find_caption_code,
     get_negative_threshold_based_on_kind,
     get_threshold_based_on_kind,
     is_figure_block,
@@ -143,8 +145,9 @@ def apply_continuity_edits(
     # verified table continuation.
     header_setting = verdict.set_next_table_repeats_header
     is_next_table = next_item.get("kind") == "table"
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
     is_table_continuation = (
-        verdict.is_continuation and verdict.continuation_kind.value == "table"
+        verdict.is_continuation and kind == PageContinuationKind.TABLE.value
     )
     if header_setting is not None and is_next_table and is_table_continuation:
         next_page_items[next_idx]["repeats_header"] = header_setting
@@ -219,6 +222,29 @@ def apply_non_continuity_edits(
     # repeats_header only has meaning for resumed/both table continuations.
     if next_item.get("kind") == "table":
         next_page_items[next_idx]["repeats_header"] = None
+
+
+def continuation_kind_for_postpass(item: dict[str, Any]) -> str:
+    """Coarse kind used to avoid auto-fixing cross-kind seams.
+
+    Parameters
+    ----------
+    item
+        The item dictionary.
+
+    Returns
+    -------
+    str
+        The coarse continuation kind: "table", "figure", or "text".
+    """
+
+    kind = item.get("kind", "block")
+
+    if kind == "table":
+        return PageContinuationKind.TABLE.value
+    if kind == "block" and is_figure_block(item):
+        return PageContinuationKind.FIGURE.value
+    return PageContinuationKind.TEXT.value
 
 
 def load_page_irs_from_extraction(
@@ -308,6 +334,236 @@ def persist_verification_run(
     logger.info(f"Verification directory: {output_dir}")
 
     return verification_dirs, verification_run
+
+
+def postpass_enforce_seam_consistency(
+    *, page_irs: dict[int, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Enforce seam consistency across all page IRs as follows:
+
+    1. If page N ends with TRUNCATED/BOTH at the bottom edge, then page N+1 must begin
+        with RESUMED/BOTH at the top edge. Otherwise downgrade page N.
+    2. If page N+1 begins with RESUMED/BOTH, then page N must end with TRUNCATED/BOTH.
+        Otherwise upgrade page N.
+    3. Upgrades automatically turn RESUMED <--> TRUNCATED into BOTH via
+        ensure_boundary(), which means "middle pages become BOTH when implied".
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of changes made during the postpass.
+    """
+
+    fixes: list[dict[str, Any]] = []
+    indices = sorted(page_irs.keys())
+
+    for prev_i, next_i in zip(indices, indices[1:]):
+        prev_page = page_irs[prev_i]
+        next_page = page_irs[next_i]
+        prev_items = prev_page.get("items", [])
+        next_items = next_page.get("items", [])
+
+        if not (prev_items and next_items):
+            continue
+
+        # Get paired edge candidates (same heuristics as verification).
+        prev_edge_idx, prev_edge = bottommost_continuity_candidate(
+            image_height=float(prev_page["image_height"]),
+            items=prev_items,
+        )
+        _, next_edge = topmost_continuity_candidate_paired(
+            image_height=float(next_page["image_height"]),
+            items=next_items,
+            prev_item=prev_edge,
+        )
+
+        # Determine seam continuity claims.
+        prev_boundary = _boundary_val(prev_edge.get("boundary"), default_val="")
+        next_boundary = _boundary_val(next_edge.get("boundary"), default_val="")
+        prev_to_next = prev_boundary in (
+            ItemBoundary.BOTH.value,
+            ItemBoundary.TRUNCATED.value,
+        )
+        next_from_prev = next_boundary in (
+            ItemBoundary.BOTH.value,
+            ItemBoundary.RESUMED.value,
+        )
+
+        # Avoid fixing if the seam candidates are different continuity kinds (e.g.,
+        # previous edge is a paragraph but next edge is a table).
+        prev_kind = continuation_kind_for_postpass(prev_edge)
+        next_kind = continuation_kind_for_postpass(next_edge)
+
+        if prev_kind != next_kind:
+            # Don’t auto-fix; just record a diagnostic.
+            if prev_to_next or next_from_prev:
+                fixes.append(
+                    {
+                        "type": "kind_mismatch_no_autofix",
+                        "prev_page": prev_i,
+                        "next_page": next_i,
+                        "prev_kind": prev_kind,
+                        "next_kind": next_kind,
+                        "prev_boundary": prev_boundary,
+                        "next_boundary": next_boundary,
+                    }
+                )
+            continue
+
+        # Case A: previous claims it continues, but next does NOT resume --> downgrade
+        # previous.
+        if prev_to_next and not next_from_prev:
+            # BOTH --> RESUMED (keep from_prev, remove to_next)
+            # TRUNCATED --> COMPLETE
+            if prev_boundary == ItemBoundary.BOTH.value:
+                ensure_boundary(
+                    allow_downgrade_both=True,
+                    desired=ItemBoundary.RESUMED.value,
+                    items=prev_items,
+                    index=prev_edge_idx,
+                )
+                new_prev_boundary = ItemBoundary.RESUMED.value
+            else:
+                ensure_boundary(
+                    desired=ItemBoundary.COMPLETE.value,
+                    items=prev_items,
+                    index=prev_edge_idx,
+                )
+                new_prev_boundary = ItemBoundary.COMPLETE.value
+
+            fixes.append(
+                {
+                    "type": "downgrade_prev_no_resume_on_next",
+                    "prev_page": prev_i,
+                    "next_page": next_i,
+                    "prev_item_index": prev_edge_idx,
+                    "prev_boundary_before": prev_boundary,
+                    "prev_boundary_after": new_prev_boundary,
+                }
+            )
+
+        # Case B: next resumes, but previous does NOT claim it continues --> upgrade
+        # previous.
+        elif next_from_prev and not prev_to_next:
+            # Force previous to extend to next. If prev was RESUMED, ensure_boundary
+            # will upgrade to BOTH automatically.
+            ensure_boundary(
+                desired=ItemBoundary.TRUNCATED.value,
+                items=prev_items,
+                index=prev_edge_idx,
+            )
+            fixes.append(
+                {
+                    "type": "upgrade_prev_missing_truncation",
+                    "prev_page": prev_i,
+                    "next_page": next_i,
+                    "prev_item_index": prev_edge_idx,
+                    "prev_boundary_before": prev_boundary,
+                    "prev_boundary_after": _boundary_val(
+                        prev_items[prev_edge_idx].get("boundary"), default_val=""
+                    ),
+                }
+            )
+
+    return fixes
+
+
+def postpass_propagate_table_local_codes(
+    *, page_irs: dict[int, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Carry forward the most recent "Table X" local_code across continuation segments
+    when repeats_header=true or boundary indicates continuation and local_code is null.
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of changes made during the postpass.
+    """
+
+    carried_table_code: str | None = None
+    changes: list[dict[str, Any]] = []
+
+    for i in sorted(page_irs.keys()):
+        page = page_irs[i]
+        items = page.get("items", [])
+
+        # Capture any caption-defined table code on the page (preferred source of
+        # truth).
+        if (caption_code := find_caption_code(items)) is not None:
+            carried_table_code = caption_code
+
+        table_continues_to_next = False
+
+        for idx, it in enumerate(items):
+            if it.get("kind") != "table":
+                continue
+
+            boundary = _boundary_val(it.get("boundary"), default_val="")
+            is_continuation_segment = boundary in (
+                ItemBoundary.BOTH.value,
+                ItemBoundary.RESUMED.value,
+                ItemBoundary.TRUNCATED.value,
+            ) or bool(it.get("repeats_header"))
+
+            # Update carry if this segment has an explicit local_code.
+            if it.get("local_code") is not None:
+                carried_table_code = str(
+                    _boundary_val(it.get("local_code"), default_val="")
+                )
+
+            # Fill missing local_code if we’re clearly in a continuation chain.
+            elif is_continuation_segment and carried_table_code:
+                it["local_code"] = carried_table_code
+                changes.append(
+                    {
+                        "type": "propagate_table_local_code",
+                        "page": i,
+                        "item_index": idx,
+                        "set_local_code": carried_table_code,
+                    }
+                )
+
+            if boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value):
+                table_continues_to_next = True
+
+        # Only keep carrying forward when the table actually continues to the next page.
+        if not table_continues_to_next:
+            carried_table_code = None
+
+    return changes
+
+
+def postprocess_verified_page_irs(
+    *, page_irs: dict[int, dict[str, Any]], verification_dirs: PageIRVerificationDirs
+) -> None:
+    """Run all postpass fixes before writing verified JSONs.
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+    verification_dirs
+        The verification directories.
+    """
+
+    seam_fixes = postpass_enforce_seam_consistency(page_irs=page_irs)
+    table_code_changes = postpass_propagate_table_local_codes(page_irs=page_irs)
+
+    # Persist what was changed for audit/debug.
+    write_to_json(
+        verification_dirs.root / "postpass_report.json",
+        {"seam_fixes": seam_fixes, "table_local_code_changes": table_code_changes},
+    )
 
 
 def sanitize_verdict_for_candidate_kinds(
@@ -600,6 +856,12 @@ def verify_page_ir_continuity(
         )
 
         logger.success(f"Finished verifying continuity between pages {i} and {i + 1}!")
+
+    # Postpass fixes: seam consistency, table code propagation, and implied BOTH
+    # upgrades.
+    postprocess_verified_page_irs(
+        page_irs=page_irs, verification_dirs=verification_dirs
+    )
 
     # Write verified page IRs after all edits have been applied.
     save_verified_page_irs(page_irs=page_irs, verification_dirs=verification_dirs)

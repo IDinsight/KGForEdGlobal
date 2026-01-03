@@ -122,7 +122,9 @@ def extract_page_ir_from_pdf_page(
 
 ## BLOCK CLASSIFICATIONS
 1. Valid block_type values: {allowed_block_types}
-  - **{BlockType.ARTIFACT.value}**: Headers, footers, page numbers;
+  - **{BlockType.ARTIFACT.value}**: ONLY running headers/footers, page numbers (arabic or roman numerals), or short decorative separators (e.g., "— — —", "***").
+    - NEVER use artifact for section titles or content headings.
+    - Examples that MUST be heading (NOT artifact): "Table of Contents", "List of Tables", "List of Figures", "Acknowledgements", "Preface", "Bibliography", "References", "Section One/Two/Three..."
   - **{BlockType.CAPTION.value}**: Labels for tables/figures (e.g., "Table 1").
   - **{BlockType.FIGURE.value}**: Diagrams/figures/illustrations/charts/flowcharts (use `figure`, set `text=null`, `list_items=null`).
   - **{BlockType.HEADING.value}**: Section titles.
@@ -139,15 +141,18 @@ def extract_page_ir_from_pdf_page(
 3. Do NOT output a full-page “{BlockType.ARTIFACT.value}” block. Only output artifacts when you see actual header/footer/page-number text.
 4. Ignore page border lines/decorative frames. Do not emit blocks/tables for borders or background. Page numbers must be a small ARTIFACT bbox around the digits/roman numerals only. Signatures/logos are FIGURE only if you include them, with tight bbox around the graphic only (not margins).
 5. Artifacts means running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
+  - If the text looks like a section label/title (not a running header/footer), classify as HEADING, not ARTIFACT.
 6. For any non-list block (including figure), list_items MUST be null or omitted (never []).
 
 ## LANGUAGES
 1. **Expected Languages**: {lang_context}.
 2. Expected Languages are only hints (common in Tanzania PDFs to include tables with fr/zh/ar in addition to en/sw).
 3. Use the BEST-MATCH BCP-47 language for the visible text, even if it is NOT in Expected Languages.
-4. Use "und" if the language is unknown or if you genuinely cannot tell.
-5. Use "mul" only if multiple languages appear in the SAME TextUnit (e.g., bilingual French+English in one cell).
-6. **NO TRANSLATION**:
+4. Prefer en, sw, etc. rather than regional subtags like en-TZ, etc.
+5. Numeric-only page numbers should be und.
+6. Use "und" if the language is unknown or if you genuinely cannot tell.
+7. Use "mul" only if multiple languages appear in the SAME TextUnit (e.g., bilingual French+English in one cell).
+8. **NO TRANSLATION**:
   - Do NOT translate, paraphrase, or “helpfully” rewrite any text.
   - For every `TextUnit`, `text_en` MUST be null or omitted. (A later translation pass fills it.)
 
@@ -183,6 +188,8 @@ def extract_page_ir_from_pdf_page(
       "contains_text": true/false/null,
       "figure_kind": one of {allowed_figure_kinds},
     }}
+  - If you set figure.contains_text=true, you MUST also populate figure.embedded_text with best-effort verbatim text.
+  - If you are not extracting embedded text, set figure.contains_text=false.
 2. Do NOT emit a figure for tiny decorative elements (small logos/ornaments) unless they are central content.
 3. Do NOT interpret diagram meanings. Do NOT convert diagram content into prose. Just preserve the region and light hints.
 
