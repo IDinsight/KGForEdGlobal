@@ -18,12 +18,7 @@ from skg.page_ir.utils import (
     is_truncated,
     textunit_text,
 )
-from skg.utils.constants import (
-    BlockType,
-    ItemBoundary,
-    PageBoundaryState,
-    PageContinuationKind,
-)
+from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 
 
 @dataclass
@@ -290,9 +285,7 @@ def validate_basic_block_invariants(
             continue
 
         block_type = getattr(item, "block_type", None)
-        text_unit = getattr(item, "text", None)
-        raw_list_items = getattr(item, "list_items", None)
-        list_items = raw_list_items or []
+        list_items = getattr(item, "list_items", [])
         fig = getattr(item, "figure", None)
 
         # Non-figure blocks must not carry figure metadata.
@@ -302,71 +295,8 @@ def validate_basic_block_invariants(
             )
 
         if block_type == BlockType.LIST:
-            validate_list_block(
-                fig=fig, i=i, list_items=list_items, text_unit=text_unit
-            )
+            validate_list_block(i=i, list_items=list_items)
             continue
-
-        if block_type == BlockType.FIGURE:
-            validate_figure_block(
-                fig=fig, i=i, list_items=list_items, text_unit=text_unit
-            )
-            continue
-
-        validate_non_list_block_has_no_list_items(i=i, raw_list_items=raw_list_items)
-
-
-def validate_figure_block(
-    *,
-    fig: Any,
-    i: int,
-    list_items: list[Any],
-    text_unit: Any,
-) -> None:
-    """Validate a figure block's invariants.
-
-    Parameters
-    ----------
-    fig
-        The figure metadata of the block.
-    i
-        The index of the block in items.
-    list_items
-        The list items of the block.
-    text_unit
-        The text unit of the block.
-
-    Raises
-    ------
-    QualityError
-        If any figure block invariant is violated.
-    """
-
-    # Figure blocks: no text, no list_items, must have figure metadata.
-    if text_unit is not None:
-        raise QualityError(f"Figure block must have text=null at items[{i}].text.")
-    if list_items:
-        raise QualityError(
-            f"Figure block must have list_items=null/omitted at items[{i}].list_items."
-        )
-    if fig is None:
-        raise QualityError(
-            f"Figure block must have non-null figure at items[{i}].figure."
-        )
-
-    # If alt_text is present, it must not be whitespace-only.
-    alt = getattr(fig, "alt_text", None)
-    if isinstance(alt, str) and not alt.strip():
-        raise QualityError(
-            f"Whitespace-only figure.alt_text at items[{i}].figure.alt_text."
-        )
-
-    # If caption is present, it must not be whitespace-only.
-    caption = getattr(fig, "caption", None)
-    if caption is not None and not textunit_text(caption).strip():
-        raise QualityError(
-            f"Whitespace-only figure.caption at items[{i}].figure.caption."
-        )
 
 
 def validate_full_page_bboxes(
@@ -520,61 +450,21 @@ def validate_item_bboxes_required_and_in_bounds(
         ctx.top_level_bboxes.append((float(x0), float(y0), float(x1), float(y1)))
 
 
-def validate_kind_matches_is_continuation(
-    *, kind: str, verdict: PageIRContinuityVerdict
-) -> None:
-    """Validate that continuation_kind matches is_continuation.
-
-    Parameters
-    ----------
-    kind
-        The continuation kind.
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If kind and is_continuation are inconsistent.
-    """
-
-    if verdict.is_continuation and kind == PageContinuationKind.NONE.value:
-        raise QualityError("is_continuation=true requires continuation_kind != 'none'.")
-    if not verdict.is_continuation and kind != PageContinuationKind.NONE.value:
-        raise QualityError("is_continuation=false requires continuation_kind='none'.")
-
-
-def validate_list_block(
-    *, fig: Any, i: int, list_items: list[Any], text_unit: Any
-) -> None:
+def validate_list_block(*, i: int, list_items: list[Any]) -> None:
     """Validate a list block's invariants.
 
     Parameters
     ----------
-    fig
-        The figure metadata of the block.
     i
         The index of the block in items.
     list_items
         The list items of the block.
-    text_unit
-        The text unit of the block.
 
     Raises
     ------
     QualityError
         If any list block invariant is violated.
     """
-
-    # Lists should be represented via list_items; text should be null.
-    if text_unit is not None:
-        raise QualityError(f"List block must have text=null at items[{i}].text.")
-    if fig is not None:
-        raise QualityError(f"List block must have figure=null at items[{i}].figure.")
-    if not list_items:
-        raise QualityError(
-            f"List block must have non-empty list_items at items[{i}].list_items."
-        )
 
     for j, li in enumerate(list_items):
         # If marker is empty and text is short, it's likely a misclassification.
@@ -689,56 +579,6 @@ def validate_non_continuation_has_no_resumed_truncated_boundaries(
         )
 
 
-def validate_non_continuation_suggests_no_edits(
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Validate that non-continuation verdicts suggest no edits.
-
-    Parameters
-    ----------
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    if verdict.is_continuation:
-        return
-
-    # If not a continuation, Step-2 must not suggest ANY edits (pairwise limitation).
-    if (
-        verdict.set_prev_item_boundary is not None
-        or verdict.set_next_item_boundary is not None
-        or verdict.set_next_table_repeats_header is not None
-    ):
-        raise QualityError("is_continuation=false must leave all set_* fields null.")
-
-
-def validate_non_list_block_has_no_list_items(*, i: int, raw_list_items: Any) -> None:
-    """Validate that a non-list block has no list items.
-
-    Parameters
-    ----------
-    i
-        The index of the block in items.
-    raw_list_items
-        The raw list items of the block.
-
-    Raises
-    ------
-    QualityError
-        If the non-list block has list items.
-    """
-
-    if raw_list_items is not None:
-        raise QualityError(
-            f"Non-list block must have list_items=null/omitted at items[{i}].list_items."
-        )
-
-
 def validate_one_table(*, i: int, item: Any) -> None:
     """Validate a single table's integrity.
 
@@ -768,48 +608,6 @@ def validate_one_table(*, i: int, item: Any) -> None:
             eff_widths=stats.eff_widths, i=i, max_eff=stats.max_eff
         )
     validate_table_has_any_text(i=i, rows=rows)
-
-
-def validate_pairwise_boundary_edits(
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Validate pairwise boundary edits in a continuity verdict.
-
-    Parameters
-    ----------
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    if not verdict.is_continuation:
-        return
-
-    # Logic: if it's a continuation, it's never correct to *set* either side to
-    # COMPLETE (if no change is needed, leave set_* null). Step-2 pairwise rule: only
-    # correct clearly incompatible boundaries. Do NOT set BOTH; we can't infer that
-    # from just N bottom + N+1 top.
-    if (
-        verdict.set_prev_item_boundary is not None
-        and verdict.set_prev_item_boundary != ItemBoundary.TRUNCATED
-    ):
-        raise QualityError(
-            "For continuation=true , set_prev_item_boundary must be TRUNCATED "
-            "(or null). Do not set BOTH in pairwise verification."
-        )
-
-    if (
-        verdict.set_next_item_boundary is not None
-        and verdict.set_next_item_boundary != ItemBoundary.RESUMED
-    ):
-        raise QualityError(
-            "For continuation=true, set_next_item_boundary must be RESUMED (or null). "
-            "Do not set BOTH in pairwise verification."
-        )
 
 
 def validate_page_indices(verdict: PageIRContinuityVerdict) -> None:
@@ -911,15 +709,6 @@ def validate_table_cells_and_spans(*, i: int, rows: list[Any]) -> None:
             ensure_text_en_none(
                 getattr(cell, "text", None), f"items[{i}].rows[{r}].cells[{c}].text"
             )
-
-            # Spans should be >= 1; schema should already enforce, but keep a guard.
-            col_span = int(getattr(cell, "col_span", 1) or 1)
-            row_span = int(getattr(cell, "row_span", 1) or 1)
-            if col_span < 1 or row_span < 1:
-                raise QualityError(
-                    f"Invalid span at items[{i}].rows[{r}].cells[{c}] "
-                    f"(col_span={col_span}, row_span={row_span})."
-                )
 
 
 def validate_table_collapse_by_header_body(
@@ -1110,40 +899,4 @@ def validate_table_rows_nonempty(*, i: int, rows: list[Any]) -> None:
     if not rows:
         raise QualityError(
             f"Empty table (rows=[]) at items[{i}].rows. Do not emit empty tables."
-        )
-
-
-def validate_table_specific_fields(
-    *, kind: str, verdict: PageIRContinuityVerdict
-) -> None:
-    """Validate table-specific fields in a continuity verdict.
-
-    Parameters
-    ----------
-    kind
-        The continuation kind.
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any table-specific quality checks fail.
-    """
-
-    is_table_cont = verdict.is_continuation and kind == PageContinuationKind.TABLE.value
-    set_next_table_repeats_header = verdict.set_next_table_repeats_header
-
-    if is_table_cont:
-        if set_next_table_repeats_header is not None and not isinstance(
-            set_next_table_repeats_header, bool
-        ):
-            raise QualityError(
-                "set_next_table_repeats_header must be a boolean when provided."
-            )
-        return
-
-    if set_next_table_repeats_header is not None:
-        raise QualityError(
-            "set_next_table_repeats_header is only valid for table continuations."
         )

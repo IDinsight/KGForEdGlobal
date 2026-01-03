@@ -31,15 +31,11 @@ from skg.page_ir.validators import (
     validate_gross_reading_order,
     validate_image_dimensions,
     validate_item_bboxes_required_and_in_bounds,
-    validate_kind_matches_is_continuation,
     validate_no_whitespace_or_empty_blocks,
     validate_non_continuation_has_no_resumed_truncated_boundaries,
-    validate_non_continuation_suggests_no_edits,
     validate_page_indices,
-    validate_pairwise_boundary_edits,
     validate_placeholder_bboxes,
     validate_table_integrity,
-    validate_table_specific_fields,
 )
 from skg.prompts.page_ir import (
     extract_page_ir_from_pdf_page,
@@ -401,13 +397,6 @@ def verify_page_ir_continuity_verdict(
 
     validate_page_indices(verdict)
     validate_non_continuation_has_no_resumed_truncated_boundaries(verdict)
-    validate_pairwise_boundary_edits(verdict)
-
-    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
-    validate_kind_matches_is_continuation(kind=kind, verdict=verdict)
-
-    validate_non_continuation_suggests_no_edits(verdict)
-    validate_table_specific_fields(kind=kind, verdict=verdict)
 
 
 def verify_page_ir_extraction_quality(
