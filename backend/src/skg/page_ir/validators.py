@@ -1,6 +1,8 @@
 """This module contains functionalities related to validating PageIR information."""
 
 # Standard Library
+import re
+
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -203,6 +205,65 @@ def _validate_one_table(*, i: int, item: Any) -> None:
             eff_widths=stats.eff_widths, i=i, max_eff=stats.max_eff
         )
     validate_table_has_any_text(i=i, rows=rows)
+
+
+def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> None:
+    """Reject cases where structural headings are mis-labeled as ARTIFACT.
+
+    Parameters
+    ----------
+    ctx
+        The PageIR extraction quality context.
+
+    Raises
+    ------
+    QualityError
+        If any artifact block appears to be a structural heading.
+    """
+
+    never_artifact = {
+        "acknowledgements",
+        "acknowledgments",
+        "bibliography",
+        "contents",
+        "list of figures",
+        "list of tables",
+        "preface",
+        "reference list",
+        "references",
+        "table of contents",
+    }
+
+    for i, it in enumerate(ctx.items):
+        if getattr(it, "kind", None) != "block" or (
+            getattr(it, "block_type", None) != BlockType.ARTIFACT
+        ):
+            continue
+
+        tu = getattr(it, "text", None)
+        raw = (getattr(tu, "text", "") or "").strip()
+        txt = raw.lower()
+
+        # If it has a local_code, it's almost certainly not an artifact.
+        if getattr(it, "local_code", None):
+            raise QualityError(
+                f"Item {i} is block_type=artifact but has local_code='{it.local_code}'. "
+                f"Structural labels must be HEADING."
+            )
+
+        # Common structural section labels.
+        if txt in never_artifact:
+            raise QualityError(
+                f"Item {i} is block_type=artifact but text='{raw}'. "
+                f"Section titles must be HEADING."
+            )
+
+        # “Section One/Two/...” should be a HEADING.
+        if re.match(r"^\s*section\s+\w+", txt):
+            raise QualityError(
+                f"Item {i} is block_type=artifact but looks like a section heading: '{raw}'. "
+                f"Classify as HEADING."
+            )
 
 
 def validate_basic_block_invariants(

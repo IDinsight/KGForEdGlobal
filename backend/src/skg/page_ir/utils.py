@@ -67,13 +67,15 @@ def _boundary_str(item: Any) -> str:
     return "" if b is None else b.value if hasattr(b, "value") else str(b)
 
 
-def _boundary_val(v: Any) -> str:
+def _boundary_val(v: Any, default_val: str = ItemBoundary.COMPLETE.value) -> str:
     """Normalize boundary enum/string to string.
 
     Parameters
     ----------
     v
         The boundary value (enum or string).
+    default_val
+        The default value to use if v is None.
 
     Returns
     -------
@@ -81,7 +83,7 @@ def _boundary_val(v: Any) -> str:
         The normalized boundary string.
     """
 
-    return getattr(v, "value", v) if v is not None else ItemBoundary.COMPLETE.value
+    return getattr(v, "value", v) if v is not None else default_val
 
 
 def _derive_boundary_state_from_items(
@@ -520,6 +522,33 @@ def extract_text(v: Any) -> Optional[str]:
         if isinstance(inner, dict):
             inner2 = inner.get("text")
             return inner2 if isinstance(inner2, str) else None
+    return None
+
+
+def find_caption_code(items: list[dict[str, Any]]) -> str | None:
+    """Find the first valid Table-like local_code from a caption block.
+
+    Parameters
+    ----------
+    items
+        List of PageIR items.
+
+    Returns
+    -------
+    str | None
+        The found caption local_code, or None if not found.
+    """
+
+    for it in items:
+        if (
+            it.get("kind") == "block"
+            and _boundary_val(it.get("block_type"), default_val="")
+            == BlockType.CAPTION.value
+        ):
+            code = _boundary_val(it.get("local_code"), default_val="")
+            if code and str(code).lower().startswith("table"):
+                return str(code)
+
     return None
 
 
