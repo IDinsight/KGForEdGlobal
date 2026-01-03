@@ -7,17 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# Third Party Library
-from loguru import logger
-
 # Package Library
 from skg.page_ir.schemas import PageIRContinuityVerdict
-from skg.utils.constants import (
-    BlockType,
-    ItemBoundary,
-    PageBoundaryState,
-    PageContinuationKind,
-)
+from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 from skg.utils.general import clamp, make_dir, near
 
 
@@ -529,6 +521,36 @@ def extract_text(v: Any) -> Optional[str]:
             inner2 = inner.get("text")
             return inner2 if isinstance(inner2, str) else None
     return None
+
+
+def get_negative_threshold_based_on_kind(
+    *, next_item: dict[str, Any], prev_item: dict[str, Any]
+) -> float:
+    """Get confidence threshold for applying no-continuation patches based on
+    continuation kind.
+
+    NB: Require VERY high confidence because clearing boundaries can remove useful
+    extractor signal. Tables/figures are easier to judge visually, so allow a slightly
+    lower threshold than plain text.
+    """
+
+    prev_kind = prev_item.get("kind")
+    next_kind = next_item.get("kind")
+
+    # Table to table and figure to figure are usually visually obvious.
+    if prev_kind == "table" and next_kind == "table":
+        return 0.85
+
+    if (
+        prev_kind == "block"
+        and next_kind == "block"
+        and is_figure_block(prev_item)
+        and is_figure_block(next_item)
+    ):
+        return 0.85
+
+    # Text is more ambiguous so be stricter.
+    return 0.90
 
 
 def get_threshold_based_on_kind(
@@ -1139,41 +1161,3 @@ def topmost_continuity_candidate_paired(
 
     # Fallback to unpaired logic.
     return topmost_continuity_candidate(image_height=image_height, items=items)
-
-
-def veto_continuation(
-    *, reason: str, verdict: PageIRContinuityVerdict
-) -> PageIRContinuityVerdict:
-    """Veto a continuation claim by forcing is_continuation=False with low confidence.
-
-    Parameters
-    ----------
-    reason
-        The reason for vetoing the verdict.
-    verdict
-        The continuity verdict from the model.
-
-    Returns
-    -------
-    PageIRContinuityVerdict
-        The modified verdict with the veto applied.
-    """
-
-    logger.warning(f"Vetoing continuation due to: {reason}")
-
-    verdict.is_continuation = False
-
-    # Candidate mismatch means we can't trust the continuation claim between THESE two
-    # items, not "there is definitely no continuation anywhere". Keep this
-    # continuation_kind="none" and low-confidence so downstream edit-application
-    # thresholds will not apply.
-    verdict.clamped_confidence = min(float(verdict.confidence), 0.49)
-    verdict.continuation_kind = PageContinuationKind.NONE
-    verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
-
-    # NB: Never apply edits if we veto the continuation claim.
-    verdict.set_prev_item_boundary = None
-    verdict.set_next_item_boundary = None
-    verdict.set_next_table_repeats_header = None
-
-    return verdict
