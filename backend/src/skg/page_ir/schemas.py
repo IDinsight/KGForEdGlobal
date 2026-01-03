@@ -679,3 +679,29 @@ class PageIRContinuityVerdict(BaseModelPageIR):
             )
 
         return self
+
+    @model_validator(mode="after")
+    def validate_page_indices(self) -> PageIRContinuityVerdict:
+        """Validate page index ordering and adjacency.
+
+        Returns
+        -------
+        PageIRContinuityVerdict
+            The passed in PageIRContinuityVerdict.
+
+        Raises
+        ------
+        ValueError
+            If page indices are not in valid order or not adjacent.
+        """
+
+        if self.prev_page_index >= self.next_page_index:
+            raise ValueError(
+                f"Invalid page index order: prev={self.prev_page_index}, next={self.next_page_index}"
+            )
+        if self.next_page_index != self.prev_page_index + 1:
+            raise ValueError(
+                f"Continuity verdict must be for adjacent pages: prev={self.prev_page_index}, next={self.next_page_index}"
+            )
+
+        return self

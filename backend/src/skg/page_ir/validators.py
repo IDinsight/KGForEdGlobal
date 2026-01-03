@@ -9,7 +9,7 @@ from typing import Any, Optional
 from loguru import logger
 
 # Package Library
-from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
+from skg.page_ir.schemas import PageIR
 from skg.page_ir.utils import (
     _boundary_str,
     _derive_boundary_state_from_items,
@@ -18,7 +18,7 @@ from skg.page_ir.utils import (
     is_truncated,
     textunit_text,
 )
-from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
+from skg.utils.constants import BlockType, FigureKind, PageBoundaryState
 
 
 @dataclass
@@ -835,62 +835,4 @@ def validate_table_rows_nonempty(*, i: int, rows: list[Any]) -> None:
     if len(rows) == 0:
         raise QualityError(
             f"Empty table (rows=[]) at items[{i}].rows. Do not emit empty tables."
-        )
-
-
-# Verification validators.
-def validate_non_continuation_has_no_resumed_truncated_boundaries(
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Validate that a non-continuation verdict has no resumed/truncated boundaries.
-
-    Parameters
-    ----------
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If the non-continuation verdict suggests resumed/truncated boundaries.
-    """
-
-    if verdict.is_continuation:
-        return
-
-    # If this is NOT a continuation, it makes no sense to suggest 'truncated'/'resumed'
-    # boundaries on the boundary items.
-    invalid = (ItemBoundary.TRUNCATED, ItemBoundary.RESUMED, ItemBoundary.BOTH)
-    if (
-        verdict.set_prev_item_boundary in invalid
-        or verdict.set_next_item_boundary in invalid
-    ):
-        raise QualityError(
-            "is_continuation=false but verdict suggests truncated/resumed item boundaries."
-        )
-
-
-def validate_page_indices(verdict: PageIRContinuityVerdict) -> None:
-    """Validate the page indices in a continuity verdict.
-
-    Parameters
-    ----------
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    if verdict.prev_page_index >= verdict.next_page_index:
-        raise QualityError(
-            f"Invalid page index order: previous page index={verdict.prev_page_index} "
-            f"next page index={verdict.next_page_index}"
-        )
-    if verdict.next_page_index - verdict.prev_page_index != 1:
-        logger.warning(
-            f"Non-adjacent page indices in verdict "
-            f"({verdict.prev_page_index}->{verdict.next_page_index}); expected adjacency."
         )
