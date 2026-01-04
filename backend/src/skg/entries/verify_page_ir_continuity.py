@@ -817,10 +817,7 @@ def verify_page_ir_continuity(
         write_to_json(
             verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json",
             {
-                # Candidate selection provenance (for debugging). NB: cached pair
-                # reports are only safe to reuse if they refer to the same candidate
-                # items. Candidate selection can change when extraction improves,
-                # heuristics change, or page IRs are edited.
+                # Candidate selection provenance (for debugging).
                 "candidate_selection": {
                     "prev_candidate_index": prev_idx,
                     "next_candidate_index": next_idx,
