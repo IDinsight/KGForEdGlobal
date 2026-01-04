@@ -247,6 +247,16 @@ def bottommost_continuity_candidate(
     if not candidates:
         raise ValueError("No non-artifact items found.")
 
+    contentish = [
+        (i, it)
+        for (i, it) in candidates
+        if not (
+            it.get("kind") == "block"
+            and str(it.get("block_type") or "").lower() in {"heading", "caption"}
+        )
+    ]
+    candidates = contentish or candidates
+
     # Look at the last 5 candidates by vertical position (closest to bottom). If any
     # are explicitly marked as truncated, prefer those (tables first).
     last_n = 5
@@ -1137,7 +1147,7 @@ def topmost_continuity_candidate_paired(
     Raises
     ------
     ValueError
-        If no non-artifact items are found.
+        If no non-artifact items or continuity candidates are found.
     """
 
     preferred_kind = prev_item.get("kind")
@@ -1172,21 +1182,31 @@ def topmost_continuity_candidate_paired(
     # Prefer block when the previous item is a block.
     if preferred_kind == "block":
         blocks = [(i, it) for (i, it) in candidates if it.get("kind") != "table"]
-        if blocks:
-            # if we have any non-minor blocks near the top, drop minor edge blocks
-            # (e.g., short captions like "Table 2: ...") so they don't become the
-            # anchor.
-            non_minor = [
+        if not blocks:
+            raise ValueError("No continuity candidates found")
+
+        # If we have any non-minor blocks near the top, drop minor edge blocks (e.g.,
+        # short captions like "Table 2: ...") so they don't become the anchor.
+        non_minor = [
+            (i, it)
+            for (i, it) in blocks
+            if not is_minor_edge_block(image_height=image_height, item=it)
+        ]
+        blocks = non_minor or blocks
+
+        # If previous is paragraph/list, prefer non-heading/non-caption blocks on next
+        # page.
+        prev_bt = str(prev_item.get("block_type") or "").lower()
+        if prev_bt in {"paragraph", "list"}:
+            contentish = [
                 (i, it)
                 for (i, it) in blocks
-                if not is_minor_edge_block(image_height=image_height, item=it)
+                if str(it.get("block_type") or "").lower() not in {"heading", "caption"}
             ]
-            blocks = non_minor or blocks
+            blocks = contentish or blocks
 
-            # Prefer non-figure blocks if possible.
-            non_fig = [(i, it) for (i, it) in blocks if not is_figure_block(it)]
-            chosen = non_fig if non_fig else blocks
-            return min(chosen, key=lambda p: (float(p[1]["bbox"][1]), p[0]))
+        non_figure_blocks = [(i, it) for (i, it) in blocks if not is_figure_block(it)]
+        return non_figure_blocks[0] if non_figure_blocks else blocks[0]
 
     # Fallback to unpaired logic.
     return topmost_continuity_candidate(image_height=image_height, items=items)
