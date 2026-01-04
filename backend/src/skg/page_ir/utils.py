@@ -622,15 +622,15 @@ def get_threshold_based_on_kind(
     is_fig_pair = is_figure_block(prev_item) or is_figure_block(next_item)
 
     if kind == "table":
-        threshold = 0.80
+        threshold = 0.75
     elif kind == "text":
-        threshold = 0.85
+        threshold = 0.75
     elif kind == "none":
-        threshold = 0.85
+        threshold = 0.75
     elif not (verdict.is_continuation and is_fig_pair):
         threshold = 1.1  # Impossible threshold --> no downstream edits
     else:
-        threshold = 0.90
+        threshold = 0.75
 
     return threshold
 
