@@ -184,7 +184,7 @@ def _call_openai_api_for_page_ir_verification(
         input=input_items,
         instructions=instructions,
         model=model,
-        temperature=0,
+        temperature=0.25,
         text_format=PageIRContinuityVerdict,
         top_p=1,
     )

@@ -188,12 +188,14 @@ def crop_image_to_bottom(
         if h <= 0 or w <= 0:
             raise ValueError(f"Invalid image size: {img.size} for {input_png_fp}")
 
+        _, _, _, y1 = [float(v) for v in bbox]
+        y1 = max(0.0, min(y1, float(h)))
         padding_px = int(desired_padding_inches * render_dpi)
 
         # Start just above the BOTTOM edge of the candidate item. This focuses the crop
         # on boundary evidence (tail rows/lines) instead of including the whole
         # (potentially large) item.
-        y0_px = float(bbox[3]) - float(padding_px)
+        y0_px = float(y1) - float(padding_px)
 
         # Enforce minimum height: y0 must not be below (h - min_height).
         max_allowed_y0 = float(h - min_height_px)
@@ -275,12 +277,14 @@ def crop_image_to_top(
         if h <= 0 or w <= 0:
             raise ValueError(f"Invalid image size: {img.size} for {input_png_fp}")
 
+        _, y0, _, _ = [float(v) for v in bbox]
+        y0 = max(0.0, min(y0, float(h)))
         padding_px = int(desired_padding_inches * render_dpi)
 
         # End just below the TOP edge of the candidate item. This focuses the crop on
         # boundary evidence (first rows/lines) instead of including the whole
         # (potentially large) item.
-        y1_px = float(bbox[1]) + float(padding_px)
+        y1_px = float(y0) + float(padding_px)
 
         # Enforce minimum height: y1 must be at least min_height_px.
         y1_px = max(y1_px, float(min_height_px))
