@@ -277,13 +277,15 @@ You will be given:
 5. Only propose additive continuity edits in the positive case:
    - If is_continuation=true, you may set set_prev_item_boundary="{ItemBoundary.TRUNCATED.value}" and/or set_next_item_boundary="{ItemBoundary.RESUMED.value}" (or leave them null).
    - If is_continuation=false, ALL set_* fields MUST be null (no edits allowed by schema).
-6. For TABLE candidates, “continuation” means the TABLE OBJECT continues onto the next page (same table grid/header, etc.)---not necessarily that the last row on page N continues into the first row on page N+1.
+6. For TABLE candidates, “continuation” is decided at the TABLE level (same grid + same header schema).
+  - DO NOT require that the last row on page N continues into the first row on page N+1.
+  - A change in table content/numbering is NORMAL within the SAME long table and is NOT evidence of a new table.
 7. Do NOT set repeats_header=true unless it is the SAME table continuing across the boundary.
 8. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
 9. If either candidate item is a HEADING (or CAPTION), always set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence ≤ 0.49, and leave all set_* null. Never set boundary metadata for HEADING/CAPTION items.
 10. UNCERTAINTY POLICY (must follow exactly):
   - Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
-  - Exception for TABLE <-> TABLE candidates: If BOTH candidates are tables AND you have at least one STRONG continuation cue (per TABLE continuation signals below) AND there is NO visible new-table marker/caption/title at the boundary, you MAY set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", with confidence in [0.55, 0.70].
+  - Exception for TABLE <-> TABLE candidates: If BOTH candidates are tables AND you have at least one STRONG continuation cue (per TABLE continuation signals below) AND there is NO visible new-table marker/caption/title at the boundary, you SHOULD set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", with confidence in [0.55, 0.70].
 
 ## ALLOWED EDITS (METADATA ONLY)
 1. set_prev_item_boundary: one of {prev_boundary_allowed} (or null)
@@ -317,6 +319,7 @@ You will be given:
   - Explicit markers:
     - "End of table"/"End"/"Conclusion of table" --> strong signal of NO continuation.
     - "(continued)"/"continued on next page"/"continued from previous page" --> strong signal of continuation (SAME table).
+  - If BOTH candidates are tables AND the column header schema appears the same (same labels/order/column count) AND the grid/layout is clearly the same, THEN set is_continuation=true, continuation_kind="table", confidence >= 0.70, UNLESS you can see an explicit NEW-table marker at the boundary (different table caption/identifier, different header schema, or a clear “End of table”). NOTE: Content changes, numbering jumps, or starting a new subject block are NOT new-table markers.
   - IMPORTANT: Changes in row content/numbering are NORMAL within a long table and do NOT imply a new table.
 3. TEXT continuation signals:
   - Only choose continuation_kind="{PageContinuationKind.TEXT.value}" when you can see strong truncation in IMAGE A and a clear resumption in IMAGE B.
