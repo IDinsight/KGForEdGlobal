@@ -656,10 +656,10 @@ def verify_page_ir_continuity(
             model=model,
             next_item_excerpt=next_excerpt,
             next_page_index=i + 1,
-            next_top_png=next_crop_fp,
-            prev_bottom_png=prev_crop_fp,
-            prev_page_index=i,
+            next_png=next_crop_fp,
             prev_item_excerpt=prev_excerpt,
+            prev_page_index=i,
+            prev_png=page_images_dir / f"{i:04}.png",
         )
         verdict = sanitize_verdict_for_candidate_kinds(
             next_item=next_item, prev_item=prev_item, verdict=verdict
