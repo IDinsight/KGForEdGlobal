@@ -446,10 +446,10 @@ def verify_page_ir_pairs(
     model: str,
     next_item_excerpt: dict[str, Any],
     next_page_index: int,
-    next_top_png: Path,
-    prev_bottom_png: Path,
+    next_png: Path,
     prev_item_excerpt: dict[str, Any],
     prev_page_index: int,
+    prev_png: Path,
 ) -> PageIRContinuityVerdict:
     """Verify continuity between two PageIR excerpts using LLM.
 
@@ -463,14 +463,14 @@ def verify_page_ir_pairs(
         Excerpt of the candidate near top item from page N+1 JSON.
     next_page_index
         The 0-based index of the next page (N+1).
-    next_top_png
-        The PNG file path of the top crop of page N+1.
-    prev_bottom_png
-        The PNG file path of the bottom crop of page N.
+    next_png
+        The PNG file path of page N+1.
     prev_item_excerpt
         Excerpt of the candidate near bottom item from page N JSON.
     prev_page_index
         The 0-based index of the previous page (N).
+    prev_png
+        The PNG file path of page N.
 
     Returns
     -------
@@ -485,8 +485,8 @@ def verify_page_ir_pairs(
         If the LLM returns invalid or poor-quality output.
     """
 
-    prev_bottom_image_url = encode_png_to_data_url(prev_bottom_png)
-    next_top_image_url = encode_png_to_data_url(next_top_png)
+    prev_image_url = encode_png_to_data_url(prev_png)
+    next_image_url = encode_png_to_data_url(next_png)
     prompts = verify_page_ir_pairs_from_extraction(
         next_item_excerpt=next_item_excerpt,
         next_page_index=next_page_index,
@@ -501,14 +501,14 @@ def verify_page_ir_pairs(
                 {"type": "input_text", "text": prompts.user_message},
                 {
                     "type": "input_text",
-                    "text": "IMAGE A: bottom crop of page N (previous page).",
+                    "text": "IMAGE A: ENTIRETY of Page N (previous page).",
                 },
-                {"type": "input_image", "image_url": prev_bottom_image_url},
+                {"type": "input_image", "image_url": prev_image_url},
                 {
                     "type": "input_text",
-                    "text": "IMAGE B: top crop of page N+1 (next page).",
+                    "text": "IMAGE B: TOP crop of page N+1 (next page).",
                 },
-                {"type": "input_image", "image_url": next_top_image_url},
+                {"type": "input_image", "image_url": next_image_url},
             ],
         }
     ]
