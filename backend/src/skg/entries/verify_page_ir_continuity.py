@@ -281,7 +281,7 @@ def persist_verification_run(
     model: str,
     output_dir: Path,
     start_page: int,
-    **kwargs: dict[str, Any],
+    **kwargs: Any,
 ) -> tuple[PageIRVerificationDirs, RunCtx]:
     """Persist verification run metadata.
 
