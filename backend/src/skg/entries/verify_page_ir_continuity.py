@@ -17,7 +17,6 @@ python src/skg/entries/verify_page_ir_continuity.py ../data/ghana/ghana.pdf /pat
 """
 
 # Standard Library
-import json
 import sys
 import traceback
 import uuid
@@ -323,10 +322,7 @@ def persist_verification_run(
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
     )
-    write_to_json(
-        output_dir / "verification_run.json",
-        json.loads(verification_run.model_dump_json(indent=2)),
-    )
+    write_to_json(fp=output_dir / "verification_run.json", json_info=verification_run)
     logger.info(f"Verification directory: {output_dir}")
 
     return verification_dirs, verification_run
@@ -349,8 +345,8 @@ def postprocess_verified_page_irs(
 
     # Persist what was changed for audit/debug.
     write_to_json(
-        verification_dirs.root / "postpass_report.json",
-        {"table_local_code_changes": table_code_changes},
+        fp=verification_dirs.root / "postprocess_report.json",
+        json_info={"table_local_code_changes": table_code_changes},
     )
 
 
@@ -524,7 +520,9 @@ def save_verified_page_irs(
         page_ir["boundary_state"] = derive_page_boundary_state(page_ir=page_ir).value
 
         # Write verified JSON.
-        write_to_json(verification_dirs.page_irs_verified / f"{i:04}.json", page_ir)
+        write_to_json(
+            fp=verification_dirs.page_irs_verified / f"{i:04}.json", json_info=page_ir
+        )
 
     logger.success("All verified page IR JSONs saved successfully!")
 
@@ -533,12 +531,12 @@ def verify_page_ir_continuity(
     *,
     doc: pymupdf.Document,
     end_page: int | None,
-    verification_dirs: PageIRVerificationDirs,
     model: str,
     page_images_dir: Path,
     page_irs_dir: Path,
     render_dpi: int,
     start_page: int,
+    verification_dirs: PageIRVerificationDirs,
 ) -> None:
     """Perform verification of PageIR JSONs in pairs.
 
@@ -548,8 +546,6 @@ def verify_page_ir_continuity(
         The PyMuPDF document.
     end_page
         0-based end page (exclusive).
-    verification_dirs
-        The verification directories.
     model
         OpenAI model for page IR verification.
     page_images_dir
@@ -560,6 +556,8 @@ def verify_page_ir_continuity(
         The render DPI for the page images during the extraction stage.
     start_page
         0-based start page (inclusive).
+    verification_dirs
+        The verification directories.
 
     Raises
     ------
@@ -677,8 +675,8 @@ def verify_page_ir_continuity(
 
         # Persist the verdict.
         write_to_json(
-            verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json",
-            {
+            fp=verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json",
+            json_info={
                 # Candidate selection provenance (for debugging).
                 "candidate_selection": {
                     "prev_candidate_index": prev_idx,
@@ -898,8 +896,8 @@ def verify(
         # 5.
         verification_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
-            verification_dirs.root / "verification_run.json",
-            verification_run.model_dump(mode="json"),
+            fp=verification_dirs.root / "verification_run.json",
+            json_info=verification_run,
         )
 
 

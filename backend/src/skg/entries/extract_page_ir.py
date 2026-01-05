@@ -10,7 +10,6 @@ python src/skg/entries/extract_page_ir.py ../data/ghana/ghana.pdf -c Ghana -y 20
 """
 
 # Standard Library
-import json
 import sys
 import traceback
 import uuid
@@ -90,7 +89,7 @@ def extract_page_by_page(
     model
         OpenAI model for page IR extraction.
     overwrite
-        Overwrite existing per-page artifacts.
+        Overwrite existing page IR JSONs.
     pdf_name
         The PDF filename.
     start_page
@@ -168,7 +167,7 @@ def extract_page_by_page(
         page_ir = PageIR.model_validate(page_ir.model_dump(mode="python"))
 
         # Save PageIR JSON.
-        write_to_json(page_ir_fp, page_ir.model_dump(mode="json"))
+        write_to_json(fp=page_ir_fp, json_info=page_ir)
         logger.success(f"Finished extracting and saving page: {page_index}!")
 
 
@@ -237,8 +236,7 @@ def persist_extraction_run(
         started_at=datetime.now(timezone.utc),
     )
     write_to_json(
-        extraction_dirs.root / "extraction_run.json",
-        json.loads(extraction_run.model_dump_json(indent=2)),
+        fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
     )
     logger.info(f"Extraction directory: {extraction_dirs.root}")
 
@@ -282,7 +280,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
         None, "--end-page", "-e", help="0-based end page (exclusive). Default: to end."
     ),
     overwrite: bool = typer.Option(
-        False, "--overwrite", help="Overwrite existing per-page artifacts."
+        False, "--overwrite", help="Overwrite existing page IR JSONs."
     ),
     use_text_layer_hints: bool = typer.Option(
         True,
@@ -324,7 +322,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
     end_page
         0-based end page (exclusive). Default: to end.
     overwrite
-        Overwrite existing per-page artifacts.
+        Overwrite existing page IR JSONs.
     use_text_layer_hints
         Whether to extract and use text layer hints from the PDF during extraction.
     year
@@ -387,8 +385,7 @@ def extract(  # pylint: disable=too-many-positional-arguments
         # 4.
         extraction_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
-            extraction_dirs.root / "extraction_run.json",
-            extraction_run.model_dump(mode="json"),
+            fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
         )
 
 
