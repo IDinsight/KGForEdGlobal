@@ -113,7 +113,11 @@ def extract_page_by_page(
 
         # Check cache. If not overwriting and JSON exists, skip entirely.
         if page_ir_fp.exists() and not overwrite:
-            logger.info(f"Skipping page {page_index} (cached).")
+            logger.warning(
+                f"Extracted page IR JSON already exists for page {page_index}. "
+                f"Skipping extraction. "
+                f"If you wish to overwrite, pass the --overwrite flag."
+            )
             continue
 
         # Extract information from the page image.
