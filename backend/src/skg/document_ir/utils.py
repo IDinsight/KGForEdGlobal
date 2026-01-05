@@ -1,0 +1,995 @@
+"""This module contains utility functions for document Intermediate Representations
+(IRs).
+"""
+
+# Standard Library
+import re
+
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional, Sequence, Union
+
+# Third Party Library
+from loguru import logger
+
+# Package Library
+from skg.document_ir.schemas import (
+    BlockSegment,
+    BlockSlice,
+    Segment,
+    SegmentProvenance,
+    TableSegment,
+    TableSlice,
+)
+from skg.page_ir.schemas import (
+    CurriculumBlock,
+    CurriculumTable,
+    ListItem,
+    PageIR,
+    TableRow,
+    TextUnit,
+)
+from skg.utils.constants import BlockType, ItemBoundary
+from skg.utils.general import compute_sha256_hex, make_dir
+
+ItemKey = tuple[int, int]
+ChainItem = tuple[int, int, Union[CurriculumTable, CurriculumBlock]]
+
+
+@dataclass(frozen=True)
+class DocumentIRDirs:
+    """Dataclass for document IR directories."""
+
+    root: Path
+
+
+def _bbox_y0(item: Union[CurriculumTable, CurriculumBlock]) -> float:
+    """Return the y0 coordinate of the item's bounding box.
+
+    Parameters
+    ----------
+    item
+        The item.
+
+    Returns
+    -------
+    float
+        The y0 coordinate.
+    """
+
+    return float(item.bbox[1])
+
+
+def _bbox_y1(item: Union[CurriculumTable, CurriculumBlock]) -> float:
+    """Return the y1 coordinate of the item's bounding box.
+
+    Parameters
+    ----------
+    item
+        The item.
+
+    Returns
+    -------
+    float
+        The y1 coordinate.
+    """
+
+    return float(item.bbox[3])
+
+
+def _boundary_continues_from_prev(boundary: ItemBoundary) -> bool:
+    """Return True if the boundary indicates continuation from previous item.
+
+    Parameters
+    ----------
+    boundary
+        The item boundary.
+
+    Returns
+    -------
+    bool
+        True if the boundary indicates continuation from previous item.
+    """
+
+    return boundary in (ItemBoundary.RESUMED, ItemBoundary.BOTH)
+
+
+def _boundary_continues_to_next(boundary: ItemBoundary) -> bool:
+    """Return True if the boundary indicates continuation to next item.
+
+    Parameters
+    ----------
+    boundary
+        The item boundary.
+
+    Returns
+    -------
+    bool
+        True if the boundary indicates continuation to next item.
+    """
+
+    return boundary in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
+
+
+def _drop_repeated_header(
+    *,
+    base_header_rows: list[TableRow],
+    header_row_count: int,
+    next_table: CurriculumTable,
+) -> list[TableRow]:
+    """Return next_table.rows with repeated header removed if warranted.
+
+    Parameters
+    ----------
+    base_header_rows
+        Header rows from the first slice.
+    header_row_count
+        Number of header rows.
+    next_table
+        The next table slice.
+
+    Returns
+    -------
+    list[TableRow]
+        Rows to add from next_table with repeated header removed if needed.
+    """
+
+    rows_to_add = list(next_table.rows)
+    if header_row_count <= 0:
+        return rows_to_add
+
+    if next_table.repeats_header is True:
+        return rows_to_add[header_row_count:]
+
+    if next_table.repeats_header is False:
+        return rows_to_add
+
+    # Unknown: detect by exact header-row match to base.
+    maybe_header = rows_to_add[:header_row_count]
+    if base_header_rows and _rows_match(base_header_rows, maybe_header):
+        return rows_to_add[header_row_count:]
+
+    return rows_to_add
+
+
+def _is_artifact_block(item: Union[CurriculumTable, CurriculumBlock]) -> bool:
+    """Return True if the item is an artifact block.
+
+    Parameters
+    ----------
+    item
+        The item to check.
+
+    Returns
+    -------
+    bool
+        True if the item is an artifact block.
+    """
+
+    return isinstance(item, CurriculumBlock) and item.block_type == BlockType.ARTIFACT
+
+
+def _match_score(
+    *,
+    next_item: Union[CurriculumTable, CurriculumBlock],
+    prev_item: Union[CurriculumTable, CurriculumBlock],
+) -> int:
+    """Score a potential continuation match (higher is better).
+
+    Parameters
+    ----------
+    next_item
+        The next item.
+    prev_item
+        The previous item.
+
+    Returns
+    -------
+    int
+        The match score.
+    """
+
+    if isinstance(prev_item, CurriculumTable) and isinstance(
+        next_item, CurriculumTable
+    ):
+        score = 0
+        if (
+            prev_item.local_code
+            and next_item.local_code
+            and prev_item.local_code.strip() == next_item.local_code.strip()
+        ):
+            score += 5
+        if table_schema_fingerprint(prev_item) == table_schema_fingerprint(next_item):
+            score += 4
+
+        # Same header_row_count is a mild positive.
+        if prev_item.header_row_count == next_item.header_row_count:
+            score += 1
+        return score
+
+    if isinstance(prev_item, CurriculumBlock) and isinstance(
+        next_item, CurriculumBlock
+    ):
+        score = 0
+        if prev_item.block_type == next_item.block_type:
+            score += 2
+        if (
+            prev_item.local_code
+            and next_item.local_code
+            and prev_item.local_code.strip() == next_item.local_code.strip()
+        ):
+            score += 1
+        return score
+
+    return -999
+
+
+def _normalize_text(text: Optional[str]) -> str:
+    """Normalize text for comparisons.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized text.
+    """
+
+    if text is None:
+        return ""
+
+    # Collapse whitespace and strip.
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _rows_match(a: Sequence[TableRow], b: Sequence[TableRow]) -> bool:
+    """Return True if two sequences of table rows match in content.
+
+    Parameters
+    ----------
+    a
+        The first sequence of table rows.
+    b
+        The second sequence of table rows.
+
+    Returns
+    -------
+    bool
+        True if the two sequences of table rows match in content.
+    """
+
+    if len(a) != len(b):
+        return False
+    return all(_row_signature(ra) == _row_signature(rb) for ra, rb in zip(a, b))
+
+
+def _row_signature(row: TableRow) -> tuple[str, ...]:
+    """Create a stable signature for a table row based on cell texts.
+
+    Parameters
+    ----------
+    row
+        The table row.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The row signature.
+    """
+
+    sig: list[str] = []
+    for cell in row.cells:
+        # TableCell.text is a TextUnit or None.
+        if cell.text is None:
+            sig.append("")
+        else:
+            sig.append(_normalize_text(cell.text.text))
+    return tuple(sig)
+
+
+def block_segment_key(block: CurriculumBlock) -> str:
+    """Deterministic key for a block segment. For headings/captions, key still exists,
+    but these should not be stitched by design.
+
+    Parameters
+    ----------
+    block
+        The curriculum block.
+
+    Returns
+    -------
+    str
+        The segment key.
+    """
+
+    base = f"{block.block_type.value}|{_normalize_text(block.local_code)}"
+    txt = ""
+
+    if block.text is not None:
+        txt = _normalize_text(block.text.text)[:400]
+    elif block.list_items:
+        txt = _normalize_text(
+            " ".join((li.text.text if li.text else "") for li in block.list_items)
+        )[:400]
+
+    return f"block:{block.block_type.value}:{compute_sha256_hex(s=base + '|' + txt)}"
+
+
+def build_continuation_chain(
+    *,
+    items_lookup: dict[int, dict[int, Union[CurriculumTable, CurriculumBlock]]],
+    links: dict[ItemKey, ItemKey],
+    start_item: Union[CurriculumTable, CurriculumBlock],
+    start_key: ItemKey,
+) -> tuple[list[ChainItem], list[str]]:
+    """Follow links to build a list of items belonging to one logical segment.
+
+    Parameters
+    ----------
+    items_lookup
+        A mapping of page_index to item_index to Item. This allows O(1) lookup of items
+        by their original index, even if intermediate artifacts were filtered out.
+    links
+        A mapping of (page_index, item_index) to (next_page_index, next_item_index) for
+        items that continue across page breaks.
+    start_item
+        The starting item of the chain.
+    start_key
+        The (page_index, item_index) of the starting item.
+
+    Returns
+    -------
+    tuple[list[ChainItem], list[str]]
+        A tuple containing:
+          - A list of (page_index, item_index, item) tuples representing the chain of
+            continuation items.
+          - A list of warning messages encountered during chain building.
+    """
+
+    chain: list[ChainItem] = []
+    warnings: list[str] = []
+
+    current_page_idx, current_item_idx = start_key
+    current_item = start_item
+
+    while True:
+        chain.append((current_page_idx, current_item_idx, current_item))
+        fwd = links.get((current_page_idx, current_item_idx))
+
+        if not fwd:
+            break
+
+        next_page_idx, next_item_idx = fwd
+        next_page_map = items_lookup.get(next_page_idx)
+
+        # Validation: Broken link (page missing).
+        if next_page_map is None:
+            warnings.append(
+                f"Broken link from {(current_page_idx, current_item_idx)} -> {fwd}: "
+                f"Page {next_page_idx} not found in lookup."
+            )
+            break
+
+        # Look up the next item by original index.
+        next_item = next_page_map.get(next_item_idx)
+
+        # Validation: Broken link (item missing on page).
+        if next_item is None:
+            warnings.append(
+                f"Broken link from {(current_page_idx, current_item_idx)} -> {fwd}: "
+                f"Item {next_item_idx} not found on page {next_page_idx}."
+            )
+            break
+
+        # Validation: incompatible kinds.
+        if not compatible_kinds_for_stitch(next_item=next_item, prev_item=current_item):
+            warnings.append(
+                f"Incompatible continuation kinds at {(current_page_idx, current_item_idx)} -> {fwd}"
+            )
+            break
+
+        # Advance to next item.
+        current_page_idx, current_item_idx = next_page_idx, next_item_idx
+        current_item = next_item
+
+    return chain, warnings
+
+
+def compatible_kinds_for_stitch(
+    *,
+    next_item: Union[CurriculumTable, CurriculumBlock],
+    prev_item: Union[CurriculumTable, CurriculumBlock],
+) -> bool:
+    """Return True if two items are stitch-compatible.
+
+    Parameters
+    ----------
+    next_item
+        The next item.
+    prev_item
+        The previous item.
+
+    Returns
+    -------
+    bool
+        True if the two items are stitch-compatible.
+    """
+
+    if isinstance(prev_item, CurriculumTable) and isinstance(
+        next_item, CurriculumTable
+    ):
+        return True
+    if isinstance(prev_item, CurriculumBlock) and isinstance(
+        next_item, CurriculumBlock
+    ):
+        # Headings/captions should never be part of a stitched continuation, but we
+        # keep this conservative check anyway.
+        if prev_item.block_type in (BlockType.HEADING, BlockType.CAPTION):
+            return False
+        if next_item.block_type in (BlockType.HEADING, BlockType.CAPTION):
+            return False
+
+        # Restrict stitching to the same block_type (simplest and usually safest).
+        return prev_item.block_type == next_item.block_type
+    return False
+
+
+def compute_page_break_links(
+    *, keep_artifacts: bool = True, page_irs: list[PageIR]
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Compute a mapping of (page_i, item_idx) --> (page_i+1, item_idx) links for
+    continuations.
+
+    This uses only the already-verified item boundaries:
+      - prev item boundary must continue to next (TRUNCATED or BOTH)
+      - next item boundary must continue from prev (RESUMED or BOTH)
+
+    We choose candidates nearest the bottom/top of each page to resolve ambiguity.
+
+    Parameters
+    ----------
+    keep_artifacts
+        If True, keep artifact blocks (page numbers, running headers/footers) when
+        normalizing page items for stitching.
+    page_irs
+        The list of PageIRs for the document.
+
+    Returns
+    -------
+    dict[tuple[int, int], tuple[int, int]]
+        Forward links for items that continue across a page break.
+    """
+
+    # Normalize pages to item lists (artifact-filtered)
+    normalized_pages: list[
+        list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]
+    ] = [
+        normalize_page_items(keep_artifacts=keep_artifacts, page_ir=page_ir)
+        for page_ir in page_irs
+    ]
+    links: dict[tuple[int, int], tuple[int, int]] = {}
+
+    for i in range(len(page_irs) - 1):
+        current_page_ir = page_irs[i]
+        next_page_ir = page_irs[i + 1]
+
+        # Access the list of (index, item) tuples for the current and next page.
+        prev_page_items = normalized_pages[i]
+        next_page_items = normalized_pages[i + 1]
+
+        # Find candidates based on item boundary flags. We iterate over the normalized
+        # list, but check the item (tuple[1]).
+        prev_candidates = [
+            idx
+            for idx, (_, item) in enumerate(prev_page_items)
+            if _boundary_continues_to_next(item.boundary)
+        ]
+        next_candidates = [
+            idx
+            for idx, (_, item) in enumerate(next_page_items)
+            if _boundary_continues_from_prev(item.boundary)
+        ]
+
+        if not prev_candidates or not next_candidates:
+            continue
+
+        # Sort by visual proximity to boundary (bottom for previous, top for next).
+        prev_candidates.sort(
+            key=lambda idx: _bbox_y1(prev_page_items[idx][1]),  # pylint: disable=W0640
+            reverse=True,
+        )
+        next_candidates.sort(
+            key=lambda idx: _bbox_y0(next_page_items[idx][1])  # pylint: disable=W0640
+        )
+
+        used_next_indices: set[int] = set()
+
+        for pidx in prev_candidates:
+            prev_orig_idx, prev_item = prev_page_items[pidx]
+            best: Optional[tuple[int, int]] = None  # (score, nidx)
+
+            # Find first compatible next candidate not used.
+            for nidx in next_candidates:
+                if nidx in used_next_indices:
+                    continue
+
+                next_item = next_page_items[nidx][1]
+
+                if not compatible_kinds_for_stitch(
+                    next_item=next_item, prev_item=prev_item
+                ):
+                    continue
+
+                score = _match_score(next_item=next_item, prev_item=prev_item)
+
+                if best is None:
+                    best = (score, nidx)
+                elif score > best[0]:
+                    best = (score, nidx)
+
+            if best is None:
+                continue
+
+            best_nidx = best[1]
+
+            # Retrieve the ORIGINAL index of the matched next item.
+            match_orig_idx = next_page_items[best_nidx][0]
+
+            # Store link: (Page A, Orig Index A) -> (Page B, Orig Index B).
+            links[(current_page_ir.page_index, prev_orig_idx)] = (
+                next_page_ir.page_index,
+                match_orig_idx,
+            )
+            used_next_indices.add(best_nidx)
+
+    return links
+
+
+def create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
+    """Create document IR directories for a given document key.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory root.
+
+    Returns
+    -------
+    DocumentIRDirs
+        The created document IR directories.
+    """
+
+    root = output_dir
+
+    for p in [root]:
+        make_dir(p)
+
+    return DocumentIRDirs(root=root)
+
+
+def join_text_units(*, repair_hyphenation: bool = True, units: list[TextUnit]) -> str:
+    """Join a list of TextUnit objects into a single combined_text. If
+    repair_hyphenation=True, applies a conservative fix for line-end hyphens when the
+    next segment begins with a lowercase letter.
+
+    Parameters
+    ----------
+    repair_hyphenation
+        If True, repair hyphenation at line breaks.
+    units
+        The list of TextUnit objects.
+
+    Returns
+    -------
+    str
+        The combined text.
+    """
+
+    texts = [u.text for u in units if u.text is not None]
+
+    if not texts:
+        return ""
+
+    if not repair_hyphenation or len(texts) == 1:
+        return "\n".join(texts)
+
+    out: list[str] = [texts[0]]
+    for nxt in texts[1:]:
+        prev = out[-1]
+        prev_strip = prev.rstrip()
+        if prev_strip.endswith("-") and nxt and nxt[0].islower():
+            # Remove trailing hyphen and join directly.
+            out[-1] = prev_strip[:-1] + nxt.lstrip()
+        else:
+            out.append(nxt)
+    return "\n".join(out)
+
+
+def materialize_segment(
+    *,
+    chain: list[ChainItem],
+    item_index: int,
+    page_index: int,
+    repair_hyphenation: bool,
+    warnings: list[str],
+) -> Segment:
+    """Dispatches the chain to the correct merging logic based on item type.
+
+    Parameters
+    ----------
+    chain
+        A list of (page_index, item_index, item) tuples representing a chain of
+        continuation items.
+    item_index
+        The starting item index of the chain.
+    page_index
+        The starting page index of the chain.
+    repair_hyphenation
+        If True, repair hyphenation at line breaks when combining text units.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    Segment
+        The merged Segment (BlockSegment or TableSegment).
+    """
+
+    first_item = chain[0][2]
+
+    if isinstance(first_item, CurriculumTable):
+        table_chain = [
+            (pi, ii, it) for pi, ii, it in chain if isinstance(it, CurriculumTable)
+        ]
+        if len(table_chain) != len(chain):
+            warnings.append(
+                f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone."
+            )
+            # fallback: treat first item standalone
+            table_chain = [(page_index, item_index, first_item)]
+        return stitch_table_chain(chain=table_chain)
+
+    block_chain = [
+        (pi, ii, it) for pi, ii, it in chain if isinstance(it, CurriculumBlock)
+    ]
+    if len(block_chain) != len(chain):
+        warnings.append(
+            f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone."
+        )
+        block_chain = [(page_index, item_index, first_item)]
+    return stitch_block_chain(chain=block_chain, repair_hyphenation=repair_hyphenation)
+
+
+def normalize_page_items(
+    *, keep_artifacts: bool, page_ir: PageIR
+) -> list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]:
+    """Normalize a PageIR items list for stitching.
+
+    Parameters
+    ----------
+    keep_artifacts
+        If True, keep artifact blocks (page numbers, running headers/footers).
+    page_ir
+        Source PageIR.
+
+    Returns
+    -------
+    list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]
+        List of (item_index, item) tuples after normalization.
+    """
+
+    items_with_idx = []
+    for idx, item in enumerate(page_ir.items):
+        if keep_artifacts or not _is_artifact_block(item):
+            items_with_idx.append((idx, item))
+
+    return items_with_idx
+
+
+def stitch_block_chain(
+    *, chain: list[tuple[int, int, CurriculumBlock]], repair_hyphenation: bool = True
+) -> BlockSegment:
+    """Stitch a chain of block slices.
+
+    Parameters
+    ----------
+    chain
+        List of (page_index, item_index, CurriculumBlock) tuples representing the
+        slices to stitch.
+    repair_hyphenation
+        If True, repair hyphenation at line breaks when combining text units.
+
+    Returns
+    -------
+    BlockSegment
+        The stitched BlockSegment.
+    """
+
+    first_pi, first_ii, first = chain[0]  # pylint: disable=W0612
+    seg_key = block_segment_key(first)
+
+    slices: list[BlockSlice] = []
+    provenance: list[SegmentProvenance] = []
+    text_units: list[TextUnit] = []
+    list_items: list[ListItem] = []
+    figure_payload: Optional[dict[str, Any]] = None
+
+    for pi, ii, b in chain:
+        slices.append(
+            BlockSlice(
+                bbox=list(b.bbox),
+                block_type=b.block_type,
+                boundary=b.boundary,
+                figure=(
+                    b.figure.model_dump(mode="json") if b.figure is not None else None
+                ),
+                item_index=ii,
+                list_items=list(b.list_items) if b.list_items else None,
+                local_code=b.local_code,
+                page_index=pi,
+                text=b.text,
+            )
+        )
+        provenance.append(
+            SegmentProvenance(
+                bbox=list(b.bbox),
+                boundary=b.boundary,
+                item_index=ii,
+                kind="block",
+                local_code=b.local_code,
+                page_index=pi,
+                repeats_header=None,
+            )
+        )
+
+        if b.text is not None:
+            text_units.append(b.text)
+        if b.list_items:
+            list_items.extend(b.list_items)
+        if b.figure is not None:
+            figure_payload = b.figure.model_dump(mode="json")
+
+    combined_text: Optional[str] = None
+    if text_units:
+        combined_text = join_text_units(
+            repair_hyphenation=repair_hyphenation, units=text_units
+        )
+
+    return BlockSegment(
+        block_type=first.block_type,
+        combined_text=combined_text,
+        figure=figure_payload,
+        list_items=list_items or (first.list_items if first.list_items else None),
+        local_code=first.local_code,
+        provenance=provenance,
+        segment_key=seg_key,
+        slices=slices,
+        text=first.text,
+    )
+
+
+def stitch_table_chain(
+    *, chain: list[tuple[int, int, CurriculumTable]]
+) -> TableSegment:
+    """Stitch a chain of table slices.
+
+    For local_code determination, the process is as follows:
+
+    1. If first.local_code is None but a later slice has one, promote the first
+        non-null code that we encounter.
+    2. Once a code is known, carry it forward to later slices that are missing it.
+    3. After the loop, if local_code was discovered mid-chain:
+        a. Backfill slices[0].local_code and provenance[0].local_code if missing.
+        b. Upgrade seg_key to table:{local_code} (so it prefers the human table label).
+
+    Parameters
+    ----------
+    chain
+        List of (page_index, item_index, CurriculumTable) tuples representing the
+        slices to stitch.
+
+    Returns
+    -------
+    TableSegment
+        The stitched TableSegment.
+    """
+
+    first_pi, first_ii, first = chain[0]
+    seg_key = table_segment_key(first)
+
+    # We'll promote the first non-null local_code observed across the whole chain.
+    local_code = first.local_code
+    header_row_count = int(first.header_row_count)
+
+    stitched_rows: list[TableRow] = list(first.rows)
+    header_rows = stitched_rows[:header_row_count] if header_row_count > 0 else []
+
+    slices: list[TableSlice] = [
+        TableSlice(
+            bbox=list(first.bbox),
+            boundary=first.boundary,
+            header_row_count=header_row_count,
+            item_index=first_ii,
+            local_code=first.local_code,
+            page_index=first_pi,
+            repeats_header=first.repeats_header,
+            rows=list(first.rows),
+        )
+    ]
+    provenance: list[SegmentProvenance] = [
+        SegmentProvenance(
+            bbox=list(first.bbox),
+            boundary=first.boundary,
+            item_index=first_ii,
+            local_code=first.local_code,
+            kind="table",
+            page_index=first_pi,
+            repeats_header=first.repeats_header,
+        )
+    ]
+
+    for pi, ii, t in chain[1:]:
+        # Promote the first observed local_code if it was missing on the first slice.
+        if local_code is None and t.local_code:
+            local_code = t.local_code
+
+        # Carry local_code forward deterministically if missing in later slices.
+        if local_code and t.local_code is None:
+            t.local_code = local_code
+
+        slices.append(
+            TableSlice(
+                bbox=list(t.bbox),
+                boundary=t.boundary,
+                header_row_count=header_row_count,
+                item_index=ii,
+                local_code=t.local_code,
+                page_index=pi,
+                repeats_header=t.repeats_header,
+                rows=list(t.rows),
+            )
+        )
+        provenance.append(
+            SegmentProvenance(
+                bbox=list(t.bbox),
+                boundary=t.boundary,
+                item_index=ii,
+                kind="table",
+                local_code=t.local_code,
+                page_index=pi,
+                repeats_header=t.repeats_header,
+            )
+        )
+
+        rows_to_add = _drop_repeated_header(
+            base_header_rows=header_rows,
+            header_row_count=header_row_count,
+            next_table=t,
+        )
+        stitched_rows.extend(rows_to_add)
+
+    # If local_code was discovered mid-chain, backfill the first slice/provenance and
+    # upgrade the segment_key to prefer the human-visible table code.
+    if local_code:
+        if slices[0].local_code is None:
+            slices[0] = slices[0].model_copy(update={"local_code": local_code})
+        if provenance[0].local_code is None:
+            provenance[0] = provenance[0].model_copy(update={"local_code": local_code})
+        seg_key = f"table:{local_code.strip()}"
+
+    n_cols = max((len(r.cells) for r in stitched_rows), default=0)
+
+    return TableSegment(
+        header_row_count=header_row_count,
+        header_rows=list(header_rows),
+        local_code=local_code,
+        n_cols=n_cols,
+        provenance=provenance,
+        rows=stitched_rows,
+        segment_key=seg_key,
+        slices=slices,
+    )
+
+
+def table_schema_fingerprint(table: CurriculumTable) -> str:
+    """Create a stable fingerprint for a table's schema using header rows. Used for
+    matching table continuations when local_code is missing.
+
+    Parameters
+    ----------
+    table
+        The curriculum table.
+
+    Returns
+    -------
+    str
+        The table schema fingerprint.
+    """
+
+    hrc = int(table.header_row_count)
+    header_rows = list(table.rows[:hrc]) if hrc > 0 else []
+
+    # Fall back to first row if header_count is 0.
+    if not header_rows and table.rows:
+        header_rows = [table.rows[0]]
+
+    sig_rows = [",".join(_row_signature(r)) for r in header_rows]
+    n_cols = max((len(r.cells) for r in table.rows), default=0)
+    base = f"hrc={hrc}|ncols={n_cols}|rows={'||'.join(sig_rows)}"
+
+    return compute_sha256_hex(n_hex=24, s=base)
+
+
+def table_segment_key(table: CurriculumTable) -> str:
+    """Deterministic key for a table segment. Prefers local_code when present;
+    otherwise uses schema fingerprint.
+
+    Parameters
+    ----------
+    table
+        The curriculum table.
+
+    Returns
+    -------
+    str
+        The segment key.
+    """
+
+    if table.local_code:
+        return f"table:{table.local_code.strip()}"
+    return f"table:schema:{table_schema_fingerprint(table)}"
+
+
+def uniquify_segment_keys(*, segments: list[Segment]) -> list[Segment]:
+    """Ensure segment_key is unique within a single DocumentIR.
+
+    Segment keys are designed to be deterministic and content-based. In rare cases
+    (e.g., repeated boilerplate text blocks or tables lacking local_code), collisions
+    can occur. When collisions occur, suffix the key with provenance of the first slice
+    (page_index/item_index) to disambiguate deterministically.
+    """
+
+    counts = Counter(s.segment_key for s in segments)
+
+    if all(c == 1 for c in counts.values()):
+        return segments
+
+    logger.warning(
+        f"Segment key collisions detected: {counts}. "
+        f"Segment keys: {[s.segment_key for s in segments]}"
+    )
+
+    used: set[str] = set()
+    out: list[Segment] = []
+
+    for s in segments:
+        base = s.segment_key
+
+        if counts[base] == 1 and base not in used:
+            out.append(s)
+            used.add(base)
+            continue
+
+        # Collision: add deterministic provenance suffix.
+        if getattr(s, "slices", None):
+            first = s.slices[0]
+            suffix = f"#p{first.page_index:04d}i{first.item_index:04d}"
+        else:
+            suffix = "#unknown"
+
+        candidate = f"{base}{suffix}"
+        k = candidate
+        n = 1
+
+        while k in used:
+            n += 1
+            k = f"{candidate}#{n}"
+
+        out.append(s.model_copy(update={"segment_key": k}))
+        used.add(k)
+
+    return out
