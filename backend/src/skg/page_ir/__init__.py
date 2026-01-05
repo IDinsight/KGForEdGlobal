@@ -1,3 +1,3 @@
-"""This package contains the Intermediate Representations (IR) modules for the SKG
+"""This package contains the page Intermediate Representations (IR) modules for the SKG
 system.
 """

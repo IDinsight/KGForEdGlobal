@@ -20,6 +20,7 @@ from typing import Any, Optional
 import langcodes
 
 from loguru import logger
+from pydantic import BaseModel
 
 # Package Library
 from skg.schemas import Valid
@@ -335,21 +336,25 @@ def validate_bcp47(code: str) -> str:
 
 
 def write_to_json(
-    fp: str | Path,
-    json_info: dict[str, Any] | list[dict[str, Any]],
+    *,
     encoding: str = "utf-8",
+    fp: str | Path,
+    indent: int = 2,
+    json_info: dict[str, Any] | list[dict[str, Any]] | BaseModel | list[BaseModel],
 ) -> None:
     """Write data either to .json or .jsonl file. The format is determined by the
     filepath extension.
 
     Parameters
     ----------
-    fp
-        Filepath to write the JSON file to.
-    json_info
-        JSON data to write out.
     encoding
         The encoding scheme for the JSON file.
+    fp
+        Filepath to write the JSON file to.
+    indent
+        The number of spaces to use for indentation in the JSON file.
+    json_info
+        JSON data to write out or Pydantic BaseModel instance(s).
 
     Raises
     ------
@@ -359,13 +364,33 @@ def write_to_json(
 
     fp = Path(fp)
     suffix = fp.suffix
+
     if suffix == ".json":
+        # Single Pydantic model.
+        if isinstance(json_info, BaseModel):
+            fp.write_text(json_info.model_dump_json(indent=indent), encoding=encoding)
+            return
+
+        # List of Pydantic models (convert to list of dicts for json.dump).
+        if (
+            isinstance(json_info, list)
+            and json_info
+            and isinstance(json_info[0], BaseModel)
+        ):
+            json_info = [m.model_dump() for m in json_info]  # type: ignore
+
+        # Standard dict or list[dict].
         with fp.open("w", encoding=encoding) as f:
-            json.dump(json_info, f)
+            json.dump(json_info, f, indent=indent)
     elif suffix == ".jsonl":
+        items = [json_info] if isinstance(json_info, (dict, BaseModel)) else json_info
         with fp.open("w", encoding=encoding) as f:
-            for dict_ in json_info:
-                f.write(json.dumps(dict_) + "\n")
+            for item in items:
+                # Use Pydantic's serializer for models.
+                if isinstance(item, BaseModel):
+                    f.write(item.model_dump_json() + "\n")
+                else:
+                    f.write(json.dumps(item) + "\n")
     else:
         raise ValueError(
             f"Invalid suffix for writing to JSON: {suffix}. "
