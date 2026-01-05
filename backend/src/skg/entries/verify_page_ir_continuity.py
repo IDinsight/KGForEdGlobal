@@ -11,9 +11,6 @@ extractor boundaries are preserved.
 Invoke from the backend directory via:
 
 python src/skg/entries/verify_page_ir_continuity.py ../data/tanzania/tanzania.pdf /path/to/extraction_run_results
-python src/skg/entries/verify_page_ir_continuity.py ../data/zambia/zambia.pdf /path/to/extraction_run_results
-python src/skg/entries/verify_page_ir_continuity.py ../data/uganda/uganda.pdf /path/to/extraction_run_results
-python src/skg/entries/verify_page_ir_continuity.py ../data/ghana/ghana.pdf /path/to/extraction_run_results
 """
 
 # Standard Library
