@@ -98,6 +98,26 @@ def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     return False
 
 
+def compute_sha256_hex(*, n_hex: int = 16, s: str) -> str:
+    """Compute the SHA-256 hex digest of a string and return the first `n_hex`
+    characters.
+
+    Parameters
+    ----------
+    n_hex
+        Number of hex characters to return from the digest.
+    s
+        The input string to hash.
+
+    Returns
+    -------
+    str
+        The first `n_hex` characters of the SHA-256 hex digest of `s`.
+    """
+
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n_hex]
+
+
 def encode_png_to_data_url(png_fp: Path) -> str:
     """Encode a PNG file to a base64 data URL.
 
