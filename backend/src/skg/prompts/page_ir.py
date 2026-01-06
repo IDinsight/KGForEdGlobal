@@ -283,7 +283,10 @@ You will be given:
 7. Do NOT set repeats_header=true unless it is the SAME table continuing across the boundary.
 8. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
 9. If either candidate item is a HEADING (or CAPTION), always set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence ≤ 0.49, and leave all set_* null. Never set boundary metadata for HEADING/CAPTION items.
-10. UNCERTAINTY POLICY (must follow exactly):
+10. ORDERING SAFETY (TEXT/LIST ONLY):
+  - If continuation_kind="{PageContinuationKind.TEXT.value}" (including lists) AND IMAGE B shows a non-artifact HEADING/CAPTION above the NEXT candidate block (i.e., the candidate list/text is introduced by a new heading), then set: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
+  - Exception: This rule does not apply to TABLE continuations (tables may have captions like "Table X (continued)" above them).
+11. UNCERTAINTY POLICY (must follow exactly):
   - Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
   - Exception for TABLE <-> TABLE candidates: If BOTH candidates are tables AND you have at least one STRONG continuation cue (per TABLE continuation signals below) AND there is NO visible new-table marker/caption/title at the boundary, you SHOULD set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", with confidence in [0.55, 0.70].
 
@@ -334,6 +337,7 @@ You will be given:
     - "Figure N shows ..." at end of page N followed by "Figure N:" or a figure/caption at top of page N+1.
     - If the bottom text clearly ends a complete sentence (ends with ".", "!" or "?"), do NOT mark as text continuation.
     - If the next candidate begins with a table/figure caption label ("Table", "Figure"), do NOT mark as text continuation.
+    - If the previous list entries appear complete (each entry is self-contained and ends cleanly, often with a right-aligned page number) and IMAGE B begins a new section under a new heading, do NOT mark continuation even if both are lists.
 4. FIGURE candidates: most figures do NOT continue across pages. Only mark continuation if the SAME figure is clearly cut off and resumes on the next page.
 5. Excerpt metadata fields like boundary/repeats_header may be null/unreliable; do not treat null as evidence of "complete".
 
