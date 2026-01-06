@@ -1181,7 +1181,7 @@ def materialize_segment(
             )
             # fallback: treat first item standalone
             table_chain = [(page_index, item_index, first_item)]
-        return stitch_table_chain(chain=table_chain)
+        return stitch_table_chain(chain=table_chain, warnings=warnings)
 
     block_chain = [
         (pi, ii, it) for pi, ii, it in chain if isinstance(it, CurriculumBlock)
@@ -1335,7 +1335,7 @@ def stitch_block_chain(
 
 
 def stitch_table_chain(
-    *, chain: list[tuple[int, int, CurriculumTable]]
+    *, chain: list[tuple[int, int, CurriculumTable]], warnings: list[str]
 ) -> TableSegment:
     """Stitch a chain of table slices.
 
@@ -1353,6 +1353,8 @@ def stitch_table_chain(
     chain
         List of (page_index, item_index, CurriculumTable) tuples representing the
         slices to stitch.
+    warnings
+        A list to append warning messages to.
 
     Returns
     -------
@@ -1360,24 +1362,42 @@ def stitch_table_chain(
         The stitched TableSegment.
     """
 
-    first_pi, first_ii, first = chain[0]
+    def _norm_code(x: str | None) -> str | None:
+        """Normalize a local_code by stripping whitespace; return None if blank.
 
-    # Promote local_code from later slices if the first slice is missing it.
-    local_code = first.local_code
+        Parameters
+        ----------
+        x
+            The local_code to normalize.
+
+        Returns
+        -------
+        str | None
+            The normalized local_code or None.
+        """
+
+        return (x or "").strip() or None
+
+    first_pi, first_ii, first = chain[0]
+    first_code = _norm_code(first.local_code)
+
+    # Promote local_code from later slices if the first slice is missing/blank it.
+    local_code = first_code
     if local_code is None:
         for _pi, _ii, t in chain[1:]:
-            if t.local_code:
-                local_code = t.local_code
+            t_code = _norm_code(t.local_code)
+            if t_code:
+                local_code = t_code
                 break
 
     # Compute segment_key *after* local_code promotion.
     seg_key = (
-        f"table:{local_code.strip()}"
+        f"table:{local_code}"
         if local_code
         else f"table:schema:{table_schema_fingerprint(first)}"
     )
 
-    header_row_count = int(first.header_row_count)
+    header_row_count = int(first.header_row_count or 0)
     stitched_rows: list[TableRow] = list(first.rows)
     header_rows = stitched_rows[:header_row_count] if header_row_count > 0 else []
 
@@ -1387,7 +1407,7 @@ def stitch_table_chain(
             boundary=first.boundary,
             header_row_count=header_row_count,
             item_index=first_ii,
-            local_code=local_code,
+            local_code=local_code,  # ok to stamp with promoted code
             page_index=first_pi,
             repeats_header=first.repeats_header,
             rows=list(first.rows),
@@ -1406,18 +1426,34 @@ def stitch_table_chain(
     ]
 
     for pi, ii, t in chain[1:]:
-        # Promote the first observed local_code if it was missing on the first slice.
-        if local_code is None and t.local_code:
-            local_code = t.local_code
+        t_code = _norm_code(t.local_code)
+
+        # Warn if codes conflict inside a stitched chain.
+        if t_code and local_code and t_code != local_code:
+            warnings.append(
+                f"Conflicting local_code in table chain {seg_key}: "
+                f"{local_code!r} vs {t_code!r} (page={pi}, item_index={ii}). "
+                f"Keeping {local_code!r}."
+            )
 
         # Carry local_code forward deterministically if missing in later slices.
-        slice_local_code = t.local_code or local_code
+        slice_local_code = t_code or local_code
+
+        # Determine k for header dropping.
+        next_hrc = int(t.header_row_count or 0)
+        if next_hrc != header_row_count:
+            warnings.append(
+                f"header_row_count mismatch in table chain {seg_key}: "
+                f"first={header_row_count} vs next={next_hrc} "
+                f"(page={pi}, item_index={ii}). Using k=min(...) for safe header-drop."
+            )
+        k = min(header_row_count, next_hrc)
 
         slices.append(
             TableSlice(
                 bbox=list(t.bbox),
                 boundary=t.boundary,
-                header_row_count=header_row_count,
+                header_row_count=next_hrc,
                 item_index=ii,
                 local_code=slice_local_code,
                 page_index=pi,
@@ -1438,20 +1474,13 @@ def stitch_table_chain(
         )
 
         rows_to_add = _drop_repeated_header(
-            base_header_rows=header_rows,
-            header_row_count=header_row_count,
-            next_table=t,
+            base_header_rows=header_rows[:k], header_row_count=k, next_table=t
         )
         stitched_rows.extend(rows_to_add)
 
-    # If local_code was discovered mid-chain, backfill the first slice/provenance and
-    # upgrade the segment_key to prefer the human-visible table code.
+    # Ensure seg_key prefers table code if known.
     if local_code:
-        if slices[0].local_code is None:
-            slices[0] = slices[0].model_copy(update={"local_code": local_code})
-        if provenance[0].local_code is None:
-            provenance[0] = provenance[0].model_copy(update={"local_code": local_code})
-        seg_key = f"table:{local_code.strip()}"
+        seg_key = f"table:{local_code}"
 
     n_cols = max((len(r.cells) for r in stitched_rows), default=0)
 
@@ -1494,26 +1523,6 @@ def table_schema_fingerprint(table: CurriculumTable) -> str:
     base = f"hrc={hrc}|ncols={n_cols}|rows={'||'.join(sig_rows)}"
 
     return compute_sha256_hex(n_hex=24, s=base)
-
-
-def table_segment_key(table: CurriculumTable) -> str:
-    """Deterministic key for a table segment. Prefers local_code when present;
-    otherwise uses schema fingerprint.
-
-    Parameters
-    ----------
-    table
-        The curriculum table.
-
-    Returns
-    -------
-    str
-        The segment key.
-    """
-
-    if table.local_code:
-        return f"table:{table.local_code.strip()}"
-    return f"table:schema:{table_schema_fingerprint(table)}"
 
 
 def uniquify_segment_keys(*, segments: list[Segment]) -> list[Segment]:

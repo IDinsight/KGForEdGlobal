@@ -143,10 +143,14 @@ Segment = Union[BlockSegment, TableSegment]
 class DocumentIR(BaseModelDocumentIR):
     """Document-level IR after stitching (steps 1 & 2)."""
 
-    doc_key: Optional[str] = Field(
-        None,
+    coord_space: str
+    doc_key: str = Field(
+        ...,
         description="Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex).",
     )
+    dpi: int
+    image_height: int
+    image_width: int
     page_count: int = Field(..., description="Total number of pages stitched.")
     pdf_name: Optional[str] = Field(None, description="Source PDF filename (no path).")
     segments: list[Segment] = Field(
