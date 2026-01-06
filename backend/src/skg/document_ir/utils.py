@@ -44,72 +44,97 @@ class DocumentIRDirs:
     root: Path
 
 
-def _bbox_y0(item: Union[CurriculumTable, CurriculumBlock]) -> float:
-    """Return the y0 coordinate of the item's bounding box.
+def _append_rejected_warnings(
+    *,
+    is_prev: bool,
+    items: list,
+    page_ir: PageIR,
+    rejected_indices: list[int],
+    warnings: list[str],
+) -> None:
+    """Append warnings for candidates rejected due to unsafe content ordering.
 
     Parameters
     ----------
-    item
-        The item.
-
-    Returns
-    -------
-    float
-        The y0 coordinate.
+    is_prev
+        If True, logging for previous-page candidates; else next-page candidates.
+    items
+        The page's normalized items list.
+    page_ir
+        The PageIR.
+    rejected_indices
+        A list of indices of rejected candidates.
+    warnings
+        A list to append warning messages to.
     """
 
-    return float(item.bbox[1])
+    if not rejected_indices:
+        return
+
+    reason = "followed" if is_prev else "preceded"
+
+    for ridx in rejected_indices:
+        orig_idx, item = items[ridx]
+        warnings.append(
+            f"Skipped stitching candidate on {'previous' if is_prev else 'next'} page "
+            f"because it is {reason} by non-artifact content (would reorder content): "
+            f"page={page_ir.page_index} item_index={orig_idx} "
+            f"kind={item.kind} boundary={item.boundary.value}"
+        )
 
 
-def _bbox_y1(item: Union[CurriculumTable, CurriculumBlock]) -> float:
-    """Return the y1 coordinate of the item's bounding box.
+def _append_unmatched_warnings(
+    *,
+    current_page_ir: PageIR,
+    next_candidates: list[int],
+    next_items: list,
+    next_page_ir: PageIR,
+    prev_candidates: list[int],
+    prev_items: list,
+    warnings: list[str],
+) -> None:
+    """Append warnings when valid candidates exist on one side but not the other.
 
     Parameters
     ----------
-    item
-        The item.
-
-    Returns
-    -------
-    float
-        The y1 coordinate.
+    current_page_ir
+        The current PageIR.
+    next_candidates
+        A list of indices of valid next-page candidates.
+    next_items
+        The next page's normalized items list.
+    next_page_ir
+        The next PageIR.
+    prev_candidates
+        A list of indices of valid previous-page candidates.
+    prev_items
+        The previous page's normalized items list.
+    warnings
+        A list to append warning messages to.
     """
 
-    return float(item.bbox[3])
+    if warnings is None:
+        return
 
+    if prev_candidates and not next_candidates:
+        for pidx in prev_candidates:
+            prev_orig_idx, prev_item = prev_items[pidx]
+            warnings.append(
+                f"Unmatched continuation on previous page (TRUNCATED/BOTH) "
+                f"- no eligible next-page candidate: "
+                f"page={current_page_ir.page_index} item_index={prev_orig_idx} "
+                f"kind={prev_item.kind} boundary={prev_item.boundary.value}"
+            )
 
-def _boundary_continues_from_prev(boundary: ItemBoundary) -> bool:
-    """Return True if the boundary indicates continuation from previous item.
-
-    Parameters
-    ----------
-    boundary
-        The item boundary.
-
-    Returns
-    -------
-    bool
-        True if the boundary indicates continuation from previous item.
-    """
-
-    return boundary in (ItemBoundary.RESUMED, ItemBoundary.BOTH)
-
-
-def _boundary_continues_to_next(boundary: ItemBoundary) -> bool:
-    """Return True if the boundary indicates continuation to next item.
-
-    Parameters
-    ----------
-    boundary
-        The item boundary.
-
-    Returns
-    -------
-    bool
-        True if the boundary indicates continuation to next item.
-    """
-
-    return boundary in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
+    if next_candidates and not prev_candidates:
+        for nidx in next_candidates:
+            next_orig_idx, next_item = next_items[nidx]
+            warnings.append(
+                f"Unmatched continuation on next page (RESUMED/BOTH) - no "
+                f"eligible previous-page candidate: "
+                f"page={next_page_ir.page_index} item_index={next_orig_idx} "
+                f"kind={next_item.kind} boundary={next_item.boundary.value}"
+            )
 
 
 def _drop_repeated_header(
@@ -153,6 +178,68 @@ def _drop_repeated_header(
     return rows_to_add
 
 
+def _find_next_candidates(items: list[Any]) -> tuple[list[int], list[int]]:
+    """Find items on the next page eligible for stitching.
+
+    Parameters
+    ----------
+    items
+        The next page's normalized items list.
+
+    Returns
+    -------
+    tuple[list[int], list[int]]
+        A tuple containing:
+            - A list of indices of valid next-page candidates.
+            - A list of indices of rejected next-page candidates.
+    """
+
+    rejected, valid = [], []
+    for idx, (_, item) in enumerate(items):
+        if item.boundary not in (ItemBoundary.RESUMED, ItemBoundary.BOTH):
+            continue
+
+        if _next_candidate_is_safe_to_stitch(
+            next_item=item, next_item_idx=idx, next_page_items=items
+        ):
+            valid.append(idx)
+        else:
+            rejected.append(idx)
+
+    return valid, rejected
+
+
+def _find_prev_candidates(items: list[Any]) -> tuple[list[int], list[int]]:
+    """Find items on the previous page eligible for stitching.
+
+    Parameters
+    ----------
+    items
+        The previous page's normalized items list.
+
+    Returns
+    -------
+    tuple[list[int], list[int]]
+        A tuple containing:
+            - A list of indices of valid previous-page candidates.
+            - A list of indices of rejected previous-page candidates.
+    """
+
+    rejected, valid = [], []
+    for idx, (_, item) in enumerate(items):
+        if item.boundary not in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH):
+            continue
+
+        if _prev_candidate_is_safe_to_stitch(
+            prev_item=item, prev_item_idx=idx, prev_page_items=items
+        ):
+            valid.append(idx)
+        else:
+            rejected.append(idx)
+
+    return valid, rejected
+
+
 def _is_artifact_block(item: Union[CurriculumTable, CurriculumBlock]) -> bool:
     """Return True if the item is an artifact block.
 
@@ -168,6 +255,88 @@ def _is_artifact_block(item: Union[CurriculumTable, CurriculumBlock]) -> bool:
     """
 
     return isinstance(item, CurriculumBlock) and item.block_type == BlockType.ARTIFACT
+
+
+def _match_candidates(
+    *,
+    current_page_ir: PageIR,
+    next_candidates: list[int],
+    next_page_ir: PageIR,
+    next_page_items: list,
+    prev_candidates: list[int],
+    prev_page_items: list,
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Sort candidates by proximity and find the best matches.
+
+    Parameters
+    ----------
+    current_page_ir
+        The current PageIR.
+    next_candidates
+        A list of indices of valid next-page candidates.
+    next_page_ir
+        The next PageIR.
+    next_page_items
+        The next page's normalized items list.
+    prev_candidates
+        A list of indices of valid previous-page candidates.
+    prev_page_items
+        The previous page's normalized items list.
+
+    Returns
+    -------
+    dict[tuple[int, int], tuple[int, int]]
+        Forward links for items that continue across the page break.
+    """
+
+    # Sort bottom of previous page by highest y-coordinate.
+    prev_candidates.sort(
+        key=lambda idx: float(prev_page_items[idx][1].bbox[3]),  # pylint: disable=W0640
+        reverse=True,
+    )
+    # Sort top of next page by lowest y-coordinate.
+    next_candidates.sort(
+        key=lambda idx: float(next_page_items[idx][1].bbox[1])  # pylint: disable=W0640
+    )
+
+    page_pair_links: dict[tuple[int, int], tuple[int, int]] = {}
+    used_next_indices: set[int] = set()
+
+    for pidx in prev_candidates:
+        prev_orig_idx, prev_item = prev_page_items[pidx]
+        best: Optional[tuple[int, int]] = None  # (score, nidx)
+
+        # Find first compatible next candidate not used.
+        for nidx in next_candidates:
+            if nidx in used_next_indices:
+                continue
+
+            next_item = next_page_items[nidx][1]
+
+            if not compatible_kinds_for_stitch(
+                next_item=next_item, prev_item=prev_item
+            ):
+                continue
+
+            score = _match_score(next_item=next_item, prev_item=prev_item)
+
+            if best is None or score > best[0]:  # pylint: disable=E1136
+                best = (score, nidx)
+
+        if best:
+            best_nidx = best[1]
+
+            # Retrieve the ORIGINAL index of the matched next item.
+            match_orig_idx = next_page_items[best_nidx][0]
+
+            # Store page pair link: (Page A, Orig Index A) -> (Page B, Orig Index B).
+            page_pair_links[(current_page_ir.page_index, prev_orig_idx)] = (
+                next_page_ir.page_index,
+                match_orig_idx,
+            )
+            used_next_indices.add(best_nidx)
+
+    return page_pair_links
 
 
 def _match_score(
@@ -225,6 +394,48 @@ def _match_score(
     return -999
 
 
+def _next_candidate_is_safe_to_stitch(
+    *,
+    next_item: Union[CurriculumTable, CurriculumBlock],
+    next_item_idx: int,
+    next_page_items: list[tuple[int, Union[CurriculumTable, CurriculumBlock]]],
+) -> bool:
+    """Determine if it's safe to stitch to the next-page candidate. Only stitch to a
+    next-page candidate if nothing non-artifact precedes it. Otherwise stitching would
+    reorder content (because the stitched segment is anchored on the previous page).
+    Exception: allow CAPTION blocks before tables (common: "Table X (continued)").
+
+    Parameters
+    ----------
+    next_item
+        The next item.
+    next_item_idx
+        The index of the next item in the next page's normalized items list.
+    next_page_items
+        The next page's normalized items list.
+
+    Returns
+    -------
+    bool
+        True if it's safe to stitch to the next-page candidate.
+    """
+
+    for _, prior in next_page_items[:next_item_idx]:
+        if _is_artifact_block(prior):
+            continue
+
+        if (
+            isinstance(next_item, CurriculumTable)
+            and isinstance(prior, CurriculumBlock)
+            and prior.block_type == BlockType.CAPTION
+        ):
+            continue
+
+        return False
+
+    return True
+
+
 def _normalize_text(text: Optional[str]) -> str:
     """Normalize text for comparisons.
 
@@ -244,6 +455,128 @@ def _normalize_text(text: Optional[str]) -> str:
 
     # Collapse whitespace and strip.
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _prev_candidate_is_safe_to_stitch(
+    *,
+    prev_item: Union[CurriculumTable, CurriculumBlock],
+    prev_item_idx: int,
+    prev_page_items: list[tuple[int, Union[CurriculumTable, CurriculumBlock]]],
+) -> bool:
+    """Determine if it's safe to stitch from the previous-page candidate. Only stitch
+    from a previous-page candidate if nothing non-artifact follows it. Exception: allow
+    CAPTION blocks after tables (e.g., Source/Note lines).
+
+    Parameters
+    ----------
+    prev_item
+        The previous item.
+    prev_item_idx
+        The index of the previous item in the previous page's normalized items list.
+    prev_page_items
+        The previous page's normalized items list.
+
+    Returns
+    -------
+    bool
+        True if it's safe to stitch from the previous-page candidate.
+    """
+
+    for _, later in prev_page_items[prev_item_idx + 1 :]:
+        if _is_artifact_block(later):
+            continue
+
+        if (
+            isinstance(prev_item, CurriculumTable)
+            and isinstance(later, CurriculumBlock)
+            and later.block_type == BlockType.CAPTION
+        ):
+            continue
+
+        return False
+
+    return True
+
+
+def _process_page_pair(
+    *,
+    current_page_ir: PageIR,
+    next_page_ir: PageIR,
+    next_page_items: list,
+    prev_page_items: list,
+    warnings: list[str],
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Orchestrate candidate finding, warning logging, and linking for a single pair of
+    pages.
+
+    The process is as follows:
+
+    1. Identify candidates (valid vs rejected).
+    2. Append warnings for unsafe candidates (rejected).
+    3. Append warnings for scenarios where no candidates exist.
+    4. Compute links between valid candidates.
+
+    Parameters
+    ----------
+    current_page_ir
+        The current PageIR.
+    next_page_ir
+        The next PageIR.
+    next_page_items
+        The next page's normalized items list.
+    prev_page_items
+        The previous page's normalized items list.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    dict[tuple[int, int], tuple[int, int]]
+        Forward links for items that continue across the page break.
+    """
+
+    # 1.
+    prev_candidates, prev_rejected = _find_prev_candidates(prev_page_items)
+    next_candidates, next_rejected = _find_next_candidates(next_page_items)
+
+    # 2.
+    _append_rejected_warnings(
+        is_prev=True,
+        items=prev_page_items,
+        page_ir=current_page_ir,
+        rejected_indices=prev_rejected,
+        warnings=warnings,
+    )
+    _append_rejected_warnings(
+        is_prev=False,
+        items=next_page_items,
+        page_ir=next_page_ir,
+        rejected_indices=next_rejected,
+        warnings=warnings,
+    )
+
+    # 3.
+    if not prev_candidates or not next_candidates:
+        _append_unmatched_warnings(
+            current_page_ir=current_page_ir,
+            next_candidates=next_candidates,
+            next_items=next_page_items,
+            next_page_ir=next_page_ir,
+            prev_candidates=prev_candidates,
+            prev_items=prev_page_items,
+            warnings=warnings,
+        )
+        return {}
+
+    # 4.
+    return _match_candidates(
+        current_page_ir=current_page_ir,
+        next_page_ir=next_page_ir,
+        prev_candidates=prev_candidates,
+        next_candidates=next_candidates,
+        prev_page_items=prev_page_items,
+        next_page_items=next_page_items,
+    )
 
 
 def _rows_match(a: Sequence[TableRow], b: Sequence[TableRow]) -> bool:
@@ -423,6 +756,7 @@ def compatible_kinds_for_stitch(
         next_item, CurriculumTable
     ):
         return True
+
     if isinstance(prev_item, CurriculumBlock) and isinstance(
         next_item, CurriculumBlock
     ):
@@ -433,13 +767,14 @@ def compatible_kinds_for_stitch(
         if next_item.block_type in (BlockType.HEADING, BlockType.CAPTION):
             return False
 
-        # Restrict stitching to the same block_type (simplest and usually safest).
+        # Restrict stitching to the same block_type.
         return prev_item.block_type == next_item.block_type
+
     return False
 
 
 def compute_page_break_links(
-    *, keep_artifacts: bool = True, page_irs: list[PageIR]
+    *, keep_artifacts: bool = True, page_irs: list[PageIR], warnings: list[str]
 ) -> dict[tuple[int, int], tuple[int, int]]:
     """Compute a mapping of (page_i, item_idx) --> (page_i+1, item_idx) links for
     continuations.
@@ -457,6 +792,8 @@ def compute_page_break_links(
         normalizing page items for stitching.
     page_irs
         The list of PageIRs for the document.
+    warnings
+        A list to append warning messages to.
 
     Returns
     -------
@@ -474,77 +811,15 @@ def compute_page_break_links(
     links: dict[tuple[int, int], tuple[int, int]] = {}
 
     for i in range(len(page_irs) - 1):
-        current_page_ir = page_irs[i]
-        next_page_ir = page_irs[i + 1]
-
-        # Access the list of (index, item) tuples for the current and next page.
-        prev_page_items = normalized_pages[i]
-        next_page_items = normalized_pages[i + 1]
-
-        # Find candidates based on item boundary flags. We iterate over the normalized
-        # list, but check the item (tuple[1]).
-        prev_candidates = [
-            idx
-            for idx, (_, item) in enumerate(prev_page_items)
-            if _boundary_continues_to_next(item.boundary)
-        ]
-        next_candidates = [
-            idx
-            for idx, (_, item) in enumerate(next_page_items)
-            if _boundary_continues_from_prev(item.boundary)
-        ]
-
-        if not prev_candidates or not next_candidates:
-            continue
-
-        # Sort by visual proximity to boundary (bottom for previous, top for next).
-        prev_candidates.sort(
-            key=lambda idx: _bbox_y1(prev_page_items[idx][1]),  # pylint: disable=W0640
-            reverse=True,
+        # Process one pair of pages at a time.
+        page_pair_links = _process_page_pair(
+            current_page_ir=page_irs[i],
+            next_page_ir=page_irs[i + 1],
+            next_page_items=normalized_pages[i + 1],
+            prev_page_items=normalized_pages[i],
+            warnings=warnings,
         )
-        next_candidates.sort(
-            key=lambda idx: _bbox_y0(next_page_items[idx][1])  # pylint: disable=W0640
-        )
-
-        used_next_indices: set[int] = set()
-
-        for pidx in prev_candidates:
-            prev_orig_idx, prev_item = prev_page_items[pidx]
-            best: Optional[tuple[int, int]] = None  # (score, nidx)
-
-            # Find first compatible next candidate not used.
-            for nidx in next_candidates:
-                if nidx in used_next_indices:
-                    continue
-
-                next_item = next_page_items[nidx][1]
-
-                if not compatible_kinds_for_stitch(
-                    next_item=next_item, prev_item=prev_item
-                ):
-                    continue
-
-                score = _match_score(next_item=next_item, prev_item=prev_item)
-
-                if best is None:
-                    best = (score, nidx)
-                elif score > best[0]:
-                    best = (score, nidx)
-
-            if best is None:
-                continue
-
-            best_nidx = best[1]
-
-            # Retrieve the ORIGINAL index of the matched next item.
-            match_orig_idx = next_page_items[best_nidx][0]
-
-            # Store link: (Page A, Orig Index A) -> (Page B, Orig Index B).
-            links[(current_page_ir.page_index, prev_orig_idx)] = (
-                next_page_ir.page_index,
-                match_orig_idx,
-            )
-            used_next_indices.add(best_nidx)
+        links.update(page_pair_links)
 
     return links
 
@@ -799,12 +1074,23 @@ def stitch_table_chain(
     """
 
     first_pi, first_ii, first = chain[0]
-    seg_key = table_segment_key(first)
 
-    # We'll promote the first non-null local_code observed across the whole chain.
+    # Promote local_code from later slices if the first slice is missing it.
     local_code = first.local_code
-    header_row_count = int(first.header_row_count)
+    if local_code is None:
+        for _pi, _ii, t in chain[1:]:
+            if t.local_code:
+                local_code = t.local_code
+                break
 
+    # Compute segment_key *after* local_code promotion.
+    seg_key = (
+        f"table:{local_code.strip()}"
+        if local_code
+        else f"table:schema:{table_schema_fingerprint(first)}"
+    )
+
+    header_row_count = int(first.header_row_count)
     stitched_rows: list[TableRow] = list(first.rows)
     header_rows = stitched_rows[:header_row_count] if header_row_count > 0 else []
 
@@ -814,7 +1100,7 @@ def stitch_table_chain(
             boundary=first.boundary,
             header_row_count=header_row_count,
             item_index=first_ii,
-            local_code=first.local_code,
+            local_code=local_code,
             page_index=first_pi,
             repeats_header=first.repeats_header,
             rows=list(first.rows),
@@ -825,7 +1111,7 @@ def stitch_table_chain(
             bbox=list(first.bbox),
             boundary=first.boundary,
             item_index=first_ii,
-            local_code=first.local_code,
+            local_code=local_code,
             kind="table",
             page_index=first_pi,
             repeats_header=first.repeats_header,
@@ -838,8 +1124,7 @@ def stitch_table_chain(
             local_code = t.local_code
 
         # Carry local_code forward deterministically if missing in later slices.
-        if local_code and t.local_code is None:
-            t.local_code = local_code
+        slice_local_code = t.local_code or local_code
 
         slices.append(
             TableSlice(
@@ -847,7 +1132,7 @@ def stitch_table_chain(
                 boundary=t.boundary,
                 header_row_count=header_row_count,
                 item_index=ii,
-                local_code=t.local_code,
+                local_code=slice_local_code,
                 page_index=pi,
                 repeats_header=t.repeats_header,
                 rows=list(t.rows),
@@ -859,7 +1144,7 @@ def stitch_table_chain(
                 boundary=t.boundary,
                 item_index=ii,
                 kind="table",
-                local_code=t.local_code,
+                local_code=slice_local_code,
                 page_index=pi,
                 repeats_header=t.repeats_header,
             )
@@ -951,6 +1236,9 @@ def uniquify_segment_keys(*, segments: list[Segment]) -> list[Segment]:
     (e.g., repeated boilerplate text blocks or tables lacking local_code), collisions
     can occur. When collisions occur, suffix the key with provenance of the first slice
     (page_index/item_index) to disambiguate deterministically.
+
+    NB: Segment keys only need to be unique within a *single* document IR. If there are
+    no collisions, adding suffixes doesn't do anything.
     """
 
     counts = Counter(s.segment_key for s in segments)
@@ -959,7 +1247,7 @@ def uniquify_segment_keys(*, segments: list[Segment]) -> list[Segment]:
         return segments
 
     logger.warning(
-        f"Segment key collisions detected: {counts}. "
+        f"Segment key collisions detected: {counts}.\n\n"
         f"Segment keys: {[s.segment_key for s in segments]}"
     )
 
