@@ -9,7 +9,12 @@ from typing import Any, Optional
 
 # Package Library
 from skg.page_ir.schemas import PageIRContinuityVerdict
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.utils.constants import (
+    SECTION_BREAK_HEADINGS,
+    BlockType,
+    ItemBoundary,
+    PageBoundaryState,
+)
 from skg.utils.general import clamp, make_dir, near
 
 
@@ -46,7 +51,16 @@ def _block_type_val(v: Any) -> str:
         The normalized block type string.
     """
 
-    return getattr(v, "value", v) if v is not None else ""
+    if isinstance(v, dict):
+        block_type = v.get("block_type")
+    elif hasattr(v, "block_type"):  # Handle Pydantic object being passed directly
+        block_type = getattr(v, "block_type")
+    else:
+        block_type = v
+
+    return (
+        str(getattr(block_type, "value", block_type)) if block_type is not None else ""
+    )
 
 
 def _boundary_str(item: Any) -> str:
@@ -63,7 +77,12 @@ def _boundary_str(item: Any) -> str:
         The boundary string, or empty string if not set.
     """
 
-    b = getattr(item, "boundary", None)
+    b = (
+        item.get("boundary")
+        if isinstance(item, dict)
+        else getattr(item, "boundary", None)
+    )
+
     return "" if b is None else b.value if hasattr(b, "value") else str(b)
 
 
@@ -578,7 +597,7 @@ def get_negative_threshold_based_on_kind(
 
     # Table to table and figure to figure are usually visually obvious.
     if prev_kind == "table" and next_kind == "table":
-        return 0.85
+        return 0.75
 
     if (
         prev_kind == "block"
@@ -586,10 +605,11 @@ def get_negative_threshold_based_on_kind(
         and is_figure_block(prev_item)
         and is_figure_block(next_item)
     ):
-        return 0.85
+        return 0.75
 
-    # Text is more ambiguous so be stricter.
-    return 0.90
+    # Other kinds (text to text, table to text, figure to text, etc.) are harder. Can
+    # be more conservative (if we want).
+    return 0.75
 
 
 def get_threshold_based_on_kind(
@@ -635,6 +655,74 @@ def get_threshold_based_on_kind(
     return threshold
 
 
+def has_structural_block_above_candidate(
+    *,
+    candidate_index: int,
+    items: list[dict[str, Any]],
+    require_section_break_text: bool = True,
+) -> bool:
+    """Determine if there is a non-artifact structural block (HEADING/CAPTION/TITLE)
+    immediately above the candidate *as the first meaningful thing on the page*.
+
+    The process is as follows:
+
+    1. We scan upwards from the candidate and stop once we hit real content
+        (paragraph/list/table/figure). This prevents false positives from earlier
+        headings that are not actually the "start context" for the candidate.
+    2. If require_section_break_text=True, only treat certain known section headers
+        (e.g., "bibliography", "list of tables") as hard negatives.
+
+    Parameters
+    ----------
+    candidate_index
+        The index of the candidate item in the items list.
+    items
+        The list of PageIR items.
+    require_section_break_text
+        If True, only treat known section break headings as valid structural blocks.
+
+    Returns
+    -------
+    bool
+        True if a structural block is found above the candidate, False otherwise.
+    """
+
+    structural = {"heading", "caption", "title"}
+
+    # Walk upward from the candidate, nearest blocks first.
+    for it in reversed(items[:candidate_index]):
+        kind = it.get("kind")
+        if kind == "table":
+            # Table above candidate means candidate isn't top-of-page content.
+            return False
+
+        if kind != "block":
+            continue
+
+        bt = (it.get("block_type") or "").lower()
+        if bt == "artifact":
+            continue
+
+        # If we hit real body content above the candidate, then the candidate is not
+        # "starting under a new heading at top of page" in the relevant sense.
+        if bt in {"paragraph", "list"}:
+            return False
+
+        if bt in structural:
+            if not require_section_break_text:
+                return True
+
+            text_unit = it.get("text") or {}
+            txt = (text_unit.get("text") or "").strip().lower()
+            return txt in SECTION_BREAK_HEADINGS
+
+        # If we encounter other block types, keep scanning.
+        if bt == "figure":
+            return False
+
+    return False
+
+
 def is_artifact(item: dict[str, Any]) -> bool:
     """Check if an item is an artifact.
 
@@ -651,7 +739,7 @@ def is_artifact(item: dict[str, Any]) -> bool:
 
     if item.get("kind") != "block":
         return False
-    return _block_type_val(item.get("block_type")) == BlockType.ARTIFACT.value
+    return _block_type_val(item) == BlockType.ARTIFACT.value
 
 
 def is_figure_block(item: dict[str, Any]) -> bool:
@@ -670,7 +758,7 @@ def is_figure_block(item: dict[str, Any]) -> bool:
 
     if item.get("kind") != "block":
         return False
-    return _block_type_val(item.get("block_type")) == BlockType.FIGURE.value
+    return _block_type_val(item) == BlockType.FIGURE.value
 
 
 def is_full_page_bbox(
@@ -722,7 +810,7 @@ def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
         True if the item is a minor edge block, False otherwise.
     """
 
-    bt = _block_type_val(item.get("block_type"))
+    bt = _block_type_val(item)
 
     # If not a block then it's never "minor". In addition, headings are usually
     # meaningful context; do not treat as "minor".
@@ -870,7 +958,7 @@ def item_snippet(
     }
 
     if kind == "block":
-        bt = _block_type_val(item.get("block_type"))
+        bt = _block_type_val(item)
         out["block_type"] = bt
         out["language"] = (item.get("text") or {}).get("language")
         text = (item.get("text") or {}).get("text")
@@ -969,7 +1057,7 @@ def min_crop_height_px(*, kind: str, page_h_px: int) -> int:
     """
 
     if kind == "table":
-        return clamp(0.33 * page_h_px, low=900, high=1600)
+        return clamp(0.33 * page_h_px, low=min(900, page_h_px), high=1600)
 
     if kind == "figure":
         # Bigger than text blocks so the verifier sees enough context/continuation cues.
@@ -999,6 +1087,51 @@ def pad_inches(kind: str) -> float:
     return 0.25
 
 
+def table_header_signature(table: Any) -> tuple[tuple[str, ...], ...] | None:
+    """Extract a normalized table header signature from a Table-like object.
+
+    Parameters
+    ----------
+    table
+        The Table-like object.
+
+    Returns
+    -------
+    tuple[tuple[str, ...], ...] | None
+        The table header signature, or None if no valid header exists.
+    """
+
+    if isinstance(table, dict):
+        rows = table.get("rows") or []
+        h = int(table.get("header_row_count") or 0)
+    else:
+        rows = getattr(table, "rows", None) or []
+        h = int(getattr(table, "header_row_count", 0) or 0)
+
+    if h <= 0 or len(rows) < h:
+        return None
+
+    sig = []
+    for r in rows[:h]:
+        cells = r.get("cells", []) if isinstance(r, dict) else getattr(r, "cells", [])
+        row_sig = []
+        for c in cells:
+            txt_unit = (
+                c.get("text") if isinstance(c, dict) else getattr(c, "text", None)
+            )
+            cleaned_text = " ".join(
+                (textunit_text(txt_unit) or "").strip().lower().split()
+            )
+            row_sig.append(cleaned_text)
+        sig.append(tuple(row_sig))
+
+    # If the header is entirely empty, ignore.
+    if not any(any(cell for cell in row) for row in sig):
+        return None
+
+    return tuple(sig)
+
+
 def textunit_text(tu: Any) -> str:
     """Safely extract tu.text from a TextUnit-like object.
 
@@ -1016,7 +1149,8 @@ def textunit_text(tu: Any) -> str:
     if tu is None:
         return ""
 
-    value = getattr(tu, "text", None)
+    value = tu.get("text") if isinstance(tu, dict) else getattr(tu, "text", None)
+
     return value if isinstance(value, str) else ""
 
 

@@ -82,3 +82,17 @@ class PageContinuationKind(str, Enum):
     NONE = "none"
     TABLE = "table"
     TEXT = "text"
+
+
+# Common section break headings (lowercase, stripped of punctuation).
+SECTION_BREAK_HEADINGS = {
+    "appendix",
+    "bibliography",
+    "contents",
+    "index",
+    "list of figures",
+    "list of tables",
+    "reference list",
+    "references",
+    "table of contents",
+}
