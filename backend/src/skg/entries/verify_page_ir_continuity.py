@@ -41,6 +41,7 @@ from skg.page_ir.llm import verify_page_ir_continuity_verdict, verify_page_ir_pa
 from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
 from skg.page_ir.utils import (
     PageIRVerificationDirs,
+    _boundary_str,
     _boundary_val,
     bottommost_continuity_candidate,
     create_page_ir_verification_dirs,
@@ -49,21 +50,20 @@ from skg.page_ir.utils import (
     find_caption_code,
     get_negative_threshold_based_on_kind,
     get_threshold_based_on_kind,
+    has_structural_block_above_candidate,
     is_figure_block,
+    is_resumed,
+    is_truncated,
     item_snippet,
     min_crop_height_px,
     pad_inches,
+    table_header_signature,
     topmost_continuity_candidate_paired,
 )
 from skg.schemas import RunCtx
 from skg.utils.constants import ItemBoundary, PageContinuationKind
 from skg.utils.general import compare_directories, open_json_type, write_to_json
-from skg.utils.pdf import (
-    compute_doc_key,
-    crop_image_to_bottom,
-    crop_image_to_top,
-    validate_page_count,
-)
+from skg.utils.pdf import compute_doc_key, crop_image_to_top, validate_page_count
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
@@ -186,12 +186,26 @@ def apply_non_continuity_edits(
         The continuity verdict from the model.
     """
 
-    # If this pair IS a continuation or confidence is below the negative threshold,
-    # then there are no non-continuity edits to apply.
+    if verdict.is_continuation:
+        return
+
+    # If confidence is not high enough and we don't have ordering safety, skip.
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+    ordering_safety_hard_negative = (
+        (not verdict.is_continuation)
+        and kind == PageContinuationKind.NONE.value
+        and not (prev_item.get("kind") == "table" and next_item.get("kind") == "table")
+        and has_structural_block_above_candidate(
+            candidate_index=next_idx, items=next_page_items
+        )
+    )
     neg_threshold = get_negative_threshold_based_on_kind(
         next_item=next_item, prev_item=prev_item
     )
-    if verdict.is_continuation or float(verdict.clamped_confidence) < neg_threshold:
+    if (
+        float(verdict.clamped_confidence) < neg_threshold
+        and not ordering_safety_hard_negative
+    ):
         return
 
     # Previous page item (seam to NEXT corresponds to TRUNCATED).
@@ -237,6 +251,134 @@ def apply_non_continuity_edits(
     # repeats_header only has meaning for resumed/both table continuations.
     if next_item.get("kind") == "table":
         next_page_items[next_idx]["repeats_header"] = None
+
+
+def fix_false_repeats_header_on_continuation(*, next_item: Any, prev_item: Any) -> None:
+    """Fix false repeats_header=true flags on continued tables where headers do not
+    match. If a table continues across a page boundary (prev last is truncated table,
+    next first is resumed table) and next_table.repeats_header==True, but the header
+    signatures DO NOT match, then auto-fix by setting repeats_header=False (and log a
+    warning).
+
+    NB: This does NOT attempt to change header_row_count; it only corrects
+    repeats_header.
+
+    Parameters
+    ----------
+    next_item
+        The page IR for the next page.
+    prev_item
+        The page IR for the previous page.
+    """
+
+    # Only table-to-table continuations.
+    prev_kind = (
+        prev_item.get("kind")
+        if isinstance(prev_item, dict)
+        else getattr(prev_item, "kind", None)
+    )
+    next_kind = (
+        next_item.get("kind")
+        if isinstance(next_item, dict)
+        else getattr(next_item, "kind", None)
+    )
+    if (
+        prev_kind != PageContinuationKind.TABLE.value
+        or next_kind != PageContinuationKind.TABLE.value
+    ):
+        return
+
+    if not is_truncated(_boundary_str(prev_item)) or not is_resumed(
+        _boundary_str(next_item)
+    ):
+        return
+
+    current_val = (
+        next_item.get("repeats_header")
+        if isinstance(next_item, dict)
+        else getattr(next_item, "repeats_header", None)
+    )
+
+    if current_val is not True:
+        return
+
+    prev_sig = table_header_signature(prev_item)
+    next_sig = table_header_signature(next_item)
+
+    # If we cannot compute signatures, be conservative and skip.
+    if prev_sig is None or next_sig is None:
+        return
+
+    if prev_sig != next_sig:
+        logger.warning(
+            "Table continuation has repeats_header=true but header rows do not match "
+            "the previous page's header. This is likely a false repeated-header flag. "
+            "Overwriting repeats_header to false."
+        )
+        if isinstance(next_item, dict):
+            next_item["repeats_header"] = False
+        else:
+            next_item.repeats_header = False
+
+
+def fix_repeats_header_for_continued_tables(*, next_item: Any, prev_item: Any) -> None:
+    """Fix repeats_header on continued tables based on header signature matching. If
+    the last continued item on prev page is a table and the first continued item on
+    next page is a table, and their header signatures match, then enforce
+    next_table.repeats_header=True.
+
+    Parameters
+    ----------
+    next_item
+        The page IR for the next page.
+    prev_item
+        The page IR for the previous page.
+    """
+
+    # Only for table-to-table continuations.
+    prev_kind = (
+        prev_item.get("kind")
+        if isinstance(prev_item, dict)
+        else getattr(prev_item, "kind", None)
+    )
+    next_kind = (
+        next_item.get("kind")
+        if isinstance(next_item, dict)
+        else getattr(next_item, "kind", None)
+    )
+    if (
+        prev_kind != PageContinuationKind.TABLE.value
+        or next_kind != PageContinuationKind.TABLE.value
+    ):
+        return
+
+    if not is_truncated(_boundary_str(prev_item)) or not is_resumed(
+        _boundary_str(next_item)
+    ):
+        return
+
+    prev_sig = table_header_signature(prev_item)
+    next_sig = table_header_signature(next_item)
+
+    if prev_sig is None or next_sig is None:
+        return
+
+    if prev_sig == next_sig:
+        # Enforce repeats_header on the resumed page.
+        current_val = (
+            next_item.get("repeats_header")
+            if isinstance(next_item, dict)
+            else getattr(next_item, "repeats_header", None)
+        )
+        if current_val is False:
+            logger.warning(
+                "Detected repeated table header on continued table but "
+                "repeats_header=false; overwriting to true."
+            )
+            if isinstance(next_item, dict):
+                next_item["repeats_header"] = True
+            else:
+                next_item.repeats_header = True
 
 
 def load_page_irs_from_extraction(
@@ -383,20 +525,26 @@ def propagate_table_local_codes(
                 continue
 
             boundary = _boundary_val(it.get("boundary"), default_val="")
-            is_continuation_segment = boundary in (
-                ItemBoundary.BOTH.value,
-                ItemBoundary.RESUMED.value,
-                ItemBoundary.TRUNCATED.value,
-            ) or bool(it.get("repeats_header"))
 
-            # Update carry if this segment has an explicit local_code.
-            if it.get("local_code") is not None:
-                carried_table_code = str(
-                    _boundary_val(it.get("local_code"), default_val="")
-                )
+            # If this is a new table start (not continuing from prev), we generally
+            # shouldn't apply the *previous* table's code. We should only carry forward
+            # if we are inside a specific chain.
+            is_resumed_or_both = boundary in (
+                ItemBoundary.RESUMED.value,
+                ItemBoundary.BOTH.value,
+            )
+
+            # If this item does NOT continue from the previous one, break the chain.
+            if not is_resumed_or_both:
+                carried_table_code = None
+
+            # Update carry if THIS item has an explicit code.
+            code = (it.get("local_code") or "").strip()
+            if code:
+                carried_table_code = code
 
             # Fill missing local_code if we’re clearly in a continuation chain.
-            elif is_continuation_segment and carried_table_code:
+            elif is_resumed_or_both and carried_table_code:
                 it["local_code"] = carried_table_code
                 changes.append(
                     {
@@ -407,6 +555,8 @@ def propagate_table_local_codes(
                     }
                 )
 
+            # Check if this table continues to the NEXT page to decide if we should
+            # keep `carried_table_code` alive for the next page loop.
             if boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value):
                 table_continues_to_next = True
 
@@ -524,6 +674,49 @@ def save_verified_page_irs(
     logger.success("All verified page IR JSONs saved successfully!")
 
 
+def should_veto_text_continuation_due_to_ordering_safety(
+    *,
+    next_idx: int,
+    next_item: dict[str, Any],
+    next_page_items: list[dict[str, Any]],
+    verdict: PageIRContinuityVerdict,
+) -> bool:
+    """Deterministically veto TEXT/LIST continuations when a structural heading/caption
+    appears above the next candidate.
+
+    Parameters
+    ----------
+    next_idx
+        Index of the continuity candidate item on the next page.
+    next_item
+        The actual item dictionary for the next page candidate.
+    next_page_items
+        The list of items on the next page.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    bool
+        True if the continuation should be vetoed due to ordering safety.
+    """
+
+    if not verdict.is_continuation:
+        return False
+
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+    if kind != PageContinuationKind.TEXT.value:
+        return False
+
+    # Do not apply this rule to TABLE continuations.
+    if next_item.get("kind") == "table":
+        return False
+
+    return has_structural_block_above_candidate(
+        candidate_index=next_idx, items=next_page_items
+    )
+
+
 def verify_page_ir_continuity(
     *,
     doc: pymupdf.Document,
@@ -601,29 +794,14 @@ def verify_page_ir_continuity(
             prev_item=prev_item,
         )
 
-        # Crop bottom of previous and top of next based on non-artifact bboxes.
-        prev_kind = prev_item.get("kind", "block")
-        if prev_kind == "block" and is_figure_block(prev_item):
-            prev_kind = "figure"
+        # Crop top of next based on non-artifact bboxes.
         next_kind = next_item.get("kind", "block")
         if next_kind == "block" and is_figure_block(next_item):
             next_kind = "figure"
-        prev_min_h = min_crop_height_px(
-            kind=prev_kind, page_h_px=int(prev_page_ir["image_height"])
-        )
         next_min_h = min_crop_height_px(
             kind=next_kind, page_h_px=int(next_page_ir["image_height"])
         )
-        prev_crop_fp = verification_dirs.page_irs_pair_crops / f"{i:04}_bottom.png"
         next_crop_fp = verification_dirs.page_irs_pair_crops / f"{i + 1:04}_top.png"
-        crop_image_to_bottom(
-            bbox=prev_item["bbox"],
-            desired_padding_inches=pad_inches(prev_kind),
-            input_png_fp=page_images_dir / f"{i:04}.png",
-            min_height_px=prev_min_h,
-            output_png_fp=prev_crop_fp,
-            render_dpi=render_dpi,
-        )
         crop_image_to_top(
             bbox=next_item["bbox"],
             desired_padding_inches=pad_inches(next_kind),
@@ -670,6 +848,18 @@ def verify_page_ir_continuity(
             )
             verify_page_ir_continuity_verdict(verdict)
 
+        if should_veto_text_continuation_due_to_ordering_safety(
+            next_idx=next_idx,
+            next_item=next_item,
+            next_page_items=next_page_items,
+            verdict=verdict,
+        ):
+            verdict = veto_continuation(
+                reason="ORDERING SAFETY: structural heading/caption above next candidate block (TEXT/LIST)",
+                verdict=verdict,
+            )
+            verify_page_ir_continuity_verdict(verdict)
+
         # Persist the verdict.
         write_to_json(
             fp=verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json",
@@ -696,6 +886,15 @@ def verify_page_ir_continuity(
             prev_item=prev_item,
             prev_page_items=prev_page_items,
             verdict=verdict,
+        )
+
+        # Post-edit normalization to enforce/correct repeated-header flags for
+        # continued tables when we can determine it deterministically.
+        fix_repeats_header_for_continued_tables(
+            prev_item=prev_item, next_item=next_item
+        )
+        fix_false_repeats_header_on_continuation(
+            prev_item=prev_item, next_item=next_item
         )
 
         # Apply non-continuity edits if VERY confident there is no continuation.
