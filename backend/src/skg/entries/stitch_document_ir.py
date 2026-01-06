@@ -57,6 +57,7 @@ from skg.document_ir.schemas import DocumentIR, Segment
 from skg.document_ir.utils import (
     DocumentIRDirs,
     ItemKey,
+    assert_page_items_consumed_exactly_once,
     build_continuation_chain,
     compute_page_break_links,
     create_document_ir_dirs,
@@ -318,6 +319,12 @@ def stitch_document_ir(
 
     # De-duplicate any accidental segment_key collisions (rare, but possible).
     segments = uniquify_segment_keys(segments=segments)
+
+    # Perform integrity check --> every normalized PageIR item must be consumed exactly
+    # once.
+    assert_page_items_consumed_exactly_once(
+        items_with_idx=items_with_idx, segments=segments, strict=True, warnings=warnings
+    )
 
     # Write document IR JSON.
     document_ir = DocumentIR(

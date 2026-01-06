@@ -5,7 +5,7 @@
 # Standard Library
 import re
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
@@ -257,6 +257,49 @@ def _is_artifact_block(item: Union[CurriculumTable, CurriculumBlock]) -> bool:
     return isinstance(item, CurriculumBlock) and item.block_type == BlockType.ARTIFACT
 
 
+def _is_safe_interstitial_block(*, next_item: object, prior: CurriculumBlock) -> bool:
+    """Determine if it's safe to ignore 'prior' when stitching 'next_item'.
+
+    Parameters
+    ----------
+    next_item
+        The next item.
+    prior
+        The prior block.
+
+    Returns
+    -------
+    bool
+        True if 'prior' can be ignored for the purpose of deciding whether it's safe to
+        stitch 'next_item' to the previous page without causing meaningful reordering.
+    """
+
+    _continued_re = re.compile(r"\bcontinued\b", re.IGNORECASE)
+    _table_figure_re = re.compile(r"^(table|figure)\s+\d+\b", re.IGNORECASE)
+
+    # Allow captions immediately before tables.
+    if prior.block_type == BlockType.CAPTION and isinstance(next_item, CurriculumTable):
+        return True
+
+    # Allow obvious "continued" headings before a continued table/figure.
+    if prior.block_type == BlockType.HEADING and isinstance(next_item, CurriculumTable):
+        txt = (prior.text.text if prior.text else "").strip()
+
+        if _continued_re.search(txt):
+            return True
+        if _table_figure_re.match(txt):
+            return True
+
+        # Allow if local_codes match.
+        if getattr(prior, "local_code", None) and getattr(
+            next_item, "local_code", None
+        ):
+            if prior.local_code.strip() == next_item.local_code.strip():
+                return True
+
+    return False
+
+
 def _match_candidates(
     *,
     current_page_ir: PageIR,
@@ -424,10 +467,8 @@ def _next_candidate_is_safe_to_stitch(
         if _is_artifact_block(prior):
             continue
 
-        if (
-            isinstance(next_item, CurriculumTable)
-            and isinstance(prior, CurriculumBlock)
-            and prior.block_type == BlockType.CAPTION
+        if isinstance(prior, CurriculumBlock) and _is_safe_interstitial_block(
+            next_item=next_item, prior=prior
         ):
             continue
 
@@ -622,6 +663,113 @@ def _row_signature(row: TableRow) -> tuple[str, ...]:
         else:
             sig.append(_normalize_text(cell.text.text))
     return tuple(sig)
+
+
+def assert_page_items_consumed_exactly_once(
+    *,
+    items_with_idx: dict[
+        int, list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]
+    ],
+    segments: list[Segment],
+    strict: bool = True,
+    warnings: list[str],
+) -> None:
+    """Validate that every normalized PageIR item is consumed exactly once by segments.
+    Expected universe of segments is derived from `items_with_idx` (i.e.,
+    post-normalization, with artifacts filtered if keep_artifacts=False upstream).
+
+    Parameters
+    ----------
+    items_with_idx
+        Mapping of page_index to list of (item_index, item) tuples after normalization.
+    segments
+        The list of segments to validate.
+    strict
+        If True, raise ValueError on integrity violations; else log warnings.
+    warnings
+        A list to append warning messages to (used if strict=False).
+
+    Raises
+    ------
+    ValueError
+        If strict=True and any of:
+            - Missing items (expected but not present in any segment.provenance).
+            - Extra items (present in segment.provenance but not expected).
+            - Duplicate consumption (same (page_index,item_index) appears in > 1
+                segment.provenance).
+    """
+
+    expected: set[ItemKey] = {
+        (page_idx, orig_item_idx)
+        for page_idx, items in items_with_idx.items()
+        for (orig_item_idx, _item) in items
+    }
+
+    used_by: dict[ItemKey, list[str]] = defaultdict(list)
+    for seg in segments:
+        for prov in seg.provenance:
+            k: ItemKey = (prov.page_index, prov.item_index)
+            used_by[k].append(seg.segment_key)
+
+    seen = set(used_by.keys())
+
+    missing = sorted(expected - seen)
+    extra = sorted(seen - expected)
+    dupes = sorted([k for k, seg_keys in used_by.items() if len(seg_keys) > 1])
+
+    if not (missing or extra or dupes):
+        return
+
+    # Build a readable error message (show a sample, not everything).
+    def _fmt_keys(keys: list[ItemKey], limit: int = 25) -> str:
+        """Format a list of (page_index, item_index) keys for display.
+
+        Parameters
+        ----------
+        keys
+            The list of keys.
+        limit
+            The maximum number of keys to show.
+
+        Returns
+        -------
+        str
+            The formatted string.
+        """
+
+        if not keys:
+            return "[]"
+
+        head = ", ".join([f"(p={p}, i={i})" for p, i in keys[:limit]])
+        tail = "" if len(keys) <= limit else f", ... (+{len(keys) - limit} more)"
+
+        return f"[{head}{tail}]"
+
+    # For dupes, show which segments consumed them.
+    dupe_details = ""
+    if dupes:
+        lines = []
+        for k in dupes[:10]:
+            lines.append(f"  {k} -> {used_by[k]}")
+        if len(dupes) > 10:
+            lines.append(f"  ... (+{len(dupes) - 10} more)")
+        dupe_details = "\nDuplicate details (page,item -> segment_keys):\n" + "\n".join(
+            lines
+        )
+
+    msg = (
+        "Integrity check failed: normalized PageIR items were not consumed exactly once.\n"
+        f"Missing (expected but not consumed): {_fmt_keys(missing)}\n"
+        f"Extra (consumed but not expected): {_fmt_keys(extra)}\n"
+        f"Duplicates (consumed >1 time): {_fmt_keys(dupes)}"
+        f"{dupe_details}"
+    )
+
+    if strict:
+        raise ValueError(msg)
+
+    # Non-strict mode: record a warning instead of failing.
+    warnings.append(msg)
 
 
 def block_segment_key(block: CurriculumBlock) -> str:
