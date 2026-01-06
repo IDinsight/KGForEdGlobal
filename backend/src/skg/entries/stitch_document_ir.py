@@ -202,8 +202,13 @@ def stitch_document_ir(
     )
 
     # Write document IR JSON.
+    first_page = page_irs[0]
     document_ir = DocumentIR(
+        coord_space=first_page.coord_space,
         doc_key=doc_key,
+        dpi=first_page.dpi,
+        image_height=first_page.image_height,
+        image_width=first_page.image_width,
         page_count=len(page_irs),
         pdf_name=pdf_name,
         segments=segments,
