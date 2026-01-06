@@ -33,11 +33,10 @@ python src/skg/entries/stitch_document_ir.py ../data/tanzania/tanzania.pdf /path
 # Standard Library
 import sys
 import traceback
-import uuid
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Union
+from typing import Union
 
 # Third Party Library
 import typer
@@ -60,142 +59,18 @@ from skg.document_ir.utils import (
     assert_page_items_consumed_exactly_once,
     build_continuation_chain,
     compute_page_break_links,
-    create_document_ir_dirs,
+    load_page_irs_from_verification,
     materialize_segment,
     normalize_page_items,
+    persist_stitching_run,
     uniquify_segment_keys,
 )
 from skg.page_ir.schemas import CurriculumBlock, CurriculumTable, PageIR
-from skg.schemas import RunCtx
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
-
-
-def load_page_irs_from_verification(
-    *, expected_doc_key: str, verified_page_irs_dir: Path
-) -> list[PageIR]:
-    """Load and validate all verified page IR JSONs from the verification output
-    directory.
-
-    Parameters
-    ----------
-    expected_doc_key
-        The expected document key for all page IRs.
-    verified_page_irs_dir
-        Directory containing the verified page IR JSONs.
-
-    Returns
-    -------
-    list[PageIR]
-        Validated page IR JSONs, sorted by page_index.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no verified page IR JSON files are found in the specified directory.
-    ValueError
-        If any verified PageIR is missing page_index.
-        If the page_index sequence is non-contiguous or does not start at 0.
-        If there are inconsistent doc_key or pdf_name values across pages.
-        If there are inconsistent coord_space, dpi, image_width, or image_height
-            values across pages.
-    """
-
-    json_files = sorted(list(verified_page_irs_dir.glob("*.json")))
-    if not json_files:
-        raise FileNotFoundError(
-            f"No verified page IR JSON files found in: {verified_page_irs_dir}"
-        )
-
-    verified_page_irs: list[PageIR] = [
-        PageIR.model_validate(open_json_type(json_file))
-        for json_file in sorted(list(verified_page_irs_dir.glob("*.json")))
-    ]
-
-    page_indexes = [p.page_index for p in verified_page_irs]
-    if any(idx is None for idx in page_indexes):
-        raise ValueError(
-            "One or more verified PageIRs are missing page_index. Cannot stitch reliably."
-        )
-
-    expected = list(range(min(page_indexes), min(page_indexes) + len(page_indexes)))
-    if page_indexes != expected:
-        raise ValueError(
-            f"Non-contiguous page_index sequence. Got {page_indexes[:10]}..."
-        )
-    if page_indexes[0] != 0:
-        raise ValueError(f"Expected page_index to start at 0, got {page_indexes[0]}")
-
-    doc_keys = {p.doc_key for p in verified_page_irs if p.doc_key is not None}
-    pdf_names = {p.pdf_name for p in verified_page_irs if p.pdf_name is not None}
-    if len(doc_keys) > 1 or len(pdf_names) > 1:
-        raise ValueError(
-            f"Inconsistent pdf_name or doc_key across pages:\n"
-            f"{sorted(doc_keys)}\n{sorted(pdf_names)}"
-        )
-    if list(doc_keys)[0] != expected_doc_key:
-        raise ValueError(
-            f"Expected doc_key '{expected_doc_key}', got '{list(doc_keys)[0]}'"
-        )
-
-    coord_spaces = {
-        p.coord_space for p in verified_page_irs if p.coord_space is not None
-    }
-    dpis = {p.dpi for p in verified_page_irs if p.dpi is not None}
-    heights = {p.image_height for p in verified_page_irs if p.image_height is not None}
-    widths = {p.image_width for p in verified_page_irs if p.image_width is not None}
-
-    if len(coord_spaces) > 1 or len(dpis) > 1 or len(widths) > 1 or len(heights) > 1:
-        raise ValueError(
-            f"Inconsistent coordinate space, page dimensions, or dpi across pages:\n"
-            f"{coord_spaces=}\n{dpis=}\n{widths=}\n{heights=}"
-        )
-
-    if (
-        any(p.dpi is None for p in verified_page_irs)
-        or any(p.image_width is None for p in verified_page_irs)
-        or any(p.image_height is None for p in verified_page_irs)
-    ):
-        raise ValueError(
-            "One or more verified PageIRs are missing dpi, image_width, or image_height."
-        )
-
-    return verified_page_irs
-
-
-def persist_stitching_run(
-    *, output_dir: Path, **kwargs: Any
-) -> tuple[DocumentIRDirs, RunCtx]:
-    """Persist stitching run metadata.
-
-    Parameters
-    ----------
-    output_dir
-        The output directory for the document IR JSON.
-    kwargs
-        Additional verification run configuration parameters.
-
-    Returns
-    -------
-    tuple[DocumentIRDirs, RunCtx]
-        The created document IR directories and persisted stitching run metadata.
-    """
-
-    extra = kwargs.get("extra", {})
-    extra.pop("status", None)
-    stitching_dirs = create_document_ir_dirs(output_dir=output_dir)
-    stitching_run = RunCtx(
-        extra=extra,
-        run_id=str(uuid.uuid4()),
-        started_at=datetime.now(timezone.utc),
-    )
-    write_to_json(fp=output_dir / "stitching_run.json", json_info=stitching_run)
-    logger.info(f"Stitching directory: {output_dir}")
-
-    return stitching_dirs, stitching_run
 
 
 def stitch_document_ir(
