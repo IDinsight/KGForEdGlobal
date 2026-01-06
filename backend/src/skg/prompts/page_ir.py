@@ -284,7 +284,7 @@ You will be given:
 8. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
 9. If either candidate item is a HEADING (or CAPTION), always set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence ≤ 0.49, and leave all set_* null. Never set boundary metadata for HEADING/CAPTION items.
 10. ORDERING SAFETY (TEXT/LIST ONLY):
-  - If continuation_kind="{PageContinuationKind.TEXT.value}" (including lists) AND IMAGE B shows a non-artifact HEADING/CAPTION above the NEXT candidate block (i.e., the candidate list/text is introduced by a new heading), then set: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
+  - If continuation_kind="{PageContinuationKind.TEXT.value}" (including lists) AND IMAGE B starts with a non-artifact HEADING/CAPTION/TITLE above the NEXT candidate block (e.g., "Table of Contents", "List of Figures", "Chapter 1", "Introduction"), then set: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
   - Exception: This rule does not apply to TABLE continuations (tables may have captions like "Table X (continued)" above them).
 11. UNCERTAINTY POLICY (must follow exactly):
   - Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
@@ -333,6 +333,7 @@ You will be given:
     - A list item/numbering clearly continues (e.g., 1., 2., 3. or bullets) and IMAGE B continues the same list
     - The top of IMAGE B starts mid-sentence (lowercase continuation, no new heading/caption) and matches the bottom of IMAGE A
   - Hard negatives (DO NOT mark text continuation even if topic is related):
+    - SECTION BOUNDARIES: If Page N ends a list (e.g., "List of Tables") and Page N+1 starts with a DIFFERENT structural section title (e.g., "Table of Contents", "List of Figures", "Index", "Bibliography"), this is a hard negative.
     - "Table N shows/illustrates/indicates ..." at end of page N followed by a new page starting with "Table N:" or a table/caption. This is a layout handoff to a table/caption, NOT a text continuation.
     - "Figure N shows ..." at end of page N followed by "Figure N:" or a figure/caption at top of page N+1.
     - If the bottom text clearly ends a complete sentence (ends with ".", "!" or "?"), do NOT mark as text continuation.
@@ -362,7 +363,7 @@ You will be given:
 1. Use confidence >= 0.75 only when continuation is visually obvious (clear cut/resume).
 2. Use 0.50–0.74 for plausible but not definitive.
 3. Use <= 0.49 when uncertain/no continuation.
-    """
+        """
     )
 
     user_message = json.dumps(
