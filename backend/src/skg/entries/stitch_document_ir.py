@@ -73,12 +73,16 @@ from skg.utils.pdf import compute_doc_key
 cli = typer.Typer(no_args_is_help=True)
 
 
-def load_page_irs_from_verification(*, verified_page_irs_dir: Path) -> list[PageIR]:
+def load_page_irs_from_verification(
+    *, expected_doc_key: str, verified_page_irs_dir: Path
+) -> list[PageIR]:
     """Load and validate all verified page IR JSONs from the verification output
     directory.
 
     Parameters
     ----------
+    expected_doc_key
+        The expected document key for all page IRs.
     verified_page_irs_dir
         Directory containing the verified page IR JSONs.
 
@@ -130,6 +134,10 @@ def load_page_irs_from_verification(*, verified_page_irs_dir: Path) -> list[Page
         raise ValueError(
             f"Inconsistent pdf_name or doc_key across pages:\n"
             f"{sorted(doc_keys)}\n{sorted(pdf_names)}"
+        )
+    if list(doc_keys)[0] != expected_doc_key:
+        raise ValueError(
+            f"Expected doc_key '{expected_doc_key}', got '{list(doc_keys)[0]}'"
         )
 
     coord_spaces = {
@@ -191,9 +199,11 @@ def persist_stitching_run(
 
 def stitch_document_ir(
     *,
+    doc_key: str,
     keep_artifacts: bool,
     overwrite: bool,
     page_irs: list[PageIR],
+    pdf_name: str,
     repair_hyphenation: bool,
     stitching_dirs: DocumentIRDirs,
 ) -> None:
@@ -208,12 +218,16 @@ def stitch_document_ir(
 
     Parameters
     ----------
+    doc_key
+        The expected document key for all page IRs.
     keep_artifacts
         If True, keep artifact blocks during stitching.
     overwrite
         Overwrite existing document IR JSON.
     page_irs
         Validated PageIR list in page order.
+    pdf_name
+        The source PDF filename (no path).
     repair_hyphenation
         Whether to repair hyphenation in stitched text blocks.
     stitching_dirs
@@ -307,9 +321,9 @@ def stitch_document_ir(
 
     # Write document IR JSON.
     document_ir = DocumentIR(
-        doc_key=page_irs[0].doc_key,
+        doc_key=doc_key,
         page_count=len(page_irs),
-        pdf_name=page_irs[0].pdf_name,
+        pdf_name=pdf_name,
         segments=segments,
         warnings=warnings,
     )
@@ -337,7 +351,7 @@ def stitch(
         resolve_path=True,
     ),
     keep_artifacts: bool = typer.Option(
-        True,
+        False,
         "--keep-artifacts",
         help="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
     ),
@@ -416,14 +430,17 @@ def stitch(
     try:
         # 2.
         verified_page_irs = load_page_irs_from_verification(
-            verified_page_irs_dir=page_irs_verified_dir
+            expected_doc_key=expected_doc_key,
+            verified_page_irs_dir=page_irs_verified_dir,
         )
 
         # 3.
         stitch_document_ir(
+            doc_key=expected_doc_key,
             keep_artifacts=keep_artifacts,
             overwrite=overwrite,
             page_irs=verified_page_irs,
+            pdf_name=pdf_fp.name,
             repair_hyphenation=repair_hyphenation,
             stitching_dirs=stitching_dirs,
         )
