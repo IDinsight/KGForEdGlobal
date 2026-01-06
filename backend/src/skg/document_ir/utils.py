@@ -4,9 +4,11 @@
 
 # Standard Library
 import re
+import uuid
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
@@ -30,8 +32,14 @@ from skg.page_ir.schemas import (
     TableRow,
     TextUnit,
 )
+from skg.schemas import RunCtx
 from skg.utils.constants import BlockType, ItemBoundary
-from skg.utils.general import compute_sha256_hex, make_dir
+from skg.utils.general import (
+    compute_sha256_hex,
+    make_dir,
+    open_json_type,
+    write_to_json,
+)
 
 ItemKey = tuple[int, int]
 ChainItem = tuple[int, int, Union[CurriculumTable, CurriculumBlock]]
@@ -112,9 +120,6 @@ def _append_unmatched_warnings(
     warnings
         A list to append warning messages to.
     """
-
-    if warnings is None:
-        return
 
     if prev_candidates and not next_candidates:
         for pidx in prev_candidates:
@@ -1032,6 +1037,108 @@ def join_text_units(*, repair_hyphenation: bool = True, units: list[TextUnit]) -
     return "\n".join(out)
 
 
+def load_page_irs_from_verification(
+    *, expected_doc_key: str, verified_page_irs_dir: Path
+) -> list[PageIR]:
+    """Load and validate all verified page IR JSONs from the verification output
+    directory.
+
+    Parameters
+    ----------
+    expected_doc_key
+        The expected document key for all page IRs.
+    verified_page_irs_dir
+        Directory containing the verified page IR JSONs.
+
+    Returns
+    -------
+    list[PageIR]
+        The loaded and validated PageIRs in filename order.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no verified page IR JSON files are found in the specified directory.
+    ValueError
+        If any verified PageIR is missing page_index.
+        If the page_index sequence is non-contiguous or does not start at 0.
+        If there are inconsistent doc_key or pdf_name values across pages.
+        If there are inconsistent coord_space, dpi, image_width, or image_height
+            values across pages.
+    """
+
+    json_files = sorted(verified_page_irs_dir.glob("*.json"))
+    if not json_files:
+        raise FileNotFoundError(
+            f"No verified page IR JSON files found in: {verified_page_irs_dir}"
+        )
+
+    page_irs: list[PageIR] = [
+        PageIR.model_validate(open_json_type(fp)) for fp in json_files
+    ]
+
+    # Validate page_index exists and sort by it (not filename).
+    if any(p.page_index is None for p in page_irs):
+        raise ValueError(
+            "One or more verified PageIRs are missing page_index. Cannot stitch reliably."
+        )
+    page_irs.sort(key=lambda p: p.page_index)
+
+    page_indexes = [p.page_index for p in page_irs]
+    expected = list(range(len(page_irs)))
+    if page_indexes != expected:
+        raise ValueError(
+            f"Non-contiguous page_index sequence. Got {page_indexes[:10]}..."
+        )
+
+    # Validate doc_key consistency + presence.
+    if expected_doc_key is None:
+        raise ValueError(
+            "verification_run.json is missing extra.doc_key (expected_doc_key)."
+        )
+
+    doc_keys = {p.doc_key for p in page_irs if p.doc_key}
+    pdf_names = {p.pdf_name for p in page_irs if p.pdf_name}
+
+    if not doc_keys:
+        raise ValueError(
+            "All verified PageIRs are missing doc_key. "
+            "Ensure step 1/2 populates PageIR.doc_key for every page."
+        )
+    if len(doc_keys) > 1 or len(pdf_names) > 1:
+        raise ValueError(
+            "Inconsistent pdf_name or doc_key across pages:\n"
+            f"{sorted(doc_keys)}\n{sorted(pdf_names)}"
+        )
+
+    only_doc_key = next(iter(doc_keys))
+    if only_doc_key != expected_doc_key:
+        raise ValueError(f"Expected doc_key '{expected_doc_key}', got '{only_doc_key}'")
+
+    # Validate coord space + dimensions + dpi consistency/presence.
+    coord_spaces = {p.coord_space for p in page_irs if p.coord_space is not None}
+    dpis = {p.dpi for p in page_irs if p.dpi is not None}
+    heights = {p.image_height for p in page_irs if p.image_height is not None}
+    widths = {p.image_width for p in page_irs if p.image_width is not None}
+
+    if len(coord_spaces) > 1 or len(dpis) > 1 or len(widths) > 1 or len(heights) > 1:
+        raise ValueError(
+            "Inconsistent coordinate space, page dimensions, or dpi across pages:\n"
+            f"{coord_spaces=}\n{dpis=}\n{widths=}\n{heights=}"
+        )
+
+    if (
+        any(p.dpi is None for p in page_irs)
+        or any(p.image_width is None for p in page_irs)
+        or any(p.image_height is None for p in page_irs)
+    ):
+        raise ValueError(
+            "One or more verified PageIRs are missing dpi, image_width, or image_height."
+        )
+
+    return page_irs
+
+
 def materialize_segment(
     *,
     chain: list[ChainItem],
@@ -1111,6 +1218,38 @@ def normalize_page_items(
             items_with_idx.append((idx, item))
 
     return items_with_idx
+
+
+def persist_stitching_run(
+    *, output_dir: Path, **kwargs: Any
+) -> tuple[DocumentIRDirs, RunCtx]:
+    """Persist stitching run metadata.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory for the document IR JSON.
+    kwargs
+        Additional verification run configuration parameters.
+
+    Returns
+    -------
+    tuple[DocumentIRDirs, RunCtx]
+        The created document IR directories and persisted stitching run metadata.
+    """
+
+    extra = kwargs.get("extra", {})
+    extra.pop("status", None)
+    stitching_dirs = create_document_ir_dirs(output_dir=output_dir)
+    stitching_run = RunCtx(
+        extra=extra,
+        run_id=str(uuid.uuid4()),
+        started_at=datetime.now(timezone.utc),
+    )
+    write_to_json(fp=output_dir / "stitching_run.json", json_info=stitching_run)
+    logger.info(f"Stitching directory: {output_dir}")
+
+    return stitching_dirs, stitching_run
 
 
 def stitch_block_chain(

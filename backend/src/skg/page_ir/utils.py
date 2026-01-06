@@ -2,20 +2,28 @@
 
 # Standard Library
 import re
+import uuid
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
-from skg.page_ir.schemas import PageIRContinuityVerdict
+from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
+from skg.schemas import RunCtx
 from skg.utils.constants import (
     SECTION_BREAK_HEADINGS,
     BlockType,
     ItemBoundary,
     PageBoundaryState,
+    PageContinuationKind,
 )
-from skg.utils.general import clamp, make_dir, near
+from skg.utils.general import clamp, make_dir, near, open_json_type, write_to_json
+from skg.utils.pdf import compute_doc_key
 
 
 @dataclass(frozen=True)
@@ -225,6 +233,190 @@ def _truncate_text_word_boundary(
     if " " in chunk:
         chunk = chunk.split(" ", 1)[1]
     return "..." + chunk, True
+
+
+def apply_continuity_edits(
+    *,
+    next_idx: int,
+    next_item: dict[str, Any],
+    next_page_items: list[dict[str, Any]],
+    prev_idx: int,
+    prev_item: dict[str, Any],
+    prev_page_items: list[dict[str, Any]],
+    verdict: PageIRContinuityVerdict,
+) -> None:
+    """Apply minimal edits to the extracted page IRs based on the continuity verdict.
+
+    Parameters
+    ----------
+    next_idx
+        Index of the continuity candidate item on the next page.
+    next_item
+        The actual item dictionary for the next page candidate.
+    next_page_items
+        The list of items on the next page.
+    prev_idx
+        Index of the continuity candidate item on the previous page.
+    prev_item
+        The actual item dictionary for the previous page candidate.
+    prev_page_items
+        The list of items on the previous page.
+    verdict
+        The continuity verdict from the model.
+    """
+
+    # If this pair is NOT a continuation or confidence is below the threshold, then
+    # there are no continuity edits to apply.
+    threshold = get_threshold_based_on_kind(
+        next_item=next_item, prev_item=prev_item, verdict=verdict
+    )
+    if not verdict.is_continuation or float(verdict.clamped_confidence) < threshold:
+        return
+
+    # Update item-level boundaries (explicit edits from model).
+    if verdict.set_prev_item_boundary is not None:
+        ensure_boundary(
+            desired=getattr(
+                verdict.set_prev_item_boundary, "value", verdict.set_prev_item_boundary
+            ),
+            items=prev_page_items,
+            index=prev_idx,
+        )
+
+    if verdict.set_next_item_boundary is not None:
+        ensure_boundary(
+            desired=getattr(
+                verdict.set_next_item_boundary, "value", verdict.set_next_item_boundary
+            ),
+            items=next_page_items,
+            index=next_idx,
+        )
+
+    # Enforce item-level consistency (implicit edits). If model verified continuity but
+    # didn't explicitly set boundaries, force defaults.
+    if verdict.set_prev_item_boundary is None:
+        ensure_boundary(
+            desired=ItemBoundary.TRUNCATED.value, index=prev_idx, items=prev_page_items
+        )
+    if verdict.set_next_item_boundary is None:
+        ensure_boundary(
+            desired=ItemBoundary.RESUMED.value, index=next_idx, items=next_page_items
+        )
+
+    # Table header repetition: set repeats_header only when the model provides it for a
+    # verified table continuation.
+    header_setting = verdict.set_next_table_repeats_header
+    is_next_table = next_item.get("kind") == "table"
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+    is_table_continuation = (
+        verdict.is_continuation and kind == PageContinuationKind.TABLE.value
+    )
+    if header_setting is not None and is_next_table and is_table_continuation:
+        next_page_items[next_idx]["repeats_header"] = header_setting
+
+
+def apply_non_continuity_edits(
+    *,
+    next_idx: int,
+    next_item: dict[str, Any],
+    next_page_items: list[dict[str, Any]],
+    prev_idx: int,
+    prev_item: dict[str, Any],
+    prev_page_items: list[dict[str, Any]],
+    verdict: PageIRContinuityVerdict,
+) -> None:
+    """If the model is VERY confident there is no continuation between these two
+    candidates, clear seam-level continuity flags on just these items.
+
+    This is a 'patch' for extractor false-positives (e.g., a table marked resumed when
+    it's actually a new table).
+
+    NB: We only clear the seam-relevant side, preserving the other side when
+    boundary="both".
+
+    Parameters
+    ----------
+    next_idx
+        Index of the continuity candidate item on the next page.
+    next_item
+        The actual item dictionary for the next page candidate.
+    next_page_items
+        The list of items on the next page.
+    prev_idx
+        Index of the continuity candidate item on the previous page.
+    prev_item
+        The actual item dictionary for the previous page candidate.
+    prev_page_items
+        The list of items on the previous page.
+    verdict
+        The continuity verdict from the model.
+    """
+
+    if verdict.is_continuation:
+        return
+
+    # If confidence is not high enough and we don't have ordering safety, skip.
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+    ordering_safety_hard_negative = (
+        (not verdict.is_continuation)
+        and kind == PageContinuationKind.NONE.value
+        and not (prev_item.get("kind") == "table" and next_item.get("kind") == "table")
+        and has_structural_block_above_candidate(
+            candidate_index=next_idx, items=next_page_items
+        )
+    )
+    neg_threshold = get_negative_threshold_based_on_kind(
+        next_item=next_item, prev_item=prev_item
+    )
+    if (
+        float(verdict.clamped_confidence) < neg_threshold
+        and not ordering_safety_hard_negative
+    ):
+        return
+
+    # Previous page item (seam to NEXT corresponds to TRUNCATED).
+    # NB: If prev_boundary is RESUMED or COMPLETE, leave it as-is.
+    prev_boundary = _boundary_val(prev_page_items[prev_idx].get("boundary"))
+    if prev_boundary == ItemBoundary.TRUNCATED.value:
+        # It only claimed "continues to next"; clear it.
+        ensure_boundary(
+            allow_downgrade_both=True,
+            desired=ItemBoundary.COMPLETE.value,
+            index=prev_idx,
+            items=prev_page_items,
+        )
+    elif prev_boundary == ItemBoundary.BOTH.value:
+        # Remove the "to next" claim but preserve "from prev".
+        ensure_boundary(
+            allow_downgrade_both=True,
+            desired=ItemBoundary.RESUMED.value,
+            index=prev_idx,
+            items=prev_page_items,
+        )
+
+    # Next page item (seam from PREV corresponds to RESUMED).
+    # NB: If next_boundary is TRUNCATED or COMPLETE, leave it as-is.
+    next_boundary = _boundary_val(next_page_items[next_idx].get("boundary"))
+    if next_boundary == ItemBoundary.RESUMED.value:
+        # It only claimed "continues from prev"; clear it.
+        ensure_boundary(
+            allow_downgrade_both=True,
+            desired=ItemBoundary.COMPLETE.value,
+            index=next_idx,
+            items=next_page_items,
+        )
+    elif next_boundary == ItemBoundary.BOTH.value:
+        # Remove the "from prev" claim but preserve "to next".
+        ensure_boundary(
+            allow_downgrade_both=True,
+            desired=ItemBoundary.TRUNCATED.value,
+            index=next_idx,
+            items=next_page_items,
+        )
+
+    # repeats_header only has meaning for resumed/both table continuations.
+    if next_item.get("kind") == "table":
+        next_page_items[next_idx]["repeats_header"] = None
 
 
 def bottommost_continuity_candidate(
@@ -579,6 +771,134 @@ def find_caption_code(items: list[dict[str, Any]]) -> str | None:
                 return str(code)
 
     return None
+
+
+def fix_false_repeats_header_on_continuation(*, next_item: Any, prev_item: Any) -> None:
+    """Fix false repeats_header=true flags on continued tables where headers do not
+    match. If a table continues across a page boundary (prev last is truncated table,
+    next first is resumed table) and next_table.repeats_header==True, but the header
+    signatures DO NOT match, then auto-fix by setting repeats_header=False (and log a
+    warning).
+
+    NB: This does NOT attempt to change header_row_count; it only corrects
+    repeats_header.
+
+    Parameters
+    ----------
+    next_item
+        The page IR for the next page.
+    prev_item
+        The page IR for the previous page.
+    """
+
+    # Only table-to-table continuations.
+    prev_kind = (
+        prev_item.get("kind")
+        if isinstance(prev_item, dict)
+        else getattr(prev_item, "kind", None)
+    )
+    next_kind = (
+        next_item.get("kind")
+        if isinstance(next_item, dict)
+        else getattr(next_item, "kind", None)
+    )
+    if (
+        prev_kind != PageContinuationKind.TABLE.value
+        or next_kind != PageContinuationKind.TABLE.value
+    ):
+        return
+
+    if not is_truncated(_boundary_str(prev_item)) or not is_resumed(
+        _boundary_str(next_item)
+    ):
+        return
+
+    current_val = (
+        next_item.get("repeats_header")
+        if isinstance(next_item, dict)
+        else getattr(next_item, "repeats_header", None)
+    )
+
+    if current_val is not True:
+        return
+
+    prev_sig = table_header_signature(prev_item)
+    next_sig = table_header_signature(next_item)
+
+    # If we cannot compute signatures, be conservative and skip.
+    if prev_sig is None or next_sig is None:
+        return
+
+    if prev_sig != next_sig:
+        logger.warning(
+            "Table continuation has repeats_header=true but header rows do not match "
+            "the previous page's header. This is likely a false repeated-header flag. "
+            "Overwriting repeats_header to false."
+        )
+        if isinstance(next_item, dict):
+            next_item["repeats_header"] = False
+        else:
+            next_item.repeats_header = False
+
+
+def fix_repeats_header_for_continued_tables(*, next_item: Any, prev_item: Any) -> None:
+    """Fix repeats_header on continued tables based on header signature matching. If
+    the last continued item on prev page is a table and the first continued item on
+    next page is a table, and their header signatures match, then enforce
+    next_table.repeats_header=True.
+
+    Parameters
+    ----------
+    next_item
+        The page IR for the next page.
+    prev_item
+        The page IR for the previous page.
+    """
+
+    # Only for table-to-table continuations.
+    prev_kind = (
+        prev_item.get("kind")
+        if isinstance(prev_item, dict)
+        else getattr(prev_item, "kind", None)
+    )
+    next_kind = (
+        next_item.get("kind")
+        if isinstance(next_item, dict)
+        else getattr(next_item, "kind", None)
+    )
+    if (
+        prev_kind != PageContinuationKind.TABLE.value
+        or next_kind != PageContinuationKind.TABLE.value
+    ):
+        return
+
+    if not is_truncated(_boundary_str(prev_item)) or not is_resumed(
+        _boundary_str(next_item)
+    ):
+        return
+
+    prev_sig = table_header_signature(prev_item)
+    next_sig = table_header_signature(next_item)
+
+    if prev_sig is None or next_sig is None:
+        return
+
+    if prev_sig == next_sig:
+        # Enforce repeats_header on the resumed page.
+        current_val = (
+            next_item.get("repeats_header")
+            if isinstance(next_item, dict)
+            else getattr(next_item, "repeats_header", None)
+        )
+        if current_val is False:
+            logger.warning(
+                "Detected repeated table header on continued table but "
+                "repeats_header=false; overwriting to true."
+            )
+            if isinstance(next_item, dict):
+                next_item["repeats_header"] = True
+            else:
+                next_item.repeats_header = True
 
 
 def get_negative_threshold_based_on_kind(
@@ -1035,6 +1355,42 @@ def item_snippet(
     return out
 
 
+def load_page_irs_from_extraction(
+    *, end_page: int, page_irs_dir: Path, start_page: int
+) -> dict[int, dict[str, Any]]:
+    """Load page IR JSONs from the extraction output directory.
+
+    Parameters
+    ----------
+    end_page
+        0-based end page (exclusive).
+    page_irs_dir
+        Directory containing the page IR JSONs.
+    start_page
+        0-based start page (inclusive).
+
+    Returns
+    -------
+    dict[int, dict[str, Any]]
+        The dictionary of page IRs by page index.
+    """
+
+    page_irs: dict[int, dict[str, Any]] = {
+        i: PageIR.model_validate(
+            open_json_type(page_irs_dir / f"{i:04}.json")
+        ).model_dump(mode="json")
+        for i in range(start_page, end_page)
+    }
+
+    # Preserve extraction hints (internal-only) so reports can show what the extractor
+    # believed. Verification will PATCH only when confidence is high.
+    for page_ir in page_irs.values():
+        for item in page_ir.get("items", []):
+            item["_orig_boundary"] = item.get("boundary")
+
+    return page_irs
+
+
 def min_crop_height_px(*, kind: str, page_h_px: int) -> int:
     """Get the minimum crop height in pixels for continuity candidate extraction.
 
@@ -1066,6 +1422,79 @@ def min_crop_height_px(*, kind: str, page_h_px: int) -> int:
     return clamp(0.16 * page_h_px, low=450, high=1000)
 
 
+def normalize_table_row_cell_counts(
+    *, page_irs: dict[int, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Ensure each table row has exactly n_cols cells by inserting blank cells where
+    extraction omitted visually-empty/row-spanned leading columns. This makes
+    downstream column-based parsing deterministic.
+
+    Parameters
+    ----------
+    page_irs
+        Mapping of page index to PageIR dict.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change records describing the modifications made.
+    """
+
+    changes: list[dict[str, Any]] = []
+
+    for page_idx in sorted(page_irs.keys()):
+        page = page_irs[page_idx]
+        for item_idx, it in enumerate(page.get("items", [])):
+            if it.get("kind") != "table":
+                continue
+
+            n_cols = it.get("n_cols")
+            if not isinstance(n_cols, int) or n_cols <= 0:
+                continue
+
+            rows = it.get("rows", [])
+            for row_idx, row in enumerate(rows):
+                cells = row.get("cells", [])
+                if not isinstance(cells, list):
+                    continue
+
+                # Keep as is.
+                if len(cells) == n_cols or len(cells) > n_cols:
+                    continue
+
+                missing = n_cols - len(cells)
+
+                # Heuristic: if the first visible cell looks like a competence code
+                # anywhere at the start of a line (e.g., "3.2", "5.2"), the missing
+                # cells are almost certainly LEADING (SN/Subject columns under a
+                # row-span).
+                first_txt = ""
+                if cells and isinstance(cells[0], dict):
+                    t = cells[0].get("text") or {}
+                    first_txt = t.get("text") or ""
+
+                codeish = bool(re.search(r"(^|\n)\s*\d+\.\d+", first_txt))
+                pad = [
+                    {"col_span": 1, "row_span": 1, "text": None} for _ in range(missing)
+                ]
+                row["cells"] = (pad + cells) if codeish else (cells + pad)
+
+                changes.append(
+                    {
+                        "type": "pad_table_row_cells",
+                        "page": page_idx,
+                        "item_index": item_idx,
+                        "row_index": row_idx,
+                        "n_cols": n_cols,
+                        "before": len(cells),
+                        "after": len(row["cells"]),
+                        "side": "left" if codeish else "right",
+                    }
+                )
+
+    return changes
+
+
 def pad_inches(kind: str) -> float:
     """Get the padding in inches for continuity candidate extraction.
 
@@ -1085,6 +1514,382 @@ def pad_inches(kind: str) -> float:
     if kind == "figure":
         return 0.50
     return 0.25
+
+
+def persist_extraction_run(
+    *,
+    country: str,
+    dpi: int,
+    end_page: Optional[int],
+    pdf_fp: Path,
+    languages: list[str],
+    model: str,
+    output_dir: Path,
+    overwrite: bool,
+    start_page: int,
+    use_text_layer_hints: bool,
+) -> tuple[str, PageIRExtractionDirs, RunCtx]:
+    """Persist extraction run metadata.
+
+    Parameters
+    ----------
+    country
+        The country associated with the PDF document.
+    dpi
+        Render DPI for page images.
+    end_page
+        0-based end page (exclusive).
+    pdf_fp
+        The file path to the PDF document to extract curriculum data from.
+    languages
+        One or more languages associated with the PDF document.
+    model
+        OpenAI model for page IR extraction.
+    output_dir
+        Output directory root.
+    overwrite
+        Specifies whether to overwrite existing per-page artifacts.
+    start_page
+        0-based start page (inclusive).
+    use_text_layer_hints
+        Whether to extract and use text layer hints from the PDF during extraction.
+
+    Returns
+    -------
+    tuple[str, ExtractionDirs, RunCtx]
+        The document key, extraction directories, and extraction run record.
+    """
+
+    doc_key = compute_doc_key(n_hex=64, pdf_fp=pdf_fp)
+    extraction_dirs = create_page_ir_extraction_dirs(
+        doc_key=doc_key, output_dir=output_dir
+    )
+    extraction_run = RunCtx(
+        extra={
+            "country": country,
+            "doc_key": doc_key,
+            "dpi": dpi,
+            "end_page_cli": end_page,  # Keep original CLI value (may be None)
+            "languages": languages,
+            "pdf_name": pdf_fp.name,
+            "overwrite": overwrite,
+            "start_page": start_page,
+            "use_text_layer_hints": use_text_layer_hints,
+        },
+        models=[model],
+        run_id=str(uuid.uuid4()),
+        started_at=datetime.now(timezone.utc),
+    )
+    write_to_json(
+        fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
+    )
+    logger.info(f"Extraction directory: {extraction_dirs.root}")
+
+    return doc_key, extraction_dirs, extraction_run
+
+
+def persist_verification_run(
+    *,
+    end_page: Optional[int],
+    model: str,
+    output_dir: Path,
+    start_page: int,
+    **kwargs: Any,
+) -> tuple[PageIRVerificationDirs, RunCtx]:
+    """Persist verification run metadata.
+
+    Parameters
+    ----------
+    end_page
+        0-based end page (exclusive).
+    model
+        OpenAI model for page IR continuity verification.
+    output_dir
+        The output directory for the verified page IR JSONs.
+    start_page
+        0-based start page (inclusive).
+    kwargs
+        Additional extraction run configuration parameters.
+
+    Returns
+    -------
+    tuple[PageIRVerificationDirs, RunCtx]
+        The created verification directories and persisted verification run metadata.
+    """
+
+    extra = kwargs.get("extra", {})
+    extra.update(
+        {
+            "end_page_cli": end_page,  # Keep original CLI value (may be None)
+            "start_page_cli": start_page,
+        }
+    )
+    extra.pop("status", None)
+    verification_dirs = create_page_ir_verification_dirs(output_dir=output_dir)
+    verification_run = RunCtx(
+        extra=extra,
+        models=[model],
+        run_id=str(uuid.uuid4()),
+        started_at=datetime.now(timezone.utc),
+    )
+    write_to_json(fp=output_dir / "verification_run.json", json_info=verification_run)
+    logger.info(f"Verification directory: {output_dir}")
+
+    return verification_dirs, verification_run
+
+
+def postprocess_verified_page_irs(
+    *, page_irs: dict[int, dict[str, Any]], verification_dirs: PageIRVerificationDirs
+) -> None:
+    """Run all postpass fixes before writing verified JSONs.
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+    verification_dirs
+        The verification directories.
+    """
+
+    table_code_changes = propagate_table_local_codes(page_irs=page_irs)
+    pad_changes = normalize_table_row_cell_counts(page_irs=page_irs)
+
+    # Persist what was changed for audit/debug.
+    write_to_json(
+        fp=verification_dirs.root / "postprocess_report.json",
+        json_info={
+            "table_local_code_changes": table_code_changes,
+            "table_row_padding_changes": pad_changes,
+        },
+    )
+
+
+def propagate_table_local_codes(
+    *, page_irs: dict[int, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Carry forward the most recent "Table X" local_code across continuation segments
+    when repeats_header=true or boundary indicates continuation and local_code is null.
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of changes made during the postpass.
+    """
+
+    carried_table_code: str | None = None
+    changes: list[dict[str, Any]] = []
+
+    for i in sorted(page_irs.keys()):
+        page = page_irs[i]
+        items = page.get("items", [])
+
+        # Capture any caption-defined table code on the page (preferred source of
+        # truth).
+        if (caption_code := find_caption_code(items)) is not None:
+            carried_table_code = caption_code
+
+        table_continues_to_next = False
+
+        for idx, it in enumerate(items):
+            if it.get("kind") != "table":
+                continue
+
+            boundary = _boundary_val(it.get("boundary"), default_val="")
+
+            # If this is a new table start (not continuing from prev), we generally
+            # shouldn't apply the *previous* table's code. We should only carry forward
+            # if we are inside a specific chain.
+            is_resumed_or_both = boundary in (
+                ItemBoundary.RESUMED.value,
+                ItemBoundary.BOTH.value,
+            )
+
+            # If this item does NOT continue from the previous one, break the chain.
+            if not is_resumed_or_both:
+                carried_table_code = None
+
+            # Update carry if THIS item has an explicit code.
+            code = (it.get("local_code") or "").strip()
+            if code:
+                carried_table_code = code
+
+            # Fill missing local_code if we’re clearly in a continuation chain.
+            elif is_resumed_or_both and carried_table_code:
+                it["local_code"] = carried_table_code
+                changes.append(
+                    {
+                        "type": "propagate_table_local_code",
+                        "page": i,
+                        "item_index": idx,
+                        "set_local_code": carried_table_code,
+                    }
+                )
+
+            # Check if this table continues to the NEXT page to decide if we should
+            # keep `carried_table_code` alive for the next page loop.
+            if boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value):
+                table_continues_to_next = True
+
+        # Only keep carrying forward when the table actually continues to the next page.
+        if not table_continues_to_next:
+            carried_table_code = None
+
+    return changes
+
+
+def sanitize_verdict_for_candidate_kinds(
+    *,
+    next_item: dict[str, Any],
+    prev_item: dict[str, Any],
+    verdict: PageIRContinuityVerdict,
+) -> PageIRContinuityVerdict:
+    """Drop (veto) continuations that are structurally impossible for the chosen
+    candidates.
+
+    Parameters
+    ----------
+    next_item
+        The actual item dictionary for the next page candidate.
+    prev_item
+        The actual item dictionary for the previous page candidate.
+    verdict
+        The continuation verdict from the model.
+
+    Returns
+    -------
+    PageIRContinuityVerdict
+        The sanitized verdict.
+    """
+
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+
+    if verdict.is_continuation and kind == PageContinuationKind.NONE.value:
+        return veto_continuation(
+            reason=f"continuation_kind={PageContinuationKind.NONE.value} is incompatible with is_continuation=true",
+            verdict=verdict,
+        )
+
+    if (not verdict.is_continuation) and kind != PageContinuationKind.NONE.value:
+        verdict.continuation_kind = PageContinuationKind.NONE
+        verdict.set_prev_item_boundary = None
+        verdict.set_next_item_boundary = None
+        verdict.set_next_table_repeats_header = None
+        return verdict
+
+    prev_kind = prev_item.get("kind")
+    next_kind = next_item.get("kind")
+
+    # Text continuations must be block-to-block (never into/from a table).
+    if kind == PageContinuationKind.TEXT.value and (
+        prev_kind != "block" or next_kind != "block"
+    ):
+        return veto_continuation(
+            reason="continuation_kind=text requires both candidates to be block items",
+            verdict=verdict,
+        )
+
+    # Table continuations must be table-to-table.
+    if kind == PageContinuationKind.TABLE.value and (
+        prev_kind != "table" or next_kind != "table"
+    ):
+        return veto_continuation(
+            reason="continuation_kind=table requires both candidates to be table items",
+            verdict=verdict,
+        )
+
+    # Figure continuations must be figure-to-figure blocks.
+    if kind == PageContinuationKind.FIGURE.value and (
+        not (is_figure_block(prev_item) and is_figure_block(next_item))
+    ):
+        return veto_continuation(
+            reason="continuation_kind=figure requires both candidates to be figure blocks",
+            verdict=verdict,
+        )
+
+    return verdict
+
+
+def save_verified_page_irs(
+    *, page_irs: dict[int, dict[str, Any]], verification_dirs: PageIRVerificationDirs
+) -> None:
+    """Save verified page IRs to the verified directory.
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+    verification_dirs
+        The verification directories.
+    """
+
+    logger.info(
+        f"Saving all verified page IR JSONs to: {verification_dirs.page_irs_verified}"
+    )
+
+    for i in sorted(page_irs.keys()):
+        page_ir = page_irs[i]
+
+        # Remove internal-only fields before writing outputs (schema forbids extras).
+        for it in page_ir.get("items", []):
+            it.pop("_orig_boundary", None)
+
+        # Derive page-level boundary_state from verified item boundaries.
+        page_ir["boundary_state"] = derive_page_boundary_state(page_ir=page_ir).value
+
+        # Write verified JSON.
+        write_to_json(
+            fp=verification_dirs.page_irs_verified / f"{i:04}.json", json_info=page_ir
+        )
+
+    logger.success("All verified page IR JSONs saved successfully!")
+
+
+def should_veto_text_continuation_due_to_ordering_safety(
+    *,
+    next_idx: int,
+    next_item: dict[str, Any],
+    next_page_items: list[dict[str, Any]],
+    verdict: PageIRContinuityVerdict,
+) -> bool:
+    """Deterministically veto TEXT/LIST continuations when a structural heading/caption
+    appears above the next candidate.
+
+    Parameters
+    ----------
+    next_idx
+        Index of the continuity candidate item on the next page.
+    next_item
+        The actual item dictionary for the next page candidate.
+    next_page_items
+        The list of items on the next page.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    bool
+        True if the continuation should be vetoed due to ordering safety.
+    """
+
+    if not verdict.is_continuation:
+        return False
+
+    kind = getattr(verdict.continuation_kind, "value", verdict.continuation_kind)
+    if kind != PageContinuationKind.TEXT.value:
+        return False
+
+    # Do not apply this rule to TABLE continuations.
+    if next_item.get("kind") == "table":
+        return False
+
+    return has_structural_block_above_candidate(
+        candidate_index=next_idx, items=next_page_items
+    )
 
 
 def table_header_signature(table: Any) -> tuple[tuple[str, ...], ...] | None:
@@ -1344,3 +2149,41 @@ def topmost_continuity_candidate_paired(
 
     # Fallback to unpaired logic.
     return topmost_continuity_candidate(image_height=image_height, items=items)
+
+
+def veto_continuation(
+    *, reason: str, verdict: PageIRContinuityVerdict
+) -> PageIRContinuityVerdict:
+    """Veto a continuation claim by forcing is_continuation=False with low confidence.
+
+    Parameters
+    ----------
+    reason
+        The reason for vetoing the verdict.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    PageIRContinuityVerdict
+        The modified verdict with the veto applied.
+    """
+
+    logger.warning(f"Vetoing continuation due to: {reason}")
+
+    verdict.is_continuation = False
+
+    # Candidate mismatch means we can't trust the continuation claim between THESE two
+    # items, not "there is definitely no continuation anywhere". Keep this
+    # continuation_kind="none" and low-confidence so downstream edit-application
+    # thresholds will not apply.
+    verdict.clamped_confidence = min(float(verdict.confidence), 0.49)
+    verdict.continuation_kind = PageContinuationKind.NONE
+    verdict.rationale = (verdict.rationale or "") + f" | Postprocess veto: {reason}"
+
+    # NB: Never apply edits if we veto the continuation claim.
+    verdict.set_prev_item_boundary = None
+    verdict.set_next_item_boundary = None
+    verdict.set_next_table_repeats_header = None
+
+    return verdict

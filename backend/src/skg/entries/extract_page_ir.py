@@ -12,7 +12,6 @@ python src/skg/entries/extract_page_ir.py ../data/ghana/ghana.pdf -c Ghana -y 20
 # Standard Library
 import sys
 import traceback
-import uuid
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,12 +34,10 @@ if __name__ == "__main__":
 # Package Library
 from skg.page_ir.llm import extract_page_ir
 from skg.page_ir.schemas import PageIR
-from skg.page_ir.utils import PageIRExtractionDirs, create_page_ir_extraction_dirs
-from skg.schemas import RunCtx
+from skg.page_ir.utils import PageIRExtractionDirs, persist_extraction_run
 from skg.utils.constants import PageBoundaryState
 from skg.utils.general import write_to_json
 from skg.utils.pdf import (
-    compute_doc_key,
     extract_text_layer_hints,
     is_mostly_blank,
     read_png_dimensions,
@@ -173,78 +170,6 @@ def extract_page_by_page(
         # Save PageIR JSON.
         write_to_json(fp=page_ir_fp, json_info=page_ir)
         logger.success(f"Finished extracting and saving page: {page_index}!")
-
-
-def persist_extraction_run(
-    *,
-    country: str,
-    dpi: int,
-    end_page: Optional[int],
-    pdf_fp: Path,
-    languages: list[str],
-    model: str,
-    output_dir: Path,
-    overwrite: bool,
-    start_page: int,
-    use_text_layer_hints: bool,
-) -> tuple[str, PageIRExtractionDirs, RunCtx]:
-    """Persist extraction run metadata.
-
-    Parameters
-    ----------
-    country
-        The country associated with the PDF document.
-    dpi
-        Render DPI for page images.
-    end_page
-        0-based end page (exclusive).
-    pdf_fp
-        The file path to the PDF document to extract curriculum data from.
-    languages
-        One or more languages associated with the PDF document.
-    model
-        OpenAI model for page IR extraction.
-    output_dir
-        Output directory root.
-    overwrite
-        Specifies whether to overwrite existing per-page artifacts.
-    start_page
-        0-based start page (inclusive).
-    use_text_layer_hints
-        Whether to extract and use text layer hints from the PDF during extraction.
-
-    Returns
-    -------
-    tuple[str, ExtractionDirs, RunCtx]
-        The document key, extraction directories, and extraction run record.
-    """
-
-    doc_key = compute_doc_key(n_hex=64, pdf_fp=pdf_fp)
-    extraction_dirs = create_page_ir_extraction_dirs(
-        doc_key=doc_key, output_dir=output_dir
-    )
-    extraction_run = RunCtx(
-        extra={
-            "country": country,
-            "doc_key": doc_key,
-            "dpi": dpi,
-            "end_page_cli": end_page,  # Keep original CLI value (may be None)
-            "languages": languages,
-            "pdf_name": pdf_fp.name,
-            "overwrite": overwrite,
-            "start_page": start_page,
-            "use_text_layer_hints": use_text_layer_hints,
-        },
-        models=[model],
-        run_id=str(uuid.uuid4()),
-        started_at=datetime.now(timezone.utc),
-    )
-    write_to_json(
-        fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
-    )
-    logger.info(f"Extraction directory: {extraction_dirs.root}")
-
-    return doc_key, extraction_dirs, extraction_run
 
 
 @cli.command()
