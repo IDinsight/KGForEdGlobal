@@ -106,7 +106,7 @@ def load_page_irs_from_verification(*, verified_page_irs_dir: Path) -> list[Page
         )
 
     verified_page_irs: list[PageIR] = [
-        PageIR.model_validate(open_json_type(json_file)).model_dump(mode="json")
+        PageIR.model_validate(open_json_type(json_file))
         for json_file in sorted(list(verified_page_irs_dir.glob("*.json")))
     ]
 
@@ -231,7 +231,7 @@ def stitch_document_ir(
     document_ir_fp = stitching_dirs.root / "document_ir.json"
 
     if not overwrite and document_ir_fp.exists():
-        logger.info(
+        logger.warning(
             f"Document IR JSON already exists at {document_ir_fp}. Skipping stitching."
             f"If you wish to overwrite, pass the --overwrite flag."
         )
@@ -250,8 +250,12 @@ def stitch_document_ir(
         p_idx: dict(items) for p_idx, items in items_with_idx.items()
     }
 
+    warnings: list[str] = []
+
     # Compute page break links based on verified boundary flags.
-    links = compute_page_break_links(keep_artifacts=keep_artifacts, page_irs=page_irs)
+    links = compute_page_break_links(
+        keep_artifacts=keep_artifacts, page_irs=page_irs, warnings=warnings
+    )
 
     # Set of destination keys to identify items that are continuations.
     continuations = set(links.values())
@@ -259,7 +263,6 @@ def stitch_document_ir(
     # Iterate in document reading order: page order, then item order.
     segments: list[Segment] = []
     visited: set[ItemKey] = set()
-    warnings: list[str] = []
 
     for page_ir in page_irs:
         page_idx = page_ir.page_index
