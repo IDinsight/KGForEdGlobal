@@ -16,7 +16,6 @@ from loguru import logger
 from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
 from skg.schemas import RunCtx
 from skg.utils.constants import (
-    SECTION_BREAK_HEADINGS,
     BlockType,
     ItemBoundary,
     PageBoundaryState,
@@ -24,6 +23,18 @@ from skg.utils.constants import (
 )
 from skg.utils.general import clamp, make_dir, near, open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
+
+SECTION_BREAK_HEADINGS = {
+    "appendix",
+    "bibliography",
+    "contents",
+    "index",
+    "list of figures",
+    "list of tables",
+    "reference list",
+    "references",
+    "table of contents",
+}
 
 
 @dataclass(frozen=True)
