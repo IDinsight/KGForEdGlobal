@@ -1316,10 +1316,21 @@ def stitch_block_chain(
             figure_payload = b.figure.model_dump(mode="json")
 
     combined_text: Optional[str] = None
+    stitched_text: Optional[TextUnit] = first.text
+
     if text_units:
         combined_text = join_text_units(
             repair_hyphenation=repair_hyphenation, units=text_units
         )
+
+        # If slice languages disagree, mark the stitched segment as mixed-language.
+        langs = {tu.language for tu in text_units}
+        if len(langs) > 1:
+            # NB: Do NOT mutate any slice TextUnit --> create a new one instead.
+            stitched_text = TextUnit(language="mul", text=combined_text, text_en=None)
+        else:
+            # Single language: avoid None if first slice lacked text.
+            stitched_text = first.text or text_units[0]
 
     return BlockSegment(
         block_type=first.block_type,
@@ -1330,7 +1341,7 @@ def stitch_block_chain(
         provenance=provenance,
         segment_key=seg_key,
         slices=slices,
-        text=first.text,
+        text=stitched_text,
     )
 
 
