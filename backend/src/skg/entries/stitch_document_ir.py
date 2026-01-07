@@ -150,6 +150,11 @@ def stitch_document_ir(
     # Set of destination keys to identify items that are continuations.
     continuations = set(links.values())
 
+    # Reverse map: destination --> list of sources that point to it (for debugging).
+    reverse_links: dict[ItemKey, list[ItemKey]] = {}
+    for src, dst in links.items():
+        reverse_links.setdefault(dst, []).append(src)
+
     # Iterate in document reading order: page order, then item order.
     segments: list[Segment] = []
     visited: set[ItemKey] = set()
@@ -161,10 +166,20 @@ def stitch_document_ir(
         for original_item_idx, item in page_items:
             key = (page_idx, original_item_idx)
 
-            # Skip if already processed or if it's the middle/end of a chain.
-            if key in visited or key in continuations:
-                visited.add(key)
+            # Skip if already processed.
+            if key in visited:
                 continue
+
+            # If this item is a continuation destination but wasn't actually consumed
+            # by a previous chain, treat it as an "orphan continuation" and process it
+            # as a standalone chain start (with a warning).
+            if key in continuations:
+                warnings.append(
+                    f"Orphan continuation destination encountered;it was pointed-to by "
+                    f"a prior page-break link but not consumed in any chain. "
+                    f"dest={key}, sources={reverse_links.get(key, [])}. "
+                    f"Processing as standalone."
+                )
 
             # Build the chains.
             chain, chain_warnings = build_continuation_chain(
