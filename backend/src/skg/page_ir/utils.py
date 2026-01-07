@@ -1,4 +1,4 @@
-"""This module contains utility functions for page Intermediate Representations (IRs)."""
+"""This module contains utility functions for page Intermediate Representations."""
 
 # Standard Library
 import re
@@ -561,7 +561,7 @@ def create_page_ir_extraction_dirs(
 
 
 def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationDirs:
-    """Create page IR verification directories for a given extraction run.
+    """Create page IR verification directories for a given verification run.
 
     Parameters
     ----------

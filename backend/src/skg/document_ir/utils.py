@@ -1,6 +1,4 @@
-"""This module contains utility functions for document Intermediate Representations
-(IRs).
-"""
+"""This module contains utility functions for document Intermediate Representations."""
 
 # Standard Library
 import re
@@ -978,7 +976,7 @@ def compute_page_break_links(
 
 
 def create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
-    """Create document IR directories for a given document key.
+    """Create document IR directories for a given stitching run.
 
     Parameters
     ----------
@@ -1230,7 +1228,7 @@ def persist_stitching_run(
     output_dir
         The output directory for the document IR JSON.
     kwargs
-        Additional verification run configuration parameters.
+        Additional stitching run configuration parameters.
 
     Returns
     -------
@@ -1242,9 +1240,7 @@ def persist_stitching_run(
     extra.pop("status", None)
     stitching_dirs = create_document_ir_dirs(output_dir=output_dir)
     stitching_run = RunCtx(
-        extra=extra,
-        run_id=str(uuid.uuid4()),
-        started_at=datetime.now(timezone.utc),
+        extra=extra, run_id=str(uuid.uuid4()), started_at=datetime.now(timezone.utc)
     )
     write_to_json(fp=output_dir / "stitching_run.json", json_info=stitching_run)
     logger.info(f"Stitching directory: {output_dir}")
