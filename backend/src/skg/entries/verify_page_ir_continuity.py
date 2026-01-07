@@ -360,7 +360,8 @@ def verify(
             f"  computed doc_key:         {computed_doc_key}\n"
             f"  extraction_run.json key:  {expected_doc_key}\n"
             f"You are likely verifying against a different PDF than the one used for "
-            f"extraction. Pass the same PDF used in step 1 or re-run extraction."
+            f"extraction. Pass the same PDF used in the extraction step or re-run "
+            f"extraction."
         )
 
     logger.info(
