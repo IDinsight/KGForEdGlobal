@@ -84,15 +84,15 @@ class PageContinuationKind(str, Enum):
     TEXT = "text"
 
 
-# Common section break headings (lowercase, stripped of punctuation).
-SECTION_BREAK_HEADINGS = {
-    "appendix",
-    "bibliography",
-    "contents",
-    "index",
-    "list of figures",
-    "list of tables",
-    "reference list",
-    "references",
-    "table of contents",
-}
+class StatementRole(str, Enum):
+    """Semantic role of a KG node in the hierarchy."""
+
+    EXPECTATION = "expectation"  # Normative statement (standard/outcome)
+    DESCRIPTOR = "descriptor"  # Performance indicator/benchmark
+    FRAMEWORK = "framework"  # The root document
+    GRADE_LEVEL = "grade_level"  # e.g., "Standard III"
+    SECTION = "section"  # Structural grouping (e.g., "Section One")
+    STRAND = "strand"  # e.g., "Main Competence"
+    SUBJECT = "subject"  # e.g., "Mathematics"
+    TOPIC = "topic"  # e.g., "Topic" or sub-strand
+    UNRESOLVED = "unresolved"  # Content that could not be classified
