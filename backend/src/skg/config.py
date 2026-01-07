@@ -5,6 +5,8 @@ well.
 """
 
 # Standard Library
+import uuid
+
 from typing import Annotated, Any, Literal, Optional
 
 # Third Party Library
@@ -32,6 +34,9 @@ class BackendSettings(BaseSettings):
 
     # Logging
     LOGGING_LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    # Namespaces
+    PROJECT_NAMESPACE: uuid.UUID = uuid.uuid5(uuid.NAMESPACE_DNS, "skg:canonical-ir:v1")
 
     # Postgres
     POSTGRES_ASYNC_API: str = Field("asyncpg", validation_alias="POSTGRES_ASYNC_API")
