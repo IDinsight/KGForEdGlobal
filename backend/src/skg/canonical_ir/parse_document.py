@@ -13,7 +13,17 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.canonical_ir.schemas import CanonicalEdge, CanonicalIR, CanonicalNode
+from skg.canonical_ir.schemas import (
+    BlockSpec,
+    CanonicalEdge,
+    CanonicalIR,
+    CanonicalNode,
+    CanonicalRowIR,
+    LeafParsingConfig,
+    LeafStatement,
+    ParserConfig,
+    TableSpec,
+)
 from skg.canonical_ir.utils import (
     _coerce_text_to_str,
     _coerce_text_to_textunit_like,
@@ -22,16 +32,7 @@ from skg.canonical_ir.utils import (
 )
 from skg.document_ir.schemas import DocumentIR
 from skg.page_ir.schemas import TextUnit
-from skg.utils.constants import (
-    BlockSpec,
-    BlockType,
-    CanonicalRowIR,
-    LeafParsingConfig,
-    LeafStatement,
-    ParseConfig,
-    StatementRole,
-    TableSpec,
-)
+from skg.utils.constants import BlockType, StatementRole
 
 
 class CanonicalIRBuilder:
@@ -178,7 +179,11 @@ class DocumentParser:
     """Encapsulates logic and state for parsing a document into CanonicalIR."""
 
     def __init__(
-        self, *, config: ParseConfig, document_ir: DocumentIR, wizard_mode: bool = False
+        self,
+        *,
+        config: ParserConfig,
+        document_ir: DocumentIR,
+        wizard_mode: bool = False,
     ) -> None:
         """
 
@@ -1639,7 +1644,7 @@ def _normalize_space(s: str) -> str:
 
 
 def _pick_heading_role_and_level(
-    *, cfg: ParseConfig, text: str
+    *, cfg: ParserConfig, text: str
 ) -> tuple[StatementRole, int, bool]:
     """Determine the role and hierarchy level for a heading string. Iterates through
     `cfg.heading_rules`. If no rule matches, defaults to StatementRole.SECTION with a
@@ -1809,7 +1814,7 @@ def _stable_list_item_key(*, body: str, marker: str | None) -> str:
     return hashlib.sha256(s).hexdigest()[:12]
 
 
-def _table_is_contentful(*, cfg: ParseConfig, seg: Any) -> bool:
+def _table_is_contentful(*, cfg: ParserConfig, seg: Any) -> bool:
     """Determine if an unmatched table is 'real' enough for wizard diagnostics.
 
     Parameters
@@ -1908,7 +1913,7 @@ def _union_bbox(a: list[float] | None, b: list[float] | None) -> list[float] | N
 
 
 def parse_document(
-    *, config: ParseConfig, document_ir: DocumentIR, wizard_mode: bool = False
+    *, config: ParserConfig, document_ir: DocumentIR, wizard_mode: bool = False
 ) -> CanonicalIR:
     """Deterministically parse DocumentIR --> CanonicalIR using config-driven rules.
 
