@@ -346,6 +346,9 @@ class DocumentParser:
         bt = getattr(seg, "block_type", None)
         bt_str = str(bt.value) if bt is not None and hasattr(bt, "value") else str(bt)
 
+        if bt_str == BlockType.ARTIFACT.value:
+            return  # Explicitly skip artifacts
+
         # Handle captions.
         if bt_str == BlockType.CAPTION.value:
             self.pending_caption_text = _normalize_space(
