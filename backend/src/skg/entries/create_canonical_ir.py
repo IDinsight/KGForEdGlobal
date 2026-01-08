@@ -3,7 +3,10 @@ from step 3 into CanonicalIR (semantic). This is step 4.
 
 Step 4 does the following:
 
-1. XXX
+1. Loads the DocumentIR JSON from the stitching run results directory.
+2. Loads the custom parser config for the PDF.
+3. Parses the document into a CanonicalIR using country/PDF-family-specific rules.
+4. Exports the CanonicalIR JSON to the canonical IR creation results directory.
 
 Invoke from the backend directory via:
 
@@ -31,6 +34,8 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.canonical_ir.parse_document import ParseConfig, parse_document
+from skg.canonical_ir.schemas import ParserConfigSpec
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     export_canonical_ir,
@@ -45,7 +50,12 @@ cli = typer.Typer(no_args_is_help=True)
 
 
 def create_canonical_ir(
-    *, creation_dirs: CanonicalIRDirs, document_ir_fp: Path, overwrite: bool
+    *,
+    creation_dirs: CanonicalIRDirs,
+    document_ir_fp: Path,
+    overwrite: bool,
+    parser_config: ParseConfig,
+    wizard_mode: bool,
 ) -> None:
     """Create a CanonicalIR JSON from a single DocumentIR JSON.
 
@@ -57,6 +67,11 @@ def create_canonical_ir(
         The file path to the DocumentIR JSON.
     overwrite
         Whether to overwrite existing canonical IR JSON.
+    parser_config
+        The parser configuration to use.
+    wizard_mode
+        Whether to enable wizard mode to capture additional diagnostics for unmatched
+        content.
     """
 
     canonical_ir_fp = creation_dirs.root / "canonical_ir.json"
@@ -68,17 +83,16 @@ def create_canonical_ir(
         )
         return
 
+    # Validate and load the Document IR.
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
-    # Run the generalized document parser.
-    warnings: list[str] = []
-    print(f"{document_ir = }")
-    print(f"{export_canonical_ir = }")
-    print(f"{warnings = }")
-    # TODO
+    # Parse the document IR into a canonical IR.
+    canonical_ir = parse_document(
+        config=parser_config, document_ir=document_ir, wizard_mode=wizard_mode
+    )
 
     # Export the canonical IR.
-    # export_canonical_ir(canonical_ir=canonical_ir, output_path=canonical_ir_fp)
+    export_canonical_ir(canonical_ir=canonical_ir, output_path=canonical_ir_fp)
 
 
 @cli.command()
@@ -103,14 +117,30 @@ def create(
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Overwrite existing canonical IR JSON."
     ),
+    parser_config_fp: Path = typer.Option(
+        None,
+        "--parser-config-fp",
+        dir_okay=False,
+        exists=True,
+        file_okay=True,
+        help="File path to a custom parser config JSON.",
+        readable=True,
+        resolve_path=True,
+    ),
+    wizard_mode: bool = typer.Option(
+        True,
+        "--wizard-mode",
+        help="Whether to enable wizard mode to capture additional diagnostics for unmatched content.",
+    ),
 ) -> None:
     """Create a CanonicalIR JSON from a single DocumentIR JSON.
 
     The process is as follows:
 
     1. Persist canonical IR creation run metadata.
-    2. ...
-    3. Persist canonical IR creation run metadata.
+    2. Load parser config.
+    3. Create canonical IR from DocumentIR JSON.
+    4. Persist canonical IR creation run metadata.
 
     Parameters
     ----------
@@ -120,6 +150,11 @@ def create(
         Directory containing the stitching run results.
     overwrite
         Whether to overwrite existing canonical IR JSON.
+    parser_config_fp
+        Optional file path to a custom parser config JSON.
+    wizard_mode
+        Whether to enable wizard mode to capture additional diagnostics for unmatched
+        content.
 
     Raises
     ------
@@ -162,10 +197,17 @@ def create(
 
     try:
         # 2.
+        config_dict = open_json_type(parser_config_fp)
+        config_model = ParserConfigSpec.model_validate(config_dict)
+        parser_config = config_model.to_runtime()
+
+        # 3.
         create_canonical_ir(
             creation_dirs=creation_dirs,
             document_ir_fp=document_ir_fp,
             overwrite=overwrite,
+            parser_config=parser_config,
+            wizard_mode=wizard_mode,
         )
         creation_run.extra["status"] = "success"
         logger.success("Canonical IR creation completed successfully!")
@@ -178,7 +220,7 @@ def create(
         }
         raise
     finally:
-        # 3.
+        # 4.
         creation_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
             fp=creation_dirs.root / "creation_run.json", json_info=creation_run

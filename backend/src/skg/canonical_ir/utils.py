@@ -16,6 +16,7 @@ from skg.canonical_ir.schemas import CanonicalIR, NormalizedRow
 from skg.config import Settings
 from skg.document_ir.schemas import TableSegment
 from skg.schemas import RunCtx
+from skg.utils.constants import StatementRole
 from skg.utils.general import compute_sha256_hex, make_dir, write_to_json
 
 
@@ -24,6 +25,86 @@ class CanonicalIRDirs:
     """Dataclass for canonical IR directories."""
 
     root: Path
+
+
+def _coerce_text_to_str(value: Any) -> str:
+    """Coerce TableCell.text (TextUnit | dict | str | None) into a plain string.
+
+    Parameters
+    ----------
+    value
+        The value to coerce.
+
+    Returns
+    -------
+    str
+        The coerced string.
+    """
+
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, dict):
+        return value.get("text") or value.get("text_en") or ""
+
+    # Pydantic model (e.g., TextUnit).
+    if hasattr(value, "text") or hasattr(value, "text_en"):
+        return getattr(value, "text", None) or getattr(value, "text_en", None) or ""
+
+    return str(value)
+
+
+def _coerce_text_to_textunit_like(value: Any) -> Any:
+    """Return a TextUnit-like object (TextUnit instance or dict), or None if empty.
+
+    NB: We avoid importing/constructing TextUnit directly here; Pydantic will validate
+    dicts into TextUnit when NormalizedRow is created.
+
+    Parameters
+    ----------
+    value
+        The value to coerce.
+
+    Returns
+    -------
+    Any
+        The coerced TextUnit-like object or None.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        # Ensure minimal shape; keep any extra fields.
+        language = value.get("language") or "und"
+        text = value.get("text")
+        text_en = value.get("text_en")
+        return {**value, "language": language, "text": text, "text_en": text_en}
+
+    if isinstance(value, str):
+        return {"language": "und", "text": value, "text_en": None}
+
+    # If it's a Pydantic-ish object with text fields, convert to a dict so Canonical
+    # TextUnit validation is consistent (avoid cross-module BaseModel instances).
+    if hasattr(value, "model_dump"):
+        d = value.model_dump(mode="python")
+        language = d.get("language") or "und"
+        text = d.get("text")
+        text_en = d.get("text_en")
+        return {**d, "language": language, "text": text, "text_en": text_en}
+
+    if hasattr(value, "text") or hasattr(value, "text_en"):
+        return {
+            "language": getattr(value, "language", None) or "und",
+            "text": getattr(value, "text", None),
+            "text_en": getattr(value, "text_en", None),
+        }
+
+    # Fallback: stringify into text.
+    return {"language": "und", "text": str(value), "text_en": None}
 
 
 def _construct_normalized_rows(
@@ -64,6 +145,8 @@ def _construct_normalized_rows(
 
     for r_idx in range(n_rows):
         bbox = row_prov[r_idx].get("bbox")
+        page_index = row_prov[r_idx].get("page_index")
+        slice_index = row_prov[r_idx].get("slice_index")
 
         if bbox is None:
             raise ValueError(
@@ -71,13 +154,27 @@ def _construct_normalized_rows(
                 f"in TableSegment '{key}'."
             )
 
-        cells = [((grid[r_idx][c]["text"] or "").strip()) for c in range(n_cols)]
+        if page_index is None or slice_index is None:
+            raise ValueError(
+                f"Missing provenance page/slice for normalized row {r_idx} "
+                f"in TableSegment '{key}'."
+            )
+
+        cells: list[Any] = []
+        for c in range(n_cols):
+            v = grid[r_idx][c]["text"]
+            if _coerce_text_to_str(v).strip() == "":
+                cells.append(None)
+            else:
+                cells.append(_coerce_text_to_textunit_like(v))
 
         output.append(
             NormalizedRow(
                 cells=cells,
                 original_row_index=r_idx,
                 provenance_bbox=bbox,
+                provenance_page_index=page_index,
+                provenance_slice_index=slice_index,
                 row_index=r_idx,
             )
         )
@@ -92,14 +189,14 @@ def _fill_span_area(
     key: str,
     r_span: int,
     r_start: int,
-    text: str,
+    value: Any,
 ) -> None:
     """Fill a specific rectangular area of the grid.
 
     Parameters
     ----------
     c_span
-        The starting column index.
+        The column span.
     c_start
         The starting column index.
     grid
@@ -110,8 +207,8 @@ def _fill_span_area(
         The row span.
     r_start
         The starting row index.
-    text
-        The text to fill in the spanned area.
+    value
+        The TextUnit-like value to fill in the spanned area.
 
     Raises
     ------
@@ -121,12 +218,12 @@ def _fill_span_area(
 
     for rr in range(r_start, r_start + r_span):
         for cc in range(c_start, c_start + c_span):
-            if grid[rr][cc]["text"] is not None:
+            if grid[rr][cc]["source_row"] != -1:
                 raise ValueError(
                     f"Overlapping spans detected at (row={rr}, col={cc}) "
                     f"in TableSegment '{key}'."
                 )
-            grid[rr][cc] = {"text": text, "source_row": r_start}
+            grid[rr][cc] = {"text": value, "source_row": r_start}
 
 
 def _forward_fill_columns(
@@ -168,19 +265,37 @@ def _forward_fill_columns(
                 f"in TableSegment '{key}'."
             )
 
-        last_text: Optional[str] = None
+        last_value: Any = None
         last_source_row: int = -1
 
         for r in range(start_row, n_rows):
             cell_data = grid[r][col]
-            cur_text = (cell_data["text"] or "").strip()
+            cur_text = _coerce_text_to_str(cell_data["text"]).strip()
 
             if cell_data["text"] is None or cur_text == "":
-                if last_text is not None:
-                    grid[r][col] = {"text": last_text, "source_row": last_source_row}
+                if last_value is not None:
+                    grid[r][col] = {"text": last_value, "source_row": last_source_row}
+
             else:
-                last_text = cur_text
+                last_value = cell_data["text"]
                 last_source_row = cell_data["source_row"]
+
+
+def _norm(s: str) -> str:
+    """Normalize a string for robust comparison.
+
+    Parameters
+    ----------
+    s
+        The string to normalize.
+
+    Returns
+    -------
+    str
+        The normalized string.
+    """
+
+    return " ".join((s or "").split()).strip().lower()
 
 
 def _populate_grid_spans(
@@ -209,7 +324,7 @@ def _populate_grid_spans(
         cursor = 0
         for cell in row.cells:
             # Advance cursor to next empty slot.
-            while cursor < n_cols and grid[r_idx][cursor]["text"] is not None:
+            while cursor < n_cols and grid[r_idx][cursor]["source_row"] != -1:
                 cursor += 1
 
             if cursor >= n_cols:
@@ -233,7 +348,15 @@ def _populate_grid_spans(
                     f"in TableSegment '{segment.segment_key}'."
                 )
 
-            text = (cell.text or "").strip() if hasattr(cell, "text") else ""
+            raw = getattr(cell, "text", None) if hasattr(cell, "text") else None
+
+            # Treat truly-empty cells as None, otherwise preserve full TextUnit-like
+            # payload.
+            value = (
+                None
+                if _coerce_text_to_str(raw).strip() == ""
+                else _coerce_text_to_textunit_like(raw)
+            )
 
             # Fill the spanned area.
             _fill_span_area(
@@ -243,7 +366,7 @@ def _populate_grid_spans(
                 key=segment.segment_key,
                 r_span=rs,
                 r_start=r_idx,
-                text=text,
+                value=value,
             )
 
             cursor += cs
@@ -254,6 +377,13 @@ def _row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str
     provenance info (at least bbox + page_index + slice_index) for the stitched row.
     This is computed deterministically from `segment.slices` using the same
     header-dropping logic as stitching.
+
+    NB:
+
+    1. repeats_header=True --> drop header_row_count rows on that slice
+    2. repeats_header=False --> drop nothing
+    3. repeats_header=None --> *infer* repeated header by matching the slice's first
+        header rows against the segment's header rows (conservative).
 
     Parameters
     ----------
@@ -277,6 +407,12 @@ def _row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str
             f"provenance."
         )
 
+    seg_hrc = int(getattr(segment, "header_row_count", 0) or 0)
+    seg_header_rows = (getattr(segment, "header_rows", None) or []) or (
+        (getattr(segment, "rows", None) or [])[:seg_hrc] if seg_hrc > 0 else []
+    )
+    seg_header_sigs = [_row_sig(r) for r in (seg_header_rows or [])[:seg_hrc]]
+
     mapping: list[dict[str, Any]] = []
 
     for slice_index, sl in enumerate(segment.slices):
@@ -288,8 +424,29 @@ def _row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str
             )
 
         drop = 0
-        if slice_index > 0 and sl.repeats_header is True:
-            drop = sl.header_row_count
+        if slice_index > 0:
+            if sl.repeats_header is True:
+                drop = int(getattr(sl, "header_row_count", 0) or 0)
+            elif sl.repeats_header is False:
+                drop = 0
+            else:
+                # repeats_header is None --> infer conservatively via header match.
+                sl_hrc = int(getattr(sl, "header_row_count", 0) or 0)
+                k = min(
+                    seg_hrc,
+                    sl_hrc,
+                    len(getattr(sl, "rows", []) or []),
+                    len(seg_header_sigs),
+                )
+                if k > 0:
+                    sl_first_sigs = [
+                        _row_sig(r) for r in (getattr(sl, "rows", []) or [])[:k]
+                    ]
+                    if sl_first_sigs == seg_header_sigs[:k]:
+                        drop = sl_hrc
+
+        # Never drop beyond available rows.
+        drop = min(drop, len(getattr(sl, "rows", []) or []))
 
         effective_rows = sl.rows[drop:]
         mapping.extend(
@@ -310,6 +467,31 @@ def _row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str
         )
 
     return mapping
+
+
+def _row_sig(row: Any) -> str:
+    """Generate a stable signature for a row for header matching.
+
+    Parameters
+    ----------
+    row
+        The TableRow-like object.
+
+    Returns
+    -------
+    str
+        The row signature.
+    """
+
+    # Signature should be stable across reruns and resilient to spacing.
+    parts: list[str] = []
+    for cell in getattr(row, "cells", None) or []:
+        txt = _norm(_coerce_text_to_str(getattr(cell, "text", None)))
+        cs = int(getattr(cell, "col_span", 1) or 1)
+        rs = int(getattr(cell, "row_span", 1) or 1)
+        parts.append(f"{rs}x{cs}:{txt}")
+
+    return "|".join(parts)
 
 
 def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
@@ -355,7 +537,7 @@ def generate_global_id(
     code: Optional[str],
     doc_key: str,
     path: list[str],
-    role: str,
+    role: StatementRole,
     text: Optional[str],
 ) -> str:
     """Generate a deterministic UUIDv5 based on document identity and semantic content.
@@ -382,8 +564,8 @@ def generate_global_id(
     # Create a stable seed string.
     code_str = code or "nocode"
     path_str = "/".join(path)
-    text_hash = compute_sha256_hex(s=text or "")[:16]
-    seed = f"{doc_key}|{role}|{path_str}|{code_str}|{text_hash}"
+    text_hash = compute_sha256_hex(s=text or "")[:32]
+    seed = f"{doc_key}|{role.value}|{path_str}|{code_str}|{text_hash}"
     return str(uuid.uuid5(Settings.PROJECT_NAMESPACE, seed))
 
 
