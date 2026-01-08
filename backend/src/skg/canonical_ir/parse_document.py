@@ -631,7 +631,6 @@ class DocumentParser:
                 role=matched.role,
                 row_bbox=bbox,
                 row_page_index=(page_indices[0] if page_indices else None),
-                row_sig=getattr(seg, "segment_key", "unknown"),
                 split=matched.split,
                 table_seg=seg,
             )
@@ -744,6 +743,11 @@ class DocumentParser:
 
         header_texts = _extract_table_header_texts(seg)
         local_code = getattr(seg, "local_code", None)
+        table_identity = _stable_table_identity(
+            local_code=local_code,
+            header_texts=header_texts,
+            caption_text=caption_text,
+        )
 
         spec = self._match_table_spec(
             caption_text=caption_text, header_texts=header_texts, local_code=local_code
@@ -795,6 +799,7 @@ class DocumentParser:
             local_code=local_code,
             seg=seg,
             spec=spec,
+            table_identity=table_identity,
         )
 
     def _handle_unmatched_table(
@@ -932,7 +937,7 @@ class DocumentParser:
         )
 
         leaf_scope_path = [
-            f"table:{spec.name}",
+            f"table:{state.get('table_identity', 'unknown')}",
             f"subject:{(state['last_subject'] or 'none')}",
             f"group:{(state['last_group'] or 'none')}",
             f"topic:{(state['last_topic'] or 'none')}",
@@ -975,11 +980,6 @@ class DocumentParser:
                 )
             )
 
-        row_sig = (
-            f"{getattr(seg, 'segment_key', 'unknown')}|"
-            f"slice{getattr(nr, 'provenance_slice_index', -1)}|"
-            f"row{getattr(nr, 'original_row_index', r_idx)}"
-        )
         row_source_tags = [
             f"prov:table_spec={spec.name}",
             f"prov:slice_index={getattr(nr, 'provenance_slice_index', -1)}",
@@ -1002,7 +1002,6 @@ class DocumentParser:
                 role=getattr(spec, "expectation_role", StatementRole.EXPECTATION),
                 row_bbox=row_bbox,
                 row_page_index=row_page_index,
-                row_sig=row_sig,
                 split=bool(getattr(spec, "split_expectations", True)),
                 table_seg=seg,
             )
@@ -1020,7 +1019,6 @@ class DocumentParser:
                 role=getattr(spec, "descriptor_role", StatementRole.DESCRIPTOR),
                 row_bbox=row_bbox,
                 row_page_index=row_page_index,
-                row_sig=row_sig,
                 split=bool(getattr(spec, "split_descriptors", True)),
                 table_seg=seg,
             )
@@ -1033,6 +1031,7 @@ class DocumentParser:
         local_code: str | None,
         seg: Any,
         spec: TableSpec,
+        table_identity: str,
     ) -> None:
         """Iterate through table rows, updating hierarchy and extracting leaves.
 
@@ -1048,6 +1047,8 @@ class DocumentParser:
             The table segment to process.
         spec
             The TableSpec for the table.
+        table_identity
+            The stable identity string for the table.
         """
 
         forward_fill_cols = list(getattr(spec, "forward_fill_cols", ()) or ())
@@ -1067,6 +1068,7 @@ class DocumentParser:
             "last_subject": None,
             "last_topic": None,
             "row_facts_sample": [],
+            "table_identity": table_identity,
         }
 
         base_parent_id = self._current_parent_id()
@@ -1204,7 +1206,6 @@ class DocumentParser:
         role: StatementRole,
         row_bbox: list[float] | None,
         row_page_index: int | None,
-        row_sig: str,
         split: bool,
         table_seg: Any,
     ) -> int:
@@ -1228,8 +1229,6 @@ class DocumentParser:
             The bounding box for the current row.
         row_page_index
             The page index for the current row.
-        row_sig
-            A unique signature for the current row.
         split
             Whether to split the cell content into multiple leaf statements.
         table_seg
@@ -1266,11 +1265,8 @@ class DocumentParser:
                     else None
                 ),
             )
-            path = (
-                self._current_path_labels()
-                + leaf_scope_path
-                + [f"row:{row_sig}", f"{role.value}:{p.list_id or 'nolist'}:{i}"]
-            )
+            path = self._current_path_labels() + leaf_scope_path
+            path.append(f"{role.value}:{p.list_id or 'nolist'}:{i}")
 
             node_id = generate_global_id(
                 code=p.list_id,
@@ -1875,6 +1871,54 @@ def _stable_list_item_key(*, body: str, marker: str | None) -> str:
 
     s = f"{marker or ''}|{body}".encode("utf-8")
     return hashlib.sha256(s).hexdigest()[:12]
+
+
+def _stable_table_identity(
+    *, caption_text: str, header_texts: list[str], local_code: str | None
+) -> str:
+    """Build a stable identifier for a table segment.
+
+    Preference order:
+      1. local_code (best, when present)
+      2. header signature hash
+      3. caption signature hash (last resort)
+      4. 'unknown'
+
+    Parameters
+    ----------
+    caption_text
+        The text of the table caption, if any.
+    header_texts
+        The list of header strings for each column.
+    local_code
+        The local code of the table, if any.
+
+    Returns
+    -------
+    str
+        A stable identifier string.
+    """
+
+    if local_code:
+        lc = _normalize_space(local_code)
+
+        # Avoid separators used elsewhere in deterministic seeds/paths.
+        lc = lc.replace("|", "_").replace(">", "_")
+        return f"lc:{lc}"
+
+    header_norm = "|".join(
+        _normalize_space(h).lower() for h in header_texts if _normalize_space(h)
+    )
+    if header_norm:
+        h = hashlib.sha256(header_norm.encode("utf-8")).hexdigest()[:12]
+        return f"hdr:{h}"
+
+    cap_norm = _normalize_space(caption_text).lower()
+    if cap_norm:
+        h = hashlib.sha256(cap_norm.encode("utf-8")).hexdigest()[:12]
+        return f"cap:{h}"
+
+    return "unknown"
 
 
 def _table_is_contentful(*, cfg: ParserConfig, seg: Any) -> bool:
