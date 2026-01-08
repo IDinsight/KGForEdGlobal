@@ -34,8 +34,8 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.parse_document import ParseConfig, parse_document
-from skg.canonical_ir.schemas import ParserConfigSpec
+from skg.canonical_ir.parse_document import parse_document
+from skg.canonical_ir.schemas import ParserConfig
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     export_canonical_ir,
@@ -54,7 +54,7 @@ def create_canonical_ir(
     creation_dirs: CanonicalIRDirs,
     document_ir_fp: Path,
     overwrite: bool,
-    parser_config: ParseConfig,
+    parser_config: ParserConfig,
     wizard_mode: bool,
 ) -> None:
     """Create a CanonicalIR JSON from a single DocumentIR JSON.
@@ -198,8 +198,7 @@ def create(
     try:
         # 2.
         config_dict = open_json_type(parser_config_fp)
-        config_model = ParserConfigSpec.model_validate(config_dict)
-        parser_config = config_model.to_runtime()
+        parser_config = ParserConfig.model_validate(config_dict)
 
         # 3.
         create_canonical_ir(
