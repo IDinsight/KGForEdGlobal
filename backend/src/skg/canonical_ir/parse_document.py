@@ -214,6 +214,7 @@ class DocumentParser:
         self.stack: list[tuple[int, str, str]] = []
 
         # Caption handling state.
+        self.pending_caption_gap_remaining: int = 0
         self.pending_caption_key: str | None = None
         self.pending_caption_text: str | None = None
 
@@ -338,6 +339,36 @@ class DocumentParser:
                 }
             )
 
+    def _capture_unmatched_heading(self, *, heading_text: str, seg: Any) -> None:
+        """Log unmatched headings to the wizard output if configured.
+
+        Parameters
+        ----------
+        heading_text
+            The text content of the heading.
+        seg
+            The heading segment to process.
+        """
+
+        if not (self.wizard_mode and self.config.capture_unmatched_headings_in_wizard):
+            return
+
+        preview = (heading_text or "").strip()
+
+        if not preview:
+            return
+
+        self.builder.unresolved.append(
+            {
+                "issue": "unmatched_heading_rule",
+                "segment_key": getattr(seg, "segment_key", None),
+                "block_type": BlockType.HEADING.value,
+                "local_code": getattr(seg, "local_code", None),
+                "context_path": self._current_path_labels(),
+                "preview": preview[: self.config.unmatched_block_max_chars],
+            }
+        )
+
     def _handle_block_segment(self, seg: Any) -> None:
         """Handle 'block' type segments (headings, paragraphs, lists, captions).
 
@@ -361,16 +392,38 @@ class DocumentParser:
                 or ""
             )
             self.pending_caption_key = getattr(seg, "segment_key", None)
+            self.pending_caption_gap_remaining = (
+                self.config.caption_to_table_max_gap_blocks
+            )
             return
 
-        # Clear pending caption if this block is not an artifact.
+        # Clear (or keep) pending caption if we see intervening non-table blocks. Many
+        # PDFs include small interstitial blocks (e.g., "continued", short headings)
+        # between a caption and the table it describes. We tolerate a small gap
+        # deterministically.
         if self.pending_caption_text is not None and bt_str != BlockType.ARTIFACT.value:
-            self.builder.warnings.append(
-                f"Caption not followed by table; clearing pending caption "
-                f"(caption_seg={self.pending_caption_key}, next_block_type={bt_str})."
+            interstitial = _normalize_space(
+                _block_text_for_matching(bt_str=bt_str, seg=seg)
             )
-            self.pending_caption_text = None
-            self.pending_caption_key = None
+            is_small_gap = (
+                bt_str
+                in (
+                    BlockType.HEADING.value,
+                    BlockType.PARAGRAPH.value,
+                    BlockType.LIST.value,
+                )
+                and len(interstitial) <= self.config.caption_to_table_max_gap_chars
+            )
+            if is_small_gap and self.pending_caption_gap_remaining > 0:
+                self.pending_caption_gap_remaining -= 1
+            else:
+                self.builder.warnings.append(
+                    f"Caption not followed by table; clearing pending caption "
+                    f"(caption_seg={self.pending_caption_key}, next_block_type={bt_str})."
+                )
+                self.pending_caption_text = None
+                self.pending_caption_key = None
+                self.pending_caption_gap_remaining = 0
 
         # Handle headings.
         if bt_str == BlockType.HEADING.value:
@@ -423,9 +476,18 @@ class DocumentParser:
             value=getattr(seg, "text", None) or getattr(seg, "combined_text", None),
         )
         title_str = _normalize_space(_coerce_text_to_str(title_tu))
-        role, level, unique = _pick_heading_role_and_level(
+
+        role, level, unique, matched = _pick_heading_role_and_level(
             cfg=self.config, text=title_str
         )
+
+        if not matched:
+            # Do not silently invent heading semantics; surface it in wizard output.
+            self._capture_unmatched_heading(seg=seg, heading_text=title_str)
+
+            # Avoid forced uniqueness on fallback headings.
+            unique = False
+
         self._push_heading(
             level=level,
             role=role,
@@ -676,6 +738,7 @@ class DocumentParser:
         caption_key = self.pending_caption_key
 
         # Consume pending caption.
+        self.pending_caption_gap_remaining = 0
         self.pending_caption_key = None
         self.pending_caption_text = None
 
@@ -1646,7 +1709,7 @@ def _normalize_space(s: str) -> str:
 
 def _pick_heading_role_and_level(
     *, cfg: ParserConfig, text: str
-) -> tuple[StatementRole, int, bool]:
+) -> tuple[StatementRole, int, bool, bool]:
     """Determine the role and hierarchy level for a heading string. Iterates through
     `cfg.heading_rules`. If no rule matches, defaults to StatementRole.SECTION with a
     high probability of uniqueness enforcement.
@@ -1660,8 +1723,8 @@ def _pick_heading_role_and_level(
 
     Returns
     -------
-    tuple[StatementRole, int, bool]
-        (Role, Level, UniquePerOccurrence)
+    tuple[StatementRole, int, bool, bool]
+        (Role, Level, UniquePerOccurrence, MatchedRule)
     """
 
     for rule in cfg.heading_rules:
@@ -1670,12 +1733,11 @@ def _pick_heading_role_and_level(
             level = (
                 rule.level if rule.level is not None else cfg.role_levels.get(role, 50)
             )
-            return role, level, rule.unique_per_occurrence
+            return role, level, rule.unique_per_occurrence, True
 
-    # Fallback: generic SECTION headings are the highest collision risk, so we make
-    # each occurrence unique.
+    # Fallback: avoid forced uniqueness; surface in wizard so config can be fixed.
     role = StatementRole.SECTION
-    return role, cfg.role_levels.get(role, 50), True
+    return role, cfg.role_levels.get(role, 50), False, False
 
 
 def _segment_bbox_union(seg: Any) -> list[float] | None:

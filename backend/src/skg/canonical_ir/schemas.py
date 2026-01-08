@@ -597,7 +597,7 @@ class TableSpec(BaseModelCanonicalIR):
             return True
 
         # Allow flexible whitespace in multi-word terms.
-        tt_re = re.escape(tt).replace(r"\ ", r"\\s+")
+        tt_re = re.escape(tt).replace(r"\ ", r"\s+")
 
         return re.search(rf"(^|[^a-z0-9]){tt_re}([^a-z0-9]|$)", haystack) is not None
 
@@ -708,8 +708,11 @@ class ParserConfig(BaseModelCanonicalIR):
     table_specs: list[TableSpec] = Field(default_factory=list)
 
     # Wizard/debugging configuration.
+    caption_to_table_max_gap_blocks: int = 2
+    caption_to_table_max_gap_chars: int = 80
     capture_table_row_facts_sample_always: bool = False
     capture_unmatched_blocks_in_wizard: bool = True
+    capture_unmatched_headings_in_wizard: bool = True
     capture_unmatched_tables_in_wizard: bool = True
     unmatched_block_max_chars: int = 600
     unmatched_block_min_chars: int = 120

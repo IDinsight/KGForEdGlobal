@@ -322,33 +322,12 @@ def _populate_grid_spans(
 
     for r_idx, row in enumerate(segment.rows):
         cursor = 0
+
         for cell in row.cells:
-            # Advance cursor to next empty slot.
-            while cursor < n_cols and grid[r_idx][cursor]["source_row"] != -1:
-                cursor += 1
-
-            if cursor >= n_cols:
-                raise ValueError(
-                    f"Row {r_idx} exceeds declared n_cols={n_cols} "
-                    f"in TableSegment '{segment.segment_key}'."
-                )
-
             # Calculate spans safely.
-            rs = max(1, int(getattr(cell, "row_span", 1) or 1))
-            cs = max(1, int(getattr(cell, "col_span", 1) or 1))
-
-            if r_idx + rs > n_rows:
-                raise ValueError(
-                    f"row_span out of bounds (row={r_idx}, row_span={rs}, n_rows={n_rows}) "
-                    f"in TableSegment '{segment.segment_key}'."
-                )
-            if cursor + cs > n_cols:
-                raise ValueError(
-                    f"col_span out of bounds (row={r_idx}, col={cursor}, col_span={cs}, n_cols={n_cols}) "
-                    f"in TableSegment '{segment.segment_key}'."
-                )
-
-            raw = getattr(cell, "text", None) if hasattr(cell, "text") else None
+            r_span = max(1, int(getattr(cell, "row_span", 1) or 1))
+            c_span = max(1, int(getattr(cell, "col_span", 1) or 1))
+            raw = getattr(cell, "text", None)
 
             # Treat truly-empty cells as None, otherwise preserve full TextUnit-like
             # payload.
@@ -358,18 +337,62 @@ def _populate_grid_spans(
                 else _coerce_text_to_textunit_like(raw)
             )
 
+            # Padding cell = extractor emitted an explicit blank cell in a column that
+            # may already be occupied by a row-span from a previous row.
+            is_padding = value is None and r_span == 1 and c_span == 1
+
+            # If this is padding and the current slot is already occupied, consume
+            # exactly one column and move on. This prevents right-shifting that can
+            # overflow n_cols.
+            if is_padding:
+                if cursor < n_cols and grid[r_idx][cursor]["source_row"] != -1:
+                    cursor += 1
+                    continue
+
+                # If we're already past the edge due to earlier padding, ignore
+                # trailing padding.
+                if cursor >= n_cols:
+                    continue
+
+            # Advance cursor to next empty slot (normal behavior for real cells).
+            while cursor < n_cols and grid[r_idx][cursor]["source_row"] != -1:
+                cursor += 1
+
+            # Sanity check: ensure span fits.
+            if cursor >= n_cols:
+                # If the only thing left is padding, ignore it; otherwise this is a
+                # real error.
+                if is_padding:
+                    continue
+
+                raise ValueError(
+                    f"Row {r_idx} exceeds declared n_cols={n_cols} "
+                    f"in TableSegment '{segment.segment_key}'."
+                )
+
+            # Validate spans.
+            _validate_span_bounds(
+                c_span=c_span,
+                cursor=cursor,
+                n_cols=n_cols,
+                n_rows=n_rows,
+                r_idx=r_idx,
+                r_span=r_span,
+                segment_key=segment.segment_key,
+            )
+
             # Fill the spanned area.
             _fill_span_area(
-                c_span=cs,
+                c_span=c_span,
                 c_start=cursor,
                 grid=grid,
                 key=segment.segment_key,
-                r_span=rs,
+                r_span=r_span,
                 r_start=r_idx,
                 value=value,
             )
 
-            cursor += cs
+            cursor += c_span
 
 
 def _row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str, Any]]:
@@ -492,6 +515,53 @@ def _row_sig(row: Any) -> str:
         parts.append(f"{rs}x{cs}:{txt}")
 
     return "|".join(parts)
+
+
+def _validate_span_bounds(
+    *,
+    c_span: int,
+    cursor: int,
+    n_cols: int,
+    n_rows: int,
+    r_idx: int,
+    r_span: int,
+    segment_key: str,
+) -> None:
+    """Validate that row and column spans fit within table limits.
+
+    Parameters
+    ----------
+    c_span
+        The column span.
+    cursor
+        The current column cursor.
+    n_cols
+        The number of columns in the table.
+    n_rows
+        The number of rows in the table.
+    r_idx
+        The current row index.
+    r_span
+        The row span.
+    segment_key
+        The TableSegment key for error reporting.
+
+    Raises
+    ------
+    ValueError
+        If spans exceed table bounds.
+    """
+
+    if r_idx + r_span > n_rows:
+        raise ValueError(
+            f"row_span out of bounds (row={r_idx}, row_span={r_span}, n_rows={n_rows}) "
+            f"in TableSegment '{segment_key}'."
+        )
+    if cursor + c_span > n_cols:
+        raise ValueError(
+            f"col_span out of bounds (row={r_idx}, col={cursor}, col_span={c_span}, n_cols={n_cols}) "
+            f"in TableSegment '{segment_key}'."
+        )
 
 
 def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
