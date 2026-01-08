@@ -6,7 +6,6 @@ into a CanonicalIR.
 import hashlib
 import re
 
-from dataclasses import asdict
 from typing import Any
 
 # Third Party Library
@@ -636,7 +635,9 @@ class DocumentParser:
                     "table_spec": spec.name,
                     "expectations_added": state["expectations_added"],
                     "descriptors_added": state["descriptors_added"],
-                    "sample_row_facts": [asdict(r) for r in state["row_facts_sample"]],
+                    "sample_row_facts": [
+                        r.model_dump() for r in state["row_facts_sample"]
+                    ],
                 }
             )
 
