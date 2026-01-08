@@ -13,16 +13,16 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Package Library
-from skg.canonical_ir.parse_document import (
+from skg.page_ir.schemas import TextUnit
+from skg.utils.constants import (
     BlockSpec,
     GraphPolicy,
     HeadingRule,
     LeafParsingConfig,
     ParseConfig,
+    StatementRole,
+    TableSpec,
 )
-from skg.canonical_ir.table_specs import TableSpec
-from skg.page_ir.schemas import TextUnit
-from skg.utils.constants import StatementRole
 
 
 # Schemas for primitives.
@@ -242,7 +242,7 @@ class ParserConfigSpec(BaseModelCanonicalIR):
     graph_policy: GraphPolicySpec = Field(default_factory=GraphPolicySpec)
     heading_rules: list[HeadingRuleSpec] = Field(default_factory=list)
     leaf_parsing: LeafParsingConfigSpec = Field(default_factory=LeafParsingConfigSpec)
-    table_specs: list[TableSpec] = Field(default_factory=list)
+    table_specs: list[TableSpecModel] = Field(default_factory=list)
 
     def to_runtime(self) -> ParseConfig:
         """Returns the runtime ParseConfig object.

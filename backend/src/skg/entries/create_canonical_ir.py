@@ -10,7 +10,7 @@ Step 4 does the following:
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_canonical_ir.py ../data/tanzania/tanzania.pdf /path/to/stitching_run_results
+python src/skg/entries/create_canonical_ir.py ../data/tanzania/tanzania.pdf /path/to/stitching_run_results --parser-config-fp ../examples/tanzania/parser_config.json
 """
 
 # Standard Library
