@@ -279,7 +279,6 @@ class DocumentParser:
         self.stack: list[tuple[int, str, str]] = []
 
         # Caption handling state.
-        self.pending_caption_gap_chars_remaining: int = 0
         self.pending_caption_gap_remaining: int = 0
         self.pending_caption_key: str | None = None
         self.pending_caption_text: str | None = None
@@ -287,7 +286,6 @@ class DocumentParser:
         # Table-to-next-caption state (caption comes after table).
         self.pending_table_caption_key: str | None = None
         self.pending_table_caption_text: str | None = None
-        self.pending_table_gap_chars_remaining: int = 0
         self.pending_table_gap_remaining: int = 0
         self.pending_table_seg: Any | None = None
 
@@ -509,14 +507,13 @@ class DocumentParser:
                 return
 
             # Otherwise, fallback behavior is that caption applies to the NEXT table.
+            # NB: We +1 so that "N small-gap blocks then table" still counts as within
+            # the window.
             if self.config.caption_binding in ("next", "both"):
                 self.pending_caption_text = caption_text
                 self.pending_caption_key = caption_key
                 self.pending_caption_gap_remaining = (
-                    self.config.caption_to_table_max_gap_blocks
-                )
-                self.pending_caption_gap_chars_remaining = (
-                    self.config.caption_to_table_max_gap_chars
+                    self.config.caption_to_table_max_gap_blocks + 1
                 )
 
             return
@@ -547,7 +544,6 @@ class DocumentParser:
                 )
                 self.pending_caption_text = None
                 self.pending_caption_key = None
-                self.pending_caption_gap_chars_remaining = 0
                 self.pending_caption_gap_remaining = 0
 
         # Handle headings.
@@ -863,7 +859,6 @@ class DocumentParser:
 
         self.pending_table_caption_key = None
         self.pending_table_caption_text = None
-        self.pending_table_gap_chars_remaining = 0
         self.pending_table_gap_remaining = 0
         self.pending_table_seg = None
 
@@ -906,6 +901,7 @@ class DocumentParser:
         if (
             self.config.caption_binding in ("next", "both")
             and self.pending_caption_text
+            and self.pending_caption_gap_remaining > 0
         ):
             caption_key = self.pending_caption_key
             caption_text = self.pending_caption_text or ""
@@ -953,6 +949,14 @@ class DocumentParser:
             The table segment to process.
         """
 
+        # NB: If we are binding caption --> NEXT table ("next"/"both"), we must consume
+        # the pending caption immediately, even if this table is
+        # unmatched/ignored/invalid. Otherwise the caption can leak to a later table.
+        if consume_pending_caption:
+            self.pending_caption_gap_remaining = 0
+            self.pending_caption_key = None
+            self.pending_caption_text = None
+
         header_texts = _extract_table_header_texts(seg)
         local_code = getattr(seg, "local_code", None)
 
@@ -999,13 +1003,6 @@ class DocumentParser:
                 f"TableSpec '{spec.name}' has no expectation_col; skipping."
             )
             return
-
-        # Consume pending caption.
-        if consume_pending_caption:
-            self.pending_caption_gap_chars_remaining = 0
-            self.pending_caption_gap_remaining = 0
-            self.pending_caption_key = None
-            self.pending_caption_text = None
 
         table_identity = _stable_table_identity(
             caption_text=caption_text,
@@ -1157,8 +1154,17 @@ class DocumentParser:
             or base_parent_id
         )
 
+        # Occurrence-preserving row identity. Ensures identical leaf text/code in
+        # different rows do NOT collapse into one node_id.
+        row_occurrence = (
+            f"row:"
+            f"{getattr(nr, 'provenance_page_index', 'nopage')}:"
+            f"{getattr(nr, 'provenance_slice_index', -1)}:"
+            f"{getattr(nr, 'original_row_index', r_idx)}"
+        )
         leaf_scope_path = [
             f"table:{state.get('table_identity', 'unknown')}",
+            row_occurrence,
             f"subject:{(state['last_subject'] or 'none')}",
             f"group:{(state['last_group'] or 'none')}",
             f"topic:{(state['last_topic'] or 'none')}",
@@ -1381,9 +1387,6 @@ class DocumentParser:
             The table segment to process.
         """
 
-        self.pending_table_gap_chars_remaining = (
-            self.config.caption_to_table_max_gap_chars
-        )
         self.pending_table_gap_remaining = (
             self.config.caption_to_table_max_gap_blocks + 1
         )
