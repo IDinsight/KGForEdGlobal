@@ -349,7 +349,7 @@ class DocumentParser:
         return CanonicalIR(
             doc_key=self.doc_ir.doc_key,
             edges=self.builder.edges_in_order,
-            nodes=list(self.builder.nodes_by_id.values()),
+            nodes=sorted(self.builder.nodes_by_id.values(), key=lambda n: n.node_id),
             pdf_name=self.doc_ir.pdf_name,
             root_id=self.root_id,
             unresolved=self.builder.unresolved,
@@ -791,19 +791,8 @@ class DocumentParser:
         caption_text = self.pending_caption_text or ""
         caption_key = self.pending_caption_key
 
-        # Consume pending caption.
-        self.pending_caption_gap_remaining = 0
-        self.pending_caption_key = None
-        self.pending_caption_text = None
-
         header_texts = _extract_table_header_texts(seg)
         local_code = getattr(seg, "local_code", None)
-        table_identity = _stable_table_identity(
-            caption_text=caption_text,
-            header_texts=header_texts,
-            local_code=local_code,
-            segment_key=getattr(seg, "segment_key", None),
-        )
 
         spec = self._match_table_spec(
             caption_text=caption_text, header_texts=header_texts, local_code=local_code
@@ -848,6 +837,18 @@ class DocumentParser:
                 f"TableSpec '{spec.name}' has no expectation_col; skipping."
             )
             return
+
+        # Consume pending caption.
+        self.pending_caption_gap_remaining = 0
+        self.pending_caption_key = None
+        self.pending_caption_text = None
+
+        table_identity = _stable_table_identity(
+            caption_text=caption_text,
+            header_texts=header_texts,
+            local_code=local_code,
+            segment_key=getattr(seg, "segment_key", None),
+        )
 
         self._process_table_rows(
             caption_key=caption_key,
