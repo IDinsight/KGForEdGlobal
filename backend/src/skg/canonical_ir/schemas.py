@@ -178,8 +178,13 @@ class BlockSpec(BaseModelCanonicalIR):
             - "any": Checks the entire heading stack.
     name
         A unique identifier for this specification.
+    required_block_any_terms
+        Terms where at least one must appear within the block's text for a match.
     required_block_terms
         Terms that must appear within the block's text itself for a match.
+    required_context_any_terms
+        Terms where at least one must appear in the context (heading hierarchy) for
+        this spec to match.
     required_context_terms
         Terms that must appear in the context (heading hierarchy) for this spec to
         match.
@@ -196,7 +201,9 @@ class BlockSpec(BaseModelCanonicalIR):
     context_scope: Literal["current", "any"] = "current"
     name: str
     pattern: str | None = None
+    required_block_any_terms: list[str] = Field(default_factory=list)
     required_block_terms: list[str] = Field(default_factory=list)
+    required_context_any_terms: list[str] = Field(default_factory=list)
     required_context_terms: list[str] = Field(default_factory=list)
     role: StatementRole = StatementRole.UNRESOLVED
     split: bool = True
@@ -252,15 +259,27 @@ class BlockSpec(BaseModelCanonicalIR):
         ):
             return False
 
+        if self.required_block_any_terms and not any(
+            self.tokenish_contains(haystack=bt_cf, term=t)
+            for t in self.required_block_any_terms
+        ):
+            return False
+
         if self.pattern and not re.search(self.pattern, bt, flags=re.IGNORECASE):
             return False
 
-        if self.required_context_terms:
+        if self.required_context_terms or self.required_context_any_terms:
             ctx = " | ".join(context_titles).casefold()
-            if not all(
+            fail_all = self.required_context_terms and not all(
                 self.tokenish_contains(haystack=ctx, term=term)
                 for term in self.required_context_terms
-            ):
+            )
+            fail_any = self.required_context_any_terms and not any(
+                self.tokenish_contains(haystack=ctx, term=term)
+                for term in self.required_context_any_terms
+            )
+
+            if fail_all or fail_any:
                 return False
 
         return True

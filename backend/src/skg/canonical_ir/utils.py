@@ -563,6 +563,32 @@ def _normalize_space(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
+def _normalize_space_keep_newlines(s: str) -> str:
+    """Normalize whitespace within lines but preserve newline structure. This is
+    critical for leaf splitting, which depends on splitlines() to detect
+    bullets/blank lines as statement boundaries.
+
+    Parameters
+    ----------
+    s
+        The input string.
+
+    Returns
+    -------
+    str
+        The normalized string with preserved newlines.
+    """
+
+    s = (s or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines: list[str] = []
+
+    for ln in s.split("\n"):
+        # Preserve blank lines exactly (so split_on_blank_lines can work).
+        lines.append(_normalize_space(ln) if ln.strip() else "")
+
+    return "\n".join(lines).strip()
+
+
 def _pick_heading_role_and_level(
     *, cfg: ParserConfig, text: str
 ) -> tuple[StatementRole, int, bool, bool]:

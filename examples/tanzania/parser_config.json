@@ -6,7 +6,7 @@
 			],
 			"context_scope": "current",
 			"name": "objectives_list_items",
-			"required_context_terms": [
+			"required_context_any_terms": [
 				"objective",
 				"objectives"
 			],
@@ -19,7 +19,7 @@
 			],
 			"context_scope": "current",
 			"name": "competences_list_items",
-			"required_context_terms": [
+			"required_context_any_terms": [
 				"competence",
 				"competences",
 				"competency",
@@ -35,7 +35,7 @@
 			],
 			"context_scope": "current",
 			"name": "objectives_leadin_paragraphs",
-			"required_context_terms": [
+			"required_context_any_terms": [
 				"objective",
 				"objectives"
 			],
@@ -51,8 +51,28 @@
 	"heading_rules": [
 		{
 			"role": "grade_level",
-			"pattern": "\\bstandard\\s+(i|ii|iii|iv|v|vi)\\b",
+			"pattern": "^\\s*standard\\s+(i|ii|iii|iv|v|vi)\\s*(?:-|–|—|to|and)\\s*(i|ii|iii|iv|v|vi)\\s*$",
 			"level": 10
+		},
+		{
+			"role": "grade_level",
+			"pattern": "^\\s*standard\\s+(i|ii|iii|iv|v|vi)\\s*$",
+			"level": 10
+		},
+		{
+			"role": "section",
+			"pattern": "^\\s*objectives?\\s+of\\s+primary\\s+education\\b",
+			"level": 15
+		},
+		{
+			"role": "section",
+			"pattern": "^\\s*general\\s+competences?\\b",
+			"level": 15
+		},
+		{
+			"role": "section",
+			"pattern": "^\\s*learning\\s+areas\\b",
+			"level": 15
 		},
 		{
 			"role": "subject",
@@ -72,14 +92,14 @@
 	"table_specs": [
 		{
 			"expectation_col": 2,
-			"expectation_role": "expectation",
+			"expectation_role": "strand",
 			"forward_fill_cols": [
 				1
 			],
 			"group_col": 1,
 			"group_role": "section",
 			"name": "tz_table_1_learning_areas_main_competences",
-			"required_caption_terms": [
+			"required_caption_any_terms": [
 				"Standard I",
 				"Standard I and II"
 			],
@@ -94,14 +114,14 @@
 		},
 		{
 			"expectation_col": 2,
-			"expectation_role": "expectation",
+			"expectation_role": "subject",
 			"forward_fill_cols": [
 				1
 			],
 			"group_col": 1,
 			"group_role": "section",
 			"name": "tz_table_2_learning_areas_subjects",
-			"required_caption_terms": [
+			"required_caption_any_terms": [
 				"Standard III",
 				"Standard III to VI"
 			],
@@ -121,7 +141,7 @@
 			],
 			"group_col": 1,
 			"name": "tz_table_3_main_specific",
-			"required_caption_terms": [
+			"required_caption_any_terms": [
 				"Standard I",
 				"Standard I and II"
 			],
@@ -142,7 +162,7 @@
 			],
 			"group_col": 2,
 			"name": "tz_table_4_subject_main_specific",
-			"required_caption_terms": [
+			"required_caption_any_terms": [
 				"Standard III",
 				"Standard III to VI"
 			],
