@@ -482,11 +482,10 @@ class DocumentParser:
         )
 
         if not matched:
-            # Do not silently invent heading semantics; surface it in wizard output.
-            self._capture_unmatched_heading(seg=seg, heading_text=title_str)
-
-            # Avoid forced uniqueness on fallback headings.
-            unique = False
+            # Do not silently invent heading semantics; surface it in wizard output. In
+            # addition, do not override uniqueness here; fallback policy is decided
+            # centrally.
+            self._capture_unmatched_heading(heading_text=title_str, seg=seg)
 
         self._push_heading(
             level=level,
@@ -990,7 +989,7 @@ class DocumentParser:
         ]
 
         if exp_tu:
-            state["expectations_added"] += self._add_leaf_nodes(
+            expectation_ids = self._add_leaf_nodes(
                 caption_seg_key=caption_key,
                 cell_tu=exp_tu,
                 extra_source_ids=row_source_tags,
@@ -1005,13 +1004,24 @@ class DocumentParser:
                 split=bool(getattr(spec, "split_expectations", True)),
                 table_seg=seg,
             )
+            state["expectations_added"] += len(expectation_ids)
+        else:
+            expectation_ids = []
+
+        descriptor_parent_id = leaf_parent_id
+        if (
+            getattr(spec, "descriptor_parenting", "expectation_if_single")
+            == "expectation_if_single"
+            and len(expectation_ids) == 1
+        ):
+            descriptor_parent_id = expectation_ids[0]
 
         if spec.descriptor_col is not None and desc_tu:
-            state["descriptors_added"] += self._add_leaf_nodes(
+            desc_ids = self._add_leaf_nodes(
                 caption_seg_key=caption_key,
                 cell_tu=desc_tu,
                 extra_source_ids=row_source_tags,
-                leaf_parent_id=leaf_parent_id,
+                leaf_parent_id=descriptor_parent_id,
                 leaf_scope_path=leaf_scope_path
                 + [
                     f"leaf_role:{getattr(spec, 'descriptor_role', StatementRole.DESCRIPTOR).value}"
@@ -1022,6 +1032,7 @@ class DocumentParser:
                 split=bool(getattr(spec, "split_descriptors", True)),
                 table_seg=seg,
             )
+            state["descriptors_added"] += len(desc_ids)
 
     def _process_table_rows(
         self,
@@ -1208,7 +1219,7 @@ class DocumentParser:
         row_page_index: int | None,
         split: bool,
         table_seg: Any,
-    ) -> int:
+    ) -> list[str]:
         """Create leaf nodes (Expectation/Descriptor) from a content cell.
 
         Parameters
@@ -1236,13 +1247,13 @@ class DocumentParser:
 
         Returns
         -------
-        int
-            The number of leaf nodes added.
+        list[str]
+            The node_ids of the leaf nodes added (in insertion order).
         """
 
         raw_text = _normalize_space(_coerce_text_to_str(cell_tu))
         if not raw_text:
-            return 0
+            return []
 
         parts = (
             _split_leaf_statements(leaf_cfg=self.config.leaf_parsing, text=raw_text)
@@ -1250,7 +1261,7 @@ class DocumentParser:
             else [LeafStatement(body=raw_text, list_id=None)]
         )
 
-        added = 0
+        node_ids: list[str] = []
         for i, p in enumerate(parts):
             body_str = _normalize_space(p.body)
             if not body_str:
@@ -1259,11 +1270,7 @@ class DocumentParser:
             leaf_body = TextUnit(
                 language=cell_tu.language,
                 text=body_str,
-                text_en=(
-                    cell_tu.text_en
-                    if not split and getattr(cell_tu, "text_en", None)
-                    else None
-                ),
+                text_en=getattr(cell_tu, "text_en", None),
             )
             path = self._current_path_labels() + leaf_scope_path
             path.append(f"{role.value}:{p.list_id or 'nolist'}:{i}")
@@ -1298,8 +1305,8 @@ class DocumentParser:
                 )
             )
             self.builder.add_edge(child_id=node_id, parent_id=leaf_parent_id)
-            added += 1
-        return added
+            node_ids.append(node_id)
+        return node_ids
 
     def _context_titles(self, *, scope: str) -> list[str]:
         """Retrieve titles from the stack for context matching.
@@ -1707,8 +1714,8 @@ def _pick_heading_role_and_level(
     *, cfg: ParserConfig, text: str
 ) -> tuple[StatementRole, int, bool, bool]:
     """Determine the role and hierarchy level for a heading string. Iterates through
-    `cfg.heading_rules`. If no rule matches, defaults to StatementRole.SECTION with a
-    high probability of uniqueness enforcement.
+    `cfg.heading_rules`. If no rule matches, defaults to StatementRole.UNRESOLVED with
+    a high probability of uniqueness enforcement.
 
     Parameters
     ----------
@@ -1731,9 +1738,11 @@ def _pick_heading_role_and_level(
             )
             return role, level, rule.unique_per_occurrence, True
 
-    # Fallback: avoid forced uniqueness; surface in wizard so config can be fixed.
-    role = StatementRole.SECTION
-    return role, cfg.role_levels.get(role, 50), False, False
+    # Fallback: do not invent semantics; mark as UNRESOLVED. Keep generic SECTION level
+    # so the stack still behaves like a heading boundary.
+    role = StatementRole.UNRESOLVED
+    level = cfg.role_levels.get(StatementRole.SECTION, 50)
+    return role, level, True, False
 
 
 def _segment_bbox_union(seg: Any) -> list[float] | None:
