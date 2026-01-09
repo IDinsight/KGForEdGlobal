@@ -595,7 +595,7 @@ def _pick_heading_role_and_level(
     # so the stack still behaves like a heading boundary.
     role = StatementRole.UNRESOLVED
     level = cfg.role_levels.get(StatementRole.SECTION, 50)
-    return role, level, True, False
+    return role, level, False, False
 
 
 def _populate_grid_spans(
@@ -818,6 +818,33 @@ def _row_sig(row: Any) -> str:
         parts.append(f"{rs}x{cs}:{txt}")
 
     return "|".join(parts)
+
+
+def _sanitize_path_part(s: str) -> str:
+    """Make a path token safe for use in generate_global_id(). Prevent delimiter
+    collisions caused by '/' in content.
+
+    Parameters
+    ----------
+    s
+        The input string.
+
+    Returns
+    -------
+    str
+        The sanitized string.
+    """
+
+    s = _normalize_space(s or "")
+
+    # Remove control characters (optional but helps avoid invisible ID instability).
+    s = re.sub(r"[\x00-\x1f\x7f]", "", s)
+
+    # Escape path delimiters so join('/') cannot create collisions.
+    s = s.replace("/", "／").replace("\\", "／")  # Fullwidth slash
+
+    # Avoid empty tokens.
+    return s if s else "_"
 
 
 def _segment_bbox_union(seg: Any) -> list[float] | None:
@@ -1227,11 +1254,12 @@ def generate_global_id(
         A deterministic UUIDv5 string.
     """
 
-    # Create a stable seed string.
     code_str = code or "nocode"
-    path_str = "/".join(path)
+    safe_path = [_sanitize_path_part(p) for p in path]
+    path_str = "/".join(safe_path)
     text_hash = compute_sha256_hex(s=text or "")[:32]
     seed = f"{doc_key}|{role.value}|{path_str}|{code_str}|{text_hash}"
+
     return str(uuid.uuid5(Settings.PROJECT_NAMESPACE, seed))
 
 
