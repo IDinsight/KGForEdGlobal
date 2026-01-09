@@ -257,6 +257,15 @@ class DocumentParser:
             config.graph_policy.mode == "tree"
         ), f"Unsupported graph mode: {config.graph_policy.mode}"
 
+        if (
+            not config.graph_policy.keep_first_parent
+            and not config.graph_policy.experimental_allow_keep_last
+        ):
+            raise ValueError(
+                "graph_policy.keep_first_parent=false is experimental; "
+                "set graph_policy.experimental_allow_keep_last=true to enable it."
+            )
+
         self.config = config
         self.doc_ir = document_ir
         self.wizard_mode = wizard_mode
@@ -270,9 +279,17 @@ class DocumentParser:
         self.stack: list[tuple[int, str, str]] = []
 
         # Caption handling state.
+        self.pending_caption_gap_chars_remaining: int = 0
         self.pending_caption_gap_remaining: int = 0
         self.pending_caption_key: str | None = None
         self.pending_caption_text: str | None = None
+
+        # Table-to-next-caption state (caption comes after table).
+        self.pending_table_caption_key: str | None = None
+        self.pending_table_caption_text: str | None = None
+        self.pending_table_gap_chars_remaining: int = 0
+        self.pending_table_gap_remaining: int = 0
+        self.pending_table_seg: Any | None = None
 
     def _initialize_root(self) -> None:
         """Create the root framework node and initialize the stack."""
@@ -321,7 +338,13 @@ class DocumentParser:
         kind = getattr(seg, "kind", None)
 
         if kind == "block":
-            self._handle_block_segment(seg)
+            # Explicitly skip artifacts.
+            bt = getattr(seg, "block_type", None)
+            bt_str = (
+                str(bt.value) if bt is not None and hasattr(bt, "value") else str(bt)
+            )
+            if bt_str != BlockType.ARTIFACT.value:
+                self._handle_block_segment(bt_str=bt_str, seg=seg)
         elif kind == "table":
             self._handle_table_segment(seg)
         else:
@@ -340,6 +363,11 @@ class DocumentParser:
 
         for seg in self.doc_ir.segments:
             self._process_segment(seg)
+
+        # NB: Flush any deferred table BEFORE enforcing tree mode, because flushing can
+        # add nodes/edges.
+        if self.pending_table_seg is not None:
+            self._flush_pending_table()
 
         if self.config.graph_policy.mode == "tree":
             self.builder.enforce_tree_mode(
@@ -425,32 +453,72 @@ class DocumentParser:
             }
         )
 
-    def _handle_block_segment(self, seg: Any) -> None:
+    def _handle_block_segment(self, *, bt_str: str, seg: Any) -> None:
         """Handle 'block' type segments (headings, paragraphs, lists, captions).
 
         Parameters
         ----------
+        bt_str
+            The block type string.
         seg
             The block segment to process.
         """
 
-        bt = getattr(seg, "block_type", None)
-        bt_str = str(bt.value) if bt is not None and hasattr(bt, "value") else str(bt)
-
-        if bt_str == BlockType.ARTIFACT.value:
-            return  # Explicitly skip artifacts
+        # If a table is pending (waiting for caption-after-table), tick down the
+        # window. If the window expires, flush the table (without caption) before
+        # processing this block to preserve order deterministically.
+        if self.pending_table_seg is not None and bt_str != BlockType.CAPTION.value:
+            interstitial = _normalize_space(
+                _block_text_for_matching(bt_str=bt_str, seg=seg)
+            )
+            is_small_gap = (
+                bt_str
+                in (
+                    BlockType.HEADING.value,
+                    BlockType.PARAGRAPH.value,
+                    BlockType.LIST.value,
+                )
+                and len(interstitial) <= self.config.caption_to_table_max_gap_chars
+            )
+            if is_small_gap and self.pending_table_gap_remaining > 0:
+                self.pending_table_gap_remaining -= 1
+            else:
+                # Expired or large intervening content: stop waiting for caption.
+                self._flush_pending_table()
 
         # Handle captions.
         if bt_str == BlockType.CAPTION.value:
-            self.pending_caption_text = _normalize_space(
+            caption_text = _normalize_space(
                 _coerce_text_to_str(getattr(seg, "text", None))
                 or getattr(seg, "combined_text", "")
                 or ""
             )
-            self.pending_caption_key = getattr(seg, "segment_key", None)
-            self.pending_caption_gap_remaining = (
-                self.config.caption_to_table_max_gap_blocks
-            )
+            caption_key = getattr(seg, "segment_key", None)
+
+            # If we're allowed to bind captions to the PREVIOUS table, and a table is
+            # currently pending, attach the caption and flush the table now.
+            if (
+                self.config.caption_binding in ("prev", "both")
+                and self.pending_table_seg is not None
+                and self.pending_table_gap_remaining > 0
+            ):
+                self.pending_table_caption_text = caption_text
+                self.pending_table_caption_key = caption_key
+                self._flush_pending_table()
+
+                return
+
+            # Otherwise, fallback behavior is that caption applies to the NEXT table.
+            if self.config.caption_binding in ("next", "both"):
+                self.pending_caption_text = caption_text
+                self.pending_caption_key = caption_key
+                self.pending_caption_gap_remaining = (
+                    self.config.caption_to_table_max_gap_blocks
+                )
+                self.pending_caption_gap_chars_remaining = (
+                    self.config.caption_to_table_max_gap_chars
+                )
+
             return
 
         # Clear (or keep) pending caption if we see intervening non-table blocks. Many
@@ -479,10 +547,16 @@ class DocumentParser:
                 )
                 self.pending_caption_text = None
                 self.pending_caption_key = None
+                self.pending_caption_gap_chars_remaining = 0
                 self.pending_caption_gap_remaining = 0
 
         # Handle headings.
         if bt_str == BlockType.HEADING.value:
+            # If a table is being deferred, it must stay under the *previous* context,
+            # so flush it before the heading mutates the stack/context.
+            if self.pending_table_seg is not None:
+                self._flush_pending_table()
+
             self._handle_heading(seg)
             return
 
@@ -751,6 +825,7 @@ class DocumentParser:
                     "table_spec": spec.name,
                     "expectations_added": state["expectations_added"],
                     "descriptors_added": state["descriptors_added"],
+                    "guidance_added": state["guidance_added"],
                     "sample_row_facts": [
                         r.model_dump() for r in state["row_facts_sample"]
                     ],
@@ -758,6 +833,7 @@ class DocumentParser:
             )
 
         if self.wizard_mode and problem:
+            seg_key = getattr(seg, "segment_key", None)
             self.builder.unresolved.append(
                 {
                     "issue": "table_matched_but_no_expectations",
@@ -772,15 +848,49 @@ class DocumentParser:
                     ),
                     "expectations_added": state["expectations_added"],
                     "descriptors_added": state["descriptors_added"],
+                    "guidance_added": state["guidance_added"],
                 }
             )
             self.builder.warnings.append(
                 f"Table matched spec '{spec.name}' but produced 0 expectations "
-                f"(segment_key={getattr(seg, 'segment_key', None)} local_code={local_code})"
+                f"(segment_key={seg_key} local_code={local_code} "
+                f"descriptors_added={state['descriptors_added']} "
+                f"guidance_added={state.get('guidance_added', 0)})"
             )
 
+    def _clear_pending_table(self) -> None:
+        """Reset pending table state."""
+
+        self.pending_table_caption_key = None
+        self.pending_table_caption_text = None
+        self.pending_table_gap_chars_remaining = 0
+        self.pending_table_gap_remaining = 0
+        self.pending_table_seg = None
+
+    def _flush_pending_table(self) -> None:
+        """Process a table we held while waiting for a following caption."""
+
+        if self.pending_table_seg is None:
+            return
+
+        caption_key = self.pending_table_caption_key
+        caption_text = self.pending_table_caption_text or ""
+        seg = self.pending_table_seg
+
+        # Clear pending-table state first (avoid re-entrancy/loops).
+        self._clear_pending_table()
+
+        # Process the table directly with the captured caption (or empty string).
+        # NB: DO NOT route through pending_caption state; this is "prev/both" binding.
+        self._handle_table_segment_with_caption(
+            caption_key=caption_key,
+            caption_text=caption_text,
+            consume_pending_caption=False,
+            seg=seg,
+        )
+
     def _handle_table_segment(self, seg: Any) -> None:
-        """Process a table segment: match spec, normalize, and extract rows.
+        """Handle 'table' type segments.
 
         Parameters
         ----------
@@ -788,8 +898,60 @@ class DocumentParser:
             The table segment to process.
         """
 
-        caption_text = self.pending_caption_text or ""
-        caption_key = self.pending_caption_key
+        # If a prior table is still pending (never got a caption), flush it now.
+        if self.pending_table_seg is not None:
+            self._flush_pending_table()
+
+        # Case 1: caption-before-table ("next"/"both").
+        if (
+            self.config.caption_binding in ("next", "both")
+            and self.pending_caption_text
+        ):
+            caption_key = self.pending_caption_key
+            caption_text = self.pending_caption_text or ""
+
+            self._handle_table_segment_with_caption(
+                caption_key=caption_key,
+                caption_text=caption_text,
+                consume_pending_caption=True,
+                seg=seg,
+            )
+            return
+
+        # Case 2: caption-after-table ("prev"/"both") --> stash and wait.
+        if self.config.caption_binding in ("prev", "both"):
+            self._stash_pending_table(seg)
+            return
+
+        # Case 3: no caption binding --> process with empty caption.
+        self._handle_table_segment_with_caption(
+            caption_key=None,
+            caption_text="",
+            consume_pending_caption=False,
+            seg=seg,
+        )
+
+    def _handle_table_segment_with_caption(
+        self,
+        *,
+        caption_key: str | None,
+        caption_text: str,
+        consume_pending_caption: bool,
+        seg: Any,
+    ) -> None:
+        """Process a table segment: match spec, normalize, and extract rows.
+
+        Parameters
+        ----------
+        caption_key
+            The segment key of the caption, if any.
+        caption_text
+            The text of the table caption.
+        consume_pending_caption
+            If True, consume and clear any pending caption state.
+        seg
+            The table segment to process.
+        """
 
         header_texts = _extract_table_header_texts(seg)
         local_code = getattr(seg, "local_code", None)
@@ -839,9 +1001,11 @@ class DocumentParser:
             return
 
         # Consume pending caption.
-        self.pending_caption_gap_remaining = 0
-        self.pending_caption_key = None
-        self.pending_caption_text = None
+        if consume_pending_caption:
+            self.pending_caption_gap_chars_remaining = 0
+            self.pending_caption_gap_remaining = 0
+            self.pending_caption_key = None
+            self.pending_caption_text = None
 
         table_identity = _stable_table_identity(
             caption_text=caption_text,
@@ -1006,6 +1170,11 @@ class DocumentParser:
             if spec.descriptor_col is not None
             else None
         )
+        guidance_tu = (
+            _cell_at(nr, spec.guidance_col)
+            if getattr(spec, "guidance_col", None) is not None
+            else None
+        )
 
         # Debug sampling.
         if self.wizard_mode and len(state["row_facts_sample"]) < 10:
@@ -1022,6 +1191,11 @@ class DocumentParser:
                         else None
                     ),
                     group=state["last_group"],
+                    guidance_raw=(
+                        _normalize_space(_coerce_text_to_str(guidance_tu))
+                        if guidance_tu
+                        else None
+                    ),
                     provenance={
                         "segment_key": getattr(seg, "segment_key", "unknown"),
                         "local_code": local_code,
@@ -1092,6 +1266,32 @@ class DocumentParser:
             )
             state["descriptors_added"] += len(desc_ids)
 
+        guidance_parent_id = leaf_parent_id
+        if (
+            getattr(spec, "guidance_parenting", "expectation_if_single")
+            == "expectation_if_single"
+            and len(expectation_ids) == 1
+        ):
+            guidance_parent_id = expectation_ids[0]
+
+        if getattr(spec, "guidance_col", None) is not None and guidance_tu:
+            guidance_ids = self._add_leaf_nodes(
+                caption_seg_key=caption_key,
+                cell_tu=guidance_tu,
+                extra_source_ids=row_source_tags,
+                leaf_parent_id=guidance_parent_id,
+                leaf_scope_path=leaf_scope_path
+                + [
+                    f"leaf_role:{getattr(spec, 'guidance_role', StatementRole.GUIDANCE).value}"
+                ],
+                role=getattr(spec, "guidance_role", StatementRole.GUIDANCE),
+                row_bbox=row_bbox,
+                row_page_index=row_page_index,
+                split=bool(getattr(spec, "split_guidance", True)),
+                table_seg=seg,
+            )
+            state["guidance_added"] = state.get("guidance_added", 0) + len(guidance_ids)
+
     def _process_table_rows(
         self,
         *,
@@ -1133,6 +1333,7 @@ class DocumentParser:
             "curr_topic_id": None,
             "descriptors_added": 0,
             "expectations_added": 0,
+            "guidance_added": 0,
             "last_group": None,
             "last_subject": None,
             "last_topic": None,
@@ -1170,6 +1371,25 @@ class DocumentParser:
             spec=spec,
             state=state,
         )
+
+    def _stash_pending_table(self, seg: Any) -> None:
+        """Store a table segment as pending for later processing.
+
+        Parameters
+        ----------
+        seg
+            The table segment to process.
+        """
+
+        self.pending_table_gap_chars_remaining = (
+            self.config.caption_to_table_max_gap_chars
+        )
+        self.pending_table_gap_remaining = (
+            self.config.caption_to_table_max_gap_blocks + 1
+        )
+        self.pending_table_caption_key = None
+        self.pending_table_caption_text = None
+        self.pending_table_seg = seg
 
     def _touch_node_provenance(
         self,
