@@ -126,6 +126,8 @@ class CanonicalRowIR(BaseModelCanonicalIR):
         The raw text extracted for the expectation column.
     group
         The extracted group (e.g., Strand) title.
+    guidance_raw
+        The raw text extracted for the guidance column.
     provenance
         Metadata tracing the row back to the source PDF segment (page, bbox, etc.).
     subject
@@ -137,6 +139,7 @@ class CanonicalRowIR(BaseModelCanonicalIR):
     descriptors_raw: Optional[str]
     expectations_raw: Optional[str]
     group: Optional[str]
+    guidance_raw: Optional[str]
     provenance: dict[str, Any]
     subject: Optional[str]
     topic: Optional[str]
@@ -268,6 +271,8 @@ class GraphPolicy(BaseModelCanonicalIR):
 
     Attributes
     ----------
+    experimental_allow_keep_last
+        If True, allows keep_first_parent=False to be used (experimental feature).
     mode
         The topology mode. Currently only "tree" is supported.
     keep_first_parent
@@ -275,8 +280,32 @@ class GraphPolicy(BaseModelCanonicalIR):
         to the first-seen parent is kept, and subsequent edges are dropped.
     """
 
+    experimental_allow_keep_last: bool = False
     keep_first_parent: bool = True
     mode: Literal["tree"] = "tree"
+
+    @model_validator(mode="after")
+    def _guard_keep_last_parent(self) -> GraphPolicy:
+        """Ensures that keep_first_parent=false is only used when explicitly allowed.
+
+        Returns
+        -------
+        GraphPolicy
+            The validated GraphPolicy object.
+
+        Raises
+        ------
+        ValueError
+            If keep_first_parent is false but experimental_allow_keep_last is not true.
+        """
+
+        if not self.keep_first_parent and not self.experimental_allow_keep_last:
+            raise ValueError(
+                "graph_policy.keep_first_parent=false is experimental; set "
+                "graph_policy.experimental_allow_keep_last=true to enable it."
+            )
+
+        return self
 
 
 class HeadingRule(BaseModelCanonicalIR):
@@ -409,6 +438,12 @@ class TableSpec(BaseModelCanonicalIR):
         0-based index of the column containing Group/Strand data.
     group_role
         The canonical role for the group column.
+    guidance_col
+        0-based index of the column containing Guidance/Notes data.
+    guidance_parenting
+        How to assign parenting for guidance statements.
+    guidance_role
+        The canonical role for the guidance column.
     ignore
         If True, the matched table is acknowledged but not converted to nodes/edges.
     name
@@ -429,6 +464,8 @@ class TableSpec(BaseModelCanonicalIR):
         Whether to split text in the descriptor column into multiple statements.
     split_expectations
         Whether to split text in the expectation column into multiple statements.
+    split_guidance
+        Whether to split text in the guidance column into multiple statements.
     subject_col
         0-based index of the column containing Subject data.
     subject_role
@@ -458,21 +495,27 @@ class TableSpec(BaseModelCanonicalIR):
     # Leaf columns.
     descriptor_col: int | None = None
     expectation_col: int | None = None
+    guidance_col: int | None = None
 
     # Forward fill (structural columns frequently span/merge).
     forward_fill_cols: list[int] = Field(default_factory=list)
 
     # Leaf parsing behavior.
-    split_descriptors: bool = True
-    split_expectations: bool = True
     descriptor_parenting: Literal["group", "expectation_if_single"] = (
         "expectation_if_single"
     )
+    guidance_parenting: Literal["group", "expectation_if_single"] = (
+        "expectation_if_single"
+    )
+    split_descriptors: bool = True
+    split_expectations: bool = True
+    split_guidance: bool = True
 
     # Role mapping.
     descriptor_role: StatementRole = StatementRole.DESCRIPTOR
     expectation_role: StatementRole = StatementRole.EXPECTATION
     group_role: StatementRole = StatementRole.STRAND
+    guidance_role: StatementRole = StatementRole.GUIDANCE
     subject_role: StatementRole = StatementRole.SUBJECT
     topic_role: StatementRole = StatementRole.TOPIC
 
@@ -520,6 +563,7 @@ class TableSpec(BaseModelCanonicalIR):
             self.topic_col,
             self.descriptor_col,
             self.expectation_col,
+            self.guidance_col,
         ] + list(self.forward_fill_cols or [])
         for c in cols:
             if c is not None and c < 0:
@@ -711,11 +755,13 @@ class ParserConfig(BaseModelCanonicalIR):
             StatementRole.UNRESOLVED: 90,
             StatementRole.EXPECTATION: 100,
             StatementRole.DESCRIPTOR: 110,
+            StatementRole.GUIDANCE: 120,
         }
     )
     table_specs: list[TableSpec] = Field(default_factory=list)
 
     # Wizard/debugging configuration.
+    caption_binding: Literal["next", "prev", "both"] = "next"
     caption_to_table_max_gap_blocks: int = 2
     caption_to_table_max_gap_chars: int = 80
     capture_table_row_facts_sample_always: bool = False

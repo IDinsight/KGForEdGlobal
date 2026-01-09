@@ -43,6 +43,7 @@
 			"split": false
 		}
 	],
+	"caption_binding": "both",
 	"graph_policy": {
 		"mode": "tree",
 		"keep_first_parent": true

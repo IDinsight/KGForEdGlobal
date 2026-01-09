@@ -91,6 +91,7 @@ class StatementRole(str, Enum):
     DESCRIPTOR = "descriptor"  # Performance indicator/benchmark
     FRAMEWORK = "framework"  # The root document
     GRADE_LEVEL = "grade_level"  # e.g., "Standard III"
+    GUIDANCE = "guidance"  # Pedagogical guidance (activities/resources/teacher notes)
     SECTION = "section"  # Structural grouping (e.g., "Section One")
     STRAND = "strand"  # e.g., "Main Competence"
     SUBJECT = "subject"  # e.g., "Mathematics"
