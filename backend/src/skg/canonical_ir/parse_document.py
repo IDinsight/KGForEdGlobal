@@ -69,6 +69,33 @@ class CanonicalIRBuilder:
         self.unresolved: list[dict[str, Any]] = []
         self.warnings: list[str] = []
 
+    def _node_summary(self, node_id: str) -> dict[str, Any]:
+        """Generate a summary dictionary for a node by ID.
+
+        Parameters
+        ----------
+        node_id
+            The ID of the node to summarize.
+
+        Returns
+        -------
+        dict[str, Any]
+            A summary dictionary containing node details.
+        """
+
+        n = self.nodes_by_id.get(node_id)
+
+        if n is None:
+            return {"node_id": node_id}
+
+        return {
+            "node_id": node_id,
+            "role": getattr(n.role, "value", str(n.role)),
+            "page_indices": list(getattr(n, "page_indices", []) or []),
+            "source_ids": list(getattr(n, "source_ids", []) or []),
+            "bbox": getattr(n, "bbox", None),
+        }
+
     def add_edge(self, *, child_id: str, parent_id: str) -> None:
         """Add a hasChild (containment) edge between two canonical nodes.
 
@@ -125,6 +152,15 @@ class CanonicalIRBuilder:
                     f"Tree conflict: child_id={e.child_id} had parent_id={prev_parent}, "
                     f"conflicting parent_id={e.parent_id} dropped."
                 )
+                self.unresolved.append(
+                    {
+                        "issue": "tree_conflict",
+                        "policy": "keep_first_parent",
+                        "child": self._node_summary(e.child_id),
+                        "kept_parent": self._node_summary(prev_parent),
+                        "dropped_parent": self._node_summary(e.parent_id),
+                    }
+                )
                 continue
 
             # Keep last parent: replace the previously kept edge for this child node.
@@ -136,8 +172,20 @@ class CanonicalIRBuilder:
                 f"Tree conflict: child_id={e.child_id} parent changed "
                 f"{old_edge.parent_id} -> {e.parent_id} (kept last)."
             )
+            self.unresolved.append(
+                {
+                    "issue": "tree_conflict",
+                    "policy": "keep_last_parent",
+                    "child": self._node_summary(e.child_id),
+                    "kept_parent": self._node_summary(e.parent_id),
+                    "dropped_parent": self._node_summary(old_edge.parent_id),
+                }
+            )
 
         self.edges_in_order = kept
+
+        # Keep internal de-dupe state consistent with the enforced edge list.
+        self.edge_set = {(e.parent_id, e.child_id, e.rel) for e in self.edges_in_order}
 
         if dropped:
             logger.warning(
@@ -1122,6 +1170,54 @@ class DocumentParser:
             state=state,
         )
 
+    def _touch_node_provenance(
+        self,
+        *,
+        bbox: list[float] | None,
+        node_id: str | None,
+        page_index: int | None,
+        role: StatementRole,
+        source_ids: list[str],
+    ) -> None:
+        """Union row-level provenance into an existing node. This is used for tables
+        where Subject/Group/Topic cells are merged and forward-filled: the grouping
+        nodes should still reflect all rows/pages they span.
+
+        Parameters
+        ----------
+        bbox
+            The bounding box to union into the node.
+        node_id
+            The node ID to update.
+        page_index
+            The page index to add to the node.
+        role
+            The StatementRole of the node.
+        source_ids
+            The source IDs to add to the node.
+        """
+
+        if not node_id:
+            return
+
+        page_indices = [page_index] if isinstance(page_index, int) else []
+        if bbox is None and not page_indices:
+            return
+
+        self.builder.upsert_node(
+            node=CanonicalNode(
+                bbox=bbox,
+                body=None,
+                doc_key=self.doc_ir.doc_key,
+                list_id=None,
+                node_id=node_id,
+                page_indices=page_indices,
+                role=role,
+                source_ids=source_ids,
+                title=None,
+            )
+        )
+
     def _update_row_hierarchy(
         self,
         *,
@@ -1213,6 +1309,31 @@ class DocumentParser:
                 or TextUnit(language="und", text=topic_str, text_en=None),
             )
             state["last_topic"] = topic_str
+
+        # Even if the subject/group/topic value did *not* change on this row (common
+        # when tables use merged cells + forward-fill), we still want the grouping
+        # nodes to accumulate provenance for every row they cover.
+        self._touch_node_provenance(
+            bbox=row_bbox,
+            node_id=state.get("curr_subject_id"),
+            page_index=row_page_index,
+            role=getattr(spec, "subject_role", StatementRole.SUBJECT),
+            source_ids=base_source_ids,
+        )
+        self._touch_node_provenance(
+            bbox=row_bbox,
+            node_id=state.get("curr_group_id"),
+            page_index=row_page_index,
+            role=getattr(spec, "group_role", StatementRole.STRAND),
+            source_ids=base_source_ids,
+        )
+        self._touch_node_provenance(
+            bbox=row_bbox,
+            node_id=state.get("curr_topic_id"),
+            page_index=row_page_index,
+            role=getattr(spec, "topic_role", StatementRole.TOPIC),
+            source_ids=base_source_ids,
+        )
 
     # STACK AND NODE HELPERS
     def _add_leaf_nodes(
@@ -1333,11 +1454,23 @@ class DocumentParser:
 
         assert scope in ("current", "any"), f"Invalid scope: {scope}"
 
-        labels = (
-            [self.stack[-1][2]]
-            if (scope == "current" and self.stack)
-            else [s[2] for s in self.stack]
-        )
+        if scope == "current" and self.stack:
+            # In "current" scope, avoid letting an UNRESOLVED heading block context
+            # matching for downstream specs. Walk upward until we find the nearest
+            # non-UNRESOLVED label.
+            labels: list[str] = []
+            for _, _, lbl in reversed(self.stack):
+                if ":" in lbl:
+                    role_prefix = lbl.split(":", 1)[0].strip()
+                    if role_prefix == StatementRole.UNRESOLVED.value:
+                        continue
+                labels = [lbl]
+                break
+            if not labels:
+                labels = [self.stack[-1][2]]
+        else:
+            labels = [s[2] for s in self.stack]
+
         output: list[str] = []
 
         for lbl in labels:

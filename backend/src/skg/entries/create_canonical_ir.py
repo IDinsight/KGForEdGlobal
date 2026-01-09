@@ -10,7 +10,7 @@ Step 4 does the following:
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_canonical_ir.py ../data/tanzania/tanzania.pdf /path/to/stitching_run_results --parser-config-fp ../examples/tanzania/parser_config.json
+python src/skg/entries/create_canonical_ir.py ../examples/tanzania/parser_config.json ../data/tanzania/tanzania.pdf /path/to/stitching_run_results
 """
 
 # Standard Library
@@ -97,6 +97,15 @@ def create_canonical_ir(
 
 @cli.command()
 def create(
+    parser_config_fp: Path = typer.Argument(
+        ...,
+        dir_okay=False,
+        exists=True,
+        file_okay=True,
+        help="File path to a custom parser config JSON.",
+        readable=True,
+        resolve_path=True,
+    ),
     pdf_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
@@ -117,16 +126,6 @@ def create(
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Overwrite existing canonical IR JSON."
     ),
-    parser_config_fp: Path = typer.Option(
-        None,
-        "--parser-config-fp",
-        dir_okay=False,
-        exists=True,
-        file_okay=True,
-        help="File path to a custom parser config JSON.",
-        readable=True,
-        resolve_path=True,
-    ),
     wizard_mode: bool = typer.Option(
         True,
         "--wizard-mode",
@@ -144,14 +143,14 @@ def create(
 
     Parameters
     ----------
+    parser_config_fp
+        File path to a custom parser config JSON.
     pdf_fp
         The file path to the PDF document to create the canonical IR for.
     stitching_run_results_dir
         Directory containing the stitching run results.
     overwrite
         Whether to overwrite existing canonical IR JSON.
-    parser_config_fp
-        Optional file path to a custom parser config JSON.
     wizard_mode
         Whether to enable wizard mode to capture additional diagnostics for unmatched
         content.
