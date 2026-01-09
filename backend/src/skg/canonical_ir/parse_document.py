@@ -26,6 +26,7 @@ from skg.canonical_ir.utils import (
     _coerce_text_to_str,
     _extract_table_header_texts,
     _normalize_space,
+    _normalize_space_keep_newlines,
     _pick_heading_role_and_level,
     _segment_bbox_union,
     _segment_page_indices,
@@ -1605,7 +1606,7 @@ class DocumentParser:
             The node_ids of the leaf nodes added (in insertion order).
         """
 
-        raw_text = _normalize_space(_coerce_text_to_str(cell_tu))
+        raw_text = _normalize_space_keep_newlines(_coerce_text_to_str(cell_tu))
         if not raw_text:
             return []
 
@@ -1840,9 +1841,48 @@ class DocumentParser:
 
         base_label = f"{role.value}:{title_str}"
         if unique_per_occurrence:
-            seg_key = getattr(source_seg, "segment_key", "unknown")
-            seg_key_short = seg_key.split(":")[-1]
-            label = f"{base_label}#{seg_key_short}"
+            # Use stable per-occurrence suffix derived from provenance, not segment_key.
+            occ_suffix: str | None = None
+            prov = getattr(source_seg, "provenance", None) or []
+
+            if prov:
+                p0 = (
+                    prov[0].page_index
+                    if hasattr(prov[0], "page_index")
+                    else prov[0].get("page_index")
+                )
+                i0 = (
+                    prov[0].item_index
+                    if hasattr(prov[0], "item_index")
+                    else prov[0].get("item_index")
+                )
+                if p0 is not None and i0 is not None:
+                    occ_suffix = f"p{p0}i{i0}"
+
+            if occ_suffix is None:
+                slices = getattr(source_seg, "slices", None) or []
+                if slices:
+                    s0 = slices[0]
+                    p0 = (
+                        s0.page_index
+                        if hasattr(s0, "page_index")
+                        else s0.get("page_index")
+                    )
+                    i0 = (
+                        s0.item_index
+                        if hasattr(s0, "item_index")
+                        else s0.get("item_index")
+                    )
+                    if p0 is not None and i0 is not None:
+                        occ_suffix = f"p{p0}i{i0}"
+
+            # Last-resort fallback (should be rare).
+            if occ_suffix is None:
+                seg_key = getattr(source_seg, "segment_key", "unknown")
+                seg_key_short = seg_key.split(":")[-1]
+                occ_suffix = f"seg{seg_key_short}"
+
+            label = f"{base_label}#{occ_suffix}"
         else:
             label = base_label
 
