@@ -27,6 +27,34 @@ class BaseModelCanonicalIR(BaseModel):
 
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
+    @staticmethod
+    def tokenish_contains(*, haystack: str, term: str) -> bool:
+        """Check if `term` exists in `haystack` as a distinct token/phrase. Prevents
+        partial matches like 'art' matching inside 'partial'.
+
+        Parameters
+        ----------
+        haystack
+            The text to search within.
+        term
+            The term to search for.
+
+        Returns
+        -------
+        bool
+            True if the term is found as a distinct token/phrase.
+        """
+
+        h = (haystack or "").casefold()
+        tt = (term or "").casefold().strip()
+
+        if not tt:
+            return True
+
+        # Allow flexible whitespace in multi-word terms.
+        tt_re = re.escape(tt).replace(r"\ ", r"\s+")
+        return re.search(rf"(^|[^a-z0-9]){tt_re}([^a-z0-9]|$)", h) is not None
+
 
 # Schemas for canonical IR.
 class CanonicalEdge(BaseModelCanonicalIR):
@@ -216,7 +244,8 @@ class BlockSpec(BaseModelCanonicalIR):
         bt_cf = bt.casefold()
 
         if self.required_block_terms and not all(
-            t.casefold() in bt_cf for t in self.required_block_terms
+            self.tokenish_contains(haystack=bt_cf, term=t)
+            for t in self.required_block_terms
         ):
             return False
 
@@ -225,7 +254,10 @@ class BlockSpec(BaseModelCanonicalIR):
 
         if self.required_context_terms:
             ctx = " | ".join(context_titles).casefold()
-            if not all(term.casefold() in ctx for term in self.required_context_terms):
+            if not all(
+                self.tokenish_contains(haystack=ctx, term=term)
+                for term in self.required_context_terms
+            ):
                 return False
 
         return True
@@ -312,7 +344,8 @@ class HeadingRule(BaseModelCanonicalIR):
         t = (text or "").casefold()
 
         if self.required_terms and not all(
-            term.casefold() in t for term in self.required_terms
+            self.tokenish_contains(haystack=t, term=term)
+            for term in self.required_terms
         ):
             return False
 
@@ -368,6 +401,8 @@ class TableSpec(BaseModelCanonicalIR):
         0-based index of the column containing Expectation/Competency data.
     expectation_role
         The canonical role for the expectation column.
+    descriptor_parenting
+        How to assign parenting for descriptor statements.
     forward_fill_cols
         Column indices that should be forward-filled (merged cells handling).
     group_col
@@ -430,6 +465,9 @@ class TableSpec(BaseModelCanonicalIR):
     # Leaf parsing behavior.
     split_descriptors: bool = True
     split_expectations: bool = True
+    descriptor_parenting: Literal["group", "expectation_if_single"] = (
+        "expectation_if_single"
+    )
 
     # Role mapping.
     descriptor_role: StatementRole = StatementRole.DESCRIPTOR
@@ -560,46 +598,16 @@ class TableSpec(BaseModelCanonicalIR):
         """
 
         # Check AND logic (All terms must be present).
-        if not all(
-            self._tokenish_contains(haystack=text, term=t) for t in required_all
-        ):
+        if not all(self.tokenish_contains(haystack=text, term=t) for t in required_all):
             return False
 
         # Check OR logic (At least one term, if any are specified).
         if required_any and not any(
-            self._tokenish_contains(haystack=text, term=t) for t in required_any
+            self.tokenish_contains(haystack=text, term=t) for t in required_any
         ):
             return False
 
         return True
-
-    @staticmethod
-    def _tokenish_contains(*, haystack: str, term: str) -> bool:
-        """Check if ``term`` exists in ``haystack`` as a distinct token/phrase.
-        Treats non-alphanumeric characters as boundaries to prevent partial matches
-        (e.g., 'art' matching inside 'part').
-
-        Parameters
-        ----------
-        haystack
-            The text to search within.
-        term
-            The term to search for.
-
-        Returns
-        -------
-        bool
-            True if the term is found as a distinct token/phrase.
-        """
-
-        tt = (term or "").casefold().strip()
-        if not tt:
-            return True
-
-        # Allow flexible whitespace in multi-word terms.
-        tt_re = re.escape(tt).replace(r"\ ", r"\s+")
-
-        return re.search(rf"(^|[^a-z0-9]){tt_re}([^a-z0-9]|$)", haystack) is not None
 
     def match(
         self,
