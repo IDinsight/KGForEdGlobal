@@ -3,6 +3,8 @@ into a CanonicalIR.
 """
 
 # Standard Library
+import re
+
 from typing import Any
 
 # Third Party Library
@@ -279,6 +281,10 @@ class DocumentParser:
         self.root_id: str = ""
         self.stack: list[tuple[int, str, str]] = []
 
+        # Ignore-section state (front matter like "Abbreviations and Acronyms").
+        self.ignore_active: bool = False
+        self.ignore_until_level: int | None = None
+
         # Caption handling state.
         self.pending_caption_gap_remaining: int = 0
         self.pending_caption_key: str | None = None
@@ -343,8 +349,17 @@ class DocumentParser:
                 str(bt.value) if bt is not None and hasattr(bt, "value") else str(bt)
             )
             if bt_str != BlockType.ARTIFACT.value:
+                # If we're inside an ignored section, skip all non-heading blocks.
+                if self.ignore_active and bt_str != BlockType.HEADING.value:
+                    return
                 self._handle_block_segment(bt_str=bt_str, seg=seg)
         elif kind == "table":
+            # If we're inside an ignored section, skip tables entirely (and do NOT emit
+            # unresolved diagnostics for them).
+            if self.ignore_active:
+                self._consume_pending_caption_before_skipped_table()
+                return
+
             self._handle_table_segment(seg)
         else:
             self.builder.warnings.append(f"Unknown segment kind: {kind}")
@@ -607,6 +622,23 @@ class DocumentParser:
         role, level, unique, matched = _pick_heading_role_and_level(
             cfg=self.config, text=title_str
         )
+
+        # If we're currently ignoring a section, end ignore mode when we hit the next
+        # peer-or-higher heading (level <= ignore_until_level). Deeper headings remain
+        # ignored.
+        if self.ignore_active:
+            if self.ignore_until_level is not None and level <= self.ignore_until_level:
+                self.ignore_active = False
+                self.ignore_until_level = None
+            else:
+                # Still inside ignored section; do not create nodes for this heading.
+                return
+
+        # Start ignore-mode if this heading matches a configured pattern.
+        if self._matches_ignore_section_heading(heading_text=title_str):
+            self.ignore_active = True
+            self.ignore_until_level = level
+            return
 
         if not matched:
             # Do not silently invent heading semantics; surface it in wizard output. In
@@ -1663,6 +1695,20 @@ class DocumentParser:
             node_ids.append(node_id)
         return node_ids
 
+    def _consume_pending_caption_before_skipped_table(self) -> None:
+        """If we skip a table, we must still consume caption --> NEXT state to avoid
+        caption leakage.
+        """
+
+        if (
+            self.config.caption_binding in ("next", "both")
+            and self.pending_caption_text
+            and self.pending_caption_gap_remaining > 0
+        ):
+            self.pending_caption_gap_remaining = 0
+            self.pending_caption_key = None
+            self.pending_caption_text = None
+
     def _context_titles(self, *, scope: str) -> list[str]:
         """Retrieve titles from the stack for context matching.
 
@@ -1798,6 +1844,26 @@ class DocumentParser:
         self.builder.add_edge(child_id=node_id, parent_id=parent_id)
 
         return node_id
+
+    def _matches_ignore_section_heading(self, *, heading_text: str) -> bool:
+        """Return True if this heading starts an ignored section.
+
+        Parameters
+        ----------
+        heading_text
+            The text of the heading to check.
+
+        Returns
+        -------
+        bool
+            True if the heading matches an ignore pattern, False otherwise.
+        """
+
+        for pat in self.config.ignore_section_heading_patterns or []:
+            if re.search(pat, heading_text, flags=re.IGNORECASE):
+                return True
+
+        return False
 
     def _push_heading(
         self,

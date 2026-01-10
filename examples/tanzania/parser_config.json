@@ -82,6 +82,9 @@
 			"level": 20
 		}
 	],
+	"ignore_section_heading_patterns": [
+		"^\\s*Abbreviations\\s*(and|&)\\s*Acronyms\\s*$"
+	],
 	"leaf_parsing": {
 		"bullet_regex": "^\\s*(?:[-•*]|\\d+[.)]|\\([a-zA-Z0-9]+\\)|[a-zA-Z][.)])\\s+",
 		"code_line_regex": "^\\s*(?P<list_id>(?:\\d+(?:\\.\\d+)+|[A-Za-z]\\d+))\\s*[:\\-–]?\\s*(?P<body>.*)$",

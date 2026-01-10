@@ -593,8 +593,9 @@ def _pick_heading_role_and_level(
     *, cfg: ParserConfig, text: str
 ) -> tuple[StatementRole, int, bool, bool]:
     """Determine the role and hierarchy level for a heading string. Iterates through
-    `cfg.heading_rules`. If no rule matches, defaults to StatementRole.UNRESOLVED with
-    a high probability of uniqueness enforcement.
+    `cfg.heading_rules`. If no rule matches, falls back to StatementRole.SECTION (a
+    safe, non-semantic grouping role) while returning MatchedRule=False so wizard mode
+    can surface the missing rule.
 
     Parameters
     ----------
@@ -617,9 +618,10 @@ def _pick_heading_role_and_level(
             )
             return role, level, rule.unique_per_occurrence, True
 
-    # Fallback: do not invent semantics; mark as UNRESOLVED. Keep generic SECTION level
-    # so the stack still behaves like a heading boundary.
-    role = StatementRole.UNRESOLVED
+    # Fallback: do not invent semantics. Treat as a generic SECTION so the heading
+    # stack still behaves like a boundary, but signal MatchedRule=False so the caller
+    # can record an "unmatched_heading_rule" in wizard output.
+    role = StatementRole.SECTION
     level = cfg.role_levels.get(StatementRole.SECTION, 50)
     return role, level, False, False
 

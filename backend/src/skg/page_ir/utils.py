@@ -2162,47 +2162,6 @@ def topmost_continuity_candidate_paired(
     return topmost_continuity_candidate(image_height=image_height, items=items)
 
 
-def validate_bbox_order(bbox: list[float]) -> list[float]:
-    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
-
-    Parameters
-    ----------
-    bbox
-        The bounding box to validate.
-
-    Returns
-    -------
-    list[float]
-        The validated bounding box.
-
-    Raises
-    ------
-    ValueError
-        If the bounding box does not have exactly 4 numbers.
-    """
-
-    if len(bbox) != 4:
-        raise ValueError(
-            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
-        )
-
-    x0, y0, x1, y1 = bbox
-
-    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
-    if x0 >= x1:
-        if x0 > x1:
-            x0, x1 = x1, x0
-        else:
-            x1 = x0 + 1.0
-    if y0 >= y1:
-        if y0 > y1:
-            y0, y1 = y1, y0
-        else:
-            y1 = y0 + 1.0
-
-    return [x0, y0, x1, y1]
-
-
 def veto_continuation(
     *, reason: str, verdict: PageIRContinuityVerdict
 ) -> PageIRContinuityVerdict:
