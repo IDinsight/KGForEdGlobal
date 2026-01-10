@@ -14,6 +14,7 @@ from typing import Annotated, Literal, Optional, Union
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 # Package Library
+from skg.page_ir.utils import validate_bbox_order
 from skg.utils.constants import (
     BlockType,
     FigureKind,
@@ -22,48 +23,6 @@ from skg.utils.constants import (
     PageContinuationKind,
 )
 from skg.utils.general import validate_bcp47
-
-
-def validate_bbox_order(bbox: list[float]) -> list[float]:
-    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
-
-    Parameters
-    ----------
-    bbox
-        The bounding box to validate.
-
-    Returns
-    -------
-    list[float]
-        The validated bounding box.
-
-    Raises
-    ------
-    ValueError
-        If the bounding box does not have exactly 4 numbers.
-    """
-
-    if len(bbox) != 4:
-        raise ValueError(
-            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
-        )
-
-    x0, y0, x1, y1 = bbox
-
-    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
-    if x0 >= x1:
-        if x0 > x1:
-            x0, x1 = x1, x0
-        else:
-            x1 = x0 + 1.0
-    if y0 >= y1:
-        if y0 > y1:
-            y0, y1 = y1, y0
-        else:
-            y1 = y0 + 1.0
-
-    return [x0, y0, x1, y1]
-
 
 # Common fields with descriptions.
 BBox = Annotated[
