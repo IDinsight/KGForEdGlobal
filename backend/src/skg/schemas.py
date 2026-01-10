@@ -17,7 +17,7 @@ class RunCtx(BaseModel):
     run_id: str
     started_at: Optional[datetime] = None
 
-    model_config = ConfigDict(extra="forbid", from_attributes=True)
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Limits(BaseModel):
