@@ -256,14 +256,14 @@ def create_kgs(
         kg_outputs = create_knowledge_graphs(
             canonical_ir_fp=canonical_ir_fp, kg_config=kg_config, kg_dirs=kg_dirs
         )
-        kg_run.status = "success"
+        kg_run.extra["status"] = "success"
 
         # 5.
-        kg_run.outputs = {k: str(v) for k, v in kg_outputs.items()}
+        kg_run.extra["outputs"] = {k: str(v) for k, v in kg_outputs.items()}
         logger.success("KG creation completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
-        kg_run.status = "error"
-        kg_run.error = {
+        kg_run.extra["status"] = "error"
+        kg_run.extra["error"] = {
             "message": str(e),
             "traceback": traceback.format_exc(limit=30),
             "type": e.__class__.__name__,
