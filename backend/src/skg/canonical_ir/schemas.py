@@ -743,6 +743,10 @@ class ParserConfig(BaseModelCanonicalIR):
         Rules for enforcing graph topology (e.g., tree structure).
     heading_rules
         Rules for interpreting headings and assigning hierarchy levels.
+    ignore_section_heading_patterns
+        If a HEADING matches any of these regex patterns (case-insensitive), ignore all
+        subsequent segments until the next heading at the same or higher level
+        (peer-or-higher).
     leaf_parsing
         Rules for splitting text chunks into atomic leaf nodes.
     role_levels
@@ -762,6 +766,7 @@ class ParserConfig(BaseModelCanonicalIR):
     block_specs: list[BlockSpec] = Field(default_factory=list)
     graph_policy: GraphPolicy = Field(default_factory=GraphPolicy)
     heading_rules: list[HeadingRule] = Field(default_factory=list)
+    ignore_section_heading_patterns: list[str] = Field(default_factory=list)
     leaf_parsing: LeafParsingConfig = Field(default_factory=LeafParsingConfig)
     role_levels: dict[StatementRole, int] = Field(
         default_factory=lambda: {
