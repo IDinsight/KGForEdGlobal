@@ -6,7 +6,7 @@
 	"case_uri_base": "urn:lc:case:",
   "description_text_policy": "source",
 	"export_dialect": "shape_only",
-	"export_in_language_policy": "default",
+	"export_in_language_policy": "source",
 	"include_descriptors": true,
 	"include_guidance": false,
 	"jurisdiction_default": "Tanzania",
