@@ -2,6 +2,7 @@
 
 # Standard Library
 from enum import Enum
+from typing import Literal
 
 
 # Enums for various constant types.
@@ -97,3 +98,9 @@ class StatementRole(str, Enum):
     SUBJECT = "subject"  # e.g., "Mathematics"
     TOPIC = "topic"  # e.g., "Topic" or sub-strand
     UNRESOLVED = "unresolved"  # Content that could not be classified
+
+
+# Literals.
+CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
+NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
+RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"]
