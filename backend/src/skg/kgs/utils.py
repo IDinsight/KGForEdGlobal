@@ -1569,7 +1569,7 @@ def _generate_lc_splits_for_standard(
     deduped: list[LCSplitCandidate] = []
     duplicates_removed = 0
     for c in candidates:
-        norm = _collapse_whitespace(text=text).lower()
+        norm = _collapse_whitespace(text=c.text).lower()
         if not norm:
             duplicates_removed += 1
             continue
