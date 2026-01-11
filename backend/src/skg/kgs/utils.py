@@ -1,6 +1,7 @@
 """This module contains utility functions for knowledge graphs."""
 
 # Standard Library
+import re
 import uuid
 
 from dataclasses import dataclass
@@ -28,6 +29,24 @@ from skg.schemas import RunCtx
 from skg.utils.constants import RelationshipTypes, StatementRole
 from skg.utils.general import make_dir, write_to_json
 
+_BULLET_LINE_PATTERNS: list[re.Pattern[str]] = [
+    # Common bullet glyphs or simple dash/star bullets.
+    re.compile(r"^\s*[\u2022\u2023\u25E6\u2043\u2219•·\-*–—]\s+(?P<rest>.+?)\s*$"),
+    # Numbered bullets: 1.  2)  3]  4-  etc.
+    re.compile(r"^\s*\d{1,3}\s*[\)\]\.\-:]\s+(?P<rest>.+?)\s*$"),
+    # Letter bullets: a)  b.  C]  etc.
+    re.compile(r"^\s*[A-Za-z]\s*[\)\]\.\-:]\s+(?P<rest>.+?)\s*$"),
+    # Roman numerals: i)  ii.  IV)  etc.
+    re.compile(
+        r"^\s*(?:[ivxlcdm]{1,6}|[IVXLCDM]{1,6})\s*[\)\]\.\-:]\s+(?P<rest>.+?)\s*$"
+    ),
+]
+_REL_TYPE_ORDER: dict[str, int] = {
+    "hasChild": 0,
+    "supports": 1,
+    "buildsTowards": 2,
+    "relatesTo": 3,
+}
 _ROLE_TO_NORMALIZED: dict[StatementRole, str] = {
     StatementRole.DESCRIPTOR: "Other",
     StatementRole.EXPECTATION: "Standard",
@@ -48,6 +67,7 @@ _ROLE_TO_STATEMENT_TYPE: dict[StatementRole, str] = {
     StatementRole.SUBJECT: "Subject",
     StatementRole.TOPIC: "Topic",
 }
+_SFI_TYPE_ORDER: dict[str, int] = {"Standard Grouping": 0, "Standard": 1, "Other": 2}
 
 
 @dataclass(frozen=True)
@@ -118,6 +138,15 @@ class HasChildBuildResult:
     dropped_edges: list[dict[str, Any]]
     relationships: list[Relationship]
     report: GraphValidationReport
+
+
+@dataclass(frozen=True)
+class LCSplitCandidate:
+    """A single LearningComponent split candidate produced from a Standard SFI."""
+
+    split_index: int
+    split_key: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -681,6 +710,29 @@ def _build_node_map(
     return node_by_id
 
 
+def _get_bullet_content(*, line: str) -> Optional[str]:
+    """Check if a line matches a bullet pattern and return the content.
+
+    Parameters
+    ----------
+    line
+        The line to check.
+
+    Returns
+    -------
+    Optional[str]
+        The captured content if matched, otherwise None.
+    """
+
+    for pat in _BULLET_LINE_PATTERNS:
+        m = pat.match(line)
+
+        if m:
+            return m.group("rest")
+
+    return None
+
+
 def _check_connectivity(
     *,
     adjacency: dict[UUID, list[UUID]],
@@ -789,6 +841,23 @@ def _check_english_text_policy(
                 "description_text_policy": config.description_text_policy,
             },
         )
+
+
+def _collapse_whitespace(*, text: str) -> str:
+    """Collapse internal whitespace and trim.
+
+    Parameters
+    ----------
+    text
+        The input text.
+
+    Returns
+    -------
+    str
+        The collapsed text.
+    """
+
+    return re.sub(r"\s+", " ", (text or "").strip())
 
 
 def _compute_reachability_from_edges(
@@ -918,6 +987,53 @@ def _create_framework_entity(
         provider=common["provider"],
     )
     return framework, warning_reason
+
+
+def _create_lc_base_metadata(
+    *, policy: str, sfi: StandardsFrameworkItem
+) -> dict[str, Any]:
+    """Create base metadata for LearningComponents.
+
+    Parameters
+    ----------
+    policy
+        The LC generation policy name.
+    sfi
+        The StandardsFrameworkItem being supported.
+
+    Returns
+    -------
+    dict[str, Any]
+        The base metadata dictionary.
+    """
+
+    sfi_meta = sfi.metadata or {}
+    base_meta: dict[str, Any] = {
+        "policy": f"lc_{policy}",
+        "supportsStandardIdentifier": str(sfi.identifier),
+        "supportsStandardCaseIdentifierUUID": str(sfi.case_identifier_uuid),
+        "docKey": sfi_meta.get("docKey"),
+        "canonicalNodeId": sfi_meta.get("canonicalNodeId"),
+        "pageIndices": sfi_meta.get("pageIndices"),
+        "sourceText": sfi_meta.get("sourceText"),
+        "sourceLanguage": sfi_meta.get("sourceLanguage"),
+    }
+
+    # Only add English fields if present (keeps metadata clean + deterministic).
+    if sfi_meta.get("englishText"):
+        base_meta["englishText"] = sfi_meta.get("englishText")
+        base_meta["englishLanguage"] = sfi_meta.get("englishLanguage") or "en"
+
+    # Add a compact source standard summary (useful for debugging and ordering).
+    base_meta["sourceStandard"] = {
+        "identifier": str(sfi.identifier),
+        "caseIdentifierUUID": str(sfi.case_identifier_uuid),
+        "statementType": sfi.statement_type,
+        "statementCode": sfi.statement_code,
+        "normalizedStatementType": sfi.normalized_statement_type,
+    }
+
+    return base_meta
 
 
 def _create_relationship(
@@ -1384,6 +1500,252 @@ def _finalize_has_child_report(
     )
 
 
+def _flush_bullet_buffer(*, buffer: list[str], items: list[str]) -> None:
+    """Flush the current line buffer into the items list.
+
+    Parameters
+    ----------
+    buffer
+        The list of strings accumulating the current bullet's text.
+        This list is cleared after flushing.
+    items
+        The list of completed bullet items.
+    """
+
+    if not buffer:
+        return
+
+    # Join accumulated lines and collapse whitespace.
+    text = " ".join(buffer)
+    cleaned = _collapse_whitespace(text=text)
+
+    if cleaned:
+        items.append(cleaned)
+
+    buffer.clear()
+
+
+def _generate_lc_splits_for_standard(
+    *, config: KnowledgeGraphConfig, sfi: StandardsFrameworkItem
+) -> tuple[str, list[LCSplitCandidate], dict[str, int]]:
+    """Generate LearningComponent split candidates for a single Standard SFI.
+
+    Parameters
+    ----------
+    config
+        The KnowledgeGraphConfig to use for split policy.
+    sfi
+        The StandardsFrameworkItem to process.
+
+    Returns
+    -------
+    tuple[str, list[LCSplitCandidate], dict[str, int]]
+        (effective_policy_name, candidates, split_stats)
+    """
+
+    policy = getattr(config, "learning_component_policy", "1_to_1")
+    text = sfi.description or ""
+
+    # Base candidates (pre-dedupe/cap).
+    if policy == "split_bullets":
+        bullets = _try_parse_bullets(text=text)
+        if bullets:
+            candidates = [
+                LCSplitCandidate(split_index=i, split_key=f"bullet-{i}", text=b)
+                for i, b in enumerate(bullets)
+            ]
+            used_fallback = 0
+        else:
+            candidates = [LCSplitCandidate(split_index=0, split_key="0", text=text)]
+            used_fallback = 1
+    else:
+        # Default is 1_to_1.
+        policy = "1_to_1"
+        candidates = [LCSplitCandidate(split_index=0, split_key="0", text=text)]
+        used_fallback = 0
+
+    # Deterministic de-duplication (based on normalized text).
+    seen: set[str] = set()
+    deduped: list[LCSplitCandidate] = []
+    duplicates_removed = 0
+    for c in candidates:
+        norm = _collapse_whitespace(text=text).lower()
+        if not norm:
+            duplicates_removed += 1
+            continue
+        if norm in seen:
+            duplicates_removed += 1
+            continue
+        seen.add(norm)
+        deduped.append(c)
+
+    # Safety cap per standard.
+    cap = int(getattr(config, "lc_max_splits_per_standard", 25) or 25)
+    truncated = 0
+    if 1 <= cap < len(deduped):
+        truncated = len(deduped) - cap
+        deduped = deduped[:cap]
+
+    # Guarantee at least one candidate.
+    if not deduped:
+        deduped = [LCSplitCandidate(split_index=0, split_key="0", text=text)]
+
+    stats = {
+        "duplicates_removed": duplicates_removed,
+        "truncated": truncated,
+        "used_fallback": used_fallback,
+        "n_candidates": len(deduped),
+    }
+
+    return policy, deduped, stats
+
+
+def _get_lc_sort_key(
+    *, lc: LearningComponent, sfi_sort_map: dict[str, tuple[Any, ...]]
+) -> tuple[Any, ...]:
+    """Generate sort key for LearningComponents.
+
+    Parameters
+    ----------
+    lc
+        The LearningComponent.
+    sfi_sort_map
+        Mapping of CASE UUID to parent SFI sort key.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        The sort key tuple.
+    """
+
+    meta = lc.metadata or {}
+    target_case_uuid = str(meta.get("supportsStandardCaseIdentifierUUID") or "")
+    standard_key = sfi_sort_map.get(target_case_uuid, (10**9, 9, "", ""))
+    split_index_i = _get_split_index(meta=meta)
+
+    return (*standard_key, split_index_i, str(lc.identifier))
+
+
+def _get_min_page_index(*, meta: dict[str, Any] | None) -> int:
+    """Get the minimum page index from metadata, or a large number if not present.
+
+    Parameters
+    ----------
+    meta
+        The metadata dictionary.
+
+    Returns
+    -------
+    int
+        The minimum page index, or a large number if not present.
+    """
+
+    if not meta:
+        return 10**9
+
+    raw = meta.get("pageIndices")
+
+    if isinstance(raw, list):
+        ints = [p for p in raw if isinstance(p, int)]
+        return min(ints) if ints else 10**9
+
+    if isinstance(raw, int):
+        return raw
+
+    return 10**9
+
+
+def _get_rel_sort_key(
+    *, rel: Relationship, sfi_sort_map: dict[str, tuple[Any, ...]]
+) -> tuple[Any, ...]:
+    """Generate sort key for Relationships.
+
+    Parameters
+    ----------
+    rel
+        The Relationship.
+    sfi_sort_map
+        Mapping of CASE UUID to SFI sort keys.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        The sort key tuple.
+    """
+
+    r_order = _REL_TYPE_ORDER.get(rel.relationship_type, 99)
+    identifier_str = str(rel.identifier)
+
+    if rel.relationship_type == "supports":
+        meta = rel.metadata or {}
+        target_case_uuid = str(rel.target_entity_value or "")
+        standard_key = sfi_sort_map.get(target_case_uuid, (10**9, 9, "", ""))
+        split_index_i = _get_split_index(meta=meta)
+
+        return r_order, *standard_key, split_index_i, identifier_str
+
+    if rel.relationship_type == "hasChild":
+        src_case_uuid = str(rel.source_entity_value or "")
+        tgt_case_uuid = str(rel.target_entity_value or "")
+
+        if rel.source_entity == "StandardsFramework":
+            src_key = (-1, 0, "", "")  # Framework edges first
+        else:
+            src_key = sfi_sort_map.get(src_case_uuid, (10**9, 9, "", ""))
+
+        tgt_key = sfi_sort_map.get(tgt_case_uuid, (10**9, 9, "", ""))
+        return (r_order, *src_key, *tgt_key, identifier_str)
+
+    # Default fallback for other types
+    return r_order, identifier_str
+
+
+def _get_sfi_sort_key(*, sfi: StandardsFrameworkItem) -> tuple[Any, ...]:
+    """Generate sort key for StandardsFrameworkItems.
+
+    Parameters
+    ----------
+    sfi
+        The StandardsFrameworkItem.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        The sort key tuple.
+    """
+
+    meta = sfi.metadata or {}
+
+    return (
+        _get_min_page_index(meta=meta),
+        _SFI_TYPE_ORDER.get(sfi.normalized_statement_type, 9),
+        str(meta.get("canonicalNodeId") or ""),
+        str(sfi.identifier),
+    )
+
+
+def _get_split_index(*, meta: dict[str, Any]) -> int:
+    """Safely extract splitIndex from metadata.
+
+    Parameters
+    ----------
+    meta
+        The metadata dictionary.
+
+    Returns
+    -------
+    int
+        The split index, or 0 if not present or invalid.
+    """
+
+    split_index = meta.get("splitIndex")
+
+    try:
+        return int(split_index) if split_index is not None else 0
+    except Exception:  # pylint: disable=broad-except
+        return 0
+
+
 def _has_alpha(text: str) -> bool:
     """Return True if text has any alphabetic characters.
 
@@ -1662,7 +2024,9 @@ def _normative_safety_override(
     if node.role != StatementRole.EXPECTATION:
         return None, None
 
-    text = (resolved.source_text or "").strip()
+    # Use the same chosen description text policy as export, so prefer_text_en doesn’t
+    # accidentally bypass safety logic.
+    text = (resolved.text or resolved.source_text or "").strip()
 
     if not text or len(text) < 3 or not _has_alpha(text):
         return None, None
@@ -1722,6 +2086,133 @@ def _populate_index_stats(
             "n_children_indexed": len(children_by_parent),
         }
     )
+
+
+def _process_lc_candidate(
+    *,
+    academic_subject: str,
+    base_meta: dict[str, Any],
+    cand: LCSplitCandidate,
+    common: dict[str, str],
+    defaults: DefaultsResolver,
+    ids: DeterministicIdRegistry,
+    policy: str,
+    seen_lc_ids: set[str],
+    seen_rel_ids: set[str],
+    sfi: StandardsFrameworkItem,
+    split_stats: dict[str, int],
+) -> Optional[tuple[LearningComponent, Relationship]]:
+    """Process a single LCSplitCandidate, creating objects if not duplicates.
+
+    Parameters
+    ----------
+    academic_subject
+        The academic subject string.
+    base_meta
+        The base metadata dictionary.
+    cand
+        The split candidate to process.
+    common
+        Common metadata dictionary.
+    defaults
+        DefaultsResolver instance.
+    ids
+        DeterministicIdRegistry instance.
+    policy
+        The policy string.
+    seen_lc_ids
+        Set of seen LC identifiers (mutated in place).
+    seen_rel_ids
+        Set of seen relationship identifiers (mutated in place).
+    sfi
+        The source StandardsFrameworkItem.
+    split_stats
+        Split statistics dictionary.
+
+    Returns
+    -------
+    Optional[tuple[LearningComponent, Relationship]]
+        The created LC and Relationship, or None if duplicate.
+    """
+
+    # Mint deterministic LC identifier using the split_key.
+    lc_identifier = ids.learning_component_id(
+        standard_sfi_id=sfi.identifier, split_key=cand.split_key
+    )
+    lc_identifier_str = str(lc_identifier)
+
+    if lc_identifier_str in seen_lc_ids:
+        return None
+
+    # supports relationship ID is deterministic --> check it BEFORE creating/adding the
+    # LC.
+    rel_identifier = ids.relationship_id(
+        from_id=lc_identifier, rel_type="supports", to_id=sfi.case_identifier_uuid
+    )
+    rel_identifier_str = str(rel_identifier)
+
+    if rel_identifier_str in seen_rel_ids:
+        return None
+
+    # LC-specific metadata (split details).
+    lc_meta: dict[str, Any] = dict(base_meta)
+    lc_meta.update(
+        {
+            "splitKey": cand.split_key,
+            "splitIndex": cand.split_index,
+            "nSplitsForStandard": split_stats.get("n_candidates", 0),
+            "usedFallback": bool(split_stats.get("used_fallback", 0)),
+        }
+    )
+
+    lc = LearningComponent(
+        academic_subject=academic_subject,
+        attribution_statement=common["attribution_statement"],
+        author=common["author"],
+        description=cand.text,
+        identifier=lc_identifier,
+        in_language=sfi.in_language,
+        license=common["license"],
+        metadata=lc_meta,
+        provider=common["provider"],
+    )
+
+    rel_meta: dict[str, Any] = {
+        **{k: v for k, v in base_meta.items() if k != "sourceStandard"},
+        "policy": f"lc_{policy}",
+        "splitKey": cand.split_key,
+        "splitIndex": cand.split_index,
+        "nSplitsForStandard": split_stats.get("n_candidates", 0),
+        "usedFallback": bool(split_stats.get("used_fallback", 0)),
+        "supportsStandardIdentifier": str(sfi.identifier),
+        "supportsStandardCaseIdentifierUUID": str(sfi.case_identifier_uuid),
+    }
+    if base_meta.get("englishText"):
+        rel_meta["englishText"] = base_meta.get("englishText")
+        rel_meta["englishLanguage"] = base_meta.get("englishLanguage") or "en"
+
+    rel = Relationship(
+        attribution_statement=common["attribution_statement"],
+        author=common["author"],
+        description=defaults.relationship_description(rel_type="supports"),
+        identifier=rel_identifier,
+        license=common["license"],
+        metadata=rel_meta,
+        provider=common["provider"],
+        relationship_type="supports",
+        source_entity="LearningComponent",
+        source_entity_key="identifier",
+        source_entity_value=str(lc.identifier),
+        target_entity="StandardsFrameworkItem",
+        target_entity_key="caseIdentifierUUID",
+        target_entity_value=str(sfi.case_identifier_uuid),
+    )
+
+    # Update seen sets.
+    seen_lc_ids.add(lc_identifier_str)
+    seen_rel_ids.add(rel_identifier_str)
+
+    return lc, rel
 
 
 def _process_node_for_mapping(
@@ -2139,6 +2630,61 @@ def _select_text_unit(*, node: CanonicalNode) -> Optional[TextUnit]:
     return None
 
 
+def _try_parse_bullets(*, text: str) -> list[str]:
+    """Attempt to parse a multiline string into bullet items.
+
+    Parameters
+    ----------
+    text
+        The input text.
+
+    Returns
+    -------
+    list[str]
+        The list of bullet items, or empty list if not a bullet list.
+    """
+
+    if not text:
+        return []
+
+    current_parts: list[str] = []
+    items: list[str] = []
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    saw_bullet_start = False
+
+    for raw in lines:
+        line = raw.rstrip()
+        stripped = line.strip()
+
+        # Case 1: Blank line. Flush current buffer and reset.
+        if not stripped:
+            _flush_bullet_buffer(buffer=current_parts, items=items)
+            continue
+
+        # Case 2: New bullet start. Flush previous buffer and start new one.
+        if (content := _get_bullet_content(line=line)) is not None:
+            _flush_bullet_buffer(buffer=current_parts, items=items)
+            saw_bullet_start = True
+            current_parts.append(content)
+            continue
+
+        # Case 3: Continuation text. If we haven't seen a bullet start yet, this is
+        # unstructured text --> fail.
+        if not saw_bullet_start:
+            return []
+
+        current_parts.append(stripped)
+
+    # Flush any remaining text in the buffer.
+    _flush_bullet_buffer(buffer=current_parts, items=items)
+
+    # Require at least 2 items to consider it a meaningful split.
+    if len(items) < 2:
+        return []
+
+    return items
+
+
 def _update_drop_counters(*, counters: dict[str, int], reason_code: str) -> None:
     """Update drop counters based on reason code.
 
@@ -2332,7 +2878,8 @@ def _validate_sfi_node(
 
     # Junk filter for EXPECTATION.
     if effective_role == StatementRole.EXPECTATION:
-        txt = (resolved.source_text or "").strip()
+        # Validate against the chosen text (honors description_text_policy).
+        txt = (resolved.text or resolved.source_text or "").strip()
         if len(txt) < 3 or not _has_alpha(txt):
             return "drop_expectation_non_linguistic_or_too_short"
 
@@ -2668,12 +3215,20 @@ def build_learning_components(
                 "n_supports_relationships": 0,
             }
         )
+
         return LearningComponentBuildResult(
             learning_components=[], supports_relationships=[], report=report
         )
 
     # Only standards (not groupings/other).
     standard_sfis = [s for s in sfis if s.normalized_statement_type == "Standard"]
+
+    # Split/quality counters.
+    duplicates_removed_total = 0
+    n_candidates_total = 0
+    n_standards_split = 0
+    truncated_total = 0
+    used_fallback_total = 0
 
     lcs: list[LearningComponent] = []
     supports_rels: list[Relationship] = []
@@ -2685,111 +3240,44 @@ def build_learning_components(
     common = defaults.common()
 
     for sfi in standard_sfis:
-        lc_identifier = ids.learning_component_id(
-            standard_sfi_id=sfi.identifier, split_key="0"
+        policy, candidates, split_stats = _generate_lc_splits_for_standard(
+            config=config, sfi=sfi
         )
-        lc_identifier_str = str(lc_identifier)
 
-        if lc_identifier_str in seen_lc_ids:
-            duplicates += 1
-            continue
+        if split_stats.get("n_candidates", 1) > 1:
+            n_standards_split += 1
 
-        # supports relationship ID is deterministic --> check it BEFORE creating/adding
-        # the LC so we never end up with an LC that has no supports edge.
-        rel_identifier = ids.relationship_id(
-            from_id=lc_identifier, rel_type="supports", to_id=sfi.case_identifier_uuid
-        )
-        rel_identifier_str = str(rel_identifier)
+        n_candidates_total += int(split_stats.get("n_candidates", 0) or 0)
+        duplicates_removed_total += int(split_stats.get("duplicates_removed", 0) or 0)
+        truncated_total += int(split_stats.get("truncated", 0) or 0)
+        used_fallback_total += int(split_stats.get("used_fallback", 0) or 0)
 
-        if rel_identifier_str in seen_rel_ids:
-            duplicates += 1
-            continue
-
-        # Commit both ids only after both uniqueness checks pass.
-        seen_lc_ids.add(lc_identifier_str)
-        seen_rel_ids.add(rel_identifier_str)
+        # Build base metadata by inheriting the same provenance/text fields from the SFI.
+        base_meta = _create_lc_base_metadata(policy=policy, sfi=sfi)
 
         academic_subject = defaults.academic_subject(override=sfi.academic_subject)
 
-        sfi_meta = sfi.metadata or {}
-
-        # Build LC metadata by inheriting the same provenance/text fields from the SFI.
-        lc_meta: dict[str, Any] = {
-            "policy": "lc_1_to_1",
-            "supportsStandardIdentifier": str(sfi.identifier),
-            "supportsStandardCaseIdentifierUUID": str(sfi.case_identifier_uuid),
-            "docKey": sfi_meta.get("docKey"),
-            "canonicalNodeId": sfi_meta.get("canonicalNodeId"),
-            "pageIndices": sfi_meta.get("pageIndices"),
-            "sourceText": sfi_meta.get("sourceText"),
-            "sourceLanguage": sfi_meta.get("sourceLanguage"),
-        }
-
-        # Only add English fields if present (keeps metadata clean + deterministic)
-        if sfi_meta.get("englishText"):
-            lc_meta["englishText"] = sfi_meta.get("englishText")
-            lc_meta["englishLanguage"] = sfi_meta.get("englishLanguage") or "en"
-
-        # Keep your existing "sourceStandard" subobject, but enrich it with text/lang too.
-        source_standard: dict[str, Any] = {
-            "statementCode": sfi.statement_code,
-            "statementType": sfi.statement_type,
-            "canonicalNodeId": sfi_meta.get("canonicalNodeId"),
-            "pageIndices": sfi_meta.get("pageIndices"),
-            "sourceText": sfi_meta.get("sourceText"),
-            "sourceLanguage": sfi_meta.get("sourceLanguage"),
-        }
-        if sfi_meta.get("englishText"):
-            source_standard["englishText"] = sfi_meta.get("englishText")
-            source_standard["englishLanguage"] = sfi_meta.get("englishLanguage") or "en"
-
-        lc_meta["sourceStandard"] = source_standard
-
-        lc = LearningComponent(
-            academic_subject=academic_subject,
-            attribution_statement=common["attribution_statement"],
-            author=common["author"],
-            description=sfi.description,
-            identifier=lc_identifier,
-            in_language=sfi.in_language,
-            license=common["license"],
-            metadata=lc_meta,
-            provider=common["provider"],
-        )
-        lcs.append(lc)
-
-        rel_meta: dict[str, Any] = {
-            "policy": "lc_1_to_1",
-            "supportsStandardIdentifier": str(sfi.identifier),
-            "supportsStandardCaseIdentifierUUID": str(sfi.case_identifier_uuid),
-            "docKey": sfi_meta.get("docKey"),
-            "canonicalNodeId": sfi_meta.get("canonicalNodeId"),
-            "pageIndices": sfi_meta.get("pageIndices"),
-            "sourceText": sfi_meta.get("sourceText"),
-            "sourceLanguage": sfi_meta.get("sourceLanguage"),
-        }
-        if sfi_meta.get("englishText"):
-            rel_meta["englishText"] = sfi_meta.get("englishText")
-            rel_meta["englishLanguage"] = sfi_meta.get("englishLanguage") or "en"
-
-        supports_rels.append(
-            Relationship(
-                attribution_statement=common["attribution_statement"],
-                author=common["author"],
-                description=defaults.relationship_description(rel_type="supports"),
-                identifier=rel_identifier,
-                license=common["license"],
-                metadata=rel_meta,
-                provider=common["provider"],
-                relationship_type="supports",
-                source_entity="LearningComponent",
-                source_entity_key="identifier",
-                source_entity_value=str(lc.identifier),
-                target_entity="StandardsFrameworkItem",
-                target_entity_key="caseIdentifierUUID",
-                target_entity_value=str(sfi.case_identifier_uuid),
+        for cand in candidates:
+            result = _process_lc_candidate(
+                academic_subject=academic_subject,
+                base_meta=base_meta,
+                cand=cand,
+                common=common,
+                defaults=defaults,
+                ids=ids,
+                policy=policy,
+                seen_lc_ids=seen_lc_ids,
+                seen_rel_ids=seen_rel_ids,
+                sfi=sfi,
+                split_stats=split_stats,
             )
-        )
+
+            if result is None:
+                duplicates += 1
+                continue
+
+            lcs.append(result[0])
+            supports_rels.append(result[1])
 
     lcs.sort(key=lambda x: str(x.identifier))
     supports_rels.sort(key=lambda x: str(x.identifier))
@@ -2798,13 +3286,30 @@ def build_learning_components(
     report.stats["learning_components"].update(
         {
             "enabled": True,
-            "n_sfis_total": len(sfis),
-            "n_standard_sfis": len(standard_sfis),
+            "policy": getattr(config, "learning_component_policy", "1_to_1"),
+            "lc_max_splits_per_standard": getattr(
+                config, "lc_max_splits_per_standard", 25
+            ),
+            "n_standard_sfis_split": n_standards_split,
+            "n_split_candidates_total": n_candidates_total,
             "n_learning_components": len(lcs),
             "n_supports_relationships": len(supports_rels),
+            "split_duplicates_removed": duplicates_removed_total,
+            "split_truncated_total": truncated_total,
+            "split_used_fallback_total": used_fallback_total,
             "duplicates_skipped": duplicates,
         }
     )
+
+    if truncated_total:
+        report.warn(
+            "lc_split_truncated",
+            "Some standards produced more split candidates than allowed and were truncated.",
+            {
+                "truncated_total": truncated_total,
+                "cap": getattr(config, "lc_max_splits_per_standard", 25),
+            },
+        )
 
     if duplicates:
         report.warn(
@@ -3137,7 +3642,7 @@ def map_canonical_to_entities(
                     "from_role": _role_str(node.role),
                     "to_role": _role_str(to_role),
                     "reason": reason,
-                    "text_preview": resolved.source_text[:200],
+                    "text_preview": (resolved.text or resolved.source_text)[:200],
                     "provenance": _node_text_debug(node),
                 },
             )
@@ -3240,7 +3745,15 @@ def persist_kg_run(*, output_dir: Path, **kwargs: Any) -> tuple[KGDirs, RunCtx]:
 
 
 def sort_export_lists_in_place(export_obj: KnowledgeGraphExport) -> None:
-    """Sort KnowledgeGraphExport lists in-place for deterministic JSON output.
+    """Sort KnowledgeGraphExport lists in-place for deterministic JSON output. The sort
+    order is deterministic and review-friendly:
+
+    1. StandardsFrameworkItems: primarily by earliest page index, then by type, then canonical id
+    2. LearningComponents: grouped by their supported standard (same ordering as SFIs), then splitIndex
+    3. Relationships:
+        - hasChild: grouped by parent/child ordering (framework edges first)
+        - supports: grouped by target standard ordering, then splitIndex
+        - Other relationship types: by identifier
 
     Parameters
     ----------
@@ -3248,7 +3761,24 @@ def sort_export_lists_in_place(export_obj: KnowledgeGraphExport) -> None:
         The KnowledgeGraphExport object to sort.
     """
 
+    # 1. Frameworks: Identifier sort is sufficient.
     export_obj.frameworks.sort(key=lambda x: str(x.identifier))
-    export_obj.learning_components.sort(key=lambda x: str(x.identifier))
-    export_obj.relationships.sort(key=lambda x: str(x.identifier))
-    export_obj.standards_framework_items.sort(key=lambda x: str(x.identifier))
+
+    # 2. StandardsFrameworkItems: Sort using extracted logic.
+    export_obj.standards_framework_items.sort(key=_get_sfi_sort_key)
+
+    # 3. Build Map: CASE UUID --> sort key (for ordering LCs and Relationships).
+    sfi_sort_by_case_uuid: dict[str, tuple[Any, ...]] = {
+        str(s.case_identifier_uuid): _get_sfi_sort_key(sfi=s)
+        for s in export_obj.standards_framework_items
+    }
+
+    # 4. LearningComponents: Sort using map.
+    export_obj.learning_components.sort(
+        key=lambda lc: _get_lc_sort_key(lc=lc, sfi_sort_map=sfi_sort_by_case_uuid)
+    )
+
+    # 5. Relationships: Sort using map.
+    export_obj.relationships.sort(
+        key=lambda rel: _get_rel_sort_key(rel=rel, sfi_sort_map=sfi_sort_by_case_uuid)
+    )

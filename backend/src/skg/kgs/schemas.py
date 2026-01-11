@@ -568,6 +568,12 @@ class KnowledgeGraphConfig(BaseModelKG):
     generate_learning_components: bool = True
     jurisdiction_default: str
     language_default: str
+    learning_component_policy: Literal["1_to_1", "split_bullets"] = "1_to_1"
+    lc_max_splits_per_standard: int = Field(
+        default=25,
+        description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
+        ge=1,
+    )
     license: str
     namespace_uuid: UUID = Field(
         default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
