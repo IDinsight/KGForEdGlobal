@@ -5,6 +5,7 @@
 	"author": "SKG Exporter",
 	"case_uri_base": "urn:lc:case:",
   "description_text_policy": "source",
+	"enable_normative_safety_overrides": true,
 	"export_dialect": "shape_only",
 	"export_in_language_policy": "source",
 	"include_descriptors": true,

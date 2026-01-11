@@ -1102,31 +1102,6 @@ def _deep_merge_dict(*, dst: dict[str, Any], src: dict[str, Any]) -> dict[str, A
     return dst
 
 
-def _extract_english_text(*, node: CanonicalNode) -> Optional[str]:
-    """Return node.text_en if present and non-empty, else None.
-
-    Parameters
-    ----------
-    node
-        The CanonicalNode to extract text from.
-
-    Returns
-    -------
-    Optional[str]
-        The extracted English text, or None if not present.
-    """
-
-    unit = _select_text_unit(node=node)
-    if unit is None:
-        return None
-
-    text_en = getattr(unit, "text_en", None)
-    if not text_en:
-        return None
-
-    return str(text_en).strip() or None
-
-
 def _filter_edges(
     *,
     canonical_edges: list[CanonicalEdge],
@@ -1657,7 +1632,7 @@ def _node_text_debug(node: CanonicalNode) -> dict[str, Any]:
 
 
 def _normative_safety_override(
-    *, node: CanonicalNode, resolved: ResolvedText
+    *, config: KnowledgeGraphConfig, node: CanonicalNode, resolved: ResolvedText
 ) -> tuple[Optional[StatementRole], Optional[str]]:
     """Return (new_role, reason) or (None, None) to keep role unchanged.
 
@@ -1671,6 +1646,8 @@ def _normative_safety_override(
 
     Parameters
     ----------
+    config
+        The KnowledgeGraphConfig to use for filtering rules.
     node
         The CanonicalNode to evaluate.
     resolved
@@ -1694,7 +1671,8 @@ def _normative_safety_override(
         return StatementRole.SECTION, "reclassify_expectation_heading_to_section"
 
     if (
-        (not _is_table_derived(node))
+        config.include_guidance
+        and (not _is_table_derived(node))
         and _has_paragraph_provenance(node)
         and len(text) >= 160
     ):
@@ -1793,9 +1771,11 @@ def _process_node_for_mapping(
         return None, None, None, "drop_empty_text", None
 
     # Normative safety overrides (only for EXPECTATION).
-    override_role, override_reason = _normative_safety_override(
-        node=node, resolved=resolved
-    )
+    override_role = override_reason = None
+    if getattr(config, "enable_normative_safety_overrides", True):
+        override_role, override_reason = _normative_safety_override(
+            config=config, node=node, resolved=resolved
+        )
 
     effective_role = override_role if override_role is not None else node.role
 
@@ -2040,7 +2020,8 @@ def _resolve_text(
         The resolved text, or None if no text found.
     """
 
-    unit = node.title or node.body
+    # Prefer a unit that actually has usable text (source or English).
+    unit = _select_text_unit(node=node) or node.title or node.body
 
     if not unit:
         return None
@@ -2055,21 +2036,20 @@ def _resolve_text(
     if not source_text and not text_en:
         return None
 
-    # Choose description text deterministically.
+    # Choose description text deterministically, and keep its language in sync.
     if config.description_text_policy == "prefer_text_en" and text_en:
-        text = text_en
+        text, text_lang = text_en, "en"
     else:
-        # Prefer source text, but don't emit empty descriptions if only English exists.
-        text = source_text or text_en
+        text, text_lang = (source_text, source_lang) if source_text else (text_en, "en")
 
     if not text:
         return None
 
-    # Choose inLanguage deterministically.
+    # Choose inLanguage deterministically *and* consistent with chosen description text.
     if config.export_in_language_policy == "default":
-        in_lang = (config.language_default or "und").strip() or "und"
+        in_lang = (config.language_default or text_lang or "und").strip() or "und"
     else:
-        in_lang = source_lang
+        in_lang = text_lang
 
     return ResolvedText(
         english_text=text_en or None,
@@ -2129,10 +2109,31 @@ def _select_text_unit(*, node: CanonicalNode) -> Optional[TextUnit]:
         The selected text unit, or None if neither has text.
     """
 
-    if node.title is not None and (node.title.text or "").strip():
+    def _has_any_text(u: Optional[TextUnit]) -> bool:
+        """Return True if TextUnit has any text.
+
+        Parameters
+        ----------
+        u
+            The TextUnit to evaluate.
+
+        Returns
+        -------
+        bool
+            True if TextUnit has any text, else False.
+        """
+
+        if u is None:
+            return False
+
+        return bool(
+            (u.text or "").strip() or (getattr(u, "text_en", None) or "").strip()
+        )
+
+    if _has_any_text(node.title):
         return node.title
 
-    if node.body is not None and (node.body.text or "").strip():
+    if _has_any_text(node.body):
         return node.body
 
     return None

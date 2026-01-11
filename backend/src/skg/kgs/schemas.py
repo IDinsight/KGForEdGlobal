@@ -560,6 +560,7 @@ class KnowledgeGraphConfig(BaseModelKG):
         description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
     )
     description_text_policy: Literal["source", "prefer_text_en"] = "source"
+    enable_normative_safety_overrides: bool = True
     export_dialect: Literal["shape_only"] = "shape_only"
     export_in_language_policy: Literal["default", "source"] = "source"
     include_descriptors: bool = True
