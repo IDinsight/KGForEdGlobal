@@ -731,6 +731,10 @@ class ParserConfig(BaseModelCanonicalIR):
 
     Attributes
     ----------
+    admin_note_patterns
+        Regex patterns (case-insensitive). If a grouping cell (subject/group/topic)
+        matches, it will be ignored (not materialized as a hierarchy node). If an
+        EXPECTATION leaf matches, it will be downgraded to GUIDANCE.
     block_specs
         Rules for processing non-heading blocks (paragraphs, lists).
     capture_table_row_facts_sample_always
@@ -763,6 +767,7 @@ class ParserConfig(BaseModelCanonicalIR):
         Heuristic filter: minimum text content to consider a table "real".
     """
 
+    admin_note_patterns: list[str] = Field(default_factory=list)
     block_specs: list[BlockSpec] = Field(default_factory=list)
     graph_policy: GraphPolicy = Field(default_factory=GraphPolicy)
     heading_rules: list[HeadingRule] = Field(default_factory=list)
