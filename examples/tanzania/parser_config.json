@@ -1,4 +1,9 @@
 {
+	"admin_note_patterns": [
+		"^\\s*administrative\\s+note\\b",
+		"relevant\\s+religious\\s+experts",
+		"ministry\\s+responsible\\s+for\\s+overseeing\\s+education"
+	],
 	"block_specs": [
 		{
 			"block_types": [

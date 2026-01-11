@@ -296,6 +296,12 @@ class DocumentParser:
         self.pending_table_gap_remaining: int = 0
         self.pending_table_seg: Any | None = None
 
+        # Admin-note filtering (country-tunable).
+        self._admin_note_regexes: list[re.Pattern[str]] = [
+            re.compile(pat, flags=re.IGNORECASE)
+            for pat in (self.config.admin_note_patterns or [])
+        ]
+
     def _initialize_root(self) -> None:
         """Create the root framework node and initialize the stack."""
 
@@ -1514,6 +1520,14 @@ class DocumentParser:
         group_str = _normalize_space(_coerce_text_to_str(group_tu))
         topic_str = _normalize_space(_coerce_text_to_str(topic_tu))
 
+        # If structural cells contain admin notes, do not materialize them as hierarchy.
+        if subj_str and self._matches_admin_note(text=subj_str):
+            subj_str = ""
+        if group_str and self._matches_admin_note(text=group_str):
+            group_str = ""
+        if topic_str and self._matches_admin_note(text=topic_str):
+            topic_str = ""
+
         # Subject level.
         if subj_str and subj_str != state["last_subject"]:
             state["curr_subject_id"] = self._ensure_group_node(
@@ -1654,19 +1668,26 @@ class DocumentParser:
             if not body_str:
                 continue
 
+            # Admin notes should never become normative standards.
+            effective_role = role
+            if role == StatementRole.EXPECTATION and self._matches_admin_note(
+                text=body_str
+            ):
+                effective_role = StatementRole.GUIDANCE
+
             leaf_body = TextUnit(
                 language=cell_tu.language,
                 text=body_str,
                 text_en=getattr(cell_tu, "text_en", None),
             )
             path = self._current_path_labels() + leaf_scope_path
-            path.append(f"{role.value}:{p.list_id or 'nolist'}:{i}")
+            path.append(f"{effective_role.value}:{p.list_id or 'nolist'}:{i}")
 
             node_id = generate_global_id(
                 code=p.list_id,
                 doc_key=self.doc_ir.doc_key,
                 path=path,
-                role=role,
+                role=effective_role,
                 text=body_str,
             )
 
@@ -1686,7 +1707,7 @@ class DocumentParser:
                     page_indices=(
                         [row_page_index] if isinstance(row_page_index, int) else []
                     ),
-                    role=role,
+                    role=effective_role,
                     source_ids=source_ids,
                     title=None,
                 )
@@ -1844,6 +1865,29 @@ class DocumentParser:
         self.builder.add_edge(child_id=node_id, parent_id=parent_id)
 
         return node_id
+
+    def _matches_admin_note(self, *, text: str) -> bool:
+        """Return True if `text` matches any configured admin-note pattern.
+
+        Parameters
+        ----------
+        text
+            The text to check.
+
+        Returns
+        -------
+        bool
+            True if the text matches an admin-note pattern, False otherwise.
+        """
+
+        if not self._admin_note_regexes:
+            return False
+
+        t = (text or "").strip()
+        if not t:
+            return False
+
+        return any(rx.search(t) is not None for rx in self._admin_note_regexes)
 
     def _matches_ignore_section_heading(self, *, heading_text: str) -> bool:
         """Return True if this heading starts an ignored section.
