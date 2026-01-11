@@ -50,6 +50,11 @@
 	},
 	"heading_rules": [
 		{
+			"role": "section",
+			"pattern": "^\\s*standard\\s+i\\s*(?:-|–|—|to|and)\\s*vi\\s*$",
+			"level": 15
+		},
+		{
 			"role": "grade_level",
 			"pattern": "^\\s*standard\\s+(i|ii|iii|iv|v|vi)\\s*(?:-|–|—|to|and)\\s*(i|ii|iii|iv|v|vi)\\s*$",
 			"level": 10
