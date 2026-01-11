@@ -3,6 +3,7 @@
 # Environments
 .env*
 *.env*
+!.envrc
 !.template.env*
 .venv
 env/
