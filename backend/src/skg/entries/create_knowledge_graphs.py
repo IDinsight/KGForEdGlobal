@@ -19,7 +19,7 @@ Step 5 does the following:
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_knowledge_graphs.py /path/to/kg_config.json /path/to/canonical_ir_run_results
+python src/skg/entries/create_knowledge_graphs.py ../examples/examples/kg_config.json /path/to/canonical_ir_run_results
 """
 
 # Standard Library

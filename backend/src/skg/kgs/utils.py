@@ -1700,7 +1700,7 @@ def _get_rel_sort_key(
     return r_order, identifier_str
 
 
-def _get_sfi_sort_key(*, sfi: StandardsFrameworkItem) -> tuple[Any, ...]:
+def _get_sfi_sort_key(sfi: StandardsFrameworkItem) -> tuple[Any, ...]:
     """Generate sort key for StandardsFrameworkItems.
 
     Parameters
@@ -2650,6 +2650,7 @@ def _try_parse_bullets(*, text: str) -> list[str]:
     current_parts: list[str] = []
     items: list[str] = []
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    preamble_parts: list[str] = []
     saw_bullet_start = False
 
     for raw in lines:
@@ -2658,20 +2659,35 @@ def _try_parse_bullets(*, text: str) -> list[str]:
 
         # Case 1: Blank line. Flush current buffer and reset.
         if not stripped:
-            _flush_bullet_buffer(buffer=current_parts, items=items)
+            if saw_bullet_start:
+                _flush_bullet_buffer(buffer=current_parts, items=items)
+            else:
+                # Before bullets: don't carry preamble across paragraph breaks.
+                preamble_parts.clear()
             continue
 
         # Case 2: New bullet start. Flush previous buffer and start new one.
         if (content := _get_bullet_content(line=line)) is not None:
+            # Allow preamble like "Students should be able to:" before bullets.
+            # Deterministically attach it to the FIRST bullet for context.
+            if not saw_bullet_start and preamble_parts:
+                prefix = _collapse_whitespace(text=" ".join(preamble_parts)).strip()
+
+                if prefix:
+                    content = f"{prefix} {content}".strip()
+
+                preamble_parts.clear()
+
             _flush_bullet_buffer(buffer=current_parts, items=items)
             saw_bullet_start = True
             current_parts.append(content)
             continue
 
         # Case 3: Continuation text. If we haven't seen a bullet start yet, this is
-        # unstructured text --> fail.
+        # preamble text --> keep scanning until we find bullets.
         if not saw_bullet_start:
-            return []
+            preamble_parts.append(stripped)
+            continue
 
         current_parts.append(stripped)
 
