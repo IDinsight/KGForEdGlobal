@@ -449,7 +449,7 @@ def test_render_and_save_page_to_png_regular_page_is_untouched(tmp_path: Path) -
     page = doc.load_page(0)
 
     assert page.rotation == 90  # Original PDF is peculiarly rotated 90 degrees
-    assert page.rect.height < page.rect.width  # Portrait
+    assert page.rect.height < page.rect.width
 
     output_fp = tmp_path / "regular.png"
 

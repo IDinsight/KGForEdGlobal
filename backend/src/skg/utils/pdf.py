@@ -617,6 +617,7 @@ def render_and_save_page_to_png(
     """
 
     page = doc.load_page(page_index)
+    orig_rotation = page.rotation
 
     if fix_rotation:
         # Get current visible dimensions (respects current rotation). page.rect returns
@@ -628,14 +629,14 @@ def render_and_save_page_to_png(
         is_landscape = width > height
 
         # Check if the page has a rotation flag set (90, 180, 270).
-        is_rotated = page.rotation in (90, 270)
+        is_rotated = page.rotation != 0
 
         # Apply fix only if the page is rotated AND currently landscape. This assumes
         # the rotation is what made it landscape and we want portrait.
         if is_landscape and is_rotated:
             logger.warning(
-                f"Page {page_index}: Detected Landscape ({width:.0f}x{height:.0f}) "
-                f"with Rotation={page.rotation}. Resetting to 0."
+                f"Page {page_index}: Landscape ({width:.0f}x{height:.0f}) "
+                f"Rotation={page.rotation}. Temporarily resetting to 0 for render."
             )
             page.set_rotation(0)
 
@@ -647,6 +648,10 @@ def render_and_save_page_to_png(
 
     output_png_fp.parent.mkdir(parents=True, exist_ok=True)
     pix.save(str(output_png_fp))
+
+    # Reset page rotation mutation for downstream.
+    if fix_rotation and page.rotation != orig_rotation:
+        page.set_rotation(orig_rotation)
 
 
 def validate_page_count(
