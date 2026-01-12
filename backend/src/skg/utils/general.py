@@ -15,7 +15,7 @@ import unicodedata
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any
 
 # Third Party Library
 import langcodes
@@ -385,29 +385,6 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
         )
 
     return record
-
-
-def truncate_text(*, max_chars: int, text: str) -> str:
-    """Return a single-line truncated preview string.
-
-    Parameters
-    ----------
-    max_chars
-        The maximum number of characters to return (including ellipsis).
-    text
-        The text to truncate.
-
-    Returns
-    -------
-    str
-        The truncated text.
-    """
-
-    text = (text or "").replace("\n", " ").strip()
-
-    return (
-        text if len(text) <= max_chars else text[: max(0, max_chars - 1)].rstrip() + "…"
-    )
 
 
 def validate_bbox_order(bbox: list[float]) -> list[float]:

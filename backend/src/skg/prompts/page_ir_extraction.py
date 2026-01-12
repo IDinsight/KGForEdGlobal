@@ -82,7 +82,7 @@ def extract_page_ir_from_pdf_page(
 8. If you set local_code, do not include that code in text.
 9. **ANTI-FULL-PAGE FAILSAFE (CRITICAL)**:
   - If the page contains substantial readable text (e.g., more than ~2 lines of body text, a TOC/list of entries, paragraphs like "Acknowledgements", or any multi-line section content), you MUST NOT output a single full-page FIGURE item.
-  - In those cases, extract the text into HEADING / PARAGRAPH / LIST blocks (and TABLE items if there is a grid).
+  - In those cases, extract the text into "{BlockType.HEADING.value}"/"{BlockType.PARAGRAPH.value}"/"{BlockType.LIST.value}" blocks (and TABLE items if there is a grid).
   - The “single full-page FIGURE page” exception is ONLY for pages that are visually dominated by a non-table graphic or scanned image with at most ~1–2 short text lines total (typical: cover image, certificate scan, photo page).
 10. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
   - The following PageIR fields are filled/overwritten by the Python pipeline:
@@ -98,7 +98,7 @@ def extract_page_ir_from_pdf_page(
 5. **FULL-PAGE BBOX EXCEPTION (EXTREMELY STRICT)**:
   - A full-page bbox is allowed ONLY if ALL are true:
     - The output contains exactly ONE item.
-    - That item is kind="block" and block_type="figure".
+    - That item is kind="block" and block_type="{BlockType.FIGURE.value}".
     - The page is visually dominated by a non-table graphic or scanned image (NOT primarily text).
     - The page has no paragraph/list-like body text beyond ~1–2 short lines.
     - figure.figure_kind MUST NOT be "unknown". If you cannot classify the figure kind, you MUST NOT use the full-page exception.
@@ -136,12 +136,12 @@ def extract_page_ir_from_pdf_page(
 3. Do NOT output a full-page “{BlockType.ARTIFACT.value}” block. Only output artifacts when you see actual header/footer/page-number text.
 4. Ignore page border lines/decorative frames. Do not emit blocks/tables for borders or background. Page numbers must be a small ARTIFACT bbox around the digits/roman numerals only. Signatures/logos are FIGURE only if you include them, with tight bbox around the graphic only (not margins).
 5. Artifacts means running header/footer/page number only. Certificates/ISBN/publisher blocks are NOT artifacts. Logos/seals/crests/graphics are NOT artifacts; treat them as figure if you include them at all.
-  - If the text looks like a section label/title (not a running header/footer), classify as HEADING, not ARTIFACT.
+  - If the text looks like a section label/title (not a running header/footer), classify as "{BlockType.HEADING.value}", not "{BlockType.ARTIFACT.value}".
 6. For any non-list block (including figure), list_items MUST be null or omitted (never []).
 
 ## LANGUAGES
 1. **Expected Languages**: {lang_context}.
-2. Expected Languages are only hints (common in Tanzania PDFs to include tables with fr/zh/ar in addition to en/sw).
+2. Expected Languages are only hints (it's common for PDFs to include tables with multiple languages).
 3. Use the BEST-MATCH BCP-47 language for the visible text, even if it is NOT in Expected Languages.
 4. Prefer en, sw, etc. rather than regional subtags like en-TZ, etc.
 5. Numeric-only page numbers should be und.
@@ -156,16 +156,33 @@ def extract_page_ir_from_pdf_page(
   - Correct: `"text": {{"text": "content", "language": "en", "text_en": null}}`
   - Incorrect: `"text": "content"`
   - Empty: If a cell is blank, set `"text": null`.
-2. **TABLE COLUMN COUNT (optional)**: If you can clearly infer the number of visual columns in the table grid (from ruling/grid and headers), set `CurriculumTable.n_cols` to that integer. If unsure, omit it or set it to null.
+2. **TABLE COLUMN COUNT (optional)**: If you can clearly infer the number of visual columns in the table grid (from ruling/grid and headers), set `Table.n_cols` to that integer. If unsure, omit it or set it to null.
 3. **TABLE HEADER ROWS**:
   - If the table has header rows at the top, set `header_row_count` to the number of header rows.
   - Keep header rows INSIDE `rows`; do not split headers into a separate field.
   - If unsure, leave it at 0/omit it.
-4. **MERGED CELLS**: If a cell clearly spans multiple rows/columns in the visible grid, set row_span/col_span accordingly; otherwise keep them as 1.
-5. **GRID-TRUE ROWS ONLY**: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
-6. **MIXED LANGUAGE IN ONE TEXTUNIT**: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
-7. Do not output empty tables; if you see a table, it must have at least one row.
-8. Do NOT misclassify tables as figures. If there is a ruled grid with cells, it must be a table.
+4. **MERGED CELLS (ROW/COL SPANS)**:
+  - If a cell visually spans multiple rows, set `row_span` to the number of rows it spans.
+  - If a cell visually spans multiple columns, set `col_span` to the number of columns it spans.
+  - For a row-spanned cell, DO NOT duplicate the same text into the covered rows unless the table actually repeats it visibly.
+  - Do NOT hallucinate merges. If you are unsure whether a merge exists, set `row_span=1` and `col_span=1` (and represent the table as best you can from the visible grid).
+  - Default: `row_span=1`, `col_span=1`.
+5. Keep all bullet/subheading lines inside the cell text
+  - If text is inside a table cell, do not emit separate list/paragraph items for it. Preserve line breaks inside the cell.
+6. Do not absorb outside-of-grid sections into the table
+  - If the grid ends and a new heading/section begins (e.g., “Assessment Guidelines...”), end the Table and emit new items after it.
+7. **GRID-TRUE ROWS ONLY**: Only create new TableRows when there is a visible row boundary in the table grid. Numbered lines inside one cell stay inside that cell’s text.
+8. **MIXED LANGUAGE IN ONE TEXTUNIT**: If a single block/cell contains multiple languages (common in bilingual curriculum tables), set TextUnit.language="mul" and keep the full verbatim text as-is. Do not split into multiple cells unless the grid shows separate cells.
+9. Do not output empty tables; if you see a table, it must have at least one row.
+10. Do NOT misclassify tables as figures. If there is a ruled grid with cells, it must be a table.
+11. **FIGURES INSIDE TABLE CELLS**:
+  - If you see an image/diagram/illustration INSIDE a table cell (e.g., a clock picture, blocks, icons), you MUST:
+    - Still extract the table grid normally (cell text may be null if no text), AND
+    - ALSO emit a separate FIGURE block with a tight bbox around the embedded image region.
+  - The FIGURE block bbox may overlap the table bbox. That is OK and expected.
+  - For that FIGURE block:
+    - kind="block", block_type="figure", text=null, list_items=null
+    - figure={{alt_text (short), contains_text, embedded_text if needed, figure_kind}}
 
 ## LIST
 1. For each list item, populate marker with the visible bullet/numbering (e.g., “•”, “1.”, “a)”) and put the remaining content in text.

@@ -11,6 +11,7 @@ from typing import Optional
 # Third Party Library
 import pymupdf
 
+from loguru import logger
 from PIL import Image, ImageStat
 
 
@@ -496,7 +497,7 @@ def render_and_save_page_to_png(
     *,
     doc: pymupdf.Document,
     dpi: int,
-    fix_rotation: bool = False,
+    fix_rotation: bool = True,
     output_png_fp: Path,
     page_index: int,
 ) -> None:
@@ -524,6 +525,27 @@ def render_and_save_page_to_png(
     """
 
     page = doc.load_page(page_index)
+
+    if fix_rotation:
+        # Get current visible dimensions (respects current rotation). page.rect returns
+        # the bounding box [x0, y0, x1, y1].
+        width = page.rect.width
+        height = page.rect.height
+
+        # Check if the page is currently landscape.
+        is_landscape = width > height
+
+        # Check if the page has a rotation flag set (90, 180, 270).
+        is_rotated = page.rotation != 0
+
+        # Apply fix only if the page is rotated AND currently landscape. This assumes
+        # the rotation is what made it landscape and we want portrait.
+        if is_landscape and is_rotated:
+            logger.warning(
+                f"Page {page_index}: Detected Landscape ({width:.0f}x{height:.0f}) "
+                f"with Rotation={page.rotation}. Resetting to 0."
+            )
+            page.set_rotation(0)
 
     scale = dpi / 72.0
     mat = pymupdf.Matrix(scale, scale)

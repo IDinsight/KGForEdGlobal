@@ -82,6 +82,7 @@ class QualityError(Exception):
         self.failed_content = failed_content
 
 
+# Extraction validators.
 def _validate_single_table(*, index: int, table: Table) -> None:
     """Validate rows and global properties for a single table.
 
@@ -224,26 +225,15 @@ def validate_basic_block_invariants(ctx: PageIRExtractionQualityCtx) -> None:
 
         if block_type_or_none == BlockType.LIST:
             for j, list_item in enumerate(list_items):
+                # If marker is empty and text is short, it's likely a misclassification.
                 marker = list_item.marker
                 list_item_text_or_none = list_item.text
-
                 validate_text_en_is_none(
                     text=list_item_text_or_none,
                     where_=f"items[{i}].list_items[{j}].text",
                 )
-
-                # Marker must be null OR a non-whitespace string (never "" / "   ").
-                if marker is not None and not marker.strip():
-                    raise QualityError(
-                        f"List item marker must be null or a non-empty string. "
-                        f"Found whitespace/empty marker at items[{i}].list_items[{j}].marker."
-                    )
-
-                # If marker is missing AND the text is extremely short, it’s probably
-                # not a list item.
-                marker_missing = (marker is None) or (not marker.strip())
                 if (
-                    marker_missing
+                    not marker.strip()
                     and list_item_text_or_none is not None
                     and len(list_item_text_or_none.text.strip()) < 3
                 ):
@@ -374,54 +364,6 @@ def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> N
             )
 
 
-def validate_footnote_blocks_are_plausible(ctx: PageIRExtractionQualityCtx) -> None:
-    """Reject likely misuses of block_type='footnote'. Intended: bottom-of-page
-    numbered notes (often separated by a rule). Not intended: page numbers, running
-    headers/footers, normal paragraphs.
-
-    Parameters
-    ----------
-    ctx
-        The PageIR extraction quality context.
-
-    Raises
-    ------
-    QualityError
-        If any footnote block appears implausible.
-    """
-
-    # Tunable thresholds (keep lenient).
-    h = float(ctx.image_height)
-    bottom_band_y0 = 0.55 * h  # Footnote should *start* in the bottom ~45%
-    max_height_frac = 0.35  # Footnote block shouldn't be huge
-
-    for i, item in enumerate(ctx.items):
-        if item.kind != "block" or item.block_type != BlockType.FOOTNOTE:
-            continue
-
-        # Boundary: footnotes should almost always be complete.
-        if item.boundary != ItemBoundary.COMPLETE:
-            raise QualityError(
-                f"Footnote blocks should usually have boundary='{ItemBoundary.COMPLETE.value}'. "
-                f"Found boundary='{item.boundary.value}' at items[{i}]."
-            )
-
-        # Bbox placement: near the bottom.
-        _, y0, _, y1 = map(float, item.bbox)
-        if y0 < bottom_band_y0:
-            raise QualityError(
-                f"Footnote block appears too high on the page at items[{i}].bbox={list(item.bbox)}. "
-                f"Footnotes should be near the bottom; otherwise use '{BlockType.PARAGRAPH.value}'."
-            )
-
-        # Size sanity: avoid classifying half-page content as a footnote.
-        if (y1 - y0) / h > max_height_frac:
-            raise QualityError(
-                f"Footnote block is unusually tall at items[{i}] (bbox height fraction={(y1 - y0) / h:.2f}). "
-                f"This is likely not a footnote; use '{BlockType.PARAGRAPH.value}'."
-            )
-
-
 def validate_full_page_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
     """Reject full-page bboxes unless the page is a single full-page figure.
 
@@ -482,114 +424,6 @@ def validate_full_page_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
         raise QualityError(
             "Full-page bbox is not allowed for contains_text=true. "
             "This usually indicates a text page being misclassified as a figure."
-        )
-
-
-def validate_full_page_figure_requires_double_check(
-    *, attempt: int, ctx: PageIRExtractionQualityCtx
-) -> None:
-    """Catch the following specific failure mode: the model outputs exactly one
-    full-page FIGURE with contains_text=false but the page is actually a scanned text
-    page (text-as-image).
-
-    Parameters
-    ----------
-    attempt
-        The extraction attempt number (1-based).
-    ctx
-        The PageIR extraction quality context.
-
-    Raises
-    ------
-    QualityError
-        If a likely missed text-as-image scenario is detected.
-    """
-
-    if len(ctx.items) != 1:
-        return
-
-    item = ctx.items[0]
-
-    if (
-        item.kind != "block"
-        or item.block_type != BlockType.FIGURE
-        or not ctx.top_level_bboxes
-        or item.figure is None
-    ):
-        return
-
-    # Must actually be full-page bbox.
-    if not is_full_page_bbox(
-        bbox=ctx.top_level_bboxes[0], page_bbox=ctx.page_bbox, tol=ctx.tol
-    ):
-        return
-
-    # Force double check.
-    if attempt == 1:
-        # If we get here, it is literally "one item, full-page figure". Force one retry
-        # with a strong re-check instruction.
-        raise QualityError(
-            f"Page {ctx.page_ir.page_index}: You returned exactly ONE full-page FIGURE "
-            f"item. Full-page figures are rare. Re-check the page carefully. If there "
-            f"is ANY readable body text or tables (including scanned text), you MUST "
-            f"extract it into heading/paragraph/list/table items with tight bboxes. "
-            "Only return a single full-page figure if the page is truly an image-only "
-            "page with no readable text."
-        )
-
-    fig = item.figure
-    alt = (fig.alt_text or "").strip().lower()
-
-    # Scan-like hint.
-    looks_like_scan = bool(re.search(r"\bscan(ned)?\b", alt))
-
-    # If it doesn't present as a scan, allow figure-only pages (photos/diagrams).
-    if not looks_like_scan:
-        return
-
-    embedded_text_or_none = fig.embedded_text
-    embedded_text = (
-        (embedded_text_or_none.text or "").strip()
-        if isinstance(embedded_text_or_none, TextUnit)
-        else ""
-    )
-    has_embedded = bool(embedded_text)
-
-    caption_text_or_none = fig.caption
-    caption_text = (
-        (caption_text_or_none.text or "").strip()
-        if isinstance(caption_text_or_none, TextUnit)
-        else ""
-    )
-    has_caption = bool(caption_text)
-
-    # If the model says there's visible text, embedded_text should exist.
-    if fig.contains_text is True and not has_embedded:
-        raise QualityError(
-            f"Page {ctx.page_ir.page_index}: figure.contains_text=true but "
-            f"embedded_text is empty. If there is visible text in the figure region, "
-            f"populate embedded_text with best-effort verbatim text."
-        )
-
-    # If model says contains_text=false and also provides no embedded text/caption, we
-    # consider this a missed scanned-text extraction.
-    if fig.contains_text is False and (not has_embedded) and (not has_caption):
-        raise QualityError(
-            f"Page {ctx.page_ir.page_index}: extractor returned a full-page scanned "
-            f"FIGURE with contains_text=false and no embedded_text/caption. This is "
-            f"likely a missed text-as-image page. Extract the page contents as "
-            f"headings/paragraphs/lists/tables instead of a single full-page figure, "
-            f"or set contains_text=true and populate embedded_text."
-        )
-
-    # If contains_text is null/unknown but also no text evidence, also fail for
-    # scan-like pages.
-    if fig.contains_text is None and (not has_embedded) and (not has_caption):
-        raise QualityError(
-            f"Page {ctx.page_ir.page_index}: extractor returned a full-page scanned "
-            f"FIGURE but provided no text evidence (contains_text is null and "
-            f"embedded_text/caption are empty). Extract text blocks/tables, or set "
-            f"contains_text=true and populate embedded_text."
         )
 
 
@@ -696,53 +530,6 @@ def validate_item_bboxes_required_and_in_bounds(
             )
 
         ctx.top_level_bboxes.append((float(x0), float(y0), float(x1), float(y1)))
-
-
-def validate_no_duplicate_item_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
-    """Disallow exact duplicate top-level item bboxes. Placeholder bbox checks only
-    catch *many* duplicates; this catches *any* duplicate.
-
-    Parameters
-    ----------
-    ctx
-        The PageIR extraction quality context.
-
-    Raises
-    ------
-    QualityError
-        If any duplicate item-level bbox is found.
-    """
-
-    if len(ctx.top_level_bboxes) < 2:
-        return
-
-    counts = Counter(ctx.top_level_bboxes)
-    dup_bboxes = [bbox for bbox, cnt in counts.items() if cnt > 1]
-
-    if not dup_bboxes:
-        return
-
-    # Map bbox to item indices (ctx.top_level_bboxes is appended in items order).
-    bbox_to_indices: dict[tuple[float, float, float, float], list[int]] = {}
-    for i, bbox in enumerate(ctx.top_level_bboxes):
-        bbox_to_indices.setdefault(bbox, []).append(i)
-
-    details = []
-    for bbox in dup_bboxes:
-        idxs = bbox_to_indices.get(bbox, [])
-        details.append(f"bbox={list(bbox)} used by items={idxs}")
-
-    # Keep the error readable if there are many duplicates.
-    max_show = 6
-    suffix = (
-        "" if len(details) <= max_show else f" (and {len(details) - max_show} more)"
-    )
-    details_str = "; ".join(details[:max_show]) + suffix
-
-    raise QualityError(
-        "Duplicate item bboxes detected. Each block/table must have a unique, tight bbox. "
-        + details_str
-    )
 
 
 def validate_no_whitespace_or_empty_blocks(ctx: PageIRExtractionQualityCtx) -> None:

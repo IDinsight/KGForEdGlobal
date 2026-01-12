@@ -12,8 +12,8 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.page_ir_extraction.schemas import PageIR
-from skg.schemas import ExtractionConfig, RunCtx
+from skg.page_ir_extraction.schemas import ExtractionConfig, PageIR
+from skg.schemas import RunCtx
 from skg.utils.constants import ItemBoundary, PageBoundaryState
 from skg.utils.general import make_dir, open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
@@ -160,7 +160,7 @@ def is_truncated(boundary: str) -> bool:
 
 def load_page_irs_from_extraction(
     *, end_page: int, page_irs_dir: Path, start_page: int
-) -> dict[int, PageIR]:
+) -> dict[int, dict[str, Any]]:
     """Load page IR JSONs from the extraction output directory.
 
     Parameters
@@ -174,14 +174,24 @@ def load_page_irs_from_extraction(
 
     Returns
     -------
-    dict[int, PageIR]
+    dict[int, dict[str, Any]]
         The dictionary of page IRs by page index.
     """
 
-    return {
-        i: PageIR.model_validate(open_json_type(page_irs_dir / f"{i:04}.json"))
+    page_irs: dict[int, dict[str, Any]] = {
+        i: PageIR.model_validate(
+            open_json_type(page_irs_dir / f"{i:04}.json")
+        ).model_dump(mode="json")
         for i in range(start_page, end_page)
     }
+
+    # Preserve extraction hints (internal-only) so reports can show what the extractor
+    # believed. Verification will PATCH only when confidence is high.
+    for page_ir in page_irs.values():
+        for item in page_ir.get("items", []):
+            item["_orig_boundary"] = item.get("boundary")
+
+    return page_irs
 
 
 def persist_extraction_run(
@@ -204,12 +214,17 @@ def persist_extraction_run(
     extraction_dirs = create_page_ir_extraction_dirs(
         doc_key=doc_key, output_dir=config.output_dir
     )
-    exclude_keys = {"model", "overwrite"}
     extraction_run = RunCtx(
         extra={
-            k: v
-            for k, v in config.model_dump(mode="json").items()
-            if k not in exclude_keys
+            "country": config.country,
+            "doc_key": doc_key,
+            "dpi": config.dpi,
+            "end_page_cli": config.end_page,  # Keep original config value (may be None)
+            "languages": config.languages,
+            "pdf_name": config.pdf_fp.name,
+            "overwrite": config.overwrite,
+            "start_page": config.start_page,
+            "use_text_layer_hints": config.use_text_layer_hints,
         },
         models=[config.model],
         run_id=str(uuid.uuid4()),
@@ -218,6 +233,7 @@ def persist_extraction_run(
     write_to_json(
         fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
     )
+    logger.info(f"Extraction directory: {extraction_dirs.root}")
     logger.info(f"Saving extraction results to: {extraction_dirs.root}")
 
     return doc_key, extraction_dirs, extraction_run

@@ -59,7 +59,7 @@ from skg.document_ir.utils import (
     save_document_ir,
     update_section_stack,
 )
-from skg.extract_page_ir.schemas import CurriculumBlock, CurriculumTable, PageIR
+from skg.page_ir_extraction.schemas import Block, PageIR, Table
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
@@ -107,10 +107,8 @@ def stitch_document_ir(
         )
         return
 
-    warnings: list[str] = []
-
-    # Normalize items per page.
-    items_mapping: dict[int, list[tuple[int, Block | Table]]] = {
+    # Normalized items per page and filter artifacts if applicable.
+    items_with_idx: dict[int, list[tuple[int, Union[Table, Block]]]] = {
         page_ir.page_index: normalize_page_items(
             keep_artifacts=config.keep_artifacts,
             page_ir=page_ir,
@@ -118,6 +116,9 @@ def stitch_document_ir(
             warnings=warnings,
         )
         for page_ir in page_irs
+    }
+    items_lookup: dict[int, dict[int, Union[Table, Block]]] = {
+        p_idx: dict(items) for p_idx, items in items_with_idx.items()
     }
 
     # Debug collectors for report output.

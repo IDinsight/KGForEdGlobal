@@ -29,9 +29,9 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.extract_page_ir.llm import extract_page_ir
-from skg.extract_page_ir.schemas import ExtractionConfig, PageIR
-from skg.extract_page_ir.utils import PageIRExtractionDirs, persist_extraction_run
+from skg.page_ir_extraction.llm import extract_page_ir
+from skg.page_ir_extraction.schemas import ExtractionConfig, PageIR
+from skg.page_ir_extraction.utils import PageIRExtractionDirs, persist_extraction_run
 from skg.utils.constants import PageBoundaryState
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import (
@@ -124,7 +124,7 @@ def extract_page_by_page(
                 image_width=image_width,
                 items=[],
                 page_index=page_index,
-                pdf_name=config.pdf_name,
+                pdf_name=config.pdf_fp.name,
             )
         else:
             page_ir = extract_page_ir(

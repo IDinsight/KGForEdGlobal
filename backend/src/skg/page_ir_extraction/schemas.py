@@ -8,35 +8,54 @@ from __future__ import annotations
 # Standard Library
 import re
 
-from typing import Literal, Optional
+from pathlib import Path
+from typing import Annotated, Literal, Optional, Self, Union
 
 # Third Party Library
-from pydantic import Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    FilePath,
+    field_validator,
+    model_validator,
+)
 
 # Package Library
-from skg.schemas import BaseSchema, BBox, LanguageField
-from skg.utils.constants import (
-    BlockType,
-    CaptionFigurePrefixes,
-    CaptionTablePrefixes,
-    FigureKind,
-    ItemBoundary,
-    PageBoundaryState,
-)
+from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
+from skg.utils.general import make_dir, validate_bbox_order, validate_bcp47
 
-# Compiled regexes.
-_TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
-_FIGURE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionFigurePrefixes)
-TABLE_TEXT_RE = re.compile(
-    rf"(?i)^\s*(?:{_TABLE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b"
-)
-FIGURE_TEXT_RE = re.compile(
-    rf"(?i)^\s*(?:{_FIGURE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b"
-)
+# Common fields with descriptions.
+BBox = Annotated[
+    list[float],
+    AfterValidator(validate_bbox_order),
+    Field(
+        description="Bounding box [x0, y0, x1, y1] in absolute pixels (px) relative to the image dimensions.",
+        max_length=4,
+        min_length=4,
+    ),
+]
+BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
+LanguageField = Annotated[
+    BCP47Str,
+    Field(
+        description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
+    ),
+]
+
+
+# Schemas for primitives.
+class BaseModelPageIRExtraction(BaseModel):
+    """Base model that enforces 'additionalProperties: false' in JSON schema for
+    compatibility with OpenAI Structured Outputs.
+    """
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
 
 
 # Schemas for component models.
-class TextUnit(BaseSchema):
+class TextUnit(BaseModelPageIRExtraction):
     """The atomic unit of text extraction. Represents a span of text with consistent
     styling.
     """
@@ -52,7 +71,7 @@ class TextUnit(BaseSchema):
     )
 
 
-class TableCell(BaseSchema):
+class TableCell(BaseModelPageIRExtraction):
     """A single cell within a table grid."""
 
     col_span: int = Field(1, description="Number of columns this cell spans.", ge=1)
@@ -62,7 +81,7 @@ class TableCell(BaseSchema):
     )
 
 
-class TableRow(BaseSchema):
+class TableRow(BaseModelPageIRExtraction):
     """A single horizontal row in a table."""
 
     cells: list[TableCell] = Field(
@@ -70,7 +89,7 @@ class TableRow(BaseSchema):
     )
 
 
-class Table(BaseSchema):
+class Table(BaseModelPageIRExtraction):
     """Represents a tabular grid extracted from the page."""
 
     bbox: BBox
@@ -92,8 +111,7 @@ class Table(BaseSchema):
     )
     kind: Literal["table"] = Field(..., description="Must be 'table'.")
     local_code: Optional[str] = Field(
-        None,
-        description="Explicit curriculum code if present (e.g., 'Table 1.2'). Preserve punctuation exactly (dots/hyphens/slashes).",
+        None, description="Explicit curriculum code if present (e.g., 'Table 1.2')."
     )
     n_cols: Optional[int] = Field(
         default=None,
@@ -164,17 +182,17 @@ class Table(BaseSchema):
         return self
 
 
-class ListItem(BaseSchema):
+class ListItem(BaseModelPageIRExtraction):
     """A single item in a list or outline."""
 
-    marker: Optional[str] = Field(
-        None,
-        description="The bullet/numbering marker (e.g., '1.', '•', 'a)', '3.9.4'). Null if there is no explicit marker (e.g., TOC dot-leader entries). Extract verbatim.",
+    marker: str = Field(
+        ...,
+        description="The bullet or numbering marker (e.g., '1.', '•', 'a)', '3.9.4'). Extract verbatim.",
     )
     text: TextUnit = Field(..., description="The text content of the list item.")
 
 
-class FigureUnit(BaseSchema):
+class FigureUnit(BaseModelPageIRExtraction):
     """Non-semantic metadata about a diagram/figure region.
 
     NB: This is NOT a full diagram parse. It is only enough to:
@@ -232,27 +250,8 @@ class FigureUnit(BaseSchema):
 
         return self
 
-    @model_validator(mode="after")
-    def validate_equation_requires_text(self) -> FigureUnit:
-        """Validate that equation figures contain text.
 
-        Returns
-        -------
-        FigureUnit
-            The passed in FigureUnit.
-        """
-
-        if self.figure_kind == FigureKind.EQUATION and self.contains_text is not True:
-            raise ValueError(
-                "figure.figure_kind='equation' requires figure.contains_text=true "
-                "(and therefore figure.embedded_text must be provided). "
-                "If unsure, use figure_kind='unknown' or 'diagram' instead."
-            )
-
-        return self
-
-
-class Block(BaseSchema):
+class Block(BaseModelPageIRExtraction):
     """A grouping of text content (paragraph, heading, list, etc.)."""
 
     bbox: BBox
@@ -278,7 +277,7 @@ class Block(BaseSchema):
     )
     local_code: Optional[str] = Field(
         None,
-        description="Explicit code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim and preserve punctuation exactly (dots/hyphens/slashes).",
+        description="Explicit code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim.",
     )
     text: Optional[TextUnit] = Field(
         None,
@@ -389,7 +388,7 @@ class Block(BaseSchema):
 
 
 # Schemas for extraction.
-class PageIR(BaseSchema):
+class PageIR(BaseModelPageIRExtraction):
     """Intermediate Representation of a single PDF page."""
 
     boundary_state: PageBoundaryState = Field(
@@ -416,7 +415,7 @@ class PageIR(BaseSchema):
         None,
         description="Width of the source image in pixels. This should be populated by the Python pipeline; it may be null during extraction.",
     )
-    items: list[Block | Table] = Field(
+    items: list[Union[Table, Block]] = Field(
         ...,
         description="Ordered list of content items found on the page, sorted by visual reading order (e.g., multi-column left-to-right, then down)",
     )
@@ -429,144 +428,159 @@ class PageIR(BaseSchema):
         description="Source PDF filename (no path). This should be populated by the Python pipeline; it may be null during extraction.",
     )
 
-    def _extract_code_string(self, text: str) -> str | None:
-        """Regex matching logic.
-
-        Parameters
-        ----------
-        text
-            The text to extract from.
-
-        Returns
-        -------
-        str | None
-            The extracted code string, or None if not found.
-        """
-
-        s = (text or "").strip()
-
-        if not s:
-            return None
-
-        if (m := TABLE_TEXT_RE.match(s)) is not None:
-            return f"Table {m.group('num')}"
-
-        if (m := FIGURE_TEXT_RE.match(s)) is not None:
-            return f"Figure {m.group('num')}"
-
-        return None
-
-    def _find_next_content_item(self, start_index: int) -> Table | Block | None:
-        """Find the next item that is not an artifact.
-
-        Parameters
-        ----------
-        start_index
-            The index to start searching from.
-
-        Returns
-        -------
-        Table | Block | None
-            The next non-artifact item, or None if not found.
-        """
-
-        for j in range(start_index, len(self.items)):
-            nxt = self.items[j]
-            if isinstance(nxt, Block) and nxt.block_type == BlockType.ARTIFACT:
-                continue
-            return nxt
-
-        return None
-
-    def _resolve_item_code(self, item: Block) -> str | None:
-        """Determine the code based on local_code or text content.
-
-        Parameters
-        ----------
-        item
-            The Block item to extract the code from.
-
-        Returns
-        -------
-        str | None
-            The resolved code string, or None if not found.
-        """
-
-        # Check existing local_code first.
-        if item.local_code:
-            normalized = self._extract_code_string(item.local_code)
-            if normalized:
-                return normalized
-
-        # Fallback to text content.
-        if item.text:
-            return self._extract_code_string(item.text.text)
-
-        return None
-
     @model_validator(mode="after")
-    def propagate_table_codes(self) -> PageIR:
-        """Propagate Table/Figure codes from adjacent label blocks to the subsequent
-        Table/Figure item if missing.
-
-        This is intentionally light-weight and schema-preserving:
-
-        1. It can derive a code from Block.text.text (e.g., "Table 3.9.4.1: ...").
-        2. It works even if the label block is misclassified (caption vs. heading vs.
-            paragraph).
-        3. It only propagates to the immediately-next non-artifact item.
+    def clamp_bboxes_within_image(self) -> PageIR:
+        """Clamp item bounding boxes into image bounds. Bounding boxes from vision
+        models often drift by a few pixels; clamping makes extraction reliable while
+        still preserving usable provenance.
 
         Returns
         -------
         PageIR
-            The passed in PageIR with propagated table/figure codes.
+            The passed in PageIR with clamped bboxes.
         """
 
-        eligible_label_types = {
-            BlockType.CAPTION,
-            BlockType.HEADING,
-            BlockType.PARAGRAPH,
-        }
+        if self.image_width is None or self.image_height is None:
+            return self
 
-        for i, item in enumerate(self.items):
-            # Check eligibility.
-            if (
-                not isinstance(item, Block)
-                or item.block_type not in eligible_label_types
-            ):
-                continue
+        image_width = float(self.image_width)
+        image_height = float(self.image_height)
 
-            # Derive/normalize code.
-            code = self._resolve_item_code(item)
-            if not code:
-                continue
+        for item in self.items:
+            x0, y0, x1, y1 = item.bbox
 
-            # Update current item if needed.
-            if not (item.local_code or "").strip():
-                item.local_code = code
+            x0 = max(0.0, min(float(x0), image_width))
+            y0 = max(0.0, min(float(y0), image_height))
+            x1 = max(0.0, min(float(x1), image_width))
+            y1 = max(0.0, min(float(y1), image_height))
 
-            # Find valid next item (skip artifacts).
-            next_item = self._find_next_content_item(start_index=i + 1)
+            # Keep bbox well-ordered after clamping (rare edge cases).
+            if x1 <= x0:
+                x1 = min(image_width, x0 + 1.0)
+            if y1 <= y0:
+                y1 = min(image_height, y0 + 1.0)
 
-            # Propagate code to next item.
-            if next_item:
-                code_lower = code.lower()
-
-                # Case A: Table.
-                if code_lower.startswith("table"):
-                    if (
-                        isinstance(next_item, Table)
-                        and not (next_item.local_code or "").strip()
-                    ):
-                        next_item.local_code = code
-
-                # Case B: Figure.
-                elif code_lower.startswith("figure"):
-                    if (
-                        isinstance(next_item, Block)
-                        and next_item.block_type == BlockType.FIGURE
-                        and not (next_item.local_code or "").strip()
-                    ):
-                        next_item.local_code = code
+            item.bbox = [x0, y0, x1, y1]
 
         return self
+
+    @model_validator(mode="after")
+    def propagate_table_codes(self) -> PageIR:
+        """Propagate table codes from caption blocks to the subsequent table if
+        missing.
+
+        Returns
+        -------
+        PageIR
+            The passed in PageIR with propagated table codes.
+        """
+
+        # If a caption block carries a Table code (e.g., "Table 5") and the next
+        # non-artifact item is a table, copy that code onto the table itself.
+        table_code_re = re.compile(r"(?i)^\s*table\s+\d+(?:\.\d+)*\b")
+
+        for i, cur in enumerate(self.items):
+            if not isinstance(cur, Block) or cur.block_type != BlockType.CAPTION:
+                continue
+
+            code = (cur.local_code or "").strip()
+            if not code or not table_code_re.match(code):
+                continue
+
+            # Look ahead to the next non-artifact item (sometimes a page number sits
+            # between).
+            j = i + 1
+            while j < len(self.items):
+                nxt = self.items[j]
+                if isinstance(nxt, Block) and nxt.block_type == BlockType.ARTIFACT:
+                    j += 1
+                    continue
+                break
+
+            if j >= len(self.items):
+                continue
+
+            nxt = self.items[j]
+            if isinstance(nxt, Table):
+                if not (nxt.local_code or "").strip():
+                    nxt.local_code = code
+
+        return self
+
+
+# Schemas for configs.
+class ExtractionConfig(BaseModelPageIRExtraction):
+    """Configuration for page IR extraction from a PDF document."""
+
+    country: str = Field(
+        ..., description="The country associated with the PDF document."
+    )
+    dpi: int = Field(250, description="Render DPI for page images.")
+    end_page: Optional[int] = Field(
+        None, description="0-based end page (exclusive). Default: to end."
+    )
+    languages: list[LanguageField] = Field(
+        ...,
+        description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
+        min_length=1,
+    )
+    model: str = Field(
+        "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
+    )
+    output_dir: Path = Field(..., description="Output directory root.")
+    overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
+    pdf_fp: FilePath = Field(
+        ...,
+        description="The file path to the PDF document to extract curriculum data from.",
+    )
+    start_page: int = Field(0, description="0-based start page (inclusive).")
+    use_text_layer_hints: bool = Field(
+        True,
+        description="Whether to extract and use text layer hints from the PDF during extraction.",
+    )
+    year: Optional[int] = Field(
+        None, description="Document year (optional; overrides any inferred year)."
+    )
+
+    @model_validator(mode="after")
+    def check_page_range(self) -> Self:
+        """Ensure that if end_page is provided, it is strictly greater than start_page.
+
+        Returns
+        -------
+        Self
+            The passed in ExtractionConfig.
+
+        Raises
+        ------
+        ValueError
+            If end_page is not greater than start_page.
+        """
+
+        if self.end_page is not None and self.end_page <= self.start_page:
+            raise ValueError(
+                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
+            )
+
+        return self
+
+    @field_validator("output_dir")
+    @classmethod
+    def ensure_output_dir_exists(cls, v: Path) -> Path:
+        """Ensure the output directory exists. If it doesn't, it creates it (including
+        parents).
+
+        Parameters
+        ----------
+        v
+            The output directory path.
+
+        Returns
+        -------
+        Path
+            The validated output directory path.
+        """
+
+        make_dir(v)
+
+        return v

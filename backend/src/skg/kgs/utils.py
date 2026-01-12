@@ -17,7 +17,6 @@ from PIL import Image
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalEdge, CanonicalIR, CanonicalNode
-from skg.extract_page_ir.schemas import TextUnit
 from skg.kgs.schemas import (
     GraphValidationReport,
     KnowledgeGraphConfig,
@@ -27,6 +26,7 @@ from skg.kgs.schemas import (
     StandardsFramework,
     StandardsFrameworkItem,
 )
+from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import RunCtx
 from skg.utils.constants import RelationshipTypes, StatementRole
 from skg.utils.general import make_dir, write_to_json
