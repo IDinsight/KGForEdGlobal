@@ -628,7 +628,7 @@ def render_and_save_page_to_png(
         is_landscape = width > height
 
         # Check if the page has a rotation flag set (90, 180, 270).
-        is_rotated = page.rotation != 0
+        is_rotated = page.rotation in (90, 270)
 
         # Apply fix only if the page is rotated AND currently landscape. This assumes
         # the rotation is what made it landscape and we want portrait.

@@ -479,12 +479,13 @@ class PageIR(BaseModelPageIRExtraction):
         # non-artifact item is a table, copy that code onto the table itself.
         table_code_re = re.compile(r"(?i)^\s*table\s+\d+(?:\.\d+)*\b")
 
-        for i, cur in enumerate(self.items):
-            if not isinstance(cur, Block) or cur.block_type != BlockType.CAPTION:
+        for i, item in enumerate(self.items):
+            if not isinstance(item, Block) or item.block_type != BlockType.CAPTION:
                 continue
 
-            code = (cur.local_code or "").strip()
-            if not code or not table_code_re.match(code):
+            current_code = (item.local_code or "").strip()
+
+            if not current_code or not table_code_re.match(current_code):
                 continue
 
             # Look ahead to the next non-artifact item (sometimes a page number sits
@@ -501,9 +502,8 @@ class PageIR(BaseModelPageIRExtraction):
                 continue
 
             nxt = self.items[j]
-            if isinstance(nxt, Table):
-                if not (nxt.local_code or "").strip():
-                    nxt.local_code = code
+            if isinstance(nxt, Table) and not (nxt.local_code or "").strip():
+                nxt.local_code = current_code
 
         return self
 
