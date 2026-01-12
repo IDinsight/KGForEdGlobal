@@ -13,37 +13,17 @@ from typing import Any, Optional
 from loguru import logger
 
 # Package Library
-from skg.page_ir.schemas import PageIR, PageIRContinuityVerdict
+from skg.extract_page_ir.utils import is_resumed, is_truncated
+from skg.page_ir.schemas import PageIRContinuityVerdict
 from skg.schemas import RunCtx
 from skg.utils.constants import (
     BlockType,
     ItemBoundary,
     PageBoundaryState,
     PageContinuationKind,
+    SectionBreakHeadings,
 )
-from skg.utils.general import clamp, make_dir, near, open_json_type, write_to_json
-from skg.utils.pdf import compute_doc_key
-
-SECTION_BREAK_HEADINGS = {
-    "appendix",
-    "bibliography",
-    "contents",
-    "index",
-    "list of figures",
-    "list of tables",
-    "reference list",
-    "references",
-    "table of contents",
-}
-
-
-@dataclass(frozen=True)
-class PageIRExtractionDirs:
-    """Dataclass for page IR extraction directories."""
-
-    root: Path
-    page_images: Path
-    page_irs: Path
+from skg.utils.general import clamp, make_dir, near, write_to_json
 
 
 @dataclass(frozen=True)
@@ -122,40 +102,6 @@ def _boundary_val(v: Any, default_val: str = ItemBoundary.COMPLETE.value) -> str
     """
 
     return getattr(v, "value", v) if v is not None else default_val
-
-
-def _derive_boundary_state_from_items(
-    non_artifact_items: list[tuple[int, Any]],
-) -> PageBoundaryState:
-    """Derive the page boundary state from item boundaries.
-
-    Parameters
-    ----------
-    non_artifact_items
-        The list of non-artifact items with their indices.
-
-    Returns
-    -------
-    PageBoundaryState
-        The derived page boundary state.
-    """
-
-    # Only consider non-artifact items for continuity.
-    non_artifact = [it for _, it in non_artifact_items]
-
-    if not non_artifact:
-        return PageBoundaryState.STANDALONE
-
-    any_from_prev = any(is_resumed(_boundary_str(it)) for it in non_artifact)
-    any_to_next = any(is_truncated(_boundary_str(it)) for it in non_artifact)
-
-    if any_from_prev and any_to_next:
-        return PageBoundaryState.BOTH
-    if any_from_prev:
-        return PageBoundaryState.CONTINUES_FROM_PREV
-    if any_to_next:
-        return PageBoundaryState.CONTINUES_TO_NEXT
-    return PageBoundaryState.STANDALONE
 
 
 def _has_boundary(it: dict[str, Any], b: ItemBoundary) -> bool:
@@ -541,34 +487,6 @@ def bottommost_continuity_candidate(
         chosen = non_fig if non_fig else near_edge
 
     return max(chosen, key=lambda p: (float(p[1]["bbox"][3]), p[0]))
-
-
-def create_page_ir_extraction_dirs(
-    *, doc_key: str, output_dir: Path
-) -> PageIRExtractionDirs:
-    """Create page IR extraction directories for a given document key.
-
-    Parameters
-    ----------
-    doc_key
-        The document key.
-    output_dir
-        The output directory root.
-
-    Returns
-    -------
-    PageIRExtractionDirs
-        The created page IR extraction directories.
-    """
-
-    root = output_dir / doc_key / "extraction"
-    page_images = root / "page_images"
-    page_irs = root / "page_irs"
-
-    for p in [root, page_images, page_irs]:
-        make_dir(p)
-
-    return PageIRExtractionDirs(root=root, page_images=page_images, page_irs=page_irs)
 
 
 def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationDirs:
@@ -1045,7 +963,7 @@ def has_structural_block_above_candidate(
 
             text_unit = it.get("text") or {}
             txt = (text_unit.get("text") or "").strip().lower()
-            return txt in SECTION_BREAK_HEADINGS
+            return txt in SectionBreakHeadings
 
         # If we encounter other block types, keep scanning.
         if bt == "figure":
@@ -1090,36 +1008,6 @@ def is_figure_block(item: dict[str, Any]) -> bool:
     if item.get("kind") != "block":
         return False
     return _block_type_val(item) == BlockType.FIGURE.value
-
-
-def is_full_page_bbox(
-    *, bb: tuple[float, ...], page_bbox: tuple[float, ...], tol: float
-) -> bool:
-    """Check if a bbox is effectively full-page within tolerance.
-
-    Parameters
-    ----------
-    bb
-        The bbox to check.
-    page_bbox
-        The page bbox.
-    tol
-        The tolerance for comparison.
-
-    Returns
-    -------
-    bool
-        True if the bbox is full-page within tolerance, False otherwise.
-    """
-
-    x0, y0, x1, y1 = bb
-
-    return (
-        abs(x0 - page_bbox[0]) <= tol
-        and abs(y0 - page_bbox[1]) <= tol
-        and abs(x1 - page_bbox[2]) <= tol
-        and abs(y1 - page_bbox[3]) <= tol
-    )
 
 
 def is_minor_edge_block(*, image_height: float, item: dict[str, Any]) -> bool:
@@ -1223,40 +1111,6 @@ def is_probable_header_footer_noise(
         return True
 
     return False
-
-
-def is_resumed(boundary: str) -> bool:
-    """Check if a boundary string indicates a resumed or both item.
-
-    Parameters
-    ----------
-    boundary
-        The boundary string to check.
-
-    Returns
-    -------
-    bool
-        True if the boundary indicates a resumed or both item, False otherwise.
-    """
-
-    return boundary in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
-
-
-def is_truncated(boundary: str) -> bool:
-    """Check if a boundary string indicates a truncated or both item.
-
-    Parameters
-    ----------
-    boundary
-        The boundary string to check.
-
-    Returns
-    -------
-    bool
-        True if the boundary indicates a truncated or both item, False otherwise.
-    """
-
-    return boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
 
 
 def item_snippet(
@@ -1364,42 +1218,6 @@ def item_snippet(
         out["rows_tail"] = [row_to_text(r) for r in tail]
 
     return out
-
-
-def load_page_irs_from_extraction(
-    *, end_page: int, page_irs_dir: Path, start_page: int
-) -> dict[int, dict[str, Any]]:
-    """Load page IR JSONs from the extraction output directory.
-
-    Parameters
-    ----------
-    end_page
-        0-based end page (exclusive).
-    page_irs_dir
-        Directory containing the page IR JSONs.
-    start_page
-        0-based start page (inclusive).
-
-    Returns
-    -------
-    dict[int, dict[str, Any]]
-        The dictionary of page IRs by page index.
-    """
-
-    page_irs: dict[int, dict[str, Any]] = {
-        i: PageIR.model_validate(
-            open_json_type(page_irs_dir / f"{i:04}.json")
-        ).model_dump(mode="json")
-        for i in range(start_page, end_page)
-    }
-
-    # Preserve extraction hints (internal-only) so reports can show what the extractor
-    # believed. Verification will PATCH only when confidence is high.
-    for page_ir in page_irs.values():
-        for item in page_ir.get("items", []):
-            item["_orig_boundary"] = item.get("boundary")
-
-    return page_irs
 
 
 def min_crop_height_px(*, kind: str, page_h_px: int) -> int:
@@ -1525,78 +1343,6 @@ def pad_inches(kind: str) -> float:
     if kind == "figure":
         return 0.50
     return 0.25
-
-
-def persist_extraction_run(
-    *,
-    country: str,
-    dpi: int,
-    end_page: Optional[int],
-    pdf_fp: Path,
-    languages: list[str],
-    model: str,
-    output_dir: Path,
-    overwrite: bool,
-    start_page: int,
-    use_text_layer_hints: bool,
-) -> tuple[str, PageIRExtractionDirs, RunCtx]:
-    """Persist extraction run metadata.
-
-    Parameters
-    ----------
-    country
-        The country associated with the PDF document.
-    dpi
-        Render DPI for page images.
-    end_page
-        0-based end page (exclusive).
-    pdf_fp
-        The file path to the PDF document to extract curriculum data from.
-    languages
-        One or more languages associated with the PDF document.
-    model
-        OpenAI model for page IR extraction.
-    output_dir
-        Output directory root.
-    overwrite
-        Specifies whether to overwrite existing per-page artifacts.
-    start_page
-        0-based start page (inclusive).
-    use_text_layer_hints
-        Whether to extract and use text layer hints from the PDF during extraction.
-
-    Returns
-    -------
-    tuple[str, ExtractionDirs, RunCtx]
-        The document key, extraction directories, and extraction run record.
-    """
-
-    doc_key = compute_doc_key(n_hex=64, pdf_fp=pdf_fp)
-    extraction_dirs = create_page_ir_extraction_dirs(
-        doc_key=doc_key, output_dir=output_dir
-    )
-    extraction_run = RunCtx(
-        extra={
-            "country": country,
-            "doc_key": doc_key,
-            "dpi": dpi,
-            "end_page_cli": end_page,  # Keep original CLI value (may be None)
-            "languages": languages,
-            "pdf_name": pdf_fp.name,
-            "overwrite": overwrite,
-            "start_page": start_page,
-            "use_text_layer_hints": use_text_layer_hints,
-        },
-        models=[model],
-        run_id=str(uuid.uuid4()),
-        started_at=datetime.now(timezone.utc),
-    )
-    write_to_json(
-        fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
-    )
-    logger.info(f"Extraction directory: {extraction_dirs.root}")
-
-    return doc_key, extraction_dirs, extraction_run
 
 
 def persist_verification_run(

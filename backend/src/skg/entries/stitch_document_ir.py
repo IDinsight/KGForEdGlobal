@@ -65,7 +65,7 @@ from skg.document_ir.utils import (
     persist_stitching_run,
     uniquify_segment_keys,
 )
-from skg.page_ir.schemas import CurriculumBlock, CurriculumTable, PageIR
+from skg.extract_page_ir.schemas import CurriculumBlock, CurriculumTable, PageIR
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 

@@ -36,6 +36,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.extract_page_ir.utils import load_page_irs_from_extraction
 from skg.page_ir.llm import verify_page_ir_continuity_verdict, verify_page_ir_pairs
 from skg.page_ir.utils import (
     PageIRVerificationDirs,
@@ -47,7 +48,6 @@ from skg.page_ir.utils import (
     get_threshold_based_on_kind,
     is_figure_block,
     item_snippet,
-    load_page_irs_from_extraction,
     min_crop_height_px,
     pad_inches,
     persist_verification_run,

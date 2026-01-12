@@ -12,7 +12,7 @@ from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 # Package Library
-from skg.page_ir.schemas import ListItem, TableRow, TextUnit
+from skg.extract_page_ir.schemas import ListItem, TableRow, TextUnit
 from skg.utils.constants import BlockType, ItemBoundary
 
 

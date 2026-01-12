@@ -22,7 +22,7 @@ from skg.document_ir.schemas import (
     TableSegment,
     TableSlice,
 )
-from skg.page_ir.schemas import (
+from skg.extract_page_ir.schemas import (
     CurriculumBlock,
     CurriculumTable,
     ListItem,

@@ -10,7 +10,7 @@ class BlockType(str, Enum):
     """The visual structural category of a content block.
 
     Types include:
-        - artifact: Page numbers, running headers/footers (to be filtered later)
+        - artifact: Page numbers, running headers/footers
         - caption: Text specifically describing a table or figure
         - figure: Diagrams/figures/illustrations/flowcharts (boxed visual regions)
         - heading: Visually distinct titles, section headers
@@ -100,7 +100,30 @@ class StatementRole(str, Enum):
     UNRESOLVED = "unresolved"  # Content that could not be classified
 
 
-# Literals.
+# Literals/sets for various constant types.
 CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
+NonArtifacts = {
+    "acknowledgements",
+    "acknowledgments",
+    "bibliography",
+    "contents",
+    "list of figures",
+    "list of tables",
+    "preface",
+    "reference list",
+    "references",
+    "table of contents",
+}
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"]
+SectionBreakHeadings = {
+    "appendix",
+    "bibliography",
+    "contents",
+    "index",
+    "list of figures",
+    "list of tables",
+    "reference list",
+    "references",
+    "table of contents",
+}

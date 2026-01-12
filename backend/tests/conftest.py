@@ -8,17 +8,20 @@ especially when those dependencies are slow, complex, or external.
 
 # Standard Library
 import importlib
-import json
 import sys
 
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, AsyncGenerator, Generator, Optional
+from typing import Any, AsyncGenerator, Generator
+from unittest.mock import MagicMock
 
 # Third Party Library
 import logfire
+import numpy as np
+import pymupdf
 import pytest
 
+from PIL import Image, ImageDraw
 from redis import asyncio as aioredis
 
 # Append the framework path.
@@ -32,13 +35,8 @@ if PACKAGE_PATH / "backend" / "tests" not in sys.path:
 
 # Package Library
 from skg.utils import logging_  # noqa: E402
-from tests.constants import REDIS_URL  # noqa: E402
-from tests.types_ import (  # noqa: E402
-    InstallLoguruMock,
-    InstallWriteJsonMock,
-    LogCall,
-    WriteCall,
-)
+from tests.constants import FIXTURES_DIR, REDIS_URL  # noqa: E402
+from tests.types_ import InstallLoguruMock, LogCall  # noqa: E402
 
 
 # Fixtures.
@@ -75,6 +73,23 @@ def fixture_loguru_capture() -> Generator[list[str], None, None]:
         logging_.logger.remove(sink_id)
 
 
+@pytest.fixture(scope="module")
+def fixture_pdf_doc() -> Generator[pymupdf.Document, None, None]:
+    """Open the PDF once for all tests to save time.
+
+    Yields
+    ------
+    Generator[pymupdf.Document, None, None]
+        The opened PDF document.
+    """
+
+    doc = pymupdf.open(FIXTURES_DIR / "utils" / "tanzania.pdf")
+
+    yield doc
+
+    doc.close()
+
+
 @pytest.fixture(scope="function")
 async def fixture_redis_client() -> AsyncGenerator[aioredis.Redis, None]:
     """Create a redis client for testing.
@@ -92,6 +107,125 @@ async def fixture_redis_client() -> AsyncGenerator[aioredis.Redis, None]:
     yield rclient
 
     await rclient.aclose()
+
+
+@pytest.fixture
+def synthetic_blank_page(tmp_path: Path) -> Path:
+    """Create a perfectly white page.
+
+    Parameters
+    ----------
+    tmp_path
+        The temporary path fixture.
+
+    Returns
+    -------
+    Path
+        The path to the created blank image.
+    """
+
+    p = tmp_path / "blank.png"
+    img = Image.new("RGB", (2480, 3508), "white")  # A4 at 300 DPI-ish
+    img.save(p)
+
+    return p
+
+
+@pytest.fixture
+def synthetic_dirty_blank_page(tmp_path: Path) -> Path:
+    """Create a page that is blank to the human eye but has scanner noise/grain
+    (off-white pixels).
+
+    Parameters
+    ----------
+    tmp_path
+        The temporary path fixture.
+
+    Returns
+    -------
+    Path
+        The path to the created dirty blank image.
+    """
+
+    p = tmp_path / "dirty_blank.png"
+    w, h = 1000, 1400
+
+    # Add random noise (240-255 range) - lighter than ink threshold.
+    noise = np.random.randint(240, 256, (h, w), dtype=np.uint8)
+    img = Image.fromarray(noise, mode="L")
+    img.save(p)
+
+    return p
+
+
+@pytest.fixture
+def synthetic_page_with_speck(tmp_path: Path) -> Path:
+    """Create a blank page with a single small black dot (e.g. dust). Should still be
+    considered blank.
+
+    Parameters
+    ----------
+    tmp_path
+        The temporary path fixture.
+
+    Returns
+    -------
+    Path
+        The path to the created image with a speck.
+    """
+
+    p = tmp_path / "speck.png"
+    img = Image.new("L", (1000, 1400), "white")
+    draw = ImageDraw.Draw(img)
+
+    # Draw a small 5x5 black dot in the center.
+    draw.rectangle([500, 700, 505, 705], fill="black")
+    img.save(p)
+
+    return p
+
+
+# Mocks.
+@pytest.fixture
+def mock_empty_struct_page() -> MagicMock:
+    """Return a Mock page that simulates:
+
+    1. Normal dimensions (rect.width/height).
+    2. get_text("dict") -> returns empty blocks (failure case).
+    3. get_text("text") -> returns raw string (fallback case).
+
+    Returns
+    -------
+    MagicMock
+        The mocked page.
+    """
+
+    page = MagicMock()
+    page.rect.width = 100
+    page.rect.height = 100
+
+    def side_effect(option: str) -> dict[str, list] | str:
+        """Side effect for `get_text` method.
+
+        Parameters
+        ----------
+        option
+            The option passed to `get_text`.
+
+        Returns
+        -------
+        dict[str, list] | str
+            The simulated return value.
+        """
+
+        if option == "dict":
+            return {"blocks": []}  # Simulate structured read failure
+
+        return "Raw Fallback Text"  # Simulate raw read success
+
+    page.get_text.side_effect = side_effect
+
+    return page
 
 
 @pytest.fixture(scope="function")
@@ -356,84 +490,6 @@ def mock_silence_logfire_and_otel_in_tests(monkeypatch: pytest.MonkeyPatch) -> N
             monkeypatch.setattr(
                 logfire, name, (lambda *args, **kwargs: None), raising=False
             )
-
-
-@pytest.fixture(scope="function")
-def mock_write_to_json(monkeypatch: pytest.MonkeyPatch) -> InstallWriteJsonMock:
-    """Mock `write_to_json` into a target module, writing JSON to disk and capturing
-    calls.
-
-    Usage:
-        calls = mock_write_to_json(target_module, dump_kwargs={"indent": 2})
-
-        # Run code that calls target_module.write_to_json(fp, payload)
-        assert calls[0]["fp"].exists()
-        assert json.loads(calls[0]["text"]) == calls[0]["payload"]
-
-    Parameters
-    ----------
-    monkeypatch
-        Pytest monkeypatch fixture.
-
-    Returns
-    -------
-    InstallWriteJsonMock
-        The installer function that patches `write_to_json` in the target module.
-    """
-
-    calls: list[WriteCall] = []
-
-    def install(
-        target_module: ModuleType,
-        *,
-        dump_kwargs: Optional[dict[str, Any]] = None,
-        ensure_parent: bool = True,
-    ) -> list[WriteCall]:
-        """Patch `target_module.write_to_json` with a fake that writes JSON to disk and
-        records each call.
-
-        Parameters
-        ----------
-        target_module
-            The module where to patch `write_to_json`.
-        dump_kwargs
-            Optional keyword arguments to pass to `json.dump` when writing the file.
-        ensure_parent
-            Whether to ensure the parent directory exists before writing the file.
-
-        Returns
-        -------
-        list[WriteCall]
-            The list that will capture the call arguments.
-        """
-
-        dump_kwargs = dump_kwargs or {}
-
-        def fake_write_to_json(fp: Path, payload: dict[str, Any]) -> None:
-            """A fake `write_to_json` that writes the payload to disk and captures the
-            call arguments.
-
-            Parameters
-            ----------
-            fp
-                File path to write the JSON payload.
-            payload
-                The JSON-serializable payload to write.
-            """
-
-            if ensure_parent:
-                fp.parent.mkdir(parents=True, exist_ok=True)
-            text = json.dumps(payload, **dump_kwargs)
-            fp.write_text(text, encoding="utf-8")
-            calls.append(WriteCall(fp=fp, payload=payload, text=text))
-
-        # NB: patch where it's imported/used (the module under test), not the original
-        # definition.
-        monkeypatch.setattr(target_module, "write_to_json", fake_write_to_json)
-
-        return calls
-
-    return install
 
 
 # Conftest helpers.

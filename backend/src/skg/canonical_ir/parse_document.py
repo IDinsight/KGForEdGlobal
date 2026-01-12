@@ -42,7 +42,7 @@ from skg.canonical_ir.utils import (
     normalize_table_grid,
 )
 from skg.document_ir.schemas import DocumentIR
-from skg.page_ir.schemas import TextUnit
+from skg.extract_page_ir.schemas import TextUnit
 from skg.utils.constants import BlockType, StatementRole
 
 

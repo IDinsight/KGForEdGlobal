@@ -11,46 +11,7 @@ from typing import Optional
 # Third Party Library
 import pymupdf
 
-from PIL import Image
-
-
-def _add_section_for_text_layer_hint(
-    *,
-    items: list[tuple[float, float, float, str]],
-    limit: int,
-    out: list[str],
-    sx: float,
-    sy: float,
-    title: str,
-) -> None:
-    """Add a section to the text layer hint output.
-
-    Parameters
-    ----------
-    items
-        The list of items (y0, x0, size, text).
-    limit
-        Maximum number of items to include.
-    out
-        The output list to append to.
-    sx
-        Scale factor for x coordinates.
-    sy
-        Scale factor for y coordinates.
-    title
-        The section title.
-    """
-
-    if not items:
-        return
-
-    out.append(f"## {title}")
-
-    for y0, x0, size, txt in items[:limit]:
-        # Truncate individual lines to keep digest compact.
-        if len(txt) > 220:
-            txt = txt[:220].rstrip() + "..."
-        out.append(f"[x={x0 * sx:.1f} y={y0 * sy:.1f} sz={size:.1f}] {txt}")
+from PIL import Image, ImageStat
 
 
 def _has_boundary_evidence(*, img: Image.Image, mode: str) -> bool:
@@ -115,6 +76,42 @@ def _has_boundary_evidence(*, img: Image.Image, mode: str) -> bool:
 
     # If it looks like a blank region, we have no evidence.
     return not (dark_frac < 0.006 and std < 14.0 and mean > 210.0)
+
+
+def add_section_for_text_hint(
+    *,
+    items: list[tuple[float, float, float, str]],
+    limit: int,
+    output: list[str],
+    sx: float,
+    sy: float,
+    title: str,
+) -> None:
+    """Add a section to the output.
+
+    Parameters
+    ----------
+    items
+        The list of items (y, x, size, text).
+    limit
+        Maximum number of items to include.
+    output
+        The output list to append to.
+    sx
+        Scale factor for x-coordinates.
+    sy
+        Scale factor for y-coordinates.
+    title
+        The section title.
+    """
+
+    if not items:
+        return
+
+    output.append(f"## {title}")
+    for y, x, s, t in items[:limit]:
+        t = t[:220].rstrip() + "..." if len(t) > 220 else t
+        output.append(f"[x={x * sx:.1f} y={y * sy:.1f} sz={s:.1f}] {t}")
 
 
 def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
@@ -329,10 +326,19 @@ def extract_text_layer_hints(
     """Extract layout-aware text layer hints from a PDF page.
 
     NB:
-      - Uses get_text("dict") for per-line positions and font sizes
-      - Converts PDF coordinates to rendered PNG pixel coords using image dims
-      - Produces a compact digest: headings/header/footer/top/bottom body
-      - Adds optional column x-peaks from word positions
+      - Uses get_text("dict") for per-line positions and font sizes.
+      - Converts PDF coordinates to rendered PNG pixel coords using image dimensions.
+      - Produces a compact digest: headings/header/footer/top/bottom body.
+      - Adds optional column x-peaks from word positions.
+
+    The process is as follows:
+
+    1. Extract raw text blocks and setup scaling from PDF points to image pixels.
+    2. Flatten structure into simple lines: (y, x, size, text).
+    3. If no lines found, fallback to raw text extraction.
+    4. Categorize lines (Headings, Header, Footer, Body) using heuristics.
+    5. Detect column X-peaks.
+    6. Build output.
 
     Parameters
     ----------
@@ -355,162 +361,155 @@ def extract_text_layer_hints(
         The extracted text layer hints, or None if no text found.
     """
 
+    # 1.
     page = doc.load_page(page_index)
+    blocks = page.get_text("dict").get("blocks", [])
+    sx = image_width / page.rect.width
+    sy = image_height / page.rect.height
 
-    # Pull structured text.
-    d = page.get_text("dict")
-    blocks = d.get("blocks") if isinstance(d, dict) else None
+    # 2.
+    lines = []
+    for b in (b for b in blocks if b["type"] == 0):
+        for line in b["lines"]:
+            # Merge spans to get full line text and max font size.
+            text = " ".join("".join(s["text"] for s in line["spans"]).split())
+            if not text:
+                continue
+            size = max((s["size"] for s in line["spans"]), default=0)
+            lines.append((line["bbox"][1], line["bbox"][0], size, text))
 
-    # Try plain text as fallback.
-    if not blocks:
+    # 3.
+    if not lines:
+        # Fallback to raw text if structured extraction fails.
         fallback = (page.get_text("text") or "").strip()
         return (
-            fallback[:max_chars]
-            + ("\n...[truncated]" if len(fallback) > max_chars else "")
+            fallback[:max_chars] + ("..." if len(fallback) > max_chars else "")
             if fallback
             else None
         )
 
-    # Coordinate conversion from PDF units to pixels.
-    page_w, page_h = float(page.rect.width), float(page.rect.height)
-    sx, sy = float(image_width) / page_w, float(image_height) / page_h
+    lines.sort()  # Sort by Y then X
 
-    # Collect line items: (y0, x0, max_font_size, text).
-    lines: list[tuple[float, float, float, str]] = []
-    for b in (b for b in blocks if b.get("type") == 0):
-        for ln in b.get("lines", []):
-            spans = ln.get("spans", [])
+    # 4.
+    h_y, f_y = page.rect.height * 0.08, page.rect.height * 0.92
 
-            # Join span texts in order.
-            text = " ".join("".join(s.get("text", "") for s in spans).split())
+    header = [line for line in lines if line[0] <= h_y]
+    footer = [line for line in lines if line[0] >= f_y]
+    body = [line for line in lines if h_y < line[0] < f_y]
 
-            if not text:
-                continue
+    # Heuristic: Headings are top 10% sizes (min 11.5).
+    sizes = sorted([line[2] for line in lines if line[2] > 0])
+    p90 = sizes[int(0.9 * (len(sizes) - 1))] if sizes else 0
+    headings = sorted(
+        [line for line in lines if line[2] >= max(p90, 11.5)],
+        key=lambda x: (-x[2], x[0]),
+    )
 
-            # Font size heuristic: take max span size in the line.
-            max_size = max((float(s.get("size", 0.0)) for s in spans), default=0.0)
-            bbox = ln.get("bbox") or b.get("bbox")
-            x0, y0 = (float(bbox[0]), float(bbox[1])) if bbox else (0.0, 0.0)
-            lines.append((y0, x0, max_size, text))
-
-    if not lines:
-        return None
-
-    # Stable visual order.
-    lines.sort(key=lambda t: (t[0], t[1]))
-
-    # Identify regions by y band (in PDF coordinates).
-    header_y, footer_y = 0.08 * page_h, 0.92 * page_h
-    header = [t for t in lines if t[0] <= header_y]
-    footer = [t for t in lines if t[0] >= footer_y]
-    body = [t for t in lines if header_y < t[0] < footer_y]
-
-    # Heading candidates: pick top font sizes (percentile-ish) without heavy heuristics.
-    sizes = sorted([t[2] for t in lines if t[2] > 0.0])
-    p90 = sizes[int(0.90 * (len(sizes) - 1))] if sizes else 0.0
-
-    # Column x-peaks (optional): helps multi-column reading order.
-    col_peaks: list[float] = []
-    words = page.get_text("words") or []
-
-    # Only compute peaks if we have enough signal.
-    if len(words) >= 80 or len(lines) >= 20:
-        # words: (x0, y0, x1, y1, "word", block_no, line_no, word_no).
-        bin_w = 20.0
-        xs = [float(w[0]) for w in words if len(w) >= 1]
-        bins = [int(x // bin_w) for x in xs]
-        top_bins = [b for b, _ in Counter(bins).most_common(3)]
-        col_peaks = [b * bin_w for b in top_bins]
-
-    out = [
+    # 5.
+    output = [
         f"PAGE_TEXT_LAYER_DIGEST dims={image_width}x{image_height}px lines={len(lines)}"
     ]
-    if col_peaks:
-        out.append(
-            f"COLUMN_X0_PEAKS_PX={', '.join(f'{p:.1f}' for p in [p * sx for p in col_peaks])}"
-        )
+    words = page.get_text("words")
+    if len(words) >= 80 or len(lines) >= 20:
+        # Bin x-coords by 20pt to find density peaks
+        bins = Counter(int(w[0] // 20) for w in words)
+        peaks = sorted([b * 20 for b, _ in bins.most_common(3)])
+        if peaks:
+            output.append(
+                f"COLUMN_X0_PEAKS_PX={', '.join(f'{p * sx:.1f}' for p in peaks)}"
+            )
 
-    _add_section_for_text_layer_hint(
-        items=sorted(
-            [t for t in lines if t[2] >= max(p90, 11.5)],
-            key=lambda t: (-t[2], t[0], t[1]),
-        ),
-        limit=min(12, max_lines_per_section),
-        out=out,
+    # 6.
+    add_section_for_text_hint(
+        items=headings,
+        limit=12,
+        output=output,
         sx=sx,
         sy=sy,
         title="HEADINGS_CANDIDATES",
     )
-    _add_section_for_text_layer_hint(
-        items=header,
-        limit=min(10, max_lines_per_section),
-        out=out,
-        sx=sx,
-        sy=sy,
-        title="HEADER_CANDIDATES",
+    add_section_for_text_hint(
+        items=header, limit=10, output=output, sx=sx, sy=sy, title="HEADER_CANDIDATES"
     )
-    _add_section_for_text_layer_hint(
-        items=footer,
-        limit=min(10, max_lines_per_section),
-        out=out,
-        sx=sx,
-        sy=sy,
-        title="FOOTER_CANDIDATES",
+    add_section_for_text_hint(
+        items=footer, limit=10, output=output, sx=sx, sy=sy, title="FOOTER_CANDIDATES"
     )
 
-    # Body lines: avoid duplicate TOP/BOTTOM on short pages.
     if len(body) <= max_lines_per_section:
-        _add_section_for_text_layer_hint(
+        add_section_for_text_hint(
             items=body,
             limit=max_lines_per_section,
-            out=out,
+            output=output,
             sx=sx,
             sy=sy,
             title="BODY_LINES",
         )
     else:
-        _add_section_for_text_layer_hint(
-            items=body[:max_lines_per_section],
+        add_section_for_text_hint(
+            items=body,
             limit=max_lines_per_section,
-            out=out,
+            output=output,
             sx=sx,
             sy=sy,
             title="TOP_BODY_LINES",
         )
-        _add_section_for_text_layer_hint(
+        add_section_for_text_hint(
             items=body[-max_lines_per_section:],
             limit=max_lines_per_section,
-            out=out,
+            output=output,
             sx=sx,
             sy=sy,
             title="BOTTOM_BODY_LINES",
         )
 
-    # Small raw excerpt fallback (kept short).
+    # Raw text fallback for flow.
     if raw := (page.get_text("text") or "").strip():
+        # Collapse spaces/tabs but preserve newlines to keep paragraph structure.
         raw = re.sub(r"[ \t]+", " ", raw)
-        raw = re.sub(r"\n{3,}", "\n\n", raw)
-        out.append("## RAW_TEXT_EXCERPT")
-        out.append(raw[:600].rstrip() + ("\n...[truncated]" if len(raw) > 600 else ""))
+        output.append(f"## RAW_TEXT_EXCERPT\n{raw[:600].strip()}...")
 
-    hint = "\n".join(out).strip()
-
-    return (
-        hint[:max_chars].rstrip() + "\n...[truncated]"
-        if len(hint) > max_chars
-        else hint
-    )
+    final_text = "\n".join(output)
+    if len(final_text) > max_chars:
+        return final_text[:max_chars].rstrip() + "\n...[truncated]"
+    return final_text
 
 
-def is_mostly_blank(*, png_fp: Path) -> bool:
-    """Check if the rendered page image is nearly blank (separator/intentional blank
-    page). Uses grayscale histogram statistics (no OCR).
+def is_mostly_blank(
+    *,
+    ink_luminance_threshold: int = 150,
+    max_ink_fraction: float = 0.005,
+    max_std_dev: float = 15.0,
+    min_mean_brightness: float = 200.0,
+    png_fp: Path,
+) -> bool:
+    """Check if the rendered page image is nearly blank using grayscale statistics.
 
     NB: If we cannot read the image properly, then the default behavior is to NOT treat
     the image as blank.
 
+    The process is as follows:
+
+    1. Convert to grayscale.
+    2. Crop borders (3% padding) to avoid scanner edge artifacts.
+    3. Crop bottom 8% to ignore footer/page numbers.
+    4. Downsample to max 600x600 for performance.
+    5. Calculate statistics: mean, stddev, ink coverage.
+    6. Calculate "ink" coverage from histogram by checking histogram for pixels darker
+         than the ink threshold.
+    7. Evaluate against thresholds.
+
     Parameters
     ----------
+    ink_luminance_threshold
+        Threshold for what counts as "ink" (0=black, 255=white). 150 avoids counting
+        light shadows/paper texture as text.
+    max_ink_fraction
+        Max fraction of pixels that can be "ink" for a page to be considered blank.
+        0.5% allows for a speck or two but not a word.
+    max_std_dev
+        Maximum standard deviation of pixel brightness to avoid high-contrast noise.
+    min_mean_brightness
+        Minimum mean brightness of the page background to avoid dark scans.
     png_fp
         The PNG file path of the page image.
 
@@ -522,48 +521,45 @@ def is_mostly_blank(*, png_fp: Path) -> bool:
 
     try:
         with Image.open(png_fp) as im:
+            # 1.
             im = im.convert("L")
             w, h = im.size
 
-            # Ignore outer border where crop marks/page frame lines live. 3% is usually
-            # enough at 200 DPI; use small values to avoid skipping real content.
+            # 2.
             pad_x = int(w * 0.03)
             pad_y = int(h * 0.03)
-            x0 = min(max(pad_x, 0), w - 1)
-            y0 = min(max(pad_y, 0), h - 1)
-            x1 = max(min(w - pad_x, w), x0 + 1)
-            y1 = max(min(h - pad_y, h), y0 + 1)
 
-            im = im.crop((x0, y0, x1, y1))
+            # Clamp coordinates to safe bounds
+            crop_box = (pad_x, pad_y, w - pad_x, h - pad_y)
+            im = im.crop(crop_box)
 
-            # Ignore bottom strip where page number boxes often sit. Keep 92% of the
-            # (already border-cropped) height.
+            # 3.
             bw, bh = im.size
-            bottom_keep = int(bh * 0.92)
-            if bottom_keep > 20:  # Avoid degenerate crops on tiny images
-                im = im.crop((0, 0, bw, bottom_keep))
+            if bh > 50:  # Only crop if we have enough height
+                im = im.crop((0, 0, bw, int(bh * 0.92)))
 
-            # Downsample aggressively for speed.
+            # 4.
             im.thumbnail((600, 600))
 
-            # Histogram over 0..255.
+            # 5.
+            stat = ImageStat.Stat(im)
+            mean = stat.mean[0]
+            std = stat.stddev[0]
+
+            # 6.
             hist = im.histogram()
-            total = float(sum(hist)) or 1.0
+            total_pixels = max(1, sum(hist))
 
-            # Fraction of "dark-ish" pixels (tuned to catch faint text but not crop
-            # marks). 0..199 are darker than mid-gray.
-            dark_frac = sum(hist[:200]) / total
+            # Sum pixels from black (0) up to threshold.
+            dark_pixels = sum(hist[:ink_luminance_threshold])
+            dark_frac = dark_pixels / total_pixels
 
-            # Contrast and brightness stats.
-            mean = sum(i * c for i, c in enumerate(hist)) / total
-            var = sum(((i - mean) ** 2) * c for i, c in enumerate(hist)) / total
-            std = var**0.5
-
-            # Conservative thresholds:
-            # - very low dark pixels
-            # - low contrast (std)
-            # - fairly light background
-            return dark_frac < 0.006 and std < 14.0 and mean > 210.0
+            # 7. Evaluate.
+            return (
+                dark_frac < max_ink_fraction
+                and std < max_std_dev
+                and mean > min_mean_brightness
+            )
     except Exception:  # pylint: disable=broad-except
         # If we can't read the image, don't treat it as blank.
         return False
@@ -581,25 +577,14 @@ def read_png_dimensions(*, png_fp: Path) -> tuple[int, int]:
     -------
     tuple[int, int]
         (width_px, height_px)
-
-    Raises
-    ------
-    ValueError
-        If the file is not a valid PNG.
     """
 
-    data = png_fp.read_bytes()
-
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise ValueError(f"Not a PNG file: {png_fp}")
-
-    width = int.from_bytes(data[16:20], "big")
-    height = int.from_bytes(data[20:24], "big")
-
+    with Image.open(png_fp) as img:
+        width, height = img.size
     return width, height
 
 
-def render_page_to_png(
+def render_and_save_page_to_png(
     *,
     doc: pymupdf.Document,
     dpi: int,
@@ -610,8 +595,8 @@ def render_page_to_png(
     visible on the page, consistently sized by DPI.
 
     NB: PDFs are typically 72 points/inch. So scale = dpi / 72 is the standard
-    conversion. So scaling via Matrix(scale, scale) gives us a predictable pixel size
-    and quality for downstream vision/OCR/LLM steps.
+    conversion. Scaling via Matrix(scale, scale) gives us a predictable pixel size and
+    quality for downstream vision/OCR/LLM steps.
 
     Parameters
     ----------
