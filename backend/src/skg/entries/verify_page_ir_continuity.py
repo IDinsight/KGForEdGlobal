@@ -36,9 +36,12 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.extract_page_ir.utils import load_page_irs_from_extraction
-from skg.page_ir.llm import verify_page_ir_continuity_verdict, verify_page_ir_pairs
-from skg.page_ir.utils import (
+from skg.page_ir_extraction.utils import load_page_irs_from_extraction
+from skg.page_ir_verification.llm import (
+    verify_page_ir_continuity_verdict,
+    verify_page_ir_pairs,
+)
+from skg.page_ir_verification.utils import (
     PageIRVerificationDirs,
     apply_continuity_edits,
     apply_non_continuity_edits,

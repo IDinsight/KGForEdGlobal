@@ -21,8 +21,8 @@ from tenacity import (
 )
 
 # Package Library
-from skg.extract_page_ir.validators import QualityError
-from skg.page_ir.schemas import PageIRContinuityVerdict
+from skg.page_ir_extraction.validators import QualityError
+from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.prompts.page_ir_verification import verify_page_ir_pairs_from_extraction
 from skg.schemas import Limits
 from skg.utils.general import encode_png_to_data_url

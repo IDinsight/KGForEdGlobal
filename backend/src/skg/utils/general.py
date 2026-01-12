@@ -14,7 +14,7 @@ import re
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # Third Party Library
 import langcodes
@@ -300,27 +300,45 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
-def stable_text_hash(text: Optional[str]) -> str:
-    """Return a deterministic SHA-256 hex digest of normalized text.
-
-    Normalization removes repeated whitespace and trims, so inconsequential formatting
-    changes don't change the hash.
+def validate_bbox_order(bbox: list[float]) -> list[float]:
+    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
 
     Parameters
     ----------
-    text
-        The input text to hash.
+    bbox
+        The bounding box to validate.
 
     Returns
     -------
-    str
-        The SHA-256 hex digest of the normalized text.
+    list[float]
+        The validated bounding box.
+
+    Raises
+    ------
+    ValueError
+        If the bounding box does not have exactly 4 numbers.
     """
 
-    if text is None:
-        text = ""
-    norm = re.sub(r"\s+", " ", str(text)).strip()
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+    if len(bbox) != 4:
+        raise ValueError(
+            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
+        )
+
+    x0, y0, x1, y1 = bbox
+
+    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
+    if x0 >= x1:
+        if x0 > x1:
+            x0, x1 = x1, x0
+        else:
+            x1 = x0 + 1.0
+    if y0 >= y1:
+        if y0 > y1:
+            y0, y1 = y1, y0
+        else:
+            y1 = y0 + 1.0
+
+    return [x0, y0, x1, y1]
 
 
 def validate_bcp47(code: str) -> str:

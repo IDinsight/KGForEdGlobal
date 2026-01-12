@@ -1,0 +1,15 @@
+{
+	"extraction": {
+    "country": "Zambia",
+		"dpi": 200,
+    "end_page": null,
+    "languages": ["en"],
+    "model": "gpt-5.2-2025-12-11",
+    "output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
+		"overwrite": false,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/zambia/zambia.pdf",
+    "start_page": 0,
+    "use_text_layer_hints": false,
+		"year": 2024
+	}
+}

@@ -1,5 +1,5 @@
-"""This module contains schemas used for extracting page Intermediate Representations
-(IRs).
+"""This module contains schemas used for **verifying** page Intermediate
+Representations (IRs).
 """
 
 # Future Library

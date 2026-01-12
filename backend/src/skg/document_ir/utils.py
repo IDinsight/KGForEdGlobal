@@ -22,11 +22,11 @@ from skg.document_ir.schemas import (
     TableSegment,
     TableSlice,
 )
-from skg.extract_page_ir.schemas import (
-    CurriculumBlock,
-    CurriculumTable,
+from skg.page_ir_extraction.schemas import (
+    Block,
     ListItem,
     PageIR,
+    Table,
     TableRow,
     TextUnit,
 )
@@ -40,7 +40,7 @@ from skg.utils.general import (
 )
 
 ItemKey = tuple[int, int]
-ChainItem = tuple[int, int, Union[CurriculumTable, CurriculumBlock]]
+ChainItem = tuple[int, int, Union[Table, Block]]
 
 
 @dataclass(frozen=True)
@@ -144,7 +144,7 @@ def _drop_repeated_header(
     *,
     base_header_rows: list[TableRow],
     header_row_count: int,
-    next_table: CurriculumTable,
+    next_table: Table,
 ) -> list[TableRow]:
     """Return next_table.rows with repeated header removed if warranted.
 
@@ -243,7 +243,7 @@ def _find_prev_candidates(items: list[Any]) -> tuple[list[int], list[int]]:
     return valid, rejected
 
 
-def _is_artifact_block(item: Union[CurriculumTable, CurriculumBlock]) -> bool:
+def _is_artifact_block(item: Union[Table, Block]) -> bool:
     """Return True if the item is an artifact block.
 
     Parameters
@@ -257,10 +257,10 @@ def _is_artifact_block(item: Union[CurriculumTable, CurriculumBlock]) -> bool:
         True if the item is an artifact block.
     """
 
-    return isinstance(item, CurriculumBlock) and item.block_type == BlockType.ARTIFACT
+    return isinstance(item, Block) and item.block_type == BlockType.ARTIFACT
 
 
-def _is_safe_interstitial_block(*, next_item: object, prior: CurriculumBlock) -> bool:
+def _is_safe_interstitial_block(*, next_item: object, prior: Block) -> bool:
     """Determine if it's safe to ignore 'prior' when stitching 'next_item'.
 
     Parameters
@@ -281,11 +281,11 @@ def _is_safe_interstitial_block(*, next_item: object, prior: CurriculumBlock) ->
     _table_figure_re = re.compile(r"^(table|figure)\s+\d+\b", re.IGNORECASE)
 
     # Allow captions immediately before tables.
-    if prior.block_type == BlockType.CAPTION and isinstance(next_item, CurriculumTable):
+    if prior.block_type == BlockType.CAPTION and isinstance(next_item, Table):
         return True
 
     # Allow obvious "continued" headings before a continued table/figure.
-    if prior.block_type == BlockType.HEADING and isinstance(next_item, CurriculumTable):
+    if prior.block_type == BlockType.HEADING and isinstance(next_item, Table):
         txt = (prior.text.text if prior.text else "").strip()
 
         if _continued_re.search(txt):
@@ -387,8 +387,8 @@ def _match_candidates(
 
 def _match_score(
     *,
-    next_item: Union[CurriculumTable, CurriculumBlock],
-    prev_item: Union[CurriculumTable, CurriculumBlock],
+    next_item: Union[Table, Block],
+    prev_item: Union[Table, Block],
 ) -> int:
     """Score a potential continuation match (higher is better).
 
@@ -405,9 +405,7 @@ def _match_score(
         The match score.
     """
 
-    if isinstance(prev_item, CurriculumTable) and isinstance(
-        next_item, CurriculumTable
-    ):
+    if isinstance(prev_item, Table) and isinstance(next_item, Table):
         score = 0
         if (
             prev_item.local_code
@@ -423,9 +421,7 @@ def _match_score(
             score += 1
         return score
 
-    if isinstance(prev_item, CurriculumBlock) and isinstance(
-        next_item, CurriculumBlock
-    ):
+    if isinstance(prev_item, Block) and isinstance(next_item, Block):
         score = 0
         if prev_item.block_type == next_item.block_type:
             score += 2
@@ -442,9 +438,9 @@ def _match_score(
 
 def _next_candidate_is_safe_to_stitch(
     *,
-    next_item: Union[CurriculumTable, CurriculumBlock],
+    next_item: Union[Table, Block],
     next_item_idx: int,
-    next_page_items: list[tuple[int, Union[CurriculumTable, CurriculumBlock]]],
+    next_page_items: list[tuple[int, Union[Table, Block]]],
 ) -> bool:
     """Determine if it's safe to stitch to the next-page candidate. Only stitch to a
     next-page candidate if nothing non-artifact precedes it. Otherwise stitching would
@@ -470,7 +466,7 @@ def _next_candidate_is_safe_to_stitch(
         if _is_artifact_block(prior):
             continue
 
-        if isinstance(prior, CurriculumBlock) and _is_safe_interstitial_block(
+        if isinstance(prior, Block) and _is_safe_interstitial_block(
             next_item=next_item, prior=prior
         ):
             continue
@@ -503,9 +499,9 @@ def _normalize_text(text: Optional[str]) -> str:
 
 def _prev_candidate_is_safe_to_stitch(
     *,
-    prev_item: Union[CurriculumTable, CurriculumBlock],
+    prev_item: Union[Table, Block],
     prev_item_idx: int,
-    prev_page_items: list[tuple[int, Union[CurriculumTable, CurriculumBlock]]],
+    prev_page_items: list[tuple[int, Union[Table, Block]]],
 ) -> bool:
     """Determine if it's safe to stitch from the previous-page candidate. Only stitch
     from a previous-page candidate if nothing non-artifact follows it. Exception: allow
@@ -531,8 +527,8 @@ def _prev_candidate_is_safe_to_stitch(
             continue
 
         if (
-            isinstance(prev_item, CurriculumTable)
-            and isinstance(later, CurriculumBlock)
+            isinstance(prev_item, Table)
+            and isinstance(later, Block)
             and later.block_type == BlockType.CAPTION
         ):
             continue
@@ -670,9 +666,7 @@ def _row_signature(row: TableRow) -> tuple[str, ...]:
 
 def assert_page_items_consumed_exactly_once(
     *,
-    items_with_idx: dict[
-        int, list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]
-    ],
+    items_with_idx: dict[int, list[tuple[int, Union[Table, Block]]]],
     segments: list[Segment],
     strict: bool = True,
     warnings: list[str],
@@ -775,7 +769,7 @@ def assert_page_items_consumed_exactly_once(
     warnings.append(msg)
 
 
-def block_segment_key(block: CurriculumBlock) -> str:
+def block_segment_key(block: Block) -> str:
     """Deterministic key for a block segment. For headings/captions, key still exists,
     but these should not be stitched by design.
 
@@ -805,9 +799,9 @@ def block_segment_key(block: CurriculumBlock) -> str:
 
 def build_continuation_chain(
     *,
-    items_lookup: dict[int, dict[int, Union[CurriculumTable, CurriculumBlock]]],
+    items_lookup: dict[int, dict[int, Union[Table, Block]]],
     links: dict[ItemKey, ItemKey],
-    start_item: Union[CurriculumTable, CurriculumBlock],
+    start_item: Union[Table, Block],
     start_key: ItemKey,
 ) -> tuple[list[ChainItem], list[str]]:
     """Follow links to build a list of items belonging to one logical segment.
@@ -885,8 +879,8 @@ def build_continuation_chain(
 
 def compatible_kinds_for_stitch(
     *,
-    next_item: Union[CurriculumTable, CurriculumBlock],
-    prev_item: Union[CurriculumTable, CurriculumBlock],
+    next_item: Union[Table, Block],
+    prev_item: Union[Table, Block],
 ) -> bool:
     """Return True if two items are stitch-compatible.
 
@@ -903,14 +897,10 @@ def compatible_kinds_for_stitch(
         True if the two items are stitch-compatible.
     """
 
-    if isinstance(prev_item, CurriculumTable) and isinstance(
-        next_item, CurriculumTable
-    ):
+    if isinstance(prev_item, Table) and isinstance(next_item, Table):
         return True
 
-    if isinstance(prev_item, CurriculumBlock) and isinstance(
-        next_item, CurriculumBlock
-    ):
+    if isinstance(prev_item, Block) and isinstance(next_item, Block):
         # Headings/captions should never be part of a stitched continuation, but we
         # keep this conservative check anyway.
         if prev_item.block_type in (BlockType.HEADING, BlockType.CAPTION):
@@ -953,9 +943,7 @@ def compute_page_break_links(
     """
 
     # Normalize pages to item lists (artifact-filtered)
-    normalized_pages: list[
-        list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]
-    ] = [
+    normalized_pages: list[list[tuple[int, Union[Table, Block]]]] = [
         normalize_page_items(keep_artifacts=keep_artifacts, page_ir=page_ir)
         for page_ir in page_irs
     ]
@@ -1169,10 +1157,8 @@ def materialize_segment(
 
     first_item = chain[0][2]
 
-    if isinstance(first_item, CurriculumTable):
-        table_chain = [
-            (pi, ii, it) for pi, ii, it in chain if isinstance(it, CurriculumTable)
-        ]
+    if isinstance(first_item, Table):
+        table_chain = [(pi, ii, it) for pi, ii, it in chain if isinstance(it, Table)]
         if len(table_chain) != len(chain):
             warnings.append(
                 f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone."
@@ -1181,9 +1167,7 @@ def materialize_segment(
             table_chain = [(page_index, item_index, first_item)]
         return stitch_table_chain(chain=table_chain, warnings=warnings)
 
-    block_chain = [
-        (pi, ii, it) for pi, ii, it in chain if isinstance(it, CurriculumBlock)
-    ]
+    block_chain = [(pi, ii, it) for pi, ii, it in chain if isinstance(it, Block)]
     if len(block_chain) != len(chain):
         warnings.append(
             f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone."
@@ -1194,7 +1178,7 @@ def materialize_segment(
 
 def normalize_page_items(
     *, keep_artifacts: bool, page_ir: PageIR
-) -> list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]:
+) -> list[tuple[int, Union[Table, Block]]]:
     """Normalize a PageIR items list for stitching.
 
     Parameters
@@ -1206,7 +1190,7 @@ def normalize_page_items(
 
     Returns
     -------
-    list[tuple[int, Union[CurriculumTable, CurriculumBlock]]]
+    list[tuple[int, Union[Table, Block]]]
         List of (item_index, item) tuples after normalization.
     """
 
@@ -1249,14 +1233,14 @@ def persist_stitching_run(
 
 
 def stitch_block_chain(
-    *, chain: list[tuple[int, int, CurriculumBlock]], repair_hyphenation: bool = True
+    *, chain: list[tuple[int, int, Block]], repair_hyphenation: bool = True
 ) -> BlockSegment:
     """Stitch a chain of block slices.
 
     Parameters
     ----------
     chain
-        List of (page_index, item_index, CurriculumBlock) tuples representing the
+        List of (page_index, item_index, Block) tuples representing the
         slices to stitch.
     repair_hyphenation
         If True, repair hyphenation at line breaks when combining text units.
@@ -1342,7 +1326,7 @@ def stitch_block_chain(
 
 
 def stitch_table_chain(
-    *, chain: list[tuple[int, int, CurriculumTable]], warnings: list[str]
+    *, chain: list[tuple[int, int, Table]], warnings: list[str]
 ) -> TableSegment:
     """Stitch a chain of table slices.
 
@@ -1358,7 +1342,7 @@ def stitch_table_chain(
     Parameters
     ----------
     chain
-        List of (page_index, item_index, CurriculumTable) tuples representing the
+        List of (page_index, item_index, Table) tuples representing the
         slices to stitch.
     warnings
         A list to append warning messages to.
@@ -1503,7 +1487,7 @@ def stitch_table_chain(
     )
 
 
-def table_schema_fingerprint(table: CurriculumTable) -> str:
+def table_schema_fingerprint(table: Table) -> str:
     """Create a stable fingerprint for a table's schema using header rows. Used for
     matching table continuations when local_code is missing.
 

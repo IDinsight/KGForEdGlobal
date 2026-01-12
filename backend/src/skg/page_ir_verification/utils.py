@@ -13,8 +13,8 @@ from typing import Any, Optional
 from loguru import logger
 
 # Package Library
-from skg.extract_page_ir.utils import is_resumed, is_truncated
-from skg.page_ir.schemas import PageIRContinuityVerdict
+from skg.page_ir_extraction.utils import is_resumed, is_truncated
+from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.schemas import RunCtx
 from skg.utils.constants import (
     BlockType,

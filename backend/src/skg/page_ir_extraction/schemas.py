@@ -24,49 +24,7 @@ from pydantic import (
 
 # Package Library
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
-from skg.utils.general import make_dir, validate_bcp47
-
-
-def validate_bbox_order(bbox: list[float]) -> list[float]:
-    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
-
-    Parameters
-    ----------
-    bbox
-        The bounding box to validate.
-
-    Returns
-    -------
-    list[float]
-        The validated bounding box.
-
-    Raises
-    ------
-    ValueError
-        If the bounding box does not have exactly 4 numbers.
-    """
-
-    if len(bbox) != 4:
-        raise ValueError(
-            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
-        )
-
-    x0, y0, x1, y1 = bbox
-
-    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
-    if x0 >= x1:
-        if x0 > x1:
-            x0, x1 = x1, x0
-        else:
-            x1 = x0 + 1.0
-    if y0 >= y1:
-        if y0 > y1:
-            y0, y1 = y1, y0
-        else:
-            y1 = y0 + 1.0
-
-    return [x0, y0, x1, y1]
-
+from skg.utils.general import make_dir, validate_bbox_order, validate_bcp47
 
 # Common fields with descriptions.
 BBox = Annotated[
@@ -131,7 +89,7 @@ class TableRow(BaseModelPageIRExtraction):
     )
 
 
-class CurriculumTable(BaseModelPageIRExtraction):
+class Table(BaseModelPageIRExtraction):
     """Represents a tabular grid extracted from the page."""
 
     bbox: BBox
@@ -171,13 +129,13 @@ class CurriculumTable(BaseModelPageIRExtraction):
     )
 
     @model_validator(mode="after")
-    def validate_header_row_count(self) -> CurriculumTable:
+    def validate_header_row_count(self) -> Table:
         """Validate that header_row_count does not exceed number of rows.
 
         Returns
         -------
-        CurriculumTable
-            The passed in CurriculumTable.
+        Table
+            The passed in Table.
 
         Raises
         ------
@@ -198,13 +156,13 @@ class CurriculumTable(BaseModelPageIRExtraction):
         return self
 
     @model_validator(mode="after")
-    def validate_repeats_header_consistency(self) -> CurriculumTable:
+    def validate_repeats_header_consistency(self) -> Table:
         """Validate that repeats_header is only set when boundary is resumed/both.
 
         Returns
         -------
-        CurriculumTable
-            The passed in CurriculumTable.
+        Table
+            The passed in Table.
 
         Raises
         ------
@@ -293,7 +251,7 @@ class FigureUnit(BaseModelPageIRExtraction):
         return self
 
 
-class CurriculumBlock(BaseModelPageIRExtraction):
+class Block(BaseModelPageIRExtraction):
     """A grouping of text content (paragraph, heading, list, etc.)."""
 
     bbox: BBox
@@ -304,7 +262,8 @@ class CurriculumBlock(BaseModelPageIRExtraction):
             f"Semantic continuity of this block across page boundaries: "
             f"'{ItemBoundary.RESUMED.value}' if it continues from the previous page; "
             f"'{ItemBoundary.TRUNCATED.value}' if it continues onto the next page; "
-            f"'{ItemBoundary.BOTH.value}' if both; otherwise '{ItemBoundary.COMPLETE.value}'."
+            f"'{ItemBoundary.BOTH.value}' if both; "
+            f"otherwise '{ItemBoundary.COMPLETE.value}'."
         ),
     )
     figure: Optional[FigureUnit] = Field(
@@ -318,7 +277,7 @@ class CurriculumBlock(BaseModelPageIRExtraction):
     )
     local_code: Optional[str] = Field(
         None,
-        description="Explicit curriculum code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim.",
+        description="Explicit code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim.",
     )
     text: Optional[TextUnit] = Field(
         None,
@@ -326,13 +285,13 @@ class CurriculumBlock(BaseModelPageIRExtraction):
     )
 
     @model_validator(mode="after")
-    def validate_block_type_figure(self) -> CurriculumBlock:
+    def validate_block_type_figure(self) -> Block:
         """Validate figure block types.
 
         Returns
         -------
-        CurriculumBlock
-            The passed in CurriculumBlock.
+        Block
+            The passed in Block.
 
         Raises
         ------
@@ -345,41 +304,35 @@ class CurriculumBlock(BaseModelPageIRExtraction):
         # Figure blocks: figure required; text/list_items must be null.
         if bt == BlockType.FIGURE:
             if self.figure is None:
-                raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' requires figure metadata."
-                )
+                raise ValueError(f"Block block_type='{bt}' requires figure metadata.")
             if self.text is not None:
-                raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' requires text=null."
-                )
+                raise ValueError(f"Block block_type='{bt}' requires text=null.")
             if self.list_items is not None:
-                raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' requires list_items=null."
-                )
+                raise ValueError(f"Block block_type='{bt}' requires list_items=null.")
             if (
                 isinstance(self.figure.alt_text, str)
                 and not self.figure.alt_text.strip()
             ):
                 raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' has figure.alt_text that is an "
+                    f"Block block_type='{bt}' has figure.alt_text that is an "
                     f"empty string (or whitespace only)."
                 )
             if self.figure.caption is not None and not self.figure.caption.text.strip():
                 raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' has figure.caption.text that "
+                    f"Block block_type='{bt}' has figure.caption.text that "
                     f"is an empty string (or whitespace only)."
                 )
 
         return self
 
     @model_validator(mode="after")
-    def validate_block_type_list(self) -> CurriculumBlock:
+    def validate_block_type_list(self) -> Block:
         """Validate list block types.
 
         Returns
         -------
-        CurriculumBlock
-            The passed in CurriculumBlock.
+        Block
+            The passed in Block.
 
         Raises
         ------
@@ -393,27 +346,23 @@ class CurriculumBlock(BaseModelPageIRExtraction):
         if bt == BlockType.LIST:
             if not self.list_items:
                 raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' requires non-empty list_items."
+                    f"Block block_type='{bt}' requires non-empty list_items."
                 )
             if self.text is not None:
-                raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' requires text=null."
-                )
+                raise ValueError(f"Block block_type='{bt}' requires text=null.")
             if self.figure is not None:
-                raise ValueError(
-                    f"CurriculumBlock block_type='{bt}' requires figure=null."
-                )
+                raise ValueError(f"Block block_type='{bt}' requires figure=null.")
 
         return self
 
     @model_validator(mode="after")
-    def validate_block_type_other(self) -> CurriculumBlock:
+    def validate_block_type_other(self) -> Block:
         """Validate other block types.
 
         Returns
         -------
-        CurriculumBlock
-            The passed in CurriculumBlock.
+        Block
+            The passed in Block.
 
         Raises
         ------
@@ -429,15 +378,11 @@ class CurriculumBlock(BaseModelPageIRExtraction):
         # Everything else (artifact/caption/heading/paragraph): text required;
         # list_items/figure must be null.
         if self.text is None or not self.text.text.strip():
-            raise ValueError(
-                f"CurriculumBlock block_type='{bt}' requires non-empty text."
-            )
+            raise ValueError(f"Block block_type='{bt}' requires non-empty text.")
         if self.list_items is not None:
-            raise ValueError(
-                f"CurriculumBlock block_type='{bt}' requires list_items=null."
-            )
+            raise ValueError(f"Block block_type='{bt}' requires list_items=null.")
         if self.figure is not None:
-            raise ValueError(f"CurriculumBlock block_type='{bt}' requires figure=null.")
+            raise ValueError(f"Block block_type='{bt}' requires figure=null.")
 
         return self
 
@@ -470,7 +415,7 @@ class PageIR(BaseModelPageIRExtraction):
         None,
         description="Width of the source image in pixels. This should be populated by the Python pipeline; it may be null during extraction.",
     )
-    items: list[Union[CurriculumTable, CurriculumBlock]] = Field(
+    items: list[Union[Table, Block]] = Field(
         ...,
         description="Ordered list of content items found on the page, sorted by visual reading order (e.g., multi-column left-to-right, then down)",
     )
@@ -535,10 +480,7 @@ class PageIR(BaseModelPageIRExtraction):
         table_code_re = re.compile(r"(?i)^\s*table\s+\d+(?:\.\d+)*\b")
 
         for i, cur in enumerate(self.items):
-            if (
-                not isinstance(cur, CurriculumBlock)
-                or cur.block_type != BlockType.CAPTION
-            ):
+            if not isinstance(cur, Block) or cur.block_type != BlockType.CAPTION:
                 continue
 
             code = (cur.local_code or "").strip()
@@ -550,10 +492,7 @@ class PageIR(BaseModelPageIRExtraction):
             j = i + 1
             while j < len(self.items):
                 nxt = self.items[j]
-                if (
-                    isinstance(nxt, CurriculumBlock)
-                    and nxt.block_type == BlockType.ARTIFACT
-                ):
+                if isinstance(nxt, Block) and nxt.block_type == BlockType.ARTIFACT:
                     j += 1
                     continue
                 break
@@ -562,7 +501,7 @@ class PageIR(BaseModelPageIRExtraction):
                 continue
 
             nxt = self.items[j]
-            if isinstance(nxt, CurriculumTable):
+            if isinstance(nxt, Table):
                 if not (nxt.local_code or "").strip():
                     nxt.local_code = code
 
@@ -580,14 +519,15 @@ class ExtractionConfig(BaseModelPageIRExtraction):
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default: to end."
     )
-    languages: list[str] = Field(
+    languages: list[LanguageField] = Field(
         ...,
         description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
+        min_length=1,
     )
     model: str = Field(
         "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
     )
-    output_dir: Path = Field(default=..., description="Output directory root.")
+    output_dir: Path = Field(..., description="Output directory root.")
     overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
     pdf_fp: FilePath = Field(
         ...,

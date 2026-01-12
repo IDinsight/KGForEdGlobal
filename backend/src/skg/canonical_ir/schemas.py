@@ -15,7 +15,7 @@ from typing import Any, Literal, Optional, Sequence
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Package Library
-from skg.extract_page_ir.schemas import TextUnit
+from skg.page_ir_extraction.schemas import TextUnit
 from skg.utils.constants import StatementRole
 
 

@@ -1,6 +1,9 @@
 """This module contains functionalities related to LLM calls for page IR **extraction**."""
 
 # Standard Library
+import json
+
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,13 +24,14 @@ from tenacity import (
 )
 
 # Package Library
-from skg.extract_page_ir.schemas import PageIR
-from skg.extract_page_ir.validators import (
+from skg.page_ir_extraction.schemas import PageIR
+from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
     QualityError,
     validate_artifacts_are_true_artifacts,
     validate_basic_block_invariants,
     validate_continuity_for_extraction,
+    validate_figure_blocks_are_well_formed,
     validate_full_page_bboxes,
     validate_gross_reading_order,
     validate_image_dimensions,
@@ -35,6 +39,7 @@ from skg.extract_page_ir.validators import (
     validate_no_whitespace_or_empty_blocks,
     validate_placeholder_bboxes,
     validate_table_integrity,
+    validate_table_spans_are_sane,
 )
 from skg.prompts.page_ir_extraction import extract_page_ir_from_pdf_page
 from skg.schemas import Limits
@@ -63,11 +68,14 @@ openai_client = OpenAI()
 )
 def _call_openai_api_for_page_ir_extraction(
     *,
+    attempt: int,
     image_height: int,
     image_width: int,
     input_items: list[Any],
     instructions: str,
     model: str,
+    page_index: int,
+    raw_page_irs_dir: Path,
 ) -> PageIR:
     """Wrapper for extraction API calls with retries.
 
@@ -83,6 +91,8 @@ def _call_openai_api_for_page_ir_extraction(
         The extraction instructions to include.
     model
         The OpenAI model to use.
+    raw_page_irs_dir
+        Directory to save raw page IR extraction artifacts.
 
     Returns
     -------
@@ -109,7 +119,7 @@ def _call_openai_api_for_page_ir_extraction(
 
     # Capture the raw text if parsing/validation fails.
     if parsed is None:
-        raise QualityError(
+        qe = QualityError(
             (
                 f"Responses.parse returned no parsed output. output_text={output_text!r}"
                 if output_text
@@ -117,24 +127,112 @@ def _call_openai_api_for_page_ir_extraction(
             ),
             failed_content=output_text,  # Pass text back to caller
         )
+        _persist_page_ir_attempt_artifacts(
+            attempt=attempt,
+            error=qe,
+            model=model,
+            output_text=output_text,
+            page_index=page_index,
+            parsed=None,
+            raw_page_irs_dir=raw_page_irs_dir,
+        )
+        raise qe
 
-    # Even if parsing succeeded, enforce quality checks. NB: populate image dimensions
-    # so PageIR's clamp validator can run.
+    # Populate image dimensions so PageIR's clamp validator can run later.
     parsed.image_width = image_width
     parsed.image_height = image_height
-
-    # Clamp any slightly out-of-bounds bboxes now that dimensions are known.
-    parsed.clamp_bboxes_within_image()
 
     try:
         verify_page_ir_extraction_quality(
             image_height=image_height, image_width=image_width, page_ir=parsed
         )
     except QualityError as e:
+        _persist_page_ir_attempt_artifacts(
+            attempt=attempt,
+            error=e,
+            model=model,
+            output_text=output_text,
+            page_index=page_index,
+            parsed=parsed,
+            raw_page_irs_dir=raw_page_irs_dir,
+        )
+
         # Attach the raw output so the correction attempt can see what it wrote.
         raise QualityError(str(e), failed_content=output_text) from e
 
+    _persist_page_ir_attempt_artifacts(
+        attempt=attempt,
+        error=None,
+        model=model,
+        output_text=output_text,
+        page_index=page_index,
+        parsed=parsed,
+        raw_page_irs_dir=raw_page_irs_dir,
+    )
+
     return parsed
+
+
+def _persist_page_ir_attempt_artifacts(
+    *,
+    attempt: int,
+    error: Exception | None,
+    model: str,
+    output_text: str | None,
+    page_index: int,
+    parsed: PageIR | None,
+    raw_page_irs_dir: Path,
+) -> None:
+    """Persist raw artifacts from a page IR extraction attempt.
+
+    Parameters
+    ----------
+    attempt
+        The attempt number (0-based).
+    error
+        The error encountered (if any).
+    model
+        The OpenAI model used.
+    output_text
+        The raw output text from the model (if any).
+    page_index
+        The 0-based page index.
+    parsed
+        The parsed PageIR object (if any).
+    raw_page_irs_dir
+        Directory to save raw page IR extraction artifacts.
+    """
+
+    stem = f"{page_index:04d}.attempt{attempt:02d}"
+
+    if output_text is not None:
+        (raw_page_irs_dir / f"{stem}.output.txt").write_text(
+            output_text, encoding="utf-8"
+        )
+
+    if parsed is not None:
+        parsed_dict = parsed.model_dump(mode="json")
+        (raw_page_irs_dir / f"{stem}.parsed.json").write_text(
+            json.dumps(parsed_dict, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    if error is not None:
+        (raw_page_irs_dir / f"{stem}.error.txt").write_text(
+            f"{error.__class__.__name__}: {str(error)}", encoding="utf-8"
+        )
+
+    meta = {
+        "attempt": attempt,
+        "has_error": error is not None,
+        "has_output_text": output_text is not None,
+        "has_parsed": parsed is not None,
+        "model": model,
+        "page_index": page_index,
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    (raw_page_irs_dir / f"{stem}.meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def extract_page_ir(
@@ -147,6 +245,7 @@ def extract_page_ir(
     model: str,
     page_index: int,
     png_fp: Path,
+    raw_page_irs_dir: Path,
     text_layer_hints: Optional[str] = None,
     year: Optional[int] = None,
 ) -> PageIR:
@@ -170,6 +269,8 @@ def extract_page_ir(
         The 0-based page index.
     png_fp
         The PNG file path of the page image.
+    raw_page_irs_dir
+        Directory to save raw page IR extraction artifacts.
     text_layer_hints
         Optional text layer hints from the PDF.
     year
@@ -212,11 +313,14 @@ def extract_page_ir(
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api_for_page_ir_extraction(
+                attempt=attempt,
                 image_height=image_height,
                 image_width=image_width,
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
+                page_index=page_index,
+                raw_page_irs_dir=raw_page_irs_dir,
             )
         except QualityError as e:
             if attempt == max_retries:
@@ -342,8 +446,10 @@ def verify_page_ir_extraction_quality(
     validate_item_bboxes_required_and_in_bounds(ctx)
     validate_full_page_bboxes(ctx)
     validate_basic_block_invariants(ctx)
+    validate_figure_blocks_are_well_formed(ctx)
     validate_artifacts_are_true_artifacts(ctx)
     validate_table_integrity(ctx)
+    validate_table_spans_are_sane(ctx)
     validate_placeholder_bboxes(ctx)
     validate_continuity_for_extraction(ctx)
     validate_gross_reading_order(ctx)

@@ -12,7 +12,7 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.extract_page_ir.schemas import ExtractionConfig, PageIR
+from skg.page_ir_extraction.schemas import ExtractionConfig, PageIR
 from skg.schemas import RunCtx
 from skg.utils.constants import ItemBoundary, PageBoundaryState
 from skg.utils.general import make_dir, open_json_type, write_to_json
@@ -26,6 +26,7 @@ class PageIRExtractionDirs:
     root: Path
     page_images: Path
     page_irs: Path
+    page_irs_raw: Path
 
 
 def create_page_ir_extraction_dirs(
@@ -49,11 +50,14 @@ def create_page_ir_extraction_dirs(
     root = output_dir / doc_key / "extraction"
     page_images = root / "page_images"
     page_irs = root / "page_irs"
+    page_irs_raw = root / "page_irs_raw"
 
-    for p in [root, page_images, page_irs]:
+    for p in [root, page_images, page_irs, page_irs_raw]:
         make_dir(p)
 
-    return PageIRExtractionDirs(root=root, page_images=page_images, page_irs=page_irs)
+    return PageIRExtractionDirs(
+        root=root, page_images=page_images, page_irs=page_irs, page_irs_raw=page_irs_raw
+    )
 
 
 def derive_boundary_state_from_items(
@@ -72,14 +76,14 @@ def derive_boundary_state_from_items(
         The derived page boundary state.
     """
 
+    if not non_artifact_items:
+        return PageBoundaryState.STANDALONE
+
     # Only consider non-artifact items for continuity.
     non_artifacts = [item for _, item in non_artifact_items]
 
-    if not non_artifacts:
-        return PageBoundaryState.STANDALONE
-
-    any_from_prev = any(is_resumed(item.value) for item in non_artifacts)
-    any_to_next = any(is_truncated(item.value) for item in non_artifacts)
+    any_from_prev = any(is_resumed(item.boundary.value) for item in non_artifacts)
+    any_to_next = any(is_truncated(item.boundary.value) for item in non_artifacts)
 
     if any_from_prev and any_to_next:
         return PageBoundaryState.BOTH

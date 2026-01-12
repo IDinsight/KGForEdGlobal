@@ -13,8 +13,8 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.extract_page_ir.schemas import PageIR, TextUnit
-from skg.extract_page_ir.utils import (
+from skg.page_ir_extraction.schemas import PageIR, Table, TextUnit
+from skg.page_ir_extraction.utils import (
     derive_boundary_state_from_items,
     is_full_page_bbox,
     is_resumed,
@@ -83,6 +83,70 @@ class QualityError(Exception):
 
 
 # Extraction validators.
+def _validate_single_table(*, index: int, table: Table) -> None:
+    """Validate rows and global properties for a single table.
+
+    Parameters
+    ----------
+    index
+        The index of the table in items.
+    table
+        The table to validate.
+
+    Raises
+    ------
+    QualityError
+        If any table property is invalid.
+    """
+
+    n_rows, row_widths = len(table.rows), []
+
+    for r, row in enumerate(table.rows):
+        if not row.cells:
+            raise QualityError(f"Table row has no cells at items[{index}].rows[{r}].")
+
+        current_row_width = 0
+        for c, cell in enumerate(row.cells):
+            # Bounds: row_span can't run off the table.
+            if r + cell.row_span > n_rows:
+                raise QualityError(
+                    f"row_span exceeds table bounds at items[{index}].rows[{r}].cells[{c}]: "
+                    f"row_span={cell.row_span} but only {n_rows - r} rows remain."
+                )
+
+            # Empty merges: If a cell spans, it should carry content.
+            if (cell.row_span > 1 or cell.col_span > 1) and cell.text is None:
+                raise QualityError(
+                    f"Spanned cell must not have text=null at items[{index}].rows[{r}].cells[{c}] "
+                    f"(row_span={cell.row_span}, col_span={cell.col_span})."
+                )
+
+            # If n_cols is known, individual cell col_span can't exceed it.
+            if table.n_cols is not None and cell.col_span > table.n_cols:
+                raise QualityError(
+                    f"col_span exceeds n_cols at items[{index}].rows[{r}].cells[{c}]: "
+                    f"col_span={cell.col_span}, n_cols={table.n_cols}."
+                )
+
+            current_row_width += cell.col_span
+
+        # Validate total row width against n_cols.
+        if table.n_cols is not None and current_row_width > table.n_cols:
+            raise QualityError(
+                f"Row exceeds n_cols at items[{index}].rows[{r}]: "
+                f"sum(col_span)={current_row_width}, n_cols={table.n_cols}."
+            )
+
+        row_widths.append(current_row_width)
+
+    # Global table check: at least one row must reach n_cols.
+    if table.n_cols is not None and all(w < table.n_cols for w in row_widths):
+        raise QualityError(
+            f"Table.n_cols={table.n_cols} but no row reaches that width at items[{index}]. "
+            f"Row widths={row_widths}. This usually indicates missing cells or wrong n_cols."
+        )
+
+
 def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> None:
     """Reject cases where structural headings are mis-labeled as ARTIFACT.
 
@@ -261,6 +325,43 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
             f"{ItemBoundary.RESUMED.value}/{ItemBoundary.TRUNCATED.value} boundaries "
             f"on non-artifact items."
         )
+
+
+def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> None:
+    """Ensure figure blocks carry figure metadata and don't misuse text/list fields.
+
+    Parameters
+    ----------
+    ctx
+        The PageIR extraction quality context.
+
+    Raises
+    ------
+    QualityError
+        If any figure block is malformed.
+    """
+
+    for i, item in enumerate(ctx.items):
+        if item.kind != "block" or item.block_type != BlockType.FIGURE:
+            continue
+
+        if item.figure is None:
+            raise QualityError(
+                f"Figure block must have figure!=null at items[{i}].figure."
+            )
+
+        # Prompt should say figure blocks must not use block.text; embedded text goes
+        # in figure.embedded_text.
+        if item.text is not None:
+            raise QualityError(
+                f"Figure block must have text=null at items[{i}].text "
+                f"(put any visible text inside figure.embedded_text or as a separate caption block)."
+            )
+
+        if item.list_items is not None:
+            raise QualityError(
+                f"Figure block must have list_items=null at items[{i}].list_items."
+            )
 
 
 def validate_full_page_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
@@ -774,6 +875,36 @@ def validate_table_n_cols(*, index: int, max_eff: int, n_cols: Any) -> None:
             f"(sum of col_span) but n_cols={n_cols}. Either increase n_cols or "
             f"adjust/split/merge cells to match the visual grid."
         )
+
+
+def validate_table_spans_are_sane(ctx: PageIRExtractionQualityCtx) -> None:
+    """Validate that table row/col spans are within bounds and consistent.
+
+    Rules enforced (general, should work across PDFs):
+
+    1. row_span/col_span are >= 1 (already enforced by schema, but we rely on it).
+    2. A cell's row_span cannot run past the bottom of the table.
+    3. If table.n_cols is set:
+        - No row may exceed n_cols (sum of col_spans)
+        - At least one row must reach n_cols (otherwise the grid is likely incomplete)
+        - No individual cell may have col_span > n_cols
+    4. Spanned cells should not be "empty merges" (span > 1 with text=None) because
+        it’s often hallucination.
+
+    Parameters
+    ----------
+    ctx
+        The PageIR extraction quality context.
+
+    Raises
+    ------
+    QualityError
+        If any table span check fails.
+    """
+
+    for i, item in enumerate(ctx.items):
+        if item.kind == "table":
+            _validate_single_table(index=i, table=item)
 
 
 def validate_table_rows_nonempty(*, index: int, rows: list[Any]) -> None:
