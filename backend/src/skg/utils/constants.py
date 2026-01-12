@@ -201,70 +201,9 @@ class StatementRole(str, Enum):
     GUIDANCE = "guidance"  # Pedagogical guidance (activities/resources/teacher notes)
 
 
-class UnresolvedReason(str, Enum):
-    """Reasons why a segment decision could not be resolved."""
-
-    ID_COLLISION = "id_collision"
-    FLAGGED_UNRESOLVED = "flagged_unresolved"
-    LOW_CONFIDENCE_TABLE_MAPPING = "low_confidence_table_mapping"
-    LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED = (
-        "low_confidence_decision_not_materialized"
-    )
-    PARENT_CONFLICT = "parent_conflict"
-    UNMATCHED_BLOCK = "unmatched_block"
-    UNMATCHED_HEADING = "unmatched_heading"
-    UNMATCHED_TABLE = "unmatched_table"
-
-
-# Literals/sets/etc. for various constant types.
-CaptionFigurePrefixes: tuple[str, ...] = (
-    "fig",
-    "fig.",
-    "figure",
-    "kielelezo",
-    "mchoro",
-)
-CaptionKind = Literal["figure", "table", "unknown"]
-CaptionTablePrefixes: tuple[str, ...] = (
-    "jedwali",
-    "tab",
-    "tab.",
-    "table",
-    "tableau",
-    "tbl",
-    "tbl.",
-)
-
-# Context grouping role precedence (outer -> inner). Used to enforce consistent
-# ordering of SegmentDecision.context_groupings[] across segments and (especially)
-# across chunked table decisions.
-#
-# NB:
-# 1. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
-# 2. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
-# 3. Order matters here!
-CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
-    NodeRole.STAGE,
-    NodeRole.GRADE_LEVEL,
-    NodeRole.LEARNING_AREA,
-    NodeRole.SUBJECT,
-    NodeRole.STRAND,
-    NodeRole.SUBSTRAND,
-    NodeRole.THEME,
-    NodeRole.SUBTHEME,
-    NodeRole.TERM,
-    NodeRole.UNIT,
-    NodeRole.WEEK,
-    NodeRole.TOPIC,
-    NodeRole.SUBTOPIC,
-    NodeRole.SECTION,
-    NodeRole.PROSE,
-)
-CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
-    role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)
-}
+# Literals/sets for various constant types.
+CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
 NonArtifacts = {
-    "abbreviations and acronyms",
     "acknowledgements",
     "acknowledgments",
     "bibliography",
@@ -277,3 +216,15 @@ NonArtifacts = {
     "table of contents",
 }
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
+RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"]
+SectionBreakHeadings = {
+    "appendix",
+    "bibliography",
+    "contents",
+    "index",
+    "list of figures",
+    "list of tables",
+    "reference list",
+    "references",
+    "table of contents",
+}

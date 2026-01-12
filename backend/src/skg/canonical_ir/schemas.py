@@ -16,20 +16,8 @@ from typing import Literal, Optional, Self
 from pydantic import Field, model_validator
 
 # Package Library
-from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import BaseSchema, BBox
-from skg.utils.constants import (
-    CONTEXT_GROUPINGS_ROLE_ORDER,
-    BlockType,
-    CaptionKind,
-    GroupingCanonicalizationAction,
-    NodeRole,
-    SegmentDecisionType,
-    StatementRole,
-    UnresolvedReason,
-)
-
-ROLE_PRECEDENCE = {role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)}
+from skg.extract_page_ir.schemas import TextUnit
+from skg.utils.constants import StatementRole
 
 
 def compute_decision_set_id(

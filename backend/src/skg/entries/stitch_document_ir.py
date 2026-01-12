@@ -59,9 +59,7 @@ from skg.document_ir.utils import (
     save_document_ir,
     update_section_stack,
 )
-from skg.page_ir_extraction.schemas import Block, PageIR, Table
-from skg.page_ir_verification.utils import load_page_irs_from_verification
-from skg.schemas import RunConfig, RunCtx, StitchingConfig
+from skg.extract_page_ir.schemas import CurriculumBlock, CurriculumTable, PageIR
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 

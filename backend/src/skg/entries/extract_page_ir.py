@@ -3,7 +3,8 @@ Representations (IRs) from raw PDF pages. This is step 1.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_page_ir.py ../examples/tanzania/config.json
+python src/skg/entries/extract_page_ir.py ../examples/tanzania/tanzania/pdf
+python src/skg/entries/extract_page_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en -l sw -l fr -l zh-Hans -l ar -o ../results
 """
 
 # Standard Library
@@ -28,10 +29,9 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.page_ir_extraction.llm import extract_page_ir
-from skg.page_ir_extraction.schemas import PageIR
-from skg.page_ir_extraction.utils import PageIRExtractionDirs, persist_extraction_run
-from skg.schemas import ExtractionConfig, RunConfig
+from skg.extract_page_ir.llm import extract_page_ir
+from skg.extract_page_ir.schemas import ExtractionConfig, PageIR
+from skg.extract_page_ir.utils import PageIRExtractionDirs, persist_extraction_run
 from skg.utils.constants import PageBoundaryState
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import (
@@ -124,11 +124,10 @@ def extract_page_by_page(
                 image_width=image_width,
                 items=[],
                 page_index=page_index,
-                pdf_name=config.pdf_fp.name,
+                pdf_name=config.pdf_name,
             )
         else:
             page_ir = extract_page_ir(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
                 country=config.country,
                 image_height=image_height,
                 image_width=image_width,
@@ -172,31 +171,28 @@ def extract(
 
     The process is as follows:
 
-    1. Validate page range against PDF document.
-    2. Persist extraction run metadata so we always have an extraction run record.
-    3. Extract page-by-page IR components and save to file.
+    1. Persist extraction run metadata so we always have an extraction run record.
+    2. Validate page range against PDF document.
+    3. Extract page-by-page IR components.
+    4. Finalize extraction run record.
 
     Parameters
     ----------
     config_fp
         The file path to the global config file for the pipeline.
-
-    Raises
-    ------
-    Exception
-        If any error occurs during extraction.
     """
 
-    config = RunConfig.model_validate(open_json_type(config_fp)).page_ir_extraction
+    # 1.
+    config = ExtractionConfig.model_validate(open_json_type(config_fp)["extraction"])
+    doc_key, extraction_dirs, extraction_run = persist_extraction_run(config=config)
+    logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
-    with pymupdf.open(str(config.pdf_fp)) as doc:
-        # 1.
-        _, end_page = validate_page_count(
-            doc=doc, end_page=config.end_page, start_page=config.start_page
-        )
-
-        # 2.
-        doc_key, extraction_dirs, extraction_run = persist_extraction_run(config=config)
+    try:
+        with pymupdf.open(str(config.pdf_fp)) as doc:
+            # 2.
+            _, end_page = validate_page_count(
+                doc=doc, end_page=config.end_page, start_page=config.start_page
+            )
 
         try:
             # 3.

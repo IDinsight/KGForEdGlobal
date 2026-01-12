@@ -11,11 +11,71 @@ from typing import Optional
 # Third Party Library
 import pymupdf
 
-from loguru import logger
 from PIL import Image, ImageStat
 
-# Package Library
-from skg.utils.general import make_dir
+
+def _has_boundary_evidence(*, img: Image.Image, mode: str) -> bool:
+    """Check if a cropped image has visual evidence near the boundary seam.
+
+    Valid modes are:
+      - "bottom": We care about the TOP of the crop (tail of prev-page candidate)
+      - "top": We care about the BOTTOM of the crop (head of next-page candidate)
+
+    Parameters
+    ----------
+    img
+        The cropped PIL Image to analyze.
+    mode
+        The mode ("bottom" or "top").
+
+    Returns
+    -------
+    bool
+        True if the image has boundary evidence, False if it looks blankish.
+    """
+
+    assert mode in {
+        "bottom",
+        "top",
+    }, f"Invalid mode: {mode}. Valid modes are 'bottom' and 'top'."
+
+    img = img.convert("L")
+    w, h = img.size
+
+    if w <= 0 or h <= 0:
+        return True  # Don't treat as blank/evidence-free
+
+    # Focus on the seam-evidence band, not the whole crop.
+    band_frac = 0.65
+    img = (
+        img.crop((0, 0, w, max(1, int(h * band_frac))))
+        if mode == "bottom"
+        else img.crop((0, max(0, int(h * (1.0 - band_frac))), w, h))
+    )
+
+    # Ignore outer border where crop marks/page frame lines usually are.
+    bw, bh = img.size
+    pad_x = int(bw * 0.03)
+    pad_y = int(bh * 0.03)
+    x0 = min(max(pad_x, 0), bw - 1)
+    y0 = min(max(pad_y, 0), bh - 1)
+    x1 = max(min(bw - pad_x, bw), x0 + 1)
+    y1 = max(min(bh - pad_y, bh), y0 + 1)
+    im = img.crop((x0, y0, x1, y1))
+
+    # Downsample for speed.
+    im.thumbnail((600, 600))
+
+    hist = im.histogram()
+    total = float(sum(hist)) or 1.0
+
+    dark_frac = sum(hist[:200]) / total
+    mean = sum(i * c for i, c in enumerate(hist)) / total
+    var = sum(((i - mean) ** 2) * c for i, c in enumerate(hist)) / total
+    std = var**0.5
+
+    # If it looks like a blank region, we have no evidence.
+    return not (dark_frac < 0.006 and std < 14.0 and mean > 210.0)
 
 
 def add_section_for_text_hint(

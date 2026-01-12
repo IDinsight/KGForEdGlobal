@@ -35,12 +35,20 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.page_ir_extraction.schemas import PageIR
-from skg.page_ir_extraction.utils import load_page_irs_from_extraction
-from skg.page_ir_verification.utils import (
-    EdgeVerdictRecord,
+from skg.extract_page_ir.utils import load_page_irs_from_extraction
+from skg.page_ir.llm import verify_page_ir_continuity_verdict, verify_page_ir_pairs
+from skg.page_ir.utils import (
     PageIRVerificationDirs,
-    compile_continuity_from_edge_verdicts,
+    apply_continuity_edits,
+    apply_non_continuity_edits,
+    bottommost_continuity_candidate,
+    fix_false_repeats_header_on_continuation,
+    fix_repeats_header_for_continued_tables,
+    get_threshold_based_on_kind,
+    is_figure_block,
+    item_snippet,
+    min_crop_height_px,
+    pad_inches,
     persist_verification_run,
     postprocess_verified_page_irs,
     save_verified_page_irs,
