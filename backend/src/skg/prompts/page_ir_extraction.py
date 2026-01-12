@@ -79,6 +79,8 @@ def extract_page_ir_from_pdf_page(
 5. **NO HALLUCINATION**: Do not add rows/cells/text that are not visible. If a cell is blank, set text: null.
 6. **Do a final scan of the bottom 10% of the page before finishing; do not stop early.**
 7. If you see an explicit curriculum code/section code/table number associated with a block or table, put it in `local_code` verbatim.
+  - Preserve punctuation exactly (dots/hyphens/slashes). Dot sequences matter.
+  - Examples: "3.9.4.1", "B5.2.1.1", "Table 1.2", "P1-THEME 3.2".
 8. If you set local_code, do not include that code in text.
 9. **ANTI-FULL-PAGE FAILSAFE (CRITICAL)**:
   - If the page contains substantial readable text (e.g., more than ~2 lines of body text, a TOC/list of entries, paragraphs like "Acknowledgements", or any multi-line section content), you MUST NOT output a single full-page FIGURE item.

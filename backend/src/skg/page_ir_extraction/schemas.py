@@ -111,7 +111,8 @@ class Table(BaseModelPageIRExtraction):
     )
     kind: Literal["table"] = Field(..., description="Must be 'table'.")
     local_code: Optional[str] = Field(
-        None, description="Explicit curriculum code if present (e.g., 'Table 1.2')."
+        None,
+        description="Explicit curriculum code if present (e.g., 'Table 1.2'). Preserve punctuation exactly (dots/hyphens/slashes).",
     )
     n_cols: Optional[int] = Field(
         default=None,
@@ -277,7 +278,7 @@ class Block(BaseModelPageIRExtraction):
     )
     local_code: Optional[str] = Field(
         None,
-        description="Explicit code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim.",
+        description="Explicit code if present (e.g., '3.9.4.1', 'SECTION 1'). Extract verbatim and preserve punctuation exactly (dots/hyphens/slashes).",
     )
     text: Optional[TextUnit] = Field(
         None,
@@ -427,42 +428,6 @@ class PageIR(BaseModelPageIRExtraction):
         None,
         description="Source PDF filename (no path). This should be populated by the Python pipeline; it may be null during extraction.",
     )
-
-    @model_validator(mode="after")
-    def clamp_bboxes_within_image(self) -> PageIR:
-        """Clamp item bounding boxes into image bounds. Bounding boxes from vision
-        models often drift by a few pixels; clamping makes extraction reliable while
-        still preserving usable provenance.
-
-        Returns
-        -------
-        PageIR
-            The passed in PageIR with clamped bboxes.
-        """
-
-        if self.image_width is None or self.image_height is None:
-            return self
-
-        image_width = float(self.image_width)
-        image_height = float(self.image_height)
-
-        for item in self.items:
-            x0, y0, x1, y1 = item.bbox
-
-            x0 = max(0.0, min(float(x0), image_width))
-            y0 = max(0.0, min(float(y0), image_height))
-            x1 = max(0.0, min(float(x1), image_width))
-            y1 = max(0.0, min(float(y1), image_height))
-
-            # Keep bbox well-ordered after clamping (rare edge cases).
-            if x1 <= x0:
-                x1 = min(image_width, x0 + 1.0)
-            if y1 <= y0:
-                y1 = min(image_height, y0 + 1.0)
-
-            item.bbox = [x0, y0, x1, y1]
-
-        return self
 
     @model_validator(mode="after")
     def propagate_table_codes(self) -> PageIR:
