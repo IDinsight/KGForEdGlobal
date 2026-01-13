@@ -170,8 +170,8 @@ def extract(
 
     The process is as follows:
 
-    1. Persist extraction run metadata so we always have an extraction run record.
-    2. Validate page range against PDF document.
+    1. Validate page range against PDF document.
+    2. Persist extraction run metadata so we always have an extraction run record.
     3. Extract page-by-page IR components.
     4. Finalize extraction run record.
 
@@ -179,23 +179,30 @@ def extract(
     ----------
     config_fp
         The file path to the global config file for the pipeline.
+
+    Raises
+    ------
+    Exception
+        If any error occurs during extraction.
     """
 
-    # 1.
     config = ExtractionConfig.model_validate(
         open_json_type(config_fp)["page_ir_extraction"]
     )
-    doc_key, extraction_dirs, extraction_run = persist_extraction_run(config=config)
-    logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
     try:
         with pymupdf.open(str(config.pdf_fp)) as doc:
-            # 2.
+            # 1.
             _, end_page = validate_page_count(
                 doc=doc, end_page=config.end_page, start_page=config.start_page
             )
 
-        try:
+            # 2.
+            doc_key, extraction_dirs, extraction_run = persist_extraction_run(
+                config=config
+            )
+            logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
+
             # 3.
             logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
