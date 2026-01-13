@@ -591,6 +591,53 @@ def validate_item_bboxes_required_and_in_bounds(
         ctx.top_level_bboxes.append((float(x0), float(y0), float(x1), float(y1)))
 
 
+def validate_no_duplicate_item_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
+    """Disallow exact duplicate top-level item bboxes. Placeholder bbox checks only
+    catch *many* duplicates; this catches *any* duplicate.
+
+    Parameters
+    ----------
+    ctx
+        The PageIR extraction quality context.
+
+    Raises
+    ------
+    QualityError
+        If any duplicate item-level bbox is found.
+    """
+
+    if len(ctx.top_level_bboxes) < 2:
+        return
+
+    counts = Counter(ctx.top_level_bboxes)
+    dup_bboxes = [bbox for bbox, cnt in counts.items() if cnt > 1]
+
+    if not dup_bboxes:
+        return
+
+    # Map bbox to item indices (ctx.top_level_bboxes is appended in items order).
+    bbox_to_indices: dict[tuple[float, float, float, float], list[int]] = {}
+    for i, bbox in enumerate(ctx.top_level_bboxes):
+        bbox_to_indices.setdefault(bbox, []).append(i)
+
+    details = []
+    for bbox in dup_bboxes:
+        idxs = bbox_to_indices.get(bbox, [])
+        details.append(f"bbox={list(bbox)} used by items={idxs}")
+
+    # Keep the error readable if there are many duplicates.
+    max_show = 6
+    suffix = (
+        "" if len(details) <= max_show else f" (and {len(details) - max_show} more)"
+    )
+    details_str = "; ".join(details[:max_show]) + suffix
+
+    raise QualityError(
+        "Duplicate item bboxes detected. Each block/table must have a unique, tight bbox. "
+        + details_str
+    )
+
+
 def validate_no_whitespace_or_empty_blocks(ctx: PageIRExtractionQualityCtx) -> None:
     """Validate that there are no whitespace-only or empty blocks.
 

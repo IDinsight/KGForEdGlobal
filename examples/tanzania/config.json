@@ -1,5 +1,5 @@
 {
-	"extraction": {
+	"page_ir_extraction": {
 		"country": "Tanzania",
 		"dpi": 250,
 		"end_page": null,
@@ -18,7 +18,7 @@
 		"use_text_layer_hints": true,
 		"year": 2023
 	},
-	"verification": {
+	"page_ir_verification": {
 		"end_page": null,
 		"extraction_run_results_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/85eab89d8bbf3bb28fd2d4bbc678701cc18545be04a7385096a1b397b7fa8144/extraction",
 		"model": "gpt-5.2-2025-12-11",

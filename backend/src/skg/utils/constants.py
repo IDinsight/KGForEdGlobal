@@ -33,6 +33,7 @@ class FigureKind(str, Enum):
     BARCODE = "barcode"
     CHART = "chart"
     DIAGRAM = "diagram"
+    EQUATION = "equation"
     FLOWCHART = "flowchart"
     GRAPH = "graph"
     ILLUSTRATION = "illustration"
