@@ -21,6 +21,7 @@ class BlockType(str, Enum):
     ARTIFACT = "artifact"
     CAPTION = "caption"
     FIGURE = "figure"
+    FOOTNOTE = "footnote"
     HEADING = "heading"
     LIST = "list"
     PARAGRAPH = "paragraph"
@@ -29,12 +30,14 @@ class BlockType(str, Enum):
 class FigureKind(str, Enum):
     """Classification of figure/diagram type (non-semantic)."""
 
+    BARCODE = "barcode"
     CHART = "chart"
     DIAGRAM = "diagram"
     FLOWCHART = "flowchart"
     GRAPH = "graph"
     ILLUSTRATION = "illustration"
     IMAGE = "image"
+    LOGO = "logo"
     MAP = "map"
     OTHER = "other"
     SCHEMATIC = "schematic"

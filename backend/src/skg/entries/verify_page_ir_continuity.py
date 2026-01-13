@@ -6,11 +6,11 @@ verification on selected boundary-candidate items, and writes corrected PageIR J
 to the verification output directory.
 
 Key guarantee for Step 3: boundaries are patched when confidence is high; otherwise
-extractor boundaries are preserved.
+extraction boundaries are preserved.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/verify_page_ir_continuity.py ../data/tanzania/tanzania.pdf /path/to/extraction_run_results
+python src/skg/entries/verify_page_ir_continuity.py ../examples/tanzania/config.json
 """
 
 # Standard Library

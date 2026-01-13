@@ -32,6 +32,7 @@ from skg.page_ir_extraction.validators import (
     validate_basic_block_invariants,
     validate_continuity_for_extraction,
     validate_figure_blocks_are_well_formed,
+    validate_footnote_blocks_are_plausible,
     validate_full_page_bboxes,
     validate_gross_reading_order,
     validate_image_dimensions,
@@ -446,6 +447,7 @@ def verify_page_ir_extraction_quality(
     validate_item_bboxes_required_and_in_bounds(ctx)
     validate_full_page_bboxes(ctx)
     validate_basic_block_invariants(ctx)
+    validate_footnote_blocks_are_plausible(ctx)
     validate_figure_blocks_are_well_formed(ctx)
     validate_artifacts_are_true_artifacts(ctx)
     validate_table_integrity(ctx)

@@ -3,8 +3,7 @@ Representations (IRs) from raw PDF pages. This is step 1.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_page_ir.py ../examples/tanzania/tanzania/pdf
-python src/skg/entries/extract_page_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en -l sw -l fr -l zh-Hans -l ar -o ../results
+python src/skg/entries/extract_page_ir.py ../examples/tanzania/config.json
 """
 
 # Standard Library
@@ -73,6 +72,14 @@ def extract_page_by_page(
     for page_index in range(config.start_page, end_page):
         page_ir_fp = extraction_dirs.page_irs / f"{page_index:04d}.json"
         png_fp = extraction_dirs.page_images / f"{page_index:04d}.png"
+
+        if not config.overwrite and page_ir_fp.exists() and png_fp.exists():
+            logger.info(
+                f"Page IR JSON and PNG already exist for page {page_index}. "
+                f"Skipping extraction. "
+                f"If you wish to overwrite, pass the --overwrite flag."
+            )
+            continue
 
         # Always ensure the PNG exists first. We render if the file is missing OR if we
         # are overwriting (e.g. changed DPI).

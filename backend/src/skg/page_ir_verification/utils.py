@@ -1,4 +1,4 @@
-"""This module contains utility functions for page Intermediate Representations."""
+"""This module contains utility functions related to page IR **verification**."""
 
 # Standard Library
 import re
