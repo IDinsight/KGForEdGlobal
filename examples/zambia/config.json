@@ -16,6 +16,7 @@
 	},
 	"page_ir_verification": {
 		"end_page": null,
+		"min_confidence_to_patch": 0.75,
 		"model": "gpt-5.2-2025-12-11",
 		"start_page": 0
 	}

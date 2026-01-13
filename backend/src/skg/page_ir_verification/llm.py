@@ -29,6 +29,7 @@ from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.page_ir_verification.validators import (
     validate_boundary_logic,
     validate_item_continuation_kind,
+    validate_negative_case_logic,
     validate_page_continuation_kind,
     validate_semantic_flow,
 )
@@ -155,6 +156,9 @@ def verify_page_ir_continuity_verdict(
     )
     validate_boundary_logic(next_item=next_item, prev_item=prev_item, verdict=verdict)
     validate_semantic_flow(next_item=next_item, verdict=verdict)
+    validate_negative_case_logic(
+        next_item=next_item, prev_item=prev_item, verdict=verdict
+    )
 
 
 def verify_page_ir_pairs(
