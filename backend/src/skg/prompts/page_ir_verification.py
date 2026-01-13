@@ -66,7 +66,7 @@ You will be given:
    - You are operating in pairwise mode: you see all of page N but only the TOP of page N+1.
    - NEVER propose set_* boundaries of "{ItemBoundary.BOTH.value}" in this step.
    Positive case (is_continuation=true):
-   - You may propose the following ONLY when existing metadata is missing/incompatible:
+   - You MUST propose the following when existing metadata is missing/incompatible (including when boundary is null/unknown or points the wrong direction):
      - set_prev_item_boundary = "{ItemBoundary.TRUNCATED.value}" or null
      - set_next_item_boundary = "{ItemBoundary.RESUMED.value}" or null
    Negative case (is_continuation=false):
@@ -97,11 +97,11 @@ You will be given:
 
 ## ALLOWED EDITS (METADATA ONLY)
 1. set_prev_item_boundary:
-  - Positive case: {ItemBoundary.TRUNCATED.value} or null
+  - Positive case: {ItemBoundary.TRUNCATED.value} or null (use null ONLY if the effective boundary is already compatible)
   - Negative-case closure: {ItemBoundary.COMPLETE.value} or null
   - NEVER propose {ItemBoundary.BOTH.value} in pairwise mode
 2. set_next_item_boundary:
-  - Positive case: {ItemBoundary.RESUMED.value} or null
+  - Positive case: {ItemBoundary.RESUMED.value} or null (use null ONLY if the effective boundary is already compatible)
   - Negative-case closure: {ItemBoundary.COMPLETE.value} or null
   - NEVER propose {ItemBoundary.BOTH.value} in pairwise mode
 3. set_next_table_repeats_header:

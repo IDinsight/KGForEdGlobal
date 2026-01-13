@@ -44,6 +44,10 @@ LanguageField = Annotated[
     ),
 ]
 
+# Compiled regexes.
+TABLE_TEXT_RE = re.compile(r"(?i)^\s*table\s+(?P<num>\d+(?:\.\d+)*)\b")
+FIGURE_TEXT_RE = re.compile(r"(?i)^\s*figure\s+(?P<num>\d+(?:\.\d+)*)\b")
+
 
 # Schemas for primitives.
 class BaseModelPageIRExtraction(BaseModel):
@@ -467,10 +471,10 @@ class PageIR(BaseModelPageIRExtraction):
         if not s:
             return None
 
-        if (m := self._table_text_re.match(s)) is not None:
+        if (m := TABLE_TEXT_RE.match(s)) is not None:
             return f"Table {m.group('num')}"
 
-        if (m := self._figure_text_re.match(s)) is not None:
+        if (m := FIGURE_TEXT_RE.match(s)) is not None:
             return f"Figure {m.group('num')}"
 
         return None
@@ -540,9 +544,6 @@ class PageIR(BaseModelPageIRExtraction):
         PageIR
             The passed in PageIR with propagated table/figure codes.
         """
-
-        self._table_text_re = re.compile(r"(?i)^\s*table\s+(?P<num>\d+(?:\.\d+)*)\b")
-        self._figure_text_re = re.compile(r"(?i)^\s*figure\s+(?P<num>\d+(?:\.\d+)*)\b")
 
         eligible_label_types = {
             BlockType.CAPTION,

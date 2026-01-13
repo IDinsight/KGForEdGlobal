@@ -117,22 +117,29 @@ def verify_page_ir_continuity(
             )
             continue
 
-        # Get bottommost and topmost continuity candidates using paired logic.
+        # Get the bottommost continuity candidate from page N.
         prev_index, prev_item = bottommost_continuity_candidate(
             image_height=prev_page_ir.image_height, items=prev_page_items
         )
+
+        # Crop top of next image (page N+1) and compute the crop height so candidate
+        # selection is restricted to items the model can actually see. This prevents
+        # false negatives when the topmost candidate is outside the crop.
+        next_crop_fp = verification_dirs.page_irs_pair_crops / f"{i + 1:04}_top.png"
+        crop_image_to_top(
+            input_png_fp=page_images_dir / f"{i + 1:04}.png", output_png_fp=next_crop_fp
+        )
+
+        # The crop starts at y=0, so its pixel height is the y-extent visible to the
+        # model.
+        next_crop_height_px = float(pymupdf.Pixmap(str(next_crop_fp)).height)
+
+        # Pick the next-page candidate from items that actually intersect the visible crop.
         next_index, next_item = topmost_continuity_candidate_paired(
             image_height=next_page_ir.image_height,
             items=next_page_items,
             prev_item=prev_item,
-        )
-        if record:
-            edge_records.append(record)
-
-        # Crop top of next image.
-        next_crop_fp = verification_dirs.page_irs_pair_crops / f"{i + 1:04}_top.png"
-        crop_image_to_top(
-            input_png_fp=page_images_dir / f"{i + 1:04}.png", output_png_fp=next_crop_fp
+            visible_y_max=next_crop_height_px,
         )
 
         # Invoke the model to verify the pair.
