@@ -3,8 +3,7 @@ Representations (IRs) from raw PDF pages. This is step 1.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_page_ir.py ../examples/tanzania/tanzania/pdf
-python src/skg/entries/extract_page_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en -l sw -l fr -l zh-Hans -l ar -o ../results
+python src/skg/entries/extract_page_ir.py ../examples/tanzania/config.json
 """
 
 # Standard Library

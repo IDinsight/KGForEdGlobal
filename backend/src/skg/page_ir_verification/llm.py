@@ -1,4 +1,6 @@
-"""This module contains functionalities related to LLM calls for **verifying** page IRs."""
+"""This module contains functionalities related to LLM calls for page IR
+**verification**.
+"""
 
 # Standard Library
 from pathlib import Path

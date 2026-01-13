@@ -225,15 +225,26 @@ def validate_basic_block_invariants(ctx: PageIRExtractionQualityCtx) -> None:
 
         if block_type_or_none == BlockType.LIST:
             for j, list_item in enumerate(list_items):
-                # If marker is empty and text is short, it's likely a misclassification.
                 marker = list_item.marker
                 list_item_text_or_none = list_item.text
+
                 validate_text_en_is_none(
                     text=list_item_text_or_none,
                     where_=f"items[{i}].list_items[{j}].text",
                 )
+
+                # Marker must be null OR a non-whitespace string (never "" / "   ").
+                if marker is not None and not marker.strip():
+                    raise QualityError(
+                        f"List item marker must be null or a non-empty string. "
+                        f"Found whitespace/empty marker at items[{i}].list_items[{j}].marker."
+                    )
+
+                # If marker is missing AND the text is extremely short, it’s probably
+                # not a list item.
+                marker_missing = (marker is None) or (not marker.strip())
                 if (
-                    not marker.strip()
+                    marker_missing
                     and list_item_text_or_none is not None
                     and len(list_item_text_or_none.text.strip()) < 3
                 ):
@@ -361,6 +372,54 @@ def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> N
         if item.list_items is not None:
             raise QualityError(
                 f"Figure block must have list_items=null at items[{i}].list_items."
+            )
+
+
+def validate_footnote_blocks_are_plausible(ctx: PageIRExtractionQualityCtx) -> None:
+    """Reject likely misuses of block_type='footnote'. Intended: bottom-of-page
+    numbered notes (often separated by a rule). Not intended: page numbers, running
+    headers/footers, normal paragraphs.
+
+    Parameters
+    ----------
+    ctx
+        The PageIR extraction quality context.
+
+    Raises
+    ------
+    QualityError
+        If any footnote block appears implausible.
+    """
+
+    # Tunable thresholds (keep lenient).
+    h = float(ctx.image_height)
+    bottom_band_y0 = 0.55 * h  # Footnote should *start* in the bottom ~45%
+    max_height_frac = 0.35  # Footnote block shouldn't be huge
+
+    for i, item in enumerate(ctx.items):
+        if item.kind != "block" or item.block_type != BlockType.FOOTNOTE:
+            continue
+
+        # Boundary: footnotes should almost always be complete.
+        if item.boundary != ItemBoundary.COMPLETE:
+            raise QualityError(
+                f"Footnote blocks should usually have boundary='{ItemBoundary.COMPLETE.value}'. "
+                f"Found boundary='{item.boundary.value}' at items[{i}]."
+            )
+
+        # Bbox placement: near the bottom.
+        _, y0, _, y1 = map(float, item.bbox)
+        if y0 < bottom_band_y0:
+            raise QualityError(
+                f"Footnote block appears too high on the page at items[{i}].bbox={list(item.bbox)}. "
+                f"Footnotes should be near the bottom; otherwise use '{BlockType.PARAGRAPH.value}'."
+            )
+
+        # Size sanity: avoid classifying half-page content as a footnote.
+        if (y1 - y0) / h > max_height_frac:
+            raise QualityError(
+                f"Footnote block is unusually tall at items[{i}] (bbox height fraction={(y1 - y0) / h:.2f}). "
+                f"This is likely not a footnote; use '{BlockType.PARAGRAPH.value}'."
             )
 
 

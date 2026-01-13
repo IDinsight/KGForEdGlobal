@@ -57,7 +57,12 @@ def extract_page_ir_from_pdf_page(
     doc_context = f"from {country}" + (f" ({year})" if year else "")
     lang_context = ", ".join(languages)
     text_block_types = json.dumps(
-        [BlockType.PARAGRAPH.value, BlockType.HEADING.value, BlockType.CAPTION.value],
+        [
+            BlockType.CAPTION.value,
+            BlockType.FOOTNOTE.value,
+            BlockType.HEADING.value,
+            BlockType.PARAGRAPH.value,
+        ],
         ensure_ascii=False,
     )
     text_layer_context = (
@@ -77,6 +82,7 @@ def extract_page_ir_from_pdf_page(
 3. **VERBATIM**: Extract text exactly as seen. Do not fix typos or complete truncated sentences.
 4. **KIND DISCRIMINATOR**: Every item in the `items` list MUST have a `"kind"` field set to either `"block"` or `"table"`.
 5. **NO HALLUCINATION**: Do not add rows/cells/text that are not visible. If a cell is blank, set text: null.
+  - **NO HALLUCINATED LIST MARKERS**: Never add bullets/numbers/letters that are not visible. For markerless TOC/outline lines, set marker=null.
 6. **Do a final scan of the bottom 10% of the page before finishing; do not stop early.**
 7. If you see an explicit curriculum code/section code/table number associated with a block or table, put it in `local_code` verbatim.
   - Preserve punctuation exactly (dots/hyphens/slashes). Dot sequences matter.
@@ -86,7 +92,8 @@ def extract_page_ir_from_pdf_page(
   - If the page contains substantial readable text (e.g., more than ~2 lines of body text, a TOC/list of entries, paragraphs like "Acknowledgements", or any multi-line section content), you MUST NOT output a single full-page FIGURE item.
   - In those cases, extract the text into "{BlockType.HEADING.value}"/"{BlockType.PARAGRAPH.value}"/"{BlockType.LIST.value}" blocks (and TABLE items if there is a grid).
   - The “single full-page FIGURE page” exception is ONLY for pages that are visually dominated by a non-table graphic or scanned image with at most ~1–2 short text lines total (typical: cover image, certificate scan, photo page).
-10. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
+10. Ignore thin separator rules/lines used to visually separate sections (including the horizontal line above footnotes). Do not emit blocks for those lines.
+11. **DO NOT POPULATE PYTHON-FILLED FIELDS**:
   - The following PageIR fields are filled/overwritten by the Python pipeline:
     - boundary_state MUST be omitted (do not include it at all).
     - doc_key, pdf_name, page_index, dpi, image_width, image_height MUST be null or omitted.
@@ -122,6 +129,10 @@ def extract_page_ir_from_pdf_page(
   - **"{BlockType.ARTIFACT.value}"**: ONLY running headers/footers, page numbers (arabic or roman numerals), or short decorative separators (e.g., "— — —", "***").
     - NEVER use artifact for section titles or content headings.
     - Examples that MUST be heading (NOT artifact): "Table of Contents", "List of Tables", "List of Figures", "Acknowledgements", "Preface", "Bibliography", "References", "Section One/Two/Three..."
+  - **"{BlockType.FOOTNOTE.value}"**: Bottom-of-page footnotes/numbered notes (often separated by a thin horizontal rule).
+    - Use when the page includes a real footnote body like "2 The curriculum does not..." at the bottom margin.
+    - Footnotes are NOT artifacts. Page numbers/running headers remain "{BlockType.ARTIFACT.value}".
+    - Extract the full footnote line(s) verbatim in `text` (including leading footnote number/superscript if visible).
   - **"{BlockType.CAPTION.value}"**: Labels for tables/figures (e.g., "Table 1").
   - **"{BlockType.FIGURE.value}"**: Diagrams/figures/illustrations/charts/flowcharts (use `figure`, set `text=null`, `list_items=null`).
   - **"{BlockType.HEADING.value}"**: Section titles.
@@ -187,7 +198,12 @@ def extract_page_ir_from_pdf_page(
     - figure={{alt_text (short), contains_text, embedded_text if needed, figure_kind}}
 
 ## LIST
-1. For each list item, populate marker with the visible bullet/numbering (e.g., “•”, “1.”, “a)”) and put the remaining content in text.
+1. For each list item:
+  - If there is an explicit bullet/number/letter/code marker visible (e.g., "•", "1.", "a)", "(i)", "3.9.4.1"), set `marker` to that EXACT marker (verbatim) and put the remaining content in `text`.
+  - If the line is list-like but has NO explicit marker (common in Table of Contents/dot-leader entries/indented outlines), set `marker` to null.
+    - DO NOT invent markers.
+    - DO NOT use an empty string for marker; use null.
+  - Keep dot leaders and page numbers inside `text` verbatim (e.g., "INTRODUCTION.................. 91").
 
 ## FIGURES/DIAGRAMS
 1. If the page contains a diagram/figure/illustration/chart/flowchart that is NOT a table grid, emit a block with:
@@ -224,6 +240,8 @@ Reminders:
 5. Only set repeats_header when the table is "{ItemBoundary.RESUMED.value}"/"{ItemBoundary.BOTH.value}" (i.e., continuing from previous page). Never set it for "{ItemBoundary.COMPLETE.value}" tables.
 6. If you can confidently count the table's columns, set "n_cols".
 7. If you see a diagram/figure (not a table), output a block_type="{BlockType.FIGURE.value}" block with a `figure` object and tight bbox.
+8. LIST MARKERS: If a list entry has no explicit bullet/number (e.g., TOC dot-leader lines), set list_items[i].marker = null (not "") and keep the whole entry (including dot leaders + page number) in list_items[i].text.
+9. If you see a real bottom-of-page footnote (often after a thin horizontal line), classify it as block_type="{BlockType.FOOTNOTE.value}" with `text` populated. Do NOT treat it as artifact.
 
 Final check before output:
 - If you are outputting exactly ONE item, stop and re-evaluate: is the page truly a full-page graphic/scan with ~no text?

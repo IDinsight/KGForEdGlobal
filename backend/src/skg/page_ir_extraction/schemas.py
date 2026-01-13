@@ -186,9 +186,9 @@ class Table(BaseModelPageIRExtraction):
 class ListItem(BaseModelPageIRExtraction):
     """A single item in a list or outline."""
 
-    marker: str = Field(
-        ...,
-        description="The bullet or numbering marker (e.g., '1.', '•', 'a)', '3.9.4'). Extract verbatim.",
+    marker: Optional[str] = Field(
+        None,
+        description="The bullet/numbering marker (e.g., '1.', '•', 'a)', '3.9.4'). Null if there is no explicit marker (e.g., TOC dot-leader entries). Extract verbatim.",
     )
     text: TextUnit = Field(..., description="The text content of the list item.")
 
