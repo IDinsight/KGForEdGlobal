@@ -251,6 +251,25 @@ class FigureUnit(BaseModelPageIRExtraction):
 
         return self
 
+    @model_validator(mode="after")
+    def validate_equation_requires_text(self) -> FigureUnit:
+        """Validate that equation figures contain text.
+
+        Returns
+        -------
+        FigureUnit
+            The passed in FigureUnit.
+        """
+
+        if self.figure_kind == FigureKind.EQUATION and self.contains_text is not True:
+            raise ValueError(
+                "figure.figure_kind='equation' requires figure.contains_text=true "
+                "(and therefore figure.embedded_text must be provided). "
+                "If unsure, use figure_kind='unknown' or 'diagram' instead."
+            )
+
+        return self
+
 
 class Block(BaseModelPageIRExtraction):
     """A grouping of text content (paragraph, heading, list, etc.)."""
