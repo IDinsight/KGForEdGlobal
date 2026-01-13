@@ -30,6 +30,31 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -> bool:
+    """Return True if bbox intersects the vertical range [y_min, y_max]. bbox is
+    [x0, y0, x1, y1] in full-page pixel coords.
+
+    Parameters
+    ----------
+    bbox
+        The bounding box to check.
+    y_max
+        The maximum y coordinate of the range.
+    y_min
+        The minimum y coordinate of the range.
+
+    Returns
+    -------
+    bool
+        True if the bbox intersects the y range, False otherwise.
+    """
+
+    y0 = float(bbox[1])
+    y1 = float(bbox[3])
+
+    return not (y1 < float(y_min) or y0 > float(y_max))
+
+
 def _merge_boundary(
     *, existing: ItemBoundary | None, patch: ItemBoundary
 ) -> ItemBoundary:
@@ -129,7 +154,10 @@ def apply_continuity_verdict(
 
 
 def bottommost_continuity_candidate(
-    *, image_height: float, items: list[Block | Table]
+    *,
+    image_height: float,
+    items: list[Block | Table],
+    visible_y_min: float | None = None,
 ) -> tuple[int, Block | Table]:
     """Pick the best "bottom of page" candidate for continuity checks.
 
@@ -139,6 +167,9 @@ def bottommost_continuity_candidate(
         The height of the page image in pixels.
     items
         List of PageIR items on the page.
+    visible_y_min
+        If provided, restrict candidate selection to items whose bbox intersects the
+        visible crop range [visible_y_min, image_height] in full-page coordinates.
 
     Returns
     -------
@@ -160,6 +191,26 @@ def bottommost_continuity_candidate(
             or is_probable_header_footer_noise(image_height=image_height, item=item)
         )
     ]
+
+    # If we are verifying using a bottom-crop image, restrict candidates to items that
+    # actually appear in that crop (in full-page coordinate space). This prevents
+    # choosing an item the model cannot see, which would cause false negatives.
+    if visible_y_min is not None:
+        y_min = float(visible_y_min)
+        cropped = [
+            (i, item)
+            for i, item in candidates
+            if _bbox_intersects_y_range(
+                bbox=item.bbox, y_max=float(image_height), y_min=y_min
+            )
+        ]
+        if cropped:
+            candidates = cropped
+        else:
+            logger.warning(
+                "No bottom-crop-visible candidates found; falling back to full-page "
+                "candidate selection."
+            )
 
     if not candidates:
         raise ValueError("No non-artifact items found.")
@@ -349,10 +400,13 @@ def is_probable_header_footer_noise(
         True if the item is likely header/footer noise, False otherwise.
     """
 
+    if item.kind != "block":
+        return False
+
     text_or_none = item.text
     text = text_or_none.text.strip() if isinstance(text_or_none, TextUnit) else ""
 
-    if item.kind != "block" or not text:
+    if not text:
         return False
 
     # Very small box height is usually a strong cue (page numbers, running headers).
@@ -373,9 +427,9 @@ def is_probable_header_footer_noise(
 
     # Common page number/footer patterns (keep conservative).
     t = re.sub(r"\s+", " ", text).strip()
-    if len(t) <= 12 and re.fullmatch(r"(\d+|[ivxlcdm]+)", t.lower()):
-        return True
-    if len(t) <= 20 and re.fullmatch(r"(page\s*)?\d+(\s*/\s*\d+)?", t.lower()):
+    if (len(t) <= 12 and re.fullmatch(r"(\d+|[ivxlcdm]+)", t.lower())) or (
+        len(t) <= 20 and re.fullmatch(r"(page\s*)?\d+(\s*/\s*\d+)?", t.lower())
+    ):
         return True
 
     return False
@@ -737,7 +791,11 @@ def save_verified_page_irs(
 
 
 def topmost_continuity_candidate_paired(
-    *, image_height: float, items: list[Block | Table], prev_item: Block | Table
+    *,
+    image_height: float,
+    items: list[Block | Table],
+    prev_item: Block | Table,
+    visible_y_max: float | None = None,
 ) -> tuple[int, Block | Table]:
     """Pick the best "top of page" candidate, preferring the same kind as prev_item.
 
@@ -759,6 +817,9 @@ def topmost_continuity_candidate_paired(
         List of items to search.
     prev_item
         The chosen previous page candidate item.
+    visible_y_max
+        If provided, restrict candidate selection to items whose bbox intersects the
+        visible crop range [0, visible_y_max] in full-page coordinates.
 
     Returns
     -------
@@ -779,6 +840,24 @@ def topmost_continuity_candidate_paired(
             or is_probable_header_footer_noise(image_height=image_height, item=item)
         )
     ]
+
+    # If we are verifying using a top-crop image, restrict candidates to items that
+    # actually appear in that crop (in full-page coordinate space). This prevents
+    # choosing an item the model cannot see, which would cause false negatives.
+    if visible_y_max is not None:
+        y_max = float(visible_y_max)
+        cropped = [
+            (i, item)
+            for i, item in candidates
+            if _bbox_intersects_y_range(bbox=item.bbox, y_max=y_max, y_min=0.0)
+        ]
+        if cropped:
+            candidates = cropped
+        else:
+            logger.warning(
+                "No top-crop-visible candidates found; falling back to full-page "
+                "candidate selection."
+            )
 
     if not candidates:
         raise ValueError("No non-artifact items found.")

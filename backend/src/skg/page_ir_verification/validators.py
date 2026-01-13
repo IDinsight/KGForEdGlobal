@@ -40,18 +40,26 @@ def validate_boundary_logic(
     eff_prev_boundary = verdict.set_prev_item_boundary or prev_item.boundary
     eff_next_boundary = verdict.set_next_item_boundary or next_item.boundary
 
-    # Previous item (bottom of Page N) must be TRUNCATED or BOTH. It cannot be COMPLETE.
-    if eff_prev_boundary == ItemBoundary.COMPLETE:
+    # Previous item (bottom of Page N) must be TRUNCATED or BOTH (i.e., it must
+    # continue TO the next page). In pairwise mode, if the extractor marked it as
+    # RESUMED (from previous) or left it null, the model MUST set
+    # set_prev_item_boundary='truncated' so Python can merge to BOTH when needed.
+    if eff_prev_boundary not in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}:
         raise QualityError(
-            f"verdict.is_continuation=True, but previous item is '{ItemBoundary.COMPLETE.value}' "
-            f"and no set_prev_item_boundary edit was proposed to fix it."
+            f"verdict.is_continuation=True requires prev boundary in {{'{ItemBoundary.TRUNCATED.value}','{ItemBoundary.BOTH.value}'}}. "
+            f"Got effective prev boundary={eff_prev_boundary}. "
+            f"Set set_prev_item_boundary='{ItemBoundary.TRUNCATED.value}' when missing/incompatible."
         )
 
-    # Next item (top of Page N+1) must be RESUMED or BOTH. It cannot be COMPLETE.
-    if eff_next_boundary == ItemBoundary.COMPLETE:
+    # Next item (top of Page N+1) must be RESUMED or BOTH (i.e., it must continue FROM
+    # the previous page). In pairwise mode, if the extractor marked it as TRUNCATED (to
+    # next) or left it null, the model MUST set set_next_item_boundary='resumed' so
+    # Python can merge to BOTH when needed.
+    if eff_next_boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
         raise QualityError(
-            f"verdict.is_continuation=True, but next item is '{ItemBoundary.COMPLETE.value}' "
-            f"and no set_next_item_boundary edit was proposed to fix it."
+            f"verdict.is_continuation=True requires next boundary in {{'{ItemBoundary.RESUMED.value}','{ItemBoundary.BOTH.value}'}}. "
+            f"Got effective next boundary={eff_next_boundary}. "
+            f"Set set_next_item_boundary='{ItemBoundary.RESUMED.value}' when missing/incompatible."
         )
 
 
