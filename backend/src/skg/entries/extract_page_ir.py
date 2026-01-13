@@ -172,8 +172,7 @@ def extract(
 
     1. Validate page range against PDF document.
     2. Persist extraction run metadata so we always have an extraction run record.
-    3. Extract page-by-page IR components.
-    4. Finalize extraction run record.
+    3. Extract page-by-page IR components and save to file.
 
     Parameters
     ----------
@@ -201,9 +200,10 @@ def extract(
             doc_key, extraction_dirs, extraction_run = persist_extraction_run(
                 config=config
             )
-            logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
             # 3.
+            logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
+
             extract_page_by_page(
                 config=config,
                 doc=doc,
@@ -222,7 +222,6 @@ def extract(
         }
         raise
     finally:
-        # 4.
         extraction_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
             fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run

@@ -140,9 +140,10 @@ def _call_openai_api_for_page_ir_extraction(
         )
         raise qe
 
-    # Populate image dimensions so PageIR's clamp validator can run later.
+    # Populate image dimensions and page index.
     parsed.image_width = image_width
     parsed.image_height = image_height
+    parsed.page_index = page_index
 
     try:
         verify_page_ir_extraction_quality(

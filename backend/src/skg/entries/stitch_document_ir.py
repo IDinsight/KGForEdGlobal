@@ -16,18 +16,11 @@ Step 3 is intentionally layout-oriented. It does NOT:
 4. export Learning Commons KG nodes/edges.
 5. Create Learning Commons KG entities/edges.
 
-Those belong in later stages (canonicalization + export).
-
-Expected inputs
----------------
-
-A directory containing page-level JSON files that validate against PageIR
-(see schemas.py). These JSONs should already have continuity metadata verified
-(i.e., correct ItemBoundary flags and repeats_header where applicable).
+Those belong in later stages (i.e., canonicalization and knowledge graph creation).
 
 Invoke from the backend directory via:
 
-python src/skg/entries/stitch_document_ir.py ../data/tanzania/tanzania.pdf /path/to/verification_run_results
+python src/skg/entries/stitch_document_ir.py ../examples/tanzania/config.json
 """
 
 # Standard Library
@@ -36,7 +29,6 @@ import traceback
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Union
 
 # Third Party Library
 import typer
@@ -52,20 +44,21 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.document_ir.schemas import DocumentIR, Segment
+from skg.document_ir.schemas import DocumentIR, Segment, StitchingConfig
 from skg.document_ir.utils import (
     DocumentIRDirs,
     ItemKey,
     assert_page_items_consumed_exactly_once,
     build_continuation_chain,
     compute_page_break_links,
-    load_page_irs_from_verification,
     materialize_segment,
     normalize_page_items,
     persist_stitching_run,
     uniquify_segment_keys,
 )
-from skg.page_ir_extraction.schemas import Block, PageIR, Table
+from skg.page_ir_extraction.schemas import Block, ExtractionConfig, PageIR, Table
+from skg.page_ir_verification.utils import load_page_irs_from_verification
+from skg.schemas import RunCtx
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
@@ -75,12 +68,10 @@ cli = typer.Typer(no_args_is_help=True)
 
 def stitch_document_ir(
     *,
+    config: StitchingConfig,
     doc_key: str,
-    keep_artifacts: bool,
-    overwrite: bool,
     page_irs: list[PageIR],
     pdf_name: str,
-    repair_hyphenation: bool,
     stitching_dirs: DocumentIRDirs,
 ) -> None:
     """Stitch verified PageIRs into a single DocumentIR.
@@ -94,33 +85,21 @@ def stitch_document_ir(
 
     Parameters
     ----------
+    config
+        The stitching run configuration.
     doc_key
         The expected document key for all page IRs.
-    keep_artifacts
-        If True, keep artifact blocks during stitching.
-    overwrite
-        Overwrite existing document IR JSON.
     page_irs
         Validated PageIR list in page order.
     pdf_name
         The source PDF filename (no path).
-    repair_hyphenation
-        Whether to repair hyphenation in stitched text blocks.
     stitching_dirs
         Directories for storing the stitched DocumentIR.
-
-    Raises
-    ------
-    ValueError
-        If no pages are provided.
     """
-
-    if not page_irs:
-        raise ValueError("No page IRs provided.")
 
     document_ir_fp = stitching_dirs.root / "document_ir.json"
 
-    if not overwrite and document_ir_fp.exists():
+    if not config.overwrite and document_ir_fp.exists():
         logger.warning(
             f"Document IR JSON already exists at {document_ir_fp}. Skipping stitching."
             f"If you wish to overwrite, pass the --overwrite flag."
@@ -128,13 +107,13 @@ def stitch_document_ir(
         return
 
     # Normalized items per page and filter artifacts if applicable.
-    items_with_idx: dict[int, list[tuple[int, Union[Table, Block]]]] = {
+    items_with_idx: dict[int, list[tuple[int, Table | Block]]] = {
         page_ir.page_index: normalize_page_items(
-            keep_artifacts=keep_artifacts, page_ir=page_ir
+            keep_artifacts=config.keep_artifacts, page_ir=page_ir
         )
         for page_ir in page_irs
     }
-    items_lookup: dict[int, dict[int, Union[Table, Block]]] = {
+    items_lookup: dict[int, dict[int, Table | Block]] = {
         p_idx: dict(items) for p_idx, items in items_with_idx.items()
     }
 
@@ -142,7 +121,7 @@ def stitch_document_ir(
 
     # Compute page break links based on verified boundary flags.
     links = compute_page_break_links(
-        keep_artifacts=keep_artifacts, page_irs=page_irs, warnings=warnings
+        keep_artifacts=config.keep_artifacts, page_irs=page_irs, warnings=warnings
     )
 
     # Set of destination keys to identify items that are continuations.
@@ -200,7 +179,7 @@ def stitch_document_ir(
                     chain=chain,
                     item_index=original_item_idx,
                     page_index=page_idx,
-                    repair_hyphenation=repair_hyphenation,
+                    repair_hyphenation=config.repair_hyphenation,
                     warnings=warnings,
                 )
             )
@@ -233,87 +212,62 @@ def stitch_document_ir(
 
 @cli.command()
 def stitch(
-    pdf_fp: Path = typer.Argument(
+    config_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
         exists=True,
         file_okay=True,
-        help="The file path to the PDF document to stitch a document IR from.",
+        help="The file path to the global config file for the pipeline.",
         readable=True,
         resolve_path=True,
-    ),
-    verification_run_results_dir: Path = typer.Argument(
-        ...,
-        dir_okay=True,
-        exists=True,
-        file_okay=False,
-        help="The verification run results directory.",
-        resolve_path=True,
-    ),
-    keep_artifacts: bool = typer.Option(
-        False,
-        "--keep-artifacts",
-        help="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
-    ),
-    repair_hyphenation: bool = typer.Option(
-        True,
-        "--repair-hyphenation",
-        help="Whether to repair hyphenation for stitched text.",
-    ),
-    overwrite: bool = typer.Option(
-        False, "--overwrite", help="Overwrite existing document IR JSON."
-    ),
+    )
 ) -> None:
     """Create a stitched DocumentIR JSON from verified PageIR JSONs.
 
     The process is as follows:
 
-    1. Persist stitching run metadata.
-    2. Load and validate verified PageIR JSONs from the verification output directory.
-    3. Stitch PageIRs into a single layout-level DocumentIR by merging cross-page
-        continuations (tables and text/list blocks) and preserving provenance.
+    1. Load config and validate extraction run existence.
+    2. Check doc_key consistency.
+    3. Load and validate verified PageIR JSONs from the verification output directory.
     4. Persist stitching run metadata.
+    5. Stitch PageIRs into a single layout-level DocumentIR by merging cross-page
+        continuations (tables and text/list blocks) and preserving provenance.
 
     Parameters
     ----------
-    pdf_fp
-        The file path to the PDF document to stitch.
-    verification_run_results_dir
-        Directory containing the verification run results.
-    keep_artifacts
-        Whether to keep artifacts such as page numbers, headers, footers, etc. after
-        stitching.
-    repair_hyphenation
-        Whether to disable hyphenation repair for stitched text.
-    overwrite
-        Whether to overwrite existing document IR JSON.
+    config_fp
+        The file path to the global config file for the pipeline.
 
     Raises
     ------
     Exception
         If any part of the stitching process fails.
-    ValueError
-        If the expected doc_key does not match the computed doc key.
     """
 
-    verification_run_results_dir = verification_run_results_dir.resolve()
-    page_irs_verified_dir = verification_run_results_dir / "page_irs_verified"
-    verification_config_fp = verification_run_results_dir / "verification_run.json"
-    verification_run_config = open_json_type(verification_config_fp)
-    stitching_results_dir = verification_run_results_dir.parent / "stitching"
-
     # 1.
-    stitching_dirs, stitching_run = persist_stitching_run(
-        output_dir=stitching_results_dir, **verification_run_config
+    config = StitchingConfig.model_validate(open_json_type(config_fp)["document_ir"])
+    extraction_config = ExtractionConfig.model_validate(
+        open_json_type(config_fp)["page_ir_extraction"]
+    )
+    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
+    extraction_run_results_dir = (
+        extraction_config.output_dir / computed_doc_key / "extraction"
+    )
+    page_irs_verified_dir = (
+        extraction_config.output_dir / computed_doc_key / "verification" / "page_irs"
+    )
+    extraction_run_config = RunCtx.model_validate(
+        open_json_type(extraction_run_results_dir / "extraction_run.json")
     )
 
-    expected_doc_key = verification_run_config.get("extra", {}).get("doc_key")
-    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=pdf_fp)
+    # 2.
+    expected_doc_key = extraction_run_config.extra["doc_key"]
+    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
 
     if computed_doc_key != expected_doc_key:
         raise ValueError(
             f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify():   {pdf_fp}\n"
+            f"  PDF provided to verify():   {extraction_config.pdf_fp}\n"
             f"  computed doc_key:           {computed_doc_key}\n"
             f"  verification_run.json key:  {expected_doc_key}\n"
             f"You are likely stitching against a different PDF than the one used for "
@@ -321,28 +275,32 @@ def stitch(
             f"verification."
         )
 
-    logger.info(
-        f"Starting document IR stitching process using verified page IR JSONs from: "
-        f"{page_irs_verified_dir}"
+    stitching_results_dir = (
+        extraction_config.output_dir / expected_doc_key / "stitching"
     )
-    logger.info(f"Loaded verification run config: {verification_run_config}")
-    logger.info(f"Saving stitching results to: {stitching_results_dir}")
 
     try:
-        # 2.
+        # 3.
         verified_page_irs = load_page_irs_from_verification(
-            expected_doc_key=expected_doc_key,
-            verified_page_irs_dir=page_irs_verified_dir,
+            doc_key=expected_doc_key, verified_page_irs_dir=page_irs_verified_dir
         )
 
-        # 3.
+        # 4.
+        stitching_dirs, stitching_run = persist_stitching_run(
+            config=config, output_dir=stitching_results_dir
+        )
+
+        # 5.
+        logger.info(
+            f"Starting document IR stitching process using verified page IR JSONs from: "
+            f"{page_irs_verified_dir}"
+        )
+
         stitch_document_ir(
+            config=config,
             doc_key=expected_doc_key,
-            keep_artifacts=keep_artifacts,
-            overwrite=overwrite,
             page_irs=verified_page_irs,
-            pdf_name=pdf_fp.name,
-            repair_hyphenation=repair_hyphenation,
+            pdf_name=extraction_config.pdf_fp.name,
             stitching_dirs=stitching_dirs,
         )
         stitching_run.extra["status"] = "success"
@@ -356,7 +314,6 @@ def stitch(
         }
         raise
     finally:
-        # 4.
         stitching_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
             fp=stitching_dirs.root / "stitching_run.json", json_info=stitching_run

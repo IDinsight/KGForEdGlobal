@@ -206,8 +206,7 @@ def verify(
     3. Validate page range.
     4. Persist verification run metadata.
     5. Run pairwise continuity verification across (N, N+1) in the selected page
-        range.
-    6. Write verified PageIR JSONs and finalize the verification run record.
+        range and write verified page IR JSONs to file.
 
     Parameters
     ----------
@@ -268,12 +267,13 @@ def verify(
             verification_dirs, verification_run = persist_verification_run(
                 config=config, output_dir=verification_results_dir
             )
+
+            # 5.
             logger.info(
                 f"Starting page IR continuity verification process using directories: "
                 f"{page_images_dir} and {page_irs_dir}"
             )
 
-            # 5.
             verify_page_ir_continuity(
                 config=config,
                 doc=doc,
@@ -293,7 +293,6 @@ def verify(
         }
         raise
     finally:
-        # 6.
         verification_run.completed_at = datetime.now(timezone.utc)
         write_to_json(
             fp=verification_dirs.root / "verification_run.json",

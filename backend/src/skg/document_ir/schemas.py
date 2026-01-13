@@ -160,3 +160,17 @@ class DocumentIR(BaseModelDocumentIR):
         default_factory=list,
         description="Any non-fatal issues detected during stitching.",
     )
+
+
+# Schemas for configs.
+class StitchingConfig(BaseModelDocumentIR):
+    """Configuration for document IR stitching from verified page IR JSONs."""
+
+    keep_artifacts: bool = Field(
+        False,
+        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
+    )
+    repair_hyphenation: bool = Field(
+        True, description="Whether to repair hyphenation for stitched text."
+    )
+    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
