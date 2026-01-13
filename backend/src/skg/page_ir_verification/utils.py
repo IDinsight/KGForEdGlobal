@@ -113,10 +113,6 @@ def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationD
 def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
     """Derive page-level boundary_state from verified item boundaries.
 
-    Scan all non-artifact, non-header/footer-noise items:
-      - from_prev if ANY item is resumed/both
-      - to_next if ANY item is truncated/both
-
     Parameters
     ----------
     page_ir
