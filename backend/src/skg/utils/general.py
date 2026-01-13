@@ -38,99 +38,6 @@ QUOTES_TRANSLATION = str.maketrans(
 )
 
 
-class Valid(BaseModel):
-    """Pydantic model for global valid values."""
-
-    completion_finish_reasons: tuple[
-        Literal[None, "function_call", "length", "stop"], ...
-    ] = (None, "function_call", "length", "stop")
-    json_file_exts: tuple[Literal[".json", ".jsonl"], ...] = (".json", ".jsonl")
-    logging_levels: tuple[
-        Literal["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"], ...
-    ] = ("CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING")
-
-    model_config = ConfigDict(extra="forbid", from_attributes=True)
-
-    @classmethod
-    def is_valid_completion_finish_reason(
-        cls, *, completion_finish_reason: str
-    ) -> bool:
-        """Check if a given completion finish reason is valid.
-
-        Parameters
-        ----------
-        completion_finish_reason
-            The completion finish reason to check.
-
-        Returns
-        -------
-        bool
-            True if the completion finish reason is valid, False otherwise.
-        """
-
-        return completion_finish_reason in cls().completion_finish_reasons
-
-    @classmethod
-    def is_valid_json_file_ext(cls, *, file_ext: str) -> bool:
-        """Check if a given JSON file extension is valid.
-
-        Parameters
-        ----------
-        file_ext
-            The file extension to check.
-
-        Returns
-        -------
-        bool
-            True if the file extension is valid, False otherwise.
-        """
-
-        return file_ext in cls().json_file_exts
-
-    @classmethod
-    def is_valid_logging_level(cls, *, logging_level: str) -> bool:
-        """Check if a given logging level is valid.
-
-        Parameters
-        ----------
-        logging_level
-            The logging level to check.
-
-        Returns
-        -------
-        bool
-            True if the logging level is valid, False otherwise.
-        """
-
-        return logging_level in cls().logging_levels
-
-
-def bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
-    """Return True if `inner` bbox is fully contained in `outer` bbox (with tolerance).
-
-    Parameters
-    ----------
-    inner
-        The inner bounding box [x0, y0, x1, y1].
-    outer
-        The outer bounding box [x0, y0, x1, y1].
-    tol
-        Tolerance in pixels.
-
-    Returns
-    -------
-    bool
-        True if `inner` is contained in `outer`, False otherwise.
-    """
-
-    ox0, oy0, ox1, oy1 = outer
-    ix0, iy0, ix1, iy1 = inner
-
-    return (
-        ix0 >= ox0 - tol and iy0 >= oy0 - tol and ix1 <= ox1 + tol and iy1 <= oy1 + tol
-    )
-
-
 def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     """Compare two directories to see if they contain the same files (ignoring file
     extensions).
@@ -259,31 +166,6 @@ def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
         Path.mkdir(dir_, exist_ok=True, mode=mode, parents=True)
         if verbose:
             logger.success(f"Created directory: {dir_}")
-
-
-def normalize_text(text: Optional[str]) -> str:
-    """Normalize text for comparisons.
-
-    Parameters
-    ----------
-    text
-        The text to normalize.
-
-    Returns
-    -------
-    str
-        The normalized text.
-    """
-
-    if text is None:
-        return ""
-
-    # Normalize unicode characters (e.g., standardize accents). NFKC form is usually
-    # best for compatibility comparisons.
-    text = unicodedata.normalize("NFKC", text)
-
-    # Collapse whitespace, strip, and lowercase.
-    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def open_json_type(filepath: str | Path) -> Any:

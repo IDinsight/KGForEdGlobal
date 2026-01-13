@@ -17,21 +17,21 @@ from skg.utils.constants import ItemBoundary, PageContinuationKind
 
 def verify_page_ir_pairs_from_extraction(
     *,
-    next_item_excerpt: dict[str, Any],
+    next_item: dict[str, Any],
     next_page_index: int,
-    prev_item_excerpt: dict[str, Any],
+    prev_item: dict[str, Any],
     prev_page_index: int,
 ) -> DotMap:
     """Generate the prompts for verifying PageIR pairs from the extraction step.
 
     Parameters
     ----------
-    next_item_excerpt
-        Excerpt of a candidate item near the TOP of page N+1 JSON.
+    next_item
+        The candidate item near the TOP of page N+1 JSON.
     next_page_index
         The 0-based page index of the next page (N+1).
-    prev_item_excerpt
-        Excerpt of a candidate item near the BOTTOM of page N JSON.
+    prev_item
+        The candidate item near the BOTTOM of page N JSON.
     prev_page_index
         The 0-based page index of the previous page (N).
 
@@ -41,24 +41,18 @@ def verify_page_ir_pairs_from_extraction(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
-    next_boundary_allowed = json.dumps([ItemBoundary.RESUMED.value], ensure_ascii=False)
-    prev_boundary_allowed = json.dumps(
-        [ItemBoundary.TRUNCATED.value], ensure_ascii=False
-    )
-
     system_message = dedent(
         f"""You are a strict PageIR continuity verifier.
 
 You will be given:
 1. Entire page N (IMAGE A)
 2. Top crop of page N+1 (IMAGE B)
-3. Excerpt of a candidate item near the BOTTOM of page N
-4. Excerpt of a candidate item near the TOP of page N+1
+3. Candidate item near the BOTTOM of page N
+4. Candidate item near the TOP of page N+1
 
 ## TASK
 1. Decide whether the candidate item at the BOTTOM of page N continues onto the candidate item at the TOP of page N+1.
 2. If (and only if) there is a continuation AND the existing continuity metadata is missing/incompatible, propose MINIMAL additive continuity-metadata edits.
-   - This step can ADD missing continuation markers, but it cannot remove/clear existing markers in the negative case.
 3. Return ONLY a JSON object matching the required schema and always include a short rationale string. No prose.
 
 ## HARD RULES
@@ -68,23 +62,26 @@ You will be given:
 4. DO NOT invent missing content.
 5. Only propose additive continuity edits in the positive case:
    - If is_continuation=true, you may set set_prev_item_boundary="{ItemBoundary.TRUNCATED.value}" and/or set_next_item_boundary="{ItemBoundary.RESUMED.value}" (or leave them null).
-   - If is_continuation=false, ALL set_* fields MUST be null (no edits allowed by schema).
+   - If is_continuation=false:
+     - You MUST set set_prev_item_boundary="{ItemBoundary.COMPLETE.value}" if the previous item is currently marked as TRUNCATED/BOTH.
+     - You MUST set set_next_item_boundary="{ItemBoundary.COMPLETE.value}" if the next item is currently marked as RESUMED/BOTH.
+     - Otherwise leave them null."
 6. For TABLE candidates, “continuation” is decided at the TABLE level (same grid + same header schema).
   - DO NOT require that the last row on page N continues into the first row on page N+1.
   - A change in table content/numbering is NORMAL within the SAME long table and is NOT evidence of a new table.
 7. Do NOT set repeats_header=true unless it is the SAME table continuing across the boundary.
-8. If is_continuation=false: leave ALL set_* fields null (no edits in the negative case).
-9. If either candidate item is a HEADING (or CAPTION), always set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence ≤ 0.49, and leave all set_* null. Never set boundary metadata for HEADING/CAPTION items.
+8. If either candidate item is a HEADING (or CAPTION), always set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* null.
+   - EXCEPTION: If the Next Candidate is a TABLE CAPTION that explicitly says "(continued)" (or similar) AND matches the Previous Candidate's table identifier, you MAY set is_continuation=true and continuation_kind="{PageContinuationKind.TABLE.value}". In this specific case, treat the caption as the anchor for the resuming table.
 10. ORDERING SAFETY (TEXT/LIST ONLY):
-  - If continuation_kind="{PageContinuationKind.TEXT.value}" (including lists) AND IMAGE B starts with a non-artifact HEADING/CAPTION/TITLE above the NEXT candidate block (e.g., "Table of Contents", "List of Figures", "Chapter 1", "Introduction"), then set: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
+  - If continuation_kind="{PageContinuationKind.TEXT.value}" (including lists) AND IMAGE B starts with a non-artifact HEADING/CAPTION/TITLE above the NEXT candidate block (e.g., "Table of Contents", "List of Figures", "Chapter 1", "Introduction"), then set: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* null.
   - Exception: This rule does not apply to TABLE continuations (tables may have captions like "Table X (continued)" above them).
 11. UNCERTAINTY POLICY (must follow exactly):
-  - Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence <= 0.49, and leave all set_* null.
-  - Exception for TABLE <-> TABLE candidates: If BOTH candidates are tables AND you have at least one STRONG continuation cue (per TABLE continuation signals below) AND there is NO visible new-table marker/caption/title at the boundary, you SHOULD set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", with confidence in [0.55, 0.70].
+  - Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* null.
+  - Exception for TABLE <-> TABLE candidates: If BOTH candidates are tables AND you have at least one STRONG continuation cue (per TABLE continuation signals below) AND there is NO visible new-table marker/caption/title at the boundary, you SHOULD set is_continuation=true, and continuation_kind="{PageContinuationKind.TABLE.value}".
 
 ## ALLOWED EDITS (METADATA ONLY)
-1. set_prev_item_boundary: one of {prev_boundary_allowed} (or null)
-2. set_next_item_boundary: one of {next_boundary_allowed} (or null)
+1. set_prev_item_boundary: {ItemBoundary.TRUNCATED.value} or null
+2. set_next_item_boundary: {ItemBoundary.RESUMED.value} or null
 3. set_next_table_repeats_header:
   - If the NEXT candidate is not a table, set_next_table_repeats_header MUST be null.
   - Only set this when is_continuation=true AND continuation_kind="{PageContinuationKind.TABLE.value}" AND the NEXT candidate is a table AND it is the SAME table continuing.
@@ -102,9 +99,9 @@ You will be given:
     - Header row repeats at the top of IMAGE B, OR
     - Column labels match exactly and grid/layout is clearly the same, OR
     - An explicit "(continued)" marker is visible.
-    - If none of these strong cues are present (e.g., caption may be outside the crop), follow the UNCERTAINTY POLICY.
+    - The visual grid structure (column vertical alignment, relative widths, and justification) aligns exactly between the bottom of IMAGE A and top of IMAGE B, implying a headless seamless break.
   - Continuation DOES NOT require a row/cell to be cut off mid-text. A page break BETWEEN complete rows is still a continuation.
-  - New table signals (ONLY THEN set is_continuation=false):
+  - New table signals (Strong evidence to set is_continuation=false):
     - A caption/title indicates a DIFFERENT table identifier than the previous one (e.g., Table 4 -> Table 5), OR the caption content clearly describes a different table.
     - A clear change in column count/labels/layout.
     - A visible boundary marker that clearly ends the table (see markers below).
@@ -114,7 +111,7 @@ You will be given:
   - Explicit markers:
     - "End of table"/"End"/"Conclusion of table" --> strong signal of NO continuation.
     - "(continued)"/"continued on next page"/"continued from previous page" --> strong signal of continuation (SAME table).
-  - If BOTH candidates are tables AND the column header schema appears the same (same labels/order/column count) AND the grid/layout is clearly the same, THEN set is_continuation=true, continuation_kind="table", confidence >= 0.70, UNLESS you can see an explicit NEW-table marker at the boundary (different table caption/identifier, different header schema, or a clear “End of table”). NOTE: Content changes, numbering jumps, or starting a new subject block are NOT new-table markers.
+  - If BOTH candidates are tables AND the column header schema appears the same (same labels/order/column count) AND the grid/layout is clearly the same, THEN set is_continuation=true, and continuation_kind="table", UNLESS you can see an explicit NEW-table marker at the boundary (different table caption/identifier, different header schema, or a clear “End of table”). NOTE: Content changes, numbering jumps, or starting a new subject block are NOT new-table markers.
   - IMPORTANT: Changes in row content/numbering are NORMAL within a long table and do NOT imply a new table.
 3. TEXT continuation signals:
   - Only choose continuation_kind="{PageContinuationKind.TEXT.value}" when you can see strong truncation in IMAGE A and a clear resumption in IMAGE B.
@@ -141,29 +138,29 @@ You will be given:
 4. If is_continuation=false, set continuation_kind="{PageContinuationKind.NONE.value}".
 5. If is_continuation=true AND continuation_kind="{PageContinuationKind.TABLE.value}", set set_next_table_repeats_header to true/false ONLY when you can confidently see whether headers repeat; otherwise leave it null.
 6. If is_continuation=true, the previous candidate should be compatible with continuing to next ("{ItemBoundary.TRUNCATED.value}" or "{ItemBoundary.BOTH.value}"), and the next candidate should be compatible with continuing from previous ("{ItemBoundary.RESUMED.value}" or "{ItemBoundary.BOTH.value}"). If incompatible, propose minimal boundary edits as allowed.
-7. Candidate mismatch safety (this rule does NOT apply when BOTH candidates are tables): If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", confidence low, and leave all set_* fields null.
+7. Candidate mismatch safety (this rule does NOT apply when BOTH candidates are tables): If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* fields null.
 8. When uncertain, follow the UNCERTAINTY POLICY above.
 
 ## PAIRWISE LIMITATION (CRITICAL, COMMON IN LONG TABLES)
-1. You see the entirety page N and the TOP of page N+1.
+1. You see the entirety page N but only the TOP of page N+1.
   - Therefore, DO NOT propose set_* boundaries of "{ItemBoundary.BOTH.value}" in this step.
   - Only propose set_prev_item_boundary="{ItemBoundary.TRUNCATED.value}" (or null) and set_next_item_boundary="{ItemBoundary.RESUMED.value}" (or null).
   - Note: the Python pipeline MAY end up with item.boundary="{ItemBoundary.BOTH.value}" if the item already had the opposite boundary (e.g., extractor marked "{ItemBoundary.RESUMED.value}" and verification adds "{ItemBoundary.TRUNCATED.value}"). That upgrade is handled in Python.
   - If a candidate boundary is already "{ItemBoundary.BOTH.value}", that is compatible with continuation; do not change it.
 
 ## CONFIDENCE CALIBRATION RULES
-1. Use confidence >= 0.75 only when continuation is visually obvious (clear cut/resume).
-2. Use 0.50–0.74 for plausible but not definitive.
-3. Use <= 0.49 when uncertain/no continuation.
-        """
+1. Use confidence >= 0.75 only when you are confident in your decision and rationale.
+2. Use 0.50–0.74 for plausible but not definitive conclusions.
+3. Use <= 0.49 when uncertain in your decision and human review is strongly recommended.
+            """
     )
 
     user_message = json.dumps(
         {
             "prev_page_index": prev_page_index,
             "next_page_index": next_page_index,
-            "prev_candidate_item_excerpt": prev_item_excerpt,
-            "next_candidate_item_excerpt": next_item_excerpt,
+            "prev_candidate_item": prev_item,
+            "next_candidate_item": next_item,
         },
         ensure_ascii=False,
         indent=2,

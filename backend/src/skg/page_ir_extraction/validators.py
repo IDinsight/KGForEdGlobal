@@ -82,7 +82,6 @@ class QualityError(Exception):
         self.failed_content = failed_content
 
 
-# Extraction validators.
 def _validate_single_table(*, index: int, table: Table) -> None:
     """Validate rows and global properties for a single table.
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from typing import Annotated, Literal, Optional, Self, Union
+from typing import Annotated, Literal, Optional, Self
 
 # Third Party Library
 from pydantic import (
@@ -435,7 +435,7 @@ class PageIR(BaseModelPageIRExtraction):
         None,
         description="Width of the source image in pixels. This should be populated by the Python pipeline; it may be null during extraction.",
     )
-    items: list[Union[Table, Block]] = Field(
+    items: list[Block | Table] = Field(
         ...,
         description="Ordered list of content items found on the page, sorted by visual reading order (e.g., multi-column left-to-right, then down)",
     )
