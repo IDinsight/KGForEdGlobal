@@ -107,6 +107,7 @@ class StatementRole(str, Enum):
 # Literals/sets for various constant types.
 CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
 NonArtifacts = {
+    "abbreviations and acronyms",
     "acknowledgements",
     "acknowledgments",
     "bibliography",
