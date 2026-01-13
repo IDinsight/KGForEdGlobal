@@ -26,28 +26,6 @@ from pydantic import BaseModel
 from skg.schemas import Valid
 
 
-def clamp(x: float, *, low: float, high: float) -> int:
-    """Clamp a floating-point number to be within a specified range and convert to an
-    integer.
-
-    Parameters
-    ----------
-    x
-        The floating-point number to clamp.
-    low
-        The lower bound of the range.
-    high
-        The upper bound of the range.
-
-    Returns
-    -------
-    int
-        The clamped integer value.
-    """
-
-    return int(max(low, min(high, x)))
-
-
 def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     """Compare two directories to see if they contain the same files (ignoring file
     extensions).
@@ -176,27 +154,6 @@ def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
         Path.mkdir(dir_, exist_ok=True, mode=mode, parents=True)
         if verbose:
             logger.success(f"Created directory: {dir_}")
-
-
-def near(a: float, b: float, *, tol: float) -> bool:
-    """Check if two floating-point numbers are near each other within a tolerance.
-
-    Parameters
-    ----------
-    a
-        The first floating-point number.
-    b
-        The second floating-point number.
-    tol
-        The tolerance within which the two numbers are considered "near".
-
-    Returns
-    -------
-    bool
-        True if the two numbers are within the specified tolerance, False otherwise.
-    """
-
-    return abs(a - b) <= tol
 
 
 def open_json_type(filepath: str | Path) -> Any:

@@ -23,8 +23,15 @@ from tenacity import (
 )
 
 # Package Library
+from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
+from skg.page_ir_verification.validators import (
+    validate_boundary_logic,
+    validate_item_continuation_kind,
+    validate_page_continuation_kind,
+    validate_semantic_flow,
+)
 from skg.prompts.page_ir_verification import verify_page_ir_pairs_from_extraction
 from skg.schemas import Limits
 from skg.utils.general import encode_png_to_data_url
@@ -50,7 +57,12 @@ openai_client = OpenAI()
     wait=wait_random_exponential(min=1, max=60),
 )
 def _call_openai_api_for_page_ir_verification(
-    *, input_items: list[Any], instructions: str, model: str
+    *,
+    input_items: list[Any],
+    instructions: str,
+    model: str,
+    next_item: Block | Table,
+    prev_item: Block | Table,
 ) -> PageIRContinuityVerdict:
     """Wrapper for verification API calls with retries.
 
@@ -62,6 +74,10 @@ def _call_openai_api_for_page_ir_verification(
         The verification instructions to include.
     model
         The OpenAI model to use.
+    next_item
+        The next page candidate item.
+    prev_item
+        The previous page candidate item.
 
     Returns
     -------
@@ -93,7 +109,9 @@ def _call_openai_api_for_page_ir_verification(
         )
 
     try:
-        verify_page_ir_continuity_verdict(parsed)
+        verify_page_ir_continuity_verdict(
+            next_item=next_item, prev_item=prev_item, verdict=parsed
+        )
     except QualityError as e:
         # Attach the raw output so the correction attempt can see what it wrote.
         raise QualityError(str(e), failed_content=output_text) from e
@@ -102,12 +120,19 @@ def _call_openai_api_for_page_ir_verification(
 
 
 def verify_page_ir_continuity_verdict(
+    *,
+    next_item: Block | Table,
+    prev_item: Block | Table,
     verdict: PageIRContinuityVerdict,
 ) -> None:
     """Validate the semantic consistency of a continuity verdict.
 
     Parameters
     ----------
+    next_item
+        The next page candidate item.
+    prev_item
+        The previous page candidate item.
     verdict
         The PageIRContinuityVerdict to validate.
 
@@ -124,15 +149,22 @@ def verify_page_ir_continuity_verdict(
             f"Low confidence ({verdict.confidence}) for continuation verdict."
         )
 
+    validate_page_continuation_kind(verdict)
+    validate_item_continuation_kind(
+        next_item=next_item, prev_item=prev_item, verdict=verdict
+    )
+    validate_boundary_logic(next_item=next_item, prev_item=prev_item, verdict=verdict)
+    validate_semantic_flow(next_item=next_item, verdict=verdict)
+
 
 def verify_page_ir_pairs(
     *,
     max_retries: int = 2,
     model: str,
-    next_item_excerpt: dict[str, Any],
+    next_item: dict[str, Any],
     next_page_index: int,
     next_png: Path,
-    prev_item_excerpt: dict[str, Any],
+    prev_item: dict[str, Any],
     prev_page_index: int,
     prev_png: Path,
 ) -> PageIRContinuityVerdict:
@@ -144,14 +176,14 @@ def verify_page_ir_pairs(
         Maximum number of retries for quality errors.
     model
         The OpenAI model to use.
-    next_item_excerpt
-        Excerpt of the candidate near top item from page N+1 JSON.
+    next_item
+        The candidate item near top item from page N+1 JSON.
     next_page_index
         The 0-based index of the next page (N+1).
     next_png
         The PNG file path of page N+1.
-    prev_item_excerpt
-        Excerpt of the candidate near bottom item from page N JSON.
+    prev_item
+        The candidate item near bottom item from page N JSON.
     prev_page_index
         The 0-based index of the previous page (N).
     prev_png
@@ -173,9 +205,9 @@ def verify_page_ir_pairs(
     prev_image_url = encode_png_to_data_url(prev_png)
     next_image_url = encode_png_to_data_url(next_png)
     prompts = verify_page_ir_pairs_from_extraction(
-        next_item_excerpt=next_item_excerpt,
+        next_item=next_item,
         next_page_index=next_page_index,
-        prev_item_excerpt=prev_item_excerpt,
+        prev_item=prev_item,
         prev_page_index=prev_page_index,
     )
     instructions = prompts.system_message
@@ -204,11 +236,21 @@ def verify_page_ir_pairs(
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
+                next_item=(
+                    Block.model_validate(next_item)
+                    if next_item["kind"] == "block"
+                    else Table.model_validate(next_item)
+                ),
+                prev_item=(
+                    Block.model_validate(prev_item)
+                    if prev_item["kind"] == "block"
+                    else Table.model_validate(prev_item)
+                ),
             )
         except QualityError as e:
             if attempt == max_retries:
                 logger.error(
-                    f"Verification failed after retries for pages "
+                    f"Verification failed after exhausting retries for pages "
                     f"{prev_page_index}-{next_page_index}."
                 )
                 raise  # Re-raise the final quality error

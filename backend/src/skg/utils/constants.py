@@ -121,14 +121,3 @@ NonArtifacts = {
 }
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"]
-SectionBreakHeadings = {
-    "appendix",
-    "bibliography",
-    "contents",
-    "index",
-    "list of figures",
-    "list of tables",
-    "reference list",
-    "references",
-    "table of contents",
-}

@@ -19,7 +19,7 @@
 		"year": 2023
 	},
 	"page_ir_verification": {
-		"end_page": null,
+		"end_page": 6,
 		"model": "gpt-5.2-2025-12-11",
 		"start_page": 0
 	}
