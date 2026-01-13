@@ -41,14 +41,14 @@ def validate_boundary_logic(
     eff_next_boundary = verdict.set_next_item_boundary or next_item.boundary
 
     # Previous item (bottom of Page N) must be TRUNCATED or BOTH. It cannot be COMPLETE.
-    if eff_prev_boundary == ItemBoundary.COMPLETE.value:
+    if eff_prev_boundary == ItemBoundary.COMPLETE:
         raise QualityError(
             f"verdict.is_continuation=True, but previous item is '{ItemBoundary.COMPLETE.value}' "
             f"and no set_prev_item_boundary edit was proposed to fix it."
         )
 
     # Next item (top of Page N+1) must be RESUMED or BOTH. It cannot be COMPLETE.
-    if eff_next_boundary == ItemBoundary.COMPLETE.value:
+    if eff_next_boundary == ItemBoundary.COMPLETE:
         raise QualityError(
             f"verdict.is_continuation=True, but next item is '{ItemBoundary.COMPLETE.value}' "
             f"and no set_next_item_boundary edit was proposed to fix it."
@@ -173,7 +173,7 @@ def validate_negative_case_logic(
 
     # Check previous item (bottom of Page N). If it was TRUNCATED, and we now say
     # "False", it should probably be COMPLETE.
-    if eff_prev_boundary in {ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value}:
+    if eff_prev_boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}:
         raise QualityError(
             f"verdict.is_continuation=False, but the previous item is still marked "
             f"'{eff_prev_boundary}'. This implies it continues. "
@@ -183,7 +183,7 @@ def validate_negative_case_logic(
 
     # Check next item (top of Page N+1). If it was RESUMED, and we now say "False", it
     # should probably be COMPLETE.
-    if eff_next_boundary in {ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value}:
+    if eff_next_boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
         raise QualityError(
             f"verdict.is_continuation=False, but the next item is still marked "
             f"'{eff_next_boundary}'. This implies it resumes from somewhere. "
@@ -243,7 +243,7 @@ def validate_semantic_flow(
 
     # Text cannot continue into a Heading/Title.
     if (
-        verdict.continuation_kind == PageContinuationKind.TEXT.value
+        verdict.continuation_kind == PageContinuationKind.TEXT
         and next_item.kind == "block"
         and next_item.block_type == BlockType.HEADING
     ):
@@ -258,7 +258,7 @@ def validate_semantic_flow(
     # container MUST be a Table. A caption block cannot physically contain the repeated
     # grid rows.
     if (
-        verdict.continuation_kind == PageContinuationKind.TABLE.value
+        verdict.continuation_kind == PageContinuationKind.TABLE
         and verdict.set_next_table_repeats_header is True
         and next_item.kind != "table"
     ):

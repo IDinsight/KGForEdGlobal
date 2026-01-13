@@ -14,7 +14,7 @@ from loguru import logger
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TableCell, TextUnit
-from skg.page_ir_verification.schemas import VerificationConfig
+from skg.page_ir_verification.schemas import PageIRContinuityVerdict, VerificationConfig
 from skg.schemas import RunCtx
 from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 from skg.utils.general import make_dir, write_to_json
@@ -28,6 +28,104 @@ class PageIRVerificationDirs:
     page_irs_pair_crops: Path
     page_irs_pair_reports: Path
     page_irs_verified: Path
+
+
+def _merge_boundary(
+    *, existing: ItemBoundary | None, patch: ItemBoundary
+) -> ItemBoundary:
+    """Merge a boundary patch into an existing boundary, upgrading to BOTH when needed.
+
+    Parameters
+    ----------
+    existing
+        The existing boundary state, or None if not set.
+    patch
+        The boundary state to apply.
+
+    Returns
+    -------
+    ItemBoundary
+        The merged boundary state.
+    """
+
+    # If the patch is definitive (BOTH/COMPLETE) or we have no history, the patch wins.
+    if existing is None or patch in (ItemBoundary.BOTH, ItemBoundary.COMPLETE):
+        return patch
+
+    # If existing is already BOTH, it absorbs partial updates (TRUNCATED/RESUMED).
+    if existing == ItemBoundary.BOTH:
+        return existing
+
+    # If we have one TRUNCATED and one RESUMED (in any order), they combine to BOTH.
+    # Note: We use a set for order-independent comparison.
+    if {existing, patch} == {ItemBoundary.TRUNCATED, ItemBoundary.RESUMED}:
+        return ItemBoundary.BOTH
+
+    # In all other cases (e.g., existing==patch, or existing is COMPLETE but patch is
+    # TRUNCATED), the patch simply overwrites the state.
+    return patch
+
+
+def apply_continuity_verdict(
+    *,
+    min_confidence_to_patch: float,
+    next_item: Block | Table,
+    prev_item: Block | Table,
+    verdict: PageIRContinuityVerdict,
+) -> dict[str, Any] | None:
+    """Apply LLM verdict edits to the *actual* PageIR items (mutates in-place).
+
+    Parameters
+    ----------
+    min_confidence_to_patch
+        Minimum confidence threshold to apply edits.
+    next_item
+        The next page candidate item.
+    prev_item
+        The previous page candidate item.
+    verdict
+        The continuity verdict from the model.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        A dictionary of applied edits, or None if no edits were applied.
+    """
+
+    if verdict.confidence < min_confidence_to_patch:
+        logger.warning(
+            f"Verdict confidence {verdict.confidence} below threshold "
+            f"{min_confidence_to_patch}, skipping edits."
+        )
+        return None
+
+    edits: dict[str, Any] = {}
+
+    if verdict.set_prev_item_boundary is not None:
+        before = prev_item.boundary
+        after = _merge_boundary(existing=before, patch=verdict.set_prev_item_boundary)
+        if after != before:
+            prev_item.boundary = after
+            edits["prev_boundary"] = {"before": before, "after": after}
+
+    if verdict.set_next_item_boundary is not None:
+        before = next_item.boundary
+        after = _merge_boundary(existing=before, patch=verdict.set_next_item_boundary)
+        if after != before:
+            next_item.boundary = after
+            edits["next_boundary"] = {"before": before, "after": after}
+
+    if verdict.set_next_table_repeats_header is not None:
+        # Validators should ensure this only happens when next_item is a table,
+        # but keep it safe.
+        if next_item.kind == "table":
+            before = getattr(next_item, "repeats_header", None)
+            after = verdict.set_next_table_repeats_header
+            if after != before:
+                next_item.repeats_header = after
+                edits["next_repeats_header"] = {"before": before, "after": after}
+
+    return edits or None
 
 
 def bottommost_continuity_candidate(
@@ -571,7 +669,7 @@ def topmost_continuity_candidate_paired(
     # with a Block, we look for a Block (skipping a table that might sit at the top).
     target_kind = prev_item.kind
 
-    for i, item in candidates:
+    for i, item in candidates[:5]:
         current_kind = item.kind
 
         if target_kind == "table" and current_kind == "table":

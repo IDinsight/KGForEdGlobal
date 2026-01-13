@@ -203,6 +203,12 @@ class VerificationConfig(BaseModelPageIRVerification):
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default: to end."
     )
+    min_confidence_to_patch: float = Field(
+        0.75,
+        ge=0.0,
+        le=1.0,
+        description="Only apply boundary/repeats_header patches when verdict.confidence >= this threshold.",
+    )
     model: str = Field(
         "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
     )

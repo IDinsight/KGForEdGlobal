@@ -41,6 +41,7 @@ from skg.page_ir_verification.llm import verify_page_ir_pairs
 from skg.page_ir_verification.schemas import VerificationConfig
 from skg.page_ir_verification.utils import (
     PageIRVerificationDirs,
+    apply_continuity_verdict,
     bottommost_continuity_candidate,
     persist_verification_run,
     postprocess_verified_page_irs,
@@ -151,6 +152,14 @@ def verify_page_ir_continuity(
         verdict.prev_page_index = i
         verdict.next_page_index = i + 1
 
+        # Apply continuity verdict to page IRs.
+        applied_edits = apply_continuity_verdict(
+            min_confidence_to_patch=config.min_confidence_to_patch,
+            next_item=next_item,
+            prev_item=prev_item,
+            verdict=verdict,
+        )
+
         # Persist the verdict.
         write_to_json(
             fp=verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json",
@@ -161,6 +170,7 @@ def verify_page_ir_continuity(
                     "prev_candidate": prev_item_json,
                     "next_candidate": next_item_json,
                 },
+                "applied_edits": applied_edits,
                 "verdict": verdict.model_dump(mode="json"),
             },
         )
