@@ -70,8 +70,14 @@ You will be given:
   - DO NOT require that the last row on page N continues into the first row on page N+1.
   - A change in table content/numbering is NORMAL within the SAME long table and is NOT evidence of a new table.
 7. Do NOT set repeats_header=true unless it is the SAME table continuing across the boundary.
-8. If either candidate item is a HEADING (or CAPTION), always set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* null.
-   - EXCEPTION: If the Next Candidate is a TABLE CAPTION that explicitly says "(continued)" (or similar) AND matches the Previous Candidate's table identifier, you MAY set is_continuation=true and continuation_kind="{PageContinuationKind.TABLE.value}". In this specific case, treat the caption as the anchor for the resuming table.
+8. HEADING/CAPTION SAFETY (TEXT ONLY):
+  - NEVER treat a HEADING or CAPTION as part of a TEXT continuation.
+  - If you would otherwise choose continuation_kind="text" but either candidate is a HEADING/CAPTION, then set is_continuation=false and continuation_kind="none".
+  - In the negative case, close dangling TRUNCATED/RESUMED boundaries by setting them to "complete" when required.
+9. CAPTION-AS-ANCHOR FOR TABLE CONTINUATION:
+  - This safety rule does NOT block TABLE continuation.
+  - If the previous candidate is a TABLE and the next candidate is a CAPTION/HEADING/PARAGRAPH that clearly labels the SAME table continuing on page N+1 (e.g., "Table X (continued)" or similar), you MAY set is_continuation=true and continuation_kind="table".
+  - In that case, set_next_table_repeats_header MUST be null (because the next candidate is not a Table).
 10. ORDERING SAFETY (TEXT/LIST ONLY):
   - If continuation_kind="{PageContinuationKind.TEXT.value}" (including lists) AND IMAGE B starts with a non-artifact HEADING/CAPTION/TITLE above the NEXT candidate block (e.g., "Table of Contents", "List of Figures", "Chapter 1", "Introduction"), then set: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* null.
   - Exception: This rule does not apply to TABLE continuations (tables may have captions like "Table X (continued)" above them).

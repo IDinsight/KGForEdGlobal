@@ -402,12 +402,15 @@ def normalize_table_row_cell_counts(
             for row_index, row in enumerate(rows):
                 cells = row.cells or []
 
-                # Keep as is.
-                current_len = len(cells)
-                if current_len >= n_cols:
+                # Count effective columns, respecting merged cells.
+                effective_cols = sum((cell.col_span or 1) for cell in cells)
+
+                # Keep as is if the row already covers the table width (including
+                # merged cells).
+                if effective_cols >= n_cols:
                     continue
 
-                missing = n_cols - len(cells)
+                missing = n_cols - effective_cols
 
                 # Heuristic: left vs. right padding. If the first cell contains a code
                 # (e.g., "3.2"), the missing cells are likely leading empty columns
@@ -428,7 +431,8 @@ def normalize_table_row_cell_counts(
                 changes.append(
                     {
                         "after": n_cols,
-                        "before": current_len,
+                        "before_cells": len(cells),
+                        "before_effective_cols": effective_cols,
                         "item_index": item_index,
                         "page": page_index,
                         "row_index": row_index,
@@ -623,7 +627,7 @@ def topmost_continuity_candidate_paired(
 
     1. Filter out artifacts and noise.
     2. Sort by top edge (y0) ascending (closest to top first).
-    3. Scan the top 5 items:
+    3. Scan the top items:
         - If we find an item of the SAME kind as prev_item (Table/Block), return it.
         - This allows us to skip over a heading/caption to link Table-to-Table, or skip
             over a top-aligned Table to link Text-to-Text.
@@ -664,12 +668,12 @@ def topmost_continuity_candidate_paired(
     # Sort by top-edge (y0) ascending (bbox is [x0, y0, x1, y1]).
     candidates.sort(key=lambda p: float(p[1].bbox[1]))
 
-    # Scan top 5 items for a "kind" match. If the previous page ended with a Table, we
+    # Scan top items for a "kind" match. If the previous page ended with a Table, we
     # look for a Table at the top of this page (skipping headers/text). If it ended
     # with a Block, we look for a Block (skipping a table that might sit at the top).
     target_kind = prev_item.kind
 
-    for i, item in candidates[:5]:
+    for i, item in candidates:
         current_kind = item.kind
 
         if target_kind == "table" and current_kind == "table":
