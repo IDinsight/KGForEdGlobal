@@ -87,7 +87,7 @@ def extract_page_ir_from_pdf_page(
 7. If you see an explicit curriculum code/section code/table number associated with a block or table, put it in `local_code` verbatim.
   - Preserve punctuation exactly (dots/hyphens/slashes). Dot sequences matter.
   - Examples: "3.9.4.1", "B5.2.1.1", "Table 1.2", "P1-THEME 3.2".
-8. If you set local_code, do not include that code in text.
+8. If you set local_code, do not include that code in `text`, **UNLESS** the block consists *only* of that code. In that case, keep the code in `text` (so the block is not empty) and also put it in `local_code`.
 9. **ANTI-FULL-PAGE FAILSAFE (CRITICAL)**:
   - If the page contains substantial readable text (e.g., more than ~2 lines of body text, a TOC/list of entries, paragraphs like "Acknowledgements", or any multi-line section content), you MUST NOT output a single full-page FIGURE item.
   - In those cases, extract the text into "{BlockType.HEADING.value}"/"{BlockType.PARAGRAPH.value}"/"{BlockType.LIST.value}" blocks (and TABLE items if there is a grid).
@@ -121,7 +121,7 @@ def extract_page_ir_from_pdf_page(
   - "{ItemBoundary.COMPLETE.value}": Fully contained on this page
 2. Focus on setting each item's `boundary` correctly ("{ItemBoundary.RESUMED.value}"/"{ItemBoundary.TRUNCATED.value}"/"{ItemBoundary.BOTH.value}"/"{ItemBoundary.COMPLETE.value}") based on visible continuation cues.
 3. DO NOT rely on whether table borders are drawn. Many PDFs repeat gridlines and headers on continuation pages.
-4. Page `boundary_state` is derived by Python from item boundaries. You may omit it.
+4. Page `boundary_state` MUST be omitted (it is derived by Python).
 5. For block_type="{BlockType.FIGURE.value}": default boundary="{ItemBoundary.COMPLETE.value}" unless the same figure is visibly cut off by the page edge.
 
 ## BLOCK CLASSIFICATIONS
@@ -141,7 +141,7 @@ def extract_page_ir_from_pdf_page(
 
 ## BLOCK TYPES
 1. Do not emit any block that contains no content.
-  - For block_type in {text_block_types}: block must have non-empty `text`.
+  - For block_type in {text_block_types}: block must have non-empty `text`. The `text` field MUST be a TextUnit object ({{"text": "...", "language": "...", "text_en": null}}), NOT a string.
   - For block_type="{BlockType.LIST.value}": block must have non-empty `list_items` and `text=null`.
   - For block_type="{BlockType.FIGURE.value}": block must have a non-null `figure` object and `text=null` and `list_items=null`.
   - For block_type="{BlockType.ARTIFACT.value}": must have non-empty text (page number/running header/footer), never full-page.
@@ -197,9 +197,11 @@ def extract_page_ir_from_pdf_page(
       - It is explicitly referenced in nearby text (e.g., “see figure…”, “as shown below”), OR
       - It is clearly required to answer/understand the exercise (e.g., a clock face for time, a shape pattern for counting).
     - Ignore tiny decorative/illustrative icons (pure decoration, repeated ornaments) and do NOT emit a FIGURE block for them (treat as no-op).
+12. **REPEATED HEADERS**: If the table is a continuation from a previous page ("{ItemBoundary.RESUMED.value}" or "{ItemBoundary.BOTH.value}") AND the header rows are repeated visually, set `repeats_header=true`. Otherwise false.
 
 ## LIST
 1. For each list item:
+  - **Disambiguation**: If a numbered line is a standalone section title, treat it as a "{BlockType.HEADING.value}" (use `local_code`). Only use "{BlockType.LIST.value}" if it is part of a vertical sequence of items.
   - If there is an explicit bullet/number/letter/code marker visible (e.g., "•", "1.", "a)", "(i)", "3.9.4.1"), set `marker` to that EXACT marker (verbatim) and put the remaining content in `text`.
   - If the line is list-like but has NO explicit marker (common in Table of Contents/dot-leader entries/indented outlines), set `marker` to null.
     - DO NOT invent markers.
@@ -231,23 +233,19 @@ def extract_page_ir_from_pdf_page(
     )
 
     user_message = dedent(
-        f"""Extract PageIR for the provided image (context: this is page_index={page_index} in the PDF).
+        f"""Extract PageIR for the provided image (context: this is page_index={page_index}).
 
-Reminders:
-1. Identify blocks (including figure blocks) and tables from the {image_width}x{image_height} image.
-2. Set "kind": "block" or "kind": "table" for every entry.
-3. Do NOT translate. `TextUnit.text_en` must be null/omitted.
-4. Use the best-match BCP-47 language code for the visible text (not limited to Expected Languages). Use "und" if unknown. Use "mul" if mixed languages are present.
-5. Only set repeats_header when the table is "{ItemBoundary.RESUMED.value}"/"{ItemBoundary.BOTH.value}" (i.e., continuing from previous page). Never set it for "{ItemBoundary.COMPLETE.value}" tables.
-6. If you can confidently count the table's columns, set "n_cols".
-7. If you see a diagram/figure (not a table), output a block_type="{BlockType.FIGURE.value}" block with a `figure` object and tight bbox.
-8. LIST MARKERS: If a list entry has no explicit bullet/number (e.g., TOC dot-leader lines), set list_items[i].marker = null (not "") and keep the whole entry (including dot leaders + page number) in list_items[i].text.
-9. If you see a real bottom-of-page footnote (often after a thin horizontal line), classify it as block_type="{BlockType.FOOTNOTE.value}" with `text` populated. Do NOT treat it as artifact.
+## CONTEXTUAL OVERRIDES AND CHECKS
+1. **Identify Content**: Identify all blocks and tables in the {image_width}x{image_height} image.
+2. **Missing List Markers**: As per rules, if a list entry (like a TOC line) has no explicit bullet/number, set `marker=null` (do not invent one).
+3. **Table Columns**: If visual columns are clear, explicitly set `n_cols`.
+4. **Continuations**: Check the top of the page. If a table continues from the previous page, mark it as "{ItemBoundary.RESUMED.value}" (or "{ItemBoundary.BOTH.value}") and set `repeats_header` if applicable.
 
-Final check before output:
-- If you are outputting exactly ONE item, stop and re-evaluate: is the page truly a full-page graphic/scan with ~no text?
-  - If NO: split into multiple blocks/tables with tight bboxes.
-- No item bbox may be full-page or reused across items (except the strict single full-page figure case above).
+## FINAL SAFETY CHECK
+Before outputting, verify:
+1. **Anti-Hallucination**: Did you invent text for a blank cell? (Set text: null instead).
+2. **Anti-Full-Page**: If you have exactly ONE item, is it strictly a full-page image/scan? If there is readable body text, you MUST split it into paragraph/heading blocks.
+3. **BBox Validity**: Ensure no bboxes are overlapping significantly or identical (unless nested), and all are within [0, 0, {image_width}, {image_height}].
         """
     )
 
