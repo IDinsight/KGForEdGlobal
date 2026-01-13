@@ -182,7 +182,9 @@ def extract(
     """
 
     # 1.
-    config = ExtractionConfig.model_validate(open_json_type(config_fp)["extraction"])
+    config = ExtractionConfig.model_validate(
+        open_json_type(config_fp)["page_ir_extraction"]
+    )
     doc_key, extraction_dirs, extraction_run = persist_extraction_run(config=config)
     logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
