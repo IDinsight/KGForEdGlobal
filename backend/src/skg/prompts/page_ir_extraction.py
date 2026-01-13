@@ -189,13 +189,14 @@ def extract_page_ir_from_pdf_page(
 9. Do not output empty tables; if you see a table, it must have at least one row.
 10. Do NOT misclassify tables as figures. If there is a ruled grid with cells, it must be a table.
 11. **FIGURES INSIDE TABLE CELLS**:
-  - If you see an image/diagram/illustration INSIDE a table cell (e.g., a clock picture, blocks, icons), you MUST:
-    - Still extract the table grid normally (cell text may be null if no text), AND
-    - ALSO emit a separate FIGURE block with a tight bbox around the embedded image region.
-  - The FIGURE block bbox may overlap the table bbox. That is OK and expected.
-  - For that FIGURE block:
-    - kind="block", block_type="figure", text=null, list_items=null
-    - figure={{alt_text (short), contains_text, embedded_text if needed, figure_kind}}
+  - If you see an image/diagram/illustration INSIDE a table cell (e.g., a clock picture, blocks, icons):
+    - Always extract the table grid normally (cell text may be null if no text).
+    - Only ALSO emit a separate FIGURE block for the embedded image if it is MEANINGFUL CONTENT, e.g.:
+      - It contains visible text/labels/numbers/symbols that matter (set figure.contains_text=true and populate figure.embedded_text best-effort), OR
+      - It is a diagram/chart/graph/table-like figure that changes meaning (e.g., number line, geometric pattern, labeled picture), OR
+      - It is explicitly referenced in nearby text (e.g., “see figure…”, “as shown below”), OR
+      - It is clearly required to answer/understand the exercise (e.g., a clock face for time, a shape pattern for counting).
+    - Ignore tiny decorative/illustrative icons (pure decoration, repeated ornaments) and do NOT emit a FIGURE block for them (treat as no-op).
 
 ## LIST
 1. For each list item:

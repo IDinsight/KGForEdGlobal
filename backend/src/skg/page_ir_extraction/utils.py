@@ -160,7 +160,7 @@ def is_truncated(boundary: str) -> bool:
 
 def load_page_irs_from_extraction(
     *, end_page: int, page_irs_dir: Path, start_page: int
-) -> dict[int, dict[str, Any]]:
+) -> dict[int, PageIR]:
     """Load page IR JSONs from the extraction output directory.
 
     Parameters
@@ -174,24 +174,14 @@ def load_page_irs_from_extraction(
 
     Returns
     -------
-    dict[int, dict[str, Any]]
+    dict[int, PageIR]
         The dictionary of page IRs by page index.
     """
 
-    page_irs: dict[int, dict[str, Any]] = {
-        i: PageIR.model_validate(
-            open_json_type(page_irs_dir / f"{i:04}.json")
-        ).model_dump(mode="json")
+    return {
+        i: PageIR.model_validate(open_json_type(page_irs_dir / f"{i:04}.json"))
         for i in range(start_page, end_page)
     }
-
-    # Preserve extraction hints (internal-only) so reports can show what the extractor
-    # believed. Verification will PATCH only when confidence is high.
-    for page_ir in page_irs.values():
-        for item in page_ir.get("items", []):
-            item["_orig_boundary"] = item.get("boundary")
-
-    return page_irs
 
 
 def persist_extraction_run(
@@ -233,7 +223,6 @@ def persist_extraction_run(
     write_to_json(
         fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
     )
-    logger.info(f"Extraction directory: {extraction_dirs.root}")
     logger.info(f"Saving extraction results to: {extraction_dirs.root}")
 
     return doc_key, extraction_dirs, extraction_run

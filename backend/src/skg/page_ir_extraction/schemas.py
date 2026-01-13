@@ -448,46 +448,148 @@ class PageIR(BaseModelPageIRExtraction):
         description="Source PDF filename (no path). This should be populated by the Python pipeline; it may be null during extraction.",
     )
 
+    def _extract_code_string(self, text: str) -> str | None:
+        """Regex matching logic.
+
+        Parameters
+        ----------
+        text
+            The text to extract from.
+
+        Returns
+        -------
+        str | None
+            The extracted code string, or None if not found.
+        """
+
+        s = (text or "").strip()
+
+        if not s:
+            return None
+
+        if (m := self._table_text_re.match(s)) is not None:
+            return f"Table {m.group('num')}"
+
+        if (m := self._figure_text_re.match(s)) is not None:
+            return f"Figure {m.group('num')}"
+
+        return None
+
+    def _find_next_content_item(self, start_index: int) -> Table | Block | None:
+        """Find the next item that is not an artifact.
+
+        Parameters
+        ----------
+        start_index
+            The index to start searching from.
+
+        Returns
+        -------
+        Table | Block | None
+            The next non-artifact item, or None if not found.
+        """
+
+        for j in range(start_index, len(self.items)):
+            nxt = self.items[j]
+            if isinstance(nxt, Block) and nxt.block_type == BlockType.ARTIFACT:
+                continue
+            return nxt
+
+        return None
+
+    def _resolve_item_code(self, item: Block) -> str | None:
+        """Determine the code based on local_code or text content.
+
+        Parameters
+        ----------
+        item
+            The Block item to extract the code from.
+
+        Returns
+        -------
+        str | None
+            The resolved code string, or None if not found.
+        """
+
+        # Check existing local_code first.
+        if item.local_code:
+            normalized = self._extract_code_string(item.local_code)
+            if normalized:
+                return normalized
+
+        # Fallback to text content.
+        if item.text:
+            return self._extract_code_string(item.text.text)
+
+        return None
+
     @model_validator(mode="after")
     def propagate_table_codes(self) -> PageIR:
-        """Propagate table codes from caption blocks to the subsequent table if
-        missing.
+        """Propagate Table/Figure codes from adjacent label blocks to the subsequent
+        Table/Figure item if missing.
+
+        This is intentionally light-weight and schema-preserving:
+
+        1. It can derive a code from Block.text.text (e.g., "Table 3.9.4.1: ...").
+        2. It works even if the label block is misclassified (caption vs. heading vs.
+            paragraph).
+        3. It only propagates to the immediately-next non-artifact item.
 
         Returns
         -------
         PageIR
-            The passed in PageIR with propagated table codes.
+            The passed in PageIR with propagated table/figure codes.
         """
 
-        # If a caption block carries a Table code (e.g., "Table 5") and the next
-        # non-artifact item is a table, copy that code onto the table itself.
-        table_code_re = re.compile(r"(?i)^\s*table\s+\d+(?:\.\d+)*\b")
+        self._table_text_re = re.compile(r"(?i)^\s*table\s+(?P<num>\d+(?:\.\d+)*)\b")
+        self._figure_text_re = re.compile(r"(?i)^\s*figure\s+(?P<num>\d+(?:\.\d+)*)\b")
+
+        eligible_label_types = {
+            BlockType.CAPTION,
+            BlockType.HEADING,
+            BlockType.PARAGRAPH,
+        }
 
         for i, item in enumerate(self.items):
-            if not isinstance(item, Block) or item.block_type != BlockType.CAPTION:
+            # Check eligibility.
+            if (
+                not isinstance(item, Block)
+                or item.block_type not in eligible_label_types
+            ):
                 continue
 
-            current_code = (item.local_code or "").strip()
-
-            if not current_code or not table_code_re.match(current_code):
+            # Derive/normalize code.
+            code = self._resolve_item_code(item)
+            if not code:
                 continue
 
-            # Look ahead to the next non-artifact item (sometimes a page number sits
-            # between).
-            j = i + 1
-            while j < len(self.items):
-                nxt = self.items[j]
-                if isinstance(nxt, Block) and nxt.block_type == BlockType.ARTIFACT:
-                    j += 1
-                    continue
-                break
+            # Update current item if needed.
+            if not (item.local_code or "").strip():
+                item.local_code = code
 
-            if j >= len(self.items):
-                continue
+            # Find valid next item (skip artifacts).
+            next_item = self._find_next_content_item(start_index=i + 1)
 
-            nxt = self.items[j]
-            if isinstance(nxt, Table) and not (nxt.local_code or "").strip():
-                nxt.local_code = current_code
+            # Propagate code to next item.
+            if next_item:
+                code_lower = code.lower()
+
+                # Case A: Table.
+                if code_lower.startswith("table"):
+                    if (
+                        isinstance(next_item, Table)
+                        and not (next_item.local_code or "").strip()
+                    ):
+                        next_item.local_code = code
+
+                # Case B: Figure.
+                elif code_lower.startswith("figure"):
+                    if (
+                        isinstance(next_item, Block)
+                        and next_item.block_type == BlockType.FIGURE
+                        and not (next_item.local_code or "").strip()
+                    ):
+                        next_item.local_code = code
 
         return self
 

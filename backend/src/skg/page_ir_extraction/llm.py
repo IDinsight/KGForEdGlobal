@@ -355,7 +355,6 @@ def extract_page_ir(
                     ],
                 }
             )
-            logger.debug(f"{input_items = }")
             continue
         except Exception as e:  # pylint: disable=broad-except
             # Let transient errors propagate (tenacity should cover most of these).
