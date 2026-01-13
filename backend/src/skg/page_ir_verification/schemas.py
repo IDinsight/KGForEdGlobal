@@ -198,7 +198,7 @@ class PageIRContinuityVerdict(BaseModelPageIRVerification):
 
 # Schemas for configs.
 class VerificationConfig(BaseModelPageIRVerification):
-    """Configuration for page IR extraction from a PDF document."""
+    """Configuration for page IR verification from a PDF document."""
 
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default: to end."
