@@ -681,25 +681,26 @@ def topmost_continuity_candidate_paired(
     # Sort by top-edge (y0) ascending (bbox is [x0, y0, x1, y1]).
     candidates.sort(key=lambda p: float(p[1].bbox[1]))
 
-    # Scan top items for a "kind" match. If the previous page ended with a Table, we
-    # look for a Table at the top of this page (skipping headers/text). If it ended
-    # with a Block, we look for a Block (skipping a table that might sit at the top).
-    target_kind = prev_item.kind
+    # If prev ended with a TABLE, only choose a TABLE if it appears very near the top.
+    # This aligns candidate selection with the "top crop" image used in verification.
+    if prev_item.kind == "table":
+        for i, item in candidates:
+            if item.kind == "table":
+                return i, item
 
+        # No top-visible table candidate (likely not in the crop). Fall back to the
+        # absolute topmost item.
+        return candidates[0]
+
+    # Otherwise (prev ended with a Block), pick the first non-table Block near the top,
+    # but never anchor text continuation on a HEADING/CAPTION.
     for i, item in candidates:
-        current_kind = item.kind
-
-        if target_kind == "table" and current_kind == "table":
-            return i, item
-
-        if target_kind != "table" and current_kind != "table":
-            # Never anchor a text continuation on a HEADING/CAPTION block.
+        if item.kind != "table":
             if isinstance(item, Block) and item.block_type in {
                 BlockType.CAPTION,
                 BlockType.HEADING,
             }:
                 continue
-
             return i, item
 
     return candidates[0]

@@ -91,35 +91,14 @@ def validate_item_continuation_kind(
             f"Found: {prev_kind} -> {next_kind}."
         )
 
-    # Table continuation: table --> table OR table --> caption.
-    if kind == PageContinuationKind.TABLE.value:
-        # Prev item MUST be a table.
-        if prev_kind != "table":
-            raise QualityError(
-                f"continuation_kind='table' requires the previous item to be a Table "
-                f"(found {prev_kind})."
-            )
-
-        # Next item must be a table OR a valid caption.
-        is_next_table = next_kind == "table"
-        is_next_valid_caption = False
-
-        if next_kind == "block":
-            # Check if block type allows it to function as a table label (captions,
-            # headings, or paragraphs can structurally appear here).
-            if next_item.block_type in {
-                BlockType.CAPTION,
-                BlockType.HEADING,
-                BlockType.PARAGRAPH,
-            }:
-                is_next_valid_caption = True
-
-        if not (is_next_table or is_next_valid_caption):
-            raise QualityError(
-                f"continuation_kind='table' requires the next item to be a Table "
-                f"or a caption/heading Block. Found BlockType: "
-                f"{next_item.block_type.value}."
-            )
+    # Table continuations must be table-to-table (never into/from a block).
+    if kind == PageContinuationKind.TABLE.value and (
+        prev_kind != "table" or next_kind != "table"
+    ):
+        raise QualityError(
+            f"continuation_kind='table' requires both candidates to be Tables. "
+            f"Found: {prev_kind} -> {next_kind}."
+        )
 
     # Figure continuations must be figure-to-figure blocks.
     if kind == PageContinuationKind.FIGURE.value:
