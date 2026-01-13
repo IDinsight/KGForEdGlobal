@@ -211,10 +211,12 @@ def persist_extraction_run(
             "dpi": config.dpi,
             "end_page_cli": config.end_page,  # Keep original config value (may be None)
             "languages": config.languages,
+            "output_dir": config.output_dir,
+            "pdf_fp": config.pdf_fp,
             "pdf_name": config.pdf_fp.name,
-            "overwrite": config.overwrite,
             "start_page": config.start_page,
             "use_text_layer_hints": config.use_text_layer_hints,
+            "year": config.year,
         },
         models=[config.model],
         run_id=str(uuid.uuid4()),

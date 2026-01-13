@@ -583,6 +583,7 @@ def persist_verification_run(
     verification_run = RunCtx(
         extra={
             "end_page_cli": config.end_page,  # Keep original config value (may be None)
+            "min_confidence_to_patch": config.min_confidence_to_patch,
             "start_page_cli": config.start_page,
         },
         models=[config.model],
