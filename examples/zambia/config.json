@@ -14,11 +14,9 @@
 		"use_text_layer_hints": false,
 		"year": 2024
 	},
-	"verification": {
+	"page_ir_verification": {
 		"end_page": null,
-		"extraction_run_results_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/427735a98f4eabc7cbb7b551b1889e5e9e7c73cf082c1650494da8b83fd6ea60/extraction",
 		"model": "gpt-5.2-2025-12-11",
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/zambia/zambia.pdf",
 		"start_page": 0
 	}
 }
