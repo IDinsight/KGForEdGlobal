@@ -172,8 +172,7 @@ def extract(
 
     1. Validate page range against PDF document.
     2. Persist extraction run metadata so we always have an extraction run record.
-    3. Extract page-by-page IR components.
-    4. Finalize extraction run record.
+    3. Extract page-by-page IR components and save to file.
 
     Parameters
     ----------
@@ -201,7 +200,6 @@ def extract(
             doc_key, extraction_dirs, extraction_run = persist_extraction_run(
                 config=config
             )
-            logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
             # 3.
             logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
@@ -213,22 +211,21 @@ def extract(
                 end_page=end_page,
                 extraction_dirs=extraction_dirs,
             )
-            extraction_run.extra["status"] = "success"
-            logger.success("Page IR extraction completed successfully!")
-        except Exception as e:  # pylint: disable=broad-except
-            extraction_run.extra["status"] = "error"
-            extraction_run.extra["error"] = {
-                "message": str(e),
-                "traceback": traceback.format_exc(limit=20),
-                "type": e.__class__.__name__,
-            }
-            raise
-        finally:
-            extraction_run.completed_at = datetime.now(timezone.utc)
-            write_to_json(
-                fp=extraction_dirs.root / "extraction_run.json",
-                json_info=extraction_run,
-            )
+        extraction_run.extra["status"] = "success"
+        logger.success("Page IR extraction completed successfully!")
+    except Exception as e:  # pylint: disable=broad-except
+        extraction_run.extra["status"] = "error"
+        extraction_run.extra["error"] = {
+            "message": str(e),
+            "traceback": traceback.format_exc(limit=20),
+            "type": e.__class__.__name__,
+        }
+        raise
+    finally:
+        extraction_run.completed_at = datetime.now(timezone.utc)
+        write_to_json(
+            fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
+        )
 
 
 if __name__ == "__main__":

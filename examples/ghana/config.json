@@ -19,5 +19,10 @@
 		"min_confidence_to_patch": 0.75,
 		"model": "gpt-5.2-2025-12-11",
 		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"repair_hyphenation": true,
+		"overwrite": true
 	}
 }

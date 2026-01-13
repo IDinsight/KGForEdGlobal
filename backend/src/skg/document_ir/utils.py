@@ -22,7 +22,7 @@ from skg.document_ir.schemas import (
     SectionHeadingRef,
     Segment,
     SegmentProvenance,
-    TableRowProvenance,
+    StitchingConfig,
     TableSegment,
     TableSlice,
 )
@@ -34,16 +34,9 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification.utils import is_artifact
-from skg.schemas import RunCtx, StitchingConfig
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
-from skg.utils.general import (
-    bbox_contains,
-    compute_sha256_hex,
-    make_dir,
-    normalize_text,
-    write_to_json,
-)
+from skg.schemas import RunCtx
+from skg.utils.constants import BlockType, ItemBoundary
+from skg.utils.general import compute_sha256_hex, make_dir, write_to_json
 
 ItemKey = tuple[int, int]
 ChainItem = tuple[int, int, Union[Table, Block]]
@@ -2162,7 +2155,7 @@ def create_item_addr(*, item_index: int, page_index: int) -> str:
     return f"p{page_index}:raw{item_index}"
 
 
-def debug_features_for_pair(
+def materialize_segment(
     *,
     next_item: Block | Table,
     next_page_h: int,
@@ -2260,31 +2253,34 @@ def normalize_page_items(
 
 
 def persist_stitching_run(
-    *, output_dir: Path, **kwargs: Any
+    *, config: StitchingConfig, output_dir: Path
 ) -> tuple[DocumentIRDirs, RunCtx]:
     """Persist stitching run metadata.
 
     Parameters
     ----------
+    config
+        The stitching run configuration.
     output_dir
-        The output directory for the document IR JSON.
-    kwargs
-        Additional stitching run configuration parameters.
+        The output directory for the stitching run results.
 
     Returns
     -------
     tuple[DocumentIRDirs, RunCtx]
-        The created document IR directories and persisted stitching run metadata.
+        The created stitching directories and persisted stitching run metadata.
     """
 
-    extra = kwargs.get("extra", {})
-    extra.pop("status", None)
     stitching_dirs = create_document_ir_dirs(output_dir=output_dir)
     stitching_run = RunCtx(
-        extra=extra, run_id=str(uuid.uuid4()), started_at=datetime.now(timezone.utc)
+        extra={
+            "keep_artifacts": config.keep_artifacts,
+            "repair_hyphenation": config.repair_hyphenation,
+        },
+        run_id=str(uuid.uuid4()),
+        started_at=datetime.now(timezone.utc),
     )
     write_to_json(fp=output_dir / "stitching_run.json", json_info=stitching_run)
-    logger.info(f"Stitching directory: {output_dir}")
+    logger.info(f"Saving stitching results to: {stitching_dirs.root}")
 
     return stitching_dirs, stitching_run
 

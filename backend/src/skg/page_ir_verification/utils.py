@@ -17,7 +17,7 @@ from skg.page_ir_extraction.schemas import Block, PageIR, Table, TableCell, Text
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict, VerificationConfig
 from skg.schemas import RunCtx
 from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
-from skg.utils.general import make_dir, write_to_json
+from skg.utils.general import make_dir, open_json_type, write_to_json
 
 
 @dataclass(frozen=True)
@@ -379,6 +379,110 @@ def is_probable_header_footer_noise(
         return True
 
     return False
+
+
+def load_page_irs_from_verification(
+    *, doc_key: str, verified_page_irs_dir: Path
+) -> list[PageIR]:
+    """Load and validate all verified page IR JSONs from the verification output
+    directory.
+
+    Parameters
+    ----------
+    doc_key
+        The document key for all page IRs.
+    verified_page_irs_dir
+        Directory containing the verified page IR JSONs.
+
+    Returns
+    -------
+    list[PageIR]
+        The loaded and validated PageIRs in filename order.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no verified page IR JSON files are found in the specified directory.
+    ValueError
+        If any verified PageIR is missing page_index.
+        If the page_index sequence is non-contiguous or does not start at 0.
+        If there are inconsistent doc_key or pdf_name values across pages.
+        If there are inconsistent coord_space, dpi, image_width, or image_height
+            values across pages.
+    """
+
+    json_files = sorted(verified_page_irs_dir.glob("*.json"))
+
+    if not json_files:
+        raise FileNotFoundError(
+            f"No verified page IR JSON files found in: {verified_page_irs_dir}"
+        )
+
+    page_irs: list[PageIR] = [
+        PageIR.model_validate(open_json_type(fp)) for fp in json_files
+    ]
+
+    # Validate page_index exists and sort by it (not filename).
+    if any(p.page_index is None for p in page_irs):
+        raise ValueError(
+            "One or more verified PageIRs are missing page_index. Cannot stitch reliably."
+        )
+
+    page_irs.sort(key=lambda p: p.page_index)
+    page_indexes = [p.page_index for p in page_irs]
+    expected = list(range(len(page_irs)))
+
+    if page_indexes != expected:
+        raise ValueError(
+            f"Non-contiguous page_index sequence. Got {page_indexes[:10]}..."
+        )
+
+    # Validate doc_key consistency + presence.
+    if doc_key is None:
+        raise ValueError(
+            "verification_run.json is missing extra.doc_key (expected_doc_key)."
+        )
+
+    doc_keys = {p.doc_key for p in page_irs if p.doc_key}
+    pdf_names = {p.pdf_name for p in page_irs if p.pdf_name}
+
+    if not doc_keys:
+        raise ValueError(
+            "All verified PageIRs are missing doc_key. "
+            "Ensure step 1/2 populates PageIR.doc_key for every page."
+        )
+    if len(doc_keys) > 1 or len(pdf_names) > 1:
+        raise ValueError(
+            "Inconsistent pdf_name or doc_key across pages:\n"
+            f"{sorted(doc_keys)}\n{sorted(pdf_names)}"
+        )
+
+    only_doc_key = next(iter(doc_keys))
+    if only_doc_key != doc_key:
+        raise ValueError(f"Expected doc_key '{doc_key}', got '{only_doc_key}'")
+
+    # Validate coordinate space, dimensions, and dpi consistency/presence.
+    coord_spaces = {p.coord_space for p in page_irs if p.coord_space is not None}
+    dpis = {p.dpi for p in page_irs if p.dpi is not None}
+    heights = {p.image_height for p in page_irs if p.image_height is not None}
+    widths = {p.image_width for p in page_irs if p.image_width is not None}
+
+    if len(coord_spaces) > 1 or len(dpis) > 1 or len(widths) > 1 or len(heights) > 1:
+        raise ValueError(
+            "Inconsistent coordinate space, page dimensions, or dpi across pages:\n"
+            f"{coord_spaces=}\n{dpis=}\n{widths=}\n{heights=}"
+        )
+
+    if (
+        any(p.dpi is None for p in page_irs)
+        or any(p.image_width is None for p in page_irs)
+        or any(p.image_height is None for p in page_irs)
+    ):
+        raise ValueError(
+            "One or more verified PageIRs are missing dpi, image_width, or image_height."
+        )
+
+    return page_irs
 
 
 def normalize_table_row_cell_counts(

@@ -30,7 +30,6 @@ import traceback
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 # Third Party Library
 import typer
@@ -46,7 +45,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.document_ir.schemas import SectionHeadingRef, Segment
+from skg.document_ir.schemas import DocumentIR, Segment, StitchingConfig
 from skg.document_ir.utils import (
     DocumentIRDirs,
     ItemKey,
@@ -59,7 +58,9 @@ from skg.document_ir.utils import (
     save_document_ir,
     update_section_stack,
 )
-from skg.page_ir_extraction.schemas import Block, PageIR, Table
+from skg.page_ir_extraction.schemas import Block, ExtractionConfig, PageIR, Table
+from skg.page_ir_verification.utils import load_page_irs_from_verification
+from skg.schemas import RunCtx
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
@@ -108,16 +109,13 @@ def stitch_document_ir(
         return
 
     # Normalized items per page and filter artifacts if applicable.
-    items_with_idx: dict[int, list[tuple[int, Union[Table, Block]]]] = {
+    items_with_idx: dict[int, list[tuple[int, Table | Block]]] = {
         page_ir.page_index: normalize_page_items(
-            keep_artifacts=config.keep_artifacts,
-            page_ir=page_ir,
-            sort_items_by_bbox=config.sort_items_by_bbox,
-            warnings=warnings,
+            keep_artifacts=config.keep_artifacts, page_ir=page_ir
         )
         for page_ir in page_irs
     }
-    items_lookup: dict[int, dict[int, Union[Table, Block]]] = {
+    items_lookup: dict[int, dict[int, Table | Block]] = {
         p_idx: dict(items) for p_idx, items in items_with_idx.items()
     }
 
@@ -127,12 +125,7 @@ def stitch_document_ir(
 
     # Compute page break links based on verified boundary flags.
     links = compute_page_break_links(
-        items_mapping=items_mapping,
-        link_debug=link_debug,
-        min_link_score=config.min_link_score,
-        page_irs=page_irs,
-        page_pair_debug=page_pair_debug,
-        warnings=warnings,
+        keep_artifacts=config.keep_artifacts, page_irs=page_irs, warnings=warnings
     )
 
     # Set of destination keys to identify items that are continuations.
@@ -200,13 +193,9 @@ def stitch_document_ir(
             segments.append(
                 materialize_segment(
                     chain=chain,
-                    doc_key=doc_key,
-                    item_index=orig_item_index,
-                    page_index=page_index,
+                    item_index=original_item_idx,
+                    page_index=page_idx,
                     repair_hyphenation=config.repair_hyphenation,
-                    section_path=section_path_snapshot,
-                    table_filldown_enabled=config.table_filldown_enabled,
-                    table_filldown_group_cols_max=config.table_filldown_group_cols_max,
                     warnings=warnings,
                 )
             )
@@ -274,24 +263,19 @@ def stitch(
     ------
     Exception
         If any part of the stitching process fails.
-    ValueError
-        If the computed doc_key from the PDF does not match the doc_key in the
-        extraction run metadata.
     """
 
     # 1.
-    run_config = RunConfig.model_validate(open_json_type(config_fp))
-    config = run_config.document_ir
-    extraction_config = run_config.page_ir_extraction
+    config = StitchingConfig.model_validate(open_json_type(config_fp)["document_ir"])
+    extraction_config = ExtractionConfig.model_validate(
+        open_json_type(config_fp)["page_ir_extraction"]
+    )
     computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
     extraction_run_results_dir = (
         extraction_config.output_dir / computed_doc_key / "extraction"
     )
     page_irs_verified_dir = (
-        extraction_config.output_dir
-        / computed_doc_key
-        / "verification"
-        / "page_irs_verified"
+        extraction_config.output_dir / computed_doc_key / "verification" / "page_irs"
     )
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")
@@ -299,6 +283,7 @@ def stitch(
 
     # 2.
     expected_doc_key = extraction_run_config.extra["doc_key"]
+    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
 
     if computed_doc_key != expected_doc_key:
         raise ValueError(
@@ -315,17 +300,17 @@ def stitch(
         extraction_config.output_dir / expected_doc_key / "stitching"
     )
 
-    # 3.
-    verified_page_irs = load_page_irs_from_verification(
-        doc_key=expected_doc_key, verified_page_irs_dir=page_irs_verified_dir
-    )
-
-    # 4.
-    stitching_dirs, stitching_run = persist_stitching_run(
-        config=config, output_dir=stitching_results_dir
-    )
-
     try:
+        # 3.
+        verified_page_irs = load_page_irs_from_verification(
+            doc_key=expected_doc_key, verified_page_irs_dir=page_irs_verified_dir
+        )
+
+        # 4.
+        stitching_dirs, stitching_run = persist_stitching_run(
+            config=config, output_dir=stitching_results_dir
+        )
+
         # 5.
         logger.info(
             f"Starting document IR stitching process using verified page IR JSONs from: "
