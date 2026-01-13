@@ -174,6 +174,19 @@ def bottommost_continuity_candidate(
         if item.kind == "table":
             return i, item
 
+    # If we're anchoring a block-to-block continuity check, do NOT pick a heading or
+    # caption as the boundary candidate (these often sit at page edges but should not
+    # be treated as continuations of text).
+    for i, item in candidates:
+        if item.kind != "table":
+            if isinstance(item, Block) and item.block_type in (
+                BlockType.CAPTION,
+                BlockType.HEADING,
+            ):
+                continue
+
+            return i, item
+
     # Fallback is to just take the absolute bottom item.
     return candidates[0]
 
@@ -680,6 +693,13 @@ def topmost_continuity_candidate_paired(
             return i, item
 
         if target_kind != "table" and current_kind != "table":
+            # Never anchor a text continuation on a HEADING/CAPTION block.
+            if isinstance(item, Block) and item.block_type in {
+                BlockType.CAPTION,
+                BlockType.HEADING,
+            }:
+                continue
+
             return i, item
 
     return candidates[0]

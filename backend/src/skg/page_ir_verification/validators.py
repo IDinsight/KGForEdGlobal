@@ -210,13 +210,13 @@ def validate_page_continuation_kind(verdict: PageIRContinuityVerdict) -> None:
 
     if verdict.is_continuation and kind == PageContinuationKind.NONE.value:
         raise QualityError(
-            "If is_continuation=true, continuation_kind cannot be 'none'."
+            f"If is_continuation=true, continuation_kind cannot be '{PageContinuationKind.NONE.value}'."
         )
 
     if (not verdict.is_continuation) and kind != PageContinuationKind.NONE.value:
         raise QualityError(
-            "If is_continuation=false, continuation_kind must be 'none' "
-            "and all set_* fields must be null."
+            f"If is_continuation=false, continuation_kind must be 'none' "
+            f"and all set_* fields must be '{ItemBoundary.COMPLETE.value}'."
         )
 
 
