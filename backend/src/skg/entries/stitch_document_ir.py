@@ -106,18 +106,18 @@ def stitch_document_ir(
         )
         return
 
+    warnings: list[str] = []
+
     # Normalized items per page and filter artifacts if applicable.
-    items_with_idx: dict[int, list[tuple[int, Table | Block]]] = {
+    items_mapping: dict[int, list[tuple[int, Table | Block]]] = {
         page_ir.page_index: normalize_page_items(
             keep_artifacts=config.keep_artifacts, page_ir=page_ir
         )
         for page_ir in page_irs
     }
     items_lookup: dict[int, dict[int, Table | Block]] = {
-        p_idx: dict(items) for p_idx, items in items_with_idx.items()
+        page_index: dict(items) for page_index, items in items_mapping.items()
     }
-
-    warnings: list[str] = []
 
     # Compute page break links based on verified boundary flags.
     links = compute_page_break_links(
@@ -137,11 +137,11 @@ def stitch_document_ir(
     visited: set[ItemKey] = set()
 
     for page_ir in page_irs:
-        page_idx = page_ir.page_index
-        page_items = items_with_idx.get(page_idx, [])
+        page_index = page_ir.page_index
+        page_items = items_mapping.get(page_index, [])
 
         for original_item_idx, item in page_items:
-            key = (page_idx, original_item_idx)
+            key = (page_index, original_item_idx)
 
             # Skip if already processed.
             if key in visited:
@@ -160,25 +160,22 @@ def stitch_document_ir(
 
             # Build the chains.
             chain, chain_warnings = build_continuation_chain(
-                links=links,
-                items_lookup=items_lookup,
-                start_item=item,
-                start_key=key,
+                items_lookup=items_lookup, links=links, start_item=item, start_key=key
             )
 
             if chain_warnings:
                 warnings.extend(chain_warnings)
 
             # Mark all items in chain as visited.
-            for page_idx, item_idx, _ in chain:
-                visited.add((page_idx, item_idx))
+            for page_index, item_index, _ in chain:
+                visited.add((page_index, item_index))
 
             # Materialize a stitched segment from the chain.
             segments.append(
                 materialize_segment(
                     chain=chain,
                     item_index=original_item_idx,
-                    page_index=page_idx,
+                    page_index=page_index,
                     repair_hyphenation=config.repair_hyphenation,
                     warnings=warnings,
                 )
@@ -187,10 +184,10 @@ def stitch_document_ir(
     # De-duplicate any accidental segment_key collisions (rare, but possible).
     segments = uniquify_segment_keys(segments=segments)
 
-    # Perform integrity check --> every normalized PageIR item must be consumed exactly
+    # Perform integrity check: every normalized PageIR item must be consumed exactly
     # once.
     assert_page_items_consumed_exactly_once(
-        items_with_idx=items_with_idx, segments=segments, strict=True, warnings=warnings
+        items_with_idx=items_mapping, segments=segments, strict=True, warnings=warnings
     )
 
     # Write document IR JSON.

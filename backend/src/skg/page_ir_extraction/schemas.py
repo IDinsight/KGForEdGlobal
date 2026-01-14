@@ -15,7 +15,14 @@ from pydantic import AfterValidator, Field, model_validator
 
 # Package Library
 from skg.schemas import BaseSchema, LanguageField
-from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
+from skg.utils.constants import (
+    BlockType,
+    CaptionFigurePrefixes,
+    CaptionTablePrefixes,
+    FigureKind,
+    ItemBoundary,
+    PageBoundaryState,
+)
 from skg.utils.general import validate_bbox_order
 
 # Common fields with descriptions.
@@ -30,8 +37,14 @@ BBox = Annotated[
 ]
 
 # Compiled regexes.
-TABLE_TEXT_RE = re.compile(r"(?i)^\s*table\s+(?P<num>\d+(?:\.\d+)*)\b")
-FIGURE_TEXT_RE = re.compile(r"(?i)^\s*figure\s+(?P<num>\d+(?:\.\d+)*)\b")
+_TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
+_FIGURE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionFigurePrefixes)
+TABLE_TEXT_RE = re.compile(
+    rf"(?i)^\s*(?:{_TABLE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b"
+)
+FIGURE_TEXT_RE = re.compile(
+    rf"(?i)^\s*(?:{_FIGURE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b"
+)
 
 
 # Schemas for component models.

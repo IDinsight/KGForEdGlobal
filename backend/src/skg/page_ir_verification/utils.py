@@ -19,11 +19,19 @@ from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.schemas import RunCtx, VerificationConfig
 from skg.utils.constants import (
     BlockType,
+    CaptionTablePrefixes,
     ItemBoundary,
     PageBoundaryState,
     PageContinuationKind,
 )
-from skg.utils.general import make_dir, open_json_type, write_to_json
+from skg.utils.general import make_dir, open_json_type, truncate_text, write_to_json
+
+# Compiled regexes.
+_TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
+TABLE_CODE_RE = re.compile(
+    rf"^\s*(?:{_TABLE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b",
+    re.IGNORECASE,
+)
 
 
 class EdgeVerdictRecord(NamedTuple):
@@ -49,6 +57,9 @@ class PageIRVerificationDirs:
 def _apply_single_edge_verdict(
     *,
     bools: dict[tuple[int, int], list[bool]],
+    effective_local_codes: dict[tuple[int, int], str | None],
+    local_code_conflicts: list[dict[str, Any]],
+    local_code_patch: dict[tuple[int, int], str],
     min_confidence: float,
     record: EdgeVerdictRecord,
     repeats_header_patch: dict[tuple[int, int], bool],
@@ -60,6 +71,12 @@ def _apply_single_edge_verdict(
     ----------
     bools
         Mapping of (page_idx, item_idx) to [from_prev, to_next] booleans.
+    effective_local_codes
+        Mapping of (page_idx, item_idx) to effective local_code (after prior patches).
+    local_code_conflicts
+        List to append any local_code conflicts detected.
+    local_code_patch
+        Mapping of (page_idx, item_idx) to desired local_code string.
     min_confidence
         Minimum confidence threshold to apply edits.
     record
@@ -82,6 +99,38 @@ def _apply_single_edge_verdict(
         if verdict.is_continuation:
             bools[prev_key][1] = True  # prev.to_next
             bools[next_key][0] = True  # next.from_prev
+
+            # Propagate local_code across TRUE continuation edges when one side is
+            # missing.
+            if verdict.continuation_kind in {
+                PageContinuationKind.TABLE,
+                PageContinuationKind.FIGURE,
+            }:
+                prev_code = effective_local_codes.get(prev_key)
+                next_code = effective_local_codes.get(next_key)
+
+                # If exactly one side has a code, copy it across and update the
+                # effective map so multi-page chains propagate. NB: setdefault prevents
+                # later edges from overwriting an earlier propagation decision for the
+                # same key.
+                if prev_code and not next_code:
+                    effective_local_codes[next_key] = prev_code
+                    local_code_patch.setdefault(next_key, prev_code)
+                elif next_code and not prev_code:
+                    effective_local_codes[prev_key] = next_code
+                    local_code_patch.setdefault(prev_key, next_code)
+                elif prev_code and next_code and prev_code != next_code:
+                    local_code_conflicts.append(
+                        {
+                            "prev_page": record.prev_page_index,
+                            "next_page": record.next_page_index,
+                            "prev_index": record.prev_candidate_index,
+                            "next_index": record.next_candidate_index,
+                            "prev_code": prev_code,
+                            "next_code": next_code,
+                            "continuation_kind": verdict.continuation_kind.value,
+                        }
+                    )
 
             if (
                 verdict.continuation_kind == PageContinuationKind.TABLE
@@ -106,30 +155,29 @@ def _apply_single_edge_verdict(
     }
 
 
-def _boundary_to_bools(boundary: ItemBoundary | None) -> tuple[bool, bool]:
-    """Return (from_prev, to_next).
+def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -> bool:
+    """Return True if bbox intersects the vertical range [y_min, y_max]. bbox is
+    [x0, y0, x1, y1] in full-page pixel coords.
 
     Parameters
     ----------
-    boundary
-        The item boundary state.
+    bbox
+        The bounding box to check.
+    y_max
+        The maximum y coordinate of the range.
+    y_min
+        The minimum y coordinate of the range.
 
     Returns
     -------
-    tuple[bool, bool]
-        A tuple indicating (from_prev, to_next).
+    bool
+        True if the bbox intersects the y range, False otherwise.
     """
 
-    if boundary == ItemBoundary.BOTH:
-        return True, True
+    y0 = float(bbox[1])
+    y1 = float(bbox[3])
 
-    if boundary == ItemBoundary.RESUMED:
-        return True, False
-
-    if boundary == ItemBoundary.TRUNCATED:
-        return False, True
-
-    return False, False  # COMPLETE or None
+    return not (y1 < float(y_min) or y0 > float(y_max))
 
 
 def _bools_to_boundary(from_prev: bool, to_next: bool) -> ItemBoundary:
@@ -158,6 +206,49 @@ def _bools_to_boundary(from_prev: bool, to_next: bool) -> ItemBoundary:
         return ItemBoundary.TRUNCATED
 
     return ItemBoundary.COMPLETE
+
+
+def _boundary_to_bools(boundary: ItemBoundary | None) -> tuple[bool, bool]:
+    """Return (from_prev, to_next).
+
+    Parameters
+    ----------
+    boundary
+        The item boundary state.
+
+    Returns
+    -------
+    tuple[bool, bool]
+        A tuple indicating (from_prev, to_next).
+    """
+
+    if boundary == ItemBoundary.BOTH:
+        return True, True
+
+    if boundary == ItemBoundary.RESUMED:
+        return True, False
+
+    if boundary == ItemBoundary.TRUNCATED:
+        return False, True
+
+    return False, False  # COMPLETE or None
+
+
+def _normalize_local_code(code: str | None) -> str | None:
+    """Normalize a local_code string by stripping whitespace.
+
+    Parameters
+    ----------
+    code
+        The local_code string to normalize.
+
+    Returns
+    -------
+    str | None
+        The normalized local_code, or None if empty.
+    """
+
+    return (code or "").strip() or None
 
 
 def _reconcile_item_state(
@@ -237,6 +328,147 @@ def _reconcile_item_state(
     return boundary_change, header_change
 
 
+def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]:
+    """Convert a row dict into a list of truncated cell strings.
+
+    Parameters
+    ----------
+    max_cell_chars
+        Maximum characters to keep per cell.
+    row
+        The table row dictionary.
+
+    Returns
+    -------
+    list[str]
+        List of truncated cell strings.
+    """
+
+    cells = row.get("cells") or []
+    output: list[str] = []
+
+    for cell in cells:
+        if not isinstance(cell, dict):
+            output.append(truncate_text(max_chars=max_cell_chars, text=str(cell)))
+            continue
+
+        text_or_none = cell.get("text", None)
+        text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
+        output.append(truncate_text(max_chars=max_cell_chars, text=text))
+
+    return output
+
+
+def bottommost_continuity_candidate(
+    *,
+    image_height: float,
+    items: list[Block | Table],
+    visible_y_min: float | None = None,
+) -> tuple[int, Block | Table]:
+    """Pick the best "bottom of page" candidate for continuity checks.
+
+    Parameters
+    ----------
+    image_height
+        The height of the page image in pixels.
+    items
+        List of PageIR items on the page.
+    visible_y_min
+        If provided, restrict candidate selection to items whose bbox intersects the
+        visible crop range [visible_y_min, image_height] in full-page coordinates.
+
+    Returns
+    -------
+    tuple[int, Block | Table]
+        The index and item of the chosen bottom-most candidate.
+    """
+
+    # Filter candidates.
+    candidates = [
+        (i, item)
+        for i, item in enumerate(items)
+        if not (
+            is_artifact(item)
+            or is_probable_header_footer_noise(image_height=image_height, item=item)
+        )
+    ]
+
+    # If we are verifying using a bottom-crop image, restrict candidates to items that
+    # actually appear in that crop (in full-page coordinate space). This prevents
+    # choosing an item the model cannot see, which would cause false negatives.
+    if visible_y_min is not None:
+        y_min = float(visible_y_min)
+        cropped = [
+            (i, item)
+            for i, item in candidates
+            if _bbox_intersects_y_range(
+                bbox=item.bbox, y_max=float(image_height), y_min=y_min
+            )
+        ]
+        assert cropped, "No bottom-crop-visible candidates found."
+        candidates = cropped
+
+    assert candidates, "No non-artifact items found."
+
+    # Sort by bottom-edge (y1) descending (bbox is [x0, y0, x1, y1]).
+    candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
+
+    # Weak prior: if the extractor flagged any items as TRUNCATED/BOTH, prefer those
+    # as boundary candidates. (We still verify with the LLM; this only affects which
+    # item we ask about.)
+    preferred = [
+        (i, item)
+        for i, item in candidates
+        if item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+    ]
+
+    def _pick(
+        sorted_candidates: list[tuple[int, Block | Table]],
+    ) -> tuple[int, Block | Table] | None:
+        """Pick a candidate from an already y-sorted list, or return None.
+
+        Parameters
+        ----------
+        sorted_candidates
+            List of candidates sorted by bottom-edge descending.
+
+        Returns
+        -------
+        tuple[int, Block | Table] | None
+            The picked candidate index and item, or None if no suitable candidate.
+        """
+
+        # Prefer a Table if it is "near" the bottom (within the bottom 5 items).
+        for i, item in sorted_candidates[:5]:
+            if item.kind == "table":
+                return i, item
+
+        # Otherwise pick the first non-table block, but never anchor on HEADING/CAPTION.
+        for i, item in sorted_candidates:
+            if item.kind != "table":
+                if isinstance(item, Block) and item.block_type in (
+                    BlockType.CAPTION,
+                    BlockType.HEADING,
+                ):
+                    continue
+
+                return i, item
+
+        return None
+
+    # Try preferred candidates first; fall back to geometric selection if needed.
+    picked = _pick(preferred)
+    if picked is not None:
+        return picked
+
+    picked = _pick(candidates)
+    if picked is not None:
+        return picked
+
+    # Last resort: take the absolute bottom item.
+    return candidates[0]
+
+
 def compile_continuity_from_edge_verdicts(
     *,
     edge_records: list[EdgeVerdictRecord],
@@ -269,18 +501,30 @@ def compile_continuity_from_edge_verdicts(
     # Initialize bools: (page_idx, item_idx) -> [from_prev, to_next].
     bools: dict[tuple[int, int], list[bool]] = {}
 
-    for page_index, page in page_irs.items():
+    # Initialize effective local codes.
+    effective_local_codes: dict[tuple[int, int], str | None] = {}
+
+    for page_index in sorted(page_irs):
+        page = page_irs[page_index]
         for item_index, item in enumerate(page.items or []):
             fp, tn = _boundary_to_bools(item.boundary)
             bools[(page_index, item_index)] = [fp, tn]
+            effective_local_codes[(page_index, item_index)] = _normalize_local_code(
+                getattr(item, "local_code", None)
+            )
 
     # Apply edge decisions (set or clear only that edge).
     applied_edges: list[dict[str, Any]] = []
+    local_code_conflicts: list[dict[str, Any]] = []
+    local_code_patch: dict[tuple[int, int], str] = {}
     repeats_header_patch: dict[tuple[int, int], bool] = {}
 
     for record in edge_records:
         summary = _apply_single_edge_verdict(
             bools=bools,
+            effective_local_codes=effective_local_codes,
+            local_code_conflicts=local_code_conflicts,
+            local_code_patch=local_code_patch,
             min_confidence=min_confidence_to_patch,
             record=record,
             repeats_header_patch=repeats_header_patch,
@@ -291,7 +535,8 @@ def compile_continuity_from_edge_verdicts(
     boundary_changes: list[dict[str, Any]] = []
     repeats_header_changes: list[dict[str, Any]] = []
 
-    for (page_index, item_index), flags in bools.items():
+    for page_index, item_index in sorted(bools):
+        flags = bools[(page_index, item_index)]
         item = (page_irs[page_index].items or [])[item_index]
 
         b_change, h_change = _reconcile_item_state(
@@ -307,125 +552,30 @@ def compile_continuity_from_edge_verdicts(
         if h_change:
             repeats_header_changes.append(h_change)
 
+    # Apply local_code patches.
+    local_code_changes: list[dict[str, Any]] = []
+
+    for (page_index, item_index), code in local_code_patch.items():
+        item = (page_irs[page_index].items or [])[item_index]
+        before = _normalize_local_code(getattr(item, "local_code", None))
+        if before is None:
+            item.local_code = code
+            local_code_changes.append(
+                {
+                    "page": page_index,
+                    "item_index": item_index,
+                    "before": None,
+                    "after": code,
+                }
+            )
+
     return {
         "applied_edges": applied_edges,
         "boundary_changes": boundary_changes,
+        "local_code_changes": local_code_changes,
+        "local_code_conflicts": local_code_conflicts,
         "repeats_header_changes": repeats_header_changes,
     }
-
-
-def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -> bool:
-    """Return True if bbox intersects the vertical range [y_min, y_max]. bbox is
-    [x0, y0, x1, y1] in full-page pixel coords.
-
-    Parameters
-    ----------
-    bbox
-        The bounding box to check.
-    y_max
-        The maximum y coordinate of the range.
-    y_min
-        The minimum y coordinate of the range.
-
-    Returns
-    -------
-    bool
-        True if the bbox intersects the y range, False otherwise.
-    """
-
-    y0 = float(bbox[1])
-    y1 = float(bbox[3])
-
-    return not (y1 < float(y_min) or y0 > float(y_max))
-
-
-def bottommost_continuity_candidate(
-    *,
-    image_height: float,
-    items: list[Block | Table],
-    visible_y_min: float | None = None,
-) -> tuple[int, Block | Table]:
-    """Pick the best "bottom of page" candidate for continuity checks.
-
-    Parameters
-    ----------
-    image_height
-        The height of the page image in pixels.
-    items
-        List of PageIR items on the page.
-    visible_y_min
-        If provided, restrict candidate selection to items whose bbox intersects the
-        visible crop range [visible_y_min, image_height] in full-page coordinates.
-
-    Returns
-    -------
-    tuple[int, Block | Table]
-        The index and item of the chosen bottom-most candidate.
-
-    Raises
-    ------
-    ValueError
-        If no non-artifact items are found.
-    """
-
-    # Filter candidates.
-    candidates = [
-        (i, item)
-        for i, item in enumerate(items)
-        if not (
-            is_artifact(item)
-            or is_probable_header_footer_noise(image_height=image_height, item=item)
-        )
-    ]
-
-    # If we are verifying using a bottom-crop image, restrict candidates to items that
-    # actually appear in that crop (in full-page coordinate space). This prevents
-    # choosing an item the model cannot see, which would cause false negatives.
-    if visible_y_min is not None:
-        y_min = float(visible_y_min)
-        cropped = [
-            (i, item)
-            for i, item in candidates
-            if _bbox_intersects_y_range(
-                bbox=item.bbox, y_max=float(image_height), y_min=y_min
-            )
-        ]
-        if cropped:
-            candidates = cropped
-        else:
-            logger.warning(
-                "No bottom-crop-visible candidates found; falling back to full-page "
-                "candidate selection."
-            )
-
-    if not candidates:
-        raise ValueError("No non-artifact items found.")
-
-    # Sort by bottom-edge (y1) descending (bbox is [x0, y0, x1, y1]).
-    candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
-
-    # Prefer a Table if it is "near" the bottom (within the bottom 5 items). This
-    # protects against cases where a small footnote or page number (that wasn't caught
-    # by the noise filter) sits slightly below a large table.
-    for i, item in candidates[:5]:
-        if item.kind == "table":
-            return i, item
-
-    # If we're anchoring a block-to-block continuity check, do NOT pick a heading or
-    # caption as the boundary candidate (these often sit at page edges but should not
-    # be treated as continuations of text).
-    for i, item in candidates:
-        if item.kind != "table":
-            if isinstance(item, Block) and item.block_type in (
-                BlockType.CAPTION,
-                BlockType.HEADING,
-            ):
-                continue
-
-            return i, item
-
-    # Fallback is to just take the absolute bottom item.
-    return candidates[0]
 
 
 def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationDirs:
@@ -518,10 +668,22 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
     """
 
     for item in items:
-        if item.kind == "block" and item.block_type.value == BlockType.CAPTION.value:
-            code = item.local_code or ""
-            if code.strip().lower().startswith("table"):
+        if item.kind == "block" and item.block_type == BlockType.CAPTION:
+            # Prefer extractor-provided local_code.
+            code = (item.local_code or "").strip()
+            if code and TABLE_CODE_RE.match(code):
                 return code
+
+            # Fallback: parse from caption text if local_code missing.
+            text = (
+                (item.text.text or "").strip()
+                if isinstance(item.text, TextUnit)
+                else ""
+            )
+            if text and (m := TABLE_CODE_RE.match(text)) is not None:
+                # Normalize to canonical "Table {num}" even if original language was
+                # "Tableau/Jedwali/Tab."
+                return f"Table {m.group('num')}"
 
     return None
 
@@ -540,11 +702,7 @@ def is_artifact(item: Block | Table) -> bool:
         True if the item is an artifact, False otherwise.
     """
 
-    return (
-        False
-        if item.kind != "block"
-        else item.block_type.value == BlockType.ARTIFACT.value
-    )
+    return False if item.kind != "block" else item.block_type == BlockType.ARTIFACT
 
 
 def is_probable_header_footer_noise(
@@ -704,6 +862,119 @@ def load_page_irs_from_verification(
     return page_irs
 
 
+def make_verification_excerpt(
+    *,
+    item: dict[str, Any],
+    max_cell_chars: int = 80,
+    max_text_chars: int = 600,
+    preview_rows: int = 3,
+) -> dict[str, Any]:
+    """Create a compact, verification-only excerpt of a PageIR item.
+
+
+    Parameters
+    ----------
+    item
+        The PageIR item dictionary.
+    max_cell_chars
+        Maximum characters to keep per table cell in previews.
+    max_text_chars
+        Maximum characters to keep for text previews.
+    preview_rows
+        Number of table rows to include in header/body previews.
+
+    Returns
+    -------
+    dict[str, Any]
+        The verification excerpt of the item.
+    """
+
+    bbox = item["bbox"]
+    kind = item["kind"]
+    local_code = item.get("local_code", None)
+
+    if kind == "table":
+        rows = item.get("rows") or []
+        header_row_count = int(item.get("header_row_count") or 0)
+
+        header_rows = rows[: min(header_row_count, preview_rows)]
+        body_rows = rows[header_row_count:]
+        top_body = body_rows[:preview_rows]
+        bottom_body = (
+            body_rows[-preview_rows:] if len(body_rows) > (2 * preview_rows) else []
+        )
+
+        return {
+            "kind": "table",
+            "bbox": bbox,
+            "local_code": local_code,
+            "header_row_count": header_row_count,
+            "n_cols": item.get("n_cols"),
+            "row_count": len(rows),
+            "header_preview": [
+                _table_row_preview(max_cell_chars=max_cell_chars, row=r)
+                for r in header_rows
+            ],
+            "top_rows_preview": [
+                _table_row_preview(max_cell_chars=max_cell_chars, row=r)
+                for r in top_body
+            ],
+            "bottom_rows_preview": [
+                _table_row_preview(max_cell_chars=max_cell_chars, row=r)
+                for r in bottom_body
+            ],
+        }
+
+    if kind == "block":
+        block_type = item["block_type"]
+        text_or_none = item.get("text", None)
+        text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
+        text_preview = truncate_text(max_chars=max_text_chars, text=text)
+        list_items = item.get("list_items") or []
+        list_preview: list[str] = []
+
+        for li in list_items[: min(6, len(list_items))]:
+            if isinstance(li, dict):
+                marker = li.get("marker") or ""
+                text_or_none = li.get("text", None)
+                text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
+                li_text = truncate_text(max_chars=180, text=text)
+                list_preview.append((marker + " " + li_text).strip())
+            else:
+                list_preview.append(truncate_text(max_chars=180, text=str(li)))
+
+        figure = item.get("figure") or {}
+        fig_caption_preview = ""
+        if isinstance(figure, dict):
+            text_or_none = figure.get("caption", None)
+            text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
+            fig_caption_preview = truncate_text(max_chars=200, text=text)
+
+        output: dict[str, Any] = {
+            "kind": "block",
+            "bbox": bbox,
+            "local_code": local_code,
+            "block_type": block_type,
+        }
+        if text_preview:
+            output["text_preview"] = text_preview
+        if list_preview:
+            output["list_preview"] = list_preview
+        if fig_caption_preview:
+            output["figure_caption_preview"] = fig_caption_preview
+        return output
+
+    # Fallback (unexpected kinds): keep tiny identifying info only.
+    text_or_none = item.get("text", None)
+    text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
+    return {
+        "kind": kind or "unknown",
+        "bbox": bbox,
+        "local_code": local_code,
+        "preview": truncate_text(max_chars=max_text_chars, text=text),
+    }
+
+
 def normalize_table_row_cell_counts(
     *, page_irs: dict[int, PageIR]
 ) -> list[dict[str, Any]]:
@@ -850,9 +1121,20 @@ def postprocess_verified_page_irs(
 
 
 def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
-    """Carry forward "Table X" codes across VERIFIED continuation boundaries. This
-    relies on the 'is_continuation' verdict having already set the correct
-    TRUNCATED/RESUMED/BOTH flags.
+    """Carry forward "Table X" codes across VERIFIED continuation boundaries.
+
+    This post-pass is intentionally conservative:
+
+    1. Only propagate codes *across page boundaries* when the verification step has
+        marked the table as RESUMED/BOTH (on this page) and TRUNCATED/BOTH (on the
+        prior page).
+    2. Only carry *one* code forward: the code of the **last table in reading order**
+        on the page that continues onto the next page (TRUNCATED/BOTH).
+    3. Never let later, non-continuing tables overwrite the carry-forward code.
+
+    In short, this function "guarantees" the code that is propagated to page N+1 is the
+    code of the table that actually continues off page N, and it prevents a later
+    complete/misclassified “table-ish” object from overwriting that carry-forward value.
 
     Parameters
     ----------
@@ -865,61 +1147,91 @@ def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str
         A list of changes made during the postpass.
     """
 
-    carried_table_code: str | None = None
+    carry_from_prev: str | None = None
     changes: list[dict[str, Any]] = []
 
-    for i in sorted(page_irs.keys()):
-        page = page_irs[i]
+    for page_idx in sorted(page_irs.keys()):
+        page = page_irs[page_idx]
         items = page.items or []
 
-        # Update context if page has a caption (e.g., "Table 1 (continued)").
-        if (caption_code := find_caption_code(items)) is not None:
-            carried_table_code = caption_code
+        # If the previous page "carried" a table code, but this page doesn't actually
+        # resume a table, drop it so it can't block caption seeding or future logic.
+        if carry_from_prev is not None and not any(
+            item.kind == "table"
+            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            for item in items
+        ):
+            carry_from_prev = None
 
-        table_continues_to_next = False
+        # Seed carry_from_prev from a caption *only if* we don't already have carry
+        # from the previous page. This supports patterns like "Table 3 (continued)" at
+        # the top of the page when the table itself is missing a code.
+        #
+        # NB: Only look at captions that appear *before the first table item* to avoid
+        # accidentally grabbing a caption for a later, unrelated table/rubric.
+        if carry_from_prev is None and any(
+            item.kind == "table"
+            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            and not (item.local_code or "").strip()
+            for item in items
+        ):
+            first_relevant_table_index = next(
+                (
+                    j
+                    for j, item in enumerate(items)
+                    if item.kind == "table"
+                    and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+                    and not (item.local_code or "").strip()
+                ),
+                None,
+            )
+            caption_scope = (
+                items[:first_relevant_table_index]
+                if first_relevant_table_index is not None
+                else []
+            )
+            caption_code = find_caption_code(caption_scope)
+            if caption_code:
+                carry_from_prev = caption_code.strip() or None
 
-        for idx, item in enumerate(items):
+        carry_to_next: str | None = None
+
+        # Ensure we only apply carry_from_prev once on this page (if multiple resumed
+        # tables exist, we can't disambiguate with a single code; leave the rest
+        # unresolved).
+        applied_prev_carry = False
+
+        for item_index, item in enumerate(items):
             if item.kind != "table":
                 continue
 
-            # Check verified boundaries.
             boundary = item.boundary
-            is_resumed_or_both = boundary in {ItemBoundary.BOTH, ItemBoundary.RESUMED}
-
-            # If verify step said "Not a continuation", we break the chain.
-            if not is_resumed_or_both:
-                carried_table_code = None
-
-            # Resolve local code.
-            current_code = (item.local_code or "").strip()
-
-            # Update carry if THIS item has an explicit code.
+            is_resumed = boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            is_truncated = boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
             code = (item.local_code or "").strip()
-            if code:
-                carried_table_code = code
 
-            if current_code:
-                # This table has its own code, it becomes the new carrier.
-                carried_table_code = current_code
-            elif is_resumed_or_both and carried_table_code:
-                # Continuation without code --> inherit from previous.
-                item.local_code = carried_table_code
+            # Fill missing code on a resumed table from the previous page's carry.
+            if is_resumed and not code and carry_from_prev and not applied_prev_carry:
+                item.local_code = carry_from_prev
+                code = carry_from_prev
+                applied_prev_carry = True
                 changes.append(
                     {
-                        "item_index": idx,
-                        "page": i,
-                        "set_local_code": carried_table_code,
+                        "item_index": item_index,
+                        "page": page_idx,
+                        "set_local_code": carry_from_prev,
                         "type": "propagate_table_local_code",
                     }
                 )
 
-            # Prepare for next page. If verify step said "Truncated", we keep the code
-            # alive for page N+1.
-            if boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}:
-                table_continues_to_next = True
+            # Decide what we carry forward to the NEXT page: only the code of the table
+            # that actually continues off this page (TRUNCATED/BOTH). If multiple
+            # tables continue, we carry the last one in reading order.
+            if is_truncated and code:
+                carry_to_next = code
 
-        # If the chain breaks at the page level, reset.
-        carried_table_code = None if not table_continues_to_next else carried_table_code
+        # Carry forward only the table that continues onto the next page.
+        carry_from_prev = carry_to_next
 
     return changes
 
@@ -1018,7 +1330,8 @@ def topmost_continuity_candidate_paired(
     Raises
     ------
     ValueError
-        If no non-artifact items or continuity candidates are found.
+        If no non-artifact items are found.
+        If no top-crop-visible candidates are found when visible_y_max is provided.
     """
 
     candidates = [
@@ -1040,40 +1353,49 @@ def topmost_continuity_candidate_paired(
             for i, item in candidates
             if _bbox_intersects_y_range(bbox=item.bbox, y_max=y_max, y_min=0.0)
         ]
-        if cropped:
-            candidates = cropped
-        else:
-            logger.warning(
-                "No top-crop-visible candidates found; falling back to full-page "
-                "candidate selection."
-            )
+        assert cropped, "No top-crop-visible candidates found."
+        candidates = cropped
 
-    if not candidates:
-        raise ValueError("No non-artifact items found.")
+    assert candidates, "No non-artifact items found."
 
     # Sort by top-edge (y0) ascending (bbox is [x0, y0, x1, y1]).
     candidates.sort(key=lambda p: float(p[1].bbox[1]))
 
-    # If prev ended with a TABLE, only choose a TABLE if it appears very near the top.
-    # This aligns candidate selection with the "top crop" image used in verification.
-    if prev_item.kind == "table":
-        for i, item in candidates:
-            if item.kind == "table":
-                return i, item
+    # Weak prior: if the extractor flagged any items as RESUMED/BOTH, prefer those as
+    # next-page boundary candidates. We still verify with the LLM; this only affects
+    # which item we ask about.
+    preferred = [
+        (i, item)
+        for i, item in candidates
+        if item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+    ]
 
-        # No top-visible table candidate (likely not in the crop). Fall back to the
-        # absolute topmost item.
-        return candidates[0]
+    # If prev ended with a Table, prefer to resume a Table.
+    if prev_item.kind == "table":
+        # Create a combined stream of items from preferred and candidates, opting for
+        # preferred and filtering on items that are tables.
+        table_search = (
+            (i, item)
+            for source in (preferred, candidates)
+            for i, item in source
+            if item.kind == "table"
+        )
+
+        # Return the first found table or default to candidates[0].
+        return next(table_search, candidates[0])
 
     # Otherwise (prev ended with a Block), pick the first non-table Block near the top,
     # but never anchor text continuation on a HEADING/CAPTION.
-    for i, item in candidates:
-        if item.kind != "table":
-            if isinstance(item, Block) and item.block_type in {
-                BlockType.CAPTION,
-                BlockType.HEADING,
-            }:
-                continue
-            return i, item
+    valid_items = (
+        (i, item)
+        for source in (preferred, candidates)
+        for i, item in source
+        if item.kind != "table"
+        and not (
+            isinstance(item, Block)
+            and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
+        )
+    )
 
-    return candidates[0]
+    # Return the first match or default to candidates[0].
+    return next(valid_items, candidates[0])

@@ -104,7 +104,23 @@ class StatementRole(str, Enum):
     UNRESOLVED = "unresolved"  # Content that could not be classified
 
 
-# Literals/sets for various constant types.
+# Literals/sets/etc. for various constant types.
+CaptionFigurePrefixes: tuple[str, ...] = (
+    "fig",
+    "fig.",
+    "figure",
+    "kielelezo",
+    "mchoro",
+)
+CaptionTablePrefixes: tuple[str, ...] = (
+    "jedwali",
+    "tab",
+    "tab.",
+    "table",
+    "tableau",
+    "tbl",
+    "tbl.",
+)
 CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
 NonArtifacts = {
     "abbreviations and acronyms",
