@@ -29,8 +29,9 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.page_ir_extraction.llm import extract_page_ir
-from skg.page_ir_extraction.schemas import ExtractionConfig, PageIR
+from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_extraction.utils import PageIRExtractionDirs, persist_extraction_run
+from skg.schemas import ExtractionConfig, RunConfig
 from skg.utils.constants import PageBoundaryState
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import (
@@ -185,9 +186,7 @@ def extract(
         If any error occurs during extraction.
     """
 
-    config = ExtractionConfig.model_validate(
-        open_json_type(config_fp)["page_ir_extraction"]
-    )
+    config = RunConfig.model_validate(open_json_type(config_fp)).page_ir_extraction
 
     with pymupdf.open(str(config.pdf_fp)) as doc:
         # 1.

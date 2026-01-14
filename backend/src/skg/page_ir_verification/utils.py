@@ -4,20 +4,36 @@
 import re
 import uuid
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # Third Party Library
 from loguru import logger
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TableCell, TextUnit
-from skg.page_ir_verification.schemas import PageIRContinuityVerdict, VerificationConfig
-from skg.schemas import RunCtx
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.page_ir_verification.schemas import PageIRContinuityVerdict
+from skg.schemas import RunCtx, VerificationConfig
+from skg.utils.constants import (
+    BlockType,
+    ItemBoundary,
+    PageBoundaryState,
+    PageContinuationKind,
+)
 from skg.utils.general import make_dir, open_json_type, write_to_json
+
+
+class EdgeVerdictRecord(NamedTuple):
+    """Edge verdict record between two page IR candidates."""
+
+    next_candidate_index: int
+    next_page_index: int
+    prev_candidate_index: int
+    prev_page_index: int
+    verdict: PageIRContinuityVerdict
 
 
 @dataclass(frozen=True)
@@ -30,81 +46,272 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
-def _apply_continuation_edits(
+def _apply_single_edge_verdict(
     *,
-    edits: dict[str, Any],
-    next_item: Block | Table,
-    prev_item: Block | Table,
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Handle positive case: apply LLM-proposed patches.
+    bools: dict[tuple[int, int], list[bool]],
+    min_confidence: float,
+    record: EdgeVerdictRecord,
+    repeats_header_patch: dict[tuple[int, int], bool],
+) -> dict[str, Any]:
+    """Apply logic for a single edge verdict and return the summary dict. Updates
+    `bools` and `repeats_header_patch` in-place.
 
     Parameters
     ----------
-    edits
-        The dictionary to record applied edits.
-    next_item
-        The next page candidate item.
-    prev_item
-        The previous page candidate item.
-    verdict
-        The continuity verdict from the model.
+    bools
+        Mapping of (page_idx, item_idx) to [from_prev, to_next] booleans.
+    min_confidence
+        Minimum confidence threshold to apply edits.
+    record
+        The edge verdict record to apply.
+    repeats_header_patch
+        Mapping of (page_idx, item_idx) to desired repeats_header boolean.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary of the applied edge verdict.
     """
 
-    # Handle previous item boundary.
-    if verdict.set_prev_item_boundary is not None:
-        before = prev_item.boundary
-        after = _merge_boundary(existing=before, patch=verdict.set_prev_item_boundary)
-        if after != before:
-            prev_item.boundary = after
-            edits["prev_boundary"] = {"before": before, "after": after}
+    verdict = record.verdict
+    prev_key = (record.prev_page_index, record.prev_candidate_index)
+    next_key = (record.next_page_index, record.next_candidate_index)
+    should_apply = verdict.confidence >= min_confidence
 
-    # Handle next item boundary,
-    if verdict.set_next_item_boundary is not None:
-        before = next_item.boundary
-        after = _merge_boundary(existing=before, patch=verdict.set_next_item_boundary)
-        if after != before:
-            next_item.boundary = after
-            edits["next_boundary"] = {"before": before, "after": after}
+    if should_apply:
+        if verdict.is_continuation:
+            bools[prev_key][1] = True  # prev.to_next
+            bools[next_key][0] = True  # next.from_prev
 
-    # Handle table headers.
-    if verdict.set_next_table_repeats_header is not None:
-        if next_item.kind == "table":
-            before = next_item.repeats_header
-            after = verdict.set_next_table_repeats_header
-            if after != before:
-                next_item.repeats_header = after
-                edits["next_repeats_header"] = {"before": before, "after": after}
+            if (
+                verdict.continuation_kind == PageContinuationKind.TABLE
+                and verdict.set_next_table_repeats_header is not None
+            ):
+                repeats_header_patch[next_key] = verdict.set_next_table_repeats_header
+        else:
+            # Clear only the directional connection for THIS candidate pair.
+            bools[prev_key][1] = False
+            bools[next_key][0] = False
+
+    # Return summary for reporting.
+    return {
+        "prev_index": record.prev_candidate_index,
+        "next_index": record.next_candidate_index,
+        "prev_page": record.prev_page_index,
+        "next_page": record.next_page_index,
+        "is_continuation": verdict.is_continuation,
+        "continuation_kind": verdict.continuation_kind.value,
+        "confidence": verdict.confidence,
+        "applied": should_apply,
+    }
 
 
-def _apply_discontinuity_edits(
-    *, edits: dict[str, Any], next_item: Block | Table, prev_item: Block | Table
-) -> None:
-    """Handle negative case: Clear edges between candidates.
+def _boundary_to_bools(boundary: ItemBoundary | None) -> tuple[bool, bool]:
+    """Return (from_prev, to_next).
 
     Parameters
     ----------
-    edits
-        The dictionary to record applied edits.
-    next_item
-        The next page candidate item.
-    prev_item
-        The previous page candidate item.
+    boundary
+        The item boundary state.
+
+    Returns
+    -------
+    tuple[bool, bool]
+        A tuple indicating (from_prev, to_next).
     """
 
-    # Clear prev --> next.
-    before = prev_item.boundary
-    after = _clear_to_next(before)
-    if after != before:
-        prev_item.boundary = after
-        edits["prev_boundary"] = {"before": before, "after": after}
+    if boundary == ItemBoundary.BOTH:
+        return True, True
 
-    # Clear next --> prev.
-    before = next_item.boundary
-    after = _clear_from_prev(before)
-    if after != before:
-        next_item.boundary = after
-        edits["next_boundary"] = {"before": before, "after": after}
+    if boundary == ItemBoundary.RESUMED:
+        return True, False
+
+    if boundary == ItemBoundary.TRUNCATED:
+        return False, True
+
+    return False, False  # COMPLETE or None
+
+
+def _bools_to_boundary(from_prev: bool, to_next: bool) -> ItemBoundary:
+    """Convert (from_prev, to_next) booleans to ItemBoundary enum.
+
+    Parameters
+    ----------
+    from_prev
+        Whether the item continues from the previous page.
+    to_next
+        Whether the item continues onto the next page.
+
+    Returns
+    -------
+    ItemBoundary
+        The corresponding ItemBoundary enum.
+    """
+
+    if from_prev and to_next:
+        return ItemBoundary.BOTH
+
+    if from_prev:
+        return ItemBoundary.RESUMED
+
+    if to_next:
+        return ItemBoundary.TRUNCATED
+
+    return ItemBoundary.COMPLETE
+
+
+def _reconcile_item_state(
+    *,
+    item: Any,
+    item_index: int,
+    flags: list[bool],
+    page_index: int,
+    repeats_header_patch: dict[tuple[int, int], bool],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Update item boundary and table headers based on calculated flags.
+
+    Parameters
+    ----------
+    item
+        The PageIR item to update.
+    item_index
+        The index of the item on the page.
+    flags
+        The (from_prev, to_next) boolean flags.
+    page_index
+        The index of the page containing the item.
+    repeats_header_patch
+        Mapping of (page_idx, item_idx) to desired repeats_header boolean.
+
+    Returns
+    -------
+    tuple[dict[str, Any] | None, dict[str, Any] | None]
+        A tuple of (boundary_change, header_change) summaries, or None if no change.
+    """
+
+    from_prev, to_next = flags
+    boundary_change = None
+    header_change = None
+
+    before_boundary = item.boundary
+    after_boundary = _bools_to_boundary(from_prev, to_next)
+
+    if before_boundary != after_boundary:
+        boundary_change = {
+            "page": page_index,
+            "item_index": item_index,
+            "before": getattr(before_boundary, "value", None),
+            "after": after_boundary.value,
+        }
+        item.boundary = after_boundary
+
+    # repeats_header only meaningful if table continues from prev.
+    if item.kind == "table":
+        table = item
+
+        # Case A: Connection broken (not RESUMED or BOTH) --> Clear header.
+        if item.boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
+            if table.repeats_header is not None:
+                header_change = {
+                    "page": page_index,
+                    "item_index": item_index,
+                    "before": table.repeats_header,
+                    "after": None,
+                }
+                table.repeats_header = None
+
+        # Case B: Connection exists --> Apply patch if present.
+        else:
+            key = (page_index, item_index)
+            if key in repeats_header_patch:
+                desired = repeats_header_patch[key]
+                if table.repeats_header != desired:
+                    header_change = {
+                        "page": page_index,
+                        "item_index": item_index,
+                        "before": table.repeats_header,
+                        "after": desired,
+                    }
+                    table.repeats_header = desired
+
+    return boundary_change, header_change
+
+
+def compile_continuity_from_edge_verdicts(
+    *,
+    edge_records: list[EdgeVerdictRecord],
+    min_confidence_to_patch: float,
+    page_irs: dict[int, PageIR],
+) -> dict[str, Any]:
+    """Apply all continuity decisions in one pass as follows:
+
+    1. Positive edge --> set prev.to_next and next.from_prev.
+    2. Negative edge --> clear ONLY that directional connection
+
+    Then recompute ItemBoundary enums from bits and also enforce repeats_header
+    consistency with boundary state.
+
+    Parameters
+    ----------
+    edge_records
+        List of edge verdict records.
+    min_confidence_to_patch
+        Minimum confidence threshold to apply edits.
+    page_irs
+        Mapping of page_index to PageIR objects.
+
+    Returns
+    -------
+    dict[str, Any]
+        A summary of applied edits.
+    """
+
+    # Initialize bools: (page_idx, item_idx) -> [from_prev, to_next].
+    bools: dict[tuple[int, int], list[bool]] = {}
+
+    for page_index, page in page_irs.items():
+        for item_index, item in enumerate(page.items or []):
+            fp, tn = _boundary_to_bools(item.boundary)
+            bools[(page_index, item_index)] = [fp, tn]
+
+    # Apply edge decisions (set or clear only that edge).
+    applied_edges: list[dict[str, Any]] = []
+    repeats_header_patch: dict[tuple[int, int], bool] = {}
+
+    for record in edge_records:
+        summary = _apply_single_edge_verdict(
+            bools=bools,
+            min_confidence=min_confidence_to_patch,
+            record=record,
+            repeats_header_patch=repeats_header_patch,
+        )
+        applied_edges.append(summary)
+
+    # Write boundaries back and enforce repeats_header consistency.
+    boundary_changes: list[dict[str, Any]] = []
+    repeats_header_changes: list[dict[str, Any]] = []
+
+    for (page_index, item_index), flags in bools.items():
+        item = (page_irs[page_index].items or [])[item_index]
+
+        b_change, h_change = _reconcile_item_state(
+            item=item,
+            item_index=item_index,
+            flags=flags,
+            page_index=page_index,
+            repeats_header_patch=repeats_header_patch,
+        )
+
+        if b_change:
+            boundary_changes.append(b_change)
+        if h_change:
+            repeats_header_changes.append(h_change)
+
+    return {
+        "applied_edges": applied_edges,
+        "boundary_changes": boundary_changes,
+        "repeats_header_changes": repeats_header_changes,
+    }
 
 
 def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -> bool:
@@ -130,141 +337,6 @@ def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -
     y1 = float(bbox[3])
 
     return not (y1 < float(y_min) or y0 > float(y_max))
-
-
-def _clear_to_next(existing: ItemBoundary) -> ItemBoundary:
-    """Remove ONLY the 'continues-to-next-page' signal from a boundary.
-
-    Parameters
-    ----------
-    existing
-        The existing boundary state.
-
-    Returns
-    -------
-    ItemBoundary
-        The updated boundary state.
-    """
-
-    if existing == ItemBoundary.TRUNCATED:
-        return ItemBoundary.COMPLETE
-    if existing == ItemBoundary.BOTH:
-        return ItemBoundary.RESUMED
-    return existing  # COMPLETE or RESUMED
-
-
-def _clear_from_prev(existing: ItemBoundary) -> ItemBoundary:
-    """Remove ONLY the 'resumes-from-prev-page' signal from a boundary.
-
-    Parameters
-    ----------
-    existing
-        The existing boundary state.
-
-    Returns
-    -------
-    ItemBoundary
-        The updated boundary state.
-    """
-
-    if existing == ItemBoundary.RESUMED:
-        return ItemBoundary.COMPLETE
-    if existing == ItemBoundary.BOTH:
-        return ItemBoundary.TRUNCATED
-    return existing  # COMPLETE or TRUNCATED
-
-
-def _merge_boundary(
-    *, existing: ItemBoundary | None, patch: ItemBoundary
-) -> ItemBoundary:
-    """Merge a boundary patch into an existing boundary, upgrading to BOTH when needed.
-
-    Parameters
-    ----------
-    existing
-        The existing boundary state, or None if not set.
-    patch
-        The boundary state to apply.
-
-    Returns
-    -------
-    ItemBoundary
-        The merged boundary state.
-    """
-
-    # If the patch is definitive (BOTH/COMPLETE) or we have no history, the patch wins.
-    if existing is None or patch in (ItemBoundary.BOTH, ItemBoundary.COMPLETE):
-        return patch
-
-    # If existing is already BOTH, it absorbs partial updates (TRUNCATED/RESUMED).
-    if existing == ItemBoundary.BOTH:
-        return existing
-
-    # If we have one TRUNCATED and one RESUMED (in any order), they combine to BOTH.
-    # Note: We use a set for order-independent comparison.
-    if {existing, patch} == {ItemBoundary.TRUNCATED, ItemBoundary.RESUMED}:
-        return ItemBoundary.BOTH
-
-    # In all other cases (e.g., existing==patch, or existing is COMPLETE but patch is
-    # TRUNCATED), the patch simply overwrites the state.
-    return patch
-
-
-def _update_if_changed(
-    *, obj: Any, attr: str, new_value: Any, edits: dict[str, Any], edit_key: str
-) -> None:
-    """Helper to update an object attribute only if the value has changed."""
-    current_value = getattr(obj, attr)
-    if current_value != new_value:
-        setattr(obj, attr, new_value)
-        edits[edit_key] = {"before": current_value, "after": new_value}
-
-
-def apply_continuity_verdict(
-    *,
-    min_confidence_to_patch: float,
-    next_item: Block | Table,
-    prev_item: Block | Table,
-    verdict: PageIRContinuityVerdict,
-) -> dict[str, Any] | None:
-    """Apply LLM verdict edits to the *actual* PageIR items (mutates in-place).
-
-    Parameters
-    ----------
-    min_confidence_to_patch
-        Minimum confidence threshold to apply edits.
-    next_item
-        The next page candidate item.
-    prev_item
-        The previous page candidate item.
-    verdict
-        The continuity verdict from the model.
-
-    Returns
-    -------
-    dict[str, Any] | None
-        A dictionary of applied edits, or None if no edits were applied.
-    """
-
-    if verdict.confidence < min_confidence_to_patch:
-        logger.warning(
-            f"Verdict confidence {verdict.confidence} below threshold "
-            f"{min_confidence_to_patch}, skipping edits."
-        )
-        return None
-
-    edits: dict[str, Any] = {}
-
-    if verdict.is_continuation:
-        _apply_continuation_edits(
-            edits=edits, next_item=next_item, prev_item=prev_item, verdict=verdict
-        )
-    else:
-        _apply_discontinuity_edits(
-            edits=edits, next_item=next_item, prev_item=prev_item
-        )
-
-    return edits or None
 
 
 def bottommost_continuity_candidate(
@@ -472,27 +544,6 @@ def is_artifact(item: Block | Table) -> bool:
         False
         if item.kind != "block"
         else item.block_type.value == BlockType.ARTIFACT.value
-    )
-
-
-def is_figure_block(item: Block | Table) -> bool:
-    """Check if an item is a figure/diagram block.
-
-    Parameters
-    ----------
-    item
-        The item to check.
-
-    Returns
-    -------
-    bool
-        True if the item is a figure block, False otherwise.
-    """
-
-    return (
-        False
-        if item.kind != "block"
-        else item.block_type.value == BlockType.FIGURE.value
     )
 
 
@@ -902,6 +953,30 @@ def save_verified_page_irs(
         )
 
     logger.success("All verified page IR JSONs saved successfully!")
+
+
+def strip_continuity_hints(item_json: dict[str, Any]) -> dict[str, Any]:
+    """Remove continuity metadata so the LLM isn't biased by extractor state.
+
+    Parameters
+    ----------
+    item_json
+        The item JSON dictionary.
+
+    Returns
+    -------
+    dict[str, Any]
+        The cleaned item JSON dictionary.
+    """
+
+    output = deepcopy(item_json)
+    output.pop("boundary", None)
+
+    # Only tables have repeats_header.
+    if output.get("kind") == "table":
+        output.pop("repeats_header", None)
+
+    return output
 
 
 def topmost_continuity_candidate_paired(

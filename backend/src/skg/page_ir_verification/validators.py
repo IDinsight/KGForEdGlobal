@@ -6,61 +6,7 @@ information.
 from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
-from skg.utils.constants import BlockType, ItemBoundary, PageContinuationKind
-
-
-def validate_boundary_logic(
-    *,
-    next_item: Block | Table,
-    prev_item: Block | Table,
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Ensure the effective boundary (original + edit) supports continuation. If
-    is_continuation=True, the items effectively cannot be 'complete'.
-
-    Parameters
-    ----------
-    next_item
-        The next page candidate item.
-    prev_item
-        The previous page candidate item.
-    verdict
-        The continuation verdict from the model.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    if not verdict.is_continuation:
-        return
-
-    # Calculate effective boundaries (apply edits if present, else use original).
-    eff_prev_boundary = verdict.set_prev_item_boundary or prev_item.boundary
-    eff_next_boundary = verdict.set_next_item_boundary or next_item.boundary
-
-    # Previous item (bottom of Page N) must be TRUNCATED or BOTH (i.e., it must
-    # continue TO the next page). In pairwise mode, if the extractor marked it as
-    # RESUMED (from previous) or left it null, the model MUST set
-    # set_prev_item_boundary='truncated' so Python can merge to BOTH when needed.
-    if eff_prev_boundary not in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}:
-        raise QualityError(
-            f"verdict.is_continuation=True requires prev boundary in {{'{ItemBoundary.TRUNCATED.value}','{ItemBoundary.BOTH.value}'}}. "
-            f"Got effective prev boundary={eff_prev_boundary}. "
-            f"Set set_prev_item_boundary='{ItemBoundary.TRUNCATED.value}' when missing/incompatible."
-        )
-
-    # Next item (top of Page N+1) must be RESUMED or BOTH (i.e., it must continue FROM
-    # the previous page). In pairwise mode, if the extractor marked it as TRUNCATED (to
-    # next) or left it null, the model MUST set set_next_item_boundary='resumed' so
-    # Python can merge to BOTH when needed.
-    if eff_next_boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
-        raise QualityError(
-            f"verdict.is_continuation=True requires next boundary in {{'{ItemBoundary.RESUMED.value}','{ItemBoundary.BOTH.value}'}}. "
-            f"Got effective next boundary={eff_next_boundary}. "
-            f"Set set_next_item_boundary='{ItemBoundary.RESUMED.value}' when missing/incompatible."
-        )
+from skg.utils.constants import BlockType, PageContinuationKind
 
 
 def validate_item_continuation_kind(
@@ -124,37 +70,6 @@ def validate_item_continuation_kind(
             )
 
 
-def validate_negative_case_logic(*, verdict: PageIRContinuityVerdict) -> None:
-    """Negative case policy:
-
-    1. The model must not propose boundary edits (set_* fields must be null).
-    2. Directional edge-clearing between these two candidates is handled in Python.
-
-    Parameters
-    ----------
-    verdict
-        The continuation verdict from the model.
-
-    Raises
-    ------
-    QualityError
-        If items are left hanging (TRUNCATED/RESUMED) without a valid link.
-    """
-
-    if verdict.is_continuation:
-        return
-
-    if (
-        verdict.set_prev_item_boundary is not None
-        or verdict.set_next_item_boundary is not None
-        or verdict.set_next_table_repeats_header is not None
-    ):
-        raise QualityError(
-            "Negative case (is_continuation=false) requires all set_* fields to be null. "
-            "Directional edge-clearing is applied deterministically in Python."
-        )
-
-
 def validate_page_continuation_kind(verdict: PageIRContinuityVerdict) -> None:
     """Check if continuations are structurally possible.
 
@@ -178,8 +93,44 @@ def validate_page_continuation_kind(verdict: PageIRContinuityVerdict) -> None:
 
     if (not verdict.is_continuation) and kind != PageContinuationKind.NONE.value:
         raise QualityError(
-            "If is_continuation=false, continuation_kind must be 'none' and all "
-            "set_* fields must be null."
+            "If is_continuation=false, continuation_kind must be 'none'."
+        )
+
+
+def validate_repeats_header_logic(
+    *, next_item: Block | Table, verdict: PageIRContinuityVerdict
+) -> None:
+    """If repeats_header is patched, it must be a table continuation and next_item must
+    be table.
+
+    Parameters
+    ----------
+    next_item
+        The next page candidate item.
+    verdict
+        The continuation verdict from the model.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if verdict.set_next_table_repeats_header is None:
+        return
+
+    if (
+        not verdict.is_continuation
+        or verdict.continuation_kind != PageContinuationKind.TABLE
+    ):
+        raise QualityError(
+            "set_next_table_repeats_header may only be set when is_continuation=true "
+            "and continuation_kind='table'."
+        )
+
+    if next_item.kind != "table":
+        raise QualityError(
+            "set_next_table_repeats_header is only valid when next_item is a table."
         )
 
 

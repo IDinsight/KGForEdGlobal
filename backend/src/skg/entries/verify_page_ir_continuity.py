@@ -35,20 +35,20 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.page_ir_extraction.schemas import ExtractionConfig
 from skg.page_ir_extraction.utils import load_page_irs_from_extraction
 from skg.page_ir_verification.llm import verify_page_ir_pairs
-from skg.page_ir_verification.schemas import VerificationConfig
 from skg.page_ir_verification.utils import (
+    EdgeVerdictRecord,
     PageIRVerificationDirs,
-    apply_continuity_verdict,
     bottommost_continuity_candidate,
+    compile_continuity_from_edge_verdicts,
     persist_verification_run,
     postprocess_verified_page_irs,
     save_verified_page_irs,
+    strip_continuity_hints,
     topmost_continuity_candidate_paired,
 )
-from skg.schemas import RunCtx
+from skg.schemas import RunConfig, RunCtx, VerificationConfig
 from skg.utils.general import compare_directories, open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key, validate_page_count
 
@@ -101,6 +101,8 @@ def verify_page_ir_continuity(
     )
 
     # Iterate in pairs.
+    edge_records: list[EdgeVerdictRecord] = []
+
     for i in range(start, stop - 1):
         assert (
             i in page_irs and (i + 1) in page_irs
@@ -130,16 +132,14 @@ def verify_page_ir_continuity(
             input_png_fp=page_images_dir / f"{i + 1:04}.png", output_png_fp=next_crop_fp
         )
 
-        # The crop starts at y=0, so its pixel height is the y-extent visible to the
-        # model.
-        next_crop_height_px = float(pymupdf.Pixmap(str(next_crop_fp)).height)
-
-        # Pick the next-page candidate from items that actually intersect the visible crop.
+        # Pick the next-page candidate from items that actually intersect the visible
+        # crop. The crop starts at y=0, so its pixel height is the y-extent visible to
+        # the model.
         next_index, next_item = topmost_continuity_candidate_paired(
             image_height=next_page_ir.image_height,
             items=next_page_items,
             prev_item=prev_item,
-            visible_y_max=next_crop_height_px,
+            visible_y_max=float(pymupdf.Pixmap(str(next_crop_fp)).height),
         )
 
         # Invoke the model to verify the pair.
@@ -149,22 +149,25 @@ def verify_page_ir_continuity(
         next_item_json = next_item.model_dump(mode="json")
         verdict = verify_page_ir_pairs(
             model=config.model,
-            next_item=next_item_json,
+            next_item=strip_continuity_hints(next_item_json),
             next_page_index=i + 1,
             next_png=next_crop_fp,
-            prev_item=prev_item_json,
+            prev_item=strip_continuity_hints(prev_item_json),
             prev_page_index=i,
             prev_png=page_images_dir / f"{i:04}.png",
         )
         verdict.prev_page_index = i
         verdict.next_page_index = i + 1
 
-        # Apply continuity verdict to page IRs.
-        applied_edits = apply_continuity_verdict(
-            min_confidence_to_patch=config.min_confidence_to_patch,
-            next_item=next_item,
-            prev_item=prev_item,
-            verdict=verdict,
+        # Record the edge verdict.
+        edge_records.append(
+            EdgeVerdictRecord(
+                next_candidate_index=next_index,
+                next_page_index=i + 1,
+                prev_page_index=i,
+                prev_candidate_index=prev_index,
+                verdict=verdict,
+            )
         )
 
         # Persist the verdict.
@@ -177,12 +180,24 @@ def verify_page_ir_continuity(
                     "prev_candidate": prev_item_json,
                     "next_candidate": next_item_json,
                 },
-                "applied_edits": applied_edits,
                 "verdict": verdict.model_dump(mode="json"),
             },
         )
 
         logger.success(f"Finished verifying continuity between pages {i} and {i + 1}!")
+
+    # Compile continuity edits from edge verdicts.
+    compile_report = compile_continuity_from_edge_verdicts(
+        edge_records=edge_records,
+        min_confidence_to_patch=config.min_confidence_to_patch,
+        page_irs=page_irs,
+    )
+
+    # Write continuity compile report.
+    write_to_json(
+        fp=verification_dirs.root / "continuity_compile_report.json",
+        json_info=compile_report,
+    )
 
     # Perform postprocess fixes.
     postprocess_verified_page_irs(
@@ -229,12 +244,9 @@ def verify(
     """
 
     # 1.
-    config = VerificationConfig.model_validate(
-        open_json_type(config_fp)["page_ir_verification"]
-    )
-    extraction_config = ExtractionConfig.model_validate(
-        open_json_type(config_fp)["page_ir_extraction"]
-    )
+    run_config = RunConfig.model_validate(open_json_type(config_fp))
+    config = run_config.page_ir_verification
+    extraction_config = run_config.page_ir_extraction
     computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
     extraction_run_results_dir = (
         extraction_config.output_dir / computed_doc_key / "extraction"

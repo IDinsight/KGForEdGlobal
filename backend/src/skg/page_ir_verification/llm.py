@@ -27,10 +27,9 @@ from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.page_ir_verification.validators import (
-    validate_boundary_logic,
     validate_item_continuation_kind,
-    validate_negative_case_logic,
     validate_page_continuation_kind,
+    validate_repeats_header_logic,
     validate_semantic_flow,
 )
 from skg.prompts.page_ir_verification import verify_page_ir_pairs_from_extraction
@@ -154,9 +153,8 @@ def verify_page_ir_continuity_verdict(
     validate_item_continuation_kind(
         next_item=next_item, prev_item=prev_item, verdict=verdict
     )
-    validate_boundary_logic(next_item=next_item, prev_item=prev_item, verdict=verdict)
+    validate_repeats_header_logic(next_item=next_item, verdict=verdict)
     validate_semantic_flow(next_item=next_item, verdict=verdict)
-    validate_negative_case_logic(verdict=verdict)
 
 
 def verify_page_ir_pairs(

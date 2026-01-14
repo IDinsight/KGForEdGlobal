@@ -13,6 +13,7 @@ from pydantic import Field
 
 # Package Library
 from skg.page_ir_extraction.schemas import ListItem, TableRow, TextUnit
+from skg.schemas import BaseSchema
 from skg.utils.constants import BlockType, ItemBoundary
 
 
@@ -93,44 +94,7 @@ class TableSlice(BaseSchema):
     )
 
 
-# Schemas for provenance.
-class SectionHeadingRef(BaseSchema):
-    """Semantic pointer to a prior heading that provides structural context for
-    downstream semantic canonicalization. This schema exists to give every stitched
-    DocumentIR segment a lightweight "where am I in the document right now?" context,
-    without doing any real semantics yet. When the stitching step hits a heading/local
-    code, we push this object onto a stack that contains human-readable text and is
-    traceable back to the source (i.e., page and item index).
-
-    Why Do We Need This
-    -------------------
-
-    When the canonical IR pipeline tries to build the CanonicalIR object
-    (e.g., grade → subject → topic → ...), it often needs extra context to interpret a
-    table or block, because the table itself might be ambiguous. For example: the table
-    just has competences, but doesn’t say the subject in the table cells. The subject
-    is in a heading above it. So Step 3 attaches something like:
-
-    section_path = ["Mathematics", "Number", "Addition"]
-
-    to the table segment, even if the table doesn’t repeat that text inside it. That
-    way, the canonical IR pipeline can deterministically infer structure using the
-    table content and the heading context without re-scanning backward across pages.
-
-    In other words, when we stitch a segment, we snapshot:
-
-    segment.section_path = copy(section_path_stack)
-
-    So every segment knows “the headings that were active when I started.”
-    """
-
-    item_index: int = Field(
-        ..., description="0-based index of the heading item inside PageIR.items."
-    )
-    page_index: int = Field(..., description="0-based page index of the heading block.")
-    text: str = Field(..., description="Heading text as extracted (no translation).")
-
-
+# Schemas for stitched segments.
 class SegmentProvenance(BaseSchema):
     """Provenance pointer to the original PageIR item."""
 
@@ -153,39 +117,6 @@ class SegmentProvenance(BaseSchema):
     )
 
 
-class TableRowProvenance(BaseSchema):
-    """Row-level provenance aligned to the stitched table rows."""
-
-    bbox: BBox = Field(
-        ..., description="Approximate bbox for the full source row region."
-    )
-    dropped_header_rows: int = Field(
-        ...,
-        description="How many header rows were dropped from this slice during stitching.",
-    )
-    page_index: int = Field(
-        ..., description="0-based page index for the slice that contributed this row."
-    )
-    row_bbox: Optional[BBox] = Field(
-        default=None,
-        description="Approximate bbox for the stitched row in the table (may equal bbox).",
-    )
-    slice_index: int = Field(
-        ..., description="0-based slice index within the stitched TableSegment."
-    )
-    slice_row_index: int = Field(
-        ..., description="0-based row index within the original slice rows list."
-    )
-    slice_row_index_after_drop: int = Field(
-        ...,
-        description="Row index after dropping repeated headers on continuation slices.",
-    )
-    slice_total_rows: int = Field(
-        ..., description="Total number of raw rows in the originating slice."
-    )
-
-
-# Schemas for stitched segments.
 class BlockSegment(BaseSchema):
     """A stitched block segment (paragraph/list/caption/heading/figure, etc.)."""
 
@@ -319,7 +250,7 @@ Segment = Annotated[Union[BlockSegment, TableSegment], Field(discriminator="kind
 
 # Schemas for stitching.
 class DocumentIR(BaseSchema):
-    """Document-level IR after stitching."""
+    """Document-level IR after stitching (steps 1 & 2)."""
 
     coord_space: str = Field(
         ..., description="Coordinate space used for all bounding boxes."
@@ -343,17 +274,3 @@ class DocumentIR(BaseSchema):
         default_factory=list,
         description="Any non-fatal issues detected during stitching.",
     )
-
-
-# Schemas for configs.
-class StitchingConfig(BaseModelDocumentIR):
-    """Configuration for document IR stitching from verified page IR JSONs."""
-
-    keep_artifacts: bool = Field(
-        False,
-        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
-    )
-    repair_hyphenation: bool = Field(
-        True, description="Whether to repair hyphenation for stitched text."
-    )
-    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")

@@ -15,7 +15,7 @@ import unicodedata
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 # Third Party Library
 import langcodes
@@ -23,19 +23,72 @@ import langcodes
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
-QUOTES_TRANSLATION = str.maketrans(
-    {
-        "“": '"',
-        "”": '"',
-        "„": '"',
-        "‟": '"',
-        "’": "'",
-        "‘": "'",
-        "‚": "'",
-        "‛": "'",
-        "\u00a0": " ",  # NBSP -> space
-    }
-)
+
+class Valid(BaseModel):
+    """Pydantic model for global valid values."""
+
+    completion_finish_reasons: tuple[
+        Literal[None, "function_call", "length", "stop"], ...
+    ] = (None, "function_call", "length", "stop")
+    json_file_exts: tuple[Literal[".json", ".jsonl"], ...] = (".json", ".jsonl")
+    logging_levels: tuple[
+        Literal["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"], ...
+    ] = ("CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING")
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    @classmethod
+    def is_valid_completion_finish_reason(
+        cls, *, completion_finish_reason: str
+    ) -> bool:
+        """Check if a given completion finish reason is valid.
+
+        Parameters
+        ----------
+        completion_finish_reason
+            The completion finish reason to check.
+
+        Returns
+        -------
+        bool
+            True if the completion finish reason is valid, False otherwise.
+        """
+
+        return completion_finish_reason in cls().completion_finish_reasons
+
+    @classmethod
+    def is_valid_json_file_ext(cls, *, file_ext: str) -> bool:
+        """Check if a given JSON file extension is valid.
+
+        Parameters
+        ----------
+        file_ext
+            The file extension to check.
+
+        Returns
+        -------
+        bool
+            True if the file extension is valid, False otherwise.
+        """
+
+        return file_ext in cls().json_file_exts
+
+    @classmethod
+    def is_valid_logging_level(cls, *, logging_level: str) -> bool:
+        """Check if a given logging level is valid.
+
+        Parameters
+        ----------
+        logging_level
+            The logging level to check.
+
+        Returns
+        -------
+        bool
+            True if the logging level is valid, False otherwise.
+        """
+
+        return logging_level in cls().logging_levels
 
 
 def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:

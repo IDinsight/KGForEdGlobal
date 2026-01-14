@@ -12,8 +12,8 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.page_ir_extraction.schemas import ExtractionConfig, PageIR
-from skg.schemas import RunCtx
+from skg.page_ir_extraction.schemas import PageIR
+from skg.schemas import ExtractionConfig, RunCtx
 from skg.utils.constants import ItemBoundary, PageBoundaryState
 from skg.utils.general import make_dir, open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
