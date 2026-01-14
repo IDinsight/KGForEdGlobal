@@ -12,6 +12,7 @@ from typing import Any
 from dotmap import DotMap
 
 # Package Library
+from skg.page_ir_verification.utils import make_verification_excerpt
 from skg.utils.constants import PageContinuationKind
 
 
@@ -126,8 +127,8 @@ Return ONLY a JSON object matching the required schema and always include a rati
         {
             "prev_page_index": prev_page_index,
             "next_page_index": next_page_index,
-            "prev_candidate_item": prev_item,
-            "next_candidate_item": next_item,
+            "prev_candidate_item": make_verification_excerpt(item=prev_item),
+            "next_candidate_item": make_verification_excerpt(item=next_item),
         },
         ensure_ascii=False,
         indent=2,

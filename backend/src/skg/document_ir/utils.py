@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -33,12 +33,13 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
+from skg.page_ir_verification.utils import is_artifact
 from skg.schemas import RunCtx, StitchingConfig
 from skg.utils.constants import BlockType, ItemBoundary
 from skg.utils.general import compute_sha256_hex, make_dir, write_to_json
 
 ItemKey = tuple[int, int]
-ChainItem = tuple[int, int, Union[Table, Block]]
+ChainItem = tuple[int, int, Block | Table]
 
 
 @dataclass(frozen=True)
@@ -353,7 +354,9 @@ def _drop_repeated_header(
     return rows_to_add
 
 
-def _find_next_candidates(items: list[Any]) -> tuple[list[int], list[int]]:
+def _find_next_candidates(
+    items: list[tuple[int, Block | Table]],
+) -> tuple[list[int], list[int]]:
     """Find items on the next page eligible for stitching.
 
     Parameters
@@ -384,7 +387,9 @@ def _find_next_candidates(items: list[Any]) -> tuple[list[int], list[int]]:
     return valid, rejected
 
 
-def _find_prev_candidates(items: list[Any]) -> tuple[list[int], list[int]]:
+def _find_prev_candidates(
+    items: list[tuple[int, Block | Table]],
+) -> tuple[list[int], list[int]]:
     """Find items on the previous page eligible for stitching.
 
     Parameters
@@ -401,35 +406,19 @@ def _find_prev_candidates(items: list[Any]) -> tuple[list[int], list[int]]:
     """
 
     rejected, valid = [], []
-    for idx, (_, item) in enumerate(items):
+
+    for index, (_, item) in enumerate(items):
         if item.boundary not in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH):
             continue
 
         if _prev_candidate_is_safe_to_stitch(
-            prev_item=item, prev_item_idx=idx, prev_page_items=items
+            prev_item=item, prev_item_index=index, prev_page_items=items
         ):
-            valid.append(idx)
+            valid.append(index)
         else:
-            rejected.append(idx)
+            rejected.append(index)
 
     return valid, rejected
-
-
-def _is_artifact_block(item: Union[Table, Block]) -> bool:
-    """Return True if the item is an artifact block.
-
-    Parameters
-    ----------
-    item
-        The item to check.
-
-    Returns
-    -------
-    bool
-        True if the item is an artifact block.
-    """
-
-    return isinstance(item, Block) and item.block_type == BlockType.ARTIFACT
 
 
 def _is_safe_interstitial_block(*, next_item: object, prior: Block) -> bool:
@@ -557,11 +546,7 @@ def _match_candidates(
     return page_pair_links
 
 
-def _match_score(
-    *,
-    next_item: Union[Table, Block],
-    prev_item: Union[Table, Block],
-) -> int:
+def _match_score(*, next_item: Block | Table, prev_item: Block | Table) -> int:
     """Score a potential continuation match (higher is better).
 
     Parameters
@@ -607,9 +592,9 @@ def _match_score(
 
 def _next_candidate_is_safe_to_stitch(
     *,
-    next_item: Union[Table, Block],
+    next_item: Block | Table,
     next_item_idx: int,
-    next_page_items: list[tuple[int, Union[Table, Block]]],
+    next_page_items: list[tuple[int, Block | Table]],
 ) -> bool:
     """Determine if it's safe to stitch to the next-page candidate. Only stitch to a
     next-page candidate if nothing non-artifact precedes it. Otherwise stitching would
@@ -631,8 +616,9 @@ def _next_candidate_is_safe_to_stitch(
         The set of picked indices.
     """
 
-    if k <= 0:
-        return set(range(len(items)))
+    for _, prior in next_page_items[:next_item_idx]:
+        if is_artifact(prior):
+            continue
 
         if isinstance(prior, Block) and _is_safe_interstitial_block(
             next_item=next_item, prior=prior
@@ -692,9 +678,9 @@ def _extract_table_local_code_from_caption(caption: Block) -> Optional[str]:
 
 def _fill_span_area(
     *,
-    prev_item: Union[Table, Block],
-    prev_item_idx: int,
-    prev_page_items: list[tuple[int, Union[Table, Block]]],
+    prev_item: Block | Table,
+    prev_item_index: int,
+    prev_page_items: list[tuple[int, Block | Table]],
 ) -> bool:
     """Determine if it's safe to stitch from the previous-page candidate. Only stitch
     from a previous-page candidate if nothing non-artifact follows it. Exception: allow
@@ -702,20 +688,12 @@ def _fill_span_area(
 
     Parameters
     ----------
-    col_span
-        The column span.
-    col_start
-        The starting column index.
-    grid
-        The grid to populate.
-    row_span
-        The row span.
-    row_start
-        The starting row index.
-    segment_id
-        The TableSegment ID (for error messages).
-    value
-        The TextUnit-like value to fill in the spanned area.
+    prev_item
+        The previous item.
+    prev_item_index
+        The index of the previous item in the previous page's normalized items list.
+    prev_page_items
+        The previous page's normalized items list.
 
     Raises
     ------
@@ -723,13 +701,9 @@ def _fill_span_area(
         If overlapping spans are detected.
     """
 
-    for rr in range(row_start, row_start + row_span):
-        for cc in range(col_start, col_start + col_span):
-            if grid[rr][cc]["source_row"] != -1:
-                raise ValueError(
-                    f"Overlapping spans detected at (row={rr}, col={cc}) "
-                    f"in TableSegment: {segment_id}."
-                )
+    for _, later in prev_page_items[prev_item_index + 1 :]:
+        if is_artifact(later):
+            continue
 
         if (
             isinstance(prev_item, Table)
@@ -745,11 +719,10 @@ def _fill_span_area(
 
 def _finalize_table_structure(
     *,
-    chain: list[tuple[int, int, Table]],
-    header_rows: list[TableRow],
-    local_code: Optional[str],
-    segment_id: str,
-    stitched_rows: list[TableRow],
+    current_page_ir: PageIR,
+    next_page_ir: PageIR,
+    next_page_items: list[tuple[int, Block | Table]],
+    prev_page_items: list[tuple[int, Block | Table]],
     warnings: list[str],
 ) -> tuple[int, Optional[str], list[list[str]]]:
     """Compute final n_cols and header signatures.
@@ -1396,7 +1369,7 @@ def _row_signature(row: TableRow) -> tuple[str, ...]:
 
 def assert_page_items_consumed_exactly_once(
     *,
-    items_with_idx: dict[int, list[tuple[int, Union[Table, Block]]]],
+    items_with_idx: dict[int, list[tuple[int, Block | Table]]],
     segments: list[Segment],
     strict: bool = True,
     warnings: list[str],
@@ -1828,9 +1801,9 @@ def block_segment_key(block: Block) -> str:
 
 def build_continuation_chain(
     *,
-    items_lookup: dict[int, dict[int, Union[Table, Block]]],
+    items_lookup: dict[int, dict[int, Block | Table]],
     links: dict[ItemKey, ItemKey],
-    start_item: Union[Table, Block],
+    start_item: Block | Table,
     start_key: ItemKey,
     warnings: list[str],
 ) -> list[ChainItem]:
@@ -1909,9 +1882,7 @@ def build_continuation_chain(
 
 
 def compatible_kinds_for_stitch(
-    *,
-    next_item: Union[Table, Block],
-    prev_item: Union[Table, Block],
+    *, next_item: Block | Table, prev_item: Block | Table
 ) -> bool:
     """Return True if two items are stitch-compatible.
 
@@ -1979,7 +1950,7 @@ def compute_page_break_links(
     page_pair_debug: list[dict[str, Any]],
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
-    """Compute a mapping of (page_i, item_index) -> (page_i+1, item_index) links for
+    """Compute a mapping of (page_i, item_index) --> (page_i+1, item_index) links for
     continuations. This uses only the already-verified item boundaries:
 
     1. prev item boundary must continue to next (TRUNCATED or BOTH).
@@ -2008,8 +1979,8 @@ def compute_page_break_links(
         Forward links for items that continue across a page break.
     """
 
-    # Normalize pages to item lists (artifact-filtered)
-    normalized_pages: list[list[tuple[int, Union[Table, Block]]]] = [
+    # Normalize pages to item lists.
+    normalized_pages: list[list[tuple[int, Block | Table]]] = [
         normalize_page_items(keep_artifacts=keep_artifacts, page_ir=page_ir)
         for page_ir in page_irs
     ]
@@ -2017,9 +1988,7 @@ def compute_page_break_links(
 
     # Process one pair of pages at a time.
     for i in range(len(page_irs) - 1):
-        logger.info(f"Computing page break links for pages {i} -> {i + 1}...")
-
-        page_pair_links = process_page_pair(
+        page_pair_links = _process_page_pair(
             current_page_ir=page_irs[i],
             link_debug=link_debug,
             min_link_score=min_link_score,
@@ -2227,8 +2196,9 @@ def materialize_segment(
 
 def normalize_page_items(
     *, keep_artifacts: bool, page_ir: PageIR
-) -> list[tuple[int, Union[Table, Block]]]:
-    """Normalize a PageIR items list for stitching.
+) -> list[tuple[int, Block | Table]]:
+    """Normalize a PageIR item for stitching. Currently, this function just removes
+    artifact items unless keep_artifacts=True.
 
     Parameters
     ----------
@@ -2243,12 +2213,12 @@ def normalize_page_items(
         List of (item_index, item) tuples after normalization.
     """
 
-    items_with_idx = []
-    for idx, item in enumerate(page_ir.items):
-        if keep_artifacts or not _is_artifact_block(item):
-            items_with_idx.append((idx, item))
+    items_mapping = []
+    for index, item in enumerate(page_ir.items):
+        if keep_artifacts or not is_artifact(item):
+            items_mapping.append((index, item))
 
-    return items_with_idx
+    return items_mapping
 
 
 def persist_stitching_run(

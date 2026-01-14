@@ -322,6 +322,29 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def truncate_text(*, max_chars: int, text: str) -> str:
+    """Return a single-line truncated preview string.
+
+    Parameters
+    ----------
+    max_chars
+        The maximum number of characters to return (including ellipsis).
+    text
+        The text to truncate.
+
+    Returns
+    -------
+    str
+        The truncated text.
+    """
+
+    text = (text or "").replace("\n", " ").strip()
+
+    return (
+        text if len(text) <= max_chars else text[: max(0, max_chars - 1)].rstrip() + "…"
+    )
+
+
 def validate_bbox_order(bbox: list[float]) -> list[float]:
     """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
 
