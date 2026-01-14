@@ -58,6 +58,60 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _align_cells_in_row(
+    *, active_span: list[int], n_cols: int, old_cells: list[Any]
+) -> list[TableCell]:
+    """Generate a new list of cells with placeholders inserted based on active spans.
+
+    Parameters
+    ----------
+    active_span
+        List indicating how many more rows each column is occupied by rowspans.
+    n_cols
+        The total number of columns in the table.
+    old_cells
+        The original list of table cells.
+
+    Returns
+    -------
+    list[TableCell]
+        The new list of table cells with placeholders inserted.
+    """
+
+    new_cells: list[TableCell] = []
+    col = 0
+
+    for cell in old_cells:
+        # Insert placeholders for columns occupied by rowspans from prior rows.
+        while col < n_cols and active_span[col] > 0:
+            new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+            col += 1
+
+        if col >= n_cols:
+            break
+
+        # Place the actual cell.
+        new_cells.append(cell)
+
+        c_span = int(getattr(cell, "col_span", 1) or 1)
+        r_span = int(getattr(cell, "row_span", 1) or 1)
+
+        # Mark future rows as occupied if this cell has a rowspan.
+        if r_span > 1:
+            for dc in range(c_span):
+                if (col + dc) < n_cols:
+                    active_span[col + dc] = max(active_span[col + dc], r_span - 1)
+
+        col += c_span
+
+    # Fill trailing occupied columns.
+    while col < n_cols and active_span[col] > 0:
+        new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+        col += 1
+
+    return new_cells
+
+
 def _apply_single_edge_verdict(
     *,
     bools: dict[tuple[int, int], list[bool]],
@@ -445,6 +499,62 @@ def _normalize_local_code(code: str | None) -> str | None:
     return (code or "").strip() or None
 
 
+def _process_table_item(
+    *, item: Any, item_index: int, page_index: int
+) -> list[dict[str, Any]]:
+    """Iterate through rows of a specific table and fix alignment.
+
+    Parameters
+    ----------
+    item
+        The PageIR table item to process.
+    item_index
+        The index of the item on the page.
+    page_index
+        The index of the page containing the item.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change summaries for rows that were modified.
+    """
+
+    changes: list[dict[str, Any]] = []
+    n_cols = item.n_cols
+
+    if not isinstance(n_cols, int) or n_cols <= 0:
+        return changes
+
+    # active_span[c] = number of remaining future rows that occupy column c.
+    active_span = [0] * n_cols
+
+    for row_index, row in enumerate(item.rows or []):
+        # Decrement active rowspans at the start of each new row.
+        active_span = [max(0, x - 1) for x in active_span]
+
+        old_cells = list(row.cells or [])
+
+        # Delegate the complex cell logic to the helper function
+        new_cells = _align_cells_in_row(
+            active_span=active_span, n_cols=n_cols, old_cells=old_cells
+        )
+
+        if len(new_cells) != len(old_cells):
+            row.cells = new_cells
+            changes.append(
+                {
+                    "type": "rowspan_alignment_inserted_placeholders",
+                    "page": page_index,
+                    "item_index": item_index,
+                    "row_index": row_index,
+                    "before_cells": len(old_cells),
+                    "after_cells": len(new_cells),
+                }
+            )
+
+    return changes
+
+
 def _reconcile_item_state(
     *,
     item: Any,
@@ -551,6 +661,39 @@ def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]
         output.append(truncate_text(max_chars=max_cell_chars, text=text))
 
     return output
+
+
+def align_table_rows_with_rowspans(
+    *, page_irs: dict[int, PageIR]
+) -> list[dict[str, Any]]:
+    """Insert placeholder empty cells where prior-row rowspans occupy columns. This
+    repairs the common failure mode where a row under a row-spanned subject shifts left
+    and causes column drift.
+
+    Parameters
+    ----------
+    page_irs
+        Mapping of page_index to PageIR objects.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change summaries for rows that were modified.
+    """
+
+    changes: list[dict[str, Any]] = []
+
+    for page_index in sorted(page_irs.keys()):
+        page_ir = page_irs[page_index]
+
+        for item_index, item in enumerate(page_ir.items or []):
+            if item.kind == "table":
+                table_changes = _process_table_item(
+                    item=item, item_index=item_index, page_index=page_index
+                )
+                changes.extend(table_changes)
+
+    return changes
 
 
 def bottom_continuity_candidates(
@@ -1095,6 +1238,101 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
     return None
 
 
+def fix_false_truncated_prose_before_table(
+    *, page_irs: dict[int, PageIR]
+) -> list[dict[str, Any]]:
+    """If a page ends with a truncated prose block but the next page starts with a
+    table/caption and there is no resumed prose block, clear the truncation when the
+    prose appears complete. This repairs false-positive prose truncations at section
+    breaks into tables.
+
+    Parameters
+    ----------
+    page_irs
+        Mapping of page_index to PageIR objects.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change summaries for items that were modified.
+    """
+
+    changes: list[dict[str, Any]] = []
+    page_indices = sorted(page_irs.keys())
+
+    for i in range(len(page_indices) - 1):
+        p_idx = page_indices[i]
+        n_idx = page_indices[i + 1]
+        prev = page_irs[p_idx]
+        nxt = page_irs[n_idx]
+
+        prev_items = [it for it in (prev.items or []) if not is_artifact(it)]
+        nxt_items = [it for it in (nxt.items or []) if not is_artifact(it)]
+
+        if not prev_items or not nxt_items:
+            continue
+
+        last_prev = prev_items[-1]
+        first_next = nxt_items[0]
+
+        # Only consider prose blocks marked truncated/both.
+        if (
+            last_prev.kind != "block"
+            or (last_prev.boundary not in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH})
+            or (last_prev.block_type not in {BlockType.PARAGRAPH, BlockType.LIST})
+        ):
+            continue
+
+        # Only fire when next page starts with a table/caption.
+        next_is_tableish = first_next.kind == "table" or (
+            first_next.kind == "block" and first_next.block_type == BlockType.CAPTION
+        )
+
+        if not next_is_tableish:
+            continue
+
+        # If next page has a resumed prose block early on, let it be a real
+        # continuation.
+        has_resumed_prose = any(
+            item.kind == "block"
+            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            and item.block_type in {BlockType.PARAGRAPH, BlockType.LIST}
+            for item in (nxt.items or [])[:6]
+        )
+
+        if has_resumed_prose:
+            continue
+
+        # If the prose ends cleanly, treat as complete.
+        text_or_none = last_prev.text
+        text = (
+            (text_or_none.text or "").strip()
+            if isinstance(text_or_none, TextUnit)
+            else ""
+        )
+        ends_cleanly = bool(
+            re.search(r"[.!?]['\"\)]?\s*$", text)
+        ) and not text.endswith("-")
+
+        if not ends_cleanly:
+            continue
+
+        old = last_prev.boundary
+        last_prev.boundary = ItemBoundary.COMPLETE
+        prev.boundary_state = derive_page_boundary_state(page_ir=prev)
+
+        changes.append(
+            {
+                "type": "clear_false_truncated_prose_before_table",
+                "page": p_idx,
+                "old_boundary": old.value,
+                "new_boundary": last_prev.boundary.value,
+            }
+        )
+
+    return changes
+
+
 def generate_candidate_pairs(
     *, next_crop_fp: Path, next_page_ir: PageIR, prev_page_ir: PageIR
 ) -> tuple[list[tuple[int, Block | Table, int, Block | Table]], dict[str, int]]:
@@ -1417,6 +1655,53 @@ def make_verification_excerpt(
     }
 
 
+def normalize_empty_table_cells_to_null(
+    *, page_irs: dict[int, PageIR]
+) -> list[dict[str, Any]]:
+    """Convert visually-empty table cell text like '' / ' ' / '\\n' into text=None.
+    This stabilizes rowspan logic and downstream canonicalization by making emptiness
+    explicit.
+
+    Parameters
+    ----------
+    page_irs
+        Mapping of page index to PageIR dict.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change records describing the modifications made.
+    """
+
+    changes: list[dict[str, Any]] = []
+
+    for page_index in sorted(page_irs.keys()):
+        page_ir = page_irs[page_index]
+        for item_index, item in enumerate(page_ir.items or []):
+            if item.kind != "table":
+                continue
+
+            for row_index, row in enumerate(item.rows or []):
+                for cell_index, cell in enumerate(row.cells or []):
+                    text_or_none = cell.text
+                    if (
+                        isinstance(text_or_none, TextUnit)
+                        and not (text_or_none.text or "").strip()
+                    ):
+                        cell.text = None
+                        changes.append(
+                            {
+                                "type": "empty_string_cell_to_null",
+                                "page": page_index,
+                                "item_index": item_index,
+                                "row_index": row_index,
+                                "cell_index": cell_index,
+                            }
+                        )
+
+    return changes
+
+
 def normalize_table_row_cell_counts(
     *, page_irs: dict[int, PageIR]
 ) -> list[dict[str, Any]]:
@@ -1546,8 +1831,17 @@ def postprocess_verified_page_irs(
         The verification directories.
     """
 
+    # Fix false truncated prose before tables.
+    prose_table_fix_changes = fix_false_truncated_prose_before_table(page_irs=page_irs)
+
     # Enrich data by flowing local codes across the now-verified boundaries.
     table_code_changes = propagate_table_local_codes(page_irs=page_irs)
+
+    # Normalize empty-string cells into explicit nulls.
+    empty_cell_changes = normalize_empty_table_cells_to_null(page_irs=page_irs)
+
+    # Insert placeholders under rowspans to prevent column drift.
+    rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs=page_irs)
 
     # Fix structural "empty cell" hallucinations from the extraction model.
     pad_changes = normalize_table_row_cell_counts(page_irs=page_irs)
@@ -1556,7 +1850,10 @@ def postprocess_verified_page_irs(
     write_to_json(
         fp=verification_dirs.root / "postprocess_report.json",
         json_info={
+            "prose_table_fix_changes": prose_table_fix_changes,
             "table_local_code_changes": table_code_changes,
+            "empty_cell_null_changes": empty_cell_changes,
+            "rowspan_alignment_changes": rowspan_alignment_changes,
             "table_row_padding_changes": pad_changes,
         },
     )
