@@ -30,6 +30,83 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _apply_continuation_edits(
+    *,
+    edits: dict[str, Any],
+    next_item: Block | Table,
+    prev_item: Block | Table,
+    verdict: PageIRContinuityVerdict,
+) -> None:
+    """Handle positive case: apply LLM-proposed patches.
+
+    Parameters
+    ----------
+    edits
+        The dictionary to record applied edits.
+    next_item
+        The next page candidate item.
+    prev_item
+        The previous page candidate item.
+    verdict
+        The continuity verdict from the model.
+    """
+
+    # Handle previous item boundary.
+    if verdict.set_prev_item_boundary is not None:
+        before = prev_item.boundary
+        after = _merge_boundary(existing=before, patch=verdict.set_prev_item_boundary)
+        if after != before:
+            prev_item.boundary = after
+            edits["prev_boundary"] = {"before": before, "after": after}
+
+    # Handle next item boundary,
+    if verdict.set_next_item_boundary is not None:
+        before = next_item.boundary
+        after = _merge_boundary(existing=before, patch=verdict.set_next_item_boundary)
+        if after != before:
+            next_item.boundary = after
+            edits["next_boundary"] = {"before": before, "after": after}
+
+    # Handle table headers.
+    if verdict.set_next_table_repeats_header is not None:
+        if next_item.kind == "table":
+            before = next_item.repeats_header
+            after = verdict.set_next_table_repeats_header
+            if after != before:
+                next_item.repeats_header = after
+                edits["next_repeats_header"] = {"before": before, "after": after}
+
+
+def _apply_discontinuity_edits(
+    *, edits: dict[str, Any], next_item: Block | Table, prev_item: Block | Table
+) -> None:
+    """Handle negative case: Clear edges between candidates.
+
+    Parameters
+    ----------
+    edits
+        The dictionary to record applied edits.
+    next_item
+        The next page candidate item.
+    prev_item
+        The previous page candidate item.
+    """
+
+    # Clear prev --> next.
+    before = prev_item.boundary
+    after = _clear_to_next(before)
+    if after != before:
+        prev_item.boundary = after
+        edits["prev_boundary"] = {"before": before, "after": after}
+
+    # Clear next --> prev.
+    before = next_item.boundary
+    after = _clear_from_prev(before)
+    if after != before:
+        next_item.boundary = after
+        edits["next_boundary"] = {"before": before, "after": after}
+
+
 def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -> bool:
     """Return True if bbox intersects the vertical range [y_min, y_max]. bbox is
     [x0, y0, x1, y1] in full-page pixel coords.
@@ -53,6 +130,48 @@ def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -
     y1 = float(bbox[3])
 
     return not (y1 < float(y_min) or y0 > float(y_max))
+
+
+def _clear_to_next(existing: ItemBoundary) -> ItemBoundary:
+    """Remove ONLY the 'continues-to-next-page' signal from a boundary.
+
+    Parameters
+    ----------
+    existing
+        The existing boundary state.
+
+    Returns
+    -------
+    ItemBoundary
+        The updated boundary state.
+    """
+
+    if existing == ItemBoundary.TRUNCATED:
+        return ItemBoundary.COMPLETE
+    if existing == ItemBoundary.BOTH:
+        return ItemBoundary.RESUMED
+    return existing  # COMPLETE or RESUMED
+
+
+def _clear_from_prev(existing: ItemBoundary) -> ItemBoundary:
+    """Remove ONLY the 'resumes-from-prev-page' signal from a boundary.
+
+    Parameters
+    ----------
+    existing
+        The existing boundary state.
+
+    Returns
+    -------
+    ItemBoundary
+        The updated boundary state.
+    """
+
+    if existing == ItemBoundary.RESUMED:
+        return ItemBoundary.COMPLETE
+    if existing == ItemBoundary.BOTH:
+        return ItemBoundary.TRUNCATED
+    return existing  # COMPLETE or TRUNCATED
 
 
 def _merge_boundary(
@@ -91,6 +210,16 @@ def _merge_boundary(
     return patch
 
 
+def _update_if_changed(
+    *, obj: Any, attr: str, new_value: Any, edits: dict[str, Any], edit_key: str
+) -> None:
+    """Helper to update an object attribute only if the value has changed."""
+    current_value = getattr(obj, attr)
+    if current_value != new_value:
+        setattr(obj, attr, new_value)
+        edits[edit_key] = {"before": current_value, "after": new_value}
+
+
 def apply_continuity_verdict(
     *,
     min_confidence_to_patch: float,
@@ -126,29 +255,14 @@ def apply_continuity_verdict(
 
     edits: dict[str, Any] = {}
 
-    if verdict.set_prev_item_boundary is not None:
-        before = prev_item.boundary
-        after = _merge_boundary(existing=before, patch=verdict.set_prev_item_boundary)
-        if after != before:
-            prev_item.boundary = after
-            edits["prev_boundary"] = {"before": before, "after": after}
-
-    if verdict.set_next_item_boundary is not None:
-        before = next_item.boundary
-        after = _merge_boundary(existing=before, patch=verdict.set_next_item_boundary)
-        if after != before:
-            next_item.boundary = after
-            edits["next_boundary"] = {"before": before, "after": after}
-
-    if verdict.set_next_table_repeats_header is not None:
-        # Validators should ensure this only happens when next_item is a table,
-        # but keep it safe.
-        if next_item.kind == "table":
-            before = getattr(next_item, "repeats_header", None)
-            after = verdict.set_next_table_repeats_header
-            if after != before:
-                next_item.repeats_header = after
-                edits["next_repeats_header"] = {"before": before, "after": after}
+    if verdict.is_continuation:
+        _apply_continuation_edits(
+            edits=edits, next_item=next_item, prev_item=prev_item, verdict=verdict
+        )
+    else:
+        _apply_discontinuity_edits(
+            edits=edits, next_item=next_item, prev_item=prev_item
+        )
 
     return edits or None
 

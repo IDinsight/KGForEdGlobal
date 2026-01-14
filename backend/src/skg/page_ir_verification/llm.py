@@ -156,9 +156,7 @@ def verify_page_ir_continuity_verdict(
     )
     validate_boundary_logic(next_item=next_item, prev_item=prev_item, verdict=verdict)
     validate_semantic_flow(next_item=next_item, verdict=verdict)
-    validate_negative_case_logic(
-        next_item=next_item, prev_item=prev_item, verdict=verdict
-    )
+    validate_negative_case_logic(verdict=verdict)
 
 
 def verify_page_ir_pairs(

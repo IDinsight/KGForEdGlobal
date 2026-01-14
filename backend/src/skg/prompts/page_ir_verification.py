@@ -54,7 +54,7 @@ You will be given:
 1. Decide whether the candidate item at the BOTTOM of page N continues onto the candidate item at the TOP of page N+1.
 2. Propose MINIMAL continuity-metadata edits ONLY when needed to:
   - Make a TRUE continuation compatible (positive case), OR
-  - Close dangling/incorrect continuity flags when you judge there is NO continuation (negative case).
+  - Negative case: do not propose boundary edits (Python clears the edge directionally)
 3. Return ONLY a JSON object matching the required schema and always include a rationale string (>= 50 characters). No prose.
 
 ## HARD RULES
@@ -63,20 +63,20 @@ You will be given:
 3. DO NOT rewrite, move, merge, or complete text/table cells across pages.
 4. DO NOT invent missing content.
 5. CONTINUITY METADATA EDITS (PAIRWISE MODE):
-   - You are operating in pairwise mode: you see all of page N but only the TOP of page N+1.
-   - NEVER propose set_* boundaries of "{ItemBoundary.BOTH.value}" in this step.
-   Positive case (is_continuation=true):
-   - You MUST propose the following when existing metadata is missing/incompatible (including when boundary is null/unknown or points the wrong direction):
-     - set_prev_item_boundary = "{ItemBoundary.TRUNCATED.value}" or null
-     - set_next_item_boundary = "{ItemBoundary.RESUMED.value}" or null
-   Negative case (is_continuation=false):
-   - You MUST close dangling continuity flags when present:
-     - If prev candidate boundary is "{ItemBoundary.TRUNCATED.value}" or "{ItemBoundary.BOTH.value}", set set_prev_item_boundary = "{ItemBoundary.COMPLETE.value}".
-     - If next candidate boundary is "{ItemBoundary.RESUMED.value}" or "{ItemBoundary.BOTH.value}", set set_next_item_boundary = "{ItemBoundary.COMPLETE.value}".
-     - Otherwise leave them null.
-   Notes:
-   - The Python pipeline may upgrade a boundary to "{ItemBoundary.BOTH.value}" if the item already has the opposite boundary (e.g., extractor marked "{ItemBoundary.RESUMED.value}" and verification adds "{ItemBoundary.TRUNCATED.value}"). That upgrade is handled in Python.
-   - If a candidate boundary is already "{ItemBoundary.BOTH.value}", it is compatible with continuation; do not change it in the positive case.
+  - You are operating in pairwise mode: you see all of page N but only the TOP of page N+1.
+  - NEVER propose set_* boundaries of "{ItemBoundary.BOTH.value}" in this step.
+  Positive case (is_continuation=true):
+  - You MUST propose the following when existing metadata is missing/incompatible (including when boundary is null/unknown or points the wrong direction):
+    - set_prev_item_boundary = "{ItemBoundary.TRUNCATED.value}" or null
+    - set_next_item_boundary = "{ItemBoundary.RESUMED.value}" or null
+  Negative case (is_continuation=false):
+  - DO NOT propose boundary edits. Leave:
+    - set_prev_item_boundary = null
+    - set_next_item_boundary = null
+  - Python will clear ONLY the edge between these two candidates (directionally) if needed.
+  Notes:
+  - The Python pipeline may upgrade a boundary to "{ItemBoundary.BOTH.value}" if the item already has the opposite boundary (e.g., extractor marked "{ItemBoundary.RESUMED.value}" and verification adds "{ItemBoundary.TRUNCATED.value}"). That upgrade is handled in Python.
+  - If a candidate boundary is already "{ItemBoundary.BOTH.value}", it is compatible with continuation; do not change it in the positive case.
 6. For TABLE candidates, “continuation” is decided at the TABLE level (same grid + same header schema).
   - DO NOT require that the last row on page N continues into the first row on page N+1.
   - A change in table content/numbering is NORMAL within the SAME long table and is NOT evidence of a new table.
@@ -84,25 +84,24 @@ You will be given:
 8. HEADING/CAPTION SAFETY (TEXT ONLY):
   - NEVER treat a HEADING or CAPTION as part of a TEXT continuation.
   - If you would otherwise choose continuation_kind="text" but either candidate is a HEADING/CAPTION, then set is_continuation=false and continuation_kind="none".
-  - In the negative case, close dangling TRUNCATED/RESUMED boundaries by setting them to "complete" when required.
 9. ORDERING SAFETY (TEXT/LIST ONLY):
   - If continuation_kind="{PageContinuationKind.TEXT.value}" (including lists) AND IMAGE B starts with a non-artifact HEADING/CAPTION/TITLE above the NEXT candidate block (e.g., "Table of Contents", "List of Figures", "Chapter 1", "Introduction"), then set:
     - is_continuation=false
     - continuation_kind="{PageContinuationKind.NONE.value}"
-    - leave all set_* null EXCEPT you MUST close dangling boundaries (set to "{ItemBoundary.COMPLETE.value}") when required by rule #5.
+    - leave all set_* null
   - Exception: This rule does not apply to TABLE continuations (tables may have captions like "Table X (continued)" above them).
 10. UNCERTAINTY POLICY (must follow exactly):
-  - Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* null EXCEPT you MUST close dangling boundaries (set to "{ItemBoundary.COMPLETE.value}") when required by rule #5.
+  - Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* null.
   - Exception for TABLE <-> TABLE candidates: If BOTH candidates are tables AND you have at least one STRONG continuation cue (per TABLE continuation signals below) AND there is NO visible new-table marker/caption/title at the boundary, you SHOULD set is_continuation=true, and continuation_kind="{PageContinuationKind.TABLE.value}".
 
 ## ALLOWED EDITS (METADATA ONLY)
 1. set_prev_item_boundary:
   - Positive case: {ItemBoundary.TRUNCATED.value} or null (use null ONLY if the effective boundary is already compatible)
-  - Negative-case closure: {ItemBoundary.COMPLETE.value} or null
+  - Negative case: null only
   - NEVER propose {ItemBoundary.BOTH.value} in pairwise mode
 2. set_next_item_boundary:
   - Positive case: {ItemBoundary.RESUMED.value} or null (use null ONLY if the effective boundary is already compatible)
-  - Negative-case closure: {ItemBoundary.COMPLETE.value} or null
+  - Negative case: null only
   - NEVER propose {ItemBoundary.BOTH.value} in pairwise mode
 3. set_next_table_repeats_header:
   - If the NEXT candidate is not a table, set_next_table_repeats_header MUST be null.
@@ -160,7 +159,11 @@ You will be given:
 4. If is_continuation=false, set continuation_kind="{PageContinuationKind.NONE.value}".
 5. If is_continuation=true AND continuation_kind="{PageContinuationKind.TABLE.value}", set set_next_table_repeats_header to true/false ONLY when you can confidently see whether headers repeat; otherwise leave it null.
 6. If is_continuation=true, the previous candidate should be compatible with continuing to next ("{ItemBoundary.TRUNCATED.value}" or "{ItemBoundary.BOTH.value}"), and the next candidate should be compatible with continuing from previous ("{ItemBoundary.RESUMED.value}" or "{ItemBoundary.BOTH.value}"). If incompatible, propose minimal boundary edits as allowed.
-7. Candidate mismatch safety (this rule does NOT apply when BOTH candidates are tables): If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", and leave all set_* fields null EXCEPT you MUST close dangling boundaries (set to "{ItemBoundary.COMPLETE.value}") when required by rule #5.
+7. Candidate mismatch safety (this rule does NOT apply when BOTH candidates are tables): If the images suggest there might be continuation somewhere across the boundary, but it is NOT clearly between these two candidate items, then set:
+  - is_continuation=false
+  - continuation_kind="{PageContinuationKind.NONE.value}"
+  - leave all set_* fields null
+  - Do NOT propose boundary “closure” edits in mismatch cases; Python will clear only the checked edge directionally.
 8. When uncertain, follow the UNCERTAINTY POLICY above.
 
 ## CONFIDENCE CALIBRATION RULES

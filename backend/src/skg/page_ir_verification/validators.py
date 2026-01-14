@@ -124,24 +124,14 @@ def validate_item_continuation_kind(
             )
 
 
-def validate_negative_case_logic(
-    *,
-    next_item: Block | Table,
-    prev_item: Block | Table,
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Ensure that if is_continuation=False, items are not left in a 'dangling' state.
-    If the model rejects continuation, it implies the items are NOT connected.
-    Therefore, they should not remain 'TRUNCATED' (at bottom) or 'RESUMED' (at top)
-    unless they connect to *something else* (which pairwise verification assumes they
-    don't).
+def validate_negative_case_logic(*, verdict: PageIRContinuityVerdict) -> None:
+    """Negative case policy:
+
+    1. The model must not propose boundary edits (set_* fields must be null).
+    2. Directional edge-clearing between these two candidates is handled in Python.
 
     Parameters
     ----------
-    next_item
-        The next page candidate item.
-    prev_item
-        The previous page candidate item.
     verdict
         The continuation verdict from the model.
 
@@ -154,28 +144,14 @@ def validate_negative_case_logic(
     if verdict.is_continuation:
         return
 
-    # Calculate effective boundaries.
-    eff_prev_boundary = verdict.set_prev_item_boundary or prev_item.boundary
-    eff_next_boundary = verdict.set_next_item_boundary or next_item.boundary
-
-    # Check previous item (bottom of Page N). If it was TRUNCATED, and we now say
-    # "False", it should probably be COMPLETE.
-    if eff_prev_boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}:
+    if (
+        verdict.set_prev_item_boundary is not None
+        or verdict.set_next_item_boundary is not None
+        or verdict.set_next_table_repeats_header is not None
+    ):
         raise QualityError(
-            f"verdict.is_continuation=False, but the previous item is still marked "
-            f"'{eff_prev_boundary}'. This implies it continues. "
-            f"Please set set_prev_item_boundary='{ItemBoundary.COMPLETE.value}' "
-            f"to close it, or change is_continuation to true."
-        )
-
-    # Check next item (top of Page N+1). If it was RESUMED, and we now say "False", it
-    # should probably be COMPLETE.
-    if eff_next_boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
-        raise QualityError(
-            f"verdict.is_continuation=False, but the next item is still marked "
-            f"'{eff_next_boundary}'. This implies it resumes from somewhere. "
-            f"Please set set_next_item_boundary='{ItemBoundary.COMPLETE.value}' "
-            f"to close it, or change is_continuation to true."
+            "Negative case (is_continuation=false) requires all set_* fields to be null. "
+            "Directional edge-clearing is applied deterministically in Python."
         )
 
 
@@ -202,8 +178,8 @@ def validate_page_continuation_kind(verdict: PageIRContinuityVerdict) -> None:
 
     if (not verdict.is_continuation) and kind != PageContinuationKind.NONE.value:
         raise QualityError(
-            f"If is_continuation=false, continuation_kind must be 'none' "
-            f"and all set_* fields must be '{ItemBoundary.COMPLETE.value}'."
+            "If is_continuation=false, continuation_kind must be 'none' and all "
+            "set_* fields must be null."
         )
 
 

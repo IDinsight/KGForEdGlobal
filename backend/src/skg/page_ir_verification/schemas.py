@@ -54,7 +54,7 @@ class PageIRContinuityVerdict(BaseModelPageIRVerification):
     )
     set_next_item_boundary: Optional[ItemBoundary] = Field(
         None,
-        description="Boundary state for the first item on the next page. In pairwise verification, do not set 'both'—only set 'resumed' or null.",
+        description="Boundary patch for the first item on the next page. In pairwise verification, only set this in the POSITIVE case (resumed or null). Must be null when is_continuation=false.",
     )
     set_next_table_repeats_header: Optional[bool] = Field(
         None,
@@ -62,7 +62,7 @@ class PageIRContinuityVerdict(BaseModelPageIRVerification):
     )
     set_prev_item_boundary: Optional[ItemBoundary] = Field(
         None,
-        description="Boundary state for the last item on the previous page. In pairwise verification, do not set 'both'—only set 'truncated' or null.",
+        description="Boundary patch for the last item on the previous page. In pairwise verification, only set this in the POSITIVE case (truncated or null). Must be null when is_continuation=false.",
     )
 
     @model_validator(mode="after")
@@ -77,7 +77,7 @@ class PageIRContinuityVerdict(BaseModelPageIRVerification):
         Raises
         ------
         ValueError
-            If the suggested edits are inconsistent with is_continuation.
+            If the suggested edits are inconsistent.
         """
 
         if self.is_continuation:
@@ -108,29 +108,16 @@ class PageIRContinuityVerdict(BaseModelPageIRVerification):
                     "set_next_table_repeats_header only allowed for table continuations."
                 )
         else:
-            # If we say "NO continuation", we usually want to ensure boundaries are
-            # CLOSED. So we allow the model to set boundaries to COMPLETE (or null to
-            # leave as-is).
-
-            # Prevent "open" edits in negative case since we cannot set an item to
-            # TRUNCATED or RESUMED if they don't connect.
-            if self.set_prev_item_boundary in {
-                ItemBoundary.BOTH,
-                ItemBoundary.TRUNCATED,
-            }:
-                assert self.set_prev_item_boundary is not None
+            # Negative case: the model must not propose boundary/table-header edits.
+            # Directional edge-clearing is handled deterministically in Python.
+            if (
+                self.set_prev_item_boundary is not None
+                or self.set_next_item_boundary is not None
+            ):
                 raise ValueError(
-                    f"If is_continuation=false, you cannot set prev_item to "
-                    f"'{self.set_prev_item_boundary.value}'. It implies connection."
+                    "If is_continuation=false, set_prev_item_boundary and "
+                    "set_next_item_boundary must be null."
                 )
-            if self.set_next_item_boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
-                assert self.set_next_item_boundary is not None
-                raise ValueError(
-                    f"If is_continuation=false, you cannot set next_item to "
-                    f"'{self.set_next_item_boundary.value}'. It implies connection."
-                )
-
-            # Prevent header flags in negative case.
             if self.set_next_table_repeats_header is not None:
                 raise ValueError(
                     "If is_continuation=false, set_next_table_repeats_header must be null."
