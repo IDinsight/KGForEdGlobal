@@ -218,10 +218,10 @@ def bottommost_continuity_candidate(
     # Sort by bottom-edge (y1) descending (bbox is [x0, y0, x1, y1]).
     candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
 
-    # Prefer a Table if it is "near" the bottom (within the bottom 3 items). This
+    # Prefer a Table if it is "near" the bottom (within the bottom 5 items). This
     # protects against cases where a small footnote or page number (that wasn't caught
     # by the noise filter) sits slightly below a large table.
-    for i, item in candidates[:3]:
+    for i, item in candidates[:5]:
         if item.kind == "table":
             return i, item
 
