@@ -238,6 +238,196 @@ def _boundary_to_bools(boundary: ItemBoundary | None) -> tuple[bool, bool]:
     return False, False  # COMPLETE or None
 
 
+def _extract_figure_preview(figure: dict[str, Any], max_chars: int) -> dict[str, str]:
+    """Extract verification fields from a figure dictionary.
+
+    Parameters
+    ----------
+    figure
+        The figure dictionary from PageIR.
+    max_chars
+        Maximum characters to keep for text previews.
+
+    Returns
+    -------
+    dict[str, str]
+        The figure preview dictionary.
+    """
+
+    preview: dict[str, str] = {}
+
+    if f_kind := figure.get("figure_kind"):
+        preview["kind"] = str(f_kind)
+
+    if alt := figure.get("alt_text"):
+        preview["alt_text"] = truncate_text(max_chars=max_chars, text=alt)
+
+    # Handle text wrappers for caption and embedded_text.
+    for field in ("caption", "embedded_text"):
+        obj = figure.get(field)
+        if isinstance(obj, dict):
+            text = _get_text_content(obj)
+            if text:
+                preview[field] = truncate_text(max_chars=max_chars, text=text)
+
+    return preview
+
+
+def _extract_list_preview(list_items: list[Any]) -> list[str]:
+    """Extract a short preview of list items (max 6).
+
+    Parameters
+    ----------
+    list_items
+        The list of list item objects.
+
+    Returns
+    -------
+    list[str]
+        The list of preview strings.
+    """
+
+    preview: list[str] = []
+
+    for li in list_items[: min(6, len(list_items))]:
+        if isinstance(li, dict):
+            marker = li.get("marker") or ""
+            text = _get_text_content(li.get("text"))
+            li_text = truncate_text(max_chars=180, text=text)
+            preview.append((marker + " " + li_text).strip())
+        else:
+            preview.append(truncate_text(max_chars=180, text=str(li)))
+
+    return preview
+
+
+def _get_text_content(obj: Any) -> str:
+    """Safely extract 'text' field from a dictionary wrapper.
+
+    Parameters
+    ----------
+    obj
+        The object to extract text from.
+
+    Returns
+    -------
+    str
+        The extracted text, or an empty string if not found.
+    """
+
+    return str(obj.get("text") or "") if isinstance(obj, dict) else ""
+
+
+def _make_block_excerpt(
+    *, bbox: Any, item: dict[str, Any], local_code: Any, max_text_chars: int
+) -> dict[str, Any]:
+    """Handle Block specific extraction (Text, Lists, Figures).
+
+    Parameters
+    ----------
+    bbox
+        The bounding box of the block.
+    item
+        The PageIR block item dictionary.
+    local_code
+        The local code of the block.
+    max_text_chars
+        Maximum characters to keep for text previews.
+
+    Returns
+    -------
+    dict[str, Any]
+        The block excerpt dictionary.
+    """
+
+    text = _get_text_content(item.get("text"))
+    text_preview = truncate_text(max_chars=max_text_chars, text=text)
+
+    list_items = item.get("list_items")
+    list_preview = _extract_list_preview(list_items) if list_items else []
+
+    figure = item.get("figure")
+    figure_preview = {}
+    if isinstance(figure, dict):
+        figure_preview = _extract_figure_preview(figure, max_text_chars)
+
+    output: dict[str, Any] = {
+        "kind": "block",
+        "bbox": bbox,
+        "local_code": local_code,
+        "block_type": item["block_type"],
+    }
+
+    if text_preview:
+        output["text_preview"] = text_preview
+    if list_preview:
+        output["list_preview"] = list_preview
+    if figure_preview:
+        output["figure_preview"] = figure_preview
+
+    return output
+
+
+def _make_table_excerpt(
+    *,
+    bbox: Any,
+    item: dict[str, Any],
+    local_code: Any,
+    max_cell_chars: int,
+    preview_rows: int,
+) -> dict[str, Any]:
+    """Handle Table specific extraction.
+
+    Parameters
+    ----------
+    bbox
+        The bounding box of the table.
+    item
+        The PageIR table item dictionary.
+    local_code
+        The local code of the table.
+    max_cell_chars
+        Maximum characters to keep per table cell in previews.
+    preview_rows
+        Number of table rows to include in header/body previews.
+
+    Returns
+    -------
+    dict[str, Any]
+        The table excerpt dictionary.
+    """
+
+    rows = item.get("rows") or []
+    header_row_count = int(item.get("header_row_count") or 0)
+
+    header_rows = rows[: min(header_row_count, preview_rows)]
+    body_rows = rows[header_row_count:]
+    top_body = body_rows[:preview_rows]
+    bottom_body = (
+        body_rows[-preview_rows:] if len(body_rows) > (2 * preview_rows) else []
+    )
+
+    return {
+        "kind": "table",
+        "bbox": bbox,
+        "local_code": local_code,
+        "header_row_count": header_row_count,
+        "n_cols": item.get("n_cols"),
+        "row_count": len(rows),
+        "header_preview": [
+            _table_row_preview(max_cell_chars=max_cell_chars, row=r)
+            for r in header_rows
+        ],
+        "top_rows_preview": [
+            _table_row_preview(max_cell_chars=max_cell_chars, row=r) for r in top_body
+        ],
+        "bottom_rows_preview": [
+            _table_row_preview(max_cell_chars=max_cell_chars, row=r)
+            for r in bottom_body
+        ],
+    }
+
+
 def _normalize_local_code(code: str | None) -> str | None:
     """Normalize a local_code string by stripping whitespace.
 
@@ -803,10 +993,16 @@ def execute_verification_attempts(
         try:
             verdict = verify_page_ir_pairs(
                 model=config.model,
-                next_item=strip_continuity_hints(nitem.model_dump(mode="json")),
+                next_item=nitem.model_dump(mode="json"),
+                next_item_excerpt=make_verification_excerpt(
+                    item=strip_continuity_hints(nitem.model_dump(mode="json"))
+                ),
                 next_page_index=page_index + 1,
                 next_png=next_crop_fp,
-                prev_item=strip_continuity_hints(pitem.model_dump(mode="json")),
+                prev_item=pitem.model_dump(mode="json"),
+                prev_item_excerpt=make_verification_excerpt(
+                    item=strip_continuity_hints(pitem.model_dump(mode="json"))
+                ),
                 prev_page_index=page_index,
                 prev_png=page_images_dir / f"{page_index:04}.png",
             )
@@ -1198,84 +1394,26 @@ def make_verification_excerpt(
     local_code = item.get("local_code", None)
 
     if kind == "table":
-        rows = item.get("rows") or []
-        header_row_count = int(item.get("header_row_count") or 0)
-
-        header_rows = rows[: min(header_row_count, preview_rows)]
-        body_rows = rows[header_row_count:]
-        top_body = body_rows[:preview_rows]
-        bottom_body = (
-            body_rows[-preview_rows:] if len(body_rows) > (2 * preview_rows) else []
+        return _make_table_excerpt(
+            bbox=bbox,
+            item=item,
+            local_code=local_code,
+            max_cell_chars=max_cell_chars,
+            preview_rows=preview_rows,
         )
 
-        return {
-            "kind": "table",
-            "bbox": bbox,
-            "local_code": local_code,
-            "header_row_count": header_row_count,
-            "n_cols": item.get("n_cols"),
-            "row_count": len(rows),
-            "header_preview": [
-                _table_row_preview(max_cell_chars=max_cell_chars, row=r)
-                for r in header_rows
-            ],
-            "top_rows_preview": [
-                _table_row_preview(max_cell_chars=max_cell_chars, row=r)
-                for r in top_body
-            ],
-            "bottom_rows_preview": [
-                _table_row_preview(max_cell_chars=max_cell_chars, row=r)
-                for r in bottom_body
-            ],
-        }
-
     if kind == "block":
-        block_type = item["block_type"]
-        text_or_none = item.get("text", None)
-        text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
-        text_preview = truncate_text(max_chars=max_text_chars, text=text)
-        list_items = item.get("list_items") or []
-        list_preview: list[str] = []
+        return _make_block_excerpt(
+            bbox=bbox, item=item, local_code=local_code, max_text_chars=max_text_chars
+        )
 
-        for li in list_items[: min(6, len(list_items))]:
-            if isinstance(li, dict):
-                marker = li.get("marker") or ""
-                text_or_none = li.get("text", None)
-                text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
-                li_text = truncate_text(max_chars=180, text=text)
-                list_preview.append((marker + " " + li_text).strip())
-            else:
-                list_preview.append(truncate_text(max_chars=180, text=str(li)))
-
-        figure = item.get("figure") or {}
-        fig_caption_preview = ""
-        if isinstance(figure, dict):
-            text_or_none = figure.get("caption", None)
-            text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
-            fig_caption_preview = truncate_text(max_chars=200, text=text)
-
-        output: dict[str, Any] = {
-            "kind": "block",
-            "bbox": bbox,
-            "local_code": local_code,
-            "block_type": block_type,
-        }
-        if text_preview:
-            output["text_preview"] = text_preview
-        if list_preview:
-            output["list_preview"] = list_preview
-        if fig_caption_preview:
-            output["figure_caption_preview"] = fig_caption_preview
-        return output
-
-    # Fallback (unexpected kinds): keep tiny identifying info only.
-    text_or_none = item.get("text", None)
-    text = text_or_none["text"] if isinstance(text_or_none, dict) else ""
     return {
         "kind": kind or "unknown",
         "bbox": bbox,
         "local_code": local_code,
-        "preview": truncate_text(max_chars=max_text_chars, text=text),
+        "preview": truncate_text(
+            max_chars=max_text_chars, text=_get_text_content(item.get("text"))
+        ),
     }
 
 

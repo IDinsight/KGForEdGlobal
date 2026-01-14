@@ -162,9 +162,11 @@ def verify_page_ir_pairs(
     max_retries: int = 2,
     model: str,
     next_item: dict[str, Any],
+    next_item_excerpt: dict[str, Any],
     next_page_index: int,
     next_png: Path,
     prev_item: dict[str, Any],
+    prev_item_excerpt: dict[str, Any],
     prev_page_index: int,
     prev_png: Path,
 ) -> PageIRContinuityVerdict:
@@ -178,12 +180,16 @@ def verify_page_ir_pairs(
         The OpenAI model to use.
     next_item
         The candidate item near top item from page N+1 JSON.
+    next_item_excerpt
+        The excerpt JSON of the candidate item near top of page N+1.
     next_page_index
         The 0-based index of the next page (N+1).
     next_png
         The PNG file path of page N+1.
     prev_item
         The candidate item near bottom item from page N JSON.
+    prev_item_excerpt
+        The excerpt JSON of the candidate item near bottom of page N.
     prev_page_index
         The 0-based index of the previous page (N).
     prev_png
@@ -205,9 +211,9 @@ def verify_page_ir_pairs(
     prev_image_url = encode_png_to_data_url(prev_png)
     next_image_url = encode_png_to_data_url(next_png)
     prompts = verify_page_ir_pairs_from_extraction(
-        next_item=next_item,
+        next_item=next_item_excerpt,
         next_page_index=next_page_index,
-        prev_item=prev_item,
+        prev_item=prev_item_excerpt,
         prev_page_index=prev_page_index,
     )
     instructions = prompts.system_message
