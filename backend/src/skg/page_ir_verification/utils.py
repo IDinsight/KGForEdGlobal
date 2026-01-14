@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 # Third Party Library
+import pymupdf
+
 from loguru import logger
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TableCell, TextUnit
+from skg.page_ir_verification.llm import verify_page_ir_pairs
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.schemas import RunCtx, VerificationConfig
 from skg.utils.constants import (
@@ -25,6 +28,7 @@ from skg.utils.constants import (
     PageContinuationKind,
 )
 from skg.utils.general import make_dir, open_json_type, truncate_text, write_to_json
+from skg.utils.pdf import crop_image_to_top
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -359,6 +363,97 @@ def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]
     return output
 
 
+def bottom_continuity_candidates(
+    *,
+    image_height: float,
+    items: list[Block | Table],
+    k: int = 3,
+    visible_y_min: float | None = None,
+) -> list[tuple[int, Block | Table]]:
+    """Return up to k strong "bottom of page" candidates for continuity checks.
+
+    This is a generalization of `bottommost_continuity_candidate`. The first element of
+    the returned list is guaranteed to match the choice made by
+    `bottommost_continuity_candidate` and subsequent candidates are additional
+    near-bottom items that are plausible alternatives (e.g., a paragraph above a
+    complete table).
+
+    Parameters
+    ----------
+    image_height
+        The height of the page image in pixels.
+    items
+        List of PageIR items on the page.
+    k
+        Maximum number of candidates to return. Must be >= 1.
+    visible_y_min
+        If provided, restrict candidate selection to items whose bbox intersects the
+        visible crop range [visible_y_min, image_height] in full-page coordinates.
+
+    Returns
+    -------
+    list[tuple[int, Block | Table]]
+        A list of (item_index, item) pairs. Length is in [1, k].
+    """
+
+    assert k >= 1, f"k must be >= 1, got {k}"
+
+    # First candidate MUST match existing behavior.
+    first_i, first_item = bottommost_continuity_candidate(
+        image_height=image_height, items=items, visible_y_min=visible_y_min
+    )
+
+    # Recompute the same candidate pool used by bottommost_continuity_candidate.
+    candidates: list[tuple[int, Block | Table]] = [
+        (i, item)
+        for i, item in enumerate(items)
+        if not (
+            is_artifact(item)
+            or is_probable_header_footer_noise(image_height=image_height, item=item)
+        )
+    ]
+
+    if visible_y_min is not None:
+        y_min = float(visible_y_min)
+        cropped = [
+            (i, item)
+            for i, item in candidates
+            if _bbox_intersects_y_range(
+                bbox=item.bbox, y_max=float(image_height), y_min=y_min
+            )
+        ]
+        assert cropped, "No bottom-crop-visible candidates found."
+        candidates = cropped
+
+    assert candidates, "No non-artifact items found."
+
+    # Sort by bottom-edge descending.
+    candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
+
+    output: list[tuple[int, Block | Table]] = [(first_i, first_item)]
+    seen: set[int] = {first_i}
+
+    # Fill remaining slots with additional plausible near-bottom anchors.
+    for i, item in candidates:
+        if len(output) >= k:
+            break
+        if i in seen:
+            continue
+
+        # Always allow tables; for blocks avoid heading/caption as text anchors.
+        if item.kind != "table" and (
+            isinstance(item, Block)
+            and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
+        ):
+            continue
+
+        output.append((i, item))
+        seen.add(i)
+
+    assert output, "No suitable continuity candidates found."
+    return output
+
+
 def bottommost_continuity_candidate(
     *,
     image_height: float,
@@ -653,6 +748,122 @@ def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
     return PageBoundaryState.STANDALONE
 
 
+def execute_verification_attempts(
+    *,
+    config: VerificationConfig,
+    page_images_dir: Path,
+    page_index: int,
+    pairs: list[tuple[int, Block | Table, int, Block | Table]],
+    next_crop_fp: Path,
+) -> dict[str, Any]:
+    """Run model verification on the list of pairs until a match is found or list
+    exhausted.
+
+    Parameters
+    ----------
+    config
+        The verification configuration.
+    page_images_dir
+        Directory containing page images.
+    page_index
+        The 0-based index of the previous page (N).
+    pairs
+        List of candidate pairs to verify.
+    next_crop_fp
+        Filepath to the cropped image of the next page.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing:
+          - attempt_summaries: List of attempt summaries.
+          - selected_verdict: The selected PageIRContinuityVerdict.
+          - selected_prev_index: The index of the selected previous item.
+          - selected_next_index: The index of the selected next item.
+
+    Raises
+    ------
+    RuntimeError
+        If all verification attempts fail.
+    """
+
+    attempt_summaries: list[dict[str, Any]] = []
+    primary_verdict: PageIRContinuityVerdict | None = None
+
+    # Default selection is the first pair (primary).
+    selected_prev_index, selected_next_index = pairs[0][0], pairs[0][2]
+    selected_verdict: PageIRContinuityVerdict | None = None
+
+    # For each candidate pair:
+    #  - Strip existing boundary hints (so model isn't biased from extraction).
+    #  - Call the model to verify continuity.
+    #  - Record the attempt summary.
+    #  - If a patch-worthy continuation is found, break early.
+    for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
+        try:
+            verdict = verify_page_ir_pairs(
+                model=config.model,
+                next_item=strip_continuity_hints(nitem.model_dump(mode="json")),
+                next_page_index=page_index + 1,
+                next_png=next_crop_fp,
+                prev_item=strip_continuity_hints(pitem.model_dump(mode="json")),
+                prev_page_index=page_index,
+                prev_png=page_images_dir / f"{page_index:04}.png",
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            attempt_summaries.append(
+                {
+                    "attempt_no": attempt_no,
+                    "prev_candidate_index": pi,
+                    "next_candidate_index": ni,
+                    "error": str(e),
+                }
+            )
+            continue
+
+        attempt_summaries.append(
+            {
+                "attempt_no": attempt_no,
+                "prev_candidate_index": pi,
+                "next_candidate_index": ni,
+                "is_continuation": verdict.is_continuation,
+                "continuation_kind": verdict.continuation_kind.value,
+                "confidence": verdict.confidence,
+                "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
+            }
+        )
+
+        # Capture primary verdict.
+        if attempt_no == 0:
+            primary_verdict = verdict
+
+        # Early exit on patch-worthy positive continuation.
+        if (
+            verdict.is_continuation
+            and verdict.confidence >= config.min_confidence_to_patch
+        ):
+            selected_prev_index, selected_next_index = pi, ni
+            selected_verdict = verdict
+            break
+
+    # If we didn't find a patch-worthy positive continuation, fall back to the
+    # primary pair verdict.
+    if selected_verdict is None:
+        if primary_verdict is None:
+            raise RuntimeError(
+                f"All continuity verification attempts failed for pages "
+                f"{page_index}-{page_index + 1}."
+            )
+        selected_verdict = primary_verdict
+
+    return {
+        "attempt_summaries": attempt_summaries,
+        "selected_verdict": selected_verdict,
+        "selected_prev_index": selected_prev_index,
+        "selected_next_index": selected_next_index,
+    }
+
+
 def find_caption_code(items: list[Block | Table]) -> str | None:
     """Find the first valid Table-like local_code from a caption block.
 
@@ -686,6 +897,99 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
                 return f"Table {m.group('num')}"
 
     return None
+
+
+def generate_candidate_pairs(
+    *, next_crop_fp: Path, next_page_ir: PageIR, prev_page_ir: PageIR
+) -> tuple[list[tuple[int, Block | Table, int, Block | Table]], dict[str, int]]:
+    """Generate and deduplicate the list of candidate pairs to verify.
+
+    Parameters
+    ----------
+    next_crop_fp
+        Filepath to the cropped image of the next page.
+    next_page_ir
+        The PageIR of the next page.
+    prev_page_ir
+        The PageIR of the previous page.
+
+    Returns
+    -------
+    tuple[list[tuple[int, Block | Table, int, Block | Table]], dict[str, int]]
+        A tuple of (candidate pairs list, primary indices dict).
+    """
+
+    prev_items = prev_page_ir.items or []
+    next_items = next_page_ir.items or []
+
+    # Build candidate pools. Instead of only one bottom item, get a small list of
+    # plausible bottom items. `bottom_continuity_candidates()` guarantees the
+    # bottommost primary candidate is first (deterministic), followed by near-bottom
+    # alternatives in case the true continuation anchor isn't the bottommost one.
+    prev_candidates = bottom_continuity_candidates(
+        image_height=prev_page_ir.image_height, items=prev_items
+    )
+    prev_index, prev_item = prev_candidates[0]
+
+    # Get top candidates on next page.
+    visible_y_max = float(pymupdf.Pixmap(str(next_crop_fp)).height)
+    next_candidates_primary = top_continuity_candidates_paired(
+        image_height=next_page_ir.image_height,
+        items=next_items,
+        prev_item=prev_item,
+        visible_y_max=visible_y_max,
+    )
+    next_index, next_item = next_candidates_primary[0]
+
+    # Build ordered candidate pairs: Always try primary pair first. Then try additional
+    # previous candidates, preferring same-kind next candidates first.
+    pairs: list[tuple[int, Block | Table, int, Block | Table]] = [
+        (prev_index, prev_item, next_index, next_item)
+    ]
+
+    # Start with the primary pair. Then, for each possible bottom candidate, get a few
+    # top candidates on the next page and order them so same-kind is tried first
+    # (table -> table, block -> block, then mixed). Duplicate pairs are expected and
+    # removed by the de-dupe step below.
+    for pi, pitem in prev_candidates:
+        next_candidates = (
+            next_candidates_primary
+            if pi == prev_index
+            else top_continuity_candidates_paired(
+                image_height=next_page_ir.image_height,
+                items=next_items,
+                prev_item=pitem,
+                visible_y_max=visible_y_max,
+            )
+        )
+
+        # Same-kind first, then cross-kind.
+        same = [(ni, nit) for (ni, nit) in next_candidates if nit.kind == pitem.kind]
+        other = [(ni, nit) for (ni, nit) in next_candidates if nit.kind != pitem.kind]
+
+        for ni, nitem in same + other:
+            pairs.append((pi, pitem, ni, nitem))
+
+    # De-dupe pairs (to avoid re-checking the same pair), preserve order, and cap
+    # attempts (to limit model calls).
+    seen_pairs: set[tuple[int, int]] = set()
+    deduped_pairs: list[tuple[int, Block | Table, int, Block | Table]] = []
+
+    for pi, pitem, ni, nitem in pairs:
+        key = (pi, ni)
+        if key not in seen_pairs:
+            seen_pairs.add(key)
+            deduped_pairs.append((pi, pitem, ni, nitem))
+
+            if len(deduped_pairs) >= 9:
+                break
+
+    primary_indices = {
+        "prev_candidate_index": prev_index,
+        "next_candidate_index": next_index,
+    }
+
+    return deduped_pairs, primary_indices
 
 
 def is_artifact(item: Block | Table) -> bool:
@@ -1104,7 +1408,7 @@ def postprocess_verified_page_irs(
         The verification directories.
     """
 
-    # 1. Enrich data by flowing local codes across the now-verified boundaries.
+    # Enrich data by flowing local codes across the now-verified boundaries.
     table_code_changes = propagate_table_local_codes(page_irs=page_irs)
 
     # Fix structural "empty cell" hallucinations from the extraction model.
@@ -1291,6 +1595,113 @@ def strip_continuity_hints(item_json: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+def top_continuity_candidates_paired(
+    *,
+    image_height: float,
+    items: list[Block | Table],
+    k: int = 3,
+    prev_item: Block | Table,
+    visible_y_max: float | None = None,
+) -> list[tuple[int, Block | Table]]:
+    """Return up to k strong "top of page" candidates for continuity checks.
+
+    This is a generalization of `topmost_continuity_candidate_paired`. The first
+    element of the returned list is guaranteed to match the choice made by
+    `topmost_continuity_candidate_paired` and subsequent candidates are additional
+    top-visible items ordered to try same-kind continuations first (Table -> Table,
+    Block -> Block), then cross-kind.
+
+    Parameters
+    ----------
+    image_height
+        The height of the page image in pixels.
+    items
+        List of PageIR items on the next page.
+    k
+        Maximum number of candidates to return. Must be >= 1.
+    prev_item
+        The chosen previous page candidate item.
+    visible_y_max
+        If provided, restrict candidate selection to items whose bbox intersects the
+        visible crop range [0, visible_y_max] in full-page coordinates.
+
+    Returns
+    -------
+    list[tuple[int, Block | Table]]
+        A list of (item_index, item) pairs. Length is in [1, k].
+    """
+
+    assert k >= 1, f"k must be >= 1, got {k}"
+
+    # First candidate MUST match existing behavior.
+    first_i, first_item = topmost_continuity_candidate_paired(
+        image_height=image_height,
+        items=items,
+        prev_item=prev_item,
+        visible_y_max=visible_y_max,
+    )
+
+    # Recompute the same candidate pool used by topmost_continuity_candidate_paired.
+    candidates: list[tuple[int, Block | Table]] = [
+        (i, item)
+        for i, item in enumerate(items)
+        if not (
+            is_artifact(item)
+            or is_probable_header_footer_noise(image_height=image_height, item=item)
+        )
+    ]
+
+    if visible_y_max is not None:
+        y_max = float(visible_y_max)
+        cropped = [
+            (i, item)
+            for i, item in candidates
+            if _bbox_intersects_y_range(bbox=item.bbox, y_max=y_max, y_min=0.0)
+        ]
+        assert cropped, "No top-crop-visible candidates found."
+        candidates = cropped
+
+    assert candidates, "No non-artifact items found."
+
+    # Sort by top-edge ascending.
+    candidates.sort(key=lambda p: float(p[1].bbox[1]))
+
+    output: list[tuple[int, Block | Table]] = [(first_i, first_item)]
+    seen: set[int] = {first_i}
+
+    # Prefer same-kind first, then cross-kind, while keeping reading-order stability.
+    same_kind: list[tuple[int, Block | Table]] = []
+    other_kind: list[tuple[int, Block | Table]] = []
+
+    for i, item in candidates:
+        if i in seen:
+            continue
+
+        # For blocks, avoid heading/caption as text anchors.
+        if item.kind != "table" and (
+            isinstance(item, Block)
+            and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
+        ):
+            continue
+
+        if item.kind == prev_item.kind:
+            same_kind.append((i, item))
+        else:
+            other_kind.append((i, item))
+
+    for bucket in (same_kind, other_kind):
+        for i, item in bucket:
+            if len(output) >= k:
+                break
+            if i in seen:
+                continue
+            output.append((i, item))
+            seen.add(i)
+
+    assert output, "No suitable continuity candidates found."
+    return output
+
+
 def topmost_continuity_candidate_paired(
     *,
     image_height: float,
@@ -1399,3 +1810,106 @@ def topmost_continuity_candidate_paired(
 
     # Return the first match or default to candidates[0].
     return next(valid_items, candidates[0])
+
+
+def verify_single_page_pair(
+    *,
+    config: VerificationConfig,
+    page_images_dir: Path,
+    page_index: int,
+    page_irs: dict[int, PageIR],
+    verification_dirs: PageIRVerificationDirs,
+) -> EdgeVerdictRecord | None:
+    """Handle the verification logic for a specific pair of pages.
+
+    Parameters
+    ----------
+    config
+        The verification run configuration.
+    page_images_dir
+        Directory containing the page images.
+    page_index
+        The index of the previous page in the pair to verify.
+    page_irs
+        The dictionary of page IRs by page index.
+    verification_dirs
+        The verification directories.
+
+    Returns
+    -------
+    EdgeVerdictRecord | None
+        The created EdgeVerdictRecord if verification was performed, or None if skipped.
+    """
+
+    assert (
+        page_index in page_irs and (page_index + 1) in page_irs
+    ), f"Missing page IR for {page_index} or {page_index + 1}"
+
+    prev_page_ir, next_page_ir = page_irs[page_index], page_irs[page_index + 1]
+
+    # Skip if either page has no items
+    if not (prev_page_ir.items and next_page_ir.items):
+        logger.warning(
+            f"Skipping continuity check for pages {page_index}-{page_index + 1}: "
+            f"prev_items={len(prev_page_ir.items)} "
+            f"next_items={len(next_page_ir.items)}"
+        )
+        return None
+
+    # Crop top of next image (page N+1) and compute visible range.
+    next_crop_fp = (
+        verification_dirs.page_irs_pair_crops / f"{page_index + 1:04}_top.png"
+    )
+    crop_image_to_top(
+        input_png_fp=page_images_dir / f"{page_index + 1:04}.png",
+        output_png_fp=next_crop_fp,
+    )
+
+    pairs, primary_indices = generate_candidate_pairs(
+        next_crop_fp=next_crop_fp, next_page_ir=next_page_ir, prev_page_ir=prev_page_ir
+    )
+
+    # Run verification attempts on the generated pairs.
+    logger.info(
+        f"Verifying continuity between pages {page_index} and {page_index + 1}..."
+    )
+
+    result = execute_verification_attempts(
+        config=config,
+        next_crop_fp=next_crop_fp,
+        page_images_dir=page_images_dir,
+        page_index=page_index,
+        pairs=pairs,
+    )
+
+    # Record the edge verdict (single selected pair per boundary).
+    selected_verdict = result["selected_verdict"]
+    selected_verdict.prev_page_index = page_index
+    selected_verdict.next_page_index = page_index + 1
+    record = EdgeVerdictRecord(
+        next_candidate_index=result["selected_next_index"],
+        next_page_index=page_index + 1,
+        prev_candidate_index=result["selected_prev_index"],
+        prev_page_index=page_index,
+        verdict=selected_verdict,
+    )
+
+    write_to_json(
+        fp=verification_dirs.page_irs_pair_reports
+        / f"{page_index:04}_{page_index + 1:04}.json",
+        json_info={
+            "attempts": result["attempt_summaries"],
+            "primary_candidate_selection": primary_indices,
+            "selected_candidate_selection": {
+                "prev_candidate_index": result["selected_prev_index"],
+                "next_candidate_index": result["selected_next_index"],
+            },
+            "verdict": selected_verdict.model_dump(mode="json"),
+        },
+    )
+
+    logger.success(
+        f"Finished verifying continuity between pages {page_index} and {page_index + 1}!"
+    )
+
+    return record
