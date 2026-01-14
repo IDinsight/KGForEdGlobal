@@ -262,7 +262,6 @@ def stitch(
 
     # 2.
     expected_doc_key = extraction_run_config.extra["doc_key"]
-    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
 
     if computed_doc_key != expected_doc_key:
         raise ValueError(
@@ -279,17 +278,17 @@ def stitch(
         extraction_config.output_dir / expected_doc_key / "stitching"
     )
 
+    # 3.
+    verified_page_irs = load_page_irs_from_verification(
+        doc_key=expected_doc_key, verified_page_irs_dir=page_irs_verified_dir
+    )
+
+    # 4.
+    stitching_dirs, stitching_run = persist_stitching_run(
+        config=config, output_dir=stitching_results_dir
+    )
+
     try:
-        # 3.
-        verified_page_irs = load_page_irs_from_verification(
-            doc_key=expected_doc_key, verified_page_irs_dir=page_irs_verified_dir
-        )
-
-        # 4.
-        stitching_dirs, stitching_run = persist_stitching_run(
-            config=config, output_dir=stitching_results_dir
-        )
-
         # 5.
         logger.info(
             f"Starting document IR stitching process using verified page IR JSONs from: "

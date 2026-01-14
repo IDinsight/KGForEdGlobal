@@ -189,18 +189,16 @@ def extract(
         open_json_type(config_fp)["page_ir_extraction"]
     )
 
-    try:
-        with pymupdf.open(str(config.pdf_fp)) as doc:
-            # 1.
-            _, end_page = validate_page_count(
-                doc=doc, end_page=config.end_page, start_page=config.start_page
-            )
+    with pymupdf.open(str(config.pdf_fp)) as doc:
+        # 1.
+        _, end_page = validate_page_count(
+            doc=doc, end_page=config.end_page, start_page=config.start_page
+        )
 
-            # 2.
-            doc_key, extraction_dirs, extraction_run = persist_extraction_run(
-                config=config
-            )
+        # 2.
+        doc_key, extraction_dirs, extraction_run = persist_extraction_run(config=config)
 
+        try:
             # 3.
             logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
@@ -211,21 +209,22 @@ def extract(
                 end_page=end_page,
                 extraction_dirs=extraction_dirs,
             )
-        extraction_run.extra["status"] = "success"
-        logger.success("Page IR extraction completed successfully!")
-    except Exception as e:  # pylint: disable=broad-except
-        extraction_run.extra["status"] = "error"
-        extraction_run.extra["error"] = {
-            "message": str(e),
-            "traceback": traceback.format_exc(limit=20),
-            "type": e.__class__.__name__,
-        }
-        raise
-    finally:
-        extraction_run.completed_at = datetime.now(timezone.utc)
-        write_to_json(
-            fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
-        )
+            extraction_run.extra["status"] = "success"
+            logger.success("Page IR extraction completed successfully!")
+        except Exception as e:  # pylint: disable=broad-except
+            extraction_run.extra["status"] = "error"
+            extraction_run.extra["error"] = {
+                "message": str(e),
+                "traceback": traceback.format_exc(limit=20),
+                "type": e.__class__.__name__,
+            }
+            raise
+        finally:
+            extraction_run.completed_at = datetime.now(timezone.utc)
+            write_to_json(
+                fp=extraction_dirs.root / "extraction_run.json",
+                json_info=extraction_run,
+            )
 
 
 if __name__ == "__main__":
