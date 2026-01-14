@@ -44,7 +44,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.document_ir.schemas import DocumentIR, Segment, StitchingConfig
+from skg.document_ir.schemas import DocumentIR, Segment
 from skg.document_ir.utils import (
     DocumentIRDirs,
     ItemKey,
@@ -56,9 +56,9 @@ from skg.document_ir.utils import (
     persist_stitching_run,
     uniquify_segment_keys,
 )
-from skg.page_ir_extraction.schemas import Block, ExtractionConfig, PageIR, Table
+from skg.page_ir_extraction.schemas import Block, PageIR, Table
 from skg.page_ir_verification.utils import load_page_irs_from_verification
-from skg.schemas import RunCtx
+from skg.schemas import RunConfig, RunCtx, StitchingConfig
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
@@ -245,10 +245,9 @@ def stitch(
     """
 
     # 1.
-    config = StitchingConfig.model_validate(open_json_type(config_fp)["document_ir"])
-    extraction_config = ExtractionConfig.model_validate(
-        open_json_type(config_fp)["page_ir_extraction"]
-    )
+    run_config = RunConfig.model_validate(open_json_type(config_fp))
+    config = run_config.document_ir
+    extraction_config = run_config.page_ir_extraction
     computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
     extraction_run_results_dir = (
         extraction_config.output_dir / computed_doc_key / "extraction"

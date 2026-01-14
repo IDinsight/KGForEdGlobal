@@ -8,23 +8,15 @@ from __future__ import annotations
 # Standard Library
 import re
 
-from pathlib import Path
-from typing import Annotated, Literal, Optional, Self
+from typing import Annotated, Literal, Optional
 
 # Third Party Library
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    ConfigDict,
-    Field,
-    FilePath,
-    field_validator,
-    model_validator,
-)
+from pydantic import AfterValidator, Field, model_validator
 
 # Package Library
+from skg.schemas import BaseSchema, LanguageField
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
-from skg.utils.general import make_dir, validate_bbox_order, validate_bcp47
+from skg.utils.general import validate_bbox_order
 
 # Common fields with descriptions.
 BBox = Annotated[
@@ -36,30 +28,14 @@ BBox = Annotated[
         min_length=4,
     ),
 ]
-BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
-LanguageField = Annotated[
-    BCP47Str,
-    Field(
-        description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
-    ),
-]
 
 # Compiled regexes.
 TABLE_TEXT_RE = re.compile(r"(?i)^\s*table\s+(?P<num>\d+(?:\.\d+)*)\b")
 FIGURE_TEXT_RE = re.compile(r"(?i)^\s*figure\s+(?P<num>\d+(?:\.\d+)*)\b")
 
 
-# Schemas for primitives.
-class BaseModelPageIRExtraction(BaseModel):
-    """Base model that enforces 'additionalProperties: false' in JSON schema for
-    compatibility with OpenAI Structured Outputs.
-    """
-
-    model_config = ConfigDict(extra="forbid", from_attributes=True)
-
-
 # Schemas for component models.
-class TextUnit(BaseModelPageIRExtraction):
+class TextUnit(BaseSchema):
     """The atomic unit of text extraction. Represents a span of text with consistent
     styling.
     """
@@ -75,7 +51,7 @@ class TextUnit(BaseModelPageIRExtraction):
     )
 
 
-class TableCell(BaseModelPageIRExtraction):
+class TableCell(BaseSchema):
     """A single cell within a table grid."""
 
     col_span: int = Field(1, description="Number of columns this cell spans.", ge=1)
@@ -85,7 +61,7 @@ class TableCell(BaseModelPageIRExtraction):
     )
 
 
-class TableRow(BaseModelPageIRExtraction):
+class TableRow(BaseSchema):
     """A single horizontal row in a table."""
 
     cells: list[TableCell] = Field(
@@ -93,7 +69,7 @@ class TableRow(BaseModelPageIRExtraction):
     )
 
 
-class Table(BaseModelPageIRExtraction):
+class Table(BaseSchema):
     """Represents a tabular grid extracted from the page."""
 
     bbox: BBox
@@ -187,7 +163,7 @@ class Table(BaseModelPageIRExtraction):
         return self
 
 
-class ListItem(BaseModelPageIRExtraction):
+class ListItem(BaseSchema):
     """A single item in a list or outline."""
 
     marker: Optional[str] = Field(
@@ -197,7 +173,7 @@ class ListItem(BaseModelPageIRExtraction):
     text: TextUnit = Field(..., description="The text content of the list item.")
 
 
-class FigureUnit(BaseModelPageIRExtraction):
+class FigureUnit(BaseSchema):
     """Non-semantic metadata about a diagram/figure region.
 
     NB: This is NOT a full diagram parse. It is only enough to:
@@ -275,7 +251,7 @@ class FigureUnit(BaseModelPageIRExtraction):
         return self
 
 
-class Block(BaseModelPageIRExtraction):
+class Block(BaseSchema):
     """A grouping of text content (paragraph, heading, list, etc.)."""
 
     bbox: BBox
@@ -412,7 +388,7 @@ class Block(BaseModelPageIRExtraction):
 
 
 # Schemas for extraction.
-class PageIR(BaseModelPageIRExtraction):
+class PageIR(BaseSchema):
     """Intermediate Representation of a single PDF page."""
 
     boundary_state: PageBoundaryState = Field(
@@ -593,81 +569,3 @@ class PageIR(BaseModelPageIRExtraction):
                         next_item.local_code = code
 
         return self
-
-
-# Schemas for configs.
-class ExtractionConfig(BaseModelPageIRExtraction):
-    """Configuration for page IR extraction from a PDF document."""
-
-    country: str = Field(
-        ..., description="The country associated with the PDF document."
-    )
-    dpi: int = Field(250, description="Render DPI for page images.")
-    end_page: Optional[int] = Field(
-        None, description="0-based end page (exclusive). Default: to end."
-    )
-    languages: list[LanguageField] = Field(
-        ...,
-        description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
-        min_length=1,
-    )
-    model: str = Field(
-        "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
-    )
-    output_dir: Path = Field(..., description="Output directory root.")
-    overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
-    pdf_fp: FilePath = Field(
-        ...,
-        description="The file path to the PDF document to extract curriculum data from.",
-    )
-    start_page: int = Field(0, description="0-based start page (inclusive).")
-    use_text_layer_hints: bool = Field(
-        True,
-        description="Whether to extract and use text layer hints from the PDF during extraction.",
-    )
-    year: Optional[int] = Field(
-        None, description="Document year (optional; overrides any inferred year)."
-    )
-
-    @model_validator(mode="after")
-    def check_page_range(self) -> Self:
-        """Ensure that if end_page is provided, it is strictly greater than start_page.
-
-        Returns
-        -------
-        Self
-            The passed in ExtractionConfig.
-
-        Raises
-        ------
-        ValueError
-            If end_page is not greater than start_page.
-        """
-
-        if self.end_page is not None and self.end_page <= self.start_page:
-            raise ValueError(
-                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
-            )
-
-        return self
-
-    @field_validator("output_dir")
-    @classmethod
-    def ensure_output_dir_exists(cls, v: Path) -> Path:
-        """Ensure the output directory exists. If it doesn't, it creates it (including
-        parents).
-
-        Parameters
-        ----------
-        v
-            The output directory path.
-
-        Returns
-        -------
-        Path
-            The validated output directory path.
-        """
-
-        make_dir(v)
-
-        return v

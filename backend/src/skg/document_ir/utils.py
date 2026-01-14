@@ -19,7 +19,6 @@ from skg.document_ir.schemas import (
     BlockSlice,
     Segment,
     SegmentProvenance,
-    StitchingConfig,
     TableSegment,
     TableSlice,
 )
@@ -31,7 +30,7 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.schemas import RunCtx
+from skg.schemas import RunCtx, StitchingConfig
 from skg.utils.constants import BlockType, ItemBoundary
 from skg.utils.general import compute_sha256_hex, make_dir, write_to_json
 

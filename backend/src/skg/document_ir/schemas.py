@@ -9,24 +9,16 @@ from __future__ import annotations
 from typing import Any, Literal, Optional, Union
 
 # Third Party Library
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 # Package Library
 from skg.page_ir_extraction.schemas import ListItem, TableRow, TextUnit
+from skg.schemas import BaseSchema
 from skg.utils.constants import BlockType, ItemBoundary
 
 
-# Schemas for primitives.
-class BaseModelDocumentIR(BaseModel):
-    """Base model that enforces 'additionalProperties: false' in JSON schema for
-    compatibility with OpenAI Structured Outputs.
-    """
-
-    model_config = ConfigDict(extra="forbid", from_attributes=True)
-
-
 # Schemas for page slices.
-class BlockSlice(BaseModelDocumentIR):
+class BlockSlice(BaseSchema):
     """A single page-slice of a (potentially multi-page) block segment."""
 
     bbox: list[float]
@@ -40,7 +32,7 @@ class BlockSlice(BaseModelDocumentIR):
     text: Optional[TextUnit] = None
 
 
-class TableSlice(BaseModelDocumentIR):
+class TableSlice(BaseSchema):
     """A single page-slice of a (potentially multi-page) table segment."""
 
     bbox: list[float]
@@ -57,7 +49,7 @@ class TableSlice(BaseModelDocumentIR):
 
 
 # Schemas for stitched segments.
-class SegmentProvenance(BaseModelDocumentIR):
+class SegmentProvenance(BaseSchema):
     """Provenance pointer to the original PageIR item."""
 
     bbox: list[float] = Field(
@@ -80,7 +72,7 @@ class SegmentProvenance(BaseModelDocumentIR):
     )
 
 
-class BlockSegment(BaseModelDocumentIR):
+class BlockSegment(BaseSchema):
     """A stitched block segment (paragraph/list/caption/heading/figure, etc.)."""
 
     block_type: BlockType
@@ -106,7 +98,7 @@ class BlockSegment(BaseModelDocumentIR):
     text: Optional[TextUnit] = None
 
 
-class TableSegment(BaseModelDocumentIR):
+class TableSegment(BaseSchema):
     """A stitched table segment merged across pages."""
 
     header_row_count: int
@@ -140,7 +132,7 @@ Segment = Union[BlockSegment, TableSegment]
 
 
 # Schemas for stitching.
-class DocumentIR(BaseModelDocumentIR):
+class DocumentIR(BaseSchema):
     """Document-level IR after stitching (steps 1 & 2)."""
 
     coord_space: str
@@ -160,17 +152,3 @@ class DocumentIR(BaseModelDocumentIR):
         default_factory=list,
         description="Any non-fatal issues detected during stitching.",
     )
-
-
-# Schemas for configs.
-class StitchingConfig(BaseModelDocumentIR):
-    """Configuration for document IR stitching from verified page IR JSONs."""
-
-    keep_artifacts: bool = Field(
-        False,
-        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
-    )
-    repair_hyphenation: bool = Field(
-        True, description="Whether to repair hyphenation for stitched text."
-    )
-    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")

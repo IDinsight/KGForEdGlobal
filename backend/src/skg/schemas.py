@@ -2,13 +2,179 @@
 
 # Standard Library
 from datetime import datetime
-from typing import Any, Callable, Literal, Optional
+from pathlib import Path
+from typing import Annotated, Any, Callable, Optional, Self
 
 # Third Party Library
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    FilePath,
+    field_validator,
+    model_validator,
+)
+
+# Package Library
+from skg.utils.general import make_dir, validate_bcp47
+
+# Common fields with descriptions.
+BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
+LanguageField = Annotated[
+    BCP47Str,
+    Field(
+        description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
+    ),
+]
 
 
-class RunCtx(BaseModel):
+class BaseSchema(BaseModel):
+    """Base model for all schemas."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+
+# Config schemas.
+class ExtractionConfig(BaseSchema):
+    """Configuration for page IR extraction from a PDF document."""
+
+    country: str = Field(
+        ..., description="The country associated with the PDF document."
+    )
+    dpi: int = Field(250, description="Render DPI for page images.")
+    end_page: Optional[int] = Field(
+        None, description="0-based end page (exclusive). Default: to end."
+    )
+    languages: list[LanguageField] = Field(
+        ...,
+        description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
+        min_length=1,
+    )
+    model: str = Field(
+        "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
+    )
+    output_dir: Path = Field(..., description="Output directory root.")
+    overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
+    pdf_fp: FilePath = Field(
+        ...,
+        description="The file path to the PDF document to extract curriculum data from.",
+    )
+    start_page: int = Field(0, description="0-based start page (inclusive).")
+    use_text_layer_hints: bool = Field(
+        True,
+        description="Whether to extract and use text layer hints from the PDF during extraction.",
+    )
+    year: Optional[int] = Field(
+        None, description="Document year (optional; overrides any inferred year)."
+    )
+
+    @model_validator(mode="after")
+    def check_page_range(self) -> Self:
+        """Ensure that if end_page is provided, it is strictly greater than start_page.
+
+        Returns
+        -------
+        Self
+            The passed in ExtractionConfig.
+
+        Raises
+        ------
+        ValueError
+            If end_page is not greater than start_page.
+        """
+
+        if self.end_page is not None and self.end_page <= self.start_page:
+            raise ValueError(
+                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
+            )
+
+        return self
+
+    @field_validator("output_dir")
+    @classmethod
+    def ensure_output_dir_exists(cls, v: Path) -> Path:
+        """Ensure the output directory exists. If it doesn't, it creates it (including
+        parents).
+
+        Parameters
+        ----------
+        v
+            The output directory path.
+
+        Returns
+        -------
+        Path
+            The validated output directory path.
+        """
+
+        make_dir(v)
+
+        return v
+
+
+class VerificationConfig(BaseSchema):
+    """Configuration for page IR verification from a PDF document."""
+
+    end_page: Optional[int] = Field(
+        None, description="0-based end page (exclusive). Default: to end."
+    )
+    min_confidence_to_patch: float = Field(
+        0.75,
+        ge=0.0,
+        le=1.0,
+        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
+    )
+    model: str = Field(
+        "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
+    )
+    start_page: int = Field(0, description="0-based start page (inclusive).")
+
+    @model_validator(mode="after")
+    def check_page_range(self) -> Self:
+        """Ensure that if end_page is provided, it is strictly greater than start_page.
+
+        Returns
+        -------
+        Self
+            The passed in ExtractionConfig.
+
+        Raises
+        ------
+        ValueError
+            If end_page is not greater than start_page.
+        """
+
+        if self.end_page is not None and self.end_page <= self.start_page:
+            raise ValueError(
+                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
+            )
+
+        return self
+
+
+class StitchingConfig(BaseSchema):
+    """Configuration for document IR stitching from verified page IR JSONs."""
+
+    keep_artifacts: bool = Field(
+        False,
+        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
+    )
+    repair_hyphenation: bool = Field(
+        True, description="Whether to repair hyphenation for stitched text."
+    )
+    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
+
+
+class RunConfig(BaseSchema):
+    """Pydantic model for run configuration."""
+
+    page_ir_extraction: ExtractionConfig
+    page_ir_verification: VerificationConfig
+    document_ir: StitchingConfig
+
+
+class RunCtx(BaseSchema):
     """Pydantic model for run metadata."""
 
     completed_at: Optional[datetime] = None
@@ -17,92 +183,19 @@ class RunCtx(BaseModel):
     run_id: str
     started_at: Optional[datetime] = None
 
-    model_config = ConfigDict(extra="forbid", from_attributes=True)
 
-
-class Limits(BaseModel):
+# Global schemas.
+class Limits(BaseSchema):
     """Pydantic model for global limits."""
 
     max_retry_attempts: int = Field(
         10, ge=0, description="Must be a non-negative integer"
     )
 
-    model_config = ConfigDict(from_attributes=True)
 
-
-class Valid(BaseModel):
-    """Pydantic model for global valid values."""
-
-    completion_finish_reasons: tuple[
-        Literal[None, "function_call", "length", "stop"], ...
-    ] = (None, "function_call", "length", "stop")
-    json_file_exts: tuple[Literal[".json", ".jsonl"], ...] = (".json", ".jsonl")
-    logging_levels: tuple[
-        Literal["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"], ...
-    ] = ("CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING")
-
-    model_config = ConfigDict(from_attributes=True)
-
-    @classmethod
-    def is_valid_completion_finish_reason(
-        cls, *, completion_finish_reason: str
-    ) -> bool:
-        """Check if a given completion finish reason is valid.
-
-        Parameters
-        ----------
-        completion_finish_reason
-            The completion finish reason to check.
-
-        Returns
-        -------
-        bool
-            True if the completion finish reason is valid, False otherwise.
-        """
-
-        return completion_finish_reason in cls().completion_finish_reasons
-
-    @classmethod
-    def is_valid_json_file_ext(cls, *, file_ext: str) -> bool:
-        """Check if a given JSON file extension is valid.
-
-        Parameters
-        ----------
-        file_ext
-            The file extension to check.
-
-        Returns
-        -------
-        bool
-            True if the file extension is valid, False otherwise.
-        """
-
-        return file_ext in cls().json_file_exts
-
-    @classmethod
-    def is_valid_logging_level(cls, *, logging_level: str) -> bool:
-        """Check if a given logging level is valid.
-
-        Parameters
-        ----------
-        logging_level
-            The logging level to check.
-
-        Returns
-        -------
-        bool
-            True if the logging level is valid, False otherwise.
-        """
-
-        return logging_level in cls().logging_levels
-
-
-# Validator for API responses.
-class ValidatorCall(BaseModel):
+class ValidatorCall(BaseSchema):
     """Pydantic model for API response validation."""
 
     num_retries: int = 3
     validator_module: Callable[..., Any]
     validator_kwargs: dict[str, Any] = Field(default_factory=dict)
-
-    model_config = ConfigDict(from_attributes=True)
