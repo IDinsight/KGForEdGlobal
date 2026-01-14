@@ -34,6 +34,7 @@ from skg.page_ir_extraction.validators import (
     validate_figure_blocks_are_well_formed,
     validate_footnote_blocks_are_plausible,
     validate_full_page_bboxes,
+    validate_full_page_figure_requires_double_check,
     validate_gross_reading_order,
     validate_image_dimensions,
     validate_item_bboxes_required_and_in_bounds,
@@ -147,7 +148,10 @@ def _call_openai_api_for_page_ir_extraction(
 
     try:
         verify_page_ir_extraction_quality(
-            image_height=image_height, image_width=image_width, page_ir=parsed
+            attempt=attempt,
+            image_height=image_height,
+            image_width=image_width,
+            page_ir=parsed,
         )
     except QualityError as e:
         _persist_page_ir_attempt_artifacts(
@@ -409,12 +413,14 @@ def extract_page_ir(
 
 
 def verify_page_ir_extraction_quality(
-    *, image_height: int, image_width: int, page_ir: PageIR
+    *, attempt: int, image_height: int, image_width: int, page_ir: PageIR
 ) -> None:
     """Validate *quality* (not schema) of a parsed PageIR.
 
     Parameters
     ----------
+    attempt
+        The extraction attempt number (0-based).
     image_height
         Rendered page image height in pixels.
     image_width
@@ -447,6 +453,7 @@ def verify_page_ir_extraction_quality(
     validate_no_whitespace_or_empty_blocks(ctx)
     validate_item_bboxes_required_and_in_bounds(ctx)
     validate_full_page_bboxes(ctx)
+    validate_full_page_figure_requires_double_check(attempt=attempt, ctx=ctx)
     validate_no_duplicate_item_bboxes(ctx)
     validate_basic_block_invariants(ctx)
     validate_footnote_blocks_are_plausible(ctx)
