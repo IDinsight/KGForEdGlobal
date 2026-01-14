@@ -58,60 +58,6 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
-def _align_cells_in_row(
-    *, active_span: list[int], n_cols: int, old_cells: list[Any]
-) -> list[TableCell]:
-    """Generate a new list of cells with placeholders inserted based on active spans.
-
-    Parameters
-    ----------
-    active_span
-        List indicating how many more rows each column is occupied by rowspans.
-    n_cols
-        The total number of columns in the table.
-    old_cells
-        The original list of table cells.
-
-    Returns
-    -------
-    list[TableCell]
-        The new list of table cells with placeholders inserted.
-    """
-
-    new_cells: list[TableCell] = []
-    col = 0
-
-    for cell in old_cells:
-        # Insert placeholders for columns occupied by rowspans from prior rows.
-        while col < n_cols and active_span[col] > 0:
-            new_cells.append(TableCell(col_span=1, row_span=1, text=None))
-            col += 1
-
-        if col >= n_cols:
-            break
-
-        # Place the actual cell.
-        new_cells.append(cell)
-
-        c_span = int(getattr(cell, "col_span", 1) or 1)
-        r_span = int(getattr(cell, "row_span", 1) or 1)
-
-        # Mark future rows as occupied if this cell has a rowspan.
-        if r_span > 1:
-            for dc in range(c_span):
-                if (col + dc) < n_cols:
-                    active_span[col + dc] = max(active_span[col + dc], r_span - 1)
-
-        col += c_span
-
-    # Fill trailing occupied columns.
-    while col < n_cols and active_span[col] > 0:
-        new_cells.append(TableCell(col_span=1, row_span=1, text=None))
-        col += 1
-
-    return new_cells
-
-
 def _apply_single_edge_verdict(
     *,
     bools: dict[tuple[int, int], list[bool]],
@@ -502,57 +448,118 @@ def _normalize_local_code(code: str | None) -> str | None:
 def _process_table_item(
     *, item: Any, item_index: int, page_index: int
 ) -> list[dict[str, Any]]:
-    """Iterate through rows of a specific table and fix alignment.
+    """Process a single table item to fix row alignments.
 
     Parameters
     ----------
     item
-        The PageIR table item to process.
+        The document item (must be of kind 'table').
     item_index
-        The index of the item on the page.
+        The index of the item in the page.
     page_index
-        The index of the page containing the item.
+        The index of the page.
 
     Returns
     -------
     list[dict[str, Any]]
-        A list of change summaries for rows that were modified.
+        List of changes made to this table.
     """
 
-    changes: list[dict[str, Any]] = []
+    item_changes: list[dict[str, Any]] = []
     n_cols = item.n_cols
 
     if not isinstance(n_cols, int) or n_cols <= 0:
-        return changes
+        return item_changes
 
-    # active_span[c] = number of remaining future rows that occupy column c.
+    # active_span[c] = number of FUTURE rows that still occupy column c.
     active_span = [0] * n_cols
 
     for row_index, row in enumerate(item.rows or []):
-        # Decrement active rowspans at the start of each new row.
+        # Process the row without decrementing active_span yet.
+        row_change = _process_table_row(active_span=active_span, n_cols=n_cols, row=row)
+
+        if row_change:
+            full_change = {
+                "type": "rowspan_alignment_inserted_placeholders",
+                "page": page_index,
+                "item_index": item_index,
+                "row_index": row_index,
+                **row_change,
+            }
+            item_changes.append(full_change)
+
+        # Decrement active_span after finishing the row.
         active_span = [max(0, x - 1) for x in active_span]
 
-        old_cells = list(row.cells or [])
+    return item_changes
 
-        # Delegate the complex cell logic to the helper function
-        new_cells = _align_cells_in_row(
-            active_span=active_span, n_cols=n_cols, old_cells=old_cells
-        )
 
-        if len(new_cells) != len(old_cells):
-            row.cells = new_cells
-            changes.append(
-                {
-                    "type": "rowspan_alignment_inserted_placeholders",
-                    "page": page_index,
-                    "item_index": item_index,
-                    "row_index": row_index,
-                    "before_cells": len(old_cells),
-                    "after_cells": len(new_cells),
-                }
-            )
+def _process_table_row(
+    *, active_span: list[int], n_cols: int, row: Any
+) -> dict[str, Any]:
+    """Process a single row to align cells based on active rowspans.
 
-    return changes
+    Parameters
+    ----------
+    active_span
+        List tracking remaining rowspan counts for each column.
+    n_cols
+        The total number of columns in the table.
+    row
+        The row object containing cells.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary of changes if modifications were made, otherwise empty.
+    """
+
+    old_cells = list(row.cells or [])
+    new_cells: list[TableCell] = []
+    col = 0
+
+    # Fill cells and handle gaps.
+    for cell in old_cells:
+        # Insert placeholders for columns occupied by prior rowspans.
+        while col < n_cols and active_span[col] > 0:
+            new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+            col += 1
+
+        if col >= n_cols:
+            break
+
+        new_cells.append(cell)
+
+        # Update active_span for the current cell's dimensions.
+        col_span = int(getattr(cell, "col_span", 1) or 1)
+        row_span = int(getattr(cell, "row_span", 1) or 1)
+
+        if row_span > 1:
+            for dc in range(col_span):
+                target_col = col + dc
+                if target_col < n_cols:
+                    active_span[target_col] = max(active_span[target_col], row_span)
+
+        col += col_span
+
+    # Fill trailing gaps if we haven't reached n_cols yet.
+    while col < n_cols and active_span[col] > 0:
+        new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+        col += 1
+
+    # Trim excess placeholders.
+    trimmed = _trim_excess_cells(n_cols=n_cols, new_cells=new_cells)
+
+    # Return change summary if differences exist.
+    if len(new_cells) != len(old_cells) or trimmed > 0:
+        row.cells = new_cells
+        return {
+            "before_cells": len(old_cells),
+            "after_cells": len(new_cells),
+            "trimmed_trailing_placeholders": trimmed,
+        }
+
+    return {}
 
 
 def _reconcile_item_state(
@@ -663,12 +670,59 @@ def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]
     return output
 
 
+def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
+    """Remove trailing placeholders if the row exceeds the expected column count.
+
+    Parameters
+    ----------
+    n_cols
+        The target number of columns.
+    new_cells
+        The list of cells to trim (modified in place).
+
+    Returns
+    -------
+    int
+        The number of cells trimmed.
+    """
+
+    def _is_removable_placeholder(*, cell: TableCell) -> bool:
+        """Check if a cell is an empty placeholder valid for trimming.
+
+        Parameters
+        ----------
+        cell
+            The cell to inspect.
+
+        Returns
+        -------
+        bool
+            True if the cell is a 1x1 empty placeholder.
+        """
+
+        col_span = int(getattr(cell, "col_span", 1) or 1)
+        row_span = int(getattr(cell, "row_span", 1) or 1)
+        text = getattr(cell, "text", None)
+
+        return col_span == 1 and row_span == 1 and text is None
+
+    trimmed = 0
+
+    while len(new_cells) > n_cols and new_cells:
+        if _is_removable_placeholder(cell=new_cells[-1]):
+            new_cells.pop()
+            trimmed += 1
+        else:
+            break
+
+    return trimmed
+
+
 def align_table_rows_with_rowspans(
     *, page_irs: dict[int, PageIR]
 ) -> list[dict[str, Any]]:
-    """Insert placeholder empty cells where prior-row rowspans occupy columns. This
-    repairs the common failure mode where a row under a row-spanned subject shifts left
-    and causes column drift.
+    """Insert placeholder empty cells where prior-row rowspans occupy columns. Fixes
+    common failure mode where a row under a row-spanned subject shifts left.
 
     Parameters
     ----------
@@ -687,11 +741,92 @@ def align_table_rows_with_rowspans(
         page_ir = page_irs[page_index]
 
         for item_index, item in enumerate(page_ir.items or []):
-            if item.kind == "table":
-                table_changes = _process_table_item(
-                    item=item, item_index=item_index, page_index=page_index
-                )
-                changes.extend(table_changes)
+            if item.kind != "table":
+                continue
+
+            table_changes = _process_table_item(
+                item=item, item_index=item_index, page_index=page_index
+            )
+            changes.extend(table_changes)
+
+            # n_cols = item.n_cols
+            #
+            # if not isinstance(n_cols, int) or n_cols <= 0:
+            #     continue
+            #
+            # # active_span[c] = number of FUTURE rows that still occupy column c.
+            # active_span = [0] * n_cols
+            #
+            # for row_index, row in enumerate(item.rows or []):
+            #     old_cells = list(row.cells or [])
+            #     new_cells: list[TableCell] = []
+            #     col = 0
+            #
+            #     # NOTE: do NOT decrement active_span here. It must apply to THIS row if
+            #     # active_span[col] > 0.
+            #
+            #     for cell in old_cells:
+            #         # Insert placeholders for occupied columns (rowspans from prior
+            #         # rows).
+            #         while col < n_cols and active_span[col] > 0:
+            #             new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+            #             col += 1
+            #
+            #         if col >= n_cols:
+            #             break
+            #
+            #         new_cells.append(cell)
+            #
+            #         col_span = int(getattr(cell, "col_span", 1) or 1)
+            #         row_span = int(getattr(cell, "row_span", 1) or 1)
+            #
+            #         # Mark future rows as occupied for all columns spanned by this cell.
+            #         if row_span > 1:
+            #             for dc in range(col_span):
+            #                 if (col + dc) < n_cols:
+            #                     active_span[col + dc] = max(
+            #                         active_span[col + dc], row_span
+            #                     )
+            #
+            #         col += col_span
+            #
+            #     # If there are still occupied columns remaining, explicitly represent
+            #     # them.
+            #     while col < n_cols and active_span[col] > 0:
+            #         new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+            #         col += 1
+            #
+            #     # Trim extra trailing placeholders if we exceeded n_cols (common when
+            #     # extractor already included a trailing null cell).
+            #     trimmed = 0
+            #     while (
+            #         len(new_cells) > n_cols
+            #         and new_cells
+            #         and (
+            #             (getattr(new_cells[-1], "col_span", 1) or 1) == 1
+            #             and (getattr(new_cells[-1], "row_span", 1) or 1) == 1
+            #             and getattr(new_cells[-1], "text", None) is None
+            #         )
+            #     ):
+            #         new_cells.pop()
+            #         trimmed += 1
+            #
+            #     if len(new_cells) != len(old_cells) or trimmed > 0:
+            #         row.cells = new_cells
+            #         changes.append(
+            #             {
+            #                 "type": "rowspan_alignment_inserted_placeholders",
+            #                 "page": page_index,
+            #                 "item_index": item_index,
+            #                 "row_index": row_index,
+            #                 "before_cells": len(old_cells),
+            #                 "after_cells": len(new_cells),
+            #                 "trimmed_trailing_placeholders": trimmed,
+            #             }
+            #         )
+            #
+            #     # Now decrement after finishing the row.
+            #     active_span = [max(0, x - 1) for x in active_span]
 
     return changes
 
@@ -1131,7 +1266,7 @@ def execute_verification_attempts(
     #  - Strip existing boundary hints (so model isn't biased from extraction).
     #  - Call the model to verify continuity.
     #  - Record the attempt summary.
-    #  - If a patch-worthy continuation is found, break early.
+    #  - If a high confidence patch is found, break early.
     for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
         try:
             verdict = verify_page_ir_pairs(
@@ -1176,24 +1311,15 @@ def execute_verification_attempts(
         if attempt_no == 0:
             primary_verdict = verdict
 
-        # Early exit on patch-worthy positive continuation.
-        if (
-            verdict.is_continuation
-            and verdict.confidence >= config.min_confidence_to_patch
-        ):
+        # Early exit on high confidence to patch.
+        if verdict.confidence >= config.min_confidence_to_patch:
             selected_prev_index, selected_next_index = pi, ni
             selected_verdict = verdict
             break
 
-    # If we didn't find a patch-worthy positive continuation, fall back to the
-    # primary pair verdict.
-    if selected_verdict is None:
-        if primary_verdict is None:
-            raise RuntimeError(
-                f"All continuity verification attempts failed for pages "
-                f"{page_index}-{page_index + 1}."
-            )
-        selected_verdict = primary_verdict
+    # If we didn't find a high confidence patch, fall back to the primary pair verdict.
+    selected_verdict = selected_verdict or primary_verdict
+    assert selected_verdict, f"No high confidence patches found for: {pairs}"
 
     return {
         "attempt_summaries": attempt_summaries,
@@ -1818,10 +1944,7 @@ def postprocess_verified_page_irs(
 ) -> None:
     """Run all postpass fixes before writing verified JSONs.
 
-    NB: Order matters
-
-    1. Propagate codes (relies on correct boundaries from verification).
-    2. Normalize cells (relies on correct table structures).
+    NB: Order matters here. Don't change unless you know what you are doing!
 
     Parameters
     ----------
