@@ -248,7 +248,6 @@ def verify(
     # 2.
     assert compare_directories(page_images_dir, page_irs_dir)
     expected_doc_key = extraction_run_config.extra["doc_key"]
-    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
 
     if computed_doc_key != expected_doc_key:
         raise ValueError(
@@ -265,18 +264,18 @@ def verify(
         extraction_config.output_dir / expected_doc_key / "verification"
     )
 
-    try:
-        with pymupdf.open(str(extraction_config.pdf_fp)) as doc:
-            # 3.
-            _, end_page = validate_page_count(
-                doc=doc, end_page=config.end_page, start_page=config.start_page
-            )
+    with pymupdf.open(str(extraction_config.pdf_fp)) as doc:
+        # 3.
+        _, end_page = validate_page_count(
+            doc=doc, end_page=config.end_page, start_page=config.start_page
+        )
 
-            # 4.
-            verification_dirs, verification_run = persist_verification_run(
-                config=config, output_dir=verification_results_dir
-            )
+        # 4.
+        verification_dirs, verification_run = persist_verification_run(
+            config=config, output_dir=verification_results_dir
+        )
 
+        try:
             # 5.
             logger.info(
                 f"Starting page IR continuity verification process using directories: "
@@ -291,22 +290,22 @@ def verify(
                 page_irs_dir=page_irs_dir,
                 verification_dirs=verification_dirs,
             )
-        verification_run.extra["status"] = "success"
-        logger.success("Page IR continuity verification completed successfully!")
-    except Exception as e:  # pylint: disable=broad-except
-        verification_run.extra["status"] = "error"
-        verification_run.extra["error"] = {
-            "message": str(e),
-            "traceback": traceback.format_exc(limit=20),
-            "type": e.__class__.__name__,
-        }
-        raise
-    finally:
-        verification_run.completed_at = datetime.now(timezone.utc)
-        write_to_json(
-            fp=verification_dirs.root / "verification_run.json",
-            json_info=verification_run,
-        )
+            verification_run.extra["status"] = "success"
+            logger.success("Page IR continuity verification completed successfully!")
+        except Exception as e:  # pylint: disable=broad-except
+            verification_run.extra["status"] = "error"
+            verification_run.extra["error"] = {
+                "message": str(e),
+                "traceback": traceback.format_exc(limit=20),
+                "type": e.__class__.__name__,
+            }
+            raise
+        finally:
+            verification_run.completed_at = datetime.now(timezone.utc)
+            write_to_json(
+                fp=verification_dirs.root / "verification_run.json",
+                json_info=verification_run,
+            )
 
         # 4.
         verification_dirs, verification_run = persist_verification_run(
