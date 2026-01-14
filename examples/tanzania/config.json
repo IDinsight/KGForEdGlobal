@@ -2,7 +2,7 @@
 	"page_ir_extraction": {
 		"country": "Tanzania",
 		"dpi": 250,
-		"end_page": 28,
+		"end_page": null,
 		"languages": [
 			"ar",
 			"en",
@@ -12,9 +12,9 @@
 		],
 		"model": "gpt-5.2-2025-12-11",
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
-		"overwrite": true,
+		"overwrite": false,
 		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/tanzania/tanzania.pdf",
-		"start_page": 27,
+		"start_page": 0,
 		"use_text_layer_hints": true,
 		"year": 2023
 	},
