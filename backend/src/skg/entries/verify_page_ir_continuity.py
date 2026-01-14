@@ -35,22 +35,20 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_extraction.utils import load_page_irs_from_extraction
-from skg.page_ir_verification.llm import verify_page_ir_pairs
 from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
     PageIRVerificationDirs,
-    bottommost_continuity_candidate,
     compile_continuity_from_edge_verdicts,
     persist_verification_run,
     postprocess_verified_page_irs,
     save_verified_page_irs,
-    strip_continuity_hints,
-    topmost_continuity_candidate_paired,
+    verify_single_page_pair,
 )
 from skg.schemas import RunConfig, RunCtx, VerificationConfig
 from skg.utils.general import compare_directories, open_json_type, write_to_json
-from skg.utils.pdf import compute_doc_key, crop_image_to_top, validate_page_count
+from skg.utils.pdf import compute_doc_key, validate_page_count
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
@@ -59,10 +57,10 @@ cli = typer.Typer(no_args_is_help=True)
 def verify_page_ir_continuity(
     *,
     config: VerificationConfig,
-    doc: pymupdf.Document,
-    end_page: int | None,
     page_images_dir: Path,
-    page_irs_dir: Path,
+    page_irs: dict[int, PageIR],
+    start: int,
+    stop: int,
     verification_dirs: PageIRVerificationDirs,
 ) -> None:
     """Perform verification of PageIR JSONs in pairs.
@@ -71,120 +69,39 @@ def verify_page_ir_continuity(
     ----------
     config
         The verification run configuration.
-    doc
-        The PyMuPDF document.
-    end_page
-        0-based end page (exclusive).
     page_images_dir
         Directory containing the page images.
-    page_irs_dir
-        Directory containing the page IR JSONs.
+    page_irs
+        The dictionary of page IRs by page index.
+    start
+        0-based start page (inclusive).
+    stop
+        0-based end page (exclusive).
     verification_dirs
         The verification directories.
 
     Raises
     ------
-    QualityError
-        If any quality checks fail.
+    RuntimeError
+        If continuity verification fails completely for any page pair.
     """
 
-    # Load all page IR indices (0000.json style).
-    json_fps = sorted(page_irs_dir.glob("*.json"))
-    page_indices = sorted(int(fp.stem) for fp in json_fps if fp.stem.isdigit())
-    assert page_indices, f"No page IR JSONs found in: {page_irs_dir}"
-    start = max(config.start_page, page_indices[0])
-    stop = min(doc.page_count, page_indices[-1] + 1) if end_page is None else end_page
-
-    # Load all page IR JSONs so that we can apply edits and then write once.
-    page_irs = load_page_irs_from_extraction(
-        end_page=stop, page_irs_dir=page_irs_dir, start_page=start
-    )
-
-    # Iterate in pairs.
+    # Edge records will hold one record per boundary (page i -> i+1) containing:
+    #  - which candidate items were compared
+    #  - what the model decided (continuation, type, confidence, etc.)
     edge_records: list[EdgeVerdictRecord] = []
 
+    # Iterate in pairs.
     for i in range(start, stop - 1):
-        assert (
-            i in page_irs and (i + 1) in page_irs
-        ), f"Missing page IR for pages {i} or {i + 1}"
-
-        prev_page_ir, next_page_ir = page_irs[i], page_irs[i + 1]
-        prev_page_items = prev_page_ir.items or []
-        next_page_items = next_page_ir.items or []
-
-        if not (prev_page_items and next_page_items):
-            logger.warning(
-                f"Skipping continuity check for pages {i}-{i + 1}: "
-                f"prev_items={len(prev_page_items)} next_items={len(next_page_items)}"
-            )
-            continue
-
-        # Get the bottommost continuity candidate from page N.
-        prev_index, prev_item = bottommost_continuity_candidate(
-            image_height=prev_page_ir.image_height, items=prev_page_items
+        record = verify_single_page_pair(
+            config=config,
+            page_images_dir=page_images_dir,
+            page_index=i,
+            page_irs=page_irs,
+            verification_dirs=verification_dirs,
         )
-
-        # Crop top of next image (page N+1) and compute the crop height so candidate
-        # selection is restricted to items the model can actually see. This prevents
-        # false negatives when the topmost candidate is outside the crop.
-        next_crop_fp = verification_dirs.page_irs_pair_crops / f"{i + 1:04}_top.png"
-        crop_image_to_top(
-            input_png_fp=page_images_dir / f"{i + 1:04}.png", output_png_fp=next_crop_fp
-        )
-
-        # Pick the next-page candidate from items that actually intersect the visible
-        # crop. The crop starts at y=0, so its pixel height is the y-extent visible to
-        # the model.
-        next_index, next_item = topmost_continuity_candidate_paired(
-            image_height=next_page_ir.image_height,
-            items=next_page_items,
-            prev_item=prev_item,
-            visible_y_max=float(pymupdf.Pixmap(str(next_crop_fp)).height),
-        )
-
-        # Invoke the model to verify the pair.
-        logger.info(f"Verifying continuity between pages {i} and {i + 1}...")
-
-        prev_item_json = prev_item.model_dump(mode="json")
-        next_item_json = next_item.model_dump(mode="json")
-        verdict = verify_page_ir_pairs(
-            model=config.model,
-            next_item=strip_continuity_hints(next_item_json),
-            next_page_index=i + 1,
-            next_png=next_crop_fp,
-            prev_item=strip_continuity_hints(prev_item_json),
-            prev_page_index=i,
-            prev_png=page_images_dir / f"{i:04}.png",
-        )
-        verdict.prev_page_index = i
-        verdict.next_page_index = i + 1
-
-        # Record the edge verdict.
-        edge_records.append(
-            EdgeVerdictRecord(
-                next_candidate_index=next_index,
-                next_page_index=i + 1,
-                prev_page_index=i,
-                prev_candidate_index=prev_index,
-                verdict=verdict,
-            )
-        )
-
-        # Persist the verdict.
-        write_to_json(
-            fp=verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json",
-            json_info={
-                "candidate_selection": {
-                    "prev_candidate_index": prev_index,
-                    "next_candidate_index": next_index,
-                    "prev_candidate": prev_item_json,
-                    "next_candidate": next_item_json,
-                },
-                "verdict": verdict.model_dump(mode="json"),
-            },
-        )
-
-        logger.success(f"Finished verifying continuity between pages {i} and {i + 1}!")
+        if record:
+            edge_records.append(record)
 
     # Compile continuity edits from edge verdicts.
     compile_report = compile_continuity_from_edge_verdicts(
@@ -229,7 +146,8 @@ def verify(
         document key matches the PDF.
     3. Validate page range.
     4. Persist verification run metadata.
-    5. Run pairwise continuity verification across (N, N+1) in the selected page
+    5. Load all page IR JSONs so that we can apply edits and then write once.
+    6. Run pairwise continuity verification across (N, N+1) in the selected page
         range and write verified page IR JSONs to file.
 
     Parameters
@@ -272,6 +190,10 @@ def verify(
             f"extraction."
         )
 
+    json_fps = sorted(page_irs_dir.glob("*.json"))
+    page_indices = sorted(int(fp.stem) for fp in json_fps if fp.stem.isdigit())
+    assert page_indices, f"No page IR JSONs found in: {page_irs_dir}"
+
     verification_results_dir = (
         extraction_config.output_dir / expected_doc_key / "verification"
     )
@@ -289,6 +211,14 @@ def verify(
 
         try:
             # 5.
+            start = max(config.start_page, page_indices[0])
+            max_available = min(doc.page_count, page_indices[-1] + 1)
+            stop = max_available if end_page is None else min(end_page, max_available)
+            page_irs = load_page_irs_from_extraction(
+                end_page=stop, page_irs_dir=page_irs_dir, start_page=start
+            )
+
+            # 6.
             logger.info(
                 f"Starting page IR continuity verification process using directories: "
                 f"{page_images_dir} and {page_irs_dir}"
@@ -296,10 +226,10 @@ def verify(
 
             verify_page_ir_continuity(
                 config=config,
-                doc=doc,
-                end_page=end_page,
                 page_images_dir=page_images_dir,
-                page_irs_dir=page_irs_dir,
+                page_irs=page_irs,
+                start=start,
+                stop=stop,
                 verification_dirs=verification_dirs,
             )
             verification_run.extra["status"] = "success"
