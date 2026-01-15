@@ -293,7 +293,7 @@ def verify_page_ir_pairs(
                                 "text": (
                                     "Hmmmm, are you absolutely sure of your verification results? "
                                     "Review your last output carefully against your stated instructions and double check your work again. "
-                                    "When you are confident in your answer, return a complete PageIR that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made."
+                                    "When you are confident in your answer, return a complete PageIRContinuityVerdict that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made."
                                 ),
                             }
                         ],
