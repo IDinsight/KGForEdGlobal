@@ -524,6 +524,7 @@ def validate_full_page_figure_requires_double_check(
     ):
         return
 
+    # Force double check.
     if attempt == 0:
         # If we get here, it is literally "one item, full-page figure". Force one retry
         # with a strong re-check instruction.
