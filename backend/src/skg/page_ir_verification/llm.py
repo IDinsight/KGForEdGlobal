@@ -58,6 +58,7 @@ openai_client = OpenAI()
 )
 def _call_openai_api_for_page_ir_verification(
     *,
+    attempt: int,
     input_items: list[Any],
     instructions: str,
     model: str,
@@ -68,6 +69,8 @@ def _call_openai_api_for_page_ir_verification(
 
     Parameters
     ----------
+    attempt
+        The current attempt number (0-based).
     input_items
         The list of messages to send to the OpenAI API.
     instructions
@@ -110,7 +113,7 @@ def _call_openai_api_for_page_ir_verification(
 
     try:
         verify_page_ir_continuity_verdict(
-            next_item=next_item, prev_item=prev_item, verdict=parsed
+            attempt=attempt, next_item=next_item, prev_item=prev_item, verdict=parsed
         )
     except QualityError as e:
         # Attach the raw output so the correction attempt can see what it wrote.
@@ -121,6 +124,7 @@ def _call_openai_api_for_page_ir_verification(
 
 def verify_page_ir_continuity_verdict(
     *,
+    attempt: int,
     next_item: Block | Table,
     prev_item: Block | Table,
     verdict: PageIRContinuityVerdict,
@@ -129,6 +133,8 @@ def verify_page_ir_continuity_verdict(
 
     Parameters
     ----------
+    attempt
+        The current attempt number (0-based).
     next_item
         The next page candidate item.
     prev_item
@@ -141,6 +147,10 @@ def verify_page_ir_continuity_verdict(
     QualityError
         If any quality checks fail.
     """
+
+    # Force retry on first attempt.
+    if attempt == 0:
+        raise QualityError("Reason does not matter and is overwritten in caller.")
 
     if verdict.is_continuation and verdict.confidence < 0.5:
         # This is a soft check, but often indicates hallucination. We might not raise
@@ -239,6 +249,7 @@ def verify_page_ir_pairs(
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api_for_page_ir_verification(
+                attempt=attempt,
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
@@ -272,17 +283,38 @@ def verify_page_ir_pairs(
                     }
                 )
 
-            input_items.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": f"Your previous verdict was logically inconsistent: {str(e)}. Please correct it.",
-                        }
-                    ],
-                }
-            )
+            if attempt == 0:
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    "Hmmmm, are you absolutely sure of your verification results? "
+                                    "Review your last output carefully against your stated instructions and double check your work again. "
+                                    "When you are confident in your answer, return a complete PageIR that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made."
+                                ),
+                            }
+                        ],
+                    }
+                )
+            else:
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    f"Your previous output had issues and must be corrected.\n"
+                                    f"ERROR: {str(e)}\n\n"
+                                    f"Return a complete PageIR that matches the schema and fixes the issue."
+                                ),
+                            }
+                        ],
+                    }
+                )
             continue
         except Exception as e:  # pylint: disable=broad-except
             # Let transient errors propagate (tenacity should cover most of these).

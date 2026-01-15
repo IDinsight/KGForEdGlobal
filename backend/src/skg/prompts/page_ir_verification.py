@@ -66,6 +66,7 @@ Return ONLY a JSON object matching the required schema and always include a rati
 4. DO NOT invent missing content.
 5. If is_continuation=false, you MUST set continuation_kind="{PageContinuationKind.NONE.value}".
 6. The ONLY optional “edit” you may propose is set_next_table_repeats_header (table continuations only). Do NOT propose any other edits.
+7. Captions shouldn’t be resumed unless the previous page has a truncated caption with the same local_code.
 
 ## ALLOWED OUTPUT FIELDS
 - is_continuation: true/false
