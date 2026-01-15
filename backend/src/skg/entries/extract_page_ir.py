@@ -129,6 +129,7 @@ def extract_page_by_page(
         else:
             page_ir = extract_page_ir(
                 country=config.country,
+                force_llm_retry_on_first_attempt=config.force_llm_retry_on_first_attempt,
                 image_height=image_height,
                 image_width=image_width,
                 languages=config.languages,

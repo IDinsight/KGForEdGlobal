@@ -1191,6 +1191,7 @@ def execute_verification_attempts(
     for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
         try:
             verdict = verify_page_ir_pairs(
+                force_llm_retry_on_first_attempt=config.force_llm_retry_on_first_attempt,
                 model=config.model,
                 next_item=nitem.model_dump(mode="json"),
                 next_item_excerpt=make_verification_excerpt(
@@ -1602,7 +1603,7 @@ def load_page_irs_from_verification(
     # Validate doc_key consistency + presence.
     if doc_key is None:
         raise ValueError(
-            "verification_run.json is missing extra.doc_key (expected_doc_key)."
+            "extraction_run.json is missing extra.doc_key (expected_doc_key)."
         )
 
     doc_keys = {p.doc_key for p in page_irs if p.doc_key}
@@ -1611,7 +1612,7 @@ def load_page_irs_from_verification(
     if not doc_keys:
         raise ValueError(
             "All verified PageIRs are missing doc_key. "
-            "Ensure step 1/2 populates PageIR.doc_key for every page."
+            "Ensure extraction step populates PageIR.doc_key for every page."
         )
     if len(doc_keys) > 1 or len(pdf_names) > 1:
         raise ValueError(

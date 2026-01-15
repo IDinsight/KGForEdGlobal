@@ -3,6 +3,7 @@
 		"country": "Ghana",
 		"dpi": 250,
 		"end_page": null,
+		"force_llm_retry_on_first_attempt": true,
 		"languages": [
 			"en"
 		],
@@ -16,6 +17,7 @@
 	},
 	"page_ir_verification": {
 		"end_page": null,
+		"force_llm_retry_on_first_attempt": true,
 		"min_confidence_to_patch": 0.75,
 		"model": "gpt-5.2-2025-12-11",
 		"start_page": 0
