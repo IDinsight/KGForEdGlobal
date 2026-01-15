@@ -96,7 +96,7 @@ def get_text(cell: TableCell) -> Optional[str]:
     return None
 
 
-def test__trim_excess_cells() -> None:
+def test_trim_excess_cells() -> None:
     """Test that trailing empty 1x1 placeholders are removed correctly."""
 
     cells = [
@@ -113,7 +113,7 @@ def test__trim_excess_cells() -> None:
     assert get_text(cells[-1]) == "B"
 
 
-def test__trim_excess_cells_stops_at_content() -> None:
+def test_trim_stops_at_content() -> None:
     """Test that trimming stops when it hits a cell with text."""
 
     cells = [
@@ -126,7 +126,7 @@ def test__trim_excess_cells_stops_at_content() -> None:
     assert len(cells) == 2
 
 
-def test__process_table_row_inserts_placeholder() -> None:
+def test_process_table_row_inserts_placeholder() -> None:
     """Verify that if active_span indicates a column is occupied, a placeholder is
     inserted before the next real cell.
     """
@@ -143,7 +143,7 @@ def test__process_table_row_inserts_placeholder() -> None:
     assert changes["after_cells"] == 2
 
 
-def test_align_table_rows_with_rowspans() -> None:
+def test_tanzania_pdf_row_alignment() -> None:
     """Test the following scenario:
 
     Structure:
