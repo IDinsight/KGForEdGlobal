@@ -59,6 +59,7 @@ openai_client = OpenAI()
 def _call_openai_api_for_page_ir_verification(
     *,
     attempt: int,
+    force_llm_retry_on_first_attempt: bool,
     input_items: list[Any],
     instructions: str,
     model: str,
@@ -71,6 +72,8 @@ def _call_openai_api_for_page_ir_verification(
     ----------
     attempt
         The current attempt number (0-based).
+    force_llm_retry_on_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     input_items
         The list of messages to send to the OpenAI API.
     instructions
@@ -113,7 +116,11 @@ def _call_openai_api_for_page_ir_verification(
 
     try:
         verify_page_ir_continuity_verdict(
-            attempt=attempt, next_item=next_item, prev_item=prev_item, verdict=parsed
+            attempt=attempt,
+            force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
+            next_item=next_item,
+            prev_item=prev_item,
+            verdict=parsed,
         )
     except QualityError as e:
         # Attach the raw output so the correction attempt can see what it wrote.
@@ -125,6 +132,7 @@ def _call_openai_api_for_page_ir_verification(
 def verify_page_ir_continuity_verdict(
     *,
     attempt: int,
+    force_llm_retry_on_first_attempt: bool,
     next_item: Block | Table,
     prev_item: Block | Table,
     verdict: PageIRContinuityVerdict,
@@ -135,6 +143,8 @@ def verify_page_ir_continuity_verdict(
     ----------
     attempt
         The current attempt number (0-based).
+    force_llm_retry_on_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     next_item
         The next page candidate item.
     prev_item
@@ -149,7 +159,7 @@ def verify_page_ir_continuity_verdict(
     """
 
     # Force retry on first attempt.
-    if attempt == 0:
+    if force_llm_retry_on_first_attempt and attempt == 0:
         raise QualityError("Reason does not matter and is overwritten in caller.")
 
     if verdict.is_continuation and verdict.confidence < 0.5:
@@ -169,6 +179,7 @@ def verify_page_ir_continuity_verdict(
 
 def verify_page_ir_pairs(
     *,
+    force_llm_retry_on_first_attempt: bool,
     max_retries: int = 2,
     model: str,
     next_item: dict[str, Any],
@@ -184,6 +195,8 @@ def verify_page_ir_pairs(
 
     Parameters
     ----------
+    force_llm_retry_on_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     max_retries
         Maximum number of retries for quality errors.
     model
@@ -250,6 +263,7 @@ def verify_page_ir_pairs(
         try:
             return _call_openai_api_for_page_ir_verification(
                 attempt=attempt,
+                force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
@@ -283,7 +297,7 @@ def verify_page_ir_pairs(
                     }
                 )
 
-            if attempt == 0:
+            if force_llm_retry_on_first_attempt and attempt == 0:
                 input_items.append(
                     {
                         "role": "user",

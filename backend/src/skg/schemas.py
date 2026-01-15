@@ -46,6 +46,10 @@ class ExtractionConfig(BaseSchema):
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default: to end."
     )
+    force_llm_retry_on_first_attempt: bool = Field(
+        False,
+        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
+    )
     languages: list[LanguageField] = Field(
         ...,
         description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
@@ -118,6 +122,10 @@ class VerificationConfig(BaseSchema):
 
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default: to end."
+    )
+    force_llm_retry_on_first_attempt: bool = Field(
+        False,
+        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
     )
     min_confidence_to_patch: float = Field(
         0.75,

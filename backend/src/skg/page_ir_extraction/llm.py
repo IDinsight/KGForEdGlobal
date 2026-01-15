@@ -72,6 +72,7 @@ openai_client = OpenAI()
 def _call_openai_api_for_page_ir_extraction(
     *,
     attempt: int,
+    force_llm_retry_on_first_attempt: bool,
     image_height: int,
     image_width: int,
     input_items: list[Any],
@@ -84,6 +85,10 @@ def _call_openai_api_for_page_ir_extraction(
 
     Parameters
     ----------
+    attempt
+        The extraction attempt number (0-based).
+    force_llm_retry_on_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     image_height
         The image height in pixels.
     image_width
@@ -149,6 +154,7 @@ def _call_openai_api_for_page_ir_extraction(
     try:
         verify_page_ir_extraction_quality(
             attempt=attempt,
+            force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
             image_height=image_height,
             image_width=image_width,
             page_ir=parsed,
@@ -245,6 +251,7 @@ def _persist_page_ir_attempt_artifacts(
 def extract_page_ir(
     *,
     country: str,
+    force_llm_retry_on_first_attempt: bool,
     image_height: int,
     image_width: int,
     languages: list[str],
@@ -262,6 +269,8 @@ def extract_page_ir(
     ----------
     country
         Country context for the prompt.
+    force_llm_retry_on_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     image_height
         The image height in pixels.
     image_width
@@ -321,6 +330,7 @@ def extract_page_ir(
         try:
             return _call_openai_api_for_page_ir_extraction(
                 attempt=attempt,
+                force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
                 image_height=image_height,
                 image_width=image_width,
                 input_items=input_items,
@@ -345,21 +355,38 @@ def extract_page_ir(
                     }
                 )
 
-            input_items.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                f"Your previous output had issues and must be corrected.\n"
-                                f"ERROR: {str(e)}\n\n"
-                                f"Return a complete PageIR that matches the schema and fixes the issue."
-                            ),
-                        }
-                    ],
-                }
-            )
+            if force_llm_retry_on_first_attempt and attempt == 0:
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    "Hmmmm, are you absolutely sure of your extraction results? "
+                                    "Review your last output carefully against your stated instructions and double check your work again. "
+                                    "When you are confident in your answer, return a complete PageIR that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made."
+                                ),
+                            }
+                        ],
+                    }
+                )
+            else:
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    f"Your previous output had issues and must be corrected.\n"
+                                    f"ERROR: {str(e)}\n\n"
+                                    f"Return a complete PageIR that matches the schema and fixes the issue."
+                                ),
+                            }
+                        ],
+                    }
+                )
             continue
         except Exception as e:  # pylint: disable=broad-except
             # Let transient errors propagate (tenacity should cover most of these).
@@ -413,7 +440,12 @@ def extract_page_ir(
 
 
 def verify_page_ir_extraction_quality(
-    *, attempt: int, image_height: int, image_width: int, page_ir: PageIR
+    *,
+    attempt: int,
+    force_llm_retry_on_first_attempt: bool,
+    image_height: int,
+    image_width: int,
+    page_ir: PageIR,
 ) -> None:
     """Validate *quality* (not schema) of a parsed PageIR.
 
@@ -421,6 +453,8 @@ def verify_page_ir_extraction_quality(
     ----------
     attempt
         The extraction attempt number (0-based).
+    force_llm_retry_on_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     image_height
         Rendered page image height in pixels.
     image_width
@@ -433,6 +467,10 @@ def verify_page_ir_extraction_quality(
     QualityError
         If any quality checks fail.
     """
+
+    # Force retry on first attempt.
+    if force_llm_retry_on_first_attempt and attempt == 0:
+        raise QualityError("Reason does not matter and is overwritten in caller.")
 
     ctx = PageIRExtractionQualityCtx(
         boundary_state=page_ir.boundary_state,
