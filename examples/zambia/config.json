@@ -2,16 +2,16 @@
 	"page_ir_extraction": {
 		"country": "Zambia",
 		"dpi": 250,
-		"end_page": null,
+		"end_page": 18,
 		"force_llm_retry_on_first_attempt": true,
 		"languages": [
 			"en"
 		],
 		"model": "gpt-5.2-2025-12-11",
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
-		"overwrite": false,
+		"overwrite": true,
 		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/zambia/zambia.pdf",
-		"start_page": 0,
+		"start_page": 16,
 		"use_text_layer_hints": false,
 		"year": 2024
 	},
@@ -24,7 +24,12 @@
 	},
 	"document_ir": {
 		"keep_artifacts": false,
+		"max_section_path_length": 12,
+		"min_link_score": 2,
+		"overwrite": true,
 		"repair_hyphenation": true,
-		"overwrite": true
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 3
 	}
 }

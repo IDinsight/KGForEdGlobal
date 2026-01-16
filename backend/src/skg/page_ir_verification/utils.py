@@ -1630,9 +1630,9 @@ def load_page_irs_from_verification(
     heights = {p.image_height for p in page_irs if p.image_height is not None}
     widths = {p.image_width for p in page_irs if p.image_width is not None}
 
-    if len(coord_spaces) > 1 or len(dpis) > 1 or len(widths) > 1 or len(heights) > 1:
+    if len(coord_spaces) > 1 or len(dpis) > 1:
         raise ValueError(
-            "Inconsistent coordinate space, page dimensions, or dpi across pages:\n"
+            "Inconsistent coordinate spaces or DPIs across pages:\n"
             f"{coord_spaces=}\n{dpis=}\n{widths=}\n{heights=}"
         )
 

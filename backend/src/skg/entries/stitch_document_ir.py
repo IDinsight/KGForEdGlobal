@@ -12,8 +12,8 @@ Step 3 is intentionally layout-oriented. It does NOT:
 
 1. Infer semantic hierarchy (grade/subject/topic).
 2. Assign statement roles (expectation/guidance/etc.).
-3. generate deterministic LC KG IDs,
-4. export Learning Commons KG nodes/edges.
+3. Generate deterministic LC KG IDs.
+4. Export Learning Commons KG nodes/edges.
 5. Create Learning Commons KG entities/edges.
 
 Those belong in later stages (i.e., canonicalization and knowledge graph creation).
@@ -27,8 +27,10 @@ python src/skg/entries/stitch_document_ir.py ../examples/tanzania/config.json
 import sys
 import traceback
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Third Party Library
 import typer
@@ -44,7 +46,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.document_ir.schemas import DocumentIR, Segment
+from skg.document_ir.schemas import SectionHeadingRef, Segment
 from skg.document_ir.utils import (
     DocumentIRDirs,
     ItemKey,
@@ -54,7 +56,8 @@ from skg.document_ir.utils import (
     materialize_segment,
     normalize_page_items,
     persist_stitching_run,
-    uniquify_segment_keys,
+    save_document_ir,
+    update_section_stack,
 )
 from skg.page_ir_extraction.schemas import Block, PageIR, Table
 from skg.page_ir_verification.utils import load_page_irs_from_verification
@@ -108,103 +111,137 @@ def stitch_document_ir(
 
     warnings: list[str] = []
 
-    # Normalized items per page and filter artifacts if applicable.
-    items_mapping: dict[int, list[tuple[int, Table | Block]]] = {
+    # Normalize items per page.
+    items_mapping: dict[int, list[tuple[int, Block | Table]]] = {
         page_ir.page_index: normalize_page_items(
-            keep_artifacts=config.keep_artifacts, page_ir=page_ir
+            keep_artifacts=config.keep_artifacts,
+            page_ir=page_ir,
+            sort_items_by_bbox=config.sort_items_by_bbox,
+            warnings=warnings,
         )
         for page_ir in page_irs
     }
-    items_lookup: dict[int, dict[int, Table | Block]] = {
-        page_index: dict(items) for page_index, items in items_mapping.items()
-    }
+
+    # Debug collectors for report output.
+    link_debug: list[dict[str, Any]] = []
+    page_pair_debug: list[dict[str, Any]] = []
 
     # Compute page break links based on verified boundary flags.
     links = compute_page_break_links(
-        keep_artifacts=config.keep_artifacts, page_irs=page_irs, warnings=warnings
+        items_mapping=items_mapping,
+        link_debug=link_debug,
+        min_link_score=config.min_link_score,
+        page_irs=page_irs,
+        page_pair_debug=page_pair_debug,
+        warnings=warnings,
     )
 
     # Set of destination keys to identify items that are continuations.
     continuations = set(links.values())
 
-    # Reverse map: destination --> list of sources that point to it (for debugging).
-    reverse_links: dict[ItemKey, list[ItemKey]] = {}
+    # Reverse map: destination -> list of sources that point to it (for debugging).
+    reverse_links: dict[ItemKey, list[ItemKey]] = defaultdict(list)
     for src, dst in links.items():
-        reverse_links.setdefault(dst, []).append(src)
+        reverse_links[dst].append(src)
 
-    # Iterate in document reading order: page order, then item order.
+    # Maintain a semantic-light heading context for later canonicalization. This is
+    # intentionally simple: we keep the most recent headings in reading order (no
+    # heading-level inference at this stage).
+    items_lookup: dict[int, dict[int, Block | Table]] = {
+        page_index: dict(items) for page_index, items in items_mapping.items()
+    }
+    section_path_stack: list[SectionHeadingRef] = []
     segments: list[Segment] = []
     visited: set[ItemKey] = set()
 
+    # Iterate in document reading order: page order, then item order.
     for page_ir in page_irs:
         page_index = page_ir.page_index
         page_items = items_mapping.get(page_index, [])
 
-        for original_item_idx, item in page_items:
-            key = (page_index, original_item_idx)
+        logger.info(f"Stitching page {page_index}...\n")
 
-            # Skip if already processed.
-            if key in visited:
+        for orig_item_index, item in page_items:
+            key = (page_index, orig_item_index)
+
+            if key in visited:  # Skip if already processed
                 continue
 
             # If this item is a continuation destination but wasn't actually consumed
             # by a previous chain, treat it as an "orphan continuation" and process it
             # as a standalone chain start (with a warning).
             if key in continuations:
-                warnings.append(
-                    f"Orphan continuation destination encountered;it was pointed-to by "
-                    f"a prior page-break link but not consumed in any chain. "
+                text = (
+                    f"Orphan continuation destination encountered; "
+                    f"it was pointed-to by a prior page-break link but not consumed in any chain. "
                     f"dest={key}, sources={reverse_links.get(key, [])}. "
                     f"Processing as standalone."
                 )
+                logger.warning(text)
+                warnings.append(text)
+                input(999)
 
-            # Build the chains.
-            chain, chain_warnings = build_continuation_chain(
-                items_lookup=items_lookup, links=links, start_item=item, start_key=key
+            # Build the continuation chains.
+            chain = build_continuation_chain(
+                items_lookup=items_lookup,
+                links=links,
+                start_item=item,
+                start_key=key,
+                warnings=warnings,
             )
-
-            if chain_warnings:
-                warnings.extend(chain_warnings)
 
             # Mark all items in chain as visited.
             for page_index, item_index, _ in chain:
                 visited.add((page_index, item_index))
 
+            # Snapshot section_path *before* materializing this segment. The current
+            # item should not appear in its own section path.
+            section_path_snapshot = list(section_path_stack)
+
             # Materialize a stitched segment from the chain.
             segments.append(
                 materialize_segment(
                     chain=chain,
-                    item_index=original_item_idx,
+                    doc_key=doc_key,
+                    item_index=orig_item_index,
                     page_index=page_index,
                     repair_hyphenation=config.repair_hyphenation,
+                    section_path=section_path_snapshot,
+                    table_filldown_enabled=config.table_filldown_enabled,
+                    table_filldown_group_cols_max=config.table_filldown_group_cols_max,
                     warnings=warnings,
                 )
             )
 
-    # De-duplicate any accidental segment_key collisions (rare, but possible).
-    segments = uniquify_segment_keys(segments=segments)
+            # Update section heading stack *after* processing a heading block. We use
+            # the first item in the chain (heading segments are standalone).
+            section_path_stack = update_section_stack(
+                chain=chain,
+                max_len=config.max_section_path_length,
+                section_path_stack=section_path_stack,
+                warnings=warnings,
+            )
 
-    # Perform integrity check: every normalized PageIR item must be consumed exactly
-    # once.
+    logger.success("Successfully stitched page IRs!")
+
+    # Check that very normalized PageIR item must be consumed exactly once.
     assert_page_items_consumed_exactly_once(
-        items_with_idx=items_mapping, segments=segments, strict=True, warnings=warnings
+        items_mapping=items_mapping, segments=segments
     )
 
-    # Write document IR JSON.
-    first_page = page_irs[0]
-    document_ir = DocumentIR(
-        coord_space=first_page.coord_space,
+    # Write results to file.
+    save_document_ir(
         doc_key=doc_key,
-        dpi=first_page.dpi,
-        image_height=first_page.image_height,
-        image_width=first_page.image_width,
-        page_count=len(page_irs),
+        document_ir_fp=document_ir_fp,
+        link_debug=link_debug,
+        links=links,
+        page_irs=page_irs,
+        page_pair_debug=page_pair_debug,
         pdf_name=pdf_name,
         segments=segments,
+        stitching_dirs=stitching_dirs,
         warnings=warnings,
     )
-
-    write_to_json(fp=document_ir_fp, json_info=document_ir)
 
 
 @cli.command()
@@ -250,7 +287,10 @@ def stitch(
         extraction_config.output_dir / computed_doc_key / "extraction"
     )
     page_irs_verified_dir = (
-        extraction_config.output_dir / computed_doc_key / "verification" / "page_irs"
+        extraction_config.output_dir
+        / computed_doc_key
+        / "verification"
+        / "page_irs_verified"
     )
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")

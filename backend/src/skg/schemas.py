@@ -162,16 +162,56 @@ class VerificationConfig(BaseSchema):
 
 
 class StitchingConfig(BaseSchema):
-    """Configuration for document IR stitching from verified page IR JSONs."""
+    """Configuration for document IR stitching from verified page IR JSONs.
+
+    NB: `table_filldown_group_cols_max` (fill-down/rowspan reconstruction)
+
+    1. Many curriculum PDFs use **merged cells/rowspans** in the *leftmost grouping
+        columns* (e.g., **Topic**, **Sub-topic**, **Strand**, **Theme**). When
+        extracted, those merged cells often appear as **blank cells** on subsequent
+        rows.
+    2. `table_filldown_group_cols_max` controls **how many leading columns** should
+        have these visually empty cells **filled down** from the most recent non-empty
+        value above. This reconstructs the intended grouping structure without changing
+        the underlying table content.
+            - Only the **first `table_filldown_group_cols_max` columns** are eligible
+                for fill-down.
+            - Columns beyond this are treated as **leaf/content columns** (e.g.,
+                competences/outcomes, activities, expected standards), where blanks
+                typically mean **“no content / not applicable”**, not “repeat previous”.
+    3. Why not set it very large (e.g., 10)? Because non-grouping columns often contain
+        legitimate blanks (or extraction misses). A large value can silently “invent”
+        repeated activities/standards by copying prior rows, corrupting the extracted
+        table semantics.
+    3. Recommended default: 2. This matches the common pattern: **Topic + Sub-topic**
+        (or equivalent) are the main rowspan/grouping columns in most primary tables.
+    """
 
     keep_artifacts: bool = Field(
         False,
         description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
     )
+    max_section_path_length: int = Field(
+        12,
+        description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
+    )
+    min_link_score: int = Field(
+        3, description="Minimum link score to consider for stitching.", ge=0
+    )
+    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
     repair_hyphenation: bool = Field(
         True, description="Whether to repair hyphenation for stitched text."
     )
-    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
+    sort_items_by_bbox: bool = Field(
+        False,
+        description="Whether to sort items by their bounding box positions before stitching.",
+    )
+    table_filldown_enabled: bool = Field(
+        True, description="Whether to enable table filldown during stitching."
+    )
+    table_filldown_group_cols_max: int = Field(
+        3, description="Maximum number of group columns for table filldown.", ge=0
+    )
 
 
 class RunConfig(BaseSchema):

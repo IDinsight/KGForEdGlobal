@@ -11,10 +11,11 @@ import base64
 import hashlib
 import json
 import re
+import unicodedata
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 # Third Party Library
 import langcodes
@@ -218,6 +219,31 @@ def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
         Path.mkdir(dir_, exist_ok=True, mode=mode, parents=True)
         if verbose:
             logger.success(f"Created directory: {dir_}")
+
+
+def normalize_text(text: Optional[str]) -> str:
+    """Normalize text for comparisons.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized text.
+    """
+
+    if text is None:
+        return ""
+
+    # Normalize unicode characters (e.g., standardize accents). NFKC form is usually
+    # best for compatibility comparisons.
+    text = unicodedata.normalize("NFKC", text)
+
+    # Collapse whitespace, strip, and lowercase.
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def open_json_type(filepath: str | Path) -> Any:
