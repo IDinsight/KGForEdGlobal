@@ -24,7 +24,12 @@
 	},
 	"document_ir": {
 		"keep_artifacts": false,
+		"max_section_path_length": 12,
+		"min_link_score": 3,
+		"overwrite": true,
 		"repair_hyphenation": true,
-		"overwrite": true
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1
 	}
 }

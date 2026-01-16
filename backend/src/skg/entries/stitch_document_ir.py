@@ -30,6 +30,7 @@ import traceback
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Third Party Library
 import typer
@@ -45,7 +46,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.document_ir.schemas import DocumentIR, Segment
+from skg.document_ir.schemas import SectionHeadingRef, Segment
 from skg.document_ir.utils import (
     DocumentIRDirs,
     ItemKey,
@@ -110,20 +111,29 @@ def stitch_document_ir(
 
     warnings: list[str] = []
 
-    # Normalized items per page and filter artifacts if applicable.
-    items_mapping: dict[int, list[tuple[int, Table | Block]]] = {
+    # Normalize items per page.
+    items_mapping: dict[int, list[tuple[int, Block | Table]]] = {
         page_ir.page_index: normalize_page_items(
-            keep_artifacts=config.keep_artifacts, page_ir=page_ir
+            keep_artifacts=config.keep_artifacts,
+            page_ir=page_ir,
+            sort_items_by_bbox=config.sort_items_by_bbox,
+            warnings=warnings,
         )
         for page_ir in page_irs
     }
-    items_lookup: dict[int, dict[int, Table | Block]] = {
-        page_index: dict(items) for page_index, items in items_mapping.items()
-    }
+
+    # Debug collectors for report output.
+    link_debug: list[dict[str, Any]] = []
+    page_pair_debug: list[dict[str, Any]] = []
 
     # Compute page break links based on verified boundary flags.
     links = compute_page_break_links(
-        keep_artifacts=config.keep_artifacts, page_irs=page_irs, warnings=warnings
+        items_mapping=items_mapping,
+        link_debug=link_debug,
+        min_link_score=config.min_link_score,
+        page_irs=page_irs,
+        page_pair_debug=page_pair_debug,
+        warnings=warnings,
     )
 
     # Set of destination keys to identify items that are continuations.
@@ -149,8 +159,7 @@ def stitch_document_ir(
         page_index = page_ir.page_index
         page_items = items_mapping.get(page_index, [])
 
-        for original_item_idx, item in page_items:
-            key = (page_index, original_item_idx)
+        logger.info(f"Stitching page {page_index}...\n")
 
         for orig_item_index, item in page_items:
             key = (page_index, orig_item_index)
@@ -170,23 +179,36 @@ def stitch_document_ir(
                 )
                 logger.warning(text)
                 warnings.append(text)
+                input(999)
 
-            # Build the chains.
-            chain, chain_warnings = build_continuation_chain(
-                items_lookup=items_lookup, links=links, start_item=item, start_key=key
+            # Build the continuation chains.
+            chain = build_continuation_chain(
+                items_lookup=items_lookup,
+                links=links,
+                start_item=item,
+                start_key=key,
+                warnings=warnings,
             )
 
             # Mark all items in chain as visited.
             for page_index, item_index, _ in chain:
                 visited.add((page_index, item_index))
 
+            # Snapshot section_path *before* materializing this segment. The current
+            # item should not appear in its own section path.
+            section_path_snapshot = list(section_path_stack)
+
             # Materialize a stitched segment from the chain.
             segments.append(
                 materialize_segment(
                     chain=chain,
-                    item_index=original_item_idx,
+                    doc_key=doc_key,
+                    item_index=orig_item_index,
                     page_index=page_index,
                     repair_hyphenation=config.repair_hyphenation,
+                    section_path=section_path_snapshot,
+                    table_filldown_enabled=config.table_filldown_enabled,
+                    table_filldown_group_cols_max=config.table_filldown_group_cols_max,
                     warnings=warnings,
                 )
             )
@@ -200,10 +222,11 @@ def stitch_document_ir(
                 warnings=warnings,
             )
 
-    # Perform integrity check: every normalized PageIR item must be consumed exactly
-    # once.
+    logger.success("Successfully stitched page IRs!")
+
+    # Check that very normalized PageIR item must be consumed exactly once.
     assert_page_items_consumed_exactly_once(
-        items_with_idx=items_mapping, segments=segments, strict=True, warnings=warnings
+        items_mapping=items_mapping, segments=segments
     )
 
     # Write results to file.
@@ -264,7 +287,10 @@ def stitch(
         extraction_config.output_dir / computed_doc_key / "extraction"
     )
     page_irs_verified_dir = (
-        extraction_config.output_dir / computed_doc_key / "verification" / "page_irs"
+        extraction_config.output_dir
+        / computed_doc_key
+        / "verification"
+        / "page_irs_verified"
     )
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")
