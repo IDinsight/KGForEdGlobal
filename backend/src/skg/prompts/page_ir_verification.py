@@ -15,6 +15,39 @@ from dotmap import DotMap
 from skg.utils.constants import PageContinuationKind
 
 
+def double_check_page_ir_verification() -> DotMap:
+    """Generate the prompts for double-checking page IR verification results.
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    system_message = None
+    user_message = dedent(
+        """**Hmmmm, are you absolutely sure of your verification results?**
+
+It's a good idea to carefully review your last output against the stated instructions and double check your response.
+
+In particular, ensure that:
+
+1. Ensure that you have carefully analyzed the provided images and candidate item excerpts.
+2. Verify that your decision aligns with the specified hard rules and decision guidance.
+3. Verify that you have identified the correct continuation kinds based on the evidence.
+  - Spend some time thinking about whether there is strong evidence for continuation or non-continuation.
+  - Is continuation_kind correctly identified?
+  - Is set_next_table_repeats_header correctly set (if applicable)?
+
+When you are confident in your answer, return a complete `PageIRContinuityVerdict` that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made.
+        """
+    )
+
+    return DotMap(
+        {"system_message": system_message, "user_message": user_message.strip()}
+    )
+
+
 def verify_page_ir_pairs_from_extraction(
     *,
     next_item: dict[str, Any],

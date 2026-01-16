@@ -44,7 +44,10 @@ from skg.page_ir_extraction.validators import (
     validate_table_integrity,
     validate_table_spans_are_sane,
 )
-from skg.prompts.page_ir_extraction import extract_page_ir_from_pdf_page
+from skg.prompts.page_ir_extraction import (
+    double_check_page_ir_extraction,
+    extract_page_ir_from_pdf_page,
+)
 from skg.schemas import Limits
 from skg.utils.constants import BlockType
 from skg.utils.general import encode_png_to_data_url
@@ -113,14 +116,23 @@ def _call_openai_api_for_page_ir_extraction(
         If the response could not be parsed or failed quality checks.
     """
 
-    response = openai_client.responses.parse(
-        input=input_items,  # User content items
-        instructions=instructions,  # System message at top-level
-        model=model,
-        temperature=0,
-        text_format=PageIR,  # Pydantic for structured output parsing
-        top_p=1,
-    )
+    if attempt == 0 or not force_llm_retry_on_first_attempt:
+        response = openai_client.responses.parse(
+            input=input_items,  # User content items
+            instructions=instructions,  # System message at top-level
+            model=model,
+            temperature=0,
+            text_format=PageIR,  # Pydantic for structured output parsing
+            top_p=1,
+        )
+    else:
+        response = openai_client.responses.parse(
+            input=input_items,  # User content items
+            instructions=instructions,  # System message at top-level
+            model=model,
+            reasoning={"effort": "high"},
+            text_format=PageIR,  # Pydantic for structured output parsing
+        )
 
     parsed = getattr(response, "output_parsed", None)
     output_text = getattr(response, "output_text", None)
@@ -362,11 +374,7 @@ def extract_page_ir(
                         "content": [
                             {
                                 "type": "input_text",
-                                "text": (
-                                    "Hmmmm, are you absolutely sure of your extraction results? "
-                                    "Review your last output carefully against your stated instructions and double check your work again. "
-                                    "When you are confident in your answer, return a complete PageIR that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made."
-                                ),
+                                "text": double_check_page_ir_extraction().user_message,
                             }
                         ],
                     }

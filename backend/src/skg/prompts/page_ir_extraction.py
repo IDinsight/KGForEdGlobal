@@ -15,6 +15,40 @@ from dotmap import DotMap
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary
 
 
+def double_check_page_ir_extraction() -> DotMap:
+    """Generate the prompts for double-checking page IR extraction results.
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    system_message = None
+    user_message = dedent(
+        """**Hmmmm, are you absolutely sure of your extraction results?**
+
+It's a good idea to carefully review your last output against the stated instructions and double-check your response.
+
+In particular, ensure that:
+
+1. Extracted items at the top and bottom of the page are not cut off or missing.
+2. Extracted items have the correct `Block`/`Figure` kinds (don't mistaken a paragraph for an artifact or vice versa!).
+3. Extracted tables have **ALL** of their structure (`rows`, `columns`, `header_row_count`, `local_code`, etc.) correctly identified and no data is missing.
+  - Spend some time thinking about this one, as tables are often tricky!
+4. Extracted bounding boxes are tight to the content and do not overlap significantly with other items.
+5. Extracted text is verbatim and does not contain hallucinated or invented content.
+6. All items are in correct visual reading order (left-to-right, top-to-bottom).
+
+When you are confident in your answer, return a complete `PageIR` that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made.
+        """
+    )
+
+    return DotMap(
+        {"system_message": system_message, "user_message": user_message.strip()}
+    )
+
+
 def extract_page_ir_from_pdf_page(
     *,
     country: str,

@@ -32,7 +32,10 @@ from skg.page_ir_verification.validators import (
     validate_repeats_header_logic,
     validate_semantic_flow,
 )
-from skg.prompts.page_ir_verification import verify_page_ir_pairs_from_extraction
+from skg.prompts.page_ir_verification import (
+    double_check_page_ir_verification,
+    verify_page_ir_pairs_from_extraction,
+)
 from skg.schemas import Limits
 from skg.utils.general import encode_png_to_data_url
 
@@ -96,14 +99,23 @@ def _call_openai_api_for_page_ir_verification(
         If the response could not be parsed or failed quality checks.
     """
 
-    response = openai_client.responses.parse(
-        input=input_items,
-        instructions=instructions,
-        model=model,
-        temperature=0,
-        text_format=PageIRContinuityVerdict,
-        top_p=1,
-    )
+    if attempt == 0 or not force_llm_retry_on_first_attempt:
+        response = openai_client.responses.parse(
+            input=input_items,
+            instructions=instructions,
+            model=model,
+            temperature=0,
+            text_format=PageIRContinuityVerdict,
+            top_p=1,
+        )
+    else:
+        response = openai_client.responses.parse(
+            input=input_items,
+            instructions=instructions,
+            model=model,
+            reasoning={"effort": "high"},
+            text_format=PageIRContinuityVerdict,
+        )
 
     parsed = getattr(response, "output_parsed", None)
     output_text = getattr(response, "output_text", None)
@@ -304,11 +316,7 @@ def verify_page_ir_pairs(
                         "content": [
                             {
                                 "type": "input_text",
-                                "text": (
-                                    "Hmmmm, are you absolutely sure of your verification results? "
-                                    "Review your last output carefully against your stated instructions and double check your work again. "
-                                    "When you are confident in your answer, return a complete PageIRContinuityVerdict that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made."
-                                ),
+                                "text": double_check_page_ir_verification().user_message,
                             }
                         ],
                     }
