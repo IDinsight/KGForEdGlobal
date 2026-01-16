@@ -328,6 +328,47 @@ def _column_signature(*, mode: str, table: Table) -> str:
     return "||".join("|".join(row) for row in canonical_rows)
 
 
+def _edge_window_indices(
+    *, from_end: bool, items: list[tuple[int, Block | Table]], k: int
+) -> set[int]:
+    """Get the indices of up to k non-artifact items from the start or end of the
+    items list.
+
+    Parameters
+    ----------
+    from_end
+        If True, get from the end; else from the start.
+    items
+        The list of (orig_index, item) tuples.
+    k
+        The maximum number of non-artifact items to pick.
+
+    Returns
+    -------
+    set[int]
+        The set of picked indices.
+    """
+
+    if k <= 0:
+        return set(range(len(items)))
+
+    picked: list[int] = []
+    it = range(len(items) - 1, -1, -1) if from_end else range(len(items))
+
+    for index in it:
+        _, item = items[index]
+
+        if is_artifact(item):
+            continue
+
+        picked.append(index)
+
+        if len(picked) >= k:
+            break
+
+    return set(picked)
+
+
 def _extract_table_local_code_from_caption(caption: Block) -> Optional[str]:
     """Extract a canonical table local_code (e.g., 'Table 4') from a caption block.
     This is used to propagate caption codes to the nearest following table on the same
@@ -456,18 +497,28 @@ def _find_paired_candidates(
             - A list of indices of valid next-page candidates.
     """
 
-    prev_signal = [
+    # Only consider boundary-marked candidates near the page edges. This reduces risk
+    # of stitching an item in the middle of a page when real content follows/precedes.
+    prev_edge = _edge_window_indices(from_end=True, items=prev_items, k=5)
+    next_edge = _edge_window_indices(from_end=False, items=next_items, k=5)
+
+    prev_signal_all = [
         i
         for i, (_, item) in enumerate(prev_items)
         if item.boundary in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
     ]
-    next_signal = [
+    next_signal_all = [
         i
         for i, (_, item) in enumerate(next_items)
         if item.boundary in (ItemBoundary.RESUMED, ItemBoundary.BOTH)
     ]
 
-    prev_valid, prev_rejected = [], []
+    # Only evaluate edge window candidates; everything else is treated as rejected so
+    # that we can still see warnings/debug output.
+    prev_signal = [i for i in prev_signal_all if i in prev_edge]
+    next_signal = [i for i in next_signal_all if i in next_edge]
+
+    prev_valid, prev_rejected = [], [i for i in prev_signal_all if i not in prev_edge]
 
     for i in prev_signal:
         prev_item = prev_items[i][1]
@@ -487,7 +538,7 @@ def _find_paired_candidates(
         else:
             prev_rejected.append(i)
 
-    next_valid, next_rejected = [], []
+    next_valid, next_rejected = [], [i for i in next_signal_all if i not in next_edge]
 
     for i in next_signal:
         next_item = next_items[i][1]
@@ -717,8 +768,12 @@ def _score_block_match(
     """
 
     score = 0.0
+    textlike = {BlockType.FOOTNOTE, BlockType.LIST, BlockType.PARAGRAPH}
 
     if prev_item.block_type == next_item.block_type:
+        score += 2
+    elif prev_item.block_type in textlike and next_item.block_type in textlike:
+        # Allow continuation where extractor flips paragraph <-> list across pages.
         score += 2
 
     # Geometric evidence (17% window, strictier than table scoring).
@@ -924,9 +979,8 @@ def assert_page_items_consumed_exactly_once(
         if remaining > 0:
             lines.append(f"  ... (+{remaining} more)")
 
-        dupe_details = (
-            f"\nDuplicate details (page,item -> segment_ids):\n{'\n'.join(lines)}"
-        )
+        joined_lines = "\n".join(lines)
+        dupe_details = f"\nDuplicate details ...\n{joined_lines}"
 
     raise ValueError(
         f"Integrity check failed: normalized PageIR items were not consumed exactly once.\n"
@@ -1090,8 +1144,17 @@ def compatible_kinds_for_stitch(
         ):
             return False
 
-        # For all other blocks, they must be same block_type.
-        return prev_item.block_type == next_item.block_type
+        # For all other blocks:
+        #   - Allow exact block_type matches (e.g., FIGURE<->FIGURE).
+        #   - Allow "text-like" continuation between PARAGRAPH and LIST (extractor can
+        #       flip across pages).
+        textlike = {BlockType.FOOTNOTE, BlockType.LIST, BlockType.PARAGRAPH}
+        is_textlike_continuation = (
+            prev_item.block_type in textlike and next_item.block_type in textlike
+        )
+        return is_textlike_continuation or (
+            prev_item.block_type == next_item.block_type
+        )
 
     # Table <-> Table allowed at this point but all others are not.
     return isinstance(prev_item, Table) and isinstance(next_item, Table)
@@ -2433,7 +2496,7 @@ def stitch_table_chain(
     chain: list[tuple[int, int, Table]],
     doc_key: str,
     section_path: list[SectionHeadingRef],
-    table_filldown_enabled: bool = True,
+    table_filldown_enabled: bool,
     table_filldown_group_cols_max: int,
     warnings: list[str],
 ) -> TableSegment:
