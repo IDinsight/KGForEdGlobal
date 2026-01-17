@@ -13,7 +13,7 @@ from pydantic import Field
 
 # Package Library
 from skg.page_ir_extraction.schemas import ListItem, TableRow, TextUnit
-from skg.schemas import BaseSchema
+from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import BlockType, ItemBoundary
 
 
@@ -21,38 +21,80 @@ from skg.utils.constants import BlockType, ItemBoundary
 class BlockSlice(BaseSchema):
     """A single page-slice of a (potentially multi-page) block segment."""
 
-    bbox: list[float]
-    block_type: BlockType
-    boundary: ItemBoundary
-    figure: Optional[dict[str, Any]] = None
-    item_index: int
-    list_items: Optional[list[ListItem]] = None
-    local_code: Optional[str] = None
-    page_index: int
-    text: Optional[TextUnit] = None
+    bbox: BBox
+    block_type: BlockType = Field(
+        ...,
+        description="The extracted type of the block (e.g., Paragraph, List, Heading).",
+    )
+    boundary: ItemBoundary = Field(
+        ...,
+        description="Indicates structural continuity (e.g., if this block flows from the previous page or continues to the next).",
+    )
+    figure: Optional[dict[str, Any]] = Field(
+        None,
+        description="Raw figure metadata if this slice represents an image/chart.",
+    )
+    item_index: int = Field(
+        ...,
+        description="The 0-based index of this item in the source PageIR.items list. Used for backtracking provenance.",
+    )
+    list_items: Optional[list[ListItem]] = Field(
+        None,
+        description="Structured list items if this slice is a list; mutually exclusive with `text`.",
+    )
+    local_code: Optional[str] = Field(
+        None,
+        description="Explicit numbering found on this specific slice (e.g., '2.1.1'). Used to resolve the segment-level local_code.",
+    )
+    page_index: int = Field(
+        ...,
+        description="The 0-based page index where this slice is located.",
+    )
+    text: Optional[TextUnit] = Field(
+        None,
+        description="The textual content of this slice. If stitched, this may be concatenated with subsequent slices.",
+    )
 
 
 class TableSlice(BaseSchema):
     """A single page-slice of a (potentially multi-page) table segment."""
 
-    bbox: list[float]
-    boundary: ItemBoundary
+    bbox: BBox
+    boundary: ItemBoundary = Field(
+        ...,
+        description="Indicates table continuity. If RESUMED or BOTH, stitching logic checks `repeats_header` to align columns.",
+    )
     dropped_header_rows: int = Field(
         0,
-        description="Number of header rows dropped from this slice during stitching (0 for first slice). This is based on repeats_header flag or canonical header matching.",
+        description="Number of header rows dropped from this slice during stitching (0 for first slice). This is calculated in `_process_next_table_slice` based on `repeats_header` or canonical header matching.",
     )
-    header_row_count: int
-    item_index: int
-    local_code: Optional[str] = None
-    page_index: int
-    repeats_header: Optional[bool] = None
+    header_row_count: int = Field(
+        ...,
+        description="The number of rows on *this specific slice* that function as headers. Note: A continuation slice might visually have 0 headers, or N repeated headers.",
+    )
+    item_index: int = Field(
+        ...,
+        description="The 0-based index of this item in the source PageIR.items list.",
+    )
+    local_code: Optional[str] = Field(
+        None,
+        description="Table identifier (e.g., 'Table 1') found on this page. If missing, the stitcher may backfill it from the segment's resolved code.",
+    )
+    page_index: int = Field(
+        ...,
+        description="The 0-based page index where this table slice is located.",
+    )
+    repeats_header: Optional[bool] = Field(
+        None,
+        description="True if the extractor detected visual header repetition on this continuation slice. Used to determine `dropped_header_rows`.",
+    )
     rows: list[TableRow] = Field(
         ...,
-        description="Rows exactly as extracted on this page slice (includes header rows).",
+        description="The raw rows extracted from this page (including any repeated headers). These are the source for the final stitched grid.",
     )
 
 
-# Schemas for stitched segments.
+# Schemas for provenance.
 class SectionHeadingRef(BaseSchema):
     """Semantic pointer to a prior heading that provides structural context for
     downstream semantic canonicalization. This schema exists to give every stitched
@@ -93,9 +135,7 @@ class SectionHeadingRef(BaseSchema):
 class SegmentProvenance(BaseSchema):
     """Provenance pointer to the original PageIR item."""
 
-    bbox: list[float] = Field(
-        ..., description="BBox [x0,y0,x1,y1] in px, copied from the source item."
-    )
+    bbox: BBox
     boundary: ItemBoundary = Field(
         ..., description="Original boundary flag on this page slice."
     )
@@ -114,10 +154,14 @@ class SegmentProvenance(BaseSchema):
     )
 
 
+# Schemas for stitched segments.
 class BlockSegment(BaseSchema):
     """A stitched block segment (paragraph/list/caption/heading/figure, etc.)."""
 
-    block_type: BlockType
+    block_type: BlockType = Field(
+        ...,
+        description="The structural category of this segment (e.g., 'Paragraph', 'List', 'Heading'). Derived from the constituent slices.",
+    )
 
     # We keep both the structured field(s) and a convenience "combined_text". For
     # lists, the canonical representation is list_items; combined_text is optional.
@@ -126,10 +170,22 @@ class BlockSegment(BaseSchema):
         description="Concatenated text across page slices when continuation occurs.",
     )
 
-    figure: Optional[dict[str, Any]] = None
-    kind: Literal["block"] = "block"
-    list_items: Optional[list[ListItem]] = None
-    local_code: Optional[str] = None
+    figure: Optional[dict[str, Any]] = Field(
+        None,
+        description="Metadata and content if this segment represents an image, chart, or diagram. Null for text/list blocks.",
+    )
+    kind: Literal["block"] = Field(
+        "block",
+        description="Discriminator field used to distinguish `BlockSegment` from `TableSegment` in union types.",
+    )
+    list_items: Optional[list[ListItem]] = Field(
+        None,
+        description="Structured list entries if `block_type` is 'List'. This is the canonical data source for lists, containing individual bullets/numbers merged across all stitched pages.",
+    )
+    local_code: Optional[str] = Field(
+        None,
+        description="The resolved explicit numbering (e.g., '2.1.1') for this segment. Computed by normalizing and resolving local codes found across the stitched slices.",
+    )
     section_path: list[SectionHeadingRef] = Field(
         default_factory=list,
         description="Heading context at the moment this segment starts. Semantic-light; used for downstream canonicalization.",
@@ -145,7 +201,10 @@ class BlockSegment(BaseSchema):
     slices: list[BlockSlice] = Field(
         default_factory=list, description="Per-page slices in order."
     )
-    text: Optional[TextUnit] = None
+    text: Optional[TextUnit] = Field(
+        None,
+        description="The structured text content (including language metadata). For multi-page segments, the `.text` field here matches the content of `combined_text`.",
+    )
 
 
 class TableSegment(BaseSchema):
@@ -155,7 +214,14 @@ class TableSegment(BaseSchema):
         default=None,
         description="Normalized string signature derived from `header_rows_canonical`, useful for matching and downstream canonicalization.",
     )
-    header_row_count: int
+    grid_sources: Optional[list[list[dict[str, Any]]]] = Field(
+        default=None,
+        description="Optional grid aligned to `rows_grid` that records where each grid cell came from (e.g., original row index and start cell position). Useful for debugging spans.",
+    )
+    header_row_count: int = Field(
+        ...,
+        description="The number of rows at the top of the stitched table that function as headers. Determined from the first slice or inferred via heuristic if missing.",
+    )
     header_rows: list[TableRow] = Field(
         default_factory=list, description="Header rows (first header_row_count rows)."
     )
@@ -163,11 +229,33 @@ class TableSegment(BaseSchema):
         default_factory=list,
         description="Canonicalized header rows as normalized strings per cell, derived from `header_rows`. Shape: [[cell0, cell1, ...], ...].",
     )
-    kind: Literal["table"] = "table"
-    local_code: Optional[str] = None
+    kind: Literal["table"] = Field(
+        "table",
+        description="Discriminator field used to distinguish `TableSegment` from `BlockSegment` in union types.",
+    )
+    local_code: Optional[str] = Field(
+        None,
+        description="The resolved table identifier (e.g., 'Table 1') for this segment. Computed by scanning the slice chain for the first non-null code.",
+    )
     n_cols: int = Field(..., description="Max number of columns across stitched rows.")
+    row_provenance: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Row-level provenance aligned to stitched `rows` (and `rows_grid`). "
+            "Length must equal len(rows). Each entry includes at least page_index, "
+            "slice_index, and an approximate row_bbox."
+        ),
+    )
     rows: list[TableRow] = Field(
         ..., description="Stitched visual rows (header rows included once)."
+    )
+    rows_grid: Optional[list[TableRow]] = Field(
+        default=None,
+        description=(
+            "Span-expanded rectangular version of `rows` where every row has exactly "
+            "`n_cols` cells and each cell has row_span=1 and col_span=1. "
+            "Pure structural normalization (no semantic interpretation)."
+        ),
     )
     rows_filldown: Optional[list[TableRow]] = Field(
         default=None,
@@ -202,14 +290,19 @@ Segment = BlockSegment | TableSegment
 class DocumentIR(BaseSchema):
     """Document-level IR after stitching."""
 
-    coord_space: str
+    coord_space: str = Field(
+        ..., description="Coordinate space used for all bounding boxes."
+    )
     doc_key: str = Field(
         ...,
         description="Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex).",
     )
-    dpi: int
-    image_height: int
-    image_width: int
+    dpi: int = Field(
+        ...,
+        description="DPI used to render the page image that these pixel bboxes refer to.",
+    )
+    image_height: int = Field(..., description="Height of the source image in pixels.")
+    image_width: int = Field(..., description="Width of the source image in pixels.")
     page_count: int = Field(..., description="Total number of pages stitched.")
     pdf_name: Optional[str] = Field(None, description="Source PDF filename (no path).")
     segments: list[Segment] = Field(

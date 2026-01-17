@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
+from skg.schemas import BBox
 from skg.utils.constants import StatementRole
 
 
@@ -71,7 +72,7 @@ class CanonicalNode(BaseModelCanonicalIR):
     NB: Do NOT include children nodes here---this is meant to be a flat hierarchy.
     """
 
-    bbox: Optional[list[float]] = None
+    bbox: Optional[BBox] = None
     body: TextUnit | None = Field(None, description="Full normative text.")
     doc_key: str
     list_id: Optional[str] = Field(
@@ -91,7 +92,7 @@ class NormalizedRow(BaseModelCanonicalIR):
 
     cells: list[TextUnit | None]
     original_row_index: int
-    provenance_bbox: list[float]
+    provenance_bbox: BBox
     provenance_page_index: int
     provenance_slice_index: int
     row_index: int
