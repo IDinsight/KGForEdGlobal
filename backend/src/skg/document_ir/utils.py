@@ -57,7 +57,7 @@ _CAPTION_TABLE_RE = re.compile(
 _DIGIT_RE = re.compile(r"\d")
 _LOCAL_CODE_RE = re.compile(r"\s+")
 _TABLE_FIGURE_RE = re.compile(
-    r"^\s*(table|figure)\s+(\d+)\s*(?:[:.\-–—]\s*)?", re.IGNORECASE
+    r"^\s*(table|figure)\s+(\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?", re.IGNORECASE
 )
 
 
@@ -1958,7 +1958,9 @@ def encode_table(table: Table) -> str:
         header_rows = [table.rows[0]]
 
     sig_rows = [",".join(_row_signature(hr)) for hr in header_rows]
-    n_cols = max((len(row.cells) for row in table.rows), default=0)
+    n_cols = max(
+        (sum(cell.col_span for cell in row.cells) for row in table.rows), default=0
+    )
     base = f"hrc={hrc}|ncols={n_cols}|rows={'||'.join(sig_rows)}"
 
     return compute_sha256_hex(n_hex=24, s=base)
