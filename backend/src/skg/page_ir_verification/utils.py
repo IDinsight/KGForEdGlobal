@@ -2132,14 +2132,15 @@ def top_continuity_candidates_paired(
     ]
 
     if visible_y_max is not None:
-        y_max = float(visible_y_max)
         cropped = [
             (i, item)
             for i, item in candidates
-            if _bbox_intersects_y_range(bbox=item.bbox, y_max=y_max, y_min=0.0)
+            if _bbox_intersects_y_range(bbox=item.bbox, y_max=visible_y_max, y_min=0.0)
         ]
-        assert cropped, "No top-crop-visible candidates found."
-        candidates = cropped
+        candidates = cropped or candidates
+        assert (
+            candidates
+        ), f"No top-crop-visible candidates found.\n{candidates = }\n{cropped = }\n{visible_y_max = }"
 
     assert candidates, "No non-artifact items found."
 
@@ -2238,14 +2239,15 @@ def topmost_continuity_candidate_paired(
     # actually appear in that crop (in full-page coordinate space). This prevents
     # choosing an item the model cannot see, which would cause false negatives.
     if visible_y_max is not None:
-        y_max = float(visible_y_max)
         cropped = [
             (i, item)
             for i, item in candidates
-            if _bbox_intersects_y_range(bbox=item.bbox, y_max=y_max, y_min=0.0)
+            if _bbox_intersects_y_range(bbox=item.bbox, y_max=visible_y_max, y_min=0.0)
         ]
-        assert cropped, "No top-crop-visible candidates found."
-        candidates = cropped
+        candidates = cropped or candidates
+        assert (
+            candidates
+        ), f"No top-crop-visible candidates found.\n{candidates = }\n{cropped = }\n{visible_y_max = }"
 
     assert candidates, "No non-artifact items found."
 
