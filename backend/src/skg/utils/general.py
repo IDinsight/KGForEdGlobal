@@ -91,6 +91,32 @@ class Valid(BaseModel):
         return logging_level in cls().logging_levels
 
 
+def bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
+    """Return True if `inner` bbox is fully contained in `outer` bbox (with tolerance).
+
+    Parameters
+    ----------
+    inner
+        The inner bounding box [x0, y0, x1, y1].
+    outer
+        The outer bounding box [x0, y0, x1, y1].
+    tol
+        Tolerance in pixels.
+
+    Returns
+    -------
+    bool
+        True if `inner` is contained in `outer`, False otherwise.
+    """
+
+    ox0, oy0, ox1, oy1 = outer
+    ix0, iy0, ix1, iy1 = inner
+
+    return (
+        ix0 >= ox0 - tol and iy0 >= oy0 - tol and ix1 <= ox1 + tol and iy1 <= oy1 + tol
+    )
+
+
 def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     """Compare two directories to see if they contain the same files (ignoring file
     extensions).
