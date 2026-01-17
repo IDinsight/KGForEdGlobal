@@ -17,6 +17,7 @@ from pydantic import Field, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
+from skg.schemas import BBox
 from skg.utils.constants import StatementRole
 
 
@@ -960,10 +961,11 @@ class CanonicalEdge(BaseSchema):
     NB: Canonical IR creation should only emit hasChild containment edges (tree mode).
     """
 
-    child_id: str = Field(..., description="CanonicalNode.node_id of the child node.")
-    order_index: int = Field(
-        ...,
-        description="Deterministic sibling order index under parent_id (encounter order).",
+    bbox: Optional[BBox] = None
+    body: TextUnit | None = Field(None, description="Full normative text.")
+    doc_key: str
+    list_id: Optional[str] = Field(
+        None, description="The alphanumeric code (e.g., '3.1.1')"
     )
     parent_id: str = Field(..., description="CanonicalNode.node_id of the parent node.")
     rel: Literal["hasChild"] = Field(
@@ -983,12 +985,51 @@ class CanonicalEdge(BaseSchema):
 class CanonicalNode(BaseSchema):
     """A single semantic node in the canonical curriculum hierarchy.
 
-    Canonical nodes are *flat*; hierarchy is represented only by CanonicalEdge hasChild
-    edges. A node may represent either:
-        - A grouping container (NodeRole): these are containers and their text is
-            treated as a label.
-        - A statement leaf (StatementRole): these are content and their text is treated
-            as normative learning content.
+    cells: list[TextUnit | None]
+    original_row_index: int
+    provenance_bbox: BBox
+    provenance_page_index: int
+    provenance_slice_index: int
+    row_index: int
+
+
+class CanonicalIR(BaseModelCanonicalIR):
+    """Represents a semantic, provenance-rich representation of a document."""
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    doc_key: str
+    edges: list[CanonicalEdge] = Field(default_factory=list)
+    pdf_name: Optional[str] = None
+    nodes: list[CanonicalNode] = Field(default_factory=list)
+    root_id: str
+    unresolved: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+# Schemas for specs.
+class CanonicalRowIR(BaseModelCanonicalIR):
+    """Intermediate representation for a single curriculum row (diagnostic purposes
+    only).
+
+    This class is used primarily in "Wizard Mode" to capture structured data extracted
+    from tables for debugging or validation purposes.
+
+    Attributes
+    ----------
+    descriptors_raw
+        The raw text extracted for the descriptor column.
+    expectations_raw
+        The raw text extracted for the expectation column.
+    group
+        The extracted group (e.g., Strand) title.
+    guidance_raw
+        The raw text extracted for the guidance column.
+    provenance
+        Metadata tracing the row back to the source PDF segment (page, bbox, etc.).
+    subject
+        The extracted subject title.
+    topic
+        The extracted topic title.
     """
 
     bbox: Optional[BBox] = Field(

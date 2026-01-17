@@ -8,13 +8,13 @@ from __future__ import annotations
 # Standard Library
 import re
 
-from typing import Annotated, Literal, Optional
+from typing import Literal, Optional
 
 # Third Party Library
-from pydantic import AfterValidator, Field, model_validator
+from pydantic import Field, model_validator
 
 # Package Library
-from skg.schemas import BaseSchema, LanguageField
+from skg.schemas import BaseSchema, BBox, LanguageField
 from skg.utils.constants import (
     BlockType,
     CaptionFigurePrefixes,
@@ -23,18 +23,6 @@ from skg.utils.constants import (
     ItemBoundary,
     PageBoundaryState,
 )
-from skg.utils.general import validate_bbox_order
-
-# Common fields with descriptions.
-BBox = Annotated[
-    list[float],
-    AfterValidator(validate_bbox_order),
-    Field(
-        description="Bounding box [x0, y0, x1, y1] in absolute pixels (px) relative to the image dimensions.",
-        max_length=4,
-        min_length=4,
-    ),
-]
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)

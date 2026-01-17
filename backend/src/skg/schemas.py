@@ -22,9 +22,18 @@ from pydantic import (
 )
 
 # Package Library
-from skg.utils.general import make_dir, validate_bcp47
+from skg.utils.general import make_dir, validate_bbox_order, validate_bcp47
 
 # Common fields with descriptions.
+BBox = Annotated[
+    list[float],
+    AfterValidator(validate_bbox_order),
+    Field(
+        description="Bounding box [x0, y0, x1, y1] in absolute pixels (px) relative to the image dimensions.",
+        max_length=4,
+        min_length=4,
+    ),
+]
 BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
 LanguageField = Annotated[
     BCP47Str,
@@ -200,7 +209,7 @@ class StitchingConfig(BaseSchema):
         12,
         description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
     )
-    min_link_score: int = Field(
+    min_link_score: float = Field(
         3, description="Minimum link score to consider for stitching.", ge=0
     )
     overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
