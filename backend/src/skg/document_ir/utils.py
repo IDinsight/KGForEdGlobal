@@ -38,6 +38,7 @@ from skg.page_ir_verification.utils import is_artifact
 from skg.schemas import RunCtx, StitchingConfig
 from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 from skg.utils.general import (
+    bbox_contains,
     compute_sha256_hex,
     make_dir,
     normalize_text,
@@ -384,7 +385,7 @@ def _drop_repeated_header(
 def _edge_window_indices(
     *, from_end: bool, items: list[tuple[int, Block | Table]], k: int
 ) -> set[int]:
-    """Get the indices of up to k non-artifact items from the start or end of the
+    """Get the indices of up to k stitch-relevant items from the start or end of the
     items list.
 
     Parameters
@@ -406,12 +407,19 @@ def _edge_window_indices(
         return set(range(len(items)))
 
     picked: list[int] = []
+    tables = [item for _, item in items if isinstance(item, Table)]
     it = range(len(items) - 1, -1, -1) if from_end else range(len(items))
 
     for index in it:
         _, item = items[index]
 
-        if is_artifact(item):
+        # Skip artifacts AND ignorable COMPLETE headings/captions/footnotes. Otherwise
+        # the edge window can get "consumed" by these items and miss the real
+        # truncated/resumed continuation content just above/below them. Also, don't let
+        # embedded overlay figures consume the edge window.
+        if _safe_to_ignore_between_pages(item) or _is_embedded_overlay_figure(
+            item=item, tables=tables
+        ):
             continue
 
         picked.append(index)
@@ -566,7 +574,7 @@ def _finalize_table_structure(
         )
         logger.warning(msg)
         warnings.append(msg)
-        input(1)
+        # input(1)
 
     return n_cols, columns_signature, header_rows_canonical
 
@@ -641,7 +649,8 @@ def _find_paired_candidates(
 
         # Anything after it must be ignorable (artifacts or COMPLETE blocks).
         if all(
-            _safe_to_ignore_between_pages(later) for _, later in prev_items[i + 1 :]
+            _safe_to_ignore_between_pages_relative(anchor=prev_item, item=later)
+            for _, later in prev_items[i + 1 :]
         ):
             prev_valid.append(i)
         else:
@@ -662,12 +671,49 @@ def _find_paired_candidates(
             continue
 
         # Anything before it must be ignorable (artifacts or COMPLETE blocks).
-        if all(_safe_to_ignore_between_pages(prior) for _, prior in next_items[:i]):
+        if all(
+            _safe_to_ignore_between_pages_relative(anchor=next_item, item=prior)
+            for _, prior in next_items[:i]
+        ):
             next_valid.append(i)
         else:
             next_rejected.append(i)
 
     return prev_rejected, prev_valid, next_rejected, next_valid
+
+
+def _is_embedded_overlay_figure(
+    *, item: Block | Table, tables: list[Table], tol: float = 2.0
+) -> bool:
+    """Check if a figure Block is an embedded overlay within any Table's bounding box.
+
+    Parameters
+    ----------
+    item
+        The item to check.
+    tables
+        The list of PageIR Tables on the same page.
+    tol
+        The tolerance for bounding box containment.
+
+    Returns
+    -------
+    bool
+        True if the item is an embedded overlay figure within any table.
+    """
+
+    if (
+        not isinstance(item, Block)
+        or item.block_type != BlockType.FIGURE
+        or item.boundary != ItemBoundary.COMPLETE
+    ):
+        return False
+
+    for t in tables:
+        if bbox_contains(inner=item.bbox, outer=t.bbox, tol=tol):
+            return True
+
+    return False
 
 
 def _is_vertical_continuation(
@@ -950,7 +996,7 @@ def _process_next_table_slice(
         )
         logger.warning(msg)
         warnings.append(msg)
-        input(1)
+        # input(1)
 
     # Carry forward the segment code; only adopt the next code if missing.
     slice_local_code = current_local_code or next_local_code
@@ -969,7 +1015,7 @@ def _process_next_table_slice(
             )
             logger.warning(msg)
             warnings.append(msg)
-            input(1)
+            # input(1)
 
         dropped_header_rows = min(drop_count, len(next_item.rows))
         rows_to_add = next_item.rows[dropped_header_rows:]
@@ -988,7 +1034,7 @@ def _process_next_table_slice(
             logger.warning(msg)
             warnings.append(msg)
             match_k = min(segment_header_row_count, next_hrc)
-            input(1)
+            # input(1)
 
         rows_to_add, dropped_header_rows = _drop_repeated_header(
             base_header_rows=segment_header_rows[:match_k],
@@ -1064,7 +1110,7 @@ def _resolve_header_row_count(
             )
             logger.warning(msg)
             warnings.append(msg)
-            input(1)
+            # input(1)
 
             return inferred_hrc
 
@@ -1157,6 +1203,41 @@ def _safe_to_ignore_between_pages(item: Block | Table) -> bool:
     return False
 
 
+def _safe_to_ignore_between_pages_relative(
+    *, anchor: Block | Table, item: Block | Table
+) -> bool:
+    """Similar to _safe_to_ignore_between_pages(), but allows certain items that are
+    geometrically contained inside the anchor (e.g., overlay figures inside a table).
+
+    Parameters
+    ----------
+    anchor
+        The anchor item.
+    item
+        The item to check.
+
+    Returns
+    -------
+    bool
+        True if the item is safe to ignore.
+    """
+
+    if _safe_to_ignore_between_pages(item):
+        return True
+
+    # Allow complete FIGURE overlays *inside* a candidate TABLE
+    if (
+        isinstance(anchor, Table)
+        and isinstance(item, Block)
+        and item.boundary == ItemBoundary.COMPLETE
+        and item.block_type == BlockType.FIGURE
+        and bbox_contains(outer=anchor.bbox, inner=item.bbox)
+    ):
+        return True
+
+    return False
+
+
 def _score_block_match(
     *, next_item: Block, next_page_h: int, prev_item: Block, prev_page_h: int
 ) -> float:
@@ -1188,9 +1269,26 @@ def _score_block_match(
         # Allow continuation where extractor flips paragraph <-> list across pages.
         score += 2
 
-    # Geometric evidence (17% window, strictier than table scoring).
+    # Boundary-alignment bonus: If the verified PageIR marks continuation across the
+    # page break, give a small boost so we don't over-rely on strict geometry.
+    if (
+        prev_item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+        and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+        and prev_item.block_type in textlike
+        and next_item.block_type in textlike
+    ):
+        score += 1
+
+    # Geometric evidence.
     if _is_vertical_continuation(
-        edge_frac=0.17,
+        edge_frac=(
+            0.20
+            if (
+                prev_item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+                and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            )
+            else 0.17
+        ),
         next_bbox=next_item.bbox,
         next_page_h=next_page_h,
         prev_bbox=prev_item.bbox,
@@ -1281,9 +1379,18 @@ def _score_table_match(
     if prev_item.header_row_count == next_item.header_row_count:
         score += 1
 
-    # Geometric evidence (20% window).
+    # Geometric evidence.
     if _is_vertical_continuation(
-        edge_frac=0.20,
+        edge_frac=(
+            0.25
+            if prev_item.boundary
+            in {
+                ItemBoundary.TRUNCATED,
+                ItemBoundary.BOTH,
+            }
+            and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            else 0.20
+        ),
         next_bbox=next_item.bbox,
         next_page_h=next_page_h,
         prev_bbox=prev_item.bbox,
@@ -1293,14 +1400,21 @@ def _score_table_match(
 
     # Structural similarity (column count).
     prev_cols = prev_item.n_cols or max(
-        (len(r.cells) for r in prev_item.rows), default=0
+        (len(row.cells) for row in prev_item.rows), default=0
     )
     next_cols = next_item.n_cols or max(
-        (len(r.cells) for r in next_item.rows), default=0
+        (len(row.cells) for row in next_item.rows), default=0
     )
+    score += int(prev_cols > 0 and prev_cols == next_cols)
 
-    if prev_cols > 0 and next_cols > 0 and prev_cols == next_cols:
-        score += 1
+    # Boundary-alignment bonus: Helps when headers/local_code are missing but the
+    # verified PageIR says this continues.
+    if (
+        prev_item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+        and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+        and prev_cols == next_cols
+    ):
+        score += 0.5
 
     # Bbox width similarity.
     prev_w = max(0.0, prev_item.bbox[2] - prev_item.bbox[0])
@@ -1506,7 +1620,7 @@ def build_continuation_chain(
             )
             logger.warning(msg)
             warnings.append(msg)
-            input(1)
+            # input(1)
             break
 
         # Look up the next item by original index.
@@ -1520,7 +1634,7 @@ def build_continuation_chain(
             )
             logger.warning(msg)
             warnings.append(msg)
-            input(1)
+            # input(1)
 
             break
 
@@ -2184,7 +2298,7 @@ def match_candidates(
                         "note": "rejected_weak_match",
                     }
                 )
-                input(1)
+                # input(1)
 
                 continue
 
@@ -2333,7 +2447,7 @@ def materialize_segment(
 
             # Fallback: treat first item standalone.
             table_chain = [(page_index, item_index, first_chain_item)]
-            input(1)
+            # input(1)
 
         return stitch_table_chain(
             chain=table_chain,
@@ -2357,7 +2471,7 @@ def materialize_segment(
 
         # Fallback: treat first item standalone.
         block_chain = [(page_index, item_index, first_chain_item)]
-        input(1)
+        # input(1)
 
     return stitch_block_chain(
         chain=block_chain,
@@ -2435,7 +2549,7 @@ def normalize_page_items(
             logger.warning(msg)
             warnings.append(msg)
             item.repeats_header = None
-            input(1)
+            # input(1)
 
         if keep_artifacts or not is_artifact(item):
             items_mapping.append((index, item))
@@ -2561,7 +2675,7 @@ def propagate_caption_table_local_codes(
                     )
                     logger.warning(msg)
                     warnings.append(msg)
-                    input(1)
+                    # input(1)
 
                 break
 
@@ -2757,7 +2871,7 @@ def process_page_pair(
             logger.error(f"{next_rejected_indices = }")
             logger.warning(msg)
             warnings.append(msg)
-            input(1)
+            # input(1)
 
         page_pair_debug.append(pair_debug)
         return {}
@@ -3039,11 +3153,20 @@ def stitch_block_chain(
 
     figure_payload: Optional[dict[str, Any]] = None
     list_items: list[ListItem] = []
+    resolved_local_code: Optional[str] = None
     segment_provenance: list[SegmentProvenance] = []
     slices: list[BlockSlice] = []
     text_units: list[TextUnit] = []
 
     for page_index, item_index, block in chain:
+        # Promote local_code across the stitched chain: take the first non-empty code
+        # encountered in any slice.
+        if resolved_local_code is None:
+            if isinstance(block.local_code, str):
+                lc = block.local_code.strip()
+                if lc:
+                    resolved_local_code = lc
+
         block_figure = (
             block.figure.model_dump(mode="json") if block.figure is not None else None
         )
@@ -3107,7 +3230,7 @@ def stitch_block_chain(
         figure=figure_payload,
         list_items=list_items
         or (first_chain_item.list_items if first_chain_item.list_items else None),
-        local_code=first_chain_item.local_code,
+        local_code=resolved_local_code,
         section_path=section_path,
         segment_id=segment_id,
         segment_provenance=segment_provenance,
@@ -3377,7 +3500,7 @@ def update_section_stack(
         )
         logger.warning(msg)
         warnings.append(msg)
-        input(1)
+        # input(1)
 
         return section_path_stack
 
