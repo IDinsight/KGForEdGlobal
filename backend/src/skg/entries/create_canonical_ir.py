@@ -185,7 +185,6 @@ def create_canonical_ir(
         logger.success(
             f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"
         )
-        input()
 
     decided_segment_ids = {d.segment_id for d in decision_set.decisions if d.segment_id}
     logger.info(

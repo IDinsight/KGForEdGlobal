@@ -115,8 +115,9 @@ StatementRole (for leaf decisions):
   - strand/main competence/topic/subtopic/unit/section
 2. Prefer the most specific reasonable NodeRole.
 3. If you are unsure, use role="{NodeRole.SECTION.value}" or omit groupings.
-4. You may optionally interpret section_path_text into context_groupings[].
-  - Only do this if confident.
+4. You may optionally interpret segment.section_path into context_groupings[].
+  - segment.section_path is a list of heading refs like: [{"text": "...", "page_index": <int>, "item_index": <int>}, ...]
+  - Use the .text values as the hierarchy context ONLY if confident.
   - Otherwise leave context_groupings empty.
 
 ## TABLE-SPECIFIC INSTRUCTIONS
