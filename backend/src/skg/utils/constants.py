@@ -140,16 +140,12 @@ class NodeRole(str, Enum):
 
     FRAMEWORK = "framework"  # The root document
     GRADE_LEVEL = "grade_level"
-    LEARNING_AREA = "learning_area"  # e.g., "Literacy and Language"
-    PROSE = "prose"  # Document structure/prose headings (Vision, Intro, etc.)
-    SECTION = "section"  # # Curriculum grouping when meaningful
+    SECTION = "section"  # Structural grouping (e.g., "Section One")
     STAGE = "stage"
     STRAND = "strand"  # e.g., "Main Competence"
     SUBJECT = "subject"  # e.g., "Mathematics"
-    SUBSTRAND = "substrand"
-    SUBTHEME = "subtheme"
+    SUBSTRAND = "substrand"  # e.g., "Specific Competence"
     SUBTOPIC = "subtopic"
-    TERM = "term"
     THEME = "theme"
     TOPIC = "topic"  # e.g., "Topic" or sub-strand
     UNIT = "unit"
@@ -160,37 +156,11 @@ class NodeRole(str, Enum):
 class SegmentDecisionType(str, Enum):
     """Enumeration of high-level actions for segment decisions."""
 
-    EMIT_FLAGGED_UNRESOLVED = "emit_flagged_unresolved"
     EMIT_GROUPINGS_AND_LEAVES = "emit_groupings_and_leaves"
     EMIT_GROUPINGS_ONLY = "emit_groupings_only"
     EMIT_LEAVES_ONLY = "emit_leaves_only"
     IGNORE = "ignore"
     UNRESOLVED = "unresolved"
-
-
-class SpineSplitApplyTo(str, Enum):
-    """Define where split rules may be applied."""
-
-    ANY = "any"
-    BLOCK_LOCAL = "block_local"  # SegmentDecision.groupings
-    OUTER_CONTEXT = "outer_context"  # SegmentDecision.context_groupings
-    TABLE_ROW_LOCAL = "table_row_local"  # RowDecision.groupings
-
-
-class SpineViolationPolicy(str, Enum):
-    """Define what to do when a decision cannot be normalized to the spine without
-    guessing.
-
-    Attributes
-    ----------
-    FLAG_UNRESOLVED
-        Set decision_type=EMIT_FLAGGED_UNRESOLVED
-    KEEP_AS_IS
-        Do not rewrite; allow compiler to proceed (rarely recommended)
-    """
-
-    FLAG_UNRESOLVED = "flag_unresolved"
-    KEEP_AS_IS = "keep_as_is"
 
 
 class StatementRole(str, Enum):
@@ -234,3 +204,11 @@ NonArtifacts = {
 }
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"]
+UnresolvedReason = Literal[
+    "ID_COLLISION",
+    "LOW_CONFIDENCE_TABLE_MAPPING",
+    "PARENT_CONFLICT",
+    "UNMATCHED_BLOCK",
+    "UNMATCHED_HEADING",
+    "UNMATCHED_TABLE",
+]

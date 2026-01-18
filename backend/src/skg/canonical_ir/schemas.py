@@ -17,8 +17,14 @@ from pydantic import Field, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import BBox
-from skg.utils.constants import StatementRole
+from skg.schemas import BaseSchema, BBox, LanguageField
+from skg.utils.constants import (
+    BlockType,
+    NodeRole,
+    SegmentDecisionType,
+    StatementRole,
+    UnresolvedReason,
+)
 
 
 def compute_decision_set_id(
@@ -40,44 +46,30 @@ def compute_decision_set_id(
     -------
     str
         The stable SHA256 hex digest representing the decision set ID.
-
-    Raises
-    ------
-    ValueError
-        If any SegmentDecision objects have empty or non-string decision_id.
     """
 
     stable = []
 
     for d in sorted(decisions, key=lambda x: x.decision_id or ""):
-        if not isinstance(d.decision_id, str) or not d.decision_id:
-            raise ValueError(
-                f"All SegmentDecision objects must have non-empty decision_id: {d}"
-            )
-
+        assert isinstance(d.decision_id, str) and d.decision_id
         stable.append(
             {
                 "decision_id": d.decision_id,
                 "segment_id": d.segment_id,
                 "segment_kind": d.segment_kind,
-                "decision_type": d.decision_type.value,
+                "decision_type": d.decision_type,
                 "block_type": (d.block_type.value if d.block_type else None),
                 "row_range_start": d.row_range_start,
                 "row_range_end": d.row_range_end,
                 "context_groupings": [
-                    context_grouping.model_dump(exclude_none=True, mode="json")
+                    context_grouping.model_dump(exclude_none=True)
                     for context_grouping in d.context_groupings
                 ],
                 "groupings": [
-                    group.model_dump(exclude_none=True, mode="json")
-                    for group in d.groupings
+                    group.model_dump(exclude_none=True) for group in d.groupings
                 ],
-                "leaves": [
-                    leaf.model_dump(exclude_none=True, mode="json") for leaf in d.leaves
-                ],
-                "rows": [
-                    row.model_dump(exclude_none=True, mode="json") for row in d.rows
-                ],
+                "leaves": [leaf.model_dump(exclude_none=True) for leaf in d.leaves],
+                "rows": [row.model_dump(exclude_none=True) for row in d.rows],
             }
         )
 
@@ -89,26 +81,6 @@ def compute_decision_set_id(
 
 
 # Schemas for provenance.
-class CaptionBinding(BaseSchema):
-    """Represents a binding between a caption segment and a table segment in DocumentIR."""
-
-    caption_kind: CaptionKind = Field(
-        ..., description="Kind of caption (table/figure)."
-    )
-    caption_page_index: Optional[int] = Field(
-        None, description="Page index of the caption."
-    )
-    caption_segment_id: str = Field(..., description="Segment ID of the caption.")
-    caption_text: str = Field(..., description="Text of the caption.")
-    gap_segments: int = Field(
-        ..., description="Number of segments between caption and table.", ge=0
-    )
-    table_page_index: Optional[int] = Field(
-        None, description="Page index of the table."
-    )
-    table_segment_id: str = Field(..., description="Segment ID of the table.")
-
-
 class UnresolvedItem(BaseSchema):
     """Represents a DocumentIR segment (or part of one) that could not be resolved into
     canonical nodes/leaves with sufficient confidence.
@@ -153,6 +125,10 @@ class GroupingDecision(BaseSchema):
     Examples: Grade, Subject, Theme, Strand, Topic, Unit, Week, Stage, Section.
     """
 
+    list_id: str | None = Field(
+        default=None,
+        description="Optional identifier code attached to the grouping (e.g., '3.1' or 'Theme 2').",
+    )
     local_code: str | None = Field(
         default=None,
         description="Optional local code associated with the grouping (rare; often used for table codes or document codes).",
@@ -160,14 +136,6 @@ class GroupingDecision(BaseSchema):
     role: NodeRole = Field(
         ...,
         description="Grouping role (NodeRole enum). Must represent a container/group node, not a leaf statement role.",
-    )
-    source_label: str | None = Field(
-        default=None,
-        description=(
-            "Verbatim label that introduced this grouping (e.g., table column header "
-            "'Topic', 'Sub-topic', 'Theme', or a heading label). "
-            "Used to preserve framework-native taxonomy (LC export statementType)."
-        ),
     )
     title: str = Field(
         ...,
@@ -194,11 +162,6 @@ class GroupingDecision(BaseSchema):
         if not title:
             raise ValueError("GroupingDecision.title must be non-empty.")
 
-        if self.source_label is not None and not (self.source_label or "").strip():
-            raise ValueError(
-                "GroupingDecision.source_label must be non-empty when provided."
-            )
-
         if self.role in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED):
             raise ValueError(
                 f"GroupingDecision.role must be a real grouping role (not {self.role})."
@@ -213,26 +176,13 @@ class LeafDecision(BaseSchema):
     """
 
     body: str = Field(..., description="Atomic leaf statement body text (original).")
-    list_marker: str | None = Field(
+    list_id: str | None = Field(
         default=None,
-        description="Optional list/bullet marker for this leaf (e.g., 'a)', 'i', '1.', 'A.'). Use ONLY for list markers, not for official curriculum codes.",
-    )
-    local_code: str | None = Field(
-        default=None,
-        description="Optional local curriculum identifier code for this leaf (e.g., '3.9.4.1'). Use this for stable codes printed in the document.",
+        description="Optional identifier code extracted for this leaf (e.g., '3.9.4.1', 'a)', '1.2').",
     )
     role: StatementRole = Field(
         ...,
         description="Leaf semantic role (StatementRole enum), e.g. EXPECTATION / DESCRIPTOR / GUIDANCE.",
-    )
-    source_label: str | None = Field(
-        default=None,
-        description=(
-            "Verbatim label that introduced this leaf statement (usually the table column "
-            "header like 'Specific Competences', 'Expected Standard', 'Learning Activities', "
-            "or a heading label like 'Learning Outcomes'). "
-            "Used to preserve framework-native taxonomy (LC export statementType)."
-        ),
     )
 
     @model_validator(mode="after")
@@ -255,11 +205,6 @@ class LeafDecision(BaseSchema):
         if not body:
             raise ValueError("LeafDecision.body must be non-empty.")
 
-        if self.source_label is not None and not (self.source_label or "").strip():
-            raise ValueError(
-                "LeafDecision.source_label must be non-empty when provided."
-            )
-
         return self
 
 
@@ -280,35 +225,14 @@ class RowDecision(BaseSchema):
         default_factory=list,
         description="Leaf statements derived from this row (e.g., specific competence statements).",
     )
+    row_bbox: BBox | None = Field(
+        default=None, description="Optional bounding box for this row if available."
+    )
     row_index: int = Field(
         ...,
-        description="0-based ABSOLUTE row index into the ORIGINAL stitched DocumentIR table rows.",
+        description="0-based row index within the table representation used for decision-making.",
         ge=0,
     )
-
-    @model_validator(mode="after")
-    def _validate_non_empty(self) -> Self:
-        """RowDecision must emit something useful. Prevents empty stubs like:
-        RowDecision(row_index=12, groupings=[], leaves=[]).
-
-        Returns
-        -------
-        Self
-            The validated RowDecision object.
-
-        Raises
-        ------
-        ValueError
-            If both groupings[] and leaves[] are empty.
-        """
-
-        if not self.groupings and not self.leaves:
-            raise ValueError(
-                "RowDecision must include at least one grouping or one leaf "
-                "(groupings[] and leaves[] cannot both be empty)."
-            )
-
-        return self
 
 
 class SegmentDecision(BaseSchema):
@@ -327,32 +251,6 @@ class SegmentDecision(BaseSchema):
         default=None,
         description="If segment_kind='block', this is the block subtype (e.g., paragraph/list/heading/caption/footnote/figure).",
     )
-    caption_kind: CaptionKind | None = Field(
-        default=None,
-        description="If segment_kind='table' and a caption was bound to this table, the caption kind (table/figure/unknown). Audit-only.",
-    )
-    caption_text: str | None = Field(
-        default=None,
-        description="If segment_kind='table' and a caption was bound to this table, the caption text. Audit-only.",
-    )
-    caption_segment_id: str | None = Field(
-        default=None,
-        description="Segment ID of the bound caption block (if any). Audit-only.",
-    )
-    caption_page_index: int | None = Field(
-        default=None,
-        description="Page index of the bound caption block (if any). Audit-only.",
-        ge=0,
-    )
-    caption_gap_segments: int | None = Field(
-        default=None,
-        description="Number of segments between caption and table when bound. Audit-only.",
-        ge=0,
-    )
-    columns_signature: str | None = Field(
-        default=None,
-        description="The columns signature for table segments (taken from the document IR). This only applies to table segment kinds.",
-    )
     confidence: float = Field(
         ...,
         description="LLM confidence for this decision in [0,1]. Used for QA and human review, not determinism.",
@@ -361,7 +259,7 @@ class SegmentDecision(BaseSchema):
     )
     context_groupings: list[GroupingDecision] = Field(
         default_factory=list,
-        description="Optional typed interpretation of section_path into grouping decisions (very useful for context anchoring).",
+        description="Optional typed interpretation of Step-3 section_path into grouping decisions (very useful for context anchoring).",
     )
     created_at: datetime | None = Field(
         default=None,
@@ -389,7 +287,7 @@ class SegmentDecision(BaseSchema):
     )
     row_range_end: int | None = Field(
         default=None,
-        description="Optional end row index (EXCLUSIVE) for chunked tables.",
+        description="Optional end row index (inclusive/exclusive depends on your convention) for chunked tables.",
     )
     row_range_start: int | None = Field(
         default=None, description="Optional start row index for chunked tables."
@@ -402,160 +300,10 @@ class SegmentDecision(BaseSchema):
         None,
         description="DocumentIR segment_id that this decision applies to. This should be populated by the Python pipeline; it may be null during segment decision.",
     )
-    segment_kind: Optional[Literal["block", "table"]] = Field(
+    segment_kind: Optional[str] = Field(
         None,
         description="High-level segment kind from DocumentIR. This should be populated by the Python pipeline; it may be null during segment decision.",
     )
-
-    @model_validator(mode="after")
-    def _validate_decision_type_semantics(self) -> SegmentDecision:
-        """Enforce that decision_type matches the shape of emitted outputs.
-
-        Updated rules (supports real table parsing):
-
-        1. emit_groupings_only:
-            - MUST NOT emit any leaves anywhere (top-level or row-level)
-            - MAY emit groupings[] and/or rows[] with row-level groupings
-        2. emit_leaves_only:
-            - MUST have empty *segment-level* groupings[]
-            - MAY emit leaves[] and/or rows[] (including row-level groupings for
-                attachment)
-        3. emit_groupings_and_leaves:
-            - MUST emit at least one grouping somewhere (segment or row)
-            - MUST emit at least one leaf somewhere (segment or row)
-        """
-
-        if self.decision_type in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        ):
-            return self
-
-        # Aggregate signals across segment-level and row-level outputs.
-        has_segment_groupings = bool(self.groupings)
-        has_row_groupings = any(bool(r.groupings) for r in self.rows)
-        has_any_groupings = has_segment_groupings or has_row_groupings
-
-        has_segment_leaves = bool(self.leaves)
-        has_row_leaves = any(bool(r.leaves) for r in self.rows)
-        has_any_leaves = has_segment_leaves or has_row_leaves
-
-        # emit_groupings_only must actually emit at least one grouping.
-        # NB: context_groupings do NOT count here, because they are "context snapshots"
-        # and almost always present. We want actual emitted groupings.
-        if (
-            self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY
-            and not has_any_groupings
-        ):
-            raise ValueError(
-                "Decision type 'emit_groupings_only' must include at least one grouping "
-                "in groupings[] or RowDecision.groupings[] (context_groupings alone is not sufficient)."
-            )
-
-        # emit_leaves_only must actually emit at least one leaf.
-        if (
-            self.decision_type == SegmentDecisionType.EMIT_LEAVES_ONLY
-            and not has_any_leaves
-        ):
-            raise ValueError(
-                "Decision type 'emit_leaves_only' must include at least one leaf "
-                "in leaves[] or RowDecision.leaves[]."
-            )
-
-        # Allow rows[] only if they contain groupings-only rows (no leaves).
-        if (
-            self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY
-            and has_any_leaves
-        ):
-            raise ValueError(
-                "Decision type 'emit_groupings_only' must not emit any leaves "
-                "(top-level leaves[] and RowDecision.leaves[] must be empty)."
-            )
-
-        # Only ban segment-level groupings; allow row-level groupings for tables.
-        if (
-            self.decision_type == SegmentDecisionType.EMIT_LEAVES_ONLY
-            and self.groupings
-        ):
-            raise ValueError(
-                "Decision type 'emit_leaves_only' must have empty segment-level groupings[]. "
-                "Use RowDecision.groupings[] for row-local containers if needed."
-            )
-
-        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES and (
-            not has_any_groupings or not has_any_leaves
-        ):
-            raise ValueError(
-                "Decision type 'emit_groupings_and_leaves' must include BOTH "
-                "groupings and leaves (either segment-level or row-level for tables)."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_non_noop_emit_decision(self) -> SegmentDecision:
-        """If decision_type indicates emission, ensure something will actually be
-        emitted. This prevents 'emit_*' decisions that are effectively empty.
-
-        Returns
-        -------
-        SegmentDecision
-            The validated SegmentDecision object.
-
-        Raises
-        ------
-        ValueError
-            If an emit decision_type has no output
-            (context_groupings/groupings/leaves/rows all empty).
-        """
-
-        if self.decision_type in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        ):
-            return self
-
-        has_any_output = bool(
-            self.context_groupings or self.groupings or self.leaves or self.rows
-        )
-        if not has_any_output:
-            raise ValueError(
-                f"Decision type '{self.decision_type.value}' emitted no output "
-                f"(context_groupings/groupings/leaves/rows all empty). "
-                f"This should usually be IGNORE or UNRESOLVED."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_table_rows_vs_leaves(self) -> SegmentDecision:
-        """Prevent double counting: if using rows[] for a table, top-level leaves[]
-        must be empty.
-
-        Returns
-        -------
-        SegmentDecision
-            The validated SegmentDecision object.
-
-        Raises
-        ------
-        ValueError
-            If both rows[] and top-level leaves[] are populated for a table segment.
-        """
-
-        if self.decision_type in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        ):
-            return self
-
-        if self.rows and self.leaves:
-            raise ValueError(
-                "SegmentDecision includes both rows[] and top-level leaves[]. "
-                "Use rows[] only for table parsing to avoid duplication."
-            )
-
-        return self
 
     @model_validator(mode="after")
     def _validate(self) -> SegmentDecision:
@@ -581,16 +329,6 @@ class SegmentDecision(BaseSchema):
             raise ValueError(
                 f"Decision type is '{self.decision_type.value}', so "
                 "context_groupings/groupings/leaves/rows must be empty."
-            )
-
-        # "emit_flagged_unresolved" is allowed to carry candidate outputs, but it must
-        # carry *something* (otherwise it should be UNRESOLVED).
-        if self.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED and not (
-            self.context_groupings or self.groupings or self.leaves or self.rows
-        ):
-            raise ValueError(
-                "Decision type is 'emit_flagged_unresolved', so at least one of "
-                "context_groupings/groupings/leaves/rows must be non-empty."
             )
 
         if (
@@ -693,267 +431,6 @@ class SegmentDecisionSet(BaseSchema):
         return self
 
 
-# Schemas for canonicalization of segment decisions.
-class GroupingCanonicalizationKey(BaseSchema):
-    """The minimal identity of a grouping candidate that we want to canonicalize.
-
-    NB:
-
-    1. role + title is usually enough.
-    2. local_code/source_label are optional but useful to preserve provenance and
-        disambiguate weird cases.
-    """
-
-    local_code: Optional[str] = Field(
-        default=None, description="Optional local code associated with this grouping."
-    )
-    role: NodeRole = Field(
-        ..., description="Grouping node role (GRADE_LEVEL, SUBJECT, THEME, etc.)"
-    )
-    source_label: Optional[str] = Field(
-        default=None,
-        description="Optional verbatim label that introduced this grouping (e.g. 'Topic', 'Strand').",
-    )
-    title: str = Field(
-        ...,
-        description="Grouping title as emitted by the segment-decision LLM (may be noisy).",
-    )
-
-    @model_validator(mode="after")
-    def _validate_title_nonempty(self) -> GroupingCanonicalizationKey:
-        """Ensure title is non-empty after trimming whitespace.
-
-        Returns
-        -------
-        GroupingCanonicalizationKey
-            The validated GroupingCanonicalizationKey object.
-
-        Raises
-        ------
-        ValueError
-            If the title is empty after trimming.
-        """
-
-        t = (self.title or "").strip()
-
-        if not t:
-            raise ValueError("GroupingKey.title must be non-empty.")
-
-        self.title = t
-
-        if self.local_code is not None:
-            self.local_code = self.local_code.strip() or None
-
-        if self.source_label is not None:
-            self.source_label = self.source_label.strip() or None
-
-        return self
-
-
-class GroupingCanonicalizationItem(BaseSchema):
-    """Canonicalization rewrite rule for grouping candidates.
-
-    We just have one rewrite rule: input grouping -> action -> output grouping(s).
-    Matching should be done deterministically in Python (exact match on
-    role/title/local_code/source_label).
-    """
-
-    action: GroupingCanonicalizationAction = Field(
-        ..., description="Canonicalization action to apply."
-    )
-    confidence: float = Field(
-        default=1.0,
-        description="Confidence in this rewrite. If below threshold, you may choose not to apply automatically.",
-        ge=0.0,
-        le=1.0,
-    )
-    input: GroupingCanonicalizationKey = Field(
-        ..., description="Original grouping candidate (verbatim-ish from decisions)."
-    )
-    output: list[GroupingCanonicalizationKey] = Field(
-        default_factory=list,
-        description="Canonical grouping(s) that replace the input. Empty for KEEP/DROP.",
-    )
-    rationale: Optional[str] = Field(
-        default=None,
-        description="Short justification for audit/debugging (not used for determinism).",
-    )
-
-    def _ensure_unique_outputs(self) -> None:
-        """Ensure no duplicate keys in the output list.
-
-        Raises
-        ------
-        ValueError
-            If duplicate output groupings are detected.
-        """
-
-        output_seen = set()
-
-        for o in self.output:
-            # Create a hashable tuple key for the object.
-            k = (o.role.value, o.title, o.local_code or "", o.source_label or "")
-
-            if k in output_seen:
-                raise ValueError(f"Duplicate output grouping in mapping item: {k}")
-
-            output_seen.add(k)
-
-    def _validate_drop(self) -> None:
-        """Validate DROP action.
-
-        Raises
-        ------
-        ValueError
-            If the output is not empty for DROP action.
-        """
-
-        if self.output:
-            raise ValueError("DROP requires output=[]")
-
-    def _validate_keep(self) -> None:
-        """Validate KEEP action.
-
-        Raises
-        ------
-        ValueError
-            If the output is not empty or not equal to input for KEEP action.
-        """
-
-        if self.output and self.output != [self.input]:
-            raise ValueError("KEEP requires output=[] (preferred) or output=[input]")
-
-    def _validate_replace(self) -> None:
-        """Validate REPLACE action.
-
-        Raises
-        ------
-        ValueError
-            If the output does not meet REPLACE action requirements.
-        """
-
-        if len(self.output) != 1:
-            raise ValueError("REPLACE requires exactly one output grouping")
-
-        target = self.output[0]
-
-        if target.role != self.input.role:
-            raise ValueError(
-                "REPLACE must not change role (use SPLIT if role must change)"
-            )
-
-        if target == self.input:
-            raise ValueError("REPLACE identical to input; use KEEP instead.")
-
-    def _validate_split(self) -> None:
-        """Validate SPLIT action.
-
-        Raises
-        ------
-        ValueError
-            If the output does not meet SPLIT action requirements.
-        """
-
-        if len(self.output) < 2:
-            raise ValueError("SPLIT requires 2+ output groupings")
-
-        # Validate precedence.
-        idxs = [ROLE_PRECEDENCE[o.role] for o in self.output]
-
-        if idxs != sorted(idxs):
-            roles = [o.role.value for o in self.output]
-
-            raise ValueError(
-                f"SPLIT output roles must follow precedence order: {roles}"
-            )
-
-    @model_validator(mode="after")
-    def _validate_action_output_contract(self) -> GroupingCanonicalizationItem:
-        """Enforce action/output consistency rules.
-
-        Returns
-        -------
-        GroupingCanonicalizationItem
-            The validated GroupingCanonicalizationItem object.
-
-        Raises
-        ------
-        ValueError
-            If the action/output combination is inconsistent.
-        """
-
-        self._ensure_unique_outputs()
-
-        validators = {
-            GroupingCanonicalizationAction.DROP: self._validate_drop,
-            GroupingCanonicalizationAction.KEEP: self._validate_keep,
-            GroupingCanonicalizationAction.REPLACE: self._validate_replace,
-            GroupingCanonicalizationAction.SPLIT: self._validate_split,
-        }
-        validator_func = validators.get(self.action)
-
-        if validator_func:
-            validator_func()
-
-        return self
-
-
-class GroupingCanonicalizationMap(BaseSchema):
-    """Top-level LLM response: a full mapping for all unique groupings found in a
-    decision set.
-
-    This mapping should be applied deterministically to:
-
-    1. SegmentDecision.context_groupings
-    2. SegmentDecision.groupings
-    3. RowDecision.groupings
-    """
-
-    doc_key: Optional[str] = Field(
-        default=None,
-        description="Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex). This should be populated by the Python pipeline; it may be null.",
-    )
-    generator: Optional[str] = Field(
-        default=None,
-        description="Model identifier for audit/debugging. This should be populated by the Python pipeline; it may be null.",
-    )
-    items: list[GroupingCanonicalizationItem] = Field(
-        default_factory=list,
-        description="Rewrite rules covering all unique input groupings.",
-    )
-
-    @model_validator(mode="after")
-    def _validate_no_duplicate_inputs(self) -> GroupingCanonicalizationMap:
-        """Ensure no duplicate inputs in the mapping.
-
-        Returns
-        -------
-        GroupingCanonicalizationMap
-
-        Raises
-        ------
-        ValueError
-            If duplicate mapping inputs are detected.
-        """
-
-        seen = set()
-
-        for item in self.items:
-            key = (
-                item.input.role.value,
-                item.input.title,
-                item.input.local_code or "",
-                item.input.source_label or "",
-            )
-
-            if key in seen:
-                raise ValueError(f"Duplicate mapping input detected for {key}")
-
-            seen.add(key)
-
-        return self
-
-
 # Schemas for canonical IR.
 class CanonicalEdge(BaseSchema):
     """A hierarchy edge in the canonical IR.
@@ -961,11 +438,10 @@ class CanonicalEdge(BaseSchema):
     NB: Canonical IR creation should only emit hasChild containment edges (tree mode).
     """
 
-    bbox: Optional[BBox] = None
-    body: TextUnit | None = Field(None, description="Full normative text.")
-    doc_key: str
-    list_id: Optional[str] = Field(
-        None, description="The alphanumeric code (e.g., '3.1.1')"
+    child_id: str = Field(..., description="CanonicalNode.node_id of the child node.")
+    order_index: int = Field(
+        ...,
+        description="Deterministic sibling order index under parent_id (encounter order).",
     )
     parent_id: str = Field(..., description="CanonicalNode.node_id of the parent node.")
     rel: Literal["hasChild"] = Field(
@@ -985,51 +461,10 @@ class CanonicalEdge(BaseSchema):
 class CanonicalNode(BaseSchema):
     """A single semantic node in the canonical curriculum hierarchy.
 
-    cells: list[TextUnit | None]
-    original_row_index: int
-    provenance_bbox: BBox
-    provenance_page_index: int
-    provenance_slice_index: int
-    row_index: int
-
-
-class CanonicalIR(BaseModelCanonicalIR):
-    """Represents a semantic, provenance-rich representation of a document."""
-
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    doc_key: str
-    edges: list[CanonicalEdge] = Field(default_factory=list)
-    pdf_name: Optional[str] = None
-    nodes: list[CanonicalNode] = Field(default_factory=list)
-    root_id: str
-    unresolved: list[dict[str, Any]] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
-# Schemas for specs.
-class CanonicalRowIR(BaseModelCanonicalIR):
-    """Intermediate representation for a single curriculum row (diagnostic purposes
-    only).
-
-    This class is used primarily in "Wizard Mode" to capture structured data extracted
-    from tables for debugging or validation purposes.
-
-    Attributes
-    ----------
-    descriptors_raw
-        The raw text extracted for the descriptor column.
-    expectations_raw
-        The raw text extracted for the expectation column.
-    group
-        The extracted group (e.g., Strand) title.
-    guidance_raw
-        The raw text extracted for the guidance column.
-    provenance
-        Metadata tracing the row back to the source PDF segment (page, bbox, etc.).
-    subject
-        The extracted subject title.
-    topic
-        The extracted topic title.
+    Canonical nodes are *flat*; hierarchy is represented only by CanonicalEdge hasChild
+    edges. A node may represent either:
+        - A grouping container (NodeRole)
+        - A statement leaf (StatementRole)
     """
 
     bbox: Optional[BBox] = Field(
@@ -1040,9 +475,13 @@ class CanonicalRowIR(BaseModelCanonicalIR):
         default=None,
         description="Full body text for statement nodes (EXPECTATION/DESCRIPTOR/GUIDANCE).",
     )
-    list_marker: str | None = Field(
+    language: LanguageField | None = Field(
         default=None,
-        description="Optional list marker (e.g., 'a)', 'i', '•'). Use this ONLY for list/bullet markers, not for official curriculum codes.",
+        description="Optional language tag for this node's text (e.g., 'en', 'sw').",
+    )
+    list_id: Optional[str] = Field(
+        default=None,
+        description="Optional extracted identifier code for this node (e.g., '3.1.1').",
     )
     local_code: str | None = Field(
         default=None,
@@ -1071,15 +510,7 @@ class CanonicalRowIR(BaseModelCanonicalIR):
         default_factory=list,
         description="Decision IDs that produced this canonical node.",
     )
-    source_label: str | None = Field(
-        default=None,
-        description=(
-            "Verbatim framework-native label that introduced this node "
-            "(e.g., 'Specific Competences', 'Expected Standard', 'Topic'). "
-            "Used for LC KG statementType export."
-        ),
-    )
-    source_segment_ids: list[str] = Field(
+    source_ids: list[str] = Field(
         default_factory=list,
         description="DocumentIR segment IDs that contributed to this node (provenance pointers).",
     )
@@ -1093,45 +524,22 @@ class CanonicalRowIR(BaseModelCanonicalIR):
     )
 
     @model_validator(mode="after")
-    def _validate_title_body_by_role(self) -> Self:
-        """Enforce role/text consistency:
-
-        1. NodeRole (grouping nodes): require title, forbid body
-        2. StatementRole (statement leaves): require body, forbid title
+    def _ensure_text(self) -> Self:
+        """Ensures that at least one of title or body is set.
 
         Returns
         -------
-        Self
+        CanonicalNode
             The validated CanonicalNode object.
 
         Raises
         ------
         ValueError
-            If the CanonicalNode is inconsistent based on its role.
+            If neither title nor body is set.
         """
 
-        if isinstance(self.role, NodeRole):
-            if self.title is None or not (self.title.text or "").strip():
-                raise ValueError(
-                    f"CanonicalNode role '{self.role.value}' is a grouping (NodeRole) "
-                    "so it must have a non-empty title."
-                )
-            if self.body is not None:
-                raise ValueError(
-                    f"CanonicalNode role '{self.role.value}' is a grouping (NodeRole) "
-                    "so it must not have a body."
-                )
-        else:
-            if self.body is None or not (self.body.text or "").strip():
-                raise ValueError(
-                    f"CanonicalNode role '{self.role.value}' is a statement (StatementRole) "
-                    "so it must have a non-empty body."
-                )
-            if self.title is not None:
-                raise ValueError(
-                    f"CanonicalNode role '{self.role.value}' is a statement (StatementRole) "
-                    "so it must not have a title."
-                )
+        if not self.title and not self.body:
+            raise ValueError("CanonicalNode must have at least one of title/body")
 
         return self
 

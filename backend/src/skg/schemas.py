@@ -228,6 +228,20 @@ class StitchingConfig(BaseSchema):
     )
 
 
+class CreateCanonicalConfig(BaseSchema):
+    """Configuration for canonical IR creation from document IR."""
+
+    force_llm_retry_on_first_attempt: bool = Field(
+        False,
+        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
+    )
+    overwrite: bool = Field(False, description="Overwrite existing canonical IR JSON.")
+    segment_decisions_fp: Path | None = Field(
+        default=None,
+        description="Path to SegmentDecisionSet JSON. If None, defaults to <canonical_run_dir>/segment_decisions.json",
+    )
+
+
 class RunConfig(BaseSchema):
     """Pydantic model for run configuration."""
 

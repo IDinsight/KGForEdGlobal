@@ -154,6 +154,38 @@ class SegmentProvenance(BaseSchema):
     )
 
 
+class TableRowProvenance(BaseSchema):
+    """Row-level provenance aligned to the stitched table rows."""
+
+    bbox: BBox = Field(
+        ..., description="Approximate bbox for the full source row region."
+    )
+    dropped_header_rows: int = Field(
+        ...,
+        description="How many header rows were dropped from this slice during stitching.",
+    )
+    page_index: int = Field(
+        ..., description="0-based page index for the slice that contributed this row."
+    )
+    row_bbox: Optional[BBox] = Field(
+        default=None,
+        description="Approximate bbox for the stitched row in the table (may equal bbox).",
+    )
+    slice_index: int = Field(
+        ..., description="0-based slice index within the stitched TableSegment."
+    )
+    slice_row_index: int = Field(
+        ..., description="0-based row index within the original slice rows list."
+    )
+    slice_row_index_after_drop: int = Field(
+        ...,
+        description="Row index after dropping repeated headers on continuation slices.",
+    )
+    slice_total_rows: int = Field(
+        ..., description="Total number of raw rows in the originating slice."
+    )
+
+
 # Schemas for stitched segments.
 class BlockSegment(BaseSchema):
     """A stitched block segment (paragraph/list/caption/heading/figure, etc.)."""
@@ -238,7 +270,7 @@ class TableSegment(BaseSchema):
         description="The resolved table identifier (e.g., 'Table 1') for this segment. Computed by scanning the slice chain for the first non-null code.",
     )
     n_cols: int = Field(..., description="Max number of columns across stitched rows.")
-    row_provenance: Optional[list[dict[str, Any]]] = Field(
+    row_provenance: Optional[list[TableRowProvenance]] = Field(
         default=None,
         description=(
             "Row-level provenance aligned to stitched `rows` (and `rows_grid`). "

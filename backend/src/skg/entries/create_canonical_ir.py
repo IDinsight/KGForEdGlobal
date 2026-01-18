@@ -35,29 +35,16 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.llm import generate_grouping_canonicalization_map
-from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
-from skg.canonical_ir.segment_decisions import (
-    load_or_build_caption_bindings,
-    process_segment_decisions,
-    segment_hint,
-)
-from skg.canonical_ir.spine_corrector import apply_spine_policy_to_decision_set
+from skg.canonical_ir.llm import generate_segment_decision
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
-    apply_grouping_canonicalization_map,
-    build_context_hint_from_decision,
-    clean_up_segment_decisions,
-    collect_unique_grouping_keys,
-    compile_canonical_ir,
-    load_segment_decision_set,
+    load_or_initialize_segment_decision_set,
     persist_canonical_run,
-    save_canonical_ir,
+    save_segment_decision_set,
 )
 from skg.canonical_ir.validators import validate_table_chunk_coverage_and_overlap
 from skg.document_ir.schemas import DocumentIR
 from skg.schemas import CreateCanonicalConfig, RunConfig, RunCtx
-from skg.utils.constants import SegmentDecisionType
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
@@ -74,24 +61,6 @@ def create_canonical_ir(
 ) -> None:
     """Create a CanonicalIR JSON from a single DocumentIR JSON.
 
-    The process is as follows:
-
-    1. Validate and load the Document IR.
-    2. Build or load one-shot caption to next table bindings.
-    3. Initialize decision set.
-    4. Generate decisions for any undecided segments in DocumentIR order.
-    5. Update context hint using the most recently-added decision.
-    6. Persist warnings for this segment.
-    7. Load the raw segment decisions.
-    8. Clean up segment decisions before LLM canonicalization.
-    9. Apply spine correction deterministically.
-    10. Collect unique grouping keys for validation later.
-    11. Generate and apply grouping canonicalization map.
-    12. Apply grouping canonicalization map to segment decisions.
-    13. Decision-set level validation for chunked tables.
-    14. Parse the segment decisions into a canonical IR.
-    15. Write results to file.
-
     Parameters
     ----------
     config
@@ -105,7 +74,6 @@ def create_canonical_ir(
     """
 
     canonical_ir_fp = creation_dirs.root / "canonical_ir.json"
-    segment_decisions_fp = creation_dirs.segment_decisions / "segment_decisions.json"
 
     if not config.overwrite and canonical_ir_fp.exists():
         logger.warning(
@@ -114,168 +82,47 @@ def create_canonical_ir(
         )
         return
 
-    # 1.
+    # Validate and load the Document IR.
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
-    # 2.
-    caption_bindings = load_or_build_caption_bindings(
-        creation_dirs=creation_dirs, document_ir=document_ir, overwrite=config.overwrite
+    # Load or initialize decision set.
+    decision_set, existing_segment_ids, segment_decisions_fp = (
+        load_or_initialize_segment_decision_set(
+            creation_dirs=creation_dirs,
+            doc_key=doc_key,
+            document_ir=document_ir,
+            segment_decisions_fp=config.segment_decisions_fp,
+        )
     )
 
-    if not config.overwrite and segment_decisions_fp.exists():
-        logger.warning(
-            f"Segment decisions JSON already exists at {segment_decisions_fp}. "
-            f"Reusing existing segment decisions. "
-            f"If you wish to overwrite, pass the --overwrite flag."
-        )
-    else:
-        # 3.
-        decision_set = SegmentDecisionSet.model_validate(
-            {
-                "decision_set_id": compute_decision_set_id(decisions=[]),
-                "decisions": [],
-                "doc_key": doc_key,
-                "generator": config.model,
-                "pdf_name": document_ir.pdf_name,
-            }
-        )
+    # Generate decisions for any undecided segments in DocumentIR order.
+    for segment in document_ir.segments:
+        if segment.segment_id in existing_segment_ids:
+            continue
 
-        # 4.
-        context_hint: list[dict[str, Any]] = []
-        existing_keys: set[tuple[str, Optional[int], Optional[int]]] = set()
-        num_segments = len(document_ir.segments)
-        segment_warnings_by_segment: dict[str, list[str]] = {}
-        segment_warnings_fp = creation_dirs.segment_decisions / "segment_warnings.json"
-
-        for i, segment in enumerate(document_ir.segments, 1):
-            logger.info(
-                f"Processing segment ({segment.segment_id}): {i}/{num_segments}"
-            )
-
-            prev_number_decisions = len(decision_set.decisions)
-            warnings: list[str] = []
-
-            prev_seg = document_ir.segments[i - 2] if i > 1 else None
-            next_seg = document_ir.segments[i] if i < num_segments else None
-            prev_seg_hint = segment_hint(prev_seg) if prev_seg else None
-            next_seg_hint = segment_hint(next_seg) if next_seg else None
-
-            decision_set = process_segment_decisions(
-                caption_bindings=caption_bindings,
-                config=config,
-                context_hint=context_hint,
-                decision_set=decision_set,
-                doc_key=doc_key,
-                existing_keys=existing_keys,
-                next_segment_hint=next_seg_hint,
-                prev_segment_hint=prev_seg_hint,
-                segment=segment,
-                segment_decisions_fp=segment_decisions_fp,
-                warnings=warnings,
-            )
-            new_decisions = decision_set.decisions[prev_number_decisions:]
-
-            # 5.
-            if new_decisions:
-                last = new_decisions[-1]
-                if last.decision_type in {
-                    SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
-                    SegmentDecisionType.EMIT_GROUPINGS_ONLY,
-                    SegmentDecisionType.EMIT_LEAVES_ONLY,
-                }:
-                    context_hint = build_context_hint_from_decision(last)
-
-            # 6.
-            segment_key = f"{i:05d}_{segment.segment_id}"
-            segment_warnings_by_segment[segment_key] = warnings
-
-            logger.success(
-                f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"
-            )
-
-        write_to_json(fp=segment_warnings_fp, json_info=segment_warnings_by_segment)
-        logger.info(f"Saved segment warnings to: {segment_warnings_fp}")
-
-        decided_segment_ids = {
-            d.segment_id for d in decision_set.decisions if d.segment_id
-        }
-        logger.info(
-            f"Segment decision set generation complete: "
-            f"{len(decided_segment_ids)}/{len(document_ir.segments)} "
-            f"segments have at least one decision "
-            f"({len(decision_set.decisions)} decisions total)."
+        segment_decision = generate_segment_decision(
+            doc_key=doc_key,
+            force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
+            model=config.model,
+            segment=segment,
         )
 
-    # 7.
-    segment_decisions = load_segment_decision_set(
-        expected_doc_key=doc_key,
-        pdf_name=document_ir.pdf_name,
-        segment_decisions_fp=segment_decisions_fp,
+        decision_set.decisions.append(segment_decision)
+        existing_segment_ids.add(segment.segment_id)
+
+        # Persist checkpoint after every segment.
+        decision_set = save_segment_decision_set(
+            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+        )
+
+    logger.info(
+        f"Segment decision set generation complete: {len(decision_set.decisions)}/{len(document_ir.segments)} decided."
     )
 
-    # 8.
-    segment_decisions = clean_up_segment_decisions(
-        creation_dirs=creation_dirs,
-        overwrite=config.overwrite,
-        segment_decisions=segment_decisions,
-    )
+    # Parse the document IR into a canonical IR.
 
-    # 9.
-    segment_decisions = apply_spine_policy_to_decision_set(
-        caption_bindings=caption_bindings,
-        creation_dirs=creation_dirs,
-        document_ir=document_ir,
-        decision_set=segment_decisions,
-        overwrite=config.overwrite,
-        spine=config.spine_policy,
-    )
-
-    # 10.
-    grouping_keys = collect_unique_grouping_keys(
-        creation_dirs=creation_dirs,
-        overwrite=config.overwrite,
-        segment_decisions=segment_decisions,
-    )
-
-    # 11.
-    mapping = generate_grouping_canonicalization_map(
-        creation_dirs=creation_dirs,
-        doc_key=doc_key,
-        grouping_keys=grouping_keys,
-        model=config.model,
-        overwrite=config.overwrite,
-    )
-
-    # 12.
-    segment_decisions = apply_grouping_canonicalization_map(
-        canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
-        creation_dirs=creation_dirs,
-        mapping=mapping,
-        overwrite=config.overwrite,
-        segment_decisions=segment_decisions,
-    )
-
-    # 13.
-    validate_table_chunk_coverage_and_overlap(
-        document_ir=document_ir, segment_decisions=segment_decisions
-    )
-
-    # 14.
-    canonical_ir = compile_canonical_ir(
-        doc_key=doc_key,
-        document_ir=document_ir,
-        segment_decision_conf_threshold=config.segment_decision_conf_threshold,
-        segment_decisions=segment_decisions,
-        structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
-    )
-
-    # 15.
-    save_canonical_ir(
-        canonical_ir=canonical_ir,
-        canonical_ir_fp=canonical_ir_fp,
-        segment_decision_conf_threshold=config.segment_decision_conf_threshold,
-        structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
-    )
+    # Write results to file.
+    # save_canonical_ir(canonical_ir=canonical_ir, canonical_ir_fp=canonical_ir_fp)
 
 
 @cli.command()
@@ -308,9 +155,6 @@ def create(
     ------
     Exception
         If any part of the canonical IR creation process fails.
-    ValueError
-        If the computed doc_key from the PDF does not match the doc_key in the
-        stitching run metadata.
     """
 
     # 1.
