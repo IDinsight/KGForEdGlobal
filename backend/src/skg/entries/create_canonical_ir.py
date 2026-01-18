@@ -37,9 +37,12 @@ if __name__ == "__main__":
 from skg.canonical_ir.llm import generate_segment_decision
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
+    decision_key,
     load_or_initialize_segment_decision_set,
+    make_table_chunk_payload,
     persist_canonical_run,
     save_segment_decision_set,
+    table_chunks_for_segment,
 )
 from skg.document_ir.schemas import DocumentIR
 from skg.schemas import CreateCanonicalConfig, RunConfig, RunCtx
@@ -84,37 +87,111 @@ def create_canonical_ir(
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
     # Load or initialize decision set.
-    decision_set, existing_segment_ids, segment_decisions_fp = (
-        load_or_initialize_segment_decision_set(
-            creation_dirs=creation_dirs,
-            doc_key=doc_key,
-            document_ir=document_ir,
-            segment_decisions_fp=config.segment_decisions_fp,
-        )
+    decision_set, segment_decisions_fp = load_or_initialize_segment_decision_set(
+        creation_dirs=creation_dirs,
+        doc_key=doc_key,
+        document_ir=document_ir,
+        segment_decisions_fp=config.segment_decisions_fp,
     )
 
     # Generate decisions for any undecided segments in DocumentIR order.
-    for segment in document_ir.segments:
-        if segment.segment_id in existing_segment_ids:
+    num_segments = len(document_ir.segments)
+    existing_keys = {decision_key(d) for d in decision_set.decisions}
+
+    for i, segment in enumerate(document_ir.segments, 1):
+        logger.info(f"Processing segment ({segment.segment_id}): {i}/{num_segments}")
+
+        # Block segments: always 1 decision (unchunked).
+        if segment.kind == "block":
+            key = (segment.segment_id, None, None)
+
+            if key in existing_keys:
+                continue
+
+            segment_decision = generate_segment_decision(
+                doc_key=doc_key,
+                force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
+                model=config.model,
+                segment=segment,
+            )
+
+            decision_set.decisions.append(segment_decision)
+            existing_keys.add(key)
+
+            # Persist checkpoint after every decision.
+            decision_set = save_segment_decision_set(
+                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+            )
             continue
 
-        segment_decision = generate_segment_decision(
-            doc_key=doc_key,
-            force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
-            model=config.model,
-            segment=segment,
+        # Table segments: chunk only if needed. If an unchunked table decision already
+        # exists, do NOT mix chunked + unchunked.
+        unchunked_key = (segment.segment_id, None, None)
+        if unchunked_key in existing_keys:
+            continue
+
+        chunks = table_chunks_for_segment(
+            max_body_rows=config.max_table_rows_per_decision, segment=segment
         )
 
-        decision_set.decisions.append(segment_decision)
-        existing_segment_ids.add(segment.segment_id)
+        # Unchunked table == 1 decision.
+        if len(chunks) == 1 and chunks[0] == (None, None):
+            key = unchunked_key
 
-        # Persist checkpoint after every segment.
-        decision_set = save_segment_decision_set(
-            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+            if key in existing_keys:
+                continue
+
+            segment_decision = generate_segment_decision(
+                doc_key=doc_key,
+                force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
+                model=config.model,
+                segment=segment,
+            )
+
+            decision_set.decisions.append(segment_decision)
+            existing_keys.add(key)
+
+            decision_set = save_segment_decision_set(
+                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+            )
+            continue
+
+        # Chunked table == N decisions.
+        for start, end in chunks:
+            key = (segment.segment_id, start, end)
+
+            if key in existing_keys:
+                continue
+
+            payload = make_table_chunk_payload(end=end, segment=segment, start=start)
+
+            segment_decision = generate_segment_decision(
+                doc_key=doc_key,
+                force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
+                model=config.model,
+                row_range_end=end,
+                row_range_start=start,
+                segment=segment,
+                segment_payload=payload,
+            )
+
+            decision_set.decisions.append(segment_decision)
+            existing_keys.add(key)
+
+            decision_set = save_segment_decision_set(
+                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+            )
+
+        logger.success(
+            f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"
         )
+        input()
 
+    decided_segment_ids = {d.segment_id for d in decision_set.decisions if d.segment_id}
     logger.info(
-        f"Segment decision set generation complete: {len(decision_set.decisions)}/{len(document_ir.segments)} decided."
+        f"Segment decision set generation complete: "
+        f"{len(decided_segment_ids)}/{len(document_ir.segments)} segments have at least one decision "
+        f"({len(decision_set.decisions)} decisions total)."
     )
 
     # Parse the document IR into a canonical IR.

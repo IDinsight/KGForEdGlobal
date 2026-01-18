@@ -143,7 +143,7 @@ class VerificationConfig(BaseSchema):
         description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
     )
     model: str = Field(
-        "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
+        "gpt-5.2-2025-12-11", description="OpenAI model for page IR verification."
     )
     start_page: int = Field(0, description="0-based start page (inclusive).")
 
@@ -230,6 +230,13 @@ class CreateCanonicalConfig(BaseSchema):
         False,
         description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
     )
+    max_table_rows_per_decision: int | None = Field(
+        default=None,
+        description="If set, only TABLE segments with *body rows* > this value are chunked into multiple SegmentDecisions. Blocks are never chunked.",
+    )
+    model: str = Field(
+        "gpt-5.2-2025-12-11", description="OpenAI model for canonical IR."
+    )
     overwrite: bool = Field(False, description="Overwrite existing canonical IR JSON.")
     segment_decisions_fp: Path | None = Field(
         default=None,
@@ -243,6 +250,7 @@ class RunConfig(BaseSchema):
     page_ir_extraction: ExtractionConfig
     page_ir_verification: VerificationConfig
     document_ir: StitchingConfig
+    canonical_ir: CreateCanonicalConfig
 
 
 class RunCtx(BaseSchema):

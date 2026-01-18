@@ -27,20 +27,12 @@ def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
         A DotMap containing 'system_message' and 'user_message'.
     """
 
-    # 1. Generate dynamic lists for the "ALLOWED ENUM VALUES" section.
-    # We sort them to ensure deterministic prompt caching.
-
-    # Format: - "emit_groupings_and_leaves"
-    decision_types_str = "\n".join(
-        [f'  - "{t.value}"' for t in sorted(SegmentDecisionType, key=lambda x: x.value)]
-    )
-
-    # Format: "artifact" "caption" ... (Horizontal list to match your original style)
     block_types_str = " ".join(
         [f'"{b.value}"' for b in sorted(BlockType, key=lambda x: x.value)]
     )
-
-    # Format: - "framework"
+    decision_types_str = "\n".join(
+        [f'  - "{t.value}"' for t in sorted(SegmentDecisionType, key=lambda x: x.value)]
+    )
     node_roles_str = "\n".join(
         [f'  - "{r.value}"' for r in sorted(NodeRole, key=lambda x: x.value)]
     )
@@ -66,6 +58,9 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 4. If decision_type="{SegmentDecisionType.IGNORE.value}" -> keep groupings/leaves/rows empty arrays.
 5. If decision_type="{SegmentDecisionType.UNRESOLVED.value}" -> keep arrays empty and explain why in rationale.
 6. For table segments, prefer using rows[] over leaves[].
+7. CHUNKING: The segment may represent a *slice* of a larger table.
+  - If Segment includes a `chunking` object, ONLY decide on the rows provided in this segment payload.
+  - NEVER assume missing rows exist outside this chunk.
 
 ## WHAT TO EXTRACT
 1. A segment can yield:
@@ -128,12 +123,22 @@ StatementRole (for leaf decisions):
 1. If segment_kind="table":
   - Prefer outputting row decisions in `rows[]`.
   - For each emitted RowDecision:
-    - row_index MUST be 0-based and refer to the provided rows list index.
+    - row_index MUST be a 0-based index into the ORIGINAL stitched DocumentIR table rows (ABSOLUTE index).
+      - If the Segment includes segment.chunking.row_index_is_absolute=true, each provided row includes `abs_row_index`. In that case: RowDecision.row_index MUST EQUAL the row's abs_row_index (copy it exactly).
+    - Do NOT emit RowDecisions for header rows.
+      - Header rows are row_index values < segment.header_row_count.
+      - Only emit RowDecisions for body rows unless a header row clearly contains real standards/expectations (rare).
     - groupings[] should capture container-like cells (subject/topic/strand/stage/week etc.).
     - leaves[] should capture expectation/descriptor/guidance statements from that row.
   - Split multiple statements within a cell into multiple LeafDecisions when clearly separable (bullets, numbering, semicolons, line breaks).
   - If headers suggest roles (e.g., "Specific Competences", "Expected Standard", "Learning Activities"), map accordingly.
   - If no rows contain anything meaningful (e.g., empty or purely formatting), use decision_type="{SegmentDecisionType.IGNORE.value}".
+2. CHUNKED TABLES:
+  - If segment.chunking exists, the provided `segment.rows` is a slice of the original table.
+  - ONLY emit RowDecisions for the provided rows in this payload.
+  - Do not emit RowDecisions for rows you cannot see.
+  - If a row cell is blank: emit nothing for that cell (do not hallucinate).
+  - Example: if a provided row has abs_row_index=57, then RowDecision.row_index MUST be 57.
 
 ## BLOCK-SPECIFIC INSTRUCTIONS
 1. If segment_kind="block":
@@ -200,7 +205,9 @@ In particular, ensure that:
   - If something looks like an activity/task, it is guidance (not expectation).
 4. **Table discipline (if segment_kind="table")**
   - Prefer `rows[]` over top-level `leaves[]`.
-  - Each RowDecision.row_index must be a valid 0-based index into the table rows list.
+  - Each RowDecision.row_index must be a valid 0-based ABSOLUTE index into the ORIGINAL stitched table rows.
+    - If segment.chunking exists, every row_index must lie within [row_range_start, row_range_end) (end exclusive), and should match each row's abs_row_index when present.
+  - Do NOT emit RowDecisions for header rows (row_index < segment.header_row_count).
   - Do NOT emit RowDecisions for blank/empty rows.
   - If you split a cell into multiple statements, ensure each LeafDecision is atomic and non-overlapping.
   - If headers imply roles (e.g., "Specific Competences", "Learning Activities", "Expected Standard"), map them correctly.

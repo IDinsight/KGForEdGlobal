@@ -86,7 +86,10 @@ def validate_segment_kind_coherence(
 def validate_table_row_index(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
-    """Validate that RowDecision.row_index values are within range and unique.
+    """Validate that RowDecision.row_index values are within range and unique. If this
+    SegmentDecision represents a chunked slice of a table, also enforce that all
+    RowDecision.row_index values lie within [row_range_start, row_range_end), where
+    row_range_end is EXCLUSIVE.
 
     Parameters
     ----------
@@ -101,32 +104,42 @@ def validate_table_row_index(
         If any quality checks fail.
     """
 
-    if segment.kind == "table" and segment_decision.rows:
-        dupes = []
-        max_row_index = len(segment.table.rows) - 1
-        seen = set()
+    if segment.kind != "table" or not segment_decision.rows:
+        return
 
-        for row in segment_decision.rows:
-            if row.row_index < 0 or row.row_index > max_row_index:
-                raise QualityError(
-                    f"RowDecision.row_index out of range.\n"
-                    f"  segment_id: {segment.segment_id}\n"
-                    f"  decision_id: {segment_decision.decision_id}\n"
-                    f"  row_index: {row.row_index}\n"
-                    f"  allowed: 0..{max_row_index}\n"
-                    f"  table_rows: {len(segment.table.rows)}"
-                )
+    table_rows = segment.table.rows
 
-            if row.row_index in seen:
-                dupes.append(row.row_index)
-            seen.add(row.row_index)
+    start = segment_decision.row_range_start
+    end = segment_decision.row_range_end
 
-        if dupes:
+    # If chunking is declared, it must be well-formed.
+    if (start is None) != (end is None):
+        raise QualityError(
+            f"Chunked table decision must include both row_range_start and row_range_end (exclusive).\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  row_range_start: {start}\n"
+            f"  row_range_end: {end}"
+        )
+
+    is_chunked = start is not None
+
+    if is_chunked:
+        if start < 0 or end < 0 or start >= end:
             raise QualityError(
-                f"Duplicate RowDecision.row_index values in table decision.\n"
+                f"Invalid chunk boundaries for table decision. Expected start < end and both >= 0.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
-                f"  duplicates: {sorted(set(dupes))}"
+                f"  row_range: [{start}, {end})"
+            )
+
+        if end > len(table_rows):
+            raise QualityError(
+                f"Chunk boundary row_range_end exceeds table length.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  row_range: [{start}, {end})\n"
+                f"  table_rows: {len(table_rows)}"
             )
 
 
@@ -193,3 +206,63 @@ def validate_table_split_explosion(
                 f"  row_index: {rd.row_index}\n"
                 f"  leaves_count: {len(rd.leaves)}"
             )
+
+
+def validate_unique_table_rows(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Validate that all RowDecision.row_index values are unique.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    table_rows = segment.table.rows
+    max_row_index = len(table_rows) - 1
+    start = segment_decision.row_range_start
+    end = segment_decision.row_range_end
+
+    seen: set[int] = set()
+    dupes: list[int] = []
+
+    for rd in segment_decision.rows:
+        # Global range check.
+        if rd.row_index < 0 or rd.row_index > max_row_index:
+            raise QualityError(
+                f"RowDecision.row_index out of range.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  row_index: {rd.row_index}\n"
+                f"  allowed: 0..{max_row_index}\n"
+                f"  table_rows: {len(table_rows)}"
+            )
+
+        if start is not None and not start <= rd.row_index < end:
+            raise QualityError(
+                f"RowDecision.row_index outside decision chunk boundaries.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  row_index: {rd.row_index}\n"
+                f"  allowed_chunk: [{start}, {end})"
+            )
+
+        if rd.row_index in seen:
+            dupes.append(rd.row_index)
+        seen.add(rd.row_index)
+
+    if dupes:
+        raise QualityError(
+            f"Duplicate RowDecision.row_index values in table decision.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  duplicates: {sorted(set(dupes))}"
+        )

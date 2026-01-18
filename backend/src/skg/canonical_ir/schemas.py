@@ -287,7 +287,7 @@ class SegmentDecision(BaseSchema):
     )
     row_range_end: int | None = Field(
         default=None,
-        description="Optional end row index (inclusive/exclusive depends on your convention) for chunked tables.",
+        description="Optional end row index (EXCLUSIVE) for chunked tables.",
     )
     row_range_start: int | None = Field(
         default=None, description="Optional start row index for chunked tables."
@@ -510,7 +510,7 @@ class CanonicalNode(BaseSchema):
         default_factory=list,
         description="Decision IDs that produced this canonical node.",
     )
-    source_ids: list[str] = Field(
+    source_segment_ids: list[str] = Field(
         default_factory=list,
         description="DocumentIR segment IDs that contributed to this node (provenance pointers).",
     )

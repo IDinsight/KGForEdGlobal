@@ -34,6 +34,7 @@
 	},
 	"canonical_ir": {
 		"force_llm_retry_on_first_attempt": false,
+		"max_table_rows_per_decision": 20,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
 		"segment_decisions_fp": null
