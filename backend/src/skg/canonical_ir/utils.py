@@ -7,6 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Third Party Library
 from loguru import logger
@@ -19,7 +20,7 @@ from skg.canonical_ir.schemas import (
     SegmentDecisionSet,
     compute_decision_set_id,
 )
-from skg.document_ir.schemas import DocumentIR
+from skg.document_ir.schemas import DocumentIR, TableSegment
 from skg.schemas import CreateCanonicalConfig, RunCtx
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
@@ -1845,14 +1846,42 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
     )
 
 
+def decision_key(
+    segment_decision: SegmentDecision,
+) -> tuple[str, int | None, int | None]:
+    """Compute a unique key for a SegmentDecision based on segment_id and row range.
+
+    Parameters
+    ----------
+    segment_decision
+        The SegmentDecision to compute the key for.
+
+    Returns
+    -------
+    tuple[str, int | None, int | None]
+        The unique key as (segment_id, row_range_start, row_range_end).
+    """
+
+    return (
+        segment_decision.segment_id or "",
+        segment_decision.row_range_start,
+        segment_decision.row_range_end,
+    )
+
+
 def load_or_initialize_segment_decision_set(
     *,
     creation_dirs: CanonicalIRDirs,
     doc_key: str,
     document_ir: DocumentIR,
     segment_decisions_fp: Path | None,
-) -> tuple[SegmentDecisionSet, set[str], Path]:
+) -> tuple[SegmentDecisionSet, Path]:
     """Load decision set if present, else initialize an empty one.
+
+    NB: We intentionally do NOT return a simple `existing_segment_ids` set since
+    canonical IR creation may create multiple decisions per table segment when chunking
+    is enabled. Callers should compute coverage based on (segment_id, row_range_start,
+    row_range_end).
 
     Parameters
     ----------
@@ -1867,9 +1896,9 @@ def load_or_initialize_segment_decision_set(
 
     Returns
     -------
-    tuple[SegmentDecisionSet, set[str], Path]
-        The loaded or initialized SegmentDecisionSet, the set of existing segment IDs,
-        and the file path to the SegmentDecisionSet JSON.
+    tuple[SegmentDecisionSet, Path]
+        The loaded or initialized SegmentDecisionSet and the file path to the
+        SegmentDecisionSet JSON.
 
     Raises
     ------
@@ -1900,14 +1929,60 @@ def load_or_initialize_segment_decision_set(
     )
 
     # Ensure any existing decisions still refer to real segments.
-    existing_segment_ids = {d.segment_id for d in decision_set.decisions}
+    existing_segment_ids: set[str] = {d.segment_id for d in decision_set.decisions}
+    assert all(seg_id for seg_id in existing_segment_ids), f"{existing_segment_ids = }"
     segments_by_id = {s.segment_id: s for s in document_ir.segments}
     missing = [sid for sid in existing_segment_ids if sid not in segments_by_id]
 
     if missing:
         raise ValueError(f"Decision set refers to missing segment_ids: {missing[:10]}")
 
-    return decision_set, existing_segment_ids, segment_decisions_fp
+    return decision_set, segment_decisions_fp
+
+
+def make_table_chunk_payload(
+    *, end: int, segment: TableSegment, start: int
+) -> dict[str, Any]:
+    """Build a table chunk payload for the LLM as follows:
+
+    1. Keep table metadata + headers
+    2. Replace `rows` with ONLY the rows in [start,end)
+    3. Adds abs_row_index to each provided row
+    4. Adds a `chunking` object so prompts can instruct absolute indexing
+
+    Parameters
+    ----------
+    end
+        The exclusive end row index for the chunk.
+    segment
+        The TableSegment to chunk.
+    start
+        The inclusive start row index for the chunk.
+
+    Returns
+    -------
+    dict[str, Any]
+        The table chunk payload.
+    """
+
+    seg = segment.model_dump(mode="json")
+    full_rows = seg["rows"]
+    chunk_rows: list[dict[str, Any]] = []
+
+    for abs_i in range(start, end):
+        row = dict(full_rows[abs_i])
+        row["abs_row_index"] = abs_i
+        chunk_rows.append(row)
+
+    seg["rows"] = chunk_rows
+    seg["chunking"] = {
+        "row_range_start": start,
+        "row_range_end": end,
+        "row_range_end_is_exclusive": True,
+        "row_index_is_absolute": True,
+    }
+
+    return seg
 
 
 def persist_canonical_run(
@@ -1981,3 +2056,44 @@ def save_segment_decision_set(
     write_to_json(fp=segment_decisions_fp, json_info=decision_set)
 
     return decision_set
+
+
+def table_chunks_for_segment(
+    *, max_body_rows: int | None, segment: TableSegment
+) -> list[tuple[int | None, int | None]]:
+    """Compute table row chunks for a TableSegment based on max_body_rows.
+
+    Parameters
+    ----------
+    max_body_rows
+        The maximum number of body rows per chunk. If None or <= 0, no chunk splitting
+        is performed.
+    segment
+        The TableSegment to compute chunks for.
+
+    Returns
+    -------
+    list[tuple[int | None, int | None]]
+        A list of (start, end) row index tuples for each chunk. If no chunk splitting
+        is needed, returns [(None, None)].
+    """
+
+    if not max_body_rows or max_body_rows <= 0:
+        return [(None, None)]
+
+    header_n = segment.header_row_count or 0
+    total_rows = len(segment.rows)
+    body_rows = max(0, total_rows - header_n)
+
+    if body_rows <= max_body_rows:
+        return [(None, None)]
+
+    chunks = []
+    start = header_n  # Chunk only body rows (skip headers)
+
+    while start < total_rows:
+        end = min(total_rows, start + max_body_rows)
+        chunks.append((start, end))
+        start = end
+
+    return chunks

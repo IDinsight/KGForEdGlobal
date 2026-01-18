@@ -28,6 +28,7 @@ from skg.canonical_ir.validators import (
     validate_table_row_index,
     validate_table_rows_vs_leaves,
     validate_table_split_explosion,
+    validate_unique_table_rows,
 )
 from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
@@ -62,6 +63,8 @@ def _call_openai_api_to_decide_on_segment(
     input_items: list[Any],
     instructions: str,
     model: str,
+    row_range_end: int | None,
+    row_range_start: int | None,
     segment: Segment,
 ) -> SegmentDecision:
     """Wrapper for segment decision API calls with retries.
@@ -80,6 +83,10 @@ def _call_openai_api_to_decide_on_segment(
         The extraction instructions to include.
     model
         The OpenAI model to use.
+    row_range_end
+        The optional row range end for table segments.
+    row_range_start
+        The optional row range start for table segments.
     segment
         The segment to decide on.
 
@@ -121,8 +128,15 @@ def _call_openai_api_to_decide_on_segment(
             "Segment decision returned no parsed output.", failed_content=output_text
         )
 
-    # Overwrite decision_id, segment_id, and segment_kind to ensure consistency.
-    parsed.decision_id = f"segment_decision:{doc_key}:{segment.segment_id}"
+    # Overwrite decision_id, segment_id, and segment_kind to ensure consistency. If the
+    # caller is chunking a table, include the row range in the decision_id.
+    if row_range_start is not None and row_range_end is not None:
+        parsed.decision_id = f"segment_decision:{doc_key}:{segment.segment_id}:{row_range_start}:{row_range_end}"
+        parsed.row_range_start = row_range_start
+        parsed.row_range_end = row_range_end
+    else:
+        parsed.decision_id = f"segment_decision:{doc_key}:{segment.segment_id}"
+
     parsed.segment_kind = segment.kind
     parsed.segment_id = segment.segment_id
 
@@ -147,7 +161,10 @@ def generate_segment_decision(
     force_llm_retry_on_first_attempt: bool,
     max_retries: int = 2,
     model: str,
+    row_range_end: int | None = None,
+    row_range_start: int | None = None,
     segment: Segment,
+    segment_payload: dict[str, Any] | None = None,
 ) -> SegmentDecision:
     """Generate a SegmentDecision using the LLM with retries.
 
@@ -161,8 +178,14 @@ def generate_segment_decision(
         Maximum number of retries for quality errors.
     model
         The OpenAI model to use.
+    row_range_end
+        The optional row range end for table segments.
+    row_range_start
+        The optional row range start for table segments.
     segment
         The segment to decide on.
+    segment_payload
+        Optional additional payload for the segment.
 
     Returns
     -------
@@ -177,7 +200,9 @@ def generate_segment_decision(
         If segment decision fails after retries.
     """
 
-    prompts = decide_on_segment(segment=segment.model_dump(mode="json"))
+    prompts = decide_on_segment(
+        segment=segment_payload or segment.model_dump(mode="json")
+    )
     instructions = prompts.system_message
     input_items = [
         {
@@ -195,6 +220,8 @@ def generate_segment_decision(
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
+                row_range_end=row_range_end,
+                row_range_start=row_range_start,
                 segment=segment,
             )
         except QualityError as e:
@@ -321,6 +348,7 @@ def verify_segment_decision_quality(
 
     validate_segment_kind_coherence(segment=segment, segment_decision=segment_decision)
     validate_table_row_index(segment=segment, segment_decision=segment_decision)
+    validate_unique_table_rows(segment=segment, segment_decision=segment_decision)
     validate_table_rows_vs_leaves(segment=segment, segment_decision=segment_decision)
     validate_non_noop_emit_decision(segment=segment, segment_decision=segment_decision)
     validate_table_split_explosion(segment=segment, segment_decision=segment_decision)

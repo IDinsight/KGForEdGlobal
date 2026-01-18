@@ -144,7 +144,7 @@ class NodeRole(str, Enum):
     STAGE = "stage"
     STRAND = "strand"  # e.g., "Main Competence"
     SUBJECT = "subject"  # e.g., "Mathematics"
-    SUBSTRAND = "substrand"  # e.g., "Specific Competence"
+    SUBSTRAND = "substrand"
     SUBTOPIC = "subtopic"
     THEME = "theme"
     TOPIC = "topic"  # e.g., "Topic" or sub-strand
