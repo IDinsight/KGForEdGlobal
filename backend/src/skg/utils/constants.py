@@ -89,19 +89,40 @@ class PageContinuationKind(str, Enum):
     TEXT = "text"
 
 
+class NodeRole(str, Enum):
+    """The role of a node in the canonical IR structure."""
+
+    FRAMEWORK = "framework"  # The root document
+    GRADE_LEVEL = "grade_level"
+    SECTION = "section"  # Structural grouping (e.g., "Section One")
+    STAGE = "stage"
+    STRAND = "strand"  # e.g., "Main Competence"
+    SUBJECT = "subject"  # e.g., "Mathematics"
+    SUBSTRAND = "substrand"  # e.g., "Specific Competence"
+    SUBTOPIC = "subtopic"
+    THEME = "theme"
+    TOPIC = "topic"  # e.g., "Topic" or sub-strand
+    UNIT = "unit"
+    UNRESOLVED = "unresolved"  # Content that could not be classified
+    WEEK = "week"
+
+
+class SegmentDecisionType(str, Enum):
+    """Enumeration of high-level actions for segment decisions."""
+
+    EMIT_GROUPINGS_AND_LEAVES = "emit_groupings_and_leaves"
+    EMIT_GROUPINGS_ONLY = "emit_groupings_only"
+    EMIT_LEAVES_ONLY = "emit_leaves_only"
+    IGNORE = "ignore"
+    UNRESOLVED = "unresolved"
+
+
 class StatementRole(str, Enum):
     """Semantic role of a KG node in the hierarchy."""
 
     EXPECTATION = "expectation"  # Normative statement (standard/outcome)
     DESCRIPTOR = "descriptor"  # Performance indicator/benchmark
-    FRAMEWORK = "framework"  # The root document
-    GRADE_LEVEL = "grade_level"  # e.g., "Standard III"
     GUIDANCE = "guidance"  # Pedagogical guidance (activities/resources/teacher notes)
-    SECTION = "section"  # Structural grouping (e.g., "Section One")
-    STRAND = "strand"  # e.g., "Main Competence"
-    SUBJECT = "subject"  # e.g., "Mathematics"
-    TOPIC = "topic"  # e.g., "Topic" or sub-strand
-    UNRESOLVED = "unresolved"  # Content that could not be classified
 
 
 # Literals/sets/etc. for various constant types.
@@ -137,3 +158,11 @@ NonArtifacts = {
 }
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"]
+UnresolvedReason = Literal[
+    "ID_COLLISION",
+    "LOW_CONFIDENCE_TABLE_MAPPING",
+    "PARENT_CONFLICT",
+    "UNMATCHED_BLOCK",
+    "UNMATCHED_HEADING",
+    "UNMATCHED_TABLE",
+]

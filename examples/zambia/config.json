@@ -31,5 +31,11 @@
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
 		"table_filldown_group_cols_max": 3
+	},
+	"canonical_ir": {
+		"force_llm_retry_on_first_attempt": false,
+		"model": "gpt-5.2-2025-12-11",
+		"overwrite": false,
+		"segment_decisions_fp": null
 	}
 }
