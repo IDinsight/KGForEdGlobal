@@ -107,8 +107,6 @@ def validate_table_row_index(
     if segment.kind != "table" or not segment_decision.rows:
         return
 
-    table_rows = segment.table.rows
-
     start = segment_decision.row_range_start
     end = segment_decision.row_range_end
 
@@ -123,6 +121,7 @@ def validate_table_row_index(
         )
 
     is_chunked = start is not None
+    table_rows = segment.rows
 
     if is_chunked:
         if start < 0 or end < 0 or start >= end:
@@ -226,7 +225,7 @@ def validate_unique_table_rows(
         If any quality checks fail.
     """
 
-    table_rows = segment.table.rows
+    table_rows = segment.rows
     max_row_index = len(table_rows) - 1
     start = segment_decision.row_range_start
     end = segment_decision.row_range_end
