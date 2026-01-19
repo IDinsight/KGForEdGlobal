@@ -25,6 +25,7 @@ from skg.canonical_ir.schemas import SegmentDecision
 from skg.canonical_ir.validators import (
     validate_non_noop_emit_decision,
     validate_segment_kind_coherence,
+    validate_table_header_rows_not_emitted,
     validate_table_row_index,
     validate_table_rows_vs_leaves,
     validate_table_split_explosion,
@@ -349,6 +350,9 @@ def verify_segment_decision_quality(
     validate_segment_kind_coherence(segment=segment, segment_decision=segment_decision)
     validate_table_row_index(segment=segment, segment_decision=segment_decision)
     validate_unique_table_rows(segment=segment, segment_decision=segment_decision)
+    validate_table_header_rows_not_emitted(
+        segment=segment, segment_decision=segment_decision
+    )
     validate_table_rows_vs_leaves(segment=segment, segment_decision=segment_decision)
     validate_non_noop_emit_decision(segment=segment, segment_decision=segment_decision)
     validate_table_split_explosion(segment=segment, segment_decision=segment_decision)

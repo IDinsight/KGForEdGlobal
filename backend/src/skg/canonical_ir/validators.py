@@ -142,6 +142,47 @@ def validate_table_row_index(
             )
 
 
+def validate_table_header_rows_not_emitted(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Ensure RowDecision.row_index does not point into header rows. This prevents the
+    model from interpreting table headers as real curriculum rows, especially for
+    unchunked table decisions where chunk boundaries aren't present.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any RowDecision.row_index points into header rows.
+    """
+
+    if segment.kind != "table" or not segment_decision.rows:
+        return
+
+    header_n = segment.header_row_count or 0
+
+    if header_n <= 0:
+        return
+
+    bad = sorted(
+        {rd.row_index for rd in segment_decision.rows if rd.row_index < header_n}
+    )
+    if bad:
+        raise QualityError(
+            f"RowDecision.row_index includes header rows; header rows must not be emitted.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  header_row_count: {header_n}\n"
+            f"  bad_row_indices: {bad}"
+        )
+
+
 def validate_table_rows_vs_leaves(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
