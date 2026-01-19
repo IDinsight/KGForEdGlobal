@@ -1,7 +1,10 @@
 """This module contains functionalities related to validating CanonicalIR information."""
 
 # Standard Library
-from typing import Any
+import re
+import unicodedata
+
+from typing import Any, Optional
 
 # Package Library
 from skg.canonical_ir.schemas import SegmentDecision
@@ -10,8 +13,11 @@ from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import BlockType, NonArtifacts, SegmentDecisionType
 
 
+_DASH_RE = re.compile(r"[‐-‒–—−]")  # common unicode dash characters
+
+
 def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
-    """Parse payload rows to build a map of {abs_row_index: casefolded_text_blob}.
+    """Parse payload rows to build a map of {abs_row_index: normalized_text_blob}.
 
     Parameters
     ----------
@@ -21,7 +27,7 @@ def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
     Returns
     -------
     dict[int, str]
-        A mapping from absolute row index to the concatenated, casefolded text
+        A mapping from absolute row index to the concatenated, normalized text.
     """
 
     row_text_by_abs_index: dict[int, str] = {}
@@ -40,9 +46,36 @@ def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
             if isinstance(c.get("text"), dict)
         ]
 
-        row_text_by_abs_index[int(abs_i)] = " \n ".join(parts).casefold()
+        row_text_by_abs_index[int(abs_i)] = _normalize_text(" \n ".join(parts))
 
     return row_text_by_abs_index
+
+
+def _normalize_text(text: Optional[str]) -> str:
+    """Normalize text for comparisons (grounding + substring checks).
+
+    Parameters
+    ----------
+    text
+        The input text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized text.
+    """
+
+    if not text:
+        return ""
+
+    # Normalize unicode forms (compatibility normalization).
+    text = unicodedata.normalize("NFKC", text)
+
+    # Normalize dash variants to ASCII hyphen.
+    text = _DASH_RE.sub("-", text)
+
+    # Collapse whitespace and casefold.
+    return re.sub(r"\s+", " ", text).strip().casefold()
 
 
 def validate_context_groupings_required_for_emit(
@@ -96,7 +129,7 @@ def validate_context_groupings_required_for_emit(
             t = h  # Defensive: some payloads may serialize as strings
 
         tn = (t or "").strip().casefold()
-        tn = " ".join(tn.split())
+        tn = _normalize_text(t)
 
         if not tn or tn in NonArtifacts:
             continue
@@ -118,73 +151,6 @@ def validate_context_groupings_required_for_emit(
             f"  has_caption_text: {has_caption}\n"
             f"  section_path_headings: {meaningful_heading_texts}"
         )
-
-
-def validate_context_groupings_supported_by_evidence(
-    *,
-    segment: Segment,
-    segment_decision: SegmentDecision,
-    segment_payload: dict[str, Any] | None,
-) -> None:
-    """Prevent hallucinated context_groupings: require that grouping titles appear in
-    evidence text (section_path headings and/or caption_text).
-
-    Parameters
-    ----------
-    segment
-        The Segment being decided on.
-    segment_decision
-        The SegmentDecision to validate.
-    segment_payload
-        The payload dictionary for the Segment being decided on.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    if (
-        segment_decision.decision_type
-        in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        )
-        or not segment_decision.context_groupings
-    ):
-        return
-
-    payload = segment_payload or {}
-
-    headings = [
-        h.get("text", "") for h in payload.get("section_path", []) if h.get("text")
-    ]
-    caption = (payload.get("caption_text") or "").strip()
-
-    evidence_blob = " \n ".join([*headings, caption]).casefold()
-
-    # If there is no evidence at all, don't enforce strict support.
-    if not evidence_blob.strip():
-        return
-
-    for g in segment_decision.context_groupings:
-        title = (g.title or "").strip()
-        if not title:
-            raise QualityError(
-                f"context_groupings contains empty title (should not be possible).\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}"
-            )
-
-        if title.casefold() not in evidence_blob:
-            raise QualityError(
-                f"Pattern A violation: context_groupings title not supported by evidence.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}\n"
-                f"  unsupported_title: {title}\n"
-                f"  evidence_headings: {headings}\n"
-                f"  has_caption_text: {bool(caption)}"
-            )
 
 
 def validate_context_groupings_supported_by_outer_evidence(
@@ -238,14 +204,14 @@ def validate_context_groupings_supported_by_outer_evidence(
             if isinstance(c, str) and c.strip():
                 header_strings.append(c)
 
-    evidence_blob = " \n ".join([*headings, caption, *header_strings]).casefold()
+    evidence_blob = _normalize_text(" \n ".join([*headings, caption, *header_strings]))
 
     # If there is NO outer evidence at all, we can't enforce this strictly.
     if not evidence_blob.strip():
         return
 
     for g in segment_decision.context_groupings:
-        title = (g.title or "").strip().casefold()
+        title = _normalize_text(g.title)
         if not title:
             raise QualityError(
                 f"context_groupings contains an empty title.\n"
@@ -352,7 +318,8 @@ def validate_row_groupings_supported_by_row_cells(
             continue
 
         for g in rd.groupings:
-            title = (g.title or "").strip().casefold()
+            title = _normalize_text(g.title)
+
             if not title:
                 raise QualityError(
                     f"RowDecision.groupings contains an empty title.\n"

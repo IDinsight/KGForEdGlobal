@@ -57,19 +57,24 @@ def compute_decision_set_id(
                 "decision_id": d.decision_id,
                 "segment_id": d.segment_id,
                 "segment_kind": d.segment_kind,
-                "decision_type": d.decision_type,
+                "decision_type": d.decision_type.value,
                 "block_type": (d.block_type.value if d.block_type else None),
                 "row_range_start": d.row_range_start,
                 "row_range_end": d.row_range_end,
                 "context_groupings": [
-                    context_grouping.model_dump(exclude_none=True)
+                    context_grouping.model_dump(exclude_none=True, mode="json")
                     for context_grouping in d.context_groupings
                 ],
                 "groupings": [
-                    group.model_dump(exclude_none=True) for group in d.groupings
+                    group.model_dump(exclude_none=True, mode="json")
+                    for group in d.groupings
                 ],
-                "leaves": [leaf.model_dump(exclude_none=True) for leaf in d.leaves],
-                "rows": [row.model_dump(exclude_none=True) for row in d.rows],
+                "leaves": [
+                    leaf.model_dump(exclude_none=True, mode="json") for leaf in d.leaves
+                ],
+                "rows": [
+                    row.model_dump(exclude_none=True, mode="json") for row in d.rows
+                ],
             }
         )
 
@@ -224,9 +229,6 @@ class RowDecision(BaseSchema):
     leaves: list[LeafDecision] = Field(
         default_factory=list,
         description="Leaf statements derived from this row (e.g., specific competence statements).",
-    )
-    row_bbox: BBox | None = Field(
-        default=None, description="Optional bounding box for this row if available."
     )
     row_index: int = Field(
         ...,

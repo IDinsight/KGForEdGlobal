@@ -24,7 +24,6 @@ from tenacity import (
 from skg.canonical_ir.schemas import SegmentDecision
 from skg.canonical_ir.validators import (
     validate_context_groupings_required_for_emit,
-    validate_context_groupings_supported_by_evidence,
     validate_context_groupings_supported_by_outer_evidence,
     validate_heading_segments_emit_groupings,
     validate_row_groupings_supported_by_row_cells,
@@ -369,11 +368,6 @@ def verify_segment_decision_quality(
     )
     validate_table_split_explosion(segment=segment, segment_decision=segment_decision)
     validate_context_groupings_required_for_emit(
-        segment=segment,
-        segment_decision=segment_decision,
-        segment_payload=segment_payload,
-    )
-    validate_context_groupings_supported_by_evidence(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
