@@ -121,7 +121,7 @@ StatementRole (for leaf decisions):
   - strand/main competence/topic/subtopic/unit/section
 2. Prefer the most specific reasonable NodeRole.
 3. If you are unsure, use role="{NodeRole.SECTION.value}" or omit groupings.
-4. REQUIRED (Pattern A): Emit `context_groupings[]` for any decision that emits anything (any `emit_*` decision_type).
+4. REQUIRED: Emit `context_groupings[]` for any decision that emits anything (any `emit_*` decision_type).
   - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
   - Therefore, YOU MUST explicitly provide the hierarchy context snapshot in `context_groupings[]`.
   - `segment.section_path` is provided as EVIDENCE ONLY (semantic-light headings).
