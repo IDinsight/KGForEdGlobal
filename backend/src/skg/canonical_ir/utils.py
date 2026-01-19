@@ -1,18 +1,20 @@
 """This module contains utility functions for canonical Intermediate Representations."""
 
 # Standard Library
+import re
 import uuid
 
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Third Party Library
 from loguru import logger
 
 # Package Library
+from skg.canonical_ir.llm import generate_segment_decision
 from skg.canonical_ir.schemas import (
     CanonicalEdge,
     CanonicalIR,
@@ -20,8 +22,15 @@ from skg.canonical_ir.schemas import (
     SegmentDecisionSet,
     compute_decision_set_id,
 )
-from skg.document_ir.schemas import DocumentIR, TableSegment
+from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
+from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import CreateCanonicalConfig, RunCtx
+from skg.utils.constants import (
+    BlockType,
+    CaptionFigurePrefixes,
+    CaptionKind,
+    CaptionTablePrefixes,
+)
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 
@@ -32,6 +41,89 @@ class CanonicalIRDirs:
     root: Path
     canonical_ir: Path
     segment_decisions: Path
+
+
+@dataclass(frozen=True)
+class CaptionBinding:
+    """Dataclass for caption-to-table bindings."""
+
+    caption_kind: CaptionKind
+    caption_page_index: int | None
+    caption_segment_id: str
+    caption_text: str
+    gap_segments: int
+    table_page_index: int | None
+    table_segment_id: str
+
+
+def _classify_caption_kind(text: str) -> CaptionKind:
+    """Classify caption kind based on text prefixes.
+
+    Parameters
+    ----------
+    text
+        The caption text to classify.
+
+    Returns
+    -------
+    CaptionKind
+        The classified caption kind.
+    """
+
+    t = (text or "").strip().lower()
+    t = re.sub(r"\s+", " ", t)
+
+    for p in CaptionTablePrefixes:
+        if t.startswith(p):
+            return "table"
+
+    for p in CaptionFigurePrefixes:
+        if t.startswith(p):
+            return "figure"
+
+    # Regex fallback for common patterns.
+    if re.match(r"^(table|tab\.?|tbl\.?|jedwali|tableau)\s*\d+", t):
+        return "table"
+
+    if re.match(r"^(figure|fig\.?)\s*\d+", t):
+        return "figure"
+
+    return "unknown"
+
+
+def _extract_block_segment_text(segment: BlockSegment) -> str | None:
+    """Extract text from a BlockSegment.
+
+    Parameters
+    ----------
+    segment
+        The BlockSegment to extract text from.
+
+    Returns
+    -------
+    str | None
+        The extracted text, or None if not found.
+    """
+
+    if segment.combined_text and segment.combined_text.strip():
+        return segment.combined_text.strip()
+
+    if isinstance(segment.text, TextUnit) and segment.text.text.strip():
+        return segment.text.text.strip()
+
+    if segment.list_items:
+        parts: list[str] = []
+
+        for list_item in segment.list_items:
+            text_unit = list_item.text
+
+            if text_unit.text.strip():
+                parts.append(text_unit.text.strip())
+
+        if parts:
+            return "\n".join(parts)
+
+    return None
 
 
 def _load_segment_decision_set(
@@ -1820,6 +1912,152 @@ def compile_canonical_ir(
     return canonical_ir
 
 
+def apply_caption_binding_to_table_payload(
+    *, caption_bindings: CaptionBinding | None, table_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply caption binding information to a table segment payload.
+
+    Parameters
+    ----------
+    caption_bindings
+        The CaptionBinding to apply, or None to skip.
+    table_payload
+        The table segment payload to update.
+
+    Returns
+    -------
+    dict[str, Any]
+        The updated table segment payload.
+    """
+
+    if not caption_bindings:
+        return table_payload
+
+    table_payload["caption_gap_segments"] = caption_bindings.gap_segments
+    table_payload["caption_kind"] = caption_bindings.caption_kind
+    table_payload["caption_page_index"] = caption_bindings.caption_page_index
+    table_payload["caption_segment_id"] = caption_bindings.caption_segment_id
+    table_payload["caption_text"] = caption_bindings.caption_text
+
+    return table_payload
+
+
+def build_caption_bindings(
+    *,
+    bind_unknown_caption: bool = True,
+    document_ir: DocumentIR,
+    max_gap_segments: int = 2,
+    max_page_distance: int = 1,
+    warnings: list[str],
+) -> dict[str, CaptionBinding]:
+    """Bind Caption block to next Table segment (within limits).
+
+    Parameters
+    ----------
+    bind_unknown_caption
+        Whether to bind captions of unknown kind.
+    document_ir
+        The DocumentIR to process.
+    max_gap_segments
+        The maximum number of non-table segments allowed between caption and table.
+    max_page_distance
+        The maximum page distance allowed between caption and table.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    dict[str, CaptionBinding]
+        The computed caption bindings, keyed by table segment ID.
+    """
+
+    caption_bindings: dict[str, CaptionBinding] = {}
+
+    # (caption_segment, caption_text, caption_kind, caption_page, caption_index)
+    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
+
+    for index, segment in enumerate(document_ir.segments):
+        page_index = (
+            segment.slices[0].page_index
+            if segment.slices
+            else segment.segment_provenance[0].page_index
+        )
+        assert isinstance(page_index, int) and page_index >= 0
+
+        # Explicit caption candidate.
+        if segment.kind == "block":
+            caption_text = _extract_block_segment_text(segment)
+
+            if segment.block_type == BlockType.CAPTION and caption_text:
+                kind = _classify_caption_kind(caption_text)
+
+                # Don't bind figure captions to tables.
+                if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
+                    continue
+
+                pending_caption = (
+                    segment,
+                    caption_text,
+                    kind,
+                    page_index,
+                    index,
+                )
+
+                continue
+
+        # Bind to next table if eligible.
+        if segment.kind == "table" and pending_caption is not None:
+            cap_seg, cap_text, cap_kind, cap_page, cap_index = pending_caption
+            gap = max(0, index - cap_index - 1)
+            page_dist = abs(page_index - cap_page)
+
+            if gap <= max_gap_segments and page_dist <= max_page_distance:
+                caption_bindings[segment.segment_id] = CaptionBinding(
+                    caption_kind=cap_kind,
+                    caption_page_index=cap_page,
+                    caption_segment_id=cap_seg.segment_id,
+                    caption_text=cap_text,
+                    gap_segments=gap,
+                    table_page_index=page_index,
+                    table_segment_id=segment.segment_id,
+                )
+            else:
+                msg = (
+                    f"Dangling caption dropped: "
+                    f"caption={cap_seg.segment_id} gap={gap} page_dist={page_dist}"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+                # input(1)
+
+            pending_caption = None
+
+            continue
+
+        # Expire pending caption if too far.
+        if pending_caption is not None:
+            cap_seg, _cap_text, _cap_kind, _cap_page, cap_index = pending_caption
+            gap = max(0, index - cap_index - 1)
+            if gap > max_gap_segments:
+                msg = (
+                    f"Dangling caption dropped: "
+                    f"caption={cap_seg.segment_id} gap_exceeded={gap}"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+                pending_caption = None
+                # input(1)
+
+    if pending_caption is not None:
+        cap_seg, *_ = pending_caption
+        msg = f"Dangling caption dropped: caption={cap_seg.segment_id} end_of_document"
+        logger.warning(msg)
+        warnings.append(msg)
+        # input(1)
+
+    return caption_bindings
+
+
 def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
     """Create canonical IR directories for a given creation run.
 
@@ -2015,6 +2253,146 @@ def persist_canonical_run(
     logger.info(f"Saving canonical IR creation results to: {creation_dirs}")
 
     return creation_dirs, creation_run
+
+
+def process_segment_decisions(
+    *,
+    caption_bindings: dict[str, Any],
+    config: CreateCanonicalConfig,
+    decision_set: SegmentDecisionSet,
+    doc_key: str,
+    existing_keys: set[tuple[str, Optional[int], Optional[int]]],
+    segment: Segment,
+    segment_decisions_fp: Path,
+) -> SegmentDecisionSet:
+    """Process a single segment to generate and persist decisions.
+
+    Parameters
+    ----------
+    caption_bindings
+        The caption bindings to apply to table segments.
+    config
+        The canonical IR creation run configuration.
+    decision_set
+        The current SegmentDecisionSet to update.
+    doc_key
+        The expected document key for all page IRs.
+    existing_keys
+        The set of existing decision keys to avoid duplicates.
+    segment
+        The Segment to process.
+    segment_decisions_fp
+        The output file path for the SegmentDecisionSet JSON.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The updated SegmentDecisionSet.
+    """
+
+    # Block segments are always 1 decision (unchunked).
+    if segment.kind == "block":
+        key: tuple[str, int | None, int | None] = (segment.segment_id, None, None)
+
+        if key in existing_keys:
+            return decision_set
+
+        table_payload = apply_caption_binding_to_table_payload(
+            caption_bindings=caption_bindings[segment.segment_id],
+            table_payload=segment.model_dump(mode="json"),
+        )
+        segment_decision = generate_segment_decision(
+            always_double_check_first_attempt=config.always_double_check_first_attempt,
+            doc_key=doc_key,
+            model=config.model,
+            segment=segment,
+            segment_payload=table_payload,
+        )
+
+        decision_set.decisions.append(segment_decision)
+        existing_keys.add(key)
+
+        # Persist checkpoint after every decision.
+        return save_segment_decision_set(
+            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+        )
+
+    # Table segments: chunk only if needed. If an unchunked table decision already
+    # exists, do NOT mix chunked + unchunked.
+    unchunked_key = (segment.segment_id, None, None)
+
+    if unchunked_key in existing_keys:
+        return decision_set
+
+    # Determine table chunks.
+    chunks = table_chunks_for_segment(
+        max_body_rows=config.max_table_rows_per_decision, segment=segment
+    )
+
+    # Unchunked table == 1 decision.
+    if len(chunks) == 1 and chunks[0] == (None, None):
+        key = unchunked_key
+
+        # Do NOT create an unchunked decision if ANY chunked decisions already exist
+        # for this segment (else we would mix chunked + unchunked representations).
+        existing_chunked_for_segment = any(
+            sid == segment.segment_id and row_start is not None
+            for (sid, row_start, _row_end) in existing_keys
+        )
+        if existing_chunked_for_segment:
+            logger.warning(
+                f"Skipping unchunked decision for table segment {segment.segment_id} "
+                f"because chunked decisions already exist (avoid mixing chunked + unchunked)."
+            )
+            return decision_set
+
+        if key not in existing_keys:
+            segment_decision = generate_segment_decision(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
+                doc_key=doc_key,
+                model=config.model,
+                segment=segment,
+            )
+
+            decision_set.decisions.append(segment_decision)
+            existing_keys.add(key)
+
+            decision_set = save_segment_decision_set(
+                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+            )
+    # Chunked table == N decisions.
+    else:
+        for start, end in chunks:
+            key = (segment.segment_id, start, end)
+
+            if start is None or end is None or key in existing_keys:
+                continue
+
+            table_payload = make_table_chunk_payload(
+                end=end, segment=segment, start=start
+            )
+            table_payload = apply_caption_binding_to_table_payload(
+                caption_bindings=caption_bindings[segment.segment_id],
+                table_payload=table_payload,
+            )
+            segment_decision = generate_segment_decision(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
+                doc_key=doc_key,
+                model=config.model,
+                row_range_end=end,
+                row_range_start=start,
+                segment=segment,
+                segment_payload=table_payload,
+            )
+
+            decision_set.decisions.append(segment_decision)
+            existing_keys.add(key)
+
+            decision_set = save_segment_decision_set(
+                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+            )
+
+    return decision_set
 
 
 def save_canonical_ir(*, canonical_ir: CanonicalIR, canonical_ir_fp: Path) -> None:

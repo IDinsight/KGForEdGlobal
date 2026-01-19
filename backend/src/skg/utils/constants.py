@@ -179,6 +179,7 @@ CaptionFigurePrefixes: tuple[str, ...] = (
     "kielelezo",
     "mchoro",
 )
+CaptionKind = Literal["figure", "table", "unknown"]
 CaptionTablePrefixes: tuple[str, ...] = (
     "jedwali",
     "tab",
