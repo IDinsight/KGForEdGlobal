@@ -22,6 +22,7 @@ from skg.document_ir.schemas import (
     SectionHeadingRef,
     Segment,
     SegmentProvenance,
+    TableRowProvenance,
     TableSegment,
     TableSlice,
 )
@@ -955,7 +956,7 @@ def _process_next_table_slice(
 
     The process is as follows:
 
-    1. Resolve local code.
+    1. Resolve local code for display but compare using normalized form.
     2. Determine rows to drop/add.
     3. Create provenance.
 
@@ -985,18 +986,21 @@ def _process_next_table_slice(
     """
 
     # 1.
-    next_local_code = normalize_local_code(next_item.local_code)
+    next_local_code = canonicalize_local_code(next_item.local_code)
 
-    if next_local_code and current_local_code and next_local_code != current_local_code:
-        msg = (
-            f"Conflicting local_code in table chain {segment_id}: "
-            f"{current_local_code!r} vs. {next_local_code!r} "
-            f"(page={next_page_index}, item_index={next_item_index}). "
-            f"Keeping {current_local_code!r}."
-        )
-        logger.warning(msg)
-        warnings.append(msg)
-        # input(1)
+    if next_local_code and current_local_code:
+        if normalize_local_code(next_local_code) != normalize_local_code(
+            current_local_code
+        ):
+            msg = (
+                f"Conflicting local_code in table chain {segment_id}: "
+                f"{current_local_code!r} vs. {next_local_code!r} "
+                f"(page={next_page_index}, item_index={next_item_index}). "
+                f"Keeping {current_local_code!r}."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+            # input(1)
 
     # Carry forward the segment code; only adopt the next code if missing.
     slice_local_code = current_local_code or next_local_code
@@ -1133,10 +1137,14 @@ def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional
     """
 
     _, _, first_item = chain[0]
-    first_code = normalize_local_code(first_item.local_code)
+    first_code = canonicalize_local_code(first_item.local_code)
 
     return first_code or next(
-        (n for *_, item in chain[1:] if (n := normalize_local_code(item.local_code))),
+        (
+            c
+            for *_, item in chain[1:]
+            if (c := canonicalize_local_code(item.local_code))
+        ),
         None,
     )
 
@@ -1823,6 +1831,54 @@ def compute_segment_id(
     name = f"{doc_key}:segment:{kind}:p{page_index:04d}:i{item_index:04d}"
 
     return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+
+
+def canonicalize_local_code(local_code: Optional[str]) -> Optional[str]:
+    """Canonicalize a local code for display.
+
+    NB:
+
+    1. This is NOT for matching/comparison (use normalize_local_code for that).
+    2. Goal is to preserve a display-safe value like "Table 4", not "table 4".
+
+    Parameters
+    ----------
+    local_code
+        The local code to canonicalize.
+
+    Returns
+    -------
+    Optional[str]
+        The canonicalized local code, or None if input is None/empty.
+    """
+
+    if not local_code:
+        return None
+
+    s = local_code.strip()
+    if not s:
+        return None
+
+    # Canonicalize common table/figure code prefixes to a stable display form.
+    # Examples:
+    #   - "TABLE 4" -> "Table 4"
+    #   - "Jedwali 4" -> "Table 4"
+    #   - "Tableau 4" -> "Table 4"
+    #   - "Figure 2" -> "Figure 2"
+    m = _CAPTION_TABLE_RE.match(s)
+
+    if m:
+        return f"Table {m.group(1)}"
+
+    m2 = _TABLE_FIGURE_RE.match(s)
+
+    if m2:
+        kind = m2.group(1).capitalize()  # Table/Figure
+        num = m2.group(2)
+        return f"{kind} {num}"
+
+    # Otherwise keep as-is (trimmed).
+    return s
 
 
 def create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
@@ -2898,7 +2954,9 @@ def process_page_pair(
     return links
 
 
-def row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str, Any]]:
+def row_provenance_by_stitched_index(
+    *, segment: TableSegment
+) -> list[TableRowProvenance]:
     """Return a list of length len(segment.rows) where each entry contains the
     provenance info (at least bbox + page_index + slice_index) for the stitched row.
     This is computed deterministically from `segment.slices` using the same
@@ -2918,8 +2976,8 @@ def row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str,
 
     Returns
     -------
-    list[dict[str, Any]]
-        List of provenance info per stitched row.
+    list[TableRowProvenance]
+        The per-stitched-row provenance mapping.
 
     Raises
     ------
@@ -2931,7 +2989,7 @@ def row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str,
         segment.slices
     ), f"TableSegment {segment.segment_id} has no slices; cannot derive row provenance."
 
-    mapping: list[dict[str, Any]] = []
+    mapping: list[TableRowProvenance] = []
 
     for slice_index, sl in enumerate(segment.slices):
         bbox = sl.bbox
@@ -2966,16 +3024,16 @@ def row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str,
                 y0 + row_h * (slice_row_index + 1),
             ]
             mapping.append(
-                {
-                    "bbox": bbox,
-                    "row_bbox": row_bbox,
-                    "page_index": sl.page_index,
-                    "slice_index": slice_index,
-                    "slice_row_index": slice_row_index,
-                    "slice_row_index_after_drop": i,
-                    "slice_total_rows": total_rows_in_slice,
-                    "dropped_header_rows": drop,
-                }
+                TableRowProvenance(
+                    bbox=bbox,
+                    dropped_header_rows=drop,
+                    page_index=sl.page_index,
+                    row_bbox=row_bbox,
+                    slice_index=slice_index,
+                    slice_row_index=slice_row_index,
+                    slice_row_index_after_drop=i,
+                    slice_total_rows=total_rows_in_slice,
+                )
             )
 
     if len(mapping) != len(segment.rows):

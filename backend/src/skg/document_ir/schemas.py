@@ -6,7 +6,7 @@ single DocumentIR.
 from __future__ import annotations
 
 # Standard Library
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 # Third Party Library
 from pydantic import Field
@@ -315,7 +315,7 @@ class TableSegment(BaseSchema):
     )
 
 
-Segment = BlockSegment | TableSegment
+Segment = Annotated[Union[BlockSegment, TableSegment], Field(discriminator="kind")]
 
 
 # Schemas for stitching.
