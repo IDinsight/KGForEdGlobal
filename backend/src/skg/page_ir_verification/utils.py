@@ -1191,7 +1191,7 @@ def execute_verification_attempts(
     for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
         try:
             verdict = verify_page_ir_pairs(
-                force_llm_retry_on_first_attempt=config.force_llm_retry_on_first_attempt,
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
                 model=config.model,
                 next_item=nitem.model_dump(mode="json"),
                 next_item_excerpt=make_verification_excerpt(

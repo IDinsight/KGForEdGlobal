@@ -57,9 +57,9 @@ openai_client = OpenAI()
 )
 def _call_openai_api_to_decide_on_segment(
     *,
+    always_double_check_first_attempt: bool,
     attempt: int,
     doc_key: str,
-    force_llm_retry_on_first_attempt: bool,
     input_items: list[Any],
     instructions: str,
     model: str,
@@ -71,12 +71,12 @@ def _call_openai_api_to_decide_on_segment(
 
     Parameters
     ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The segment decision attempt number (0-based).
     doc_key
         The document key.
-    force_llm_retry_on_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     input_items
         The list of messages to send to the OpenAI API.
     instructions
@@ -101,7 +101,7 @@ def _call_openai_api_to_decide_on_segment(
         If the response could not be parsed or failed quality checks.
     """
 
-    if attempt == 0 or not force_llm_retry_on_first_attempt:
+    if attempt == 0 or not always_double_check_first_attempt:
         response = openai_client.responses.parse(
             input=input_items,
             instructions=instructions,
@@ -143,8 +143,8 @@ def _call_openai_api_to_decide_on_segment(
     try:
         parsed = SegmentDecision.model_validate(parsed.model_dump())
         verify_segment_decision_quality(
+            always_double_check_first_attempt=always_double_check_first_attempt,
             attempt=attempt,
-            force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
             segment=segment,
             segment_decision=parsed,
         )
@@ -157,8 +157,8 @@ def _call_openai_api_to_decide_on_segment(
 
 def generate_segment_decision(
     *,
+    always_double_check_first_attempt: bool,
     doc_key: str,
-    force_llm_retry_on_first_attempt: bool,
     max_retries: int = 2,
     model: str,
     row_range_end: int | None = None,
@@ -170,10 +170,10 @@ def generate_segment_decision(
 
     Parameters
     ----------'
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     doc_key
         The document key.
-    force_llm_retry_on_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     max_retries
         Maximum number of retries for quality errors.
     model
@@ -214,9 +214,9 @@ def generate_segment_decision(
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api_to_decide_on_segment(
+                always_double_check_first_attempt=always_double_check_first_attempt,
                 attempt=attempt,
                 doc_key=doc_key,
-                force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
@@ -240,7 +240,7 @@ def generate_segment_decision(
                     }
                 )
 
-            if force_llm_retry_on_first_attempt and attempt == 0:
+            if always_double_check_first_attempt and attempt == 0:
                 input_items.append(
                     {
                         "role": "user",
@@ -318,8 +318,8 @@ def generate_segment_decision(
 
 def verify_segment_decision_quality(
     *,
+    always_double_check_first_attempt: bool,
     attempt: int,
-    force_llm_retry_on_first_attempt: bool,
     segment: Segment,
     segment_decision: SegmentDecision,
 ) -> None:
@@ -327,10 +327,10 @@ def verify_segment_decision_quality(
 
     Parameters
     ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The current attempt number (0-based).
-    force_llm_retry_on_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     segment
         The Segment being decided on.
     segment_decision
@@ -343,7 +343,7 @@ def verify_segment_decision_quality(
     """
 
     # Force retry on first attempt.
-    if force_llm_retry_on_first_attempt and attempt == 0:
+    if always_double_check_first_attempt and attempt == 0:
         raise QualityError("Reason does not matter and is overwritten in caller.")
 
     validate_segment_kind_coherence(segment=segment, segment_decision=segment_decision)
