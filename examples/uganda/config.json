@@ -1,9 +1,9 @@
 {
 	"page_ir_extraction": {
+		"always_double_check_first_attempt": true,
 		"country": "Uganda",
 		"dpi": 250,
 		"end_page": null,
-		"force_llm_retry_on_first_attempt": true,
 		"languages": [
 			"en"
 		],
@@ -16,8 +16,8 @@
 		"year": 2016
 	},
 	"page_ir_verification": {
+		"always_double_check_first_attempt": true,
 		"end_page": null,
-		"force_llm_retry_on_first_attempt": true,
 		"min_confidence_to_patch": 0.75,
 		"model": "gpt-5.2-2025-12-11",
 		"start_page": 0
@@ -33,7 +33,7 @@
 		"table_filldown_group_cols_max": 1
 	},
 	"canonical_ir": {
-		"force_llm_retry_on_first_attempt": false,
+		"always_double_check_first_attempt": false,
 		"max_table_rows_per_decision": 20,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,

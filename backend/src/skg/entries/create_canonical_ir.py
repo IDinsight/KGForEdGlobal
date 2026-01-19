@@ -109,8 +109,8 @@ def create_canonical_ir(
                 continue
 
             segment_decision = generate_segment_decision(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
                 doc_key=doc_key,
-                force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
                 model=config.model,
                 segment=segment,
             )
@@ -142,8 +142,8 @@ def create_canonical_ir(
                 continue
 
             segment_decision = generate_segment_decision(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
                 doc_key=doc_key,
-                force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
                 model=config.model,
                 segment=segment,
             )
@@ -166,8 +166,8 @@ def create_canonical_ir(
             payload = make_table_chunk_payload(end=end, segment=segment, start=start)
 
             segment_decision = generate_segment_decision(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
                 doc_key=doc_key,
-                force_llm_retry_on_first_attempt=config.force_retry_on_first_attempt,
                 model=config.model,
                 row_range_end=end,
                 row_range_start=start,

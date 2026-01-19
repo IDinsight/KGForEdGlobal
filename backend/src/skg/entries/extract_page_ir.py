@@ -128,8 +128,8 @@ def extract_page_by_page(
             )
         else:
             page_ir = extract_page_ir(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
                 country=config.country,
-                force_llm_retry_on_first_attempt=config.force_llm_retry_on_first_attempt,
                 image_height=image_height,
                 image_width=image_width,
                 languages=config.languages,

@@ -74,8 +74,8 @@ openai_client = OpenAI()
 )
 def _call_openai_api_for_page_ir_extraction(
     *,
+    always_double_check_first_attempt: bool,
     attempt: int,
-    force_llm_retry_on_first_attempt: bool,
     image_height: int,
     image_width: int,
     input_items: list[Any],
@@ -88,10 +88,10 @@ def _call_openai_api_for_page_ir_extraction(
 
     Parameters
     ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The extraction attempt number (0-based).
-    force_llm_retry_on_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     image_height
         The image height in pixels.
     image_width
@@ -116,7 +116,7 @@ def _call_openai_api_for_page_ir_extraction(
         If the response could not be parsed or failed quality checks.
     """
 
-    if attempt == 0 or not force_llm_retry_on_first_attempt:
+    if attempt == 0 or not always_double_check_first_attempt:
         response = openai_client.responses.parse(
             input=input_items,  # User content items
             instructions=instructions,  # System message at top-level
@@ -165,8 +165,8 @@ def _call_openai_api_for_page_ir_extraction(
 
     try:
         verify_page_ir_extraction_quality(
+            always_double_check_first_attempt=always_double_check_first_attempt,
             attempt=attempt,
-            force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
             image_height=image_height,
             image_width=image_width,
             page_ir=parsed,
@@ -262,8 +262,8 @@ def _persist_page_ir_attempt_artifacts(
 
 def extract_page_ir(
     *,
+    always_double_check_first_attempt: bool,
     country: str,
-    force_llm_retry_on_first_attempt: bool,
     image_height: int,
     image_width: int,
     languages: list[str],
@@ -279,10 +279,10 @@ def extract_page_ir(
 
     Parameters
     ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     country
         Country context for the prompt.
-    force_llm_retry_on_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     image_height
         The image height in pixels.
     image_width
@@ -341,8 +341,8 @@ def extract_page_ir(
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api_for_page_ir_extraction(
+                always_double_check_first_attempt=always_double_check_first_attempt,
                 attempt=attempt,
-                force_llm_retry_on_first_attempt=force_llm_retry_on_first_attempt,
                 image_height=image_height,
                 image_width=image_width,
                 input_items=input_items,
@@ -367,7 +367,7 @@ def extract_page_ir(
                     }
                 )
 
-            if force_llm_retry_on_first_attempt and attempt == 0:
+            if always_double_check_first_attempt and attempt == 0:
                 input_items.append(
                     {
                         "role": "user",
@@ -449,8 +449,8 @@ def extract_page_ir(
 
 def verify_page_ir_extraction_quality(
     *,
+    always_double_check_first_attempt: bool,
     attempt: int,
-    force_llm_retry_on_first_attempt: bool,
     image_height: int,
     image_width: int,
     page_ir: PageIR,
@@ -459,10 +459,10 @@ def verify_page_ir_extraction_quality(
 
     Parameters
     ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The extraction attempt number (0-based).
-    force_llm_retry_on_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     image_height
         Rendered page image height in pixels.
     image_width
@@ -477,7 +477,7 @@ def verify_page_ir_extraction_quality(
     """
 
     # Force retry on first attempt.
-    if force_llm_retry_on_first_attempt and attempt == 0:
+    if always_double_check_first_attempt and attempt == 0:
         raise QualityError("Reason does not matter and is overwritten in caller.")
 
     ctx = PageIRExtractionQualityCtx(

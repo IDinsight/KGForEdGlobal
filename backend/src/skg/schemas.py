@@ -48,16 +48,16 @@ class BaseSchema(BaseModel):
 class ExtractionConfig(BaseSchema):
     """Configuration for page IR extraction from a PDF document."""
 
+    always_double_check_first_attempt: bool = Field(
+        False,
+        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
+    )
     country: str = Field(
         ..., description="The country associated with the PDF document."
     )
     dpi: int = Field(250, description="Render DPI for page images.")
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default: to end."
-    )
-    force_llm_retry_on_first_attempt: bool = Field(
-        False,
-        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
     )
     languages: list[LanguageField] = Field(
         ...,
@@ -129,12 +129,12 @@ class ExtractionConfig(BaseSchema):
 class VerificationConfig(BaseSchema):
     """Configuration for page IR verification from a PDF document."""
 
-    end_page: Optional[int] = Field(
-        None, description="0-based end page (exclusive). Default: to end."
-    )
-    force_llm_retry_on_first_attempt: bool = Field(
+    always_double_check_first_attempt: bool = Field(
         False,
         description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
+    )
+    end_page: Optional[int] = Field(
+        None, description="0-based end page (exclusive). Default: to end."
     )
     min_confidence_to_patch: float = Field(
         0.75,
@@ -226,7 +226,7 @@ class StitchingConfig(BaseSchema):
 class CreateCanonicalConfig(BaseSchema):
     """Configuration for canonical IR creation from document IR."""
 
-    force_llm_retry_on_first_attempt: bool = Field(
+    always_double_check_first_attempt: bool = Field(
         False,
         description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
     )
