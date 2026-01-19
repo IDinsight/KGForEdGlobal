@@ -130,6 +130,7 @@ def create_canonical_ir(
         if unchunked_key in existing_keys:
             continue
 
+        # Determine table chunks.
         chunks = table_chunks_for_segment(
             max_body_rows=config.max_table_rows_per_decision, segment=segment
         )
@@ -137,6 +138,20 @@ def create_canonical_ir(
         # Unchunked table == 1 decision.
         if len(chunks) == 1 and chunks[0] == (None, None):
             key = unchunked_key
+
+            # Do NOT create an unchunked decision if ANY chunked decisions already
+            # exist for this segment (else we would mix chunked + unchunked
+            # representations).
+            existing_chunked_for_segment = any(
+                sid == segment.segment_id and row_start is not None
+                for (sid, row_start, _row_end) in existing_keys
+            )
+            if existing_chunked_for_segment:
+                logger.warning(
+                    f"Skipping unchunked decision for table segment {segment.segment_id} "
+                    f"because chunked decisions already exist (avoid mixing chunked + unchunked)."
+                )
+                continue
 
             if key in existing_keys:
                 continue
