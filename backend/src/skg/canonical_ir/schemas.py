@@ -17,7 +17,7 @@ from pydantic import Field, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import BaseSchema, BBox, LanguageField
+from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import (
     BlockType,
     NodeRole,
@@ -230,7 +230,7 @@ class RowDecision(BaseSchema):
     )
     row_index: int = Field(
         ...,
-        description="0-based row index within the table representation used for decision-making.",
+        description="0-based ABSOLUTE row index into the ORIGINAL stitched DocumentIR table rows.",
         ge=0,
     )
 
@@ -300,10 +300,75 @@ class SegmentDecision(BaseSchema):
         None,
         description="DocumentIR segment_id that this decision applies to. This should be populated by the Python pipeline; it may be null during segment decision.",
     )
-    segment_kind: Optional[str] = Field(
+    segment_kind: Optional[Literal["block", "table"]] = Field(
         None,
         description="High-level segment kind from DocumentIR. This should be populated by the Python pipeline; it may be null during segment decision.",
     )
+
+    @model_validator(mode="after")
+    def _validate_non_noop_emit_decision(self) -> SegmentDecision:
+        """If decision_type indicates emission, ensure something will actually be
+        emitted. This prevents 'emit_*' decisions that are effectively empty.
+
+        Returns
+        -------
+        SegmentDecision
+            The validated SegmentDecision object.
+
+        Raises
+        ------
+        ValueError
+            If an emit decision_type has no output
+            (context_groupings/groupings/leaves/rows all empty).
+        """
+
+        if self.decision_type in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        ):
+            return self
+
+        has_any_output = bool(
+            self.context_groupings or self.groupings or self.leaves or self.rows
+        )
+        if not has_any_output:
+            raise ValueError(
+                f"Decision type '{self.decision_type.value}' emitted no output "
+                f"(context_groupings/groupings/leaves/rows all empty). "
+                f"This should usually be IGNORE or UNRESOLVED."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_table_rows_vs_leaves(self) -> SegmentDecision:
+        """Prevent double counting: if using rows[] for a table, top-level leaves[]
+        must be empty.
+
+        Returns
+        -------
+        SegmentDecision
+            The validated SegmentDecision object.
+
+        Raises
+        ------
+        ValueError
+            If both rows[] and top-level leaves[] are populated for a table segment.
+        """
+
+        if self.decision_type in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        ):
+            return self
+
+        if self.rows and self.leaves:
+            raise ValueError(
+                "SegmentDecision includes both rows[] and top-level leaves[]. "
+                "Use rows[] only for table parsing to avoid duplication."
+            )
+
+        return self
 
     @model_validator(mode="after")
     def _validate(self) -> SegmentDecision:
@@ -463,8 +528,10 @@ class CanonicalNode(BaseSchema):
 
     Canonical nodes are *flat*; hierarchy is represented only by CanonicalEdge hasChild
     edges. A node may represent either:
-        - A grouping container (NodeRole)
-        - A statement leaf (StatementRole)
+        - A grouping container (NodeRole): these are containers and their text is
+            treated as a label.
+        - A statement leaf (StatementRole): these are content and their text is treated
+            as normative learning content.
     """
 
     bbox: Optional[BBox] = Field(
@@ -474,10 +541,6 @@ class CanonicalNode(BaseSchema):
     body: TextUnit | None = Field(
         default=None,
         description="Full body text for statement nodes (EXPECTATION/DESCRIPTOR/GUIDANCE).",
-    )
-    language: LanguageField | None = Field(
-        default=None,
-        description="Optional language tag for this node's text (e.g., 'en', 'sw').",
     )
     list_id: Optional[str] = Field(
         default=None,
@@ -524,22 +587,45 @@ class CanonicalNode(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def _ensure_text(self) -> Self:
-        """Ensures that at least one of title or body is set.
+    def _validate_title_body_by_role(self) -> Self:
+        """Enforce role/text consistency:
+
+        1. NodeRole (grouping nodes): require title, forbid body
+        2. StatementRole (statement leaves): require body, forbid title
 
         Returns
         -------
-        CanonicalNode
+        Self
             The validated CanonicalNode object.
 
         Raises
         ------
         ValueError
-            If neither title nor body is set.
+            If the CanonicalNode is inconsistent based on its role.
         """
 
-        if not self.title and not self.body:
-            raise ValueError("CanonicalNode must have at least one of title/body")
+        if isinstance(self.role, NodeRole):
+            if self.title is None or not (self.title.text or "").strip():
+                raise ValueError(
+                    f"CanonicalNode role '{self.role.value}' is a grouping (NodeRole) "
+                    "so it must have a non-empty title."
+                )
+            if self.body is not None:
+                raise ValueError(
+                    f"CanonicalNode role '{self.role.value}' is a grouping (NodeRole) "
+                    "so it must not have a body."
+                )
+        else:
+            if self.body is None or not (self.body.text or "").strip():
+                raise ValueError(
+                    f"CanonicalNode role '{self.role.value}' is a statement (StatementRole) "
+                    "so it must have a non-empty body."
+                )
+            if self.title is not None:
+                raise ValueError(
+                    f"CanonicalNode role '{self.role.value}' is a statement (StatementRole) "
+                    "so it must not have a title."
+                )
 
         return self
 

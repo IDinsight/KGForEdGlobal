@@ -154,16 +154,6 @@ def _load_segment_decision_set(
 
     raw = open_json_type(segment_decisions_fp)
 
-    # Allow "raw list" format.
-    if isinstance(raw, list):
-        decisions = [SegmentDecision.model_validate(d) for d in raw]
-        raw = {
-            "pdf_name": pdf_name,
-            "doc_key": expected_doc_key,
-            "decision_set_id": compute_decision_set_id(decisions=decisions),
-            "decisions": decisions,
-        }
-
     # Ensure decision_set_id exists for wrapper format.
     if isinstance(raw, dict):
         if raw.get("decisions") is None:
@@ -2204,6 +2194,12 @@ def make_table_chunk_payload(
     """
 
     seg = segment.model_dump(mode="json")
+
+    # NB: Chunk payload should not include full-table derived views that can leak
+    # information outside the chunk.
+    for k in ("rows_grid", "rows_filldown", "grid_sources", "row_provenance"):
+        seg.pop(k, None)
+
     full_rows = seg["rows"]
     chunk_rows: list[dict[str, Any]] = []
 
