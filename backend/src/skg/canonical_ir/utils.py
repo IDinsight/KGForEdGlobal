@@ -2257,7 +2257,7 @@ def persist_canonical_run(
 
 def process_segment_decisions(
     *,
-    caption_bindings: dict[str, Any],
+    caption_bindings: dict[str, CaptionBinding | None],
     config: CreateCanonicalConfig,
     decision_set: SegmentDecisionSet,
     doc_key: str,
@@ -2297,25 +2297,29 @@ def process_segment_decisions(
         if key in existing_keys:
             return decision_set
 
-        table_payload = apply_caption_binding_to_table_payload(
-            caption_bindings=caption_bindings[segment.segment_id],
-            table_payload=segment.model_dump(mode="json"),
-        )
+        # NB: Never apply caption bindings to block segments.
+        segment_payload = segment.model_dump(mode="json")
+
         segment_decision = generate_segment_decision(
             always_double_check_first_attempt=config.always_double_check_first_attempt,
             doc_key=doc_key,
             model=config.model,
             segment=segment,
-            segment_payload=table_payload,
+            segment_payload=segment_payload,
         )
 
         decision_set.decisions.append(segment_decision)
         existing_keys.add(key)
 
-        # Persist checkpoint after every decision.
         return save_segment_decision_set(
             decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
         )
+
+    assert segment.kind == "table"
+
+    # Caption bindings dict is keyed by TABLE segment_id, and many tables have NO
+    # caption -> Use .get().
+    binding: CaptionBinding | None = caption_bindings.get(segment.segment_id)
 
     # Table segments: chunk only if needed. If an unchunked table decision already
     # exists, do NOT mix chunked + unchunked.
@@ -2347,11 +2351,18 @@ def process_segment_decisions(
             return decision_set
 
         if key not in existing_keys:
+            # Apply caption binding and pass the payload even for UNCHUNKED tables so
+            # the LLM sees caption_text/caption_kind etc.
+            table_payload = segment.model_dump(mode="json")
+            table_payload = apply_caption_binding_to_table_payload(
+                caption_bindings=binding, table_payload=table_payload
+            )
             segment_decision = generate_segment_decision(
                 always_double_check_first_attempt=config.always_double_check_first_attempt,
                 doc_key=doc_key,
                 model=config.model,
                 segment=segment,
+                segment_payload=table_payload,
             )
 
             decision_set.decisions.append(segment_decision)
@@ -2371,10 +2382,12 @@ def process_segment_decisions(
             table_payload = make_table_chunk_payload(
                 end=end, segment=segment, start=start
             )
+
+            # Use binding (may be None), do not index caption_bindings[].
             table_payload = apply_caption_binding_to_table_payload(
-                caption_bindings=caption_bindings[segment.segment_id],
-                table_payload=table_payload,
+                caption_bindings=binding, table_payload=table_payload
             )
+
             segment_decision = generate_segment_decision(
                 always_double_check_first_attempt=config.always_double_check_first_attempt,
                 doc_key=doc_key,
