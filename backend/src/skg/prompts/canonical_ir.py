@@ -3,6 +3,8 @@ creation.
 """
 
 # Standard Library
+import json
+
 from textwrap import dedent
 from typing import Any
 
@@ -119,10 +121,24 @@ StatementRole (for leaf decisions):
   - strand/main competence/topic/subtopic/unit/section
 2. Prefer the most specific reasonable NodeRole.
 3. If you are unsure, use role="{NodeRole.SECTION.value}" or omit groupings.
-4. You may optionally interpret segment.section_path into context_groupings[].
-  - segment.section_path is a list of heading refs like: [{"text": "...", "page_index": <int>, "item_index": <int>}, ...]
-  - Use the .text values as the hierarchy context ONLY if confident.
-  - Otherwise leave context_groupings empty.
+4. REQUIRED (Pattern A): Emit `context_groupings[]` for any decision that emits anything (any `emit_*` decision_type).
+  - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
+  - Therefore, YOU MUST explicitly provide the hierarchy context snapshot in `context_groupings[]`.
+  - `segment.section_path` is provided as EVIDENCE ONLY (semantic-light headings).
+  - `context_groupings[]` must be derived only from evidence in the segment payload:
+    - section_path texts
+    - caption_text (if present for tables)
+    - table header phrases if they clearly imply context
+  - If no usable context evidence exists, context_groupings may be [] (attach to framework root).
+  - If uncertain about context, choose decision_type="unresolved".
+
+## IMPORTANT: Outer context vs. row-local context for tables
+1. For TABLE segments (including chunked slices):
+  - `context_groupings[]` should represent ONLY the stable OUTER context for this table/chunk:
+      * derived from `section_path[]` and/or `caption_text` and/or table headers
+      * e.g., Grade/Stage, Subject/Learning Area, Theme/Unit if clearly indicated
+  - Row-specific context (topic/subtopic/strand/code/week/etc. that changes by row) MUST go inside `RowDecision.groupings[]`.
+  - Do NOT promote per-row values from table cells into `context_groupings[]` unless they are clearly table-scoped and stable across the chunk (rare).
 
 ## TABLE-SPECIFIC INSTRUCTIONS
 1. If segment_kind="table":
@@ -135,6 +151,7 @@ StatementRole (for leaf decisions):
       - Only emit RowDecisions for body rows unless a header row clearly contains real standards/expectations (rare).
     - groupings[] should capture container-like cells (subject/topic/strand/stage/week etc.).
     - leaves[] should capture expectation/descriptor/guidance statements from that row.
+  - Reminder: Put stable OUTER context in `context_groupings[]`, and row-varying context in `RowDecision.groupings[]`.
   - Split multiple statements within a cell into multiple LeafDecisions when clearly separable (bullets, numbering, semicolons, line breaks).
   - If headers suggest roles (e.g., "Specific Competences", "Expected Standard", "Learning Activities"), map accordingly.
   - If no rows contain anything meaningful (e.g., empty or purely formatting), use decision_type="{SegmentDecisionType.IGNORE.value}".
@@ -186,7 +203,9 @@ StatementRole (for leaf decisions):
 
 NB: If caption_text is present, it describes the TABLE and is useful context; do not emit it as a node.
 
-Segment: {segment}
+Segment JSON:
+
+{json.dumps(segment, ensure_ascii=False, indent=2)}
         """
     )
 
@@ -235,6 +254,7 @@ In particular, ensure that:
   - Do NOT emit RowDecisions for blank/empty rows.
   - If you split a cell into multiple statements, ensure each LeafDecision is atomic and non-overlapping.
   - If headers imply roles (e.g., "Specific Competences", "Learning Activities", "Expected Standard"), map them correctly.
+  - Ensure table OUTER context is in `context_groupings[]` (section_path/caption/headers), and row-local context is in `RowDecision.groupings[]` (topic/subtopic/code/week/etc).
 5. **Block discipline (if segment_kind="block")**
   - If block_type is "{BlockType.CAPTION.value}": decision_type should usually be "{SegmentDecisionType.IGNORE.value}" (captions bind later).
   - If block_type is "{BlockType.HEADING.value}": emit groupings only if it clearly denotes a hierarchy container
@@ -242,6 +262,9 @@ In particular, ensure that:
 6. **Conservativeness + confidence calibration**
    - If you're not sure, mark unresolved with confidence < 0.6.
    - Only use confidence >= 0.85 when the mapping is obvious.
+7. - If decision_type is any emit_*:
+     - `context_groupings[]` must be present and reflect the current hierarchy context based on evidence in the segment payload (especially section_path and caption_text).
+     - The compiler will not create nodes from segment.section_path automatically.
 
 When you are confident in your answer, return a complete `SegmentDecision` that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made.
         """

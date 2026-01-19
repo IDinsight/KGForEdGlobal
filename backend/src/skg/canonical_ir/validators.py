@@ -1,17 +1,64 @@
 """This module contains functionalities related to validating CanonicalIR information."""
 
+# Standard Library
+from typing import Any
+
 # Package Library
 from skg.canonical_ir.schemas import SegmentDecision
 from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
-from skg.utils.constants import SegmentDecisionType
+from skg.utils.constants import BlockType, NonArtifacts, SegmentDecisionType
 
 
-def validate_non_noop_emit_decision(
-    *, segment: Segment, segment_decision: SegmentDecision
+def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
+    """Parse payload rows to build a map of {abs_row_index: casefolded_text_blob}.
+
+    Parameters
+    ----------
+    rows
+        The list of row dictionaries from the segment payload.
+
+    Returns
+    -------
+    dict[int, str]
+        A mapping from absolute row index to the concatenated, casefolded text
+    """
+
+    row_text_by_abs_index: dict[int, str] = {}
+
+    for r in rows:
+        abs_i = r.get("abs_row_index")
+
+        if abs_i is None:
+            continue
+
+        # Extract text from all cells in the row.
+        cells = r.get("cells") or []
+        parts = [
+            str(c.get("text", {}).get("text", "") or "")
+            for c in cells
+            if isinstance(c.get("text"), dict)
+        ]
+
+        row_text_by_abs_index[int(abs_i)] = " \n ".join(parts).casefold()
+
+    return row_text_by_abs_index
+
+
+def validate_context_groupings_required_for_emit(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
 ) -> None:
-    """If decision_type indicates emission, ensure something will actually be emitted.
-    This prevents 'emit_*' decisions that are effectively empty.
+    """If this decision emits anything and *meaningful* context evidence exists, then
+    context_groupings[] must be non-empty. "Meaningful context evidence" is
+    intentionally conservative:
+        - section_path contains at least 1 non-artifact heading, OR
+        - caption_text is present (table payload)
+
+    NB: We ignore common document furniture headings (Table of Contents, References,
+        etc.) via `NonArtifacts`.
 
     Parameters
     ----------
@@ -19,6 +66,8 @@ def validate_non_noop_emit_decision(
         The Segment being decided on.
     segment_decision
         The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
 
     Raises
     ------
@@ -32,21 +81,293 @@ def validate_non_noop_emit_decision(
     ):
         return
 
-    has_any_output = bool(
-        segment_decision.context_groupings
-        or segment_decision.groupings
-        or segment_decision.leaves
-        or segment_decision.rows
-    )
+    payload = segment_payload or {}
 
-    if not has_any_output:
+    # Determine whether section_path is meaningful.
+    section_path = payload.get("section_path") or []
+    meaningful_heading_texts: list[str] = []
+
+    for h in section_path:
+        t = ""
+
+        if isinstance(h, dict):
+            t = h.get("text", "") or ""
+        elif isinstance(h, str):
+            t = h  # Defensive: some payloads may serialize as strings
+
+        tn = (t or "").strip().casefold()
+        tn = " ".join(tn.split())
+
+        if not tn or tn in NonArtifacts:
+            continue
+
+        meaningful_heading_texts.append(t)
+
+    has_meaningful_section_path = bool(meaningful_heading_texts)
+    has_caption = bool((payload.get("caption_text") or "").strip())
+
+    if (
+        has_meaningful_section_path or has_caption
+    ) and not segment_decision.context_groupings:
         raise QualityError(
-            f"Decision type '{segment_decision.decision_type.value}' emitted no output "
-            f"(context_groupings/groupings/leaves/rows all empty). "
-            f"This should usually be IGNORE or UNRESOLVED.\n"
+            f"Emitting decision must include non-empty context_groupings[] when "
+            f"meaningful section_path or caption_text evidence exists.\n"
             f"  segment_id: {segment.segment_id}\n"
-            f"  decision_id: {segment_decision.decision_id}"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  has_meaningful_section_path: {has_meaningful_section_path}\n"
+            f"  has_caption_text: {has_caption}\n"
+            f"  section_path_headings: {meaningful_heading_texts}"
         )
+
+
+def validate_context_groupings_supported_by_evidence(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
+) -> None:
+    """Prevent hallucinated context_groupings: require that grouping titles appear in
+    evidence text (section_path headings and/or caption_text).
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if (
+        segment_decision.decision_type
+        in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        )
+        or not segment_decision.context_groupings
+    ):
+        return
+
+    payload = segment_payload or {}
+
+    headings = [
+        h.get("text", "") for h in payload.get("section_path", []) if h.get("text")
+    ]
+    caption = (payload.get("caption_text") or "").strip()
+
+    evidence_blob = " \n ".join([*headings, caption]).casefold()
+
+    # If there is no evidence at all, don't enforce strict support.
+    if not evidence_blob.strip():
+        return
+
+    for g in segment_decision.context_groupings:
+        title = (g.title or "").strip()
+        if not title:
+            raise QualityError(
+                f"context_groupings contains empty title (should not be possible).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}"
+            )
+
+        if title.casefold() not in evidence_blob:
+            raise QualityError(
+                f"Pattern A violation: context_groupings title not supported by evidence.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  unsupported_title: {title}\n"
+                f"  evidence_headings: {headings}\n"
+                f"  has_caption_text: {bool(caption)}"
+            )
+
+
+def validate_context_groupings_supported_by_outer_evidence(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
+) -> None:
+    """`context_groupings[]` must be supported by OUTER evidence:
+        - section_path texts
+        - caption_text
+        - header_rows_canonical
+
+    This discourages the model from promoting row-local values into outer context.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if (
+        segment_decision.decision_type
+        in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        )
+        or not segment_decision.context_groupings
+    ):
+        return
+
+    payload = segment_payload or {}
+    headings = [
+        h.get("text", "") for h in payload.get("section_path", []) if h.get("text")
+    ]
+    caption = payload.get("caption_text") or ""
+    header_rows = payload.get("header_rows_canonical") or []
+    header_strings = []
+
+    for r in header_rows:
+        for c in r:
+            if isinstance(c, str) and c.strip():
+                header_strings.append(c)
+
+    evidence_blob = " \n ".join([*headings, caption, *header_strings]).casefold()
+
+    # If there is NO outer evidence at all, we can't enforce this strictly.
+    if not evidence_blob.strip():
+        return
+
+    for g in segment_decision.context_groupings:
+        title = (g.title or "").strip().casefold()
+        if not title:
+            raise QualityError(
+                f"context_groupings contains an empty title.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}"
+            )
+        if title not in evidence_blob:
+            raise QualityError(
+                f"Strategy 1 violation: context_groupings title not supported by OUTER evidence "
+                f"(section_path/caption/headers). It may be a row-local value.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  unsupported_title: {g.title}\n"
+                f"  section_path_headings: {headings}\n"
+                f"  has_caption_text: {bool((caption or '').strip())}"
+            )
+
+
+def validate_heading_segments_emit_groupings(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Ensure HEADING blocks don't become no-op context only. If the stitching step
+    classified a segment as a HEADING block and the LLM decision emits anything (i.e.,
+    is not IGNORE/UNRESOLVED), then we require it to emit at least one grouping node in
+    `groupings[]`. Without this, the model can put all structure into
+    `context_groupings[]` and skip emitting the actual heading node, which causes
+    hierarchy/order drift. The decision can still be IGNORE/UNRESOLVED (e.g.,
+    false-positive running headers).
+    """
+
+    if segment.kind != "block":
+        return
+
+    # Only enforce for true heading blocks from DocumentIR.
+    if getattr(segment, "block_type", None) != BlockType.HEADING:
+        return
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    if not segment_decision.groupings:
+        raise QualityError(
+            f"Heading segment emitted a decision but did not emit any grouping nodes.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  decision_type: {segment_decision.decision_type.value}"
+        )
+
+
+def validate_row_groupings_supported_by_row_cells(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
+) -> None:
+    """Row-local groupings must be grounded in the row's visible cell text. This
+    prevents hallucinated Topic/Subtopic/Code values. Only enforced for TABLE segments
+    where segment_payload includes rows.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if (
+        segment.kind != "table"
+        or (
+            segment_decision.decision_type
+            in (
+                SegmentDecisionType.IGNORE,
+                SegmentDecisionType.UNRESOLVED,
+            )
+        )
+        or not segment_decision.rows
+    ):
+        return
+
+    payload = segment_payload or {}
+    row_text_map = _build_row_text_map(payload.get("rows") or [])
+
+    # Validate each row decision grouping title appears in that row text.
+    for rd in segment_decision.rows:
+        if not rd.groupings:
+            continue
+
+        row_blob = row_text_map.get(rd.row_index)
+
+        # If we can't find the row blob (e.g., unchunked payload without
+        # abs_row_index), skip strict enforcement.
+        if not row_blob:
+            continue
+
+        for g in rd.groupings:
+            title = (g.title or "").strip().casefold()
+            if not title:
+                raise QualityError(
+                    f"RowDecision.groupings contains an empty title.\n"
+                    f"  segment_id: {segment.segment_id}\n"
+                    f"  decision_id: {segment_decision.decision_id}\n"
+                    f"  row_index: {rd.row_index}"
+                )
+            if title not in row_blob:
+                raise QualityError(
+                    f"Strategy 1 violation: RowDecision grouping title not supported by visible row cell text.\n"
+                    f"  segment_id: {segment.segment_id}\n"
+                    f"  decision_id: {segment_decision.decision_id}\n"
+                    f"  row_index: {rd.row_index}\n"
+                    f"  unsupported_title: {g.title}"
+                )
 
 
 def validate_segment_kind_coherence(
@@ -180,37 +501,6 @@ def validate_table_header_rows_not_emitted(
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  header_row_count: {header_n}\n"
             f"  bad_row_indices: {bad}"
-        )
-
-
-def validate_table_rows_vs_leaves(
-    *, segment: Segment, segment_decision: SegmentDecision
-) -> None:
-    """Prevent double counting: if using rows[] for a table, top-level leaves[] should
-    be empty.
-
-    Parameters
-    ----------
-    segment
-        The Segment being decided on.
-    segment_decision
-        The SegmentDecision to validate.
-
-    Raises
-    ------
-    QualityError
-        If both rows[] and top-level leaves[] are present in a table decision.
-    """
-
-    if segment.kind != "table":
-        return
-
-    if segment_decision.rows and segment_decision.leaves:
-        raise QualityError(
-            f"Table decision includes both rows[] and top-level leaves[]. "
-            f"Use rows[] only for table parsing to avoid duplication.\n"
-            f"  segment_id: {segment.segment_id}\n"
-            f"  decision_id: {segment_decision.decision_id}"
         )
 
 

@@ -23,11 +23,14 @@ from tenacity import (
 # Package Library
 from skg.canonical_ir.schemas import SegmentDecision
 from skg.canonical_ir.validators import (
-    validate_non_noop_emit_decision,
+    validate_context_groupings_required_for_emit,
+    validate_context_groupings_supported_by_evidence,
+    validate_context_groupings_supported_by_outer_evidence,
+    validate_heading_segments_emit_groupings,
+    validate_row_groupings_supported_by_row_cells,
     validate_segment_kind_coherence,
     validate_table_header_rows_not_emitted,
     validate_table_row_index,
-    validate_table_rows_vs_leaves,
     validate_table_split_explosion,
     validate_unique_table_rows,
 )
@@ -67,6 +70,7 @@ def _call_openai_api_to_decide_on_segment(
     row_range_end: int | None,
     row_range_start: int | None,
     segment: Segment,
+    segment_payload: dict[str, Any] | None,
 ) -> SegmentDecision:
     """Wrapper for segment decision API calls with retries.
 
@@ -90,6 +94,8 @@ def _call_openai_api_to_decide_on_segment(
         The optional row range start for table segments.
     segment
         The segment to decide on.
+    segment_payload
+        Optional additional payload for the segment.
 
     Returns
     -------
@@ -148,6 +154,7 @@ def _call_openai_api_to_decide_on_segment(
             attempt=attempt,
             segment=segment,
             segment_decision=parsed,
+            segment_payload=segment_payload,
         )
     except (ValidationError, QualityError) as e:
         # Attach the raw output so the correction attempt can see what it wrote.
@@ -224,6 +231,7 @@ def generate_segment_decision(
                 row_range_end=row_range_end,
                 row_range_start=row_range_start,
                 segment=segment,
+                segment_payload=segment_payload,
             )
         except QualityError as e:
             if attempt == max_retries:
@@ -323,6 +331,7 @@ def verify_segment_decision_quality(
     attempt: int,
     segment: Segment,
     segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None = None,
 ) -> None:
     """Validate the semantic consistency of a continuity verdict.
 
@@ -336,6 +345,8 @@ def verify_segment_decision_quality(
         The Segment being decided on.
     segment_decision
         The SegmentDecision to validate.
+    segment_payload
+        Optional additional payload for the segment.
 
     Raises
     ------
@@ -353,6 +364,27 @@ def verify_segment_decision_quality(
     validate_table_header_rows_not_emitted(
         segment=segment, segment_decision=segment_decision
     )
-    validate_table_rows_vs_leaves(segment=segment, segment_decision=segment_decision)
-    validate_non_noop_emit_decision(segment=segment, segment_decision=segment_decision)
+    validate_heading_segments_emit_groupings(
+        segment=segment, segment_decision=segment_decision
+    )
     validate_table_split_explosion(segment=segment, segment_decision=segment_decision)
+    validate_context_groupings_required_for_emit(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_payload=segment_payload,
+    )
+    validate_context_groupings_supported_by_evidence(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_payload=segment_payload,
+    )
+    validate_context_groupings_supported_by_outer_evidence(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_payload=segment_payload,
+    )
+    validate_row_groupings_supported_by_row_cells(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_payload=segment_payload,
+    )
