@@ -1346,7 +1346,7 @@ def test__process_next_table_slice_local_code_conflict() -> None:
     warnings: list[str] = []
 
     result = utils._process_next_table_slice(
-        current_local_code="table 1",  # Current
+        current_local_code="Table 1",  # Current
         next_item=next_item,
         next_item_index=1,
         next_page_index=1,
@@ -1356,10 +1356,10 @@ def test__process_next_table_slice_local_code_conflict() -> None:
         warnings=warnings,
     )
 
-    assert result["local_code"] == "table 1"
+    assert result["local_code"] == "Table 1"
     assert len(warnings) == 1
     assert "Conflicting local_code" in warnings[0]
-    assert "'table 1' vs. 'table 2'" in warnings[0]
+    assert "'Table 1' vs. 'Table 2'" in warnings[0]
 
 
 def test__process_next_table_slice_provenance_creation() -> None:
@@ -1390,7 +1390,7 @@ def test__process_next_table_slice_provenance_creation() -> None:
     assert prov.page_index == 2
     assert prov.item_index == 5
     assert prov.bbox == [10, 20, 30, 40]
-    assert prov.local_code == "table x"
+    assert prov.local_code == "Table X"
     assert result["slice"].page_index == 2
 
 
@@ -1527,7 +1527,7 @@ def test__resolve_initial_local_code_first_item_empty_finds_second() -> None:
     ]
 
     result = utils._resolve_initial_local_code(chain)
-    assert result == "table 3"
+    assert result == "Table 3"
 
 
 def test__resolve_initial_local_code_first_item_has_code() -> None:
@@ -1539,7 +1539,7 @@ def test__resolve_initial_local_code_first_item_has_code() -> None:
     ]
 
     result = utils._resolve_initial_local_code(chain)
-    assert result == "table 1"
+    assert result == "Table 1"
 
 
 def test__resolve_initial_local_code_normalization_behavior() -> None:
@@ -1550,7 +1550,7 @@ def test__resolve_initial_local_code_normalization_behavior() -> None:
 
     # We rely on the real normalize_local_code implementation here.
     result = utils._resolve_initial_local_code(chain)
-    assert result == "table 1.2"
+    assert result == "Table 1.2"
 
 
 def test__resolve_initial_local_code_single_item_chain_none() -> None:
@@ -1570,7 +1570,7 @@ def test__resolve_initial_local_code_stops_at_first_valid_match() -> None:
     ]
 
     result = utils._resolve_initial_local_code(chain)
-    assert result == "table a"
+    assert result == "Table A"
 
 
 def test_expand_table_rows_to_rows_grid_bounds_validation() -> None:
@@ -1910,15 +1910,15 @@ def test_row_provenance_by_stitched_index_multi_slice_stitching() -> None:
     assert len(provenance) == 4
 
     # Row 0 (From Slice 1).
-    assert provenance[0]["page_index"] == 1
-    assert provenance[0]["slice_index"] == 0
-    assert provenance[0]["slice_row_index"] == 0
+    assert provenance[0].page_index == 1
+    assert provenance[0].slice_index == 0
+    assert provenance[0].slice_row_index == 0
 
     # Row 2 (From Slice 2) - This is the first row of the second page.
-    assert provenance[2]["page_index"] == 2
-    assert provenance[2]["slice_index"] == 1
-    assert provenance[2]["slice_row_index"] == 0
-    assert provenance[2]["dropped_header_rows"] == 0
+    assert provenance[2].page_index == 2
+    assert provenance[2].slice_index == 1
+    assert provenance[2].slice_row_index == 0
+    assert provenance[2].dropped_header_rows == 0
 
 
 def test_row_provenance_by_stitched_index_no_slices_assertion() -> None:
@@ -1951,19 +1951,19 @@ def test_row_provenance_by_stitched_index_single_slice_simple() -> None:
 
     # Check first row.
     row_0 = provenance[0]
-    assert row_0["page_index"] == 1
-    assert row_0["slice_index"] == 0
-    assert row_0["slice_row_index"] == 0
+    assert row_0.page_index == 1
+    assert row_0.slice_index == 0
+    assert row_0.slice_row_index == 0
 
     # Height 300 / 3 rows = 100 per row. y0=0, y1=100.
-    assert row_0["row_bbox"] == [0, 0, 100, 100]
+    assert row_0.row_bbox == [0, 0, 100, 100]
 
     # Check last row.
     row_2 = provenance[2]
-    assert row_2["slice_row_index"] == 2
+    assert row_2.slice_row_index == 2
 
     # y0=200, y1=300
-    assert row_2["row_bbox"] == [0, 200, 100, 300]
+    assert row_2.row_bbox == [0, 200, 100, 300]
 
 
 def test_row_provenance_by_stitched_index_with_dropped_headers() -> None:
@@ -2003,21 +2003,21 @@ def test_row_provenance_by_stitched_index_with_dropped_headers() -> None:
     # Check the last row (Data B), which came from Slice 2.
     prov_data_b = provenance[2]
 
-    assert prov_data_b["page_index"] == 2
-    assert prov_data_b["slice_index"] == 1
+    assert prov_data_b.page_index == 2
+    assert prov_data_b.slice_index == 1
 
     # It was index 1 in the original slice (0 was header).
-    assert prov_data_b["slice_row_index"] == 1
+    assert prov_data_b.slice_row_index == 1
 
     # It is the 0th row *after* dropping headers.
-    assert prov_data_b["slice_row_index_after_drop"] == 0
+    assert prov_data_b.slice_row_index_after_drop == 0
 
     # Verify bbox calculation:
     #   - Slice height 20 / 2 rows = 10 per row.
     #   - Index 1 corresponds to y range [10, 20].
     #   - If the logic incorrectly used "index after drop (0)", it would return
     #   [0, 0, 10, 10]. We want [0, 10, 10, 20].
-    assert prov_data_b["row_bbox"] == [0.0, 10.0, 10.0, 20.0]
+    assert prov_data_b.row_bbox == [0.0, 10.0, 10.0, 20.0]
 
 
 def test_stitch_table_chain_columns_signature_generation() -> None:
@@ -2216,10 +2216,10 @@ def test_stitch_table_chain_propagates_local_code() -> None:
         warnings=[],
     )
 
-    assert segment.local_code == "table 2.1"
+    assert segment.local_code == "Table 2.1"
 
     # Provenance backfill (Item 1 should now have the code).
-    assert segment.segment_provenance[0].local_code == "table 2.1"
+    assert segment.segment_provenance[0].local_code == "Table 2.1"
 
     # Forward propagation (Item 3 should have the code).
-    assert segment.segment_provenance[2].local_code == "table 2.1"
+    assert segment.segment_provenance[2].local_code == "Table 2.1"
