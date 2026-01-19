@@ -34,15 +34,13 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.llm import generate_segment_decision
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
+    build_caption_bindings,
     decision_key,
     load_or_initialize_segment_decision_set,
-    make_table_chunk_payload,
     persist_canonical_run,
-    save_segment_decision_set,
-    table_chunks_for_segment,
+    process_segment_decisions,
 )
 from skg.document_ir.schemas import DocumentIR
 from skg.schemas import CreateCanonicalConfig, RunConfig, RunCtx
@@ -86,6 +84,13 @@ def create_canonical_ir(
     # Validate and load the Document IR.
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
+    warnings: list[str] = []
+
+    # Build one-shot caption to next table bindings.
+    caption_bindings = build_caption_bindings(
+        document_ir=document_ir, warnings=warnings
+    )
+
     # Load or initialize decision set.
     decision_set, segment_decisions_fp = load_or_initialize_segment_decision_set(
         creation_dirs=creation_dirs,
@@ -101,101 +106,15 @@ def create_canonical_ir(
     for i, segment in enumerate(document_ir.segments, 1):
         logger.info(f"Processing segment ({segment.segment_id}): {i}/{num_segments}")
 
-        # Block segments: always 1 decision (unchunked).
-        if segment.kind == "block":
-            key = (segment.segment_id, None, None)
-
-            if key in existing_keys:
-                continue
-
-            segment_decision = generate_segment_decision(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                doc_key=doc_key,
-                model=config.model,
-                segment=segment,
-            )
-
-            decision_set.decisions.append(segment_decision)
-            existing_keys.add(key)
-
-            # Persist checkpoint after every decision.
-            decision_set = save_segment_decision_set(
-                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
-            )
-            continue
-
-        # Table segments: chunk only if needed. If an unchunked table decision already
-        # exists, do NOT mix chunked + unchunked.
-        unchunked_key = (segment.segment_id, None, None)
-        if unchunked_key in existing_keys:
-            continue
-
-        # Determine table chunks.
-        chunks = table_chunks_for_segment(
-            max_body_rows=config.max_table_rows_per_decision, segment=segment
+        decision_set = process_segment_decisions(
+            caption_bindings=caption_bindings,
+            config=config,
+            decision_set=decision_set,
+            doc_key=doc_key,
+            existing_keys=existing_keys,
+            segment=segment,
+            segment_decisions_fp=segment_decisions_fp,
         )
-
-        # Unchunked table == 1 decision.
-        if len(chunks) == 1 and chunks[0] == (None, None):
-            key = unchunked_key
-
-            # Do NOT create an unchunked decision if ANY chunked decisions already
-            # exist for this segment (else we would mix chunked + unchunked
-            # representations).
-            existing_chunked_for_segment = any(
-                sid == segment.segment_id and row_start is not None
-                for (sid, row_start, _row_end) in existing_keys
-            )
-            if existing_chunked_for_segment:
-                logger.warning(
-                    f"Skipping unchunked decision for table segment {segment.segment_id} "
-                    f"because chunked decisions already exist (avoid mixing chunked + unchunked)."
-                )
-                continue
-
-            if key in existing_keys:
-                continue
-
-            segment_decision = generate_segment_decision(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                doc_key=doc_key,
-                model=config.model,
-                segment=segment,
-            )
-
-            decision_set.decisions.append(segment_decision)
-            existing_keys.add(key)
-
-            decision_set = save_segment_decision_set(
-                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
-            )
-            continue
-
-        # Chunked table == N decisions.
-        for start, end in chunks:
-            key = (segment.segment_id, start, end)
-
-            if key in existing_keys:
-                continue
-
-            payload = make_table_chunk_payload(end=end, segment=segment, start=start)
-
-            segment_decision = generate_segment_decision(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                doc_key=doc_key,
-                model=config.model,
-                row_range_end=end,
-                row_range_start=start,
-                segment=segment,
-                segment_payload=payload,
-            )
-
-            decision_set.decisions.append(segment_decision)
-            existing_keys.add(key)
-
-            decision_set = save_segment_decision_set(
-                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
-            )
 
         logger.success(
             f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"

@@ -141,6 +141,21 @@ StatementRole (for leaf decisions):
   - If a row cell is blank: emit nothing for that cell (do not hallucinate).
   - Example: if a provided row has abs_row_index=57, then RowDecision.row_index MUST be 57.
 
+## CAPTION BINDING (IMPORTANT)
+- For table segments, the input JSON may include optional caption metadata fields:
+  - caption_kind
+  - caption_text
+  - caption_segment_id
+  - caption_page_index
+  - caption_gap_segments
+- How to use caption_text:
+  - Treat caption_text as table-scoped context (it describes what the table represents).
+  - Use it to disambiguate subject/grade/theme/strand/week/stage when the table headers or section path are insufficient.
+  - caption_text is NOT a curriculum statement and should NOT be emitted as a grouping node or a leaf statement by itself.
+  - Do NOT copy caption_text verbatim into groupings or leaves.
+  - If caption_text contains key structure (e.g., "Grade 2 Mathematics"), you may incorporate the IMPLIED structure by creating normal groupings (e.g., SUBJECT="Mathematics", GRADE_LEVEL="Grade 2"), but only if confident.
+  - If caption_text conflicts with section_path_text, prefer section_path_text unless the caption is clearly more specific for this table.
+
 ## BLOCK-SPECIFIC INSTRUCTIONS
 1. If segment_kind="block":
   - If block_type is "{BlockType.ARTIFACT.value}" or page-number-like: decision_type="{SegmentDecisionType.IGNORE.value}".
@@ -162,6 +177,8 @@ StatementRole (for leaf decisions):
     # Keep the user message small and stable: include the segment JSON verbatim.
     user_message = dedent(
         f"""Decide on this ONE segment and output a single SegmentDecision JSON object (JSON only, no markdown).
+
+NB: If caption_text is present, it describes the TABLE and is useful context; do not emit it as a node.
 
 Segment: {segment}
         """
