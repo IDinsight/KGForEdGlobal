@@ -165,8 +165,10 @@ StatementRole (for leaf decisions):
   - If block_type is "{BlockType.ARTIFACT.value}" or page-number-like: decision_type="{SegmentDecisionType.IGNORE.value}".
   - If block_type is "{BlockType.CAPTION.value}": decision_type="{SegmentDecisionType.IGNORE.value}" (captions bind to tables later; do not emit nodes).
   - If block_type is "{BlockType.HEADING.value}":
-    - If it clearly indicates a grouping (subject/grade/topic/theme): {SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}
-    - Otherwise ignore
+    - Headings are almost always structural containers → default to decision_type="{SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}"
+    - Choose the most specific NodeRole you can infer (GRADE_LEVEL / SUBJECT / THEME / STRAND / TOPIC / UNIT / WEEK / STAGE / SECTION).
+    - If unsure, STILL emit a grouping using role="{NodeRole.SECTION.value}" and title = the heading text.
+    - Only use decision_type="{SegmentDecisionType.IGNORE.value}" if the heading is clearly page furniture (running header/footer, repeated publisher line, standalone page number).
   - If {BlockType.PARAGRAPH.value}/{BlockType.LIST.value} includes clear expectations: {SegmentDecisionType.EMIT_LEAVES_ONLY.value} (or {SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES.value} if it also contains a grouping label)
 
 ## CONFIDENCE
