@@ -34,7 +34,11 @@ def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
         [f'  - "{t.value}"' for t in sorted(SegmentDecisionType, key=lambda x: x.value)]
     )
     node_roles_str = "\n".join(
-        [f'  - "{r.value}"' for r in sorted(NodeRole, key=lambda x: x.value)]
+        [
+            f'  - "{r.value}"'
+            for r in sorted(NodeRole, key=lambda x: x.value)
+            if r not in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED)
+        ]
     )
 
     system_message = dedent(

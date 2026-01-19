@@ -266,6 +266,9 @@ def validate_unique_table_rows(
         If any quality checks fail.
     """
 
+    if segment.kind != "table" or not segment_decision.rows:
+        return
+
     table_rows = segment.rows
     max_row_index = len(table_rows) - 1
     start = segment_decision.row_range_start
