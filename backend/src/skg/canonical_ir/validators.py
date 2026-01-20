@@ -10,9 +10,14 @@ from typing import Any, Optional
 from skg.canonical_ir.schemas import SegmentDecision
 from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
-from skg.utils.constants import BlockType, NonArtifacts, SegmentDecisionType
+from skg.utils.constants import (
+    BlockType,
+    NonArtifacts,
+    SegmentDecisionType,
+    StatementRole,
+)
 
-_DASH_RE = re.compile(r"[‐-‒–—−]")  # common unicode dash characters
+_DASH_RE = re.compile(r"[‐-‒–—−]")  # Common unicode dash characters
 
 
 def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
@@ -48,6 +53,95 @@ def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
         row_text_by_abs_index[int(abs_i)] = _normalize_text(" \n ".join(parts))
 
     return row_text_by_abs_index
+
+
+def _find_hierarchical_pairs(ids: list[str]) -> list[tuple[str, str]]:
+    """Identify pairs of IDs where one is a hierarchical prefix of the other.
+
+    Parameters
+    ----------
+    ids
+        The list of list/code identifiers.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        A list of (parent_id, child_id) tuples where child_id is a hierarchical
+        sub-code of parent_id.
+    """
+
+    parents_with_children = []
+
+    # Sort by length to check shorter codes first.
+    uniq_ids = sorted(set(ids), key=len)
+
+    for parent_id in uniq_ids:
+        for child_id in uniq_ids:
+            if parent_id == child_id:
+                continue
+
+            if _is_hierarchical_prefix(child_id=child_id, parent_id=parent_id):
+                parents_with_children.append((parent_id, child_id))
+
+    return parents_with_children
+
+
+def _is_hierarchical_prefix(*, child_id: str, parent_id: str) -> bool:
+    """Return True if child_id is a hierarchical sub-code of parent_id.
+
+    Examples:
+        - 1.1 -> 1.1.1
+        - 3-2 -> 3-2-1
+
+    Parameters
+    ----------
+    child_id
+        The child list/code identifier.
+    parent_id
+        The parent list/code identifier.
+
+    Returns
+    -------
+    bool
+        True if child_id is a hierarchical sub-code of parent_id.
+    """
+
+    if not parent_id or not child_id:
+        return False
+
+    # Prefer dot hierarchy. Fall back to dash.
+    if child_id.startswith(parent_id + "."):
+        return True
+    if child_id.startswith(parent_id + "-"):
+        return True
+
+    return False
+
+
+def _normalize_list_id(list_id: Optional[str]) -> str:
+    """Normalize list/code identifiers for prefix hierarchy checks.
+
+    Parameters
+    ----------
+    list_id
+        The input list identifier.
+
+    Returns
+    -------
+    str
+        The normalized list identifier.
+    """
+
+    if not list_id:
+        return ""
+
+    s = unicodedata.normalize("NFKC", str(list_id)).strip()
+    s = _DASH_RE.sub("-", s)
+
+    # Drop common trailing punctuation.
+    s = s.rstrip(". ")
+
+    return s
 
 
 def _normalize_text(text: Optional[str]) -> str:
@@ -270,6 +364,45 @@ def validate_heading_segments_emit_groupings(
         )
 
 
+def validate_row_groupings_no_duplicate_roles(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Prevent a single RowDecision from encoding sibling fanout as a single hierarchy
+    path. For example, strand and multiple subjects in one row must be split into
+    multiple RowDecisions.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment.kind != "table" or not segment_decision.rows:
+        return
+
+    allow_duplicates = {"section"}  # Safe default
+
+    for row in segment_decision.rows:
+        roles = [g.role for g in row.groupings or []]
+        dup_roles = {
+            r for r in roles if roles.count(r) > 1 and r not in allow_duplicates
+        }
+
+        if dup_roles:
+            raise QualityError(
+                f"Row {row.row_index} contains duplicate grouping roles {sorted(dup_roles)}. "
+                f"This usually means the row contains multiple siblings (e.g. multiple subjects). "
+                f"Split into multiple RowDecision entries with the SAME row_index, one per sibling."
+            )
+
+
 def validate_row_groupings_supported_by_row_cells(
     *,
     segment: Segment,
@@ -340,6 +473,92 @@ def validate_row_groupings_supported_by_row_cells(
                     f"  decision_id: {segment_decision.decision_id}\n"
                     f"  row_index: {rd.row_index}\n"
                     f"  unsupported_title: {g.title}"
+                )
+
+
+def validate_row_leaf_hierarchy_not_flattened(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Detect a common table error: emitting a higher-level container statement as a
+    leaf expectation in the same row as its more specific sub-statements. We enforce
+    this only when we observe hierarchical list_id patterns like:
+    parent="1.1" and child="1.1.1" (or dash hierarchy).
+
+    In these cases, the parent should usually be represented as a RowDecision grouping
+    (STRAND/TOPIC/SECTION) rather than as an EXPECTATION leaf.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if (
+        segment.kind != "table"
+        or not segment_decision.rows
+        or (
+            segment_decision.decision_type
+            in (
+                SegmentDecisionType.IGNORE,
+                SegmentDecisionType.UNRESOLVED,
+            )
+        )
+    ):
+        return
+
+    for rd in segment_decision.rows:
+        leaves = rd.leaves or []
+
+        if len(leaves) < 2:
+            continue
+
+        # Build normalized list_id -> leaf map for this row.
+        ids: list[str] = []
+        id_to_leaf = {}
+
+        for leaf in leaves:
+            lid = _normalize_list_id(getattr(leaf, "list_id", None))
+
+            if not lid:
+                continue
+
+            ids.append(lid)
+            id_to_leaf[lid] = leaf
+
+        if len(ids) < 2:
+            continue
+
+        # Find any parent code that has at least one child code in the same row.
+        parents_with_children = _find_hierarchical_pairs(ids)
+
+        # If the parent is emitted as a leaf expectation, flag it.
+        for parent_id, child_id in parents_with_children:
+            parent_leaf = id_to_leaf.get(parent_id)
+            child_leaf = id_to_leaf.get(child_id)
+
+            if not parent_leaf or not child_leaf:
+                continue
+
+            if (
+                getattr(parent_leaf, "role", None) == StatementRole.EXPECTATION
+                and getattr(child_leaf, "role", None) == StatementRole.EXPECTATION
+            ):
+                raise QualityError(
+                    f"RowDecision appears to flatten a hierarchical code structure into leaves. "
+                    f"When a parent code (e.g., '1.1') and child code (e.g., '1.1.1') occur in the same row, "
+                    f"treat the parent item as a grouping (RowDecision.groupings) and emit only the child items as leaf expectations.\n"
+                    f"  segment_id: {segment.segment_id}\n"
+                    f"  decision_id: {segment_decision.decision_id}\n"
+                    f"  row_index: {rd.row_index}\n"
+                    f"  parent_list_id: {parent_id}\n"
+                    f"  child_list_id: {child_id}"
                 )
 
 
