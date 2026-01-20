@@ -26,7 +26,9 @@ from skg.canonical_ir.validators import (
     validate_context_groupings_required_for_emit,
     validate_context_groupings_supported_by_outer_evidence,
     validate_heading_segments_emit_groupings,
+    validate_row_groupings_no_duplicate_roles,
     validate_row_groupings_supported_by_row_cells,
+    validate_row_leaf_hierarchy_not_flattened,
     validate_segment_kind_coherence,
     validate_table_header_rows_not_emitted,
     validate_table_row_index,
@@ -382,4 +384,10 @@ def verify_segment_decision_quality(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
+    )
+    validate_row_groupings_no_duplicate_roles(
+        segment=segment, segment_decision=segment_decision
+    )
+    validate_row_leaf_hierarchy_not_flattened(
+        segment=segment, segment_decision=segment_decision
     )
