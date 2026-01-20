@@ -144,6 +144,8 @@ def _call_openai_api_to_decide_on_segment(
         parsed.row_range_end = row_range_end
     else:
         parsed.decision_id = f"segment_decision:{doc_key}:{segment.segment_id}"
+        parsed.row_range_start = None
+        parsed.row_range_end = None
 
     parsed.block_type = segment.block_type if segment.kind == "block" else None
     parsed.segment_kind = segment.kind
