@@ -238,10 +238,6 @@ class CreateCanonicalConfig(BaseSchema):
         "gpt-5.2-2025-12-11", description="OpenAI model for canonical IR."
     )
     overwrite: bool = Field(False, description="Overwrite existing canonical IR JSON.")
-    segment_decisions_fp: Path | None = Field(
-        default=None,
-        description="Path to SegmentDecisionSet JSON. If None, defaults to <canonical_run_dir>/segment_decisions.json",
-    )
 
 
 class RunConfig(BaseSchema):

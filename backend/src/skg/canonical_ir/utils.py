@@ -122,67 +122,6 @@ def _extract_block_segment_text(segment: BlockSegment) -> str | None:
     return None
 
 
-def _load_segment_decision_set(
-    *, expected_doc_key: str, pdf_name: str, segment_decisions_fp: Path
-) -> SegmentDecisionSet:
-    """Load SegmentDecisionSet JSON and normalize formats.
-
-    Parameters
-    ----------
-    expected_doc_key
-        The expected document key for the SegmentDecisionSet.
-    pdf_name
-        The expected PDF name for the SegmentDecisionSet.
-    segment_decisions_fp
-        The file path to the SegmentDecisionSet JSON.
-
-    Returns
-    -------
-    SegmentDecisionSet
-        The loaded SegmentDecisionSet.
-
-    Raises
-    ------
-    ValueError
-        If the SegmentDecisionSet.doc_key does not match expected_doc_key, or if the
-        SegmentDecisionSet.pdf_name does not match pdf_name.
-    """
-
-    raw = open_json_type(segment_decisions_fp)
-
-    # Ensure decision_set_id exists for wrapper format.
-    if isinstance(raw, dict):
-        if raw.get("decisions") is None:
-            raise ValueError(
-                f"SegmentDecisionSet file missing `decisions` key: {segment_decisions_fp}"
-            )
-
-        decisions = [SegmentDecision.model_validate(d) for d in raw["decisions"]]
-        raw["decisions"] = decisions
-
-        if raw.get("decision_set_id") in (None, ""):
-            raw["decision_set_id"] = compute_decision_set_id(decisions=decisions)
-
-    decision_set = SegmentDecisionSet.model_validate(raw)
-
-    if decision_set.doc_key != expected_doc_key:
-        raise ValueError(
-            f"SegmentDecisionSet.doc_key mismatch.\n"
-            f"  Expected: {expected_doc_key}\n"
-            f"  Got:      {decision_set.doc_key}\n"
-            f"  File:     {segment_decisions_fp}"
-        )
-
-    if decision_set.pdf_name != pdf_name:
-        raise ValueError(
-            f"SegmentDecisionSet.pdf_name mismatch.\n"
-            f"  DocumentIR: {pdf_name}\n"
-            f"  Decisions:  {decision_set.pdf_name}"
-        )
-
-    return decision_set
-
-
 def apply_caption_binding_to_table_payload(
     *, caption_bindings: CaptionBinding | None, table_payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -408,83 +347,52 @@ def decision_key(
     )
 
 
-def load_or_initialize_segment_decision_set(
-    *,
-    creation_dirs: CanonicalIRDirs,
-    doc_key: str,
-    document_ir: DocumentIR,
-    segment_decisions_fp: Path | None,
-) -> tuple[SegmentDecisionSet, Path]:
-    """Load decision set if present, else initialize an empty one.
-
-    NB: We intentionally do NOT return a simple `existing_segment_ids` set since
-    canonical IR creation may create multiple decisions per table segment when chunking
-    is enabled. Callers should compute coverage based on (segment_id, row_range_start,
-    row_range_end).
+def load_segment_decision_set(
+    *, expected_doc_key: str, pdf_name: str, segment_decisions_fp: Path
+) -> SegmentDecisionSet:
+    """Load SegmentDecisionSet JSON and normalize formats.
 
     Parameters
     ----------
-    creation_dirs
-        The canonical IR creation directories.
-    doc_key
+    expected_doc_key
         The expected document key for the SegmentDecisionSet.
-    document_ir
-        The DocumentIR to reference for segment existence.
+    pdf_name
+        The expected PDF name for the SegmentDecisionSet.
     segment_decisions_fp
         The file path to the SegmentDecisionSet JSON.
 
     Returns
     -------
-    tuple[SegmentDecisionSet, Path]
-        The loaded or initialized SegmentDecisionSet and the file path to the
-        SegmentDecisionSet JSON.
+    SegmentDecisionSet
+        The loaded SegmentDecisionSet.
 
     Raises
     ------
     ValueError
-        If the SegmentDecisionSet refers to missing segment IDs.
-        If some decisions are missing segment_id.
+        If the SegmentDecisionSet.doc_key does not match expected_doc_key, or if the
+        SegmentDecisionSet.pdf_name does not match pdf_name.
     """
 
-    segment_decisions_fp = (
-        segment_decisions_fp or creation_dirs.root / "segment_decisions.json"
-    )
-    segment_decisions_fp = Path(segment_decisions_fp)
-
-    decision_set = (
-        _load_segment_decision_set(
-            expected_doc_key=doc_key,
-            pdf_name=document_ir.pdf_name,
-            segment_decisions_fp=segment_decisions_fp,
-        )
-        if segment_decisions_fp.exists()
-        else SegmentDecisionSet.model_validate(
-            {
-                "pdf_name": document_ir.pdf_name,
-                "doc_key": doc_key,
-                "decision_set_id": compute_decision_set_id(decisions=[]),
-                "decisions": [],
-            }
-        )
+    decision_set = SegmentDecisionSet.model_validate(
+        open_json_type(segment_decisions_fp)
     )
 
-    # Ensure any existing decisions still refer to real segments.
-    existing_segment_ids = {
-        d.segment_id for d in decision_set.decisions if d.segment_id
-    }
+    if decision_set.doc_key != expected_doc_key:
+        raise ValueError(
+            f"SegmentDecisionSet.doc_key mismatch.\n"
+            f"  Expected: {expected_doc_key}\n"
+            f"  Got:      {decision_set.doc_key}\n"
+            f"  File:     {segment_decisions_fp}"
+        )
 
-    if len(existing_segment_ids) != len(
-        [d for d in decision_set.decisions if d.segment_id]
-    ):
-        raise ValueError("Some decisions are missing segment_id.")
+    if decision_set.pdf_name != pdf_name:
+        raise ValueError(
+            f"SegmentDecisionSet.pdf_name mismatch.\n"
+            f"  DocumentIR: {pdf_name}\n"
+            f"  Decisions:  {decision_set.pdf_name}"
+        )
 
-    segments_by_id = {s.segment_id: s for s in document_ir.segments}
-    missing = [sid for sid in existing_segment_ids if sid not in segments_by_id]
-
-    if missing:
-        raise ValueError(f"Decision set refers to missing segment_ids: {missing[:10]}")
-
-    return decision_set, segment_decisions_fp
+    return decision_set
 
 
 def make_table_chunk_payload(
