@@ -47,12 +47,21 @@ def compute_decision_set_id(
     -------
     str
         The stable SHA256 hex digest representing the decision set ID.
+
+    Raises
+    ------
+    ValueError
+        If any SegmentDecision objects have empty or non-string decision_id.
     """
 
     stable = []
 
     for d in sorted(decisions, key=lambda x: x.decision_id or ""):
-        assert isinstance(d.decision_id, str) and d.decision_id
+        if not isinstance(d.decision_id, str) or not d.decision_id:
+            raise ValueError(
+                f"All SegmentDecision objects must have non-empty decision_id: {d}"
+            )
+
         stable.append(
             {
                 "decision_id": d.decision_id,
@@ -143,6 +152,14 @@ class GroupingDecision(BaseSchema):
         ...,
         description="Grouping role (NodeRole enum). Must represent a container/group node, not a leaf statement role.",
     )
+    source_label: str | None = Field(
+        default=None,
+        description=(
+            "Verbatim label that introduced this grouping (e.g., table column header "
+            "'Topic', 'Sub-topic', 'Theme', or a heading label). "
+            "Used to preserve framework-native taxonomy (LC export statementType)."
+        ),
+    )
     title: str = Field(
         ...,
         description="Human-readable title for the grouping node (original text, not translated).",
@@ -168,6 +185,11 @@ class GroupingDecision(BaseSchema):
         if not title:
             raise ValueError("GroupingDecision.title must be non-empty.")
 
+        if self.source_label is not None and not (self.source_label or "").strip():
+            raise ValueError(
+                "GroupingDecision.source_label must be non-empty when provided."
+            )
+
         if self.role in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED):
             raise ValueError(
                 f"GroupingDecision.role must be a real grouping role (not {self.role})."
@@ -190,6 +212,15 @@ class LeafDecision(BaseSchema):
         ...,
         description="Leaf semantic role (StatementRole enum), e.g. EXPECTATION / DESCRIPTOR / GUIDANCE.",
     )
+    source_label: str | None = Field(
+        default=None,
+        description=(
+            "Verbatim label that introduced this leaf statement (usually the table column "
+            "header like 'Specific Competences', 'Expected Standard', 'Learning Activities', "
+            "or a heading label like 'Learning Outcomes'). "
+            "Used to preserve framework-native taxonomy (LC export statementType)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_leaf(self) -> LeafDecision:
@@ -210,6 +241,11 @@ class LeafDecision(BaseSchema):
 
         if not body:
             raise ValueError("LeafDecision.body must be non-empty.")
+
+        if self.source_label is not None and not (self.source_label or "").strip():
+            raise ValueError(
+                "LeafDecision.source_label must be non-empty when provided."
+            )
 
         return self
 
@@ -660,6 +696,14 @@ class CanonicalNode(BaseSchema):
     source_decision_ids: list[str] = Field(
         default_factory=list,
         description="Decision IDs that produced this canonical node.",
+    )
+    source_label: str | None = Field(
+        default=None,
+        description=(
+            "Verbatim framework-native label that introduced this node "
+            "(e.g., 'Specific Competences', 'Expected Standard', 'Topic'). "
+            "Used for LC KG statementType export."
+        ),
     )
     source_segment_ids: list[str] = Field(
         default_factory=list,
