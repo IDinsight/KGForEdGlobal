@@ -246,10 +246,10 @@ def attach_caption_binding_to_segment_decision(
 def build_caption_bindings(
     *,
     bind_unknown_caption: bool = True,
+    creation_dirs: CanonicalIRDirs,
     document_ir: DocumentIR,
     max_gap_segments: int = 2,
     max_page_distance: int = 1,
-    warnings: list[str],
 ) -> dict[str, CaptionBinding]:
     """Bind Caption block to next Table segment (within limits).
 
@@ -257,14 +257,14 @@ def build_caption_bindings(
     ----------
     bind_unknown_caption
         Whether to bind captions of unknown kind.
+    creation_dirs
+        The canonical IR creation directories.
     document_ir
         The DocumentIR to process.
     max_gap_segments
         The maximum number of non-table segments allowed between caption and table.
     max_page_distance
         The maximum page distance allowed between caption and table.
-    warnings
-        A list to append warning messages to.
 
     Returns
     -------
@@ -273,6 +273,7 @@ def build_caption_bindings(
     """
 
     caption_bindings: dict[str, CaptionBinding] = {}
+    warnings: list[str] = []
 
     # (caption_segment, caption_text, caption_kind, caption_page, caption_index)
     pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
@@ -355,6 +356,9 @@ def build_caption_bindings(
         logger.warning(msg)
         warnings.append(msg)
         # input(1)
+
+    warnings_fp = creation_dirs.root / "caption_binding_warnings.json"
+    write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
 
     return caption_bindings
 
@@ -619,7 +623,8 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
 
     This mirrors `make_table_chunk_payload` but includes ALL rows. Critically, it:
 
-    1. Removes derived full-table views (rows_grid/rows_filldown/...)
+    1. Prefers `rows_filldown` (if available) so row-level groupings are grounded
+        in-row (raw visual rows are preserved under `rows_original`).
     2. Adds `abs_row_index` to every row so validators can enforce grounding
     3. Adds a lightweight `chunking` object indicating absolute indices
 
@@ -636,8 +641,25 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
 
     seg = segment.model_dump(mode="json")
 
-    # NB: Full payload should not include derived structures that can bloat the prompt
-    # and leak cross-row info.
+    # Prefer fill-down view if it exists.
+    rows_raw = seg.get("rows") or []
+    rows_filldown = seg.get("rows_filldown")
+
+    use_filldown = (
+        isinstance(rows_filldown, list)
+        and len(rows_filldown) == len(rows_raw)
+        and len(rows_raw) > 0
+    )
+
+    if use_filldown:
+        seg["rows_original"] = rows_raw
+        seg["rows"] = rows_filldown  # Store rows_filldown here before removing
+        seg["rows_original_preserved"] = True
+    else:
+        seg["rows_original_preserved"] = False
+
+    # NB: Remove derived structures that bloat the prompt. We intentionally keep the
+    # filldown effect by swapping seg["rows"] above.
     for k in ("rows_grid", "rows_filldown", "grid_sources", "row_provenance"):
         seg.pop(k, None)
 
@@ -700,6 +722,7 @@ def process_segment_decisions(
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
     segment: Segment,
     segment_decisions_fp: Path,
+    warnings: list[str],
 ) -> SegmentDecisionSet:
     """Process a single segment to generate and persist decisions.
 
@@ -719,6 +742,8 @@ def process_segment_decisions(
         The Segment to process.
     segment_decisions_fp
         The output file path for the SegmentDecisionSet JSON.
+    warnings
+        A list to append warning messages to.
 
     Returns
     -------
@@ -731,6 +756,13 @@ def process_segment_decisions(
         key: tuple[str, int | None, int | None] = (segment.segment_id, None, None)
 
         if key in existing_keys:
+            msg = (
+                f"Skipping block segment {segment.segment_id}: decision already exists."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+            # input(1)
+
             return decision_set
 
         # NB: Never apply caption bindings to block segments.
@@ -762,6 +794,11 @@ def process_segment_decisions(
     unchunked_key = (segment.segment_id, None, None)
 
     if unchunked_key in existing_keys:
+        msg = f"Skipping table segment {segment.segment_id}: unchunked decision already exists."
+        logger.warning(msg)
+        warnings.append(msg)
+        # input(1)
+
         return decision_set
 
     # Determine table chunks.
@@ -780,10 +817,14 @@ def process_segment_decisions(
             for (sid, row_start, _row_end) in existing_keys
         )
         if existing_chunked_for_segment:
-            logger.warning(
+            msg = (
                 f"Skipping unchunked decision for table segment {segment.segment_id} "
                 f"because chunked decisions already exist (avoid mixing chunked + unchunked)."
             )
+            logger.warning(msg)
+            warnings.append(msg)
+            # input(1)
+
             return decision_set
 
         if key not in existing_keys:
@@ -816,6 +857,15 @@ def process_segment_decisions(
             key = (segment.segment_id, start, end)
 
             if start is None or end is None or key in existing_keys:
+                if key in existing_keys:
+                    msg = (
+                        f"Skipping table chunk for {segment.segment_id}: "
+                        f"row_range_start={start}, row_range_end={end} already decided."
+                    )
+                    logger.warning(msg)
+                    warnings.append(msg)
+                    # input(1)
+
                 continue
 
             table_payload = make_table_chunk_payload(

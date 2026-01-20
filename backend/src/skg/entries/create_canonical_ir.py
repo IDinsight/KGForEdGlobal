@@ -44,7 +44,7 @@ from skg.canonical_ir.utils import (
 )
 from skg.document_ir.schemas import DocumentIR
 from skg.schemas import CreateCanonicalConfig, RunConfig, RunCtx
-from skg.utils.general import open_json_type, write_to_json
+from skg.utils.general import make_dir, open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
 # Instantiate typer apps for the command line interface.
@@ -84,11 +84,9 @@ def create_canonical_ir(
     # Validate and load the Document IR.
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
-    warnings: list[str] = []
-
     # Build one-shot caption to next table bindings.
     caption_bindings = build_caption_bindings(
-        document_ir=document_ir, warnings=warnings
+        creation_dirs=creation_dirs, document_ir=document_ir
     )
 
     # Load or initialize decision set.
@@ -102,10 +100,13 @@ def create_canonical_ir(
     # Generate decisions for any undecided segments in DocumentIR order.
     num_segments = len(document_ir.segments)
     existing_keys = {decision_key(d) for d in decision_set.decisions}
+    segment_warnings_dir = creation_dirs.root / "segment_warnings"
+    make_dir(segment_warnings_dir)
 
     for i, segment in enumerate(document_ir.segments, 1):
         logger.info(f"Processing segment ({segment.segment_id}): {i}/{num_segments}")
 
+        warnings: list[str] = []
         decision_set = process_segment_decisions(
             caption_bindings=caption_bindings,
             config=config,
@@ -114,7 +115,14 @@ def create_canonical_ir(
             existing_keys=existing_keys,
             segment=segment,
             segment_decisions_fp=segment_decisions_fp,
+            warnings=warnings,
         )
+
+        # Persist warnings for this segment.
+        warnings_fp = (
+            segment_warnings_dir / f"{i:05d}_{segment.segment_id}_warnings.json"
+        )
+        write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
 
         logger.success(
             f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"
