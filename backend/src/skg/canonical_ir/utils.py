@@ -1932,6 +1932,36 @@ def apply_caption_binding_to_table_payload(
     return table_payload
 
 
+def attach_caption_binding_to_segment_decision(
+    *, caption_binding: CaptionBinding | None, segment_decision: SegmentDecision
+) -> SegmentDecision:
+    """Persist caption binding provenance on the SegmentDecision.
+
+    Parameters
+    ----------
+    caption_binding
+        The CaptionBinding to apply, or None to skip.
+    segment_decision
+        The SegmentDecision to update.
+
+    Returns
+    -------
+    SegmentDecision
+        The updated SegmentDecision.
+    """
+
+    if not caption_binding:
+        return segment_decision
+
+    segment_decision.caption_gap_segments = caption_binding.gap_segments
+    segment_decision.caption_kind = caption_binding.caption_kind
+    segment_decision.caption_page_index = caption_binding.caption_page_index
+    segment_decision.caption_segment_id = caption_binding.caption_segment_id
+    segment_decision.caption_text = caption_binding.caption_text
+
+    return segment_decision
+
+
 def build_caption_bindings(
     *,
     bind_unknown_caption: bool = True,
@@ -2200,7 +2230,7 @@ def make_table_chunk_payload(
     for k in ("rows_grid", "rows_filldown", "grid_sources", "row_provenance"):
         seg.pop(k, None)
 
-    full_rows = seg["rows"]
+    full_rows = seg.get("rows") or []
     chunk_rows: list[dict[str, Any]] = []
 
     for abs_i in range(start, end):
@@ -2212,6 +2242,51 @@ def make_table_chunk_payload(
     seg["chunking"] = {
         "row_range_start": start,
         "row_range_end": end,
+        "row_range_end_is_exclusive": True,
+        "row_index_is_absolute": True,
+    }
+
+    return seg
+
+
+def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
+    """Build a FULL (unchunked) table payload for the LLM.
+
+    This mirrors `make_table_chunk_payload` but includes ALL rows. Critically, it:
+
+    1. Removes derived full-table views (rows_grid/rows_filldown/...)
+    2. Adds `abs_row_index` to every row so validators can enforce grounding
+    3. Adds a lightweight `chunking` object indicating absolute indices
+
+    Parameters
+    ----------
+    segment
+        The TableSegment to process.
+
+    Returns
+    -------
+    dict[str, Any]
+        The full table payload.
+    """
+
+    seg = segment.model_dump(mode="json")
+
+    # NB: Full payload should not include derived structures that can bloat the prompt
+    # and leak cross-row info.
+    for k in ("rows_grid", "rows_filldown", "grid_sources", "row_provenance"):
+        seg.pop(k, None)
+
+    rows = seg.get("rows") or []
+
+    # Add abs_row_index to every row (headers included).
+    for abs_i, row in enumerate(rows):
+        if isinstance(row, dict):
+            row["abs_row_index"] = abs_i
+
+    seg["rows"] = rows
+    seg["chunking"] = {
+        "row_range_start": 0,
+        "row_range_end": len(rows),
         "row_range_end_is_exclusive": True,
         "row_index_is_absolute": True,
     }
@@ -2349,7 +2424,7 @@ def process_segment_decisions(
         if key not in existing_keys:
             # Apply caption binding and pass the payload even for UNCHUNKED tables so
             # the LLM sees caption_text/caption_kind etc.
-            table_payload = segment.model_dump(mode="json")
+            table_payload = make_table_full_payload(segment=segment)
             table_payload = apply_caption_binding_to_table_payload(
                 caption_bindings=binding, table_payload=table_payload
             )
@@ -2359,6 +2434,9 @@ def process_segment_decisions(
                 model=config.model,
                 segment=segment,
                 segment_payload=table_payload,
+            )
+            segment_decision = attach_caption_binding_to_segment_decision(
+                caption_binding=binding, segment_decision=segment_decision
             )
 
             decision_set.decisions.append(segment_decision)
@@ -2392,6 +2470,9 @@ def process_segment_decisions(
                 row_range_start=start,
                 segment=segment,
                 segment_payload=table_payload,
+            )
+            segment_decision = attach_caption_binding_to_segment_decision(
+                caption_binding=binding, segment_decision=segment_decision
             )
 
             decision_set.decisions.append(segment_decision)

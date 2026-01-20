@@ -20,6 +20,7 @@ from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import (
     BlockType,
+    CaptionKind,
     NodeRole,
     SegmentDecisionType,
     StatementRole,
@@ -253,6 +254,28 @@ class SegmentDecision(BaseSchema):
         default=None,
         description="If segment_kind='block', this is the block subtype (e.g., paragraph/list/heading/caption/footnote/figure).",
     )
+    caption_kind: CaptionKind | None = Field(
+        default=None,
+        description="If segment_kind='table' and a caption was bound to this table, the caption kind (table/figure/unknown). Audit-only.",
+    )
+    caption_text: str | None = Field(
+        default=None,
+        description="If segment_kind='table' and a caption was bound to this table, the caption text. Audit-only.",
+    )
+    caption_segment_id: str | None = Field(
+        default=None,
+        description="Segment ID of the bound caption block (if any). Audit-only.",
+    )
+    caption_page_index: int | None = Field(
+        default=None,
+        description="Page index of the bound caption block (if any). Audit-only.",
+        ge=0,
+    )
+    caption_gap_segments: int | None = Field(
+        default=None,
+        description="Number of segments between caption and table when bound. Audit-only.",
+        ge=0,
+    )
     confidence: float = Field(
         ...,
         description="LLM confidence for this decision in [0,1]. Used for QA and human review, not determinism.",
@@ -306,6 +329,58 @@ class SegmentDecision(BaseSchema):
         None,
         description="High-level segment kind from DocumentIR. This should be populated by the Python pipeline; it may be null during segment decision.",
     )
+
+    @model_validator(mode="after")
+    def _validate_decision_type_semantics(self) -> SegmentDecision:
+        """Enforce that decision_type matches the shape of emitted outputs.
+
+        Rules:
+
+        1. emit_groupings_only: no leaves[] and no rows[]
+        2. emit_leaves_only: no groupings[]
+        3. emit_groupings_and_leaves: must include both grouping + leaf output
+
+        Returns
+        -------
+        SegmentDecision
+            The validated SegmentDecision object.
+
+        Raises
+        ------
+        ValueError
+            If the SegmentDecision is inconsistent based on its decision_type.
+        """
+
+        if self.decision_type in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        ):
+            return self
+
+        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY and (
+            self.leaves or self.rows
+        ):
+            raise ValueError(
+                "Decision type 'emit_groupings_only' must have empty leaves[] and rows[]."
+            )
+        if (
+            self.decision_type == SegmentDecisionType.EMIT_LEAVES_ONLY
+            and self.groupings
+        ):
+            raise ValueError(
+                "Decision type 'emit_leaves_only' must have empty groupings[]."
+            )
+        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES:
+            has_groupings = bool(self.groupings) or any(r.groupings for r in self.rows)
+            has_leaves = bool(self.leaves) or any(r.leaves for r in self.rows)
+
+            if not has_groupings or not has_leaves:
+                raise ValueError(
+                    "Decision type 'emit_groupings_and_leaves' must include BOTH groupings and leaves "
+                    "(either top-level groupings[]/leaves[] or row-level groupings/leaves for tables)."
+                )
+
+        return self
 
     @model_validator(mode="after")
     def _validate_non_noop_emit_decision(self) -> SegmentDecision:

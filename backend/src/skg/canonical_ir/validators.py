@@ -12,7 +12,6 @@ from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import BlockType, NonArtifacts, SegmentDecisionType
 
-
 _DASH_RE = re.compile(r"[‐-‒–—−]")  # common unicode dash characters
 
 
@@ -220,7 +219,7 @@ def validate_context_groupings_supported_by_outer_evidence(
             )
         if title not in evidence_blob:
             raise QualityError(
-                f"Strategy 1 violation: context_groupings title not supported by OUTER evidence "
+                f"context_groupings title not supported by OUTER evidence "
                 f"(section_path/caption/headers). It may be a row-local value.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
@@ -329,7 +328,7 @@ def validate_row_groupings_supported_by_row_cells(
                 )
             if title not in row_blob:
                 raise QualityError(
-                    f"Strategy 1 violation: RowDecision grouping title not supported by visible row cell text.\n"
+                    f"RowDecision grouping title not supported by visible row cell text.\n"
                     f"  segment_id: {segment.segment_id}\n"
                     f"  decision_id: {segment_decision.decision_id}\n"
                     f"  row_index: {rd.row_index}\n"

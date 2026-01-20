@@ -67,6 +67,9 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 7. CHUNKING: The segment may represent a *slice* of a larger table.
   - If Segment includes a `chunking` object, ONLY decide on the rows provided in this segment payload.
   - NEVER assume missing rows exist outside this chunk.
+8. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}" -> groupings may be non-empty, but leaves[] and rows[] MUST be empty.
+9. If decision_type="{SegmentDecisionType.EMIT_LEAVES_ONLY.value}" -> leaves[]/rows[] may be non-empty, but groupings[] MUST be empty.
+10. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES.value}" -> you MUST emit BOTH some grouping AND some leaf output.
 
 ## WHAT TO EXTRACT
 1. A segment can yield:
