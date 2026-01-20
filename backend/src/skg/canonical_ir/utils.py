@@ -476,7 +476,12 @@ def load_or_initialize_segment_decision_set(
 
 
 def make_table_chunk_payload(
-    *, end: int, segment: TableSegment, start: int
+    *,
+    context_rows_after: int = 2,
+    context_rows_before: int = 2,
+    end: int,
+    segment: TableSegment,
+    start: int,
 ) -> dict[str, Any]:
     """Build a table chunk payload for the LLM as follows:
 
@@ -484,9 +489,20 @@ def make_table_chunk_payload(
     2. Replace `rows` with ONLY the rows in [start,end)
     3. Adds abs_row_index to each provided row
     4. Adds a `chunking` object so prompts can instruct absolute indexing
+    5. Adds `context_rows_before` containing up to N rows immediately preceding `start`
+       (context-only; the LLM MUST NOT emit RowDecision for these rows).
+    6. Adds `context_rows_after` containing up to M rows immediately following `end`
+       (context-only; the LLM MUST NOT emit RowDecision for these rows).
+    7. If `rows_filldown` exists in the segment, uses it to produce a fill-down view of
+       ONLY the decision rows. The filled rows become the main `rows` payload, and the
+       raw visual decision rows are preserved under `rows_original`.
 
     Parameters
     ----------
+    context_rows_after
+        The number of context rows to include after the chunk end.
+    context_rows_before
+        The number of context rows to include before the chunk start.
     end
         The exclusive end row index for the chunk.
     segment
@@ -503,24 +519,88 @@ def make_table_chunk_payload(
     seg = segment.model_dump(mode="json")
 
     # NB: Chunk payload should not include full-table derived views that can leak
-    # information outside the chunk.
-    for k in ("rows_grid", "rows_filldown", "grid_sources", "row_provenance"):
+    # information outside the chunk. NB: We intentionally KEEP rows_filldown here (if
+    # present) but slice it down to the decision-row window so it does not expose the
+    # entire table.
+    for k in ("rows_grid", "grid_sources", "row_provenance"):
         seg.pop(k, None)
 
-    full_rows = seg.get("rows") or []
-    chunk_rows: list[dict[str, Any]] = []
+    full_rows_raw = seg.get("rows") or []
+    full_rows_filldown: list[dict[str, Any]] | None = seg.get("rows_filldown")
+
+    # Context windows (before/after).
+    ctx_before_start = max(0, start - max(0, int(context_rows_before or 0)))
+    ctx_after_end = min(len(full_rows_raw), end + max(0, int(context_rows_after or 0)))
+
+    context_rows_before_payload: list[dict[str, Any]] = []
+    context_rows_after_payload: list[dict[str, Any]] = []
+
+    for abs_i in range(ctx_before_start, start):
+        row = dict(full_rows_raw[abs_i])
+        row["abs_row_index"] = abs_i
+        row["is_context_only"] = True
+        context_rows_before_payload.append(row)
+
+    for abs_i in range(end, ctx_after_end):
+        row = dict(full_rows_raw[abs_i])
+        row["abs_row_index"] = abs_i
+        row["is_context_only"] = True
+        context_rows_after_payload.append(row)
+
+    # Decision rows: raw visual + optional fill-down view.
+    decision_rows_raw: list[dict[str, Any]] = []
+    decision_rows_payload: list[dict[str, Any]] = []
+
+    # Prefer fill-down view (if available) for primary `rows`, because validators
+    # ground row-local groupings against visible row text.
+    use_filldown = (full_rows_filldown is not None) and len(full_rows_filldown) == len(
+        full_rows_raw
+    )
 
     for abs_i in range(start, end):
-        row = dict(full_rows[abs_i])
-        row["abs_row_index"] = abs_i
-        chunk_rows.append(row)
+        raw_row = dict(full_rows_raw[abs_i])
+        raw_row["abs_row_index"] = abs_i
+        raw_row["is_context_only"] = False
+        decision_rows_raw.append(raw_row)
 
-    seg["rows"] = chunk_rows
+        if use_filldown:
+            assert full_rows_filldown is not None
+            fd_row = dict(full_rows_filldown[abs_i])
+            fd_row["abs_row_index"] = abs_i
+            fd_row["is_context_only"] = False
+            decision_rows_payload.append(fd_row)
+        else:
+            decision_rows_payload.append(raw_row)
+
+    # Primary decision rows (potentially fill-down adjusted)/
+    seg["rows"] = decision_rows_payload
+
+    # Preserve raw visual decision rows for audit/debug.
+    seg["rows_original"] = decision_rows_raw
+
+    # Preserve context rows separately (raw visual).
+    seg["context_rows_before"] = context_rows_before_payload
+    seg["context_rows_after"] = context_rows_after_payload
+
+    # Keep ONLY the decision-row slice of rows_filldown for explicitness/debugging.
+    if use_filldown:
+        seg["rows_filldown"] = [dict(r) for r in decision_rows_payload]
+    else:
+        seg.pop("rows_filldown", None)
+
     seg["chunking"] = {
         "row_range_start": start,
         "row_range_end": end,
         "row_range_end_is_exclusive": True,
         "row_index_is_absolute": True,
+        "context_rows_before_start": ctx_before_start,
+        "context_rows_before_end": start,
+        "context_rows_before_count": len(context_rows_before_payload),
+        "context_rows_after_start": end,
+        "context_rows_after_end": ctx_after_end,
+        "context_rows_after_count": len(context_rows_after_payload),
+        "rows_are_filldown_view": use_filldown,
+        "rows_original_preserved": True,
     }
 
     return seg

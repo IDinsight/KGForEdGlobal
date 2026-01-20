@@ -749,7 +749,16 @@ def validate_table_split_explosion(
 def validate_unique_table_rows(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
-    """Validate that all RowDecision.row_index values are unique.
+    """Validate basic row index constraints and prevent *exact* duplicate RowDecisions.
+
+    We intentionally **allow** multiple RowDecision entries to share the same
+    `row_index`. This is required when a single table row contains *sibling fanout*
+    (e.g., multiple subjects/strands/topics encoded in one row). In those cases, the
+    correct representation is to emit **multiple** RowDecision objects with the
+    **same** row_index (one per sibling path).
+
+    What we disallow is emitting the *same* RowDecision more than once (exact
+    duplicates), because that creates unstable downstream counts and ordering.
 
     Parameters
     ----------
@@ -772,8 +781,10 @@ def validate_unique_table_rows(
     start = segment_decision.row_range_start
     end = segment_decision.row_range_end
 
-    seen: set[int] = set()
-    dupes: list[int] = []
+    # Allow repeated row_index values, but disallow exact duplicate RowDecision entries
+    # (same row_index + same groupings + same leaves).
+    seen_fingerprints: set[str] = set()
+    dup_fingerprints: list[tuple[int, str]] = []
 
     for rd in segment_decision.rows:
         # Global range check.
@@ -796,14 +807,40 @@ def validate_unique_table_rows(
                 f"  allowed_chunk: [{start}, {end})"
             )
 
-        if rd.row_index in seen:
-            dupes.append(rd.row_index)
-        seen.add(rd.row_index)
+        # Fingerprint the *entire* row decision so we can allow sibling fanout while
+        # still catching accidental repeats. Sort components so exact-duplicate
+        # detection is robust to ordering.
+        group_parts = sorted(
+            [
+                f"{g.role.value}:{_normalize_text(g.title)}:{_normalize_list_id(g.list_id)}:{_normalize_list_id(g.local_code)}"
+                for g in (rd.groupings or [])
+            ]
+        )
+        leaf_parts = sorted(
+            [
+                f"{leaf.role.value}:{_normalize_list_id(leaf.list_id)}:{_normalize_text(leaf.body)}"
+                for leaf in (rd.leaves or [])
+            ]
+        )
 
-    if dupes:
+        group_fp = "|".join(group_parts)
+        leaf_fp = "|".join(leaf_parts)
+
+        fp = f"row={rd.row_index}::g=[{group_fp}]::l=[{leaf_fp}]"
+
+        if fp in seen_fingerprints:
+            dup_fingerprints.append((rd.row_index, fp))
+        else:
+            seen_fingerprints.add(fp)
+
+    if dup_fingerprints:
+        dup_row_indices = sorted({ri for (ri, _) in dup_fingerprints})
         raise QualityError(
-            f"Duplicate RowDecision.row_index values in table decision.\n"
+            f"Exact duplicate RowDecision entries detected (duplicates are not allowed).\n"
+            f"  NOTE: Multiple RowDecisions with the SAME row_index are allowed when representing sibling fanout;\n"
+            f"        but they must differ in groupings and/or leaves.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
-            f"  duplicates: {sorted(set(dupes))}"
+            f"  affected_row_indices: {dup_row_indices}\n"
+            f"  duplicate_count: {len(dup_fingerprints)}"
         )
