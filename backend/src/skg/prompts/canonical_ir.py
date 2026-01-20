@@ -45,177 +45,79 @@ def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
 
 Your job: Given ONE segment from a stitched curriculum DocumentIR (either a BLOCK or TABLE), produce a **SegmentDecision** JSON object.
 
-The SegmentDecision is used later by a deterministic compiler to build a canonical standards hierarchy.
+## JSON OUTPUT STRUCTURE (CRITICAL)
+You must strictly adhere to these field names:
+
+1. **SegmentDecision** (Top Level):
+   - `decision_type`: Enum value (see below).
+   - `rationale`: String explaining your logic.
+   - `confidence`: Float [0.0 - 1.0].
+   - `context_groupings`: List of GroupingDecision objects (outer context).
+   - `groupings`: List of GroupingDecision objects (segment-level).
+   - `leaves`: List of LeafDecision objects (segment-level).
+   - `rows`: List of RowDecision objects (table-level).
+
+2. **GroupingDecision** (for containers/headers):
+   - `role`: NodeRole Enum.
+   - `title`: String (the heading text).
+   - `list_id`: String (optional code, e.g., "1.2", "Unit A").
+
+3. **LeafDecision** (for atomic standards):
+   - `role`: StatementRole Enum.
+   - `body`: String (the expectation text).
+   - `list_id`: String (optional code/bullet, e.g., "a)", "3.1.1").
+
+4. **RowDecision** (for table rows):
+   - `row_index`: Integer (must match input `abs_row_index` exactly).
+   - `groupings`: List of GroupingDecision objects (row-local context).
+   - `leaves`: List of LeafDecision objects (row-specific content).
 
 ## CRITICAL RULES
-1. NEVER INVENT CONTENT
-  - Only use text/rows provided in the segment.
-  - If a cell is blank, leave it blank/emit nothing.
-  - Do not merge across pages or assume missing rows.
-2. BE CONSERVATIVE
-  - If uncertain, choose decision_type="{SegmentDecisionType.UNRESOLVED.value}" with high-quality rationale.
-  - Avoid over-classifying ambiguous prose as standards.
-3. DO NOT TRANSLATE.
-  - Preserve original language and casing.
-  - Translation happens later.
-4. If decision_type="{SegmentDecisionType.IGNORE.value}" -> keep groupings/leaves/rows empty arrays.
-5. If decision_type="{SegmentDecisionType.UNRESOLVED.value}" -> keep arrays empty and explain why in rationale.
-6. For table segments, prefer using rows[] over leaves[].
-7. CHUNKING: The segment may represent a *slice* of a larger table.
-  - If Segment includes a `chunking` object, ONLY decide on the rows provided in this segment payload.
-  - NEVER assume missing rows exist outside this chunk.
-8. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}":
-   - You MAY emit groupings[] and/or rows[] (row-level groupings)
-   - You MUST NOT emit any leaves (top-level leaves[] must be empty AND all RowDecision.leaves[] must be empty)
-9. If decision_type="{SegmentDecisionType.EMIT_LEAVES_ONLY.value}":
-   - segment-level groupings[] MUST be empty
-   - You MAY still use rows[] for tables, and RowDecision.groupings[] is allowed (row-local containers)
-10. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES.value}":
-   - You MUST emit at least one grouping somewhere (segment-level groupings[] or RowDecision.groupings[])
-   - You MUST emit at least one leaf somewhere (top-level leaves[] or RowDecision.leaves[])
+1. **NEVER INVENT CONTENT**: Use only provided text. If blank, emit nothing.
+2. **BE CONSERVATIVE**: If uncertain, use decision_type="{SegmentDecisionType.UNRESOLVED.value}".
+3. **DO NOT TRANSLATE**: Preserve original language and casing.
+4. **MUTUALLY EXCLUSIVE OUTPUTS** (Schema Enforcement):
+   - If using `rows[]` (tables), `leaves[]` MUST be empty. Never mix top-level leaves with rows.
+   - If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}", ALL `leaves` arrays must be empty.
+   - If decision_type="{SegmentDecisionType.EMIT_LEAVES_ONLY.value}", top-level `groupings` must be empty (use row-level `groupings` instead).
+5. **CONTEXT & HIERARCHY**:
+   - `context_groupings[]` is REQUIRED for all non-ignore decisions.
+   - It represents the **stable outer context** (Snapshot) derived from `section_path`, `caption_text`, or headers.
+   - Do NOT put row-varying data here.
 
-## WHAT TO EXTRACT
-1. A segment can yield:
-  - groupings: hierarchy containers (e.g., subject/grade/strand/topic/theme/unit/week/stage/section)
-  - leaves: atomic statements (expectations/descriptors/guidance)
-  - rows: for tables, per-row groupings + leaves (preferred)
-
-## ALLOWED ENUM VALUES
-segment_kind:
-  - "block"
-  - "table"
-
-decision_type:
+## DECISION TYPES
 {decision_types_str}
 
-NodeRole (for grouping decisions):
+## ALLOWED ROLES
+**NodeRole (Groupings):**
 {node_roles_str}
+*Use `role="{NodeRole.SECTION.value}"` if specific role is unclear.*
 
-StatementRole (for leaf decisions):
-  - "{StatementRole.EXPECTATION.value}"   (normative learning outcome/competence/objective/standard)
-  - "{StatementRole.DESCRIPTOR.value}"    (benchmark/indicator/expected standard/performance criteria)
-  - "{StatementRole.GUIDANCE.value}"      (learning activities, pedagogy, resources, notes)
+**StatementRole (Leaves):**
+  - "{StatementRole.EXPECTATION.value}": Normative outcomes ("Student can...", "Learners should...").
+  - "{StatementRole.DESCRIPTOR.value}": Assessment criteria/benchmarks.
+  - "{StatementRole.GUIDANCE.value}": Activities, teacher notes, resources.
 
-## ROLE GUIDANCE (how to label leaves)
-{StatementRole.EXPECTATION.name}:
-  - "Learners should be able to..."
-  - "Pupils demonstrate..."
-  - "Student can..."
-  - "Specific competence:" statements
-  - "Learning outcome:" statements
-  - Clear measurable objective/standard
+## TABLE PARSING INSTRUCTIONS
+1. **Header Rows**: Do NOT emit RowDecisions for headers. Use header text ONLY to infer roles for body cells.
+2. **Row Index**: You must use the `abs_row_index` provided in the input as your `RowDecision.row_index`.
+3. **Multi-valued Cells**: If a cell contains multiple distinct items (e.g., a list of topics), emit multiple `RowDecision` objects with the SAME `row_index` (one for each item).
+4. **Hierarchy in Tables**:
+   - If a row has a generic container (e.g., "Competence 1") AND specific items (e.g., "1.1 ...", "1.2 ..."):
+   - Put the container in `RowDecision.groupings[]`.
+   - Put the specific items in `RowDecision.leaves[]`.
 
-{StatementRole.DESCRIPTOR.name}:
-  - "Expected standard / benchmark"
-  - performance indicator/criteria
-  - rubric-like achievement description
-  - "Assessment criteria"
-
-{StatementRole.GUIDANCE.name}:
-  - activities/tasks: "Discuss...", "Do...", "Group work...", "Teacher guides..."
-  - "Learning activities" column content
-  - exemplars/resources/teaching notes
-
-## GROUPING GUIDANCE (how to label hierarchy containers)
-1. Use GroupingDecision for container nodes like:
-  - grade/stage ("Standard I", "Grade 2", "P1")
-  - subject/learning area ("Mathematics", "Literacy", "Science")
-  - theme/sub-theme/week (Uganda thematic curriculum)
-  - strand/main competence/topic/subtopic/unit/section
-2. Prefer the most specific reasonable NodeRole.
-3. If you are unsure, use role="{NodeRole.SECTION.value}" or omit groupings.
-4. REQUIRED: Emit `context_groupings[]` for any decision that emits anything (any `emit_*` decision_type).
-  - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
-  - Therefore, YOU MUST explicitly provide the hierarchy context snapshot in `context_groupings[]`.
-  - `segment.section_path` is provided as EVIDENCE ONLY (semantic-light headings).
-  - `context_groupings[]` must be derived only from evidence in the segment payload:
-    - section_path texts
-    - caption_text (if present for tables)
-    - table header phrases if they clearly imply context
-  - If no usable context evidence exists, context_groupings may be [] (attach to framework root).
-  - If uncertain about context, choose decision_type="unresolved".
-5. **Role assignment guardrails (IMPORTANT):**
-  - Use role=SUBJECT ONLY for actual learning areas/subjects (e.g., Mathematics, English, Science, Social Studies).
-  - Do NOT label document titles, publishers, ministries, or high-level document headings as SUBJECT.
-  - Examples of non-subject headings: “Curriculum”, “Syllabus”, “Framework”, “Ministry of Education”, “National Curriculum”, “Table of Contents”. Stage-band headings like “Lower Primary”, “Upper Primary”, “Primary Cycle” should be role=STAGE (not SUBJECT).
-6. **Grade/Stage grouping normalization (IMPORTANT):**
-  - role=GRADE_LEVEL should contain only the grade identifier/band (e.g., “Grade 1”, “P1”, “Standard I–II”, “Grades 1–3”).
-  - role=STAGE should contain stage/cycle names (e.g., “Lower Primary”, “Upper Primary”, “Primary Cycle”).
-  - If a heading mixes both, split into STAGE + GRADE_LEVEL (and optionally SECTION for the remaining phrase).
-
-## IMPORTANT: Outer context vs. row-local context for tables
-1. For TABLE segments (including chunked slices):
-  - `context_groupings[]` should represent ONLY the stable OUTER context for this table/chunk:
-      * derived from `section_path[]` and/or `caption_text` and/or table headers
-      * e.g., Grade/Stage, Subject/Learning Area, Theme/Unit if clearly indicated
-  - Row-specific context (topic/subtopic/strand/code/week/etc. that changes by row) MUST go inside `RowDecision.groupings[]`.
-  - Do NOT promote per-row values from table cells into `context_groupings[]` unless they are clearly table-scoped and stable across the chunk (rare).
-
-## TABLE-SPECIFIC INSTRUCTIONS
-1. If segment_kind="table":
-  - Prefer outputting row decisions in `rows[]`.
-  - For each emitted RowDecision:
-    - row_index MUST be a 0-based index into the ORIGINAL stitched DocumentIR table rows (ABSOLUTE index).
-      - If the Segment includes segment.chunking.row_index_is_absolute=true, each provided row includes `abs_row_index`. In that case: RowDecision.row_index MUST EQUAL the row's abs_row_index (copy it exactly).
-    - Do NOT emit RowDecisions for header rows.
-      - Header rows are row_index values < segment.header_row_count.
-      - Only emit RowDecisions for body rows unless a header row clearly contains real standards/expectations (rare).
-    - groupings[] should capture container-like cells (subject/topic/strand/stage/week etc.).
-    - leaves[] should capture expectation/descriptor/guidance statements from that row.
-  - Reminder: Put stable OUTER context in `context_groupings[]`, and row-varying context in `RowDecision.groupings[]`.
-  - Split multiple statements within a cell into multiple LeafDecisions when clearly separable (bullets, numbering, semicolons, line breaks).
-  - If headers suggest roles (e.g., "Specific Competences", "Expected Standard", "Learning Activities"), map accordingly.
-  - If no rows contain anything meaningful (e.g., empty or purely formatting), use decision_type="{SegmentDecisionType.IGNORE.value}".
-  - Multi-valued cells/sibling fanout rule (IMPORTANT):
-    - If a single table row contains multiple same-level sibling items (e.g., a list of topics/subjects/units/skills in one cell), do NOT encode them as a single hierarchy path inside one RowDecision.groupings[].
-    - Instead, emit multiple RowDecision entries with the SAME row_index, each containing the shared parent grouping(s) plus exactly one sibling item.
-    - This preserves the intended structure: one parent → many children.
-  - **Hierarchy/coding discipline (IMPORTANT):**
-    - Many curriculum tables contain BOTH a higher-level container statement and more specific sub-statements. This may be expressed via headers (e.g., "Main/General competence" vs "Specific competence"), or via hierarchical codes/list_ids where a parent code is a prefix of child codes (e.g., "1.1" and "1.1.1").
-    - In these cases, treat the higher-level container as a **grouping** in `RowDecision.groupings[]` (use role STRAND/TOPIC/SECTION as appropriate, and keep the code in list_id if present), and emit ONLY the more specific sub-statements as leaf expectations in `RowDecision.leaves[]`.
-    - Do NOT emit both the parent container and its child sub-statements as leaf expectations in the same row.
-2. CHUNKED TABLES:
-  - If segment.chunking exists, the provided `segment.rows` is a slice of the original table.
-  - ONLY emit RowDecisions for the provided rows in this payload.
-  - Do not emit RowDecisions for rows you cannot see.
-  - If a row cell is blank: emit nothing for that cell (do not hallucinate).
-  - Example: if a provided row has abs_row_index=57, then RowDecision.row_index MUST be 57.
-
-## CAPTION BINDING (IMPORTANT)
-1. For table segments, the input JSON may include optional caption metadata fields:
-  - caption_kind
-  - caption_text
-  - caption_segment_id
-  - caption_page_index
-  - caption_gap_segments
-2. How to use caption_text:
-  - Treat caption_text as table-scoped context (it describes what the table represents).
-  - Use it to disambiguate subject/grade/theme/strand/week/stage when the table headers or section path are insufficient.
-  - caption_text is NOT a curriculum statement and should NOT be emitted as a grouping node or a leaf statement by itself.
-  - Do NOT copy caption_text verbatim into groupings or leaves.
-  - If caption_text contains key structure (e.g., "Grade 2 Mathematics"), you may incorporate the IMPLIED structure by creating normal groupings (e.g., SUBJECT="Mathematics", GRADE_LEVEL="Grade 2"), but only if confident.
-  - If caption_text conflicts with section_path_text, prefer section_path_text unless the caption is clearly more specific for this table.
-
-## BLOCK-SPECIFIC INSTRUCTIONS
-1. Use the input field segment.block_type to guide your decision.
-2. Do NOT output block_type in SegmentDecision (it will be set deterministically by the pipeline).
-3. If block_type is "{BlockType.ARTIFACT.value}" or page-number-like: decision_type="{SegmentDecisionType.IGNORE.value}".
-4. If block_type is "{BlockType.CAPTION.value}": decision_type="{SegmentDecisionType.IGNORE.value}" (captions bind to tables later; do not emit nodes).
-5. If block_type is "{BlockType.HEADING.value}":
-6. Headings are almost always structural containers → default to decision_type="{SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}"
-7. Choose the most specific NodeRole you can infer (GRADE_LEVEL / SUBJECT / THEME / STRAND / TOPIC / UNIT / WEEK / STAGE / SECTION).
-8. If unsure, STILL emit a grouping using role="{NodeRole.SECTION.value}" and title = the heading text.
-9. Only use decision_type="{SegmentDecisionType.IGNORE.value}" if the heading is clearly page furniture (running header/footer, repeated publisher line, standalone page number).
-10. If {BlockType.PARAGRAPH.value}/{BlockType.LIST.value} includes clear expectations: {SegmentDecisionType.EMIT_LEAVES_ONLY.value} (or {SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES.value} if it also contains a grouping label)
-11. For heading blocks: put the heading itself in groupings[]; use context_groupings[] only for the outer context in section_path.
+## CAPTIONS & BLOCK TYPES
+1. **Captions**: Use `caption_text` (if present) to inform `context_groupings`, but DO NOT emit the caption text itself as a node.
+2. **Block Types**:
+   - If block_type="{BlockType.HEADING.value}": Usually `EMIT_GROUPINGS_ONLY`.
+   - If block_type="{BlockType.ARTIFACT.value}" or page numbers: `IGNORE`.
 
 ## CONFIDENCE
-1. Provide confidence ∈ [0,1] where:
-  - 0.80+: obvious mapping (clean competence/outcome rows, clear standards statements)
-  - 0.60–0.79: reasonable but mild ambiguity
-  - 0.30–0.59: ambiguous; likely unresolved
-  - <0.30: unresolved
-        """
+  - 0.80+: Obvious mapping.
+  - 0.60–0.79: Reasonable.
+  - <0.60: Unresolved.
+            """
     )
 
     # Keep the user message small and stable: include the segment JSON verbatim.
