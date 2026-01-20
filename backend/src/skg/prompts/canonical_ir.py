@@ -87,6 +87,14 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
   - leaves: atomic statements (expectations/descriptors/guidance)
   - rows: for tables, per-row groupings + leaves (preferred)
 
+## SOURCE LABELS (REQUIRED WHEN AVAILABLE)
+1. When you emit any GroupingDecision or LeafDecision, also emit `source_label` whenever you can.
+2. `source_label` MUST be copied VERBATIM from visible evidence in the segment payload:
+  - Table column headers (preferred): e.g., "Topic", "Sub-topic", "Specific Competences", "Expected Standard", "Learning Activities"
+  - Heading/section labels (if clearly the label introducing the statements)
+3. If no explicit label exists in the evidence, set source_label=null (omit it).
+4. Do NOT invent or paraphrase source_label.
+
 ## ALLOWED ENUM VALUES
 segment_kind:
   - "block"

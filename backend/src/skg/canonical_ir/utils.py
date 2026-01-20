@@ -439,6 +439,7 @@ def load_or_initialize_segment_decision_set(
     ------
     ValueError
         If the SegmentDecisionSet refers to missing segment IDs.
+        If some decisions are missing segment_id.
     """
 
     segment_decisions_fp = (
@@ -464,8 +465,15 @@ def load_or_initialize_segment_decision_set(
     )
 
     # Ensure any existing decisions still refer to real segments.
-    existing_segment_ids: set[str] = {d.segment_id for d in decision_set.decisions}
-    assert all(seg_id for seg_id in existing_segment_ids), f"{existing_segment_ids = }"
+    existing_segment_ids = {
+        d.segment_id for d in decision_set.decisions if d.segment_id
+    }
+
+    if len(existing_segment_ids) != len(
+        [d for d in decision_set.decisions if d.segment_id]
+    ):
+        raise ValueError("Some decisions are missing segment_id.")
+
     segments_by_id = {s.segment_id: s for s in document_ir.segments}
     missing = [sid for sid in existing_segment_ids if sid not in segments_by_id]
 
