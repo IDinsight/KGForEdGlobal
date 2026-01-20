@@ -194,13 +194,10 @@ def validate_context_groupings_supported_by_outer_evidence(
     headings: list[str] = []
 
     for h in section_path:
-        if isinstance(h, dict):
-            t = h.get("text", "") or ""
-        elif isinstance(h, str):
-            t = h
-        else:
+        if not isinstance(h, (dict, str)):
             continue
 
+        t = (h.get("text", "") or "") if isinstance(h, dict) else h
         tn = _normalize_text(t)
 
         if not tn or tn in NonArtifacts:
@@ -210,13 +207,9 @@ def validate_context_groupings_supported_by_outer_evidence(
 
     caption = payload.get("caption_text") or ""
     header_rows = payload.get("header_rows_canonical") or []
-    header_strings = []
-
-    for r in header_rows:
-        for c in r:
-            if isinstance(c, str) and c.strip():
-                header_strings.append(c)
-
+    header_strings = [
+        c for r in header_rows for c in r if isinstance(c, str) and c.strip()
+    ]
     evidence_blob = _normalize_text(" \n ".join([*headings, caption, *header_strings]))
 
     # If there is NO outer evidence at all, we can't enforce this strictly.
