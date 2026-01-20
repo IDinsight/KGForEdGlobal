@@ -177,11 +177,21 @@ def validate_context_groupings_required_for_emit(
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None,
 ) -> None:
-    """If this decision emits anything and *meaningful* context evidence exists, then
-    context_groupings[] must be non-empty. "Meaningful context evidence" is
-    intentionally conservative:
-        - section_path contains at least 1 non-artifact heading, OR
-        - caption_text is present (table payload)
+    """Require non-empty context_groupings[] only when it matters. We intentionally DO
+    NOT force context_groupings[] to be non-empty for *groupings-only* HEADING
+    decisions, because cover pages/front-matter often contain only institutional
+    headings (country/ministry/publisher) that should not become parents in the
+    curriculum hierarchy.
+
+    We DO require non-empty context_groupings[] when:
+        - The segment is a TABLE (outer context anchors row statements), OR
+        - The decision emits any leaf statements (expectations/descriptors/guidance)
+
+    In those cases, we only enforce non-empty context when there is some curriculum-ish
+    outer evidence available:
+        - caption_text exists, OR
+        - section_path contains curriculum structure cues
+            (grade/standard/stage/subject/unit/etc.)
 
     NB: We ignore common document furniture headings (Table of Contents, References,
         etc.) via `NonArtifacts`.
@@ -207,11 +217,34 @@ def validate_context_groupings_required_for_emit(
     ):
         return
 
+    # Only enforce non-empty context when we emit leaves OR for table segments.
+    emits_any_leaves = bool(segment_decision.leaves) or any(
+        (r.leaves for r in (segment_decision.rows or []))
+    )
+
+    if segment.kind != "table" and not emits_any_leaves:
+        return
+
     payload = segment_payload or {}
 
-    # Determine whether section_path is meaningful.
+    # Determine whether section_path contains curriculum-ish context.
     section_path = payload.get("section_path") or []
     meaningful_heading_texts: list[str] = []
+
+    # Positive curriculum structure cues (general, country-agnostic). Avoid treating
+    # institutional front-matter headings as meaningful hierarchy context.
+    curriculum_hint_re = re.compile(
+        r"\b("
+        r"grade|standard|class|form|stage|level|"
+        r"subject|learning area|"
+        r"theme|sub[- ]?theme|strand|topic|sub[- ]?topic|"
+        r"unit|module|chapter|week|term|section"
+        r")\b"
+        r"|\bp\d+\b"  # P1/P2 style
+        r"|\b[ivx]{1,7}\b"  # I–VII roman numerals
+        r"|\b\d+\b",  # numeric cues
+        flags=re.IGNORECASE,
+    )
 
     for h in section_path:
         t = ""
@@ -224,6 +257,10 @@ def validate_context_groupings_required_for_emit(
         tn = _normalize_text(t)
 
         if not tn or tn in NonArtifacts:
+            continue
+
+        # Only count headings that look like curriculum structure.
+        if not curriculum_hint_re.search(tn):
             continue
 
         meaningful_heading_texts.append(t)

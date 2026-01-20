@@ -80,6 +80,7 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
   - You MUST NOT emit exact duplicate RowDecision entries (same row_index + identical groupings + identical leaves).
 12. If decision_type="{SegmentDecisionType.IGNORE.value}" or "{SegmentDecisionType.UNRESOLVED.value}" -> context_groupings[] MUST be empty.
 13. Preserve statement order as it appears in the segment; do not reorder leaves or row decisions.
+14. Do NOT include institutional or governmental identifiers (e.g., country name, ministry name, publisher, approving authority) in context_groupings[]. Such text is document metadata, not curriculum hierarchy. If no curriculum hierarchy is present, use an empty context.
 
 ## WHAT TO EXTRACT
 1. A segment can yield:
@@ -139,16 +140,18 @@ StatementRole (for leaf decisions):
   - strand/main competence/topic/subtopic/unit/section
 2. Prefer the most specific reasonable NodeRole.
 3. If you are unsure, use role="{NodeRole.SECTION.value}" or omit groupings.
-4. REQUIRED: Emit `context_groupings[]` for any decision that emits anything (any `emit_*` decision_type).
+4. Always include the field `context_groupings[]` in your output. It MAY be empty.
   - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
-  - Therefore, YOU MUST explicitly provide the hierarchy context snapshot in `context_groupings[]`.
+  - Therefore, you MUST explicitly provide the hierarchy context snapshot in `context_groupings[]` when there is clear curriculum structure evidence.
   - `segment.section_path` is provided as EVIDENCE ONLY (semantic-light headings).
   - `context_groupings[]` must be derived only from evidence in the segment payload:
     - section_path texts
     - caption_text (if present for tables)
     - table header phrases if they clearly imply context
-  - If no usable context evidence exists, context_groupings may be [] (attach to framework root).
-  - If uncertain about context, choose decision_type="unresolved".
+  - If the ONLY available outer evidence is institutional/front-matter metadata (e.g., country name, ministry name, publisher, approval certificate), then `context_groupings` MUST be [] (attach to framework root).
+  - For TABLE segments and for any decision that emits leaf statements (expectations/descriptors/guidance), prefer a non-empty `context_groupings[]` when supported by evidence (Grade/Stage/Subject/Theme/Unit).
+  - If no usable curriculum context evidence exists, `context_groupings` may be [] (attach to framework root).
+  - If uncertain about context, choose decision_type="{SegmentDecisionType.UNRESOLVED.value}".
 5. **Role assignment guardrails (IMPORTANT):**
   - Use role=SUBJECT ONLY for actual learning areas/subjects (e.g., Mathematics, English, Science, Social Studies).
   - Do NOT label document titles, publishers, ministries, or high-level document headings as SUBJECT.
@@ -320,8 +323,10 @@ In particular, ensure that:
   - If you're not sure, mark unresolved with confidence < 0.6.
   - Only use confidence >= 0.85 when the mapping is obvious.
 9. If decision_type is any emit_*:
-  - `context_groupings[]` must be present and reflect the current hierarchy context based on evidence in the segment payload (especially section_path and caption_text).
-  - The compiler will not create nodes from segment.section_path automatically.
+  - Always include the field `context_groupings[]` (it may be empty).
+  - For TABLE segments and for any decision that emits leaf statements, prefer a non-empty `context_groupings[]` when supported by evidence (grade/stage/subject/theme/unit via section_path/caption/headers).
+  - If the only outer evidence is institutional/front-matter metadata, use `context_groupings=[]` (attach to framework root).
+  - Reminder: the compiler will not create nodes from segment.section_path automatically.
 10. **Grade label check:**
   - If role=GRADE_LEVEL contains extra narrative words beyond the grade/stage identifier, rewrite it so grade_level is only the grade/stage label and move the remaining phrase to role=SECTION/TOPIC.
 
