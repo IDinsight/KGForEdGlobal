@@ -127,7 +127,6 @@ def validate_context_groupings_required_for_emit(
         elif isinstance(h, str):
             t = h  # Defensive: some payloads may serialize as strings
 
-        tn = (t or "").strip().casefold()
         tn = _normalize_text(t)
 
         if not tn or tn in NonArtifacts:
@@ -191,9 +190,24 @@ def validate_context_groupings_supported_by_outer_evidence(
         return
 
     payload = segment_payload or {}
-    headings = [
-        h.get("text", "") for h in payload.get("section_path", []) if h.get("text")
-    ]
+    section_path = payload.get("section_path") or []
+    headings: list[str] = []
+
+    for h in section_path:
+        if isinstance(h, dict):
+            t = h.get("text", "") or ""
+        elif isinstance(h, str):
+            t = h
+        else:
+            continue
+
+        tn = _normalize_text(t)
+
+        if not tn or tn in NonArtifacts:
+            continue
+
+        headings.append(t)
+
     caption = payload.get("caption_text") or ""
     header_rows = payload.get("header_rows_canonical") or []
     header_strings = []
@@ -341,6 +355,11 @@ def validate_segment_kind_coherence(
 ) -> None:
     """Ensure the decision structure matches the actual segment kind.
 
+    1. Block segments must not include rows[]
+    2. Table segments must not include block_type
+    3. Block segments must have block_type equal to DocumentIR's segment.block_type
+      (block_type is set deterministically by the pipeline)
+
     Parameters
     ----------
     segment
@@ -354,20 +373,31 @@ def validate_segment_kind_coherence(
         If any quality checks fail.
     """
 
-    if segment.kind == "block" and segment_decision.rows:
-        raise QualityError(
-            f"Block segment decision must not include rows[].\n"
-            f"  segment_id: {segment.segment_id}\n"
-            f"  decision_id: {segment_decision.decision_id}"
-        )
+    if segment.kind == "block":
+        if segment_decision.rows:
+            raise QualityError(
+                f"Block segment decision must not include rows[].\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}"
+            )
 
-    if segment.kind == "table" and segment_decision.block_type is not None:
-        raise QualityError(
-            f"Table segment decision must not include block_type.\n"
-            f"  segment_id: {segment.segment_id}\n"
-            f"  decision_id: {segment_decision.decision_id}\n"
-            f"  block_type: {segment_decision.block_type}"
-        )
+        if segment_decision.block_type != segment.block_type:
+            raise QualityError(
+                f"Block segment decision has mismatched block_type.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  expected: {segment.block_type}\n"
+                f"  got: {segment_decision.block_type}"
+            )
+
+    if segment.kind == "table":
+        if segment_decision.block_type is not None:
+            raise QualityError(
+                f"Table segment decision must not include block_type.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  block_type: {segment_decision.block_type}"
+            )
 
 
 def validate_table_row_index(

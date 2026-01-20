@@ -334,21 +334,18 @@ class SegmentDecision(BaseSchema):
     def _validate_decision_type_semantics(self) -> SegmentDecision:
         """Enforce that decision_type matches the shape of emitted outputs.
 
-        Rules:
+        Updated rules (supports real table parsing):
 
-        1. emit_groupings_only: no leaves[] and no rows[]
-        2. emit_leaves_only: no groupings[]
-        3. emit_groupings_and_leaves: must include both grouping + leaf output
-
-        Returns
-        -------
-        SegmentDecision
-            The validated SegmentDecision object.
-
-        Raises
-        ------
-        ValueError
-            If the SegmentDecision is inconsistent based on its decision_type.
+        1. emit_groupings_only:
+            - MUST NOT emit any leaves anywhere (top-level or row-level)
+            - MAY emit groupings[] and/or rows[] with row-level groupings
+        2. emit_leaves_only:
+            - MUST have empty *segment-level* groupings[]
+            - MAY emit leaves[] and/or rows[] (including row-level groupings for
+                attachment)
+        3. emit_groupings_and_leaves:
+            - MUST emit at least one grouping somewhere (segment or row)
+            - MUST emit at least one leaf somewhere (segment or row)
         """
 
         if self.decision_type in (
@@ -357,28 +354,42 @@ class SegmentDecision(BaseSchema):
         ):
             return self
 
-        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY and (
-            self.leaves or self.rows
+        # Aggregate signals across segment-level and row-level outputs.
+        has_segment_groupings = bool(self.groupings)
+        has_row_groupings = any(bool(r.groupings) for r in self.rows)
+        has_any_groupings = has_segment_groupings or has_row_groupings
+
+        has_segment_leaves = bool(self.leaves)
+        has_row_leaves = any(bool(r.leaves) for r in self.rows)
+        has_any_leaves = has_segment_leaves or has_row_leaves
+
+        # Allow rows[] only if they contain groupings-only rows (no leaves).
+        if (
+            self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY
+            and has_any_leaves
         ):
             raise ValueError(
-                "Decision type 'emit_groupings_only' must have empty leaves[] and rows[]."
+                "Decision type 'emit_groupings_only' must not emit any leaves "
+                "(top-level leaves[] and RowDecision.leaves[] must be empty)."
             )
+
+        # Only ban segment-level groupings; allow row-level groupings for tables.
         if (
             self.decision_type == SegmentDecisionType.EMIT_LEAVES_ONLY
             and self.groupings
         ):
             raise ValueError(
-                "Decision type 'emit_leaves_only' must have empty groupings[]."
+                "Decision type 'emit_leaves_only' must have empty segment-level groupings[]. "
+                "Use RowDecision.groupings[] for row-local containers if needed."
             )
-        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES:
-            has_groupings = bool(self.groupings) or any(r.groupings for r in self.rows)
-            has_leaves = bool(self.leaves) or any(r.leaves for r in self.rows)
 
-            if not has_groupings or not has_leaves:
-                raise ValueError(
-                    "Decision type 'emit_groupings_and_leaves' must include BOTH groupings and leaves "
-                    "(either top-level groupings[]/leaves[] or row-level groupings/leaves for tables)."
-                )
+        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES and (
+            not has_any_groupings or not has_any_leaves
+        ):
+            raise ValueError(
+                "Decision type 'emit_groupings_and_leaves' must include BOTH "
+                "groupings and leaves (either segment-level or row-level for tables)."
+            )
 
         return self
 

@@ -143,6 +143,7 @@ def _call_openai_api_to_decide_on_segment(
     else:
         parsed.decision_id = f"segment_decision:{doc_key}:{segment.segment_id}"
 
+    parsed.block_type = segment.block_type if segment.kind == "block" else None
     parsed.segment_kind = segment.kind
     parsed.segment_id = segment.segment_id
 
