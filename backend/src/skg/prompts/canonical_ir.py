@@ -29,9 +29,6 @@ def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
         A DotMap containing 'system_message' and 'user_message'.
     """
 
-    block_types_str = " ".join(
-        [f'"{b.value}"' for b in sorted(BlockType, key=lambda x: x.value)]
-    )
     decision_types_str = "\n".join(
         [f'  - "{t.value}"' for t in sorted(SegmentDecisionType, key=lambda x: x.value)]
     )
@@ -67,9 +64,15 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 7. CHUNKING: The segment may represent a *slice* of a larger table.
   - If Segment includes a `chunking` object, ONLY decide on the rows provided in this segment payload.
   - NEVER assume missing rows exist outside this chunk.
-8. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}" -> groupings may be non-empty, but leaves[] and rows[] MUST be empty.
-9. If decision_type="{SegmentDecisionType.EMIT_LEAVES_ONLY.value}" -> leaves[]/rows[] may be non-empty, but groupings[] MUST be empty.
-10. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES.value}" -> you MUST emit BOTH some grouping AND some leaf output.
+8. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_ONLY.value}":
+   - You MAY emit groupings[] and/or rows[] (row-level groupings)
+   - You MUST NOT emit any leaves (top-level leaves[] must be empty AND all RowDecision.leaves[] must be empty)
+9. If decision_type="{SegmentDecisionType.EMIT_LEAVES_ONLY.value}":
+   - segment-level groupings[] MUST be empty
+   - You MAY still use rows[] for tables, and RowDecision.groupings[] is allowed (row-local containers)
+10. If decision_type="{SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES.value}":
+   - You MUST emit at least one grouping somewhere (segment-level groupings[] or RowDecision.groupings[])
+   - You MUST emit at least one leaf somewhere (top-level leaves[] or RowDecision.leaves[])
 
 ## WHAT TO EXTRACT
 1. A segment can yield:
@@ -84,9 +87,6 @@ segment_kind:
 
 decision_type:
 {decision_types_str}
-
-block_type (if segment_kind="block"):
-  - {block_types_str}
 
 NodeRole (for grouping decisions):
 {node_roles_str}
@@ -182,6 +182,8 @@ StatementRole (for leaf decisions):
 
 ## BLOCK-SPECIFIC INSTRUCTIONS
 1. If segment_kind="block":
+  - Use the input field segment.block_type to guide your decision.
+  - Do NOT output block_type in SegmentDecision (it will be set deterministically by the pipeline).
   - If block_type is "{BlockType.ARTIFACT.value}" or page-number-like: decision_type="{SegmentDecisionType.IGNORE.value}".
   - If block_type is "{BlockType.CAPTION.value}": decision_type="{SegmentDecisionType.IGNORE.value}" (captions bind to tables later; do not emit nodes).
   - If block_type is "{BlockType.HEADING.value}":
