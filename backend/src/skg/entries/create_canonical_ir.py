@@ -35,11 +35,12 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     build_caption_bindings,
     decision_key,
-    load_or_initialize_segment_decision_set,
+    load_segment_decision_set,
     persist_canonical_run,
     process_segment_decisions,
 )
@@ -75,6 +76,7 @@ def create_canonical_ir(
     """
 
     canonical_ir_fp = creation_dirs.root / "canonical_ir.json"
+    segment_decisions_fp = creation_dirs.root / "segment_decisions.json"
 
     if not config.overwrite and canonical_ir_fp.exists():
         logger.warning(
@@ -86,58 +88,80 @@ def create_canonical_ir(
     # Validate and load the Document IR.
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
-    # Build one-shot caption to next table bindings.
-    caption_bindings = build_caption_bindings(
-        creation_dirs=creation_dirs, document_ir=document_ir
-    )
-
-    # Load or initialize decision set.
-    decision_set, segment_decisions_fp = load_or_initialize_segment_decision_set(
-        creation_dirs=creation_dirs,
-        doc_key=doc_key,
-        document_ir=document_ir,
-        segment_decisions_fp=config.segment_decisions_fp,
-    )
-
-    # Generate decisions for any undecided segments in DocumentIR order.
-    num_segments = len(document_ir.segments)
-    existing_keys = {decision_key(d) for d in decision_set.decisions}
-    segment_warnings_dir = creation_dirs.root / "segment_warnings"
-    make_dir(segment_warnings_dir)
-
-    for i, segment in enumerate(document_ir.segments, 1):
-        logger.info(f"Processing segment ({segment.segment_id}): {i}/{num_segments}")
-
-        warnings: list[str] = []
-        decision_set = process_segment_decisions(
-            caption_bindings=caption_bindings,
-            config=config,
-            decision_set=decision_set,
-            doc_key=doc_key,
-            existing_keys=existing_keys,
-            segment=segment,
-            segment_decisions_fp=segment_decisions_fp,
-            warnings=warnings,
+    if not config.overwrite and segment_decisions_fp.exists():
+        logger.warning(
+            f"Segment decisions JSON already exists at {segment_decisions_fp}. "
+            f"Reusing existing segment decisions. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+    else:
+        # Build one-shot caption to next table bindings.
+        caption_bindings = build_caption_bindings(
+            creation_dirs=creation_dirs, document_ir=document_ir
         )
 
-        # Persist warnings for this segment.
-        warnings_fp = (
-            segment_warnings_dir / f"{i:05d}_{segment.segment_id}_warnings.json"
+        # Initialize decision set.
+        decision_set = SegmentDecisionSet.model_validate(
+            {
+                "pdf_name": document_ir.pdf_name,
+                "doc_key": doc_key,
+                "decision_set_id": compute_decision_set_id(decisions=[]),
+                "decisions": [],
+            }
         )
-        write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
 
-        logger.success(
-            f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"
+        # Generate decisions for any undecided segments in DocumentIR order.
+        num_segments = len(document_ir.segments)
+        existing_keys = {decision_key(d) for d in decision_set.decisions}
+        segment_warnings_dir = creation_dirs.root / "segment_warnings"
+        make_dir(segment_warnings_dir)
+
+        for i, segment in enumerate(document_ir.segments, 1):
+            logger.info(
+                f"Processing segment ({segment.segment_id}): {i}/{num_segments}"
+            )
+
+            warnings: list[str] = []
+            decision_set = process_segment_decisions(
+                caption_bindings=caption_bindings,
+                config=config,
+                decision_set=decision_set,
+                doc_key=doc_key,
+                existing_keys=existing_keys,
+                segment=segment,
+                segment_decisions_fp=segment_decisions_fp,
+                warnings=warnings,
+            )
+
+            # Persist warnings for this segment.
+            warnings_fp = (
+                segment_warnings_dir / f"{i:05d}_{segment.segment_id}_warnings.json"
+            )
+            write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
+
+            logger.success(
+                f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"
+            )
+
+        decided_segment_ids = {
+            d.segment_id for d in decision_set.decisions if d.segment_id
+        }
+        logger.info(
+            f"Segment decision set generation complete: "
+            f"{len(decided_segment_ids)}/{len(document_ir.segments)} "
+            f"segments have at least one decision "
+            f"({len(decision_set.decisions)} decisions total)."
         )
 
-    decided_segment_ids = {d.segment_id for d in decision_set.decisions if d.segment_id}
-    logger.info(
-        f"Segment decision set generation complete: "
-        f"{len(decided_segment_ids)}/{len(document_ir.segments)} segments have at least one decision "
-        f"({len(decision_set.decisions)} decisions total)."
+    # Load the segment decisions.
+    segment_decisions = load_segment_decision_set(
+        expected_doc_key=doc_key,
+        pdf_name=document_ir.pdf_name,
+        segment_decisions_fp=segment_decisions_fp,
     )
 
-    # Parse the document IR into a canonical IR.
+    # Parse the segment decisions into a canonical IR.
+    logger.info(f"{segment_decisions = }")
 
     # Write results to file.
     # save_canonical_ir(canonical_ir=canonical_ir, canonical_ir_fp=canonical_ir_fp)
