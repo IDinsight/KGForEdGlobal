@@ -75,23 +75,6 @@ class FrontMatterHeadings(str, Enum):
     VISION = "vision"
 
 
-class GroupingCanonicalizationAction(str, Enum):
-    """Canonicalization action for curriculum groupings.
-
-    Options are:
-
-    1. DROP -> drop this grouping entirely (output must be empty)
-    2. KEEP -> keep as-is (output must be empty or exactly the same as input)
-    3. REPLACE -> replace with exactly 1 canonical grouping (same role)
-    4. SPLIT -> replace with 2+ canonical groupings (roles may differ)
-    """
-
-    DROP = "drop"
-    KEEP = "keep"
-    REPLACE = "replace"
-    SPLIT = "split"
-
-
 class ItemBoundary(str, Enum):
     """Enumeration for item boundary states on a page.
 
@@ -140,7 +123,9 @@ class NodeRole(str, Enum):
 
     FRAMEWORK = "framework"  # The root document
     GRADE_LEVEL = "grade_level"
-    SECTION = "section"  # Structural grouping (e.g., "Section One")
+    LEARNING_AREA = "learning_area"  # e.g., "Literacy and Language"
+    PROSE = "prose"  # Document structure/prose headings (Vision, Intro, etc.)
+    SECTION = "section"  # # Curriculum grouping when meaningful
     STAGE = "stage"
     STRAND = "strand"  # e.g., "Main Competence"
     SUBJECT = "subject"  # e.g., "Mathematics"
@@ -189,6 +174,30 @@ CaptionTablePrefixes: tuple[str, ...] = (
     "tbl",
     "tbl.",
 )
+
+# Context grouping role precedence (outer -> inner). Used to enforce consistent
+# ordering of SegmentDecision.context_groupings[] across segments and (especially)
+# across chunked table decisions.
+#
+# NB:
+# 1. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
+# 2. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
+#
+CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
+    NodeRole.STAGE,
+    NodeRole.GRADE_LEVEL,
+    NodeRole.LEARNING_AREA,
+    NodeRole.SUBJECT,
+    NodeRole.STRAND,
+    NodeRole.SUBSTRAND,
+    NodeRole.THEME,
+    NodeRole.UNIT,
+    NodeRole.WEEK,
+    NodeRole.SECTION,
+)
+CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
+    role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)
+}
 CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
 NonArtifacts = {
     "abbreviations and acronyms",
