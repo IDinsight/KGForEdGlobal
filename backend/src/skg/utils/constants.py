@@ -162,6 +162,7 @@ RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"
 UnresolvedReason = Literal[
     "ID_COLLISION",
     "LOW_CONFIDENCE_TABLE_MAPPING",
+    "LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED",
     "PARENT_CONFLICT",
     "UNMATCHED_BLOCK",
     "UNMATCHED_HEADING",

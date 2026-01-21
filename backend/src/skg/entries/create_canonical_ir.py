@@ -38,10 +38,12 @@ from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     build_caption_bindings,
+    compile_canonical_ir,
     decision_key,
     load_segment_decision_set,
     persist_canonical_run,
     process_segment_decisions,
+    save_canonical_ir,
 )
 from skg.document_ir.schemas import DocumentIR
 from skg.schemas import CreateCanonicalConfig, RunConfig, RunCtx
@@ -157,12 +159,19 @@ def create_canonical_ir(
         pdf_name=document_ir.pdf_name,
         segment_decisions_fp=segment_decisions_fp,
     )
+    assert segment_decisions.doc_key == doc_key, (
+        f"SegmentDecisionSet.doc_key != expected doc_key\n"
+        f"decision_set.doc_key={segment_decisions.doc_key}\n"
+        f"expected={doc_key}"
+    )
 
     # Parse the segment decisions into a canonical IR.
-    logger.info(f"{segment_decisions = }")
+    canonical_ir = compile_canonical_ir(
+        doc_key=doc_key, document_ir=document_ir, segment_decisions=segment_decisions
+    )
 
     # Write results to file.
-    # save_canonical_ir(canonical_ir=canonical_ir, canonical_ir_fp=canonical_ir_fp)
+    save_canonical_ir(canonical_ir=canonical_ir, canonical_ir_fp=canonical_ir_fp)
 
 
 @cli.command()
