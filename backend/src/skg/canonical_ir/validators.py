@@ -12,12 +12,18 @@ from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import (
     BlockType,
+    NodeRole,
     NonArtifacts,
     SegmentDecisionType,
     StatementRole,
 )
 
+# Compiled regexes.
+_CODE_LIKE_RE = re.compile(r"^[A-Za-z]?\d+(?:[.\-]\d+){1,}$")
 _DASH_RE = re.compile(r"[‐-‒–—−]")  # Common unicode dash characters
+_LEAF_BODY_CODE_PREFIX_RE = re.compile(
+    r"^\s*([A-Za-z]?\d+(?:[.\-]\d+){1,})\s*[\)\.:\-]?\s+"
+)
 
 
 def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
@@ -118,24 +124,44 @@ def _is_hierarchical_prefix(*, child_id: str, parent_id: str) -> bool:
     return False
 
 
-def _normalize_list_id(list_id: Optional[str]) -> str:
-    """Normalize list/code identifiers for prefix hierarchy checks.
+def _looks_like_curriculum_code(value: Optional[str]) -> bool:
+    """Return True if `value` looks like a stable curriculum code (e.g., 3.9.4.1).
 
     Parameters
     ----------
-    list_id
-        The input list identifier.
+    value
+        The input list/code identifier.
+
+    Returns
+    -------
+    bool
+        True if the value looks like a curriculum code.
+    """
+
+    return (
+        False if not value else bool(_CODE_LIKE_RE.match(_normalize_list_marker(value)))
+    )
+
+
+def _normalize_list_marker(list_marker: Optional[str]) -> str:
+    """Normalize list/bullet marker tokens for comparisons (and occasional prefix
+    checks).
+
+    Parameters
+    ----------
+    list_marker
+        The input list/bullet marker.
 
     Returns
     -------
     str
-        The normalized list identifier.
+        The normalized list marker.
     """
 
-    if not list_id:
+    if not list_marker:
         return ""
 
-    s = unicodedata.normalize("NFKC", str(list_id)).strip()
+    s = unicodedata.normalize("NFKC", str(list_marker)).strip()
     s = _DASH_RE.sub("-", s)
 
     # Drop common trailing punctuation.
@@ -268,16 +294,39 @@ def validate_context_groupings_required_for_emit(
     has_meaningful_section_path = bool(meaningful_heading_texts)
     has_caption = bool((payload.get("caption_text") or "").strip())
 
+    # Allow context_groupings=[] if the decision emits a strong "outer anchor" grouping
+    # (e.g., SUBJECT/GRADE/STAGE/THEME/UNIT/WEEK) in groupings[] or row groupings[].
+    outer_anchor_roles = {
+        NodeRole.GRADE_LEVEL,
+        NodeRole.STAGE,
+        NodeRole.SUBJECT,
+        NodeRole.THEME,
+        NodeRole.UNIT,
+        NodeRole.WEEK,
+    }
+
+    emits_outer_anchor_grouping = any(
+        (g.role in outer_anchor_roles) for g in (segment_decision.groupings or [])
+    ) or any(
+        (g.role in outer_anchor_roles)
+        for r in (segment_decision.rows or [])
+        for g in (r.groupings or [])
+    )
+
     if (
-        has_meaningful_section_path or has_caption
-    ) and not segment_decision.context_groupings:
+        (has_meaningful_section_path or has_caption)
+        and not segment_decision.context_groupings
+        and not emits_outer_anchor_grouping
+    ):
         raise QualityError(
             f"Emitting decision must include non-empty context_groupings[] when "
-            f"meaningful section_path or caption_text evidence exists.\n"
+            f"meaningful section_path or caption_text evidence exists, UNLESS the "
+            f"decision emits an outer anchor grouping (GRADE/STAGE/SUBJECT/THEME/UNIT/WEEK).\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  has_meaningful_section_path: {has_meaningful_section_path}\n"
             f"  has_caption_text: {has_caption}\n"
+            f"  emits_outer_anchor_grouping: {emits_outer_anchor_grouping}\n"
             f"  section_path_headings: {meaningful_heading_texts}"
         )
 
@@ -401,6 +450,107 @@ def validate_heading_segments_emit_groupings(
         )
 
 
+def validate_leaf_codes_use_local_code(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Check that official curriculum codes (e.g., 3.9.4.1) are placed in
+    LeafDecision.local_code and not embedded in LeafDecision.body.
+
+    NB:
+    1. list_marker is ONLY for bullets/enumerators (a), i), 1.).
+    2. local_code is for stable document identifiers like 3.9.4.1.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    leaves: list[Any] = []
+    leaves.extend(segment_decision.leaves or [])
+
+    for rd in segment_decision.rows or []:
+        leaves.extend(rd.leaves or [])
+
+    for leaf in leaves:
+        body = getattr(leaf, "body", "") or ""
+        local_code = getattr(leaf, "local_code", None)
+
+        # If local_code is already present, we don't care what the body starts with.
+        if local_code:
+            continue
+
+        # Detect "3.9.4.1 ..." at the start of body and force it into local_code.
+        m = _LEAF_BODY_CODE_PREFIX_RE.match(body)
+        if m and _looks_like_curriculum_code(m.group(1)):
+            code = m.group(1)
+            raise QualityError(
+                f"LeafDecision.body appears to start with an official curriculum code. "
+                f"Move the code into LeafDecision.local_code and remove it from body.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  detected_code: {code}\n"
+                f"  body: {body[:200]}"
+            )
+
+
+def validate_leaf_list_marker_not_code(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Check that list_marker is ONLY for bullets/enumerators (a), i, 1.). Codes must
+    be in local_code.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    leaves: list[Any] = []
+    leaves.extend(segment_decision.leaves or [])
+
+    for rd in segment_decision.rows or []:
+        leaves.extend(rd.leaves or [])
+
+    for leaf in leaves:
+        lm = getattr(leaf, "list_marker", None)
+        if _looks_like_curriculum_code(lm):
+            raise QualityError(
+                f"LeafDecision.list_marker looks like an official curriculum code. "
+                f"Move this value to LeafDecision.local_code.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  list_marker: {lm}\n"
+                f"  body: {getattr(leaf,'body','')[:200]}"
+            )
+
+
 def validate_row_groupings_no_duplicate_roles(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
@@ -518,7 +668,7 @@ def validate_row_leaf_hierarchy_not_flattened(
 ) -> None:
     """Detect a common table error: emitting a higher-level container statement as a
     leaf expectation in the same row as its more specific sub-statements. We enforce
-    this only when we observe hierarchical list_id patterns like:
+    this only when we observe hierarchical local_code patterns like:
     parent="1.1" and child="1.1.1" (or dash hierarchy).
 
     In these cases, the parent should usually be represented as a RowDecision grouping
@@ -556,36 +706,35 @@ def validate_row_leaf_hierarchy_not_flattened(
         if len(leaves) < 2:
             continue
 
-        # Build normalized list_id -> leaf map for this row.
-        ids: list[str] = []
-        id_to_leaf = {}
+        # Build normalized local_code -> leaf map for this row.
+        local_codes: list[str] = []
+        local_code_to_leaf = {}
 
         for leaf in leaves:
-            lid = _normalize_list_id(getattr(leaf, "list_id", None))
+            local_code = _normalize_list_marker(getattr(leaf, "local_code", None))
 
-            if not lid:
+            if not local_code:
                 continue
 
-            ids.append(lid)
-            id_to_leaf[lid] = leaf
+            local_codes.append(local_code)
+            local_code_to_leaf[local_code] = leaf
 
-        if len(ids) < 2:
+        if len(local_codes) < 2:
             continue
 
         # Find any parent code that has at least one child code in the same row.
-        parents_with_children = _find_hierarchical_pairs(ids)
+        parents_with_children = _find_hierarchical_pairs(local_codes)
 
         # If the parent is emitted as a leaf expectation, flag it.
-        for parent_id, child_id in parents_with_children:
-            parent_leaf = id_to_leaf.get(parent_id)
-            child_leaf = id_to_leaf.get(child_id)
-
-            if not parent_leaf or not child_leaf:
-                continue
+        for parent_code, child_code in parents_with_children:
+            parent_leaf = local_code_to_leaf.get(parent_code)
+            child_leaf = local_code_to_leaf.get(child_code)
 
             if (
-                getattr(parent_leaf, "role", None) == StatementRole.EXPECTATION
-                and getattr(child_leaf, "role", None) == StatementRole.EXPECTATION
+                parent_leaf
+                and child_leaf
+                and parent_leaf.role == StatementRole.EXPECTATION
+                and child_leaf.role == StatementRole.EXPECTATION
             ):
                 raise QualityError(
                     f"RowDecision appears to flatten a hierarchical code structure into leaves. "
@@ -594,8 +743,8 @@ def validate_row_leaf_hierarchy_not_flattened(
                     f"  segment_id: {segment.segment_id}\n"
                     f"  decision_id: {segment_decision.decision_id}\n"
                     f"  row_index: {rd.row_index}\n"
-                    f"  parent_list_id: {parent_id}\n"
-                    f"  child_list_id: {child_id}"
+                    f"  parent_local_code: {parent_code}\n"
+                    f"  child_local_code: {child_code}"
                 )
 
 
@@ -849,13 +998,13 @@ def validate_unique_table_rows(
         # detection is robust to ordering.
         group_parts = sorted(
             [
-                f"{g.role.value}:{_normalize_text(g.title)}:{_normalize_list_id(g.list_id)}:{_normalize_list_id(g.local_code)}"
+                f"{g.role.value}:{_normalize_text(g.title)}:{_normalize_list_marker(getattr(g, 'local_code', None))}"
                 for g in (rd.groupings or [])
             ]
         )
         leaf_parts = sorted(
             [
-                f"{leaf.role.value}:{_normalize_list_id(leaf.list_id)}:{_normalize_text(leaf.body)}"
+                f"{leaf.role.value}:{_normalize_list_marker(getattr(leaf,'list_marker',None))}:{_normalize_list_marker(getattr(leaf,'local_code',None))}:{_normalize_text(leaf.body)}"
                 for leaf in (rd.leaves or [])
             ]
         )
