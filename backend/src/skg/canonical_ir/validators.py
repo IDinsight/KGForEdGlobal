@@ -197,6 +197,89 @@ def _normalize_text(text: Optional[str]) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+def _validate_chunk_sequence(
+    *,
+    expected_end: int,
+    expected_start: int,
+    intervals: list[tuple[int, int]],
+    segment: Segment,
+) -> None:
+    """Helper to validate that sorted intervals cover the range
+    [expected_start, expected_end) contiguously without overlaps or gaps.
+
+    Parameters
+    ----------
+    expected_end
+        The expected exclusive end of the covered range.
+    expected_start
+        The expected inclusive start of the covered range.
+    intervals
+        The list of (start, end) intervals to validate.
+    segment
+        The Segment being validated.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    cursor = expected_start
+
+    for start, end in intervals:
+        if start >= end:
+            raise QualityError(
+                f"Invalid chunk interval (start must be < end).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  interval: [{start}, {end})"
+            )
+
+        if start < expected_start:
+            raise QualityError(
+                f"Chunk interval begins before the table body rows (likely includes header rows).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  header_row_count: {segment.header_row_count}\n"
+                f"  body_row_range: [{expected_start}, {expected_end})\n"
+                f"  interval: [{start}, {end})"
+            )
+
+        if end > expected_end:
+            raise QualityError(
+                f"Chunk interval ends past the end of the table rows.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  table_row_count: {expected_end}\n"
+                f"  interval: [{start}, {end})"
+            )
+
+        if start < cursor:
+            raise QualityError(
+                f"Overlapping chunk intervals detected.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  overlap_at: row_index={start}\n"
+                f"  previous_end: {cursor}\n"
+                f"  interval: [{start}, {end})"
+            )
+
+        if start > cursor:
+            raise QualityError(
+                f"Gap between chunk intervals detected (missing coverage).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  missing_row_range: [{cursor}, {start})\n"
+                f"  next_interval: [{start}, {end})"
+            )
+
+        cursor = end
+
+    if cursor != expected_end:
+        raise QualityError(
+            f"Chunk intervals do not fully cover the table body rows.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  covered_end: {cursor}\n"
+            f"  expected_end: {expected_end}\n"
+            f"  body_row_range: [{expected_start}, {expected_end})"
+        )
+
+
 def validate_context_groupings_required_for_emit(
     *,
     segment: Segment,
@@ -267,8 +350,7 @@ def validate_context_groupings_required_for_emit(
         r"unit|module|chapter|week|term|section"
         r")\b"
         r"|\bp\d+\b"  # P1/P2 style
-        r"|\b[ivx]{1,7}\b"  # I–VII roman numerals
-        r"|\b\d+\b",  # numeric cues
+        r"|\b[ivx]{1,7}\b",  # I–VII roman numerals
         flags=re.IGNORECASE,
     )
 
@@ -796,6 +878,92 @@ def validate_segment_kind_coherence(
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  block_type: {segment_decision.block_type}"
             )
+
+
+def validate_table_chunk_coverage_and_overlap(
+    *, decisions_for_segment: list[SegmentDecision], segment: Segment
+) -> None:
+    """Validate that chunked-table SegmentDecisions cover the whole table body with no
+    overlaps.
+
+    NB: This is a **decision-set-level** validator intended to run *after* all chunk
+    decisions for a table segment have been produced, but *before* compilation.
+
+    It checks:
+
+    1. No mixing of chunked and unchunked decisions for the same table segment.
+    2. Chunk intervals are within the table row bounds and do not include header rows.
+    3. Chunk intervals do not overlap.
+    4. Chunk intervals fully cover the table body rows: [header_row_count, len(rows)).
+
+    Parameters
+    ----------
+    decisions_for_segment
+        All SegmentDecision objects whose segment_id == segment.segment_id.
+    segment
+        The DocumentIR segment (must be a table segment).
+
+    Raises
+    ------
+    QualityError
+        If any chunk coverage / overlap checks fail.
+    """
+
+    assert segment.kind == "table", f"Segment kind must be 'table'. Got: {segment.kind}"
+
+    # Decisions with explicit chunk ranges.
+    chunk_decisions = [
+        d
+        for d in (decisions_for_segment or [])
+        if d.row_range_start is not None and d.row_range_end is not None
+    ]
+
+    # Not a chunked table (either unchunked decision or no decisions yet).
+    if not chunk_decisions:
+        return
+
+    # Disallow mixing chunked + unchunked decisions for the same table segment.
+    has_unchunked = any(
+        (d.row_range_start is None and d.row_range_end is None)
+        for d in (decisions_for_segment or [])
+    )
+    if has_unchunked:
+        raise QualityError(
+            f"Chunked + unchunked SegmentDecisions detected for the same table segment. "
+            f"This can happen if you generated chunked decisions with one config and later "
+            f"generated an unchunked decision (or vice-versa).\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  chunk_decision_count: {len(chunk_decisions)}"
+        )
+
+    # Build interval to decision_id list map to detect duplicates.
+    interval_to_ids: dict[tuple[int, int], list[str]] = {}
+
+    for d in chunk_decisions:
+        assert d.row_range_start is not None and d.row_range_end is not None
+        interval = (int(d.row_range_start), int(d.row_range_end))
+        interval_to_ids.setdefault(interval, []).append(d.decision_id)
+
+    duplicate_intervals = {k: v for k, v in interval_to_ids.items() if len(v) > 1}
+
+    if duplicate_intervals:
+        sample = list(duplicate_intervals.items())[:5]
+        raise QualityError(
+            f"Duplicate chunk intervals detected for the same table segment.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  duplicates(sample): {sample}"
+        )
+
+    # Sort intervals by start/end.
+    intervals = sorted(interval_to_ids.keys(), key=lambda t: (t[0], t[1]))
+
+    # Validate contiguous, non-overlapping coverage of the table body rows.
+    _validate_chunk_sequence(
+        intervals=intervals,
+        segment=segment,
+        expected_start=segment.header_row_count,
+        expected_end=len(segment.rows),
+    )
 
 
 def validate_table_row_index(

@@ -47,6 +47,7 @@ from skg.canonical_ir.utils import (
     process_segment_decisions,
     save_canonical_ir,
 )
+from skg.canonical_ir.validators import validate_table_chunk_coverage_and_overlap
 from skg.document_ir.schemas import DocumentIR
 from skg.schemas import CreateCanonicalConfig, RunConfig, RunCtx
 from skg.utils.constants import SegmentDecisionType
@@ -149,8 +150,6 @@ def create_canonical_ir(
                     SegmentDecisionType.EMIT_LEAVES_ONLY,
                 }:
                     context_hint = build_context_hint_from_decision(last)
-                    logger.info(f"{context_hint = }")
-                    input()
 
             # Persist warnings for this segment.
             segment_key = f"{i:05d}_{segment.segment_id}"
@@ -184,6 +183,21 @@ def create_canonical_ir(
         f"decision_set.doc_key={segment_decisions.doc_key}\n"
         f"expected={doc_key}"
     )
+
+    # Decision-set level validation for chunked tables.
+    decisions_by_segment_id: dict[str, list[Any]] = {}
+    for d in segment_decisions.decisions:
+        assert isinstance(d.segment_id, str), f"Decision missing segment_id: {d}"
+        decisions_by_segment_id.setdefault(d.segment_id, []).append(d)
+
+    for seg in document_ir.segments:
+        if seg.kind != "table":
+            continue
+
+        validate_table_chunk_coverage_and_overlap(
+            decisions_for_segment=decisions_by_segment_id.get(seg.segment_id, []),
+            segment=seg,
+        )
 
     # Parse the segment decisions into a canonical IR.
     canonical_ir = compile_canonical_ir(
