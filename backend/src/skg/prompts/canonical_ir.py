@@ -157,10 +157,10 @@ StatementRole (for leaf decisions):
    - EXAMPLES:
      3a. Heading: "VISION"
        -> decision_type="emit_groupings_only"
-       -> groupings=[{"role":"prose","title":"VISION"}]
+       -> groupings=[{{"role":"prose","title":"VISION"}}]
        -> context_groupings=[]
      3b. Heading: "GRADE 1 — ENGLISH LANGUAGE"
-       -> groupings=[{"role":"grade_level","title":"GRADE 1"},{"role":"subject","title":"ENGLISH LANGUAGE"}]
+       -> groupings=[{{"role":"grade_level","title":"GRADE 1"}},{{"role":"subject","title":"ENGLISH LANGUAGE"}}]
 4. Table under "Expected Standard/Learning Activities/Specific Competences"
    -> context_groupings should include only Grade/Stage/Subject
    -> RowDecision.groupings should contain Topic/Sub-topic codes
