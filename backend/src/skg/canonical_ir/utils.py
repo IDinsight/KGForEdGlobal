@@ -76,6 +76,194 @@ class ContextFrame:
     node_id: str
 
 
+def _check_cycles(*, child_to_parent: dict[str, str], warnings: list[str]) -> None:
+    """Detect cycles by following parent pointers.
+
+    Parameters
+    ----------
+    child_to_parent
+        The mapping of child_id to parent_id.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for child in child_to_parent:
+        seen: set[str] = set()
+        cur = child
+
+        while cur in child_to_parent:
+            if cur in seen:
+                msg = f"cycle_detected_at:{cur}"
+                logger.warning(msg)
+                warnings.append(msg)
+                break
+
+            seen.add(cur)
+            cur = child_to_parent[cur]
+
+
+def _check_multiple_parents(
+    *, edges: list[CanonicalEdge], warnings: list[str]
+) -> dict[str, str]:
+    """Ensure no child has more than 1 parent and return the child->parent map.
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges to check.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    dict[str, str]
+        The mapping of child_id to parent_id.
+    """
+
+    child_to_parent: dict[str, str] = {}
+
+    for e in edges:
+        existing = child_to_parent.get(e.child_id)
+
+        if existing is None:
+            child_to_parent[e.child_id] = e.parent_id
+        elif existing != e.parent_id:
+            msg = (
+                f"tree_invariant_violation_multiple_parents:"
+                f"child={e.child_id} p1={existing} p2={e.parent_id}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+    return child_to_parent
+
+
+def _check_order_indices(*, edges: list[CanonicalEdge], warnings: list[str]) -> None:
+    """Validate order indices: check for duplicates, zero-start, and gaps.
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges to check.
+    warnings
+        The list of warnings to append to.
+    """
+
+    # Group orders by parent.
+    parent_to_orders: dict[str, list[int]] = {}
+    for e in edges:
+        parent_to_orders.setdefault(e.parent_id, []).append(e.order_index)
+
+    # Validate each parent's group.
+    for parent, orders in parent_to_orders.items():
+        # Check duplicates.
+        if len(orders) != len(set(orders)):
+            msg = f"order_index_duplicate_under_parent:{parent}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        sorted_orders = sorted(set(orders))
+
+        # Check strict contiguous ordering starting at 0.
+        if sorted_orders and sorted_orders[0] != 0:
+            msg = f"order_index_not_starting_at_zero:{parent} min={sorted_orders[0]}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # Check contiguity ignoring dropped edges
+        for i in range(1, len(sorted_orders)):
+            if sorted_orders[i] != sorted_orders[i - 1] + 1:
+                msg = f"order_index_gap_under_parent:{parent} orders={sorted_orders}"
+                logger.warning(msg)
+                warnings.append(msg)
+                break
+
+
+def _check_root_as_child(
+    *, edges: list[CanonicalEdge], root_id: str, warnings: list[str]
+) -> None:
+    """Ensure the root does not appear as a child (tree invariant).
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges to check.
+    root_id
+        The root node ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for e in edges:
+        if e.child_id == root_id:
+            msg = f"root_has_parent_edge:{root_id} parent={e.parent_id}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+
+def _check_structural_warnings(
+    *,
+    decision: SegmentDecision,
+    page_indices: list[int],
+    section_path_text: list[str],
+    segment_id: str,
+    segment_kind: str,
+    structural_leaf_warn_threshold: float,
+    warnings: list[str],
+) -> None:
+    """Check decision confidence against structural threshold and emit warnings.
+
+    Parameters
+    ----------
+    decision
+        The SegmentDecision to check.
+    page_indices
+        The list of page indices for the segment.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    segment_kind
+        The segment kind.
+    structural_leaf_warn_threshold
+        The structural leaf warning confidence threshold.
+    warnings
+        The list of warnings to append to.
+    """
+
+    if decision.confidence >= structural_leaf_warn_threshold:
+        return
+
+    leaf_count = _count_decision_leaves(decision)
+
+    if leaf_count <= 0:
+        return
+
+    pages_str = _format_page_indices(page_indices)
+    path_str = _format_section_path(section_path_text=section_path_text)
+
+    if decision.row_range_start is not None or decision.row_range_end is not None:
+        start = (
+            decision.row_range_start if decision.row_range_start is not None else "-"
+        )
+        end = decision.row_range_end if decision.row_range_end is not None else "-"
+        row_range_str = f"[{start},{end})"
+    else:
+        row_range_str = "-"
+
+    msg = (
+        f"structural_leaf_review:"
+        f"segment_id={segment_id} decision_id={decision.decision_id} "
+        f"kind={segment_kind} conf={decision.confidence:.3f} "
+        f"leaf_count={leaf_count} threshold={structural_leaf_warn_threshold:.3f} "
+        f"row_range={row_range_str} "
+        f"pages={pages_str} "
+        f"section_path={path_str}"
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+
+
 def _classify_caption_kind(text: str) -> CaptionKind:
     """Classify caption kind based on text prefixes.
 
@@ -372,6 +560,31 @@ def _grouping_key(g: GroupingDecision) -> str:
     return f"{g.role.value}:{_normalize_text(text=title)}:{_normalize_text(text=code)}"
 
 
+def _index_decisions_by_segment(
+    *, segment_decisions: SegmentDecisionSet
+) -> dict[str, list[SegmentDecision]]:
+    """Index all decisions by their segment ID.
+
+    Parameters
+    ----------
+    segment_decisions
+        The SegmentDecisionSet to index.
+
+    Returns
+    -------
+    dict[str, list[SegmentDecision]]
+        The mapping of segment_id to list of SegmentDecisions.
+    """
+
+    decisions_by_segment: dict[str, list[SegmentDecision]] = defaultdict(list)
+
+    for d in segment_decisions.decisions:
+        assert isinstance(d.segment_id, str) and d.segment_id
+        decisions_by_segment[d.segment_id].append(d)
+
+    return decisions_by_segment
+
+
 def _make_unresolved_sample(
     *, decision: SegmentDecision, max_len: int = 280, segment: Segment
 ) -> str:
@@ -410,6 +623,369 @@ def _make_unresolved_sample(
     s = " | ".join(parts).strip()
 
     return s[:max_len]
+
+
+def _materialize_block_leaves(
+    *,
+    ancestor_keys: list[str],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edge_set: set[tuple[str, str]],
+    edges: list[CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    parent_id: str,
+    section_path_text: list[str],
+    segment_id: str,
+    warnings: list[str],
+) -> None:
+    """Materialize leaf nodes for a block segment.
+
+    Parameters
+    ----------
+    ancestor_keys
+        The list of ancestor grouping keys.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edge_set
+        The set of emitted edges (parent_id, child_id).
+    edges
+        The list of CanonicalEdges to append to.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    parent_id
+        The parent node ID.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for leaf in decision.leaves:
+        leaf_id = canonical_leaf_node_id(
+            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, leaf=leaf
+        )
+
+        node = CanonicalNode(
+            bbox=None,
+            body=TextUnit(language="und", text=leaf.body),
+            list_marker=leaf.list_marker,
+            local_code=leaf.local_code,
+            node_id=leaf_id,
+            normalized_text=_normalize_text(text=leaf.body),
+            page_indices=page_indices,
+            role=leaf.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision.decision_id],
+            source_label=leaf.source_label,
+            source_segment_ids=[segment_id],
+            source_type="block",
+            title=None,
+        )
+
+        ensure_node(node=node, nodes_by_id=nodes_by_id)
+        _emit_edge(
+            child_id=leaf_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            edge_set=edge_set,
+            edges=edges,
+            next_order_index=next_order_index,
+            parent_id=parent_id,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
+
+
+def _materialize_decision_structure(
+    *,
+    active_context_stack: list[ContextFrame],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edge_set: set[tuple[str, str]],
+    edges: list[CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    root_id: str,
+    section_path_text: list[str],
+    segment: Segment,
+    warnings: list[str],
+) -> list[ContextFrame]:
+    """Reconcile context stack, create grouping nodes, and materialize leaves/rows.
+
+    Parameters
+    ----------
+    active_context_stack
+        The current active context stack.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edge_set
+        The set of emitted edges (parent_id, child_id).
+    edges
+        The list of CanonicalEdges to append to.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    root_id
+        The root node ID.
+    section_path_text
+        The section path text for the segment.
+    segment
+        The Segment to materialize.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    list[ContextFrame]
+        The updated active_context_stack.
+    """
+
+    # Context stack reconciliation.
+    parent_id, ancestor_keys, active_context_stack = reconcile_context_stack(
+        active_stack=active_context_stack,
+        child_to_parent=child_to_parent,
+        decision=decision,
+        desired_context=decision.context_groupings,
+        doc_key=doc_key,
+        edge_set=edge_set,
+        edges=edges,
+        next_order_index=next_order_index,
+        nodes_by_id=nodes_by_id,
+        root_id=root_id,
+        segment=segment,
+        warnings=warnings,
+    )
+
+    # Apply decision.groupings[] under the context stack tip.
+    for g in decision.groupings:
+        g_title = canonical_grouping_title(role=g.role, title=g.title)
+        node_id = canonical_grouping_node_id(
+            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
+        )
+
+        node = CanonicalNode(
+            bbox=None,
+            body=None,
+            list_marker=None,
+            local_code=g.local_code,
+            node_id=node_id,
+            normalized_text=_normalize_text(text=g_title),
+            page_indices=page_indices,
+            role=g.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision.decision_id],
+            source_label=g.source_label,
+            source_segment_ids=[segment.segment_id],
+            source_type=segment.kind,
+            title=TextUnit(language="und", text=g_title),
+        )
+
+        ensure_node(node=node, nodes_by_id=nodes_by_id)
+        _emit_edge(
+            child_id=node_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            edge_set=edge_set,
+            edges=edges,
+            next_order_index=next_order_index,
+            parent_id=parent_id,
+            segment_id=segment.segment_id,
+            warnings=warnings,
+        )
+
+        parent_id = node_id
+        ancestor_keys.append(_grouping_key(g))
+
+    # Dispatch based on segment kind.
+    if segment.kind == "block":
+        _materialize_block_leaves(
+            ancestor_keys=ancestor_keys,
+            child_to_parent=child_to_parent,
+            decision=decision,
+            doc_key=doc_key,
+            edge_set=edge_set,
+            edges=edges,
+            next_order_index=next_order_index,
+            nodes_by_id=nodes_by_id,
+            page_indices=page_indices,
+            parent_id=parent_id,
+            section_path_text=section_path_text,
+            segment_id=segment.segment_id,
+            warnings=warnings,
+        )
+    elif segment.kind == "table":
+        _materialize_table_rows(
+            ancestor_keys=ancestor_keys,
+            child_to_parent=child_to_parent,
+            decision=decision,
+            doc_key=doc_key,
+            edge_set=edge_set,
+            edges=edges,
+            next_order_index=next_order_index,
+            nodes_by_id=nodes_by_id,
+            page_indices=page_indices,
+            parent_id=parent_id,
+            section_path_text=section_path_text,
+            segment_id=segment.segment_id,
+            warnings=warnings,
+        )
+    else:
+        msg = f"unknown_segment_kind:{segment.kind}:{segment.segment_id}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return active_context_stack
+
+
+def _materialize_table_rows(
+    *,
+    ancestor_keys: list[str],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edge_set: set[tuple[str, str]],
+    edges: list[CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    parent_id: str,
+    section_path_text: list[str],
+    segment_id: str,
+    warnings: list[str],
+) -> None:
+    """Materialize rows and leaves for a table segment.
+
+    Parameters
+    ----------
+    ancestor_keys
+        The list of ancestor grouping keys.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edge_set
+        The set of emitted edges (parent_id, child_id).
+    edges
+        The list of CanonicalEdges to append to.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    parent_id
+        The parent node ID.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for row in sorted(decision.rows, key=lambda r: r.row_index):
+        row_parent_id = parent_id
+        row_ancestor_keys = list(ancestor_keys)
+
+        # Row groupings.
+        for g in row.groupings:
+            g_title = canonical_grouping_title(role=g.role, title=g.title)
+            node_id = canonical_grouping_node_id(
+                ancestor_grouping_keys=row_ancestor_keys, doc_key=doc_key, grouping=g
+            )
+
+            node = CanonicalNode(
+                bbox=None,
+                body=None,
+                list_marker=None,
+                local_code=g.local_code,
+                node_id=node_id,
+                normalized_text=_normalize_text(text=g_title),
+                page_indices=page_indices,
+                role=g.role,
+                section_path_text=section_path_text,
+                source_decision_ids=[decision.decision_id],
+                source_label=g.source_label,
+                source_segment_ids=[segment_id],
+                source_type="table",
+                title=TextUnit(language="und", text=g_title),
+            )
+
+            ensure_node(node=node, nodes_by_id=nodes_by_id)
+            _emit_edge(
+                child_id=node_id,
+                child_to_parent=child_to_parent,
+                decision_id=decision.decision_id,
+                edge_set=edge_set,
+                edges=edges,
+                next_order_index=next_order_index,
+                parent_id=row_parent_id,
+                segment_id=segment_id,
+                warnings=warnings,
+            )
+
+            row_parent_id = node_id
+            row_ancestor_keys.append(_grouping_key(g))
+
+        # Row leaves.
+        for leaf in row.leaves:
+            leaf_id = canonical_leaf_node_id(
+                ancestor_grouping_keys=row_ancestor_keys, doc_key=doc_key, leaf=leaf
+            )
+
+            node = CanonicalNode(
+                bbox=None,
+                body=TextUnit(language="und", text=leaf.body),
+                list_marker=leaf.list_marker,
+                local_code=leaf.local_code,
+                node_id=leaf_id,
+                normalized_text=_normalize_text(text=leaf.body),
+                page_indices=page_indices,
+                role=leaf.role,
+                section_path_text=section_path_text,
+                source_decision_ids=[decision.decision_id],
+                source_label=leaf.source_label,
+                source_segment_ids=[segment_id],
+                source_type="table",
+                title=None,
+            )
+
+            ensure_node(node=node, nodes_by_id=nodes_by_id)
+            _emit_edge(
+                child_id=leaf_id,
+                child_to_parent=child_to_parent,
+                decision_id=decision.decision_id,
+                edge_set=edge_set,
+                edges=edges,
+                next_order_index=next_order_index,
+                parent_id=row_parent_id,
+                segment_id=segment_id,
+                warnings=warnings,
+            )
 
 
 def _normalize_text(text: Optional[str]) -> str:
@@ -484,6 +1060,95 @@ def _stable_extend_unique(*, base: list[str], extra: list[str]) -> list[str]:
             seen.add(x)
 
     return out
+
+
+def _validate_and_handle_unresolved(
+    *,
+    decision: SegmentDecision,
+    low_conf_threshold: float,
+    page_indices: list[int],
+    section_path_text: list[str],
+    segment: Segment,
+    unresolved: list[UnresolvedItem],
+    warnings: list[str],
+) -> bool:
+    """Validate decision, update unresolved/warnings, return True if materializable.
+
+    Parameters
+    ----------
+    decision
+        The SegmentDecision to validate.
+    low_conf_threshold
+        The low confidence threshold.
+    page_indices
+        The list of page indices for the segment.
+    section_path_text
+        The section path text for the segment.
+    segment
+        The Segment to validate.
+    unresolved
+        The list of UnresolvedItems to append to.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    bool
+        True if the decision is materializable, False otherwise.
+    """
+
+    if decision.decision_type == SegmentDecisionType.IGNORE:
+        return False
+
+    if decision.decision_type == SegmentDecisionType.UNRESOLVED:
+        reason = (
+            UnresolvedReason.UNMATCHED_TABLE
+            if segment.kind == "table"
+            else UnresolvedReason.UNMATCHED_BLOCK
+        )
+        unresolved.append(
+            UnresolvedItem(
+                caption_text=decision.caption_text,
+                headers=[],
+                local_code=segment.local_code,
+                kind=segment.kind,
+                page_indices=page_indices,
+                reason=reason,
+                sample=None,
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+            )
+        )
+        return False
+
+    # Confidence gating.
+    if decision.confidence < low_conf_threshold:
+        msg = (
+            f"low_confidence_decision_not_materialized:"
+            f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
+            f"kind={segment.kind} conf={decision.confidence:.3f} "
+            f"threshold={low_conf_threshold:.3f}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        unresolved.append(
+            UnresolvedItem(
+                caption_text=decision.caption_text,
+                headers=(
+                    _extract_table_headers(segment) if segment.kind == "table" else []
+                ),
+                kind=segment.kind,
+                local_code=getattr(segment, "local_code", None),
+                page_indices=page_indices,
+                reason="LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED",
+                sample=_make_unresolved_sample(decision=decision, segment=segment),
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+            )
+        )
+        return False
+
+    return True
 
 
 def apply_caption_binding_to_table_payload(
@@ -918,12 +1583,7 @@ def compile_canonical_ir(
         The compiled CanonicalIR.
     """
 
-    # Index decisions by segment_id for faster lookups.
-    decisions_by_segment: dict[str, list[SegmentDecision]] = defaultdict(list)
-    for d in segment_decisions.decisions:
-        assert isinstance(d.segment_id, str) and d.segment_id
-        decisions_by_segment[d.segment_id].append(d)
-
+    # 1. Initialize state containers.
     active_context_stack: list[ContextFrame] = []
     child_to_parent: dict[str, str] = {}
     edge_set: set[tuple[str, str]] = set()
@@ -933,7 +1593,12 @@ def compile_canonical_ir(
     unresolved: list[UnresolvedItem] = []
     warnings: list[str] = []
 
-    # Framework root.
+    # 2. Index decisions.
+    decisions_by_segment = _index_decisions_by_segment(
+        segment_decisions=segment_decisions
+    )
+
+    # 3. Create Framework Root.
     framework_title = segment_decisions.pdf_name
     root_id = uuidv5_from_key(f"lc:canonical:{doc_key}:framework")
     framework_node = CanonicalNode(
@@ -954,289 +1619,67 @@ def compile_canonical_ir(
     )
     ensure_node(node=framework_node, nodes_by_id=nodes_by_id)
 
-    # Main traversal loop.
+    # 4. Main traversal loop.
     for segment in document_ir.segments:
         seg_id = segment.segment_id
-        seg_kind = segment.kind  # "block" | "table"
         seg_decisions = decisions_by_segment.get(seg_id, [])
 
         if not seg_decisions:
             msg = f"no_decision_for_segment:{seg_id}"
             logger.warning(msg)
-            warnings.append(f"no_decision_for_segment:{seg_id}")
-            # input(1)
-
+            warnings.append(msg)
             continue
 
+        # Prepare segment-level data,
         page_indices = sorted({p.page_index for p in segment.segment_provenance})
         section_path_text = [h.text for h in (segment.section_path or [])]
         seg_decisions_sorted = sorted(seg_decisions, key=_decision_sort_key)
 
         # Process each decision for the segment.
-        for d in seg_decisions_sorted:
-            if d.decision_type == SegmentDecisionType.IGNORE:
+        for decision in seg_decisions_sorted:
+            # Check ignore/unresolved/low confidence.
+            should_continue = _validate_and_handle_unresolved(
+                decision=decision,
+                low_conf_threshold=low_conf_threshold,
+                page_indices=page_indices,
+                section_path_text=section_path_text,
+                segment=segment,
+                unresolved=unresolved,
+                warnings=warnings,
+            )
+
+            if not should_continue:
                 continue
 
-            if d.decision_type == SegmentDecisionType.UNRESOLVED:
-                unresolved.append(
-                    UnresolvedItem(
-                        caption_text=d.caption_text,
-                        headers=[],
-                        local_code=segment.local_code,
-                        kind=seg_kind,
-                        page_indices=page_indices,
-                        reason=(
-                            UnresolvedReason.UNMATCHED_TABLE
-                            if seg_kind == "table"
-                            else UnresolvedReason.UNMATCHED_BLOCK
-                        ),
-                        sample=None,
-                        section_path_text=section_path_text,
-                        segment_id=seg_id,
-                    )
-                )
-                continue
+            # Check for structural warnings
+            _check_structural_warnings(
+                decision=decision,
+                page_indices=page_indices,
+                section_path_text=section_path_text,
+                segment_id=seg_id,
+                segment_kind=segment.kind,
+                structural_leaf_warn_threshold=structural_leaf_warn_threshold,
+                warnings=warnings,
+            )
 
-            # Confidence gating.
-            if d.confidence < low_conf_threshold:
-                msg = (
-                    f"low_confidence_decision_not_materialized:"
-                    f"segment_id={seg_id} decision_id={d.decision_id} "
-                    f"kind={seg_kind} conf={d.confidence:.3f} threshold={low_conf_threshold:.3f}"
-                )
-                logger.warning(msg)
-                warnings.append(msg)
-                unresolved.append(
-                    UnresolvedItem(
-                        caption_text=d.caption_text,
-                        headers=(
-                            _extract_table_headers(segment)
-                            if seg_kind == "table"
-                            else []
-                        ),
-                        kind=seg_kind,
-                        local_code=getattr(segment, "local_code", None),
-                        page_indices=page_indices,
-                        reason="LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED",
-                        sample=_make_unresolved_sample(decision=d, segment=segment),
-                        section_path_text=section_path_text,
-                        segment_id=seg_id,
-                    )
-                )
-                # input(1)
-
-                continue
-
-            # Structural leaf review warning layer. Only applies to decisions that are
-            # being materialized (i.e. passed low_conf_threshold).
-            if d.confidence < structural_leaf_warn_threshold:
-                leaf_count = _count_decision_leaves(d)
-                if leaf_count > 0:
-                    pages_str = _format_page_indices(page_indices)
-                    path_str = _format_section_path(section_path_text=section_path_text)
-                    if d.row_range_start is not None or d.row_range_end is not None:
-                        start = (
-                            d.row_range_start if d.row_range_start is not None else "-"
-                        )
-                        end = d.row_range_end if d.row_range_end is not None else "-"
-                        row_range_str = f"[{start},{end})"
-                    else:
-                        row_range_str = "-"
-                    msg = (
-                        f"structural_leaf_review:"
-                        f"segment_id={seg_id} decision_id={d.decision_id} "
-                        f"kind={seg_kind} conf={d.confidence:.3f} "
-                        f"leaf_count={leaf_count} threshold={structural_leaf_warn_threshold:.3f} "
-                        f"row_range={row_range_str} "
-                        f"pages={pages_str} "
-                        f"section_path={path_str}"
-                    )
-                    logger.warning(msg)
-                    warnings.append(msg)
-                    # input(1)
-
-            # Context stack reconciliation.
-            parent_id, ancestor_keys, active_context_stack = reconcile_context_stack(
-                active_stack=active_context_stack,
+            # Materialize nodes.
+            active_context_stack = _materialize_decision_structure(
+                active_context_stack=active_context_stack,
                 child_to_parent=child_to_parent,
-                decision=d,
-                desired_context=d.context_groupings,
+                decision=decision,
                 doc_key=doc_key,
                 edge_set=edge_set,
                 edges=edges,
                 next_order_index=next_order_index,
                 nodes_by_id=nodes_by_id,
+                page_indices=page_indices,
                 root_id=root_id,
+                section_path_text=section_path_text,
                 segment=segment,
                 warnings=warnings,
             )
 
-            # Apply decision.groupings[] under the context stack tip.
-            for g in d.groupings:
-                g_title = canonical_grouping_title(role=g.role, title=g.title)
-                node_id = canonical_grouping_node_id(
-                    ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
-                )
-
-                node = CanonicalNode(
-                    bbox=None,
-                    body=None,
-                    list_marker=None,
-                    local_code=g.local_code,
-                    node_id=node_id,
-                    normalized_text=_normalize_text(text=g_title),
-                    page_indices=page_indices,
-                    role=g.role,
-                    section_path_text=section_path_text,
-                    source_decision_ids=[d.decision_id],
-                    source_label=g.source_label,
-                    source_segment_ids=[seg_id],
-                    source_type=seg_kind,
-                    title=TextUnit(language="und", text=g_title),
-                )
-
-                ensure_node(node=node, nodes_by_id=nodes_by_id)
-                _emit_edge(
-                    child_id=node_id,
-                    child_to_parent=child_to_parent,
-                    decision_id=d.decision_id,
-                    edge_set=edge_set,
-                    edges=edges,
-                    next_order_index=next_order_index,
-                    parent_id=parent_id,
-                    segment_id=seg_id,
-                    warnings=warnings,
-                )
-
-                parent_id = node_id
-                ancestor_keys.append(_grouping_key(g))
-
-            # Materialize leaves.
-            # Block segment leaves live directly under (context + segment groupings).
-            if seg_kind == "block":
-                for leaf in d.leaves:
-                    leaf_id = canonical_leaf_node_id(
-                        ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, leaf=leaf
-                    )
-
-                    node = CanonicalNode(
-                        bbox=None,
-                        body=TextUnit(language="und", text=leaf.body),
-                        list_marker=leaf.list_marker,
-                        local_code=leaf.local_code,
-                        node_id=leaf_id,
-                        normalized_text=_normalize_text(text=leaf.body),
-                        page_indices=page_indices,
-                        role=leaf.role,
-                        section_path_text=section_path_text,
-                        source_decision_ids=[d.decision_id],
-                        source_label=leaf.source_label,
-                        source_segment_ids=[seg_id],
-                        source_type=seg_kind,
-                        title=None,
-                    )
-
-                    ensure_node(node=node, nodes_by_id=nodes_by_id)
-                    _emit_edge(
-                        child_id=leaf_id,
-                        child_to_parent=child_to_parent,
-                        decision_id=d.decision_id,
-                        edge_set=edge_set,
-                        edges=edges,
-                        next_order_index=next_order_index,
-                        parent_id=parent_id,
-                        segment_id=seg_id,
-                        warnings=warnings,
-                    )
-            # Table segment leaves live under per-row groupings.
-            elif seg_kind == "table":
-                for row in sorted(d.rows, key=lambda r: r.row_index):
-                    row_parent_id = parent_id
-                    row_ancestor_keys = list(ancestor_keys)
-
-                    for g in row.groupings:
-                        g_title = canonical_grouping_title(role=g.role, title=g.title)
-                        node_id = canonical_grouping_node_id(
-                            ancestor_grouping_keys=row_ancestor_keys,
-                            doc_key=doc_key,
-                            grouping=g,
-                        )
-
-                        node = CanonicalNode(
-                            bbox=None,
-                            body=None,
-                            list_marker=None,
-                            local_code=g.local_code,
-                            node_id=node_id,
-                            normalized_text=_normalize_text(text=g_title),
-                            page_indices=page_indices,
-                            role=g.role,
-                            section_path_text=section_path_text,
-                            source_decision_ids=[d.decision_id],
-                            source_label=g.source_label,
-                            source_segment_ids=[seg_id],
-                            source_type=seg_kind,
-                            title=TextUnit(language="und", text=g_title),
-                        )
-
-                        ensure_node(node=node, nodes_by_id=nodes_by_id)
-                        _emit_edge(
-                            child_id=node_id,
-                            child_to_parent=child_to_parent,
-                            decision_id=d.decision_id,
-                            edge_set=edge_set,
-                            edges=edges,
-                            next_order_index=next_order_index,
-                            parent_id=row_parent_id,
-                            segment_id=seg_id,
-                            warnings=warnings,
-                        )
-
-                        row_parent_id = node_id
-                        row_ancestor_keys.append(_grouping_key(g))
-
-                    for leaf in row.leaves:
-                        leaf_id = canonical_leaf_node_id(
-                            ancestor_grouping_keys=row_ancestor_keys,
-                            doc_key=doc_key,
-                            leaf=leaf,
-                        )
-
-                        node = CanonicalNode(
-                            bbox=None,
-                            body=TextUnit(language="und", text=leaf.body),
-                            list_marker=leaf.list_marker,
-                            local_code=leaf.local_code,
-                            node_id=leaf_id,
-                            normalized_text=_normalize_text(text=leaf.body),
-                            page_indices=page_indices,
-                            role=leaf.role,
-                            section_path_text=section_path_text,
-                            source_decision_ids=[d.decision_id],
-                            source_label=leaf.source_label,
-                            source_segment_ids=[seg_id],
-                            source_type=seg_kind,
-                            title=None,
-                        )
-
-                        ensure_node(node=node, nodes_by_id=nodes_by_id)
-                        _emit_edge(
-                            child_id=leaf_id,
-                            child_to_parent=child_to_parent,
-                            decision_id=d.decision_id,
-                            edge_set=edge_set,
-                            edges=edges,
-                            next_order_index=next_order_index,
-                            parent_id=row_parent_id,
-                            segment_id=seg_id,
-                            warnings=warnings,
-                        )
-            else:
-                msg = f"unknown_segment_kind:{seg_kind}:{seg_id}"
-                logger.warning(msg)
-                warnings.append(msg)
-                # input(1)
-
+    # 5. Final compilation.
     canonical_ir = CanonicalIR(
         decision_set_id=segment_decisions.decision_set_id,
         doc_key=doc_key,
@@ -1696,22 +2139,17 @@ def merge_nodes_postpass(
         )
 
         # Merge optional fields conservatively: keep first non-null.
-        if m.normalized_text is None and n.normalized_text is not None:
-            m.normalized_text = n.normalized_text
+        for field in (
+            "normalized_text",
+            "source_label",
+            "source_type",
+            "list_marker",
+            "local_code",
+            "bbox",
+        ):
+            if getattr(m, field) is None and getattr(n, field) is not None:
+                setattr(m, field, getattr(n, field))
 
-        if m.source_label is None and n.source_label is not None:
-            m.source_label = n.source_label
-
-        if m.source_type is None and n.source_type is not None:
-            m.source_type = n.source_type
-
-        if m.list_marker is None and n.list_marker is not None:
-            m.list_marker = n.list_marker
-
-        if m.local_code is None and n.local_code is not None:
-            m.local_code = n.local_code
-
-        # bbox: keep first non-null.
         if m.bbox is None and n.bbox is not None:
             m.bbox = n.bbox
 
@@ -1928,7 +2366,7 @@ def process_segment_decisions(
                 f"Skipping unchunked decision for table segment {segment.segment_id} "
                 f"because chunked decisions already exist (avoid mixing chunked + unchunked)."
             )
-            logger.warning(msg)
+            # logger.warning(msg)
             warnings.append(msg)
             # input(1)
 
@@ -1973,7 +2411,7 @@ def process_segment_decisions(
                         f"Skipping table chunk for {segment.segment_id}: "
                         f"row_range_start={start}, row_range_end={end} already decided."
                     )
-                    logger.warning(msg)
+                    # logger.warning(msg)
                     warnings.append(msg)
                     # input(1)
 
@@ -2169,76 +2607,10 @@ def sanity_checks_postpass(
     if root_id not in node_ids:
         raise ValueError(f"canonical_root_missing:{root_id}")
 
-    # Root should not appear as a child (tree invariant).
-    for e in edges:
-        if e.child_id == root_id:
-            msg = f"root_has_parent_edge:{root_id} parent={e.parent_id}"
-            logger.warning(msg)
-            warnings.append(msg)
-            # input(1)
-
-    # Tree invariant: no child has more than 1 parent.
-    child_to_parent: dict[str, str] = {}
-    for e in edges:
-        existing = child_to_parent.get(e.child_id)
-
-        if existing is None:
-            child_to_parent[e.child_id] = e.parent_id
-        elif existing != e.parent_id:
-            msg = (
-                f"tree_invariant_violation_multiple_parents:"
-                f"child={e.child_id} p1={existing} p2={e.parent_id}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-            # input(1)
-
-    # Cycle detection by following parent pointers until root or repeat.
-    for child in child_to_parent:
-        seen: set[str] = set()
-        cur = child
-
-        while cur in child_to_parent:
-            if cur in seen:
-                msg = f"cycle_detected_at:{cur}"
-                logger.warning(msg)
-                warnings.append(msg)
-                # input(1)
-
-                break
-
-            seen.add(cur)
-            cur = child_to_parent[cur]
-
-    # order_index sanity check per parent: duplicates/gaps.
-    parent_to_orders: dict[str, list[int]] = {}
-    for e in edges:
-        parent_to_orders.setdefault(e.parent_id, []).append(e.order_index)
-
-    for parent, orders in parent_to_orders.items():
-        if len(orders) != len(set(orders)):
-            msg = f"order_index_duplicate_under_parent:{parent}"
-            logger.warning(msg)
-            warnings.append(msg)
-            # input(1)
-
-        # Check strict contiguous ordering starting at 0.
-        sorted_orders = sorted(set(orders))
-        if sorted_orders and sorted_orders[0] != 0:
-            msg = f"order_index_not_starting_at_zero:{parent} min={sorted_orders[0]}"
-            logger.warning(msg)
-            warnings.append(msg)
-            # input(1)
-
-        # Check contiguity ignoring dropped edges.
-        for i in range(1, len(sorted_orders)):
-            if sorted_orders[i] != sorted_orders[i - 1] + 1:
-                msg = f"order_index_gap_under_parent:{parent} orders={sorted_orders}"
-                logger.warning(msg)
-                warnings.append(msg)
-                # input(1)
-
-                break
+    _check_root_as_child(edges=edges, root_id=root_id, warnings=warnings)
+    child_to_parent = _check_multiple_parents(edges=edges, warnings=warnings)
+    _check_cycles(child_to_parent=child_to_parent, warnings=warnings)
+    _check_order_indices(edges=edges, warnings=warnings)
 
 
 def save_canonical_ir(*, canonical_ir: CanonicalIR, canonical_ir_fp: Path) -> None:
