@@ -23,7 +23,10 @@ from tenacity import (
 # Package Library
 from skg.canonical_ir.schemas import SegmentDecision
 from skg.canonical_ir.validators import (
+    validate_chunked_table_context_matches_prior_context,
+    validate_context_groupings_no_duplicate_roles,
     validate_context_groupings_required_for_emit,
+    validate_context_groupings_role_order,
     validate_context_groupings_supported_by_outer_evidence,
     validate_heading_segments_emit_groupings,
     validate_leaf_codes_use_local_code,
@@ -31,6 +34,7 @@ from skg.canonical_ir.validators import (
     validate_row_groupings_no_duplicate_roles,
     validate_row_groupings_supported_by_row_cells,
     validate_row_leaf_hierarchy_not_flattened,
+    validate_section_titles_not_front_matter,
     validate_segment_kind_coherence,
     validate_table_header_rows_not_emitted,
     validate_table_row_index,
@@ -373,6 +377,9 @@ def verify_segment_decision_quality(
     validate_heading_segments_emit_groupings(
         segment=segment, segment_decision=segment_decision
     )
+    validate_section_titles_not_front_matter(
+        segment=segment, segment_decision=segment_decision
+    )
     validate_table_split_explosion(segment=segment, segment_decision=segment_decision)
     validate_context_groupings_required_for_emit(
         segment=segment,
@@ -380,6 +387,17 @@ def verify_segment_decision_quality(
         segment_payload=segment_payload,
     )
     validate_context_groupings_supported_by_outer_evidence(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_payload=segment_payload,
+    )
+    validate_context_groupings_role_order(
+        segment=segment, segment_decision=segment_decision
+    )
+    validate_context_groupings_no_duplicate_roles(
+        segment=segment, segment_decision=segment_decision
+    )
+    validate_chunked_table_context_matches_prior_context(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,

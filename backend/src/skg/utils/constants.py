@@ -46,6 +46,35 @@ class FigureKind(str, Enum):
     UNKNOWN = "unknown"
 
 
+class FrontMatterHeadings(str, Enum):
+    """Document-structure headings that are NOT part of curriculum hierarchy.
+
+    These are common in curriculum PDFs (Vision, Introduction, Assessment guidance,
+    etc.) but should NOT become NodeRole.SECTION in the standards tree.
+    """
+
+    ACKNOWLEDGMENT = "acknowledgment"
+    ACKNOWLEDGMENTS = "acknowledgments"
+    ACKNOWLEDGEMENT = "acknowledgement"
+    ACKNOWLEDGEMENTS = "acknowledgements"
+    AIMS = "aims"
+    ASSESSMENT = "assessment"
+    BACKGROUND = "background"
+    FOREWORD = "foreword"
+    INTRODUCTION = "introduction"
+    MISSION = "mission"
+    OBJECTIVES = "objectives"
+    PREFACE = "preface"
+    PURPOSE = "purpose"
+    RATIONALE = "rationale"
+    SUGGESTED_TEACHING_METHODOLOGY = "suggested teaching methodology"
+    STRUCTURE_OF_SYLLABUS = "structure of syllabus"
+    STRUCTURE_OF_THE_SYLLABUS = "structure of the syllabus"
+    TEACHING_METHODOLOGY = "teaching methodology"
+    TIME_ALLOCATION = "time allocation"
+    VISION = "vision"
+
+
 class ItemBoundary(str, Enum):
     """Enumeration for item boundary states on a page.
 
@@ -94,7 +123,9 @@ class NodeRole(str, Enum):
 
     FRAMEWORK = "framework"  # The root document
     GRADE_LEVEL = "grade_level"
-    SECTION = "section"  # Structural grouping (e.g., "Section One")
+    LEARNING_AREA = "learning_area"  # e.g., "Literacy and Language"
+    PROSE = "prose"  # Document structure/prose headings (Vision, Intro, etc.)
+    SECTION = "section"  # # Curriculum grouping when meaningful
     STAGE = "stage"
     STRAND = "strand"  # e.g., "Main Competence"
     SUBJECT = "subject"  # e.g., "Mathematics"
@@ -143,6 +174,30 @@ CaptionTablePrefixes: tuple[str, ...] = (
     "tbl",
     "tbl.",
 )
+
+# Context grouping role precedence (outer -> inner). Used to enforce consistent
+# ordering of SegmentDecision.context_groupings[] across segments and (especially)
+# across chunked table decisions.
+#
+# NB:
+# 1. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
+# 2. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
+#
+CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
+    NodeRole.STAGE,
+    NodeRole.GRADE_LEVEL,
+    NodeRole.LEARNING_AREA,
+    NodeRole.SUBJECT,
+    NodeRole.STRAND,
+    NodeRole.SUBSTRAND,
+    NodeRole.THEME,
+    NodeRole.UNIT,
+    NodeRole.WEEK,
+    NodeRole.SECTION,
+)
+CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
+    role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)
+}
 CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
 NonArtifacts = {
     "abbreviations and acronyms",

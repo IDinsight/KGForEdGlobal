@@ -575,7 +575,6 @@ def _finalize_table_structure(
         )
         logger.warning(msg)
         warnings.append(msg)
-        # input(1)
 
     return n_cols, columns_signature, header_rows_canonical
 
@@ -1000,7 +999,6 @@ def _process_next_table_slice(
             )
             logger.warning(msg)
             warnings.append(msg)
-            # input(1)
 
     # Carry forward the segment code; only adopt the next code if missing.
     slice_local_code = current_local_code or next_local_code
@@ -1019,7 +1017,6 @@ def _process_next_table_slice(
             )
             logger.warning(msg)
             warnings.append(msg)
-            # input(1)
 
         dropped_header_rows = min(drop_count, len(next_item.rows))
         rows_to_add = next_item.rows[dropped_header_rows:]
@@ -1038,7 +1035,6 @@ def _process_next_table_slice(
             logger.warning(msg)
             warnings.append(msg)
             match_k = min(segment_header_row_count, next_hrc)
-            # input(1)
 
         rows_to_add, dropped_header_rows = _drop_repeated_header(
             base_header_rows=segment_header_rows[:match_k],
@@ -1114,8 +1110,6 @@ def _resolve_header_row_count(
             )
             logger.warning(msg)
             warnings.append(msg)
-            # input(1)
-
             return inferred_hrc
 
     return header_row_count
@@ -1628,7 +1622,6 @@ def build_continuation_chain(
             )
             logger.warning(msg)
             warnings.append(msg)
-            # input(1)
             break
 
         # Look up the next item by original index.
@@ -1642,8 +1635,6 @@ def build_continuation_chain(
             )
             logger.warning(msg)
             warnings.append(msg)
-            # input(1)
-
             break
 
         # Assert compatible kinds. NB: This is strictly a sanity check at this point
@@ -2356,8 +2347,6 @@ def match_candidates(
                         "note": "rejected_weak_match",
                     }
                 )
-                # input(1)
-
                 continue
 
             # Store page pair link: (Page A, Orig Index A) -> (Page B, Orig Index B).
@@ -2505,7 +2494,6 @@ def materialize_segment(
 
             # Fallback: treat first item standalone.
             table_chain = [(page_index, item_index, first_chain_item)]
-            # input(1)
 
         return stitch_table_chain(
             chain=table_chain,
@@ -2529,7 +2517,6 @@ def materialize_segment(
 
         # Fallback: treat first item standalone.
         block_chain = [(page_index, item_index, first_chain_item)]
-        # input(1)
 
     return stitch_block_chain(
         chain=block_chain,
@@ -2607,7 +2594,6 @@ def normalize_page_items(
             logger.warning(msg)
             warnings.append(msg)
             item.repeats_header = None
-            # input(1)
 
         if keep_artifacts or not is_artifact(item):
             items_mapping.append((index, item))
@@ -2733,7 +2719,6 @@ def propagate_caption_table_local_codes(
                     )
                     logger.warning(msg)
                     warnings.append(msg)
-                    # input(1)
 
                 break
 
@@ -2929,7 +2914,6 @@ def process_page_pair(
             logger.error(f"{next_rejected_indices = }")
             logger.warning(msg)
             warnings.append(msg)
-            # input(1)
 
         page_pair_debug.append(pair_debug)
         return {}
@@ -3560,8 +3544,6 @@ def update_section_stack(
         )
         logger.warning(msg)
         warnings.append(msg)
-        # input(1)
-
         return section_path_stack
 
     section_path_stack.append(

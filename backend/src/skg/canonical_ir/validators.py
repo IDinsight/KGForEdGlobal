@@ -11,7 +11,9 @@ from skg.canonical_ir.schemas import SegmentDecision
 from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import (
+    CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
     BlockType,
+    FrontMatterHeadings,
     NodeRole,
     NonArtifacts,
     SegmentDecisionType,
@@ -92,6 +94,67 @@ def _find_hierarchical_pairs(ids: list[str]) -> list[tuple[str, str]]:
     return parents_with_children
 
 
+def _fingerprint_groupings_for_compare(
+    groupings: list[dict[str, str]] | None,
+) -> list[tuple[str, str]]:
+    """Convert grouping dicts from payload into a comparable fingerprint.
+
+    Parameters
+    ----------
+    groupings
+        The list of grouping dictionaries from the segment payload.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        A list of (role, title) tuples for comparison.
+    """
+
+    fps: list[tuple[str, str]] = []
+
+    for g in groupings or []:
+        role = str(g.get("role", "")).strip().lower()
+        title = _normalize_text(str(g.get("title", "")))
+
+        if role and title:
+            fps.append((role, title))
+
+    return fps
+
+
+def _fingerprint_groupings_models_for_compare(
+    groupings: list[Any] | None,
+) -> list[tuple[str, str]]:
+    """Convert grouping models from SegmentDecision into a comparable fingerprint.
+
+    Parameters
+    ----------
+    groupings
+        The list of grouping models from the SegmentDecision.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        A list of (role, title) tuples for comparison.
+    """
+
+    fps: list[tuple[str, str]] = []
+
+    for g in groupings or []:
+        role = str(getattr(g, "role", "")).strip().lower()
+
+        # Role may be Enum; normalize to value if possible
+        if hasattr(getattr(g, "role", None), "value"):
+            role = str(g.role.value).strip().lower()
+
+        title = _normalize_text(str(getattr(g, "title", "")))
+
+        if role and title:
+            fps.append((role, title))
+
+    return fps
+
+
 def _is_hierarchical_prefix(*, child_id: str, parent_id: str) -> bool:
     """Return True if child_id is a hierarchical sub-code of parent_id.
 
@@ -141,6 +204,39 @@ def _looks_like_curriculum_code(value: Optional[str]) -> bool:
     return (
         False if not value else bool(_CODE_LIKE_RE.match(_normalize_list_marker(value)))
     )
+
+
+def _looks_like_front_matter_heading(title: str) -> bool:
+    """Return True if `title` looks like a document-structure heading.
+
+    Parameters
+    ----------
+    title
+        The input heading title.
+
+    Returns
+    -------
+    bool
+        True if the title looks like a front-matter heading.
+    """
+
+    front_matter_headings = {h.value for h in FrontMatterHeadings}
+
+    tn = _normalize_text(title)
+
+    if not tn:
+        return False
+
+    # Direct match.
+    if tn in front_matter_headings:
+        return True
+
+    # Substring match (handles extra punctuation/formatting).
+    for phrase in front_matter_headings:
+        if phrase in tn:
+            return True
+
+    return False
 
 
 def _normalize_list_marker(list_marker: Optional[str]) -> str:
@@ -280,6 +376,107 @@ def _validate_chunk_sequence(
         )
 
 
+def validate_chunked_table_context_matches_prior_context(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
+) -> None:
+    """For chunked table segments, enforce that non-first chunks reuse the exact same
+    outer context stack.
+
+    Rule: If segment_payload.chunking.is_first_chunk == False and
+    prior_context_groupings[] is non-empty, then decision.context_groupings[] must
+    match prior_context_groupings[] (role and title after normalization).
+
+    This prevents context drift across table chunks.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_payload is None or segment.kind != "table":
+        return
+
+    chunking = segment_payload.get("chunking") or {}
+    is_first_chunk = bool(chunking.get("is_first_chunk", False))
+
+    # Only enforce for non-first chunks.
+    if is_first_chunk:
+        return
+
+    prior = segment_payload.get("prior_context_groupings") or []
+
+    if not prior:
+        return
+
+    prior_fp = _fingerprint_groupings_for_compare(prior)
+    decision_fp = _fingerprint_groupings_models_for_compare(
+        segment_decision.context_groupings
+    )
+
+    if decision_fp != prior_fp:
+        raise QualityError(
+            f"Chunked table context drift detected: context_groupings[] does not match prior_context_groupings[].\n"
+            f"segment_id={segment.segment_id}\n"
+            f"decision_id={segment_decision.decision_id}\n"
+            f"chunk_row_range_start={chunking.get('row_range_start')}, chunk_row_range_end={chunking.get('row_range_end')}\n"
+            f"prior_context_groupings={prior_fp}\n"
+            f"decision_context_groupings={decision_fp}"
+        )
+
+
+def validate_context_groupings_no_duplicate_roles(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Disallow duplicate NodeRoles in context_groupings[]. This is especially
+    important once LEARNING_AREA exists (prevents double SUBJECT stacks).
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    seen: set[NodeRole] = set()
+
+    for g in segment_decision.context_groupings or []:
+        if g.role in seen:
+            raise QualityError(
+                f"Duplicate NodeRole in context_groupings[].\n"
+                f"segment_id={segment.segment_id}\n"
+                f"decision_id={segment_decision.decision_id}\n"
+                f"role={g.role.value}\n"
+                f"title={g.title}"
+            )
+
+        seen.add(g.role)
+
+
 def validate_context_groupings_required_for_emit(
     *,
     segment: Segment,
@@ -381,6 +578,7 @@ def validate_context_groupings_required_for_emit(
     outer_anchor_roles = {
         NodeRole.GRADE_LEVEL,
         NodeRole.STAGE,
+        NodeRole.LEARNING_AREA,
         NodeRole.SUBJECT,
         NodeRole.THEME,
         NodeRole.UNIT,
@@ -411,6 +609,64 @@ def validate_context_groupings_required_for_emit(
             f"  emits_outer_anchor_grouping: {emits_outer_anchor_grouping}\n"
             f"  section_path_headings: {meaningful_heading_texts}"
         )
+
+
+def validate_context_groupings_role_order(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Enforce stable outer -> inner ordering of context_groupings[] using a fixed role
+    precedence. This prevents drift like: stage -> subject -> grade -> subject -> strand
+    and ensures chunked tables keep identical context stacks.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    roles = [g.role for g in (segment_decision.context_groupings or [])]
+
+    if not roles:
+        return
+
+    # Convert NodeRole -> precedence index (unknown roles are treated as errors).
+    indices: list[int] = []
+    for r in roles:
+        if r not in CONTEXT_GROUPINGS_ROLE_PRECEDENCE:
+            raise QualityError(
+                f"Unknown NodeRole in context_groupings[].\n"
+                f"segment_id={segment.segment_id}\n"
+                f"decision_id={segment_decision.decision_id}\n"
+                f"role={getattr(r, 'value', str(r))}"
+            )
+        indices.append(CONTEXT_GROUPINGS_ROLE_PRECEDENCE[r])
+
+    # Must be non-decreasing outer -> inner.
+    for i in range(1, len(indices)):
+        if indices[i] < indices[i - 1]:
+            pretty = [
+                (g.role.value, g.title)
+                for g in (segment_decision.context_groupings or [])
+            ]
+            raise QualityError(
+                f"context_groupings[] roles are out of order (must be outer→inner).\n"
+                f"segment_id={segment.segment_id}\n"
+                f"decision_id={segment_decision.decision_id}\n"
+                f"context_groupings={pretty}"
+            )
 
 
 def validate_context_groupings_supported_by_outer_evidence(
@@ -827,6 +1083,51 @@ def validate_row_leaf_hierarchy_not_flattened(
                     f"  row_index: {rd.row_index}\n"
                     f"  parent_local_code: {parent_code}\n"
                     f"  child_local_code: {child_code}"
+                )
+
+
+def validate_section_titles_not_front_matter(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Reject NodeRole.SECTION groupings that are actually document-prose headings
+    like Vision/Introduction/Assessment/Time Allocation/etc. If the model wants to
+    preserve these, it should emit NodeRole.PROSE instead.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    # Check all grouping locations where SECTION might appear.
+    grouping_lists = []
+    grouping_lists.append(segment_decision.context_groupings or [])
+    grouping_lists.append(segment_decision.groupings or [])
+    for rd in segment_decision.rows or []:
+        grouping_lists.append(rd.groupings or [])
+
+    for groupings in grouping_lists:
+        for g in groupings:
+            if g.role == NodeRole.SECTION and _looks_like_front_matter_heading(g.title):
+                raise QualityError(
+                    f"NodeRole.SECTION used for a document front-matter heading.\n"
+                    f"Use NodeRole.PROSE for document structure (or IGNORE).\n"
+                    f"  segment_id: {segment.segment_id}\n"
+                    f"  decision_id: {segment_decision.decision_id}\n"
+                    f"  title: {g.title}"
                 )
 
 

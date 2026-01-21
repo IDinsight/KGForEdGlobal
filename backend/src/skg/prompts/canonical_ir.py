@@ -81,6 +81,7 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 12. If decision_type="{SegmentDecisionType.IGNORE.value}" or "{SegmentDecisionType.UNRESOLVED.value}" -> context_groupings[] MUST be empty.
 13. Preserve statement order as it appears in the segment; do not reorder leaves or row decisions.
 14. Do NOT include institutional or governmental identifiers (e.g., country name, ministry name, publisher, approving authority) in context_groupings[]. Such text is document metadata, not curriculum hierarchy. If no curriculum hierarchy is present, use an empty context.
+15. context_groupings[] must be ordered outer→inner using a fixed role order, and must be identical across chunks of the same table segment.
 
 ## WHAT TO EXTRACT
 1. A segment can yield:
@@ -150,10 +151,20 @@ StatementRole (for leaf decisions):
   - strand/main competence/topic/subtopic/unit/section
 2. Prefer the most specific reasonable NodeRole.
 3. If you are unsure, prefer omitting groupings or using decision_type="{SegmentDecisionType.UNRESOLVED.value}" rather than emitting a SECTION.
-   - Use role="{NodeRole.SECTION.value}" ONLY for meaningful curriculum structure labels (e.g., Unit, Module, Chapter, Domain, Topic heading that is not a Subject).
-   - DO NOT emit role="{NodeRole.SECTION.value}" for generic document-type words that do not add hierarchy signal, such as: "syllabus/syllabi", "curriculum", "framework", "guide", "teacher's guide", "national curriculum", "table of contents", "foreword", "preface", "acknowledgements".
+   - Use role="{NodeRole.SECTION.value}" ONLY for real curriculum structure containers such as: "Unit 1", "Module 2", "Domain: Number", "Topic: Fractions"
+   - DO NOT use role="{NodeRole.SECTION.value}" for document structure headings: Vision, Introduction, Assessment, Time Allocation, Teaching Methodology, Structure of the Syllabus. Use role="{NodeRole.PROSE.value}" instead.
    - If a heading mixes a real hierarchy label with generic document-type words, emit ONLY the meaningful hierarchy label. Example: "Lower Primary Education Syllabi" -> emit STAGE="Lower Primary" (do not emit SECTION="Education Syllabi").
-4. Always include the field `context_groupings[]` in your output. It MAY be empty.
+   - EXAMPLES:
+     3a. Heading: "VISION"
+       -> decision_type="emit_groupings_only"
+       -> groupings=[{"role":"prose","title":"VISION"}]
+       -> context_groupings=[]
+     3b. Heading: "GRADE 1 — ENGLISH LANGUAGE"
+       -> groupings=[{"role":"grade_level","title":"GRADE 1"},{"role":"subject","title":"ENGLISH LANGUAGE"}]
+4. Table under "Expected Standard/Learning Activities/Specific Competences"
+   -> context_groupings should include only Grade/Stage/Subject
+   -> RowDecision.groupings should contain Topic/Sub-topic codes
+5. Always include the field `context_groupings[]` in your output. It MAY be empty.
   - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
   - Therefore, you MUST explicitly provide the hierarchy context snapshot in `context_groupings[]` when there is clear curriculum structure evidence.
   - `segment.section_path` is provided as EVIDENCE ONLY (semantic-light headings).
@@ -165,17 +176,24 @@ StatementRole (for leaf decisions):
   - For TABLE segments and for any decision that emits leaf statements (expectations/descriptors/guidance), prefer a non-empty `context_groupings[]` when supported by evidence (Grade/Stage/Subject/Theme/Unit).
   - If no usable curriculum context evidence exists, `context_groupings` may be [] (attach to framework root).
   - If uncertain about context, choose decision_type="{SegmentDecisionType.UNRESOLVED.value}".
-5. **Role assignment guardrails (IMPORTANT):**
+6. **Role assignment guardrails (IMPORTANT):**
   - Use role=SUBJECT ONLY for actual learning areas/subjects (e.g., Mathematics, English, Science, Social Studies).
   - Do NOT label document titles, publishers, ministries, or high-level document headings as SUBJECT.
   - Examples of non-subject headings: “Curriculum”, “Syllabus”, “Framework”, “Ministry of Education”, “National Curriculum”, “Table of Contents”. Stage-band headings like “Lower Primary”, “Upper Primary”, “Primary Cycle” should be role=STAGE (not SUBJECT).
   - Generic document-type headings (e.g., "Syllabus", "Curriculum", "Framework") should usually be ignored or treated as metadata, not emitted as SECTION.
-6. **Grade/Stage grouping normalization (IMPORTANT):**
+7. **Grade/Stage grouping normalization (IMPORTANT):**
   - role=GRADE_LEVEL should contain only the grade identifier/band (e.g., “Grade 1”, “P1”, “Standard I–II”, “Grades 1–3”).
   - role=STAGE should contain stage/cycle names (e.g., “Lower Primary”, “Upper Primary”, “Primary Cycle”).
   - If a heading mixes both, split into STAGE + GRADE_LEVEL.
   - Only emit an additional SECTION if the remaining phrase is meaningful curriculum structure (e.g., "Unit 1", "Strand: Number").
   - Do NOT emit SECTION for generic document-type leftovers (e.g., "Syllabus", "Curriculum", "Framework").
+8. role="{NodeRole.PROSE.value}" is for document structure/prose headings that should NOT be part of the curriculum hierarchy, e.g.:
+  - Vision / Mission / Introduction
+  - Assessment (document-level guidance)
+  - Time Allocation
+  - Suggested Teaching Methodology
+  - Structure of the Syllabus
+  - Use role="{NodeRole.PROSE.value}" instead of role="{NodeRole.SECTION.value}" for these.
 
 ## IMPORTANT: Outer context vs. row-local context for tables
 1. For TABLE segments (including chunked slices):
@@ -187,6 +205,30 @@ StatementRole (for leaf decisions):
 
 ## PRIOR CONTEXT GROUPINGS
 1. The payload may include prior_context_groupings[] (a short list of the active context stack from the immediately previous decided segment). Use it only if consistent with the current segment’s evidence, to decide context_groupings[].
+
+## CONTEXT GROUPINGS ORDER + STABILITY (IMPORTANT)
+1. context_groupings[] MUST be ordered from OUTER → INNER using this fixed role order:
+  - STAGE → GRADE_LEVEL → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → SECTION
+2. Do NOT repeat the same NodeRole more than once in context_groupings[].
+  - If you see both a broad "learning area" and a specific subject but only have role=SUBJECT available, keep ONLY the most specific subject and omit the broader learning area.
+3. For TABLE segments:
+  - Do NOT include TOPIC/SUBTOPIC in context_groupings[]. Those are row-local and MUST go in RowDecision.groupings[].
+4. CHUNKED TABLE STABILITY:
+  - If segment.chunking exists AND prior_context_groupings[] is present and non-empty: -> set context_groupings[] EXACTLY equal to prior_context_groupings[] unless the current segment’s evidence clearly contradicts it.
+  - This is REQUIRED so that all chunks of the same table share identical outer context.
+  - If you MUST change context_groupings[] for a chunked table, explain the contradiction in rationale using only evidence from: section_path[], caption_text, or table headers.
+
+## LEARNING AREA vs SUBJECT (IMPORTANT)
+1. Use role="learning_area" for broad umbrella areas such as:
+  - "Literacy and Language"
+  - "Mathematics and Science"
+  - "Creative and Technology Studies"
+2. Use role="subject" for the specific syllabus subject such as:
+  - "English Language"
+  - "Mathematics"
+  - "Integrated Science"
+3. The preferred context order is OUTER → INNER: stage → grade_level → learning_area → subject → strand → substrand → theme → unit → week → section
+4. Do NOT repeat the same role twice in context_groupings[].
 
 ## TABLE-SPECIFIC INSTRUCTIONS
 1. If segment_kind="table":
@@ -334,6 +376,14 @@ In particular, ensure that:
   - If you split a cell into multiple statements, ensure each LeafDecision is atomic and non-overlapping.
   - If headers imply roles (e.g., "Specific Competences", "Learning Activities", "Expected Standard"), map them correctly.
   - Ensure table OUTER context is in `context_groupings[]` (section_path/caption/headers), and row-local context is in `RowDecision.groupings[]` (topic/subtopic/code/week/etc).
+  - Use role="learning_area" for broad umbrellas (e.g., "Literacy and Language") and role="subject" for the specific subject (e.g., "English Language").
+  - context_groupings[] must be ordered outer→inner using: stage → grade_level → learning_area → subject → strand → substrand → theme → unit → week → section
+  - Do not repeat the same role twice in context_groupings[].
+  - **Context ordering + chunk stability (IMPORTANT):**
+    - context_groupings[] MUST follow this fixed OUTER → INNER role order: STAGE → GRADE_LEVEL → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → SECTION
+    - Do NOT repeat the same NodeRole more than once in context_groupings[].
+    - Do NOT put TOPIC/SUBTOPIC in context_groupings[] for tables (they belong in RowDecision.groupings[]).
+    - If segment.chunking exists and prior_context_groupings[] is provided and non-empty: context_groupings[] should match prior_context_groupings[] EXACTLY unless clear contradiction is present in evidence.
   - If a row lists multiple same-level siblings (e.g., multiple subjects/topics in one cell), emit multiple RowDecisions with the SAME row_index, one per sibling; do not stack siblings into one groupings[] path.
   - **Hierarchy/coding discipline:**
     - If a row contains a higher-level container statement (e.g., a "Main/General" item) plus more specific sub-items (often indicated by hierarchical codes/local_code like "1.1" and "1.1.1"), treat the higher-level item as a grouping in `RowDecision.groupings[]` and emit ONLY the more specific sub-items as leaf expectations.
