@@ -19,6 +19,7 @@ import traceback
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Third Party Library
 import typer
@@ -38,6 +39,7 @@ from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     build_caption_bindings,
+    build_context_hint_from_decision,
     compile_canonical_ir,
     decision_key,
     load_segment_decision_set,
@@ -47,7 +49,8 @@ from skg.canonical_ir.utils import (
 )
 from skg.document_ir.schemas import DocumentIR
 from skg.schemas import CreateCanonicalConfig, RunConfig, RunCtx
-from skg.utils.general import make_dir, open_json_type, write_to_json
+from skg.utils.constants import SegmentDecisionType
+from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
 # Instantiate typer apps for the command line interface.
@@ -111,20 +114,23 @@ def create_canonical_ir(
         )
 
         # Generate decisions for any undecided segments in DocumentIR order.
+        context_hint: list[dict[str, Any]] = []
         num_segments = len(document_ir.segments)
         existing_keys = {decision_key(d) for d in decision_set.decisions}
-        segment_warnings_dir = creation_dirs.root / "segment_warnings"
-        make_dir(segment_warnings_dir)
+        segment_warnings_fp = creation_dirs.root / "segment_warnings.json"
+        segment_warnings_by_segment: dict[str, list[str]] = {}
 
         for i, segment in enumerate(document_ir.segments, 1):
             logger.info(
                 f"Processing segment ({segment.segment_id}): {i}/{num_segments}"
             )
 
+            prev_number_decisions = len(decision_set.decisions)
             warnings: list[str] = []
             decision_set = process_segment_decisions(
                 caption_bindings=caption_bindings,
                 config=config,
+                context_hint=context_hint,
                 decision_set=decision_set,
                 doc_key=doc_key,
                 existing_keys=existing_keys,
@@ -132,16 +138,30 @@ def create_canonical_ir(
                 segment_decisions_fp=segment_decisions_fp,
                 warnings=warnings,
             )
+            new_decisions = decision_set.decisions[prev_number_decisions:]
+
+            # Update context hint using the most recently-added decision.
+            if new_decisions:
+                last = new_decisions[-1]
+                if last.decision_type in {
+                    SegmentDecisionType.EMIT_GROUPINGS_ONLY,
+                    SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
+                    SegmentDecisionType.EMIT_LEAVES_ONLY,
+                }:
+                    context_hint = build_context_hint_from_decision(last)
+                    logger.info(f"{context_hint = }")
+                    input()
 
             # Persist warnings for this segment.
-            warnings_fp = (
-                segment_warnings_dir / f"{i:05d}_{segment.segment_id}_warnings.json"
-            )
-            write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
+            segment_key = f"{i:05d}_{segment.segment_id}"
+            segment_warnings_by_segment[segment_key] = warnings
 
             logger.success(
                 f"Finished processing segment ({segment.segment_id}): {i}/{num_segments}!"
             )
+
+        write_to_json(fp=segment_warnings_fp, json_info=segment_warnings_by_segment)
+        logger.info(f"Saved segment warnings to: {segment_warnings_fp}")
 
         decided_segment_ids = {
             d.segment_id for d in decision_set.decisions if d.segment_id

@@ -140,10 +140,6 @@ class GroupingDecision(BaseSchema):
     Examples: Grade, Subject, Theme, Strand, Topic, Unit, Week, Stage, Section.
     """
 
-    list_id: str | None = Field(
-        default=None,
-        description="Optional identifier code attached to the grouping (e.g., '3.1' or 'Theme 2').",
-    )
     local_code: str | None = Field(
         default=None,
         description="Optional local code associated with the grouping (rare; often used for table codes or document codes).",
@@ -204,9 +200,13 @@ class LeafDecision(BaseSchema):
     """
 
     body: str = Field(..., description="Atomic leaf statement body text (original).")
-    list_id: str | None = Field(
+    list_marker: str | None = Field(
         default=None,
-        description="Optional identifier code extracted for this leaf (e.g., '3.9.4.1', 'a)', '1.2').",
+        description="Optional list/bullet marker for this leaf (e.g., 'a)', 'i', '1.', 'A.'). Use ONLY for list markers, not for official curriculum codes.",
+    )
+    local_code: str | None = Field(
+        default=None,
+        description="Optional local curriculum identifier code for this leaf (e.g., '3.9.4.1'). Use this for stable codes printed in the document.",
     )
     role: StatementRole = Field(
         ...,
@@ -272,6 +272,30 @@ class RowDecision(BaseSchema):
         description="0-based ABSOLUTE row index into the ORIGINAL stitched DocumentIR table rows.",
         ge=0,
     )
+
+    @model_validator(mode="after")
+    def _validate_non_empty(self) -> Self:
+        """RowDecision must emit something useful. Prevents empty stubs like:
+        RowDecision(row_index=12, groupings=[], leaves=[]).
+
+        Returns
+        -------
+        Self
+            The validated RowDecision object.
+
+        Raises
+        ------
+        ValueError
+            If both groupings[] and leaves[] are empty.
+        """
+
+        if not self.groupings and not self.leaves:
+            raise ValueError(
+                "RowDecision must include at least one grouping or one leaf "
+                "(groupings[] and leaves[] cannot both be empty)."
+            )
+
+        return self
 
 
 class SegmentDecision(BaseSchema):
@@ -398,6 +422,28 @@ class SegmentDecision(BaseSchema):
         has_segment_leaves = bool(self.leaves)
         has_row_leaves = any(bool(r.leaves) for r in self.rows)
         has_any_leaves = has_segment_leaves or has_row_leaves
+
+        # emit_groupings_only must actually emit at least one grouping.
+        # NB: context_groupings do NOT count here, because they are "context snapshots"
+        # and almost always present. We want actual emitted groupings.
+        if (
+            self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY
+            and not has_any_groupings
+        ):
+            raise ValueError(
+                "Decision type 'emit_groupings_only' must include at least one grouping "
+                "in groupings[] or RowDecision.groupings[] (context_groupings alone is not sufficient)."
+            )
+
+        # emit_leaves_only must actually emit at least one leaf.
+        if (
+            self.decision_type == SegmentDecisionType.EMIT_LEAVES_ONLY
+            and not has_any_leaves
+        ):
+            raise ValueError(
+                "Decision type 'emit_leaves_only' must include at least one leaf "
+                "in leaves[] or RowDecision.leaves[]."
+            )
 
         # Allow rows[] only if they contain groupings-only rows (no leaves).
         if (
@@ -666,9 +712,9 @@ class CanonicalNode(BaseSchema):
         default=None,
         description="Full body text for statement nodes (EXPECTATION/DESCRIPTOR/GUIDANCE).",
     )
-    list_id: Optional[str] = Field(
+    list_marker: str | None = Field(
         default=None,
-        description="Optional extracted identifier code for this node (e.g., '3.1.1').",
+        description="Optional list marker (e.g., 'a)', 'i', '•'). Use this ONLY for list/bullet markers, not for official curriculum codes.",
     )
     local_code: str | None = Field(
         default=None,

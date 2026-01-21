@@ -366,11 +366,10 @@ def _grouping_key(g: GroupingDecision) -> str:
         The grouping key.
     """
 
-    code = g.list_id or g.local_code or "-"
+    code = g.local_code or "-"
+    title = canonical_grouping_title(role=g.role, title=g.title)
 
-    return (
-        f"{g.role.value}:{_normalize_text(text=g.title)}:{_normalize_text(text=code)}"
-    )
+    return f"{g.role.value}:{_normalize_text(text=title)}:{_normalize_text(text=code)}"
 
 
 def _make_unresolved_sample(
@@ -402,7 +401,7 @@ def _make_unresolved_sample(
         parts.append(f"rationale={rationale}")
 
     # Use segment text for blocks when available.
-    text_or_none = segment.text
+    text_or_none = getattr(segment, "text", None)
     segment_text = text_or_none.text if isinstance(text_or_none, TextUnit) else None
 
     if segment_text:
@@ -488,13 +487,13 @@ def _stable_extend_unique(*, base: list[str], extra: list[str]) -> list[str]:
 
 
 def apply_caption_binding_to_table_payload(
-    *, caption_bindings: CaptionBinding | None, table_payload: dict[str, Any]
+    *, caption_binding: CaptionBinding | None, table_payload: dict[str, Any]
 ) -> dict[str, Any]:
     """Apply caption binding information to a table segment payload.
 
     Parameters
     ----------
-    caption_bindings
+    caption_binding
         The CaptionBinding to apply, or None to skip.
     table_payload
         The table segment payload to update.
@@ -505,14 +504,14 @@ def apply_caption_binding_to_table_payload(
         The updated table segment payload.
     """
 
-    if not caption_bindings:
+    if not caption_binding:
         return table_payload
 
-    table_payload["caption_gap_segments"] = caption_bindings.gap_segments
-    table_payload["caption_kind"] = caption_bindings.caption_kind
-    table_payload["caption_page_index"] = caption_bindings.caption_page_index
-    table_payload["caption_segment_id"] = caption_bindings.caption_segment_id
-    table_payload["caption_text"] = caption_bindings.caption_text
+    table_payload["caption_gap_segments"] = caption_binding.gap_segments
+    table_payload["caption_kind"] = caption_binding.caption_kind
+    table_payload["caption_page_index"] = caption_binding.caption_page_index
+    table_payload["caption_segment_id"] = caption_binding.caption_segment_id
+    table_payload["caption_text"] = caption_binding.caption_text
 
     return table_payload
 
@@ -667,6 +666,83 @@ def build_caption_bindings(
     return caption_bindings
 
 
+def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]:
+    """Build context hint from SegmentDecision's context_groupings and groupings.
+
+    Parameters
+    ----------
+    d
+        The SegmentDecision to extract context hint from.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The context hint as a list of dicts.
+    """
+
+    carry_roles = {
+        NodeRole.GRADE_LEVEL,
+        NodeRole.STAGE,
+        NodeRole.STRAND,
+        NodeRole.SUBJECT,
+        NodeRole.THEME,
+        NodeRole.UNIT,
+        NodeRole.WEEK,
+    }
+    hint: list[dict[str, Any]] = []
+
+    for g in d.context_groupings or []:
+        if g.role in carry_roles:
+            hint.append(g.model_dump(mode="json"))
+
+    for g in d.groupings or []:
+        if g.role in carry_roles:
+            hint.append(g.model_dump(mode="json"))
+
+    return hint
+
+
+def canonical_grade_level_title(title: str) -> str:
+    """Normalize common grade label variants into a consistent display form.
+
+    Examples:
+      - "GRADE 1-3"     -> "GRADES 1–3"
+      - "GRADES 1 – 3"  -> "GRADES 1–3"
+      - "Grade 2"       -> "GRADE 2"
+
+    NB:
+
+    1. This only fires when patterns match confidently.
+    2. Otherwise we return the original string unchanged.
+    """
+
+    if not title:
+        return title
+
+    # Normalize unicode + whitespace + dash variants for matching.
+    t = unicodedata.normalize("NFKC", title).strip()
+    t = _WS_RE.sub(" ", t)
+    t = _DASH_RE.sub("-", t)  # Unify various dash chars
+    t = re.sub(r"\s*-\s*", "-", t)  # Remove spaces around hyphen
+    t = _WS_RE.sub(" ", t).strip()
+
+    # Numeric grade range: GRADE(S) 1 - 3,
+    m = re.match(r"^(grades?|grade)\s+(\d+)-(\d+)$", t, flags=re.IGNORECASE)
+    if m:
+        start = int(m.group(2))
+        end = int(m.group(3))
+        return f"GRADES {start}–{end}"  # en dash
+
+    # Single numeric grade: GRADE(S) 2.
+    m = re.match(r"^(grades?|grade)\s+(\d+)$", t, flags=re.IGNORECASE)
+    if m:
+        n = int(m.group(2))
+        return f"GRADE {n}"
+
+    # Otherwise: leave unchanged (avoid accidental over-normalization).
+    return title.strip()
+
+
 def canonical_grouping_node_id(
     *, ancestor_grouping_keys: list[str], doc_key: str, grouping: GroupingDecision
 ) -> str:
@@ -688,8 +764,9 @@ def canonical_grouping_node_id(
     """
 
     path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
-    code = grouping.local_code or grouping.list_id or "-"
-    text_hash = _normalized_text_hash(text=grouping.title)
+    code = grouping.local_code or "-"
+    title = canonical_grouping_title(role=grouping.role, title=grouping.title)
+    text_hash = _normalized_text_hash(text=title)
 
     key = canonical_key(
         doc_key=doc_key,
@@ -700,6 +777,32 @@ def canonical_grouping_node_id(
     )
 
     return uuidv5_from_key(key)
+
+
+def canonical_grouping_title(*, role: NodeRole, title: str) -> str:
+    """Canonicalize grouping titles in a role-aware way. This is intentionally
+    conservative: we only normalize when we can do so deterministically and safely.
+
+    Parameters
+    ----------
+    role
+        The node role.
+    title
+        The original title.
+
+    Returns
+    -------
+    str
+        The canonicalized title.
+    """
+
+    if not title:
+        return title
+
+    if role == NodeRole.GRADE_LEVEL:
+        return canonical_grade_level_title(title)
+
+    return title.strip()
 
 
 def canonical_key(
@@ -763,7 +866,7 @@ def canonical_leaf_node_id(
     """
 
     path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
-    code = leaf.list_id or "-"
+    code = leaf.local_code or "-"
     text_hash = _normalized_text_hash(text=leaf.body)
 
     key = canonical_key(
@@ -836,7 +939,7 @@ def compile_canonical_ir(
     framework_node = CanonicalNode(
         bbox=None,
         body=None,
-        list_id=None,
+        list_marker=None,
         local_code=None,
         node_id=root_id,
         normalized_text=_normalize_text(text=framework_title),
@@ -970,6 +1073,7 @@ def compile_canonical_ir(
 
             # Apply decision.groupings[] under the context stack tip.
             for g in d.groupings:
+                g_title = canonical_grouping_title(role=g.role, title=g.title)
                 node_id = canonical_grouping_node_id(
                     ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
                 )
@@ -977,10 +1081,10 @@ def compile_canonical_ir(
                 node = CanonicalNode(
                     bbox=None,
                     body=None,
-                    list_id=g.list_id,
+                    list_marker=None,
                     local_code=g.local_code,
                     node_id=node_id,
-                    normalized_text=_normalize_text(text=g.title),
+                    normalized_text=_normalize_text(text=g_title),
                     page_indices=page_indices,
                     role=g.role,
                     section_path_text=section_path_text,
@@ -988,7 +1092,7 @@ def compile_canonical_ir(
                     source_label=g.source_label,
                     source_segment_ids=[seg_id],
                     source_type=seg_kind,
-                    title=TextUnit(language="und", text=g.title),
+                    title=TextUnit(language="und", text=g_title),
                 )
 
                 ensure_node(node=node, nodes_by_id=nodes_by_id)
@@ -1018,8 +1122,8 @@ def compile_canonical_ir(
                     node = CanonicalNode(
                         bbox=None,
                         body=TextUnit(language="und", text=leaf.body),
-                        list_id=leaf.list_id,
-                        local_code=None,
+                        list_marker=leaf.list_marker,
+                        local_code=leaf.local_code,
                         node_id=leaf_id,
                         normalized_text=_normalize_text(text=leaf.body),
                         page_indices=page_indices,
@@ -1051,6 +1155,7 @@ def compile_canonical_ir(
                     row_ancestor_keys = list(ancestor_keys)
 
                     for g in row.groupings:
+                        g_title = canonical_grouping_title(role=g.role, title=g.title)
                         node_id = canonical_grouping_node_id(
                             ancestor_grouping_keys=row_ancestor_keys,
                             doc_key=doc_key,
@@ -1060,10 +1165,10 @@ def compile_canonical_ir(
                         node = CanonicalNode(
                             bbox=None,
                             body=None,
-                            list_id=g.list_id,
+                            list_marker=None,
                             local_code=g.local_code,
                             node_id=node_id,
-                            normalized_text=_normalize_text(text=g.title),
+                            normalized_text=_normalize_text(text=g_title),
                             page_indices=page_indices,
                             role=g.role,
                             section_path_text=section_path_text,
@@ -1071,7 +1176,7 @@ def compile_canonical_ir(
                             source_label=g.source_label,
                             source_segment_ids=[seg_id],
                             source_type=seg_kind,
-                            title=TextUnit(language="und", text=g.title),
+                            title=TextUnit(language="und", text=g_title),
                         )
 
                         ensure_node(node=node, nodes_by_id=nodes_by_id)
@@ -1100,8 +1205,8 @@ def compile_canonical_ir(
                         node = CanonicalNode(
                             bbox=None,
                             body=TextUnit(language="und", text=leaf.body),
-                            list_id=leaf.list_id,
-                            local_code=None,
+                            list_marker=leaf.list_marker,
+                            local_code=leaf.local_code,
                             node_id=leaf_id,
                             normalized_text=_normalize_text(text=leaf.body),
                             page_indices=page_indices,
@@ -1600,8 +1705,8 @@ def merge_nodes_postpass(
         if m.source_type is None and n.source_type is not None:
             m.source_type = n.source_type
 
-        if m.list_id is None and n.list_id is not None:
-            m.list_id = n.list_id
+        if m.list_marker is None and n.list_marker is not None:
+            m.list_marker = n.list_marker
 
         if m.local_code is None and n.local_code is not None:
             m.local_code = n.local_code
@@ -1713,6 +1818,7 @@ def process_segment_decisions(
     *,
     caption_bindings: dict[str, CaptionBinding | None],
     config: CreateCanonicalConfig,
+    context_hint: list[dict[str, Any]] | None = None,
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
@@ -1728,6 +1834,8 @@ def process_segment_decisions(
         The caption bindings to apply to table segments.
     config
         The canonical IR creation run configuration.
+    context_hint
+        The context hint to include in the segment decision payload.
     decision_set
         The current SegmentDecisionSet to update.
     doc_key
@@ -1763,6 +1871,9 @@ def process_segment_decisions(
 
         # NB: Never apply caption bindings to block segments.
         segment_payload = segment.model_dump(mode="json")
+        segment_payload["prior_context_groupings"] = [
+            dict(x) for x in (context_hint or [])
+        ]
 
         segment_decision = generate_segment_decision(
             always_double_check_first_attempt=config.always_double_check_first_attempt,
@@ -1828,8 +1939,12 @@ def process_segment_decisions(
             # the LLM sees caption_text/caption_kind etc.
             table_payload = make_table_full_payload(segment=segment)
             table_payload = apply_caption_binding_to_table_payload(
-                caption_bindings=binding, table_payload=table_payload
+                caption_binding=binding, table_payload=table_payload
             )
+            table_payload["prior_context_groupings"] = [
+                dict(x) for x in (context_hint or [])
+            ]
+
             segment_decision = generate_segment_decision(
                 always_double_check_first_attempt=config.always_double_check_first_attempt,
                 doc_key=doc_key,
@@ -1870,8 +1985,11 @@ def process_segment_decisions(
 
             # Use binding (may be None), do not index caption_bindings[].
             table_payload = apply_caption_binding_to_table_payload(
-                caption_bindings=binding, table_payload=table_payload
+                caption_binding=binding, table_payload=table_payload
             )
+            table_payload["prior_context_groupings"] = [
+                dict(x) for x in (context_hint or [])
+            ]
 
             segment_decision = generate_segment_decision(
                 always_double_check_first_attempt=config.always_double_check_first_attempt,
@@ -1982,7 +2100,7 @@ def reconcile_context_stack(
         node = CanonicalNode(
             bbox=None,
             body=None,
-            list_id=g.list_id,
+            list_marker=None,
             local_code=g.local_code,
             node_id=node_id,
             normalized_text=_normalize_text(text=g.title),

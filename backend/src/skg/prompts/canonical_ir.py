@@ -96,6 +96,16 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 3. If no explicit label exists in the evidence, set source_label=null (omit it).
 4. Do NOT invent or paraphrase source_label.
 
+## CODES VS LIST MARKERS (IMPORTANT)
+Curriculum PDFs often contain BOTH:
+  - Official curriculum codes like: `3.9.4.1`
+  - Bullet/list markers like: `a)`, `i`, `•`
+
+Rules:
+  - Put OFFICIAL codes (e.g., `3.9.4.1`) into `LeafDecision.local_code`
+  - Put ONLY bullet/list markers into `LeafDecision.list_marker`
+  - NEVER put official codes into `list_marker`
+
 ## ALLOWED ENUM VALUES
 segment_kind:
   - "block"
@@ -139,7 +149,10 @@ StatementRole (for leaf decisions):
   - theme/sub-theme/week (Uganda thematic curriculum)
   - strand/main competence/topic/subtopic/unit/section
 2. Prefer the most specific reasonable NodeRole.
-3. If you are unsure, use role="{NodeRole.SECTION.value}" or omit groupings.
+3. If you are unsure, prefer omitting groupings or using decision_type="{SegmentDecisionType.UNRESOLVED.value}" rather than emitting a SECTION.
+   - Use role="{NodeRole.SECTION.value}" ONLY for meaningful curriculum structure labels (e.g., Unit, Module, Chapter, Domain, Topic heading that is not a Subject).
+   - DO NOT emit role="{NodeRole.SECTION.value}" for generic document-type words that do not add hierarchy signal, such as: "syllabus/syllabi", "curriculum", "framework", "guide", "teacher's guide", "national curriculum", "table of contents", "foreword", "preface", "acknowledgements".
+   - If a heading mixes a real hierarchy label with generic document-type words, emit ONLY the meaningful hierarchy label. Example: "Lower Primary Education Syllabi" -> emit STAGE="Lower Primary" (do not emit SECTION="Education Syllabi").
 4. Always include the field `context_groupings[]` in your output. It MAY be empty.
   - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
   - Therefore, you MUST explicitly provide the hierarchy context snapshot in `context_groupings[]` when there is clear curriculum structure evidence.
@@ -156,10 +169,13 @@ StatementRole (for leaf decisions):
   - Use role=SUBJECT ONLY for actual learning areas/subjects (e.g., Mathematics, English, Science, Social Studies).
   - Do NOT label document titles, publishers, ministries, or high-level document headings as SUBJECT.
   - Examples of non-subject headings: “Curriculum”, “Syllabus”, “Framework”, “Ministry of Education”, “National Curriculum”, “Table of Contents”. Stage-band headings like “Lower Primary”, “Upper Primary”, “Primary Cycle” should be role=STAGE (not SUBJECT).
+  - Generic document-type headings (e.g., "Syllabus", "Curriculum", "Framework") should usually be ignored or treated as metadata, not emitted as SECTION.
 6. **Grade/Stage grouping normalization (IMPORTANT):**
   - role=GRADE_LEVEL should contain only the grade identifier/band (e.g., “Grade 1”, “P1”, “Standard I–II”, “Grades 1–3”).
   - role=STAGE should contain stage/cycle names (e.g., “Lower Primary”, “Upper Primary”, “Primary Cycle”).
-  - If a heading mixes both, split into STAGE + GRADE_LEVEL (and optionally SECTION for the remaining phrase).
+  - If a heading mixes both, split into STAGE + GRADE_LEVEL.
+  - Only emit an additional SECTION if the remaining phrase is meaningful curriculum structure (e.g., "Unit 1", "Strand: Number").
+  - Do NOT emit SECTION for generic document-type leftovers (e.g., "Syllabus", "Curriculum", "Framework").
 
 ## IMPORTANT: Outer context vs. row-local context for tables
 1. For TABLE segments (including chunked slices):
@@ -168,6 +184,9 @@ StatementRole (for leaf decisions):
       * e.g., Grade/Stage, Subject/Learning Area, Theme/Unit if clearly indicated
   - Row-specific context (topic/subtopic/strand/code/week/etc. that changes by row) MUST go inside `RowDecision.groupings[]`.
   - Do NOT promote per-row values from table cells into `context_groupings[]` unless they are clearly table-scoped and stable across the chunk (rare).
+
+## PRIOR CONTEXT GROUPINGS
+1. The payload may include prior_context_groupings[] (a short list of the active context stack from the immediately previous decided segment). Use it only if consistent with the current segment’s evidence, to decide context_groupings[].
 
 ## TABLE-SPECIFIC INSTRUCTIONS
 1. If segment_kind="table":
@@ -185,8 +204,10 @@ StatementRole (for leaf decisions):
   - If headers suggest roles (e.g., "Specific Competences", "Expected Standard", "Learning Activities"), map accordingly.
   - If no rows contain anything meaningful (e.g., empty or purely formatting), use decision_type="{SegmentDecisionType.IGNORE.value}".
   - **Hierarchy/coding discipline (IMPORTANT):**
-    - Many curriculum tables contain BOTH a higher-level container statement and more specific sub-statements. This may be expressed via headers (e.g., "Main/General competence" vs "Specific competence"), or via hierarchical codes/list_ids where a parent code is a prefix of child codes (e.g., "1.1" and "1.1.1").
-    - In these cases, treat the higher-level container as a **grouping** in `RowDecision.groupings[]` (use role STRAND/TOPIC/SECTION as appropriate, and keep the code in list_id if present), and emit ONLY the more specific sub-statements as leaf expectations in `RowDecision.leaves[]`.
+    - Many curriculum tables contain BOTH a higher-level container statement and more specific sub-statements. This may be expressed via headers (e.g., "Main/General competence" vs "Specific competence"), or via hierarchical codes where a parent code is a prefix of child codes (e.g., "1.1" and "1.1.1").
+    - In these cases, treat the higher-level container as a **grouping** in `RowDecision.groupings[]` (use role STRAND/TOPIC/SECTION as appropriate), and emit ONLY the more specific sub-statements as leaf expectations in `RowDecision.leaves[]`.
+    - Put OFFICIAL curriculum codes (e.g., "1.1", "1.1.1", "3.9.4.1") into `local_code`.
+    - Put ONLY bullet/list markers (e.g., "a)", "i", "1.") into `list_marker`.
     - Do NOT emit both the parent container and its child sub-statements as leaf expectations in the same row.
 2. CHUNKED TABLES:
   - If segment.chunking exists, the provided `segment.rows` is a slice of the original table.
@@ -297,7 +318,10 @@ In particular, ensure that:
     - {StatementRole.GUIDANCE.value} = activities/resources/teaching notes
   - If something looks like an activity/task, it is guidance (not expectation).
 5. **Role sanity check:**
-  - If you assigned role=SUBJECT to something that looks like a document title/preamble heading (mentions curriculum/syllabus/framework/ministry/national/education or is very long/all-caps), correct it to role=SECTION.
+  - If you assigned role=SUBJECT to something that looks like a document title/preamble heading or metadata (mentions curriculum/syllabus/framework/guide/ministry/national/education, publisher, approving authority, table of contents, foreword/preface), DO NOT keep it as SUBJECT.
+  - In most cases, such headings should be decision_type="{SegmentDecisionType.IGNORE.value}" (front-matter) OR omitted from groupings entirely.
+  - Do NOT "fix" these by converting them into role=SECTION unless they clearly represent meaningful curriculum structure (e.g., a real Unit/Module/Domain/Topic heading).
+  - If a heading mixes meaningful hierarchy + boilerplate document-type words, emit ONLY the meaningful hierarchy label. Example: "Lower Primary Education Syllabi" -> emit STAGE="Lower Primary" and omit "Education Syllabi".
 6. **Table discipline (if segment_kind="table")**
   - Prefer `rows[]` over top-level `leaves[]`.
   - Each RowDecision.row_index must be a valid 0-based ABSOLUTE index into the ORIGINAL stitched table rows.
@@ -312,7 +336,7 @@ In particular, ensure that:
   - Ensure table OUTER context is in `context_groupings[]` (section_path/caption/headers), and row-local context is in `RowDecision.groupings[]` (topic/subtopic/code/week/etc).
   - If a row lists multiple same-level siblings (e.g., multiple subjects/topics in one cell), emit multiple RowDecisions with the SAME row_index, one per sibling; do not stack siblings into one groupings[] path.
   - **Hierarchy/coding discipline:**
-    - If a row contains a higher-level container statement (e.g., a "Main/General" item) plus more specific sub-items (often indicated by hierarchical codes/list_ids like "1.1" and "1.1.1"), treat the higher-level item as a grouping in `RowDecision.groupings[]` and emit ONLY the more specific sub-items as leaf expectations.
+    - If a row contains a higher-level container statement (e.g., a "Main/General" item) plus more specific sub-items (often indicated by hierarchical codes/local_code like "1.1" and "1.1.1"), treat the higher-level item as a grouping in `RowDecision.groupings[]` and emit ONLY the more specific sub-items as leaf expectations.
     - Do NOT emit both the parent container and its child sub-items as leaf expectations in the same row.
 7. **Block discipline (if segment_kind="block")**
   - If block_type is "{BlockType.CAPTION.value}": decision_type should usually be "{SegmentDecisionType.IGNORE.value}" (captions bind later).
@@ -328,7 +352,13 @@ In particular, ensure that:
   - If the only outer evidence is institutional/front-matter metadata, use `context_groupings=[]` (attach to framework root).
   - Reminder: the compiler will not create nodes from segment.section_path automatically.
 10. **Grade label check:**
-  - If role=GRADE_LEVEL contains extra narrative words beyond the grade/stage identifier, rewrite it so grade_level is only the grade/stage label and move the remaining phrase to role=SECTION/TOPIC.
+  - If role=GRADE_LEVEL contains extra narrative words beyond the grade identifier/band, rewrite it so grade_level is only the grade label.
+  - Only emit an additional grouping for the remaining phrase if it is meaningful curriculum structure (e.g., Topic/Unit/Strand); otherwise omit it.
+  - Do NOT emit SECTION for generic document-type leftovers (e.g., "Syllabus", "Curriculum", "Framework").
+11. **SECTION usage guardrail (IMPORTANT):**
+  - role=SECTION is NOT a default fallback.
+  - Use SECTION only for meaningful curriculum structure labels that are not better captured as STAGE/GRADE_LEVEL/SUBJECT/THEME/UNIT/WEEK/STRAND/TOPIC.
+  - Do NOT emit SECTION for generic document-type words that do not add hierarchy signal, such as: "syllabus/syllabi", "curriculum", "framework", "guide", "teacher's guide", "national curriculum", "table of contents", "foreword", "preface", "acknowledgements".
 
 When you are confident in your answer, return a complete `SegmentDecision` that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made.
         """
