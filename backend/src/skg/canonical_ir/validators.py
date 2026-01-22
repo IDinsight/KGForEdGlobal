@@ -642,6 +642,18 @@ def validate_context_groupings_role_order(
     if not roles:
         return
 
+    # Disallow roles that should never appear in context_groupings[]. FRAMEWORK is
+    # implicit (root); UNRESOLVED is a bucket, not a context node.
+    for g in segment_decision.context_groupings or []:
+        if g.role in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED):
+            raise QualityError(
+                f"Invalid NodeRole in context_groupings[].\n"
+                f"segment_id={segment.segment_id}\n"
+                f"decision_id={segment_decision.decision_id}\n"
+                f"role={g.role.value}\n"
+                f"title={g.title}"
+            )
+
     # Convert NodeRole -> precedence index (unknown roles are treated as errors).
     indices: list[int] = []
     for r in roles:
@@ -801,6 +813,48 @@ def validate_heading_segments_emit_groupings(
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  decision_type: {segment_decision.decision_type.value}"
+        )
+
+
+def validate_ignore_unresolved_emit_nothing(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """If decision_type is IGNORE or UNRESOLVED, it must not emit groupings/leaves/rows.
+    We still allow rationale/confidence/context_groupings for audit, but the decision
+    must not contain materializable outputs.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_decision.decision_type not in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    has_groupings = bool(segment_decision.groupings)
+    has_leaves = bool(segment_decision.leaves)
+    has_rows = bool(segment_decision.rows)
+
+    if has_groupings or has_leaves or has_rows:
+        raise QualityError(
+            f"ignore_or_unresolved_must_not_emit_nodes\n"
+            f"segment_id={segment.segment_id}\n"
+            f"decision_id={segment_decision.decision_id}\n"
+            f"decision_type={segment_decision.decision_type.value}\n"
+            f"groupings_count={len(segment_decision.groupings or [])}\n"
+            f"leaves_count={len(segment_decision.leaves or [])}\n"
+            f"rows_count={len(segment_decision.rows or [])}"
         )
 
 
