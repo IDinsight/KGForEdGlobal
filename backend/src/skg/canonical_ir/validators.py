@@ -23,9 +23,18 @@ from skg.utils.constants import (
 # Compiled regexes.
 _CODE_LIKE_RE = re.compile(r"^[A-Za-z]?\d+(?:[.\-]\d+){1,}$")
 _DASH_RE = re.compile(r"[‐-‒–—−]")  # Common unicode dash characters
+_GRADE_MARKER_RE = re.compile(
+    r"\b(?:p\.?|primary|grade|class|std\.?|standard)\s*([0-9]{1,2}|[ivx]{1,5})\b",
+    re.IGNORECASE,
+)
 _LEAF_BODY_CODE_PREFIX_RE = re.compile(
     r"^\s*([A-Za-z]?\d+(?:[.\-]\d+){1,})\s*[\)\.:\-]?\s+"
 )
+_ROMAN_NUMERAL_RE = re.compile(r"^[ivx]{1,5}$", re.IGNORECASE)
+_TERM_MARKER_RE = re.compile(
+    r"\b(?:term|semester|trimester)\s*([0-9]{1,2})\b", re.IGNORECASE
+)
+_WEEK_MARKER_RE = re.compile(r"\b(?:week|wk)\s*([0-9]{1,2})\b", re.IGNORECASE)
 
 
 def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
@@ -61,6 +70,80 @@ def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
         row_text_by_abs_index[int(abs_i)] = _normalize_text(" \n ".join(parts))
 
     return row_text_by_abs_index
+
+
+def _extract_marker_numbers(
+    *, allow_roman: bool, regex: re.Pattern, text_norm: str
+) -> set[int]:
+    """Extract numeric designators (e.g., grade/week/term numbers) from normalized
+    text.
+
+    Parameters
+    ----------
+    allow_roman
+        Whether to allow roman numerals as valid numbers.
+    regex
+        The compiled regex pattern to use for extraction.
+    text_norm
+        The normalized text to search.
+
+    Returns
+    -------
+    set[int]
+        The set of extracted numeric designators.
+    """
+
+    output: set[int] = set()
+
+    if not text_norm:
+        return output
+
+    for m in regex.finditer(text_norm):
+        raw = (m.group(1) or "").strip()
+
+        if not raw:
+            continue
+
+        if raw.isdigit():
+            output.add(int(raw))
+            continue
+
+        if allow_roman and _ROMAN_NUMERAL_RE.match(raw):
+            val = _roman_to_int(raw)
+            if val is not None:
+                output.add(val)
+
+    return output
+
+
+def _extract_valid_headings(payload: dict[str, Any]) -> list[str]:
+    """Extract valid headings from section_path, filtering out non-artifact headings.
+
+    Parameters
+    ----------
+    payload
+        The segment payload dictionary.
+
+    Returns
+    -------
+    list[str]
+        A list of valid heading texts from section_path.
+    """
+
+    section_path = payload.get("section_path") or []
+    headings: list[str] = []
+
+    for h in section_path:
+        if not isinstance(h, (dict, str)):
+            continue
+
+        t = (h.get("text", "") or "") if isinstance(h, dict) else h
+        tn = _normalize_text(t)
+
+        if tn and tn not in NonArtifacts:
+            headings.append(t)
+
+    return headings
 
 
 def _find_hierarchical_pairs(ids: list[str]) -> list[tuple[str, str]]:
@@ -293,6 +376,118 @@ def _normalize_text(text: Optional[str]) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+def _outer_evidence_supports_title(
+    *,
+    evidence_blob_norm: str,
+    prior_titles_norm: set[str],
+    role: NodeRole,
+    title_norm: str,
+) -> bool:
+    """Return True if the context grouping title is supported by outer evidence.
+
+    Default policy: strict substring match.
+    Mild normalization policy:
+      - For GRADE_LEVEL: allow numeric equivalence across aliases
+        (P1 ~ Primary 1 ~ Grade 1 ~ Std I).
+      - Optionally for WEEK/TERM: allow numeric equivalence (Week 1 ~ Wk 1).
+
+    Parameters
+    ----------
+    evidence_blob_norm
+        The normalized outer evidence text blob.
+    prior_titles_norm
+        The set of normalized prior context grouping titles.
+    role
+        The NodeRole of the context grouping.
+    title_norm
+        The normalized title of the context grouping.
+
+    Returns
+    -------
+    bool
+        True if the title is supported by outer evidence.
+    """
+
+    # 1. Strict support: title appears verbatim in evidence (normalized substring).
+    if title_norm and title_norm in evidence_blob_norm:
+        return True
+
+    # 2. Also allow support from prior_context_groupings (chunk stability).
+    if title_norm and title_norm in prior_titles_norm:
+        return True
+
+    # 3. Mild role-aware numeric equivalence.
+    if role == NodeRole.GRADE_LEVEL:
+        title_nums = _extract_marker_numbers(
+            allow_roman=True, regex=_GRADE_MARKER_RE, text_norm=title_norm
+        )
+        evidence_nums = _extract_marker_numbers(
+            allow_roman=True, regex=_GRADE_MARKER_RE, text_norm=evidence_blob_norm
+        )
+
+        # Accept if they share at least one grade number (very conservative).
+        return bool(title_nums and evidence_nums and (title_nums & evidence_nums))
+
+    if role == NodeRole.WEEK:
+        title_nums = _extract_marker_numbers(
+            allow_roman=False, regex=_WEEK_MARKER_RE, text_norm=title_norm
+        )
+        evidence_nums = _extract_marker_numbers(
+            allow_roman=False, regex=_WEEK_MARKER_RE, text_norm=evidence_blob_norm
+        )
+
+        return bool(title_nums and evidence_nums and (title_nums & evidence_nums))
+
+    if role == NodeRole.TERM:
+        title_nums = _extract_marker_numbers(
+            allow_roman=False, regex=_TERM_MARKER_RE, text_norm=title_norm
+        )
+        evidence_nums = _extract_marker_numbers(
+            allow_roman=False, regex=_TERM_MARKER_RE, text_norm=evidence_blob_norm
+        )
+
+        return bool(title_nums and evidence_nums and (title_nums & evidence_nums))
+
+    return False
+
+
+def _roman_to_int(s: str) -> int | None:
+    """Convert small roman numerals to int. Supports I to XII (usually enough for
+    primary).
+
+    Parameters
+    ----------
+    s
+        The roman numeral string.
+
+    Returns
+    -------
+    int | None
+        The integer value of the roman numeral, or None if input is empty or invalid.
+    """
+
+    if not s:
+        return None
+
+    s_norm = _normalize_text(s).replace(" ", "")
+    mapping = {
+        "i": 1,
+        "ii": 2,
+        "iii": 3,
+        "iv": 4,
+        "v": 5,
+        "vi": 6,
+        "vii": 7,
+        "viii": 8,
+        "ix": 9,
+        "x": 10,
+        "xi": 11,
+        "xii": 12,
+    }
+
+    return mapping.get(s_norm)
+
+
 def _validate_chunk_sequence(
     *,
     expected_end: int,
@@ -385,9 +580,10 @@ def validate_chunked_table_context_matches_prior_context(
     """For chunked table segments, enforce that non-first chunks reuse the exact same
     outer context stack.
 
-    Rule: If segment_payload.chunking.is_first_chunk == False and
-    prior_context_groupings[] is non-empty, then decision.context_groupings[] must
-    match prior_context_groupings[] (role and title after normalization).
+    Rule: ONLY enforce for truly chunked table payloads (i.e. chunk payloads that
+    include context_rows_before/after metadata). For those:
+      - if chunking.is_first_chunk == False and prior_context_groupings[] is non-empty,
+        then decision.context_groupings[] must match prior_context_groupings[].
 
     This prevents context drift across table chunks.
 
@@ -410,10 +606,29 @@ def validate_chunked_table_context_matches_prior_context(
         return
 
     chunking = segment_payload.get("chunking") or {}
-    is_first_chunk = bool(chunking.get("is_first_chunk", False))
+
+    # NB: Only enforce this rule for chunked-table payloads (i.e. payloads that were
+    # produced by make_table_chunk_payload). Full-table payloads also include a
+    # lightweight chunking object for absolute indices, but they are not "chunked".
+    is_actually_chunked = (
+        "context_rows_before_count" in chunking
+        or "context_rows_after_count" in chunking
+        or "context_rows_before" in segment_payload
+        or "context_rows_after" in segment_payload
+    )
+
+    if not is_actually_chunked:
+        return
+
+    # Treat row_range_start==0 as first chunk if is_first_chunk is missing.
+    row_range_start = chunking.get("row_range_start", None)
+    is_first_chunk = chunking.get("is_first_chunk", None)
+
+    if is_first_chunk is None and row_range_start == 0:
+        is_first_chunk = True
 
     # Only enforce for non-first chunks.
-    if is_first_chunk:
+    if bool(is_first_chunk):
         return
 
     prior = segment_payload.get("prior_context_groupings") or []
@@ -720,21 +935,7 @@ def validate_context_groupings_supported_by_outer_evidence(
         return
 
     payload = segment_payload or {}
-    section_path = payload.get("section_path") or []
-    headings: list[str] = []
-
-    for h in section_path:
-        if not isinstance(h, (dict, str)):
-            continue
-
-        t = (h.get("text", "") or "") if isinstance(h, dict) else h
-        tn = _normalize_text(t)
-
-        if not tn or tn in NonArtifacts:
-            continue
-
-        headings.append(t)
-
+    headings = _extract_valid_headings(payload)
     caption = payload.get("caption_text") or ""
     header_rows = payload.get("header_rows_canonical") or []
     header_strings = [
@@ -768,17 +969,37 @@ def validate_context_groupings_supported_by_outer_evidence(
                 f"  section_path_headings: {headings}"
             )
 
-        if title not in evidence_blob:
+        prior = payload.get("prior_context_groupings") or []
+        prior_titles_norm: set[str] = set()
+
+        for pg in prior:
+            if not isinstance(pg, dict):
+                continue
+
+            pt = _normalize_text(pg.get("title", ""))
+
+            if pt:
+                prior_titles_norm.add(pt)
+
+        if not _outer_evidence_supports_title(
+            evidence_blob_norm=evidence_blob,
+            prior_titles_norm=prior_titles_norm,
+            role=g.role,
+            title_norm=title,
+        ):
             raise QualityError(
-                f"context_groupings title not supported by OUTER evidence (section_path/caption/header_rows). "
-                f"Fix: REMOVE this grouping from context_groupings[] or change it to a title that appears verbatim in "
-                f"section_path/caption/header_rows.\n"
+                f"context_groupings title not supported by OUTER evidence (section_path/caption/header_rows) "
+                f"or prior_context_groupings. "
+                f"Fix: REMOVE this grouping from context_groupings[] or change it to a title supported by "
+                f"section_path/caption/header_rows (or ensure it is a stable prior_context_grouping).\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  unsupported_title: {g.title}\n"
+                f"  role: {g.role.value}\n"
                 f"  section_path_headings: {headings}\n"
                 f"  header_rows_canonical: {payload.get('header_rows_canonical')}\n"
-                f"  has_caption_text: {bool((caption or '').strip())}"
+                f"  has_caption_text: {bool((caption or '').strip())}\n"
+                f"  prior_context_titles: {sorted(list(prior_titles_norm))[:10]}"
             )
 
 
