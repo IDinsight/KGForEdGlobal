@@ -142,8 +142,9 @@ StatementRole (for leaf decisions):
 
 ## CONTEXT GROUPINGS ORDER + STABILITY (IMPORTANT)
 1. context_groupings[] MUST be ordered from OUTER → INNER using this fixed role order:
-  STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → SECTION
+  STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → TOPIC → SUBTOPIC → SECTION → PROSE
 2. Do NOT repeat the same NodeRole more than once in context_groupings[].
+3. Only include PROSE when the segment is truly front matter / narrative structure; otherwise prefer SECTION or leave context empty.
 
 ## HARD RULE: OUTER-EVIDENCE SUPPORT FOR context_groupings (CRITICAL)
 Every `context_groupings[i].title` MUST be directly supported by OUTER evidence:
@@ -303,7 +304,7 @@ In particular, ensure that:
 
   - **Context ordering + stability (IMPORTANT)**
     - context_groupings[] must be ordered OUTER→INNER using this fixed role order:
-      STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → SECTION
+      STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → TOPIC → SUBTOPIC → SECTION → PROSE
     - Do not repeat the same NodeRole more than once in context_groupings[].
     - If segment.chunking exists and prior_context_groupings[] is provided and non-empty:
       - context_groupings[] should match prior_context_groupings[] EXACTLY unless clear contradiction is present in OUTER evidence.

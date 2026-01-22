@@ -29,6 +29,7 @@ from skg.canonical_ir.validators import (
     validate_context_groupings_role_order,
     validate_context_groupings_supported_by_outer_evidence,
     validate_heading_segments_emit_groupings,
+    validate_ignore_unresolved_emit_nothing,
     validate_leaf_codes_use_local_code,
     validate_leaf_list_marker_not_code,
     validate_row_groupings_no_duplicate_roles,
@@ -369,6 +370,9 @@ def verify_segment_decision_quality(
         raise QualityError("Reason does not matter and is overwritten in caller.")
 
     validate_segment_kind_coherence(segment=segment, segment_decision=segment_decision)
+    validate_ignore_unresolved_emit_nothing(
+        segment=segment, segment_decision=segment_decision
+    )
     validate_table_row_index(segment=segment, segment_decision=segment_decision)
     validate_unique_table_rows(segment=segment, segment_decision=segment_decision)
     validate_table_header_rows_not_emitted(

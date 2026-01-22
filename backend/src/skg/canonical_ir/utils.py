@@ -783,12 +783,23 @@ def _make_unresolved_sample(
     if rationale:
         parts.append(f"rationale={rationale}")
 
-    # Use segment text for blocks when available.
-    text_or_none = getattr(segment, "text", None)
-    segment_text = text_or_none.text if isinstance(text_or_none, TextUnit) else None
+    segment_text: str | None = None
 
-    if segment_text:
-        parts.append(segment_text)
+    if isinstance(segment, BlockSegment):
+        segment_text = _extract_block_segment_text(segment)
+    else:
+        # Fallback: best-effort (mostly useful for some segment variants)
+        text_or_none = segment.text
+        segment_text = text_or_none.text if isinstance(text_or_none, TextUnit) else None
+
+    if segment_text and segment_text.strip():
+        parts.append(segment_text.strip())
+    # For tables, we often don't have a clean "text" field; header preview can help
+    # debugging.
+    elif isinstance(segment, TableSegment):
+        headers = _extract_table_headers(segment)
+        if headers:
+            parts.append("headers=" + " | ".join(headers[:8]))
 
     s = " | ".join(parts).strip()
 
@@ -1443,8 +1454,8 @@ def _process_table_segment(
         # only if it produced a usable outer context.
         if stable_table_prior_context is None:
             usable = segment_decision.decision_type not in (
-                "ignore",
-                "unresolved",
+                SegmentDecisionType.IGNORE,
+                SegmentDecisionType.UNRESOLVED,
             ) and bool(segment_decision.context_groupings)
             if usable:
                 stable_table_prior_context = _groupings_to_payload_dicts(

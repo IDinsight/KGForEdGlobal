@@ -196,7 +196,7 @@ CaptionTablePrefixes: tuple[str, ...] = (
 # NB:
 # 1. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
 # 2. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
-#
+# 3. Order matters here!
 CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.STAGE,
     NodeRole.GRADE_LEVEL,
@@ -207,7 +207,10 @@ CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.THEME,
     NodeRole.UNIT,
     NodeRole.WEEK,
+    NodeRole.TOPIC,
+    NodeRole.SUBTOPIC,
     NodeRole.SECTION,
+    NodeRole.PROSE,
 )
 CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
     role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)
