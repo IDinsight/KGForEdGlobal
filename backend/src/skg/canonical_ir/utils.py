@@ -38,6 +38,7 @@ from skg.utils.constants import (
     CaptionKind,
     CaptionTablePrefixes,
     NodeRole,
+    NonArtifacts,
     SegmentDecisionType,
     UnresolvedReason,
 )
@@ -47,6 +48,13 @@ T = TypeVar("T")
 
 # Compiled regexes.
 _DASH_RE = re.compile(r"[‐-‒–—−]+")
+_STRUCTURAL_CONTEXT_CUE_RE = re.compile(
+    r"\b("
+    r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
+    r"learning\s+area|unit|week|term|chapter|module|p\s*[1-9]|std\s*[ivx]+"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 _WS_RE = re.compile(r"\s+")
 
 
@@ -235,6 +243,26 @@ def _check_structural_warnings(
         The list of warnings to append to.
     """
 
+    # Audit-only warning: segment.section_path suggests strong curriculum structure,
+    # but the LLM provided an empty context_groupings snapshot. This does NOT
+    # materialize any hierarchy; it only flags likely missed context.
+    if (
+        decision.decision_type
+        not in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED)
+        and not decision.context_groupings
+        and section_path_text
+    ):
+        path_str = " / ".join([p for p in section_path_text if p])
+        if path_str and _STRUCTURAL_CONTEXT_CUE_RE.search(path_str):
+            pages_str = ",".join(str(p) for p in page_indices) if page_indices else "-"
+            msg = (
+                f"context_evidence_present_but_context_groupings_empty:"
+                f"segment_id={segment_id} decision_id={decision.decision_id} "
+                f"kind={segment_kind} pages={pages_str} section_path={path_str!r}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
     if decision.confidence >= structural_leaf_warn_threshold:
         return
 
@@ -303,6 +331,43 @@ def _classify_caption_kind(text: str) -> CaptionKind:
     return "unknown"
 
 
+def _filter_section_path_for_llm(
+    section_path: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Remove front-matter/non-artifact headings from the section_path evidence shown
+    to the LLM.
+
+    Parameters
+    ----------
+    section_path
+        The section_path to filter.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The filtered section_path.
+    """
+
+    if not section_path:
+        return []
+
+    output: list[dict[str, Any]] = []
+
+    for h in section_path:
+        txt = (h.get("text") or "").strip()
+        if not txt:
+            continue
+
+        norm = _normalize_text(text=txt)
+
+        if norm in NonArtifacts:
+            continue
+
+        output.append(h)
+
+    return output
+
+
 def _groupings_to_payload_dicts(gs: list[Any] | None) -> list[dict[str, Any]]:
     """Convert a list of GroupingDecision to list of dicts for payload.
 
@@ -363,6 +428,87 @@ def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
     decision_id = getattr(d, "decision_id", "") or ""
 
     return start, end, decision_id
+
+
+def _detect_semantic_collision(
+    *, existing: CanonicalNode, node: CanonicalNode, warnings: list[str]
+) -> bool:
+    """Check for semantic conflicts between an existing node and a new node.
+
+    Parameters
+    ----------
+    existing
+        The existing CanonicalNode.
+    node
+        The new CanonicalNode.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    bool
+        True if a collision is detected (and appends details to warnings), otherwise
+        False.
+    """
+
+    collision = False
+
+    # Role mismatch.
+    if existing.role != node.role:
+        msg = (
+            f"node_semantic_conflict_same_id_different_role:"
+            f"node_id={node.node_id} existing_role={existing.role} new_role={node.role} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        collision = True
+
+    # Grouping title mismatch.
+    existing_title = existing.title.text if existing.title is not None else None
+    new_title = node.title.text if node.title is not None else None
+
+    if existing_title and new_title and existing_title.strip() != new_title.strip():
+        msg = (
+            f"node_semantic_conflict_same_id_different_title:"
+            f"node_id={node.node_id} existing_title={existing_title!r} new_title={new_title!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        collision = True
+
+    # Leaf/statement body mismatch.
+    existing_body = existing.body.text if existing.body is not None else None
+    new_body = node.body.text if node.body is not None else None
+
+    if existing_body and new_body and existing_body.strip() != new_body.strip():
+        msg = (
+            f"node_semantic_conflict_same_id_different_body:"
+            f"node_id={node.node_id} existing_body={existing_body!r} new_body={new_body!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        collision = True
+
+    # Local code mismatch.
+    if (
+        existing.local_code
+        and node.local_code
+        and existing.local_code.strip() != node.local_code.strip()
+    ):
+        msg = (
+            "node_semantic_conflict_same_id_different_local_code:"
+            f"node_id={node.node_id} existing_local_code={existing.local_code!r} "
+            f"new_local_code={node.local_code!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        collision = True
+
+    return collision
 
 
 def _emit_edge(
@@ -719,9 +865,11 @@ def _materialize_block_leaves(
             title=None,
         )
 
-        ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
+        effective_leaf_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
         _emit_edge(
-            child_id=leaf_id,
+            child_id=effective_leaf_id,
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
             edges=edges,
@@ -826,9 +974,11 @@ def _materialize_decision_structure(
             title=TextUnit(language="und", text=g_title),
         )
 
-        ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
+        effective_node_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
         _emit_edge(
-            child_id=node_id,
+            child_id=effective_node_id,
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
             edges=edges,
@@ -839,7 +989,7 @@ def _materialize_decision_structure(
             warnings=warnings,
         )
 
-        parent_id = node_id
+        parent_id = effective_node_id
         ancestor_keys.append(_grouping_key(g))
 
     # Dispatch based on segment kind.
@@ -959,9 +1109,11 @@ def _materialize_table_rows(
                 title=TextUnit(language="und", text=g_title),
             )
 
-            ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
+            effective_node_id = ensure_node(
+                node=node, nodes_by_id=nodes_by_id, warnings=warnings
+            )
             _emit_edge(
-                child_id=node_id,
+                child_id=effective_node_id,
                 child_to_parent=child_to_parent,
                 decision_id=decision.decision_id,
                 edges=edges,
@@ -972,7 +1124,7 @@ def _materialize_table_rows(
                 warnings=warnings,
             )
 
-            row_parent_id = node_id
+            row_parent_id = effective_node_id
             row_ancestor_keys.append(_grouping_key(g))
 
         # Row leaves.
@@ -998,9 +1150,11 @@ def _materialize_table_rows(
                 title=None,
             )
 
-            ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
+            effective_leaf_id = ensure_node(
+                node=node, nodes_by_id=nodes_by_id, warnings=warnings
+            )
             _emit_edge(
-                child_id=leaf_id,
+                child_id=effective_leaf_id,
                 child_to_parent=child_to_parent,
                 decision_id=decision.decision_id,
                 edges=edges,
@@ -1102,8 +1256,11 @@ def _process_block_segment(
         warnings.append(msg)
         return decision_set
 
-    # NB: Never apply caption bindings to block segments.
+    # Filter the outer evidence shown to the LLM so it matches validator policy.
     segment_payload = segment.model_dump(mode="json")
+    segment_payload["section_path"] = _filter_section_path_for_llm(
+        segment_payload.get("section_path")
+    )
     segment_payload["prior_context_groupings"] = [dict(x) for x in (context_hint or [])]
 
     segment_decision = generate_segment_decision(
@@ -1311,6 +1468,67 @@ def _process_table_segment(
         )
 
     return decision_set
+
+
+def _resolve_collision(
+    *, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode], warnings: list[str]
+) -> str:
+    """Disambiguate a node ID using provenance data and inserts it as a new node. Used
+    when a semantic collision is detected. Updates node.node_id in place.
+
+    Parameters
+    ----------
+    node
+        The CanonicalNode with a colliding node_id.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    str
+        The new unique node_id.
+    """
+
+    parts: list[str] = []
+
+    # Build a stable disambiguator string from provenance.
+    if node.source_segment_ids:
+        parts.append(f"seg={node.source_segment_ids[0]}")
+    if node.source_decision_ids:
+        parts.append(f"dec={node.source_decision_ids[0]}")
+    if node.page_indices:
+        parts.append(f"page={node.page_indices[0]}")
+    if node.list_marker:
+        parts.append(f"list={node.list_marker}")
+    if node.local_code:
+        parts.append(f"code={node.local_code}")
+
+    disambiguator = "|".join(parts) if parts else "no_provenance"
+    base_key = f"{node.node_id}|collision|{disambiguator}"
+
+    # Generate deterministic new ID.
+    new_id = uuidv5_from_key(base_key)
+
+    # Extremely defensive: ensure uniqueness deterministically.
+    i = 1
+    while new_id in nodes_by_id:
+        new_id = uuidv5_from_key(f"{base_key}|{i}")
+        i += 1
+
+    msg = (
+        f"node_id_collision_resolved:"
+        f"old_node_id={node.node_id} new_node_id={new_id} disambiguator={disambiguator}"
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+
+    # Apply changes.
+    node.node_id = new_id
+    nodes_by_id[new_id] = node
+
+    return new_id
 
 
 def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
@@ -1912,7 +2130,9 @@ def compile_canonical_ir(
         source_type=None,
         title=TextUnit(language="und", text=framework_title),
     )
-    ensure_node(node=framework_node, nodes_by_id=nodes_by_id, warnings=warnings)
+    effective_root_id = ensure_node(
+        node=framework_node, nodes_by_id=nodes_by_id, warnings=warnings
+    )
 
     # 4. Main traversal loop.
     for segment in document_ir.segments:
@@ -1990,7 +2210,7 @@ def compile_canonical_ir(
                 next_order_index=next_order_index,
                 nodes_by_id=nodes_by_id,
                 page_indices=page_indices,
-                root_id=root_id,
+                root_id=effective_root_id,
                 section_path_text=section_path_text,
                 segment=segment,
                 warnings=warnings,
@@ -2003,7 +2223,7 @@ def compile_canonical_ir(
         edges=edges,
         nodes=list(nodes_by_id.values()),
         pdf_name=segment_decisions.pdf_name,
-        root_id=root_id,
+        root_id=effective_root_id,
         segment_decisions=segment_decisions.decisions,
         unresolved=unresolved,
         warnings=warnings,
@@ -2135,10 +2355,14 @@ def dedupe_edges_postpass(
 
 def ensure_node(
     *, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode], warnings: list[str]
-) -> None:
-    """Ensure a CanonicalNode is present in nodes_by_id, merging provenance if needed.
+) -> str:
+    """Ensure a CanonicalNode is present in nodes_by_id.
 
-    Merge policy:
+    Returns the effective node_id. If the incoming node's node_id already exists but
+    the semantics do not match, we deterministically disambiguate the ID using stable
+    provenance-derived salt and insert as a distinct node.
+
+    Merge policy (when semantics match):
 
     1. Preserve first-seen ordering for all provenance lists.
     2. Merge: page_indices, source_segment_ids, source_decision_ids, section_path_text.
@@ -2152,49 +2376,30 @@ def ensure_node(
         The mapping of node_id to CanonicalNode.
     warnings
         The list of warnings to append to.
+
+    Returns
+    -------
+    str
+        The effective node_id.
     """
 
     if node.node_id not in nodes_by_id:
         nodes_by_id[node.node_id] = node
-        return
+        return node.node_id
 
     existing = nodes_by_id[node.node_id]
 
-    # Role mismatch is always a conflict.
-    if existing.role != node.role:
-        msg = (
-            f"node_semantic_conflict_same_id_different_role:"
-            f"node_id={node.node_id} existing_role={existing.role} new_role={node.role} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
-        )
-        logger.warning(msg)
-        warnings.append(msg)
+    # Track whether this is a true semantic collision (same ID but different node).
+    collision = _detect_semantic_collision(
+        existing=existing, node=node, warnings=warnings
+    )
 
-    # Grouping title mismatch.
-    existing_title = existing.title.text if existing.title is not None else None
-    new_title = node.title.text if node.title is not None else None
-    if existing_title and new_title and existing_title.strip() != new_title.strip():
-        msg = (
-            f"node_semantic_conflict_same_id_different_title:"
-            f"node_id={node.node_id} existing_title={existing_title!r} new_title={new_title!r} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
-        )
-        logger.warning(msg)
-        warnings.append(msg)
+    # If we detected a collision, deterministically disambiguate the node_id and insert.
+    # NB: Return the effective node_id so callers emit edges to the correct node.
+    if collision:
+        return _resolve_collision(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
 
-    # Leaf/statement body mismatch.
-    existing_body = existing.body.text if existing.body is not None else None
-    new_body = node.body.text if node.body is not None else None
-    if existing_body and new_body and existing_body.strip() != new_body.strip():
-        msg = (
-            f"node_semantic_conflict_same_id_different_body:"
-            f"node_id={node.node_id} existing_body={existing_body!r} new_body={new_body!r} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
-        )
-        logger.warning(msg)
-        warnings.append(msg)
-
-    # Stable provenance merge (preserve first-seen order).
+    # No collision: Semantics match -> merge provenance (preserve first-seen order).
     existing.page_indices = _stable_extend_unique(
         base=existing.page_indices, extra=node.page_indices
     )
@@ -2218,9 +2423,11 @@ def ensure_node(
     if existing.source_type is None and node.source_type is not None:
         existing.source_type = node.source_type
 
-    # Preserve bbox if missing (do NOT attempt union without a known BBox shape).
+    # Preserve bbox if missing (do NOT attempt union without a known bbox shape).
     if existing.bbox is None and node.bbox is not None:
         existing.bbox = node.bbox
+
+    return existing.node_id
 
 
 def load_segment_decision_set(
@@ -2313,6 +2520,7 @@ def make_table_chunk_payload(
     """
 
     seg = segment.model_dump(mode="json")
+    seg["section_path"] = _filter_section_path_for_llm(seg.get("section_path"))
 
     # NB: Chunk payload should not include full-table derived views that can leak
     # information outside the chunk. NB: We intentionally KEEP rows_filldown here (if
@@ -2424,6 +2632,7 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
     """
 
     seg = segment.model_dump(mode="json")
+    seg["section_path"] = _filter_section_path_for_llm(seg.get("section_path"))
 
     # Prefer fill-down view if it exists.
     rows_raw = seg.get("rows") or []
@@ -2560,7 +2769,7 @@ def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -
     if not joined:
         return "-"
 
-    return hashlib.sha256(joined.encode(encoding)).hexdigest()[:16]
+    return hashlib.sha256(joined.encode(encoding)).hexdigest()[:32]
 
 
 def perform_postpass_hygiene(canonical_ir: CanonicalIR) -> CanonicalIR:
@@ -2806,9 +3015,11 @@ def reconcile_context_stack(
             title=TextUnit(language="und", text=g_title),
         )
 
-        ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
+        effective_node_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
         _emit_edge(
-            child_id=node_id,
+            child_id=effective_node_id,
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
             edges=edges,
@@ -2821,8 +3032,8 @@ def reconcile_context_stack(
 
         # Advance stack.
         gk = _grouping_key(g)
-        new_stack.append(ContextFrame(grouping_key=gk, node_id=node_id))
-        parent_id = node_id
+        new_stack.append(ContextFrame(grouping_key=gk, node_id=effective_node_id))
+        parent_id = effective_node_id
         ancestor_keys.append(gk)
 
     # After reconciliation, new_stack should EXACTLY matches desired_context snapshot.

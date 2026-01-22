@@ -742,6 +742,20 @@ def validate_context_groupings_supported_by_outer_evidence(
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}"
             )
+
+        # Front-matter headings (Preface, Contents, etc.) are intentionally filtered
+        # out of OUTER evidence to prevent them from becoming curricular context.
+        if title in NonArtifacts:
+            raise QualityError(
+                f"context_groupings contains a FRONT-MATTER title (non-curricular): '{g.title}'. "
+                f"Fix: REMOVE this grouping from context_groupings[] and attach directly under the framework root "
+                f"(or under a real curricular grouping like Grade/Subject if present).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  front_matter_title: {g.title}\n"
+                f"  section_path_headings: {headings}"
+            )
+
         if title not in evidence_blob:
             raise QualityError(
                 f"context_groupings title not supported by OUTER evidence (section_path/caption/header_rows). "
