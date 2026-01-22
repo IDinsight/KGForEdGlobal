@@ -1453,14 +1453,13 @@ def _process_table_segment(
         # Freeze the table prior context from the FIRST generated chunk decision, but
         # only if it produced a usable outer context.
         if stable_table_prior_context is None:
+            stable_hint = build_context_hint_from_decision(segment_decision)
             usable = segment_decision.decision_type not in (
                 SegmentDecisionType.IGNORE,
                 SegmentDecisionType.UNRESOLVED,
-            ) and bool(segment_decision.context_groupings)
+            ) and bool(stable_hint)
             if usable:
-                stable_table_prior_context = _groupings_to_payload_dicts(
-                    segment_decision.context_groupings
-                )
+                stable_table_prior_context = [dict(x) for x in stable_hint]
             else:
                 stable_table_prior_context = [dict(x) for x in (context_hint or [])]
                 msg = (
@@ -1841,7 +1840,19 @@ def build_caption_bindings(
 
 
 def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]:
-    """Build context hint from SegmentDecision's context_groupings and groupings.
+    """Build context hint from a SegmentDecision.
+
+    This is used as `prior_context_groupings` when deciding later chunks of the same
+    table segment (and can also be used as a general context hint between segments).
+
+    Preference in order:
+
+    1. `context_groupings[]` (explicit outer-context snapshot)
+    2. `groupings[]`        (segment-level groupings emitted by the decision)
+    3. `rows[].groupings[]` (row-level groupings; useful when the table repeats context
+        per row)
+
+    Only coarse "carry" roles are included to avoid noisy/unstable context.
 
     Parameters
     ----------
@@ -1865,14 +1876,41 @@ def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]
         NodeRole.WEEK,
     }
     hint: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _maybe_add(g: GroupingDecision) -> None:
+        """Helper to add grouping if eligible.
+
+        Parameters
+        ----------
+        g
+            The GroupingDecision to consider.
+
+        """
+
+        if g.role not in carry_roles:
+            return
+
+        title = (g.title or "").strip()
+        key = (str(g.role), title.casefold())
+
+        if key in seen:
+            return
+
+        seen.add(key)
+        hint.append(g.model_dump(mode="json"))
 
     for g in d.context_groupings or []:
-        if g.role in carry_roles:
-            hint.append(g.model_dump(mode="json"))
+        _maybe_add(g)
 
     for g in d.groupings or []:
-        if g.role in carry_roles:
-            hint.append(g.model_dump(mode="json"))
+        _maybe_add(g)
+
+    # Row-level groupings matter when the table repeats grade/subject/week/etc per-row
+    # (e.g., Uganda thematic curriculum tables).
+    for rd in getattr(d, "rows", None) or []:
+        for g in rd.groupings or []:
+            _maybe_add(g)
 
     return hint
 
