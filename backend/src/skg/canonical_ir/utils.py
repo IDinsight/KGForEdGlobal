@@ -10,7 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, TypeVar
 
 # Third Party Library
 from loguru import logger
@@ -42,6 +42,8 @@ from skg.utils.constants import (
     UnresolvedReason,
 )
 from skg.utils.general import make_dir, open_json_type, write_to_json
+
+T = TypeVar("T")
 
 # Compiled regexes.
 _DASH_RE = re.compile(r"[‐-‒–—−]+")
@@ -342,7 +344,7 @@ def _count_decision_leaves(d: SegmentDecision) -> int:
     return n
 
 
-def _decision_sort_key(d: SegmentDecision) -> tuple[int, int]:
+def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
     """Sort key for SegmentDecision ordering.
 
     Parameters
@@ -352,15 +354,15 @@ def _decision_sort_key(d: SegmentDecision) -> tuple[int, int]:
 
     Returns
     -------
-    tuple[int, int]
-        The sort key as (row_range_start, row_range_end).
+    tuple[int, int, str]
+        The sort key as (row_range_start, row_range_end, decision_id).
     """
 
-    # Sorting rule: (row_range_start,row_range_end) with None treated consistently.
     start = d.row_range_start if d.row_range_start is not None else -1
     end = d.row_range_end if d.row_range_end is not None else 2**31 - 1
+    decision_id = getattr(d, "decision_id", "") or ""
 
-    return start, end
+    return start, end, decision_id
 
 
 def _emit_edge(
@@ -368,8 +370,8 @@ def _emit_edge(
     child_id: str,
     child_to_parent: dict[str, str],
     decision_id: str,
-    edge_set: set[tuple[str, str]],
     edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     parent_id: str,
     segment_id: str,
@@ -378,10 +380,10 @@ def _emit_edge(
     """Emit edge and assign order_index by encounter order.
 
     NB:
-
     1. Keep-first-parent tree enforcement.
     2. Drop and warn on parent conflicts.
     3. Assign order_index by first encounter order per parent.
+    4. Merge provenance if the exact same edge is encountered again.
 
     Parameters
     ----------
@@ -391,10 +393,10 @@ def _emit_edge(
         The mapping of child_id to parent_id.
     decision_id
         The SegmentDecision ID.
-    edge_set
-        The set of emitted edges (parent_id, child_id).
     edges
         The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
     next_order_index
         The mapping of parent_id to next order_index.
     parent_id
@@ -405,44 +407,48 @@ def _emit_edge(
         The list of warnings to append to.
     """
 
-    # Tree enforcement (keep-first-parent).
+    # Keep-first-parent tree enforcement.
     existing_parent = child_to_parent.get(child_id)
     if existing_parent is not None and existing_parent != parent_id:
         msg = (
             f"tree_parent_conflict_dropped:"
-            f"child={child_id} "
-            f"kept_parent={existing_parent} "
-            f"dropped_parent={parent_id} "
-            f"segment_id={segment_id} "
-            f"decision_id={decision_id}"
+            f"child={child_id} existing_parent={existing_parent} new_parent={parent_id}"
         )
         logger.warning(msg)
         warnings.append(msg)
         return
 
-    # Edge dedupe.
+    # Record first valid parent assignment.
+    if existing_parent is None:
+        child_to_parent[child_id] = parent_id
+
+    # Edge key.
     key = (parent_id, child_id)
 
-    if key in edge_set:
+    # If edge already exists, merge provenance into the first-emitted edge.
+    existing = edges_by_key.get(key)
+    if existing is not None:
+        existing.source_segment_ids = _stable_extend_unique(
+            base=existing.source_segment_ids, extra=[segment_id]
+        )
+        existing.source_decision_ids = _stable_extend_unique(
+            base=existing.source_decision_ids, extra=[decision_id]
+        )
         return
 
-    # This is the first valid parent assignment for this child.
-    child_to_parent[child_id] = parent_id
-
-    # Deterministic sibling ordering.
+    # Deterministic sibling ordering (per parent).
     order = next_order_index[parent_id]
     next_order_index[parent_id] += 1
 
-    edges.append(
-        CanonicalEdge(
-            child_id=child_id,
-            order_index=order,
-            parent_id=parent_id,
-            source_decision_ids=[decision_id],
-            source_segment_ids=[segment_id],
-        )
+    edge = CanonicalEdge(
+        child_id=child_id,
+        order_index=order,
+        parent_id=parent_id,
+        source_decision_ids=[decision_id],
+        source_segment_ids=[segment_id],
     )
-    edge_set.add(key)
+    edges.append(edge)
+    edges_by_key[key] = edge
 
 
 def _extract_block_segment_text(segment: BlockSegment) -> str | None:
@@ -649,8 +655,8 @@ def _materialize_block_leaves(
     child_to_parent: dict[str, str],
     decision: SegmentDecision,
     doc_key: str,
-    edge_set: set[tuple[str, str]],
     edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
@@ -671,10 +677,10 @@ def _materialize_block_leaves(
         The SegmentDecision to materialize.
     doc_key
         The document key.
-    edge_set
-        The set of emitted edges (parent_id, child_id).
     edges
         The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
     next_order_index
         The mapping of parent_id to next order_index.
     nodes_by_id
@@ -713,13 +719,13 @@ def _materialize_block_leaves(
             title=None,
         )
 
-        ensure_node(node=node, nodes_by_id=nodes_by_id)
+        ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
         _emit_edge(
             child_id=leaf_id,
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
-            edge_set=edge_set,
             edges=edges,
+            edges_by_key=edges_by_key,
             next_order_index=next_order_index,
             parent_id=parent_id,
             segment_id=segment_id,
@@ -733,8 +739,8 @@ def _materialize_decision_structure(
     child_to_parent: dict[str, str],
     decision: SegmentDecision,
     doc_key: str,
-    edge_set: set[tuple[str, str]],
     edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
@@ -755,10 +761,10 @@ def _materialize_decision_structure(
         The SegmentDecision to materialize.
     doc_key
         The document key.
-    edge_set
-        The set of emitted edges (parent_id, child_id).
     edges
         The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
     next_order_index
         The mapping of parent_id to next order_index.
     nodes_by_id
@@ -787,7 +793,7 @@ def _materialize_decision_structure(
         decision=decision,
         desired_context=decision.context_groupings,
         doc_key=doc_key,
-        edge_set=edge_set,
+        edges_by_key=edges_by_key,
         edges=edges,
         next_order_index=next_order_index,
         nodes_by_id=nodes_by_id,
@@ -820,13 +826,13 @@ def _materialize_decision_structure(
             title=TextUnit(language="und", text=g_title),
         )
 
-        ensure_node(node=node, nodes_by_id=nodes_by_id)
+        ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
         _emit_edge(
             child_id=node_id,
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
-            edge_set=edge_set,
             edges=edges,
+            edges_by_key=edges_by_key,
             next_order_index=next_order_index,
             parent_id=parent_id,
             segment_id=segment.segment_id,
@@ -843,8 +849,8 @@ def _materialize_decision_structure(
             child_to_parent=child_to_parent,
             decision=decision,
             doc_key=doc_key,
-            edge_set=edge_set,
             edges=edges,
+            edges_by_key=edges_by_key,
             next_order_index=next_order_index,
             nodes_by_id=nodes_by_id,
             page_indices=page_indices,
@@ -859,8 +865,8 @@ def _materialize_decision_structure(
             child_to_parent=child_to_parent,
             decision=decision,
             doc_key=doc_key,
-            edge_set=edge_set,
             edges=edges,
+            edges_by_key=edges_by_key,
             next_order_index=next_order_index,
             nodes_by_id=nodes_by_id,
             page_indices=page_indices,
@@ -883,8 +889,8 @@ def _materialize_table_rows(
     child_to_parent: dict[str, str],
     decision: SegmentDecision,
     doc_key: str,
-    edge_set: set[tuple[str, str]],
     edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
@@ -905,10 +911,10 @@ def _materialize_table_rows(
         The SegmentDecision to materialize.
     doc_key
         The document key.
-    edge_set
-        The set of emitted edges (parent_id, child_id).
     edges
         The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
     next_order_index
         The mapping of parent_id to next order_index.
     nodes_by_id
@@ -953,13 +959,13 @@ def _materialize_table_rows(
                 title=TextUnit(language="und", text=g_title),
             )
 
-            ensure_node(node=node, nodes_by_id=nodes_by_id)
+            ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
             _emit_edge(
                 child_id=node_id,
                 child_to_parent=child_to_parent,
                 decision_id=decision.decision_id,
-                edge_set=edge_set,
                 edges=edges,
+                edges_by_key=edges_by_key,
                 next_order_index=next_order_index,
                 parent_id=row_parent_id,
                 segment_id=segment_id,
@@ -992,13 +998,13 @@ def _materialize_table_rows(
                 title=None,
             )
 
-            ensure_node(node=node, nodes_by_id=nodes_by_id)
+            ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
             _emit_edge(
                 child_id=leaf_id,
                 child_to_parent=child_to_parent,
                 decision_id=decision.decision_id,
-                edge_set=edge_set,
                 edges=edges,
+                edges_by_key=edges_by_key,
                 next_order_index=next_order_index,
                 parent_id=row_parent_id,
                 segment_id=segment_id,
@@ -1307,7 +1313,7 @@ def _process_table_segment(
     return decision_set
 
 
-def _stable_extend_unique(*, base: list[str], extra: list[str]) -> list[str]:
+def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
     """Deterministic "stable union" for string lists:
 
     1. Preserve first-seen order
@@ -1322,7 +1328,7 @@ def _stable_extend_unique(*, base: list[str], extra: list[str]) -> list[str]:
 
     Returns
     -------
-    list[str]
+    list[T]
         The extended list of strings.
     """
 
@@ -1384,7 +1390,9 @@ def _validate_and_handle_unresolved(
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
-                headers=[],
+                headers=(
+                    _extract_table_headers(segment) if segment.kind == "table" else []
+                ),
                 local_code=segment.local_code,
                 kind=segment.kind,
                 page_indices=page_indices,
@@ -1415,7 +1423,7 @@ def _validate_and_handle_unresolved(
                 kind=segment.kind,
                 local_code=getattr(segment, "local_code", None),
                 page_indices=page_indices,
-                reason="LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED",
+                reason=UnresolvedReason.LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED,
                 sample=_make_unresolved_sample(decision=decision, segment=segment),
                 section_path_text=section_path_text,
                 segment_id=segment.segment_id,
@@ -1703,6 +1711,13 @@ def canonical_grouping_node_id(
 
     path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
     code = grouping.local_code or "-"
+
+    if code != "-":
+        # Normalize local_code deterministically (whitespace + unicode dash).
+        code = unicodedata.normalize("NFKC", code)
+        code = _DASH_RE.sub("-", code)
+        code = _WS_RE.sub(" ", code).strip()
+
     title = canonical_grouping_title(role=grouping.role, title=grouping.title)
     text_hash = _normalized_text_hash(text=title)
 
@@ -1805,6 +1820,13 @@ def canonical_leaf_node_id(
 
     path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
     code = leaf.local_code or "-"
+
+    if code != "-":
+        # Normalize local_code deterministically (whitespace + unicode dash).
+        code = unicodedata.normalize("NFKC", code)
+        code = _DASH_RE.sub("-", code)
+        code = _WS_RE.sub(" ", code).strip()
+
     text_hash = _normalized_text_hash(text=leaf.body)
 
     key = canonical_key(
@@ -1859,8 +1881,8 @@ def compile_canonical_ir(
     # 1. Initialize state containers.
     active_context_stack: list[ContextFrame] = []
     child_to_parent: dict[str, str] = {}
-    edge_set: set[tuple[str, str]] = set()
     edges: list[CanonicalEdge] = []
+    edges_by_key: dict[tuple[str, str], CanonicalEdge] = {}
     next_order_index: dict[str, int] = defaultdict(int)
     nodes_by_id: dict[str, CanonicalNode] = {}
     unresolved: list[UnresolvedItem] = []
@@ -1890,22 +1912,44 @@ def compile_canonical_ir(
         source_type=None,
         title=TextUnit(language="und", text=framework_title),
     )
-    ensure_node(node=framework_node, nodes_by_id=nodes_by_id)
+    ensure_node(node=framework_node, nodes_by_id=nodes_by_id, warnings=warnings)
 
     # 4. Main traversal loop.
     for segment in document_ir.segments:
         seg_id = segment.segment_id
         seg_decisions = decisions_by_segment.get(seg_id, [])
 
+        # Prepare segment-level data (needed even when unresolved).
+        page_indices = sorted({p.page_index for p in segment.segment_provenance})
+        section_path_text = [h.text for h in (segment.section_path or [])]
+
         if not seg_decisions:
             msg = f"no_decision_for_segment:{seg_id}"
             logger.warning(msg)
             warnings.append(msg)
+            unresolved.append(
+                UnresolvedItem(
+                    caption_text=None,
+                    headers=(
+                        _extract_table_headers(segment)
+                        if segment.kind == "table"
+                        else []
+                    ),
+                    kind=segment.kind,
+                    local_code=segment.local_code,
+                    page_indices=page_indices,
+                    reason=(
+                        UnresolvedReason.UNMATCHED_TABLE
+                        if segment.kind == "table"
+                        else UnresolvedReason.UNMATCHED_BLOCK
+                    ),
+                    sample=(segment.combined_text if segment.kind == "block" else None),
+                    section_path_text=section_path_text,
+                    segment_id=segment.segment_id,
+                )
+            )
             continue
 
-        # Prepare segment-level data,
-        page_indices = sorted({p.page_index for p in segment.segment_provenance})
-        section_path_text = [h.text for h in (segment.section_path or [])]
         seg_decisions_sorted = sorted(seg_decisions, key=_decision_sort_key)
 
         # Process each decision for the segment.
@@ -1941,8 +1985,8 @@ def compile_canonical_ir(
                 child_to_parent=child_to_parent,
                 decision=decision,
                 doc_key=doc_key,
-                edge_set=edge_set,
                 edges=edges,
+                edges_by_key=edges_by_key,
                 next_order_index=next_order_index,
                 nodes_by_id=nodes_by_id,
                 page_indices=page_indices,
@@ -2089,8 +2133,16 @@ def dedupe_edges_postpass(
     return list(merged.values())
 
 
-def ensure_node(*, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode]) -> None:
+def ensure_node(
+    *, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode], warnings: list[str]
+) -> None:
     """Ensure a CanonicalNode is present in nodes_by_id, merging provenance if needed.
+
+    Merge policy:
+
+    1. Preserve first-seen ordering for all provenance lists.
+    2. Merge: page_indices, source_segment_ids, source_decision_ids, section_path_text.
+    3. Keep-first for core semantic fields; fill if missing.
 
     Parameters
     ----------
@@ -2098,21 +2150,77 @@ def ensure_node(*, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode]) -
         The CanonicalNode to ensure.
     nodes_by_id
         The mapping of node_id to CanonicalNode.
+    warnings
+        The list of warnings to append to.
     """
 
     if node.node_id not in nodes_by_id:
         nodes_by_id[node.node_id] = node
         return
 
-    # Merge minimal provenance (should be safe and deterministic).
     existing = nodes_by_id[node.node_id]
-    existing.page_indices = sorted(set(existing.page_indices + node.page_indices))
-    existing.source_segment_ids = sorted(
-        set(existing.source_segment_ids + node.source_segment_ids)
+
+    # Role mismatch is always a conflict.
+    if existing.role != node.role:
+        msg = (
+            f"node_semantic_conflict_same_id_different_role:"
+            f"node_id={node.node_id} existing_role={existing.role} new_role={node.role} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    # Grouping title mismatch.
+    existing_title = existing.title.text if existing.title is not None else None
+    new_title = node.title.text if node.title is not None else None
+    if existing_title and new_title and existing_title.strip() != new_title.strip():
+        msg = (
+            f"node_semantic_conflict_same_id_different_title:"
+            f"node_id={node.node_id} existing_title={existing_title!r} new_title={new_title!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    # Leaf/statement body mismatch.
+    existing_body = existing.body.text if existing.body is not None else None
+    new_body = node.body.text if node.body is not None else None
+    if existing_body and new_body and existing_body.strip() != new_body.strip():
+        msg = (
+            f"node_semantic_conflict_same_id_different_body:"
+            f"node_id={node.node_id} existing_body={existing_body!r} new_body={new_body!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    # Stable provenance merge (preserve first-seen order).
+    existing.page_indices = _stable_extend_unique(
+        base=existing.page_indices, extra=node.page_indices
     )
-    existing.source_decision_ids = sorted(
-        set(existing.source_decision_ids + node.source_decision_ids)
+    existing.source_segment_ids = _stable_extend_unique(
+        base=existing.source_segment_ids, extra=node.source_segment_ids
     )
+    existing.source_decision_ids = _stable_extend_unique(
+        base=existing.source_decision_ids, extra=node.source_decision_ids
+    )
+    existing.section_path_text = _stable_extend_unique(
+        base=existing.section_path_text, extra=node.section_path_text
+    )
+
+    # Keep-first semantics, fill missing values if present.
+    if existing.normalized_text is None and node.normalized_text is not None:
+        existing.normalized_text = node.normalized_text
+
+    if existing.source_label is None and node.source_label is not None:
+        existing.source_label = node.source_label
+
+    if existing.source_type is None and node.source_type is not None:
+        existing.source_type = node.source_type
+
+    # Preserve bbox if missing (do NOT attempt union without a known BBox shape).
+    if existing.bbox is None and node.bbox is not None:
+        existing.bbox = node.bbox
 
 
 def load_segment_decision_set(
@@ -2399,7 +2507,9 @@ def merge_nodes_postpass(
             warnings.append(msg)
 
         # Merge provenance deterministically.
-        m.page_indices = sorted(set(m.page_indices + n.page_indices))
+        m.page_indices = _stable_extend_unique(
+            base=m.page_indices, extra=n.page_indices
+        )
         m.source_segment_ids = _stable_extend_unique(
             base=m.source_segment_ids, extra=n.source_segment_ids
         )
@@ -2602,8 +2712,8 @@ def reconcile_context_stack(
     decision: SegmentDecision,
     desired_context: list[GroupingDecision],
     doc_key: str,
-    edge_set: set[tuple[str, str]],
     edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     root_id: str,
@@ -2626,10 +2736,10 @@ def reconcile_context_stack(
         The desired context snapshot from the SegmentDecision.
     doc_key
         The document key.
-    edge_set
-        The set of existing edges (parent_id, child_id) to avoid duplicates.
     edges
         The list of CanonicalEdges to append new edges to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge for deduplication.
     next_order_index
         The mapping of parent_id to next order index for child edges.
     nodes_by_id
@@ -2677,6 +2787,7 @@ def reconcile_context_stack(
         node_id = canonical_grouping_node_id(
             ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
         )
+        g_title = canonical_grouping_title(role=g.role, title=g.title)
 
         node = CanonicalNode(
             bbox=None,
@@ -2684,7 +2795,7 @@ def reconcile_context_stack(
             list_marker=None,
             local_code=g.local_code,
             node_id=node_id,
-            normalized_text=_normalize_text(text=g.title),
+            normalized_text=_normalize_text(text=g_title),
             page_indices=page_indices,
             role=g.role,
             section_path_text=section_path_text,
@@ -2692,16 +2803,16 @@ def reconcile_context_stack(
             source_label=g.source_label,
             source_segment_ids=[seg_id],
             source_type=seg_kind,
-            title=TextUnit(language="und", text=g.title),
+            title=TextUnit(language="und", text=g_title),
         )
 
-        ensure_node(node=node, nodes_by_id=nodes_by_id)
+        ensure_node(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
         _emit_edge(
             child_id=node_id,
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
-            edge_set=edge_set,
             edges=edges,
+            edges_by_key=edges_by_key,
             next_order_index=next_order_index,
             parent_id=parent_id,
             segment_id=seg_id,
