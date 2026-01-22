@@ -152,12 +152,22 @@ Every `context_groupings[i].title` MUST be directly supported by OUTER evidence:
     - `segment.section_path[]`, OR
     - `caption_text`, OR
     - `header_rows_canonical`
-If unsupported, DELETE that grouping (do NOT guess and do NOT carry it over from prior context).
+
+If unsupported, DELETE that grouping.
+
+IMPORTANT OVERRIDE:
+  - This outer-evidence rule OVERRIDES prior_context_groupings.
+  - Even if `prior_context_groupings[]` contains a title, you MUST NOT copy it into `context_groupings[]`
+    unless it is supported by the OUTER evidence for THIS segment/chunk.
 
 Table-specific guidance:
   - If `header_rows_canonical[0]` is a single merged label (e.g., "WRITING", "READING"),
     treat it as strong OUTER evidence for a stable table-scoped grouping (often STRAND),
     and prefer it over prior context if they conflict.
+  - If `header_rows_canonical[0]` is a single merged label, you MUST emit it as a STRAND grouping:
+      * Prefer placing it in `context_groupings[]` when the table is chunked (for stability across chunks), OR
+      * Place it in segment-level `groupings[]` when the table is not chunked.
+  - If prior_context_groupings contains STRAND and the merged header label is different, that is a contradiction → override STRAND to the merged header label.
 
 ## OUTER context vs. row-local context for tables
 For TABLE segments (including chunked slices):
@@ -170,9 +180,17 @@ For TABLE segments (including chunked slices):
 ## PRIOR CONTEXT GROUPINGS (for chunked stability)
 1. The payload may include prior_context_groupings[] (active context stack from the immediately previous decided segment).
 2. If segment.chunking exists AND prior_context_groupings[] is present and non-empty:
-  - set context_groupings[] EXACTLY equal to prior_context_groupings[] unless current OUTER evidence clearly contradicts it.
-  - clear contradiction includes: section_path/caption/header_rows explicitly naming a different subject/strand/theme/unit than prior_context_groupings[].
-  - If you change context_groupings[] due to contradiction, explain it in rationale using only OUTER evidence.
+
+  - Start from prior_context_groupings[] as a *hint*, but APPLY THE OUTER-EVIDENCE SUPPORT RULE ABOVE. If any prior grouping title is not supported by THIS segment's OUTER evidence, DROP it (do not copy it forward).
+
+  - If THIS segment's OUTER evidence explicitly indicates a DIFFERENT value for a carried role
+    (especially SUBJECT/STRAND/THEME/UNIT/WEEK), you MUST override the prior value with the evidence-supported value.
+
+  - Clear contradiction includes:
+    * section_path/caption/header_rows naming a different subject/strand/theme/unit/week than prior_context_groupings[].
+
+  - If you change context_groupings[] (dropping unsupported prior context OR overriding due to contradiction),
+    explain the change in rationale using only OUTER evidence.
 
 ## TABLE-SPECIFIC INSTRUCTIONS
 If segment_kind="table":
@@ -300,15 +318,23 @@ In particular, ensure that:
         - `caption_text`, OR
         - `header_rows_canonical`
     - If a context_groupings title is unsupported, DELETE that grouping (do NOT guess and do NOT carry it over from memory).
-    - If `header_rows_canonical[0]` is a single merged label (e.g., "WRITING"), treat it as strong outer evidence for STRAND and prefer it over prior context.
+    - If `header_rows_canonical[0]` is a single merged label (e.g., "WRITING", "READING"), treat it as strong outer evidence for STRAND.
+      You MUST emit it as a STRAND grouping:
+        * Prefer placing it in `context_groupings[]` when the table is chunked (for stability), OR
+        * Place it in segment-level `groupings[]` when the table is not chunked.
+    - If prior_context_groupings contains a STRAND and the merged header label is different, that is a contradiction → override STRAND to the merged header label.
+    - This rule OVERRIDES prior_context_groupings. Do NOT carry over prior_context_groupings titles unless they are supported by THIS segment's OUTER evidence.
 
   - **Context ordering + stability (IMPORTANT)**
     - context_groupings[] must be ordered OUTER→INNER using this fixed role order:
       STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → TOPIC → SUBTOPIC → SECTION → PROSE
     - Do not repeat the same NodeRole more than once in context_groupings[].
     - If segment.chunking exists and prior_context_groupings[] is provided and non-empty:
-      - context_groupings[] should match prior_context_groupings[] EXACTLY unless clear contradiction is present in OUTER evidence.
-      - Clear contradiction includes: section_path/caption/header_rows explicitly naming a different subject/strand/theme/unit than prior_context_groupings[].
+      - Start from prior_context_groupings[] as a hint, BUT APPLY the outer-evidence support rule:
+          * Drop any prior grouping titles that are NOT supported by THIS segment’s OUTER evidence.
+      - If THIS segment’s OUTER evidence explicitly indicates a DIFFERENT value for a carried role
+        (especially SUBJECT/STRAND/THEME/UNIT/WEEK), you MUST override the prior value with the evidence-supported value.
+      - Clear contradiction includes: section_path/caption/header_rows explicitly naming a different subject/strand/theme/unit/week than prior_context_groupings[].
 
   - If a row lists multiple same-level siblings (e.g., multiple subjects/topics in one cell), emit multiple RowDecisions with the SAME row_index, one per sibling; do not stack siblings into one groupings[] path.
 
