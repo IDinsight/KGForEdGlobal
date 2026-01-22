@@ -130,7 +130,9 @@ class NodeRole(str, Enum):
     STRAND = "strand"  # e.g., "Main Competence"
     SUBJECT = "subject"  # e.g., "Mathematics"
     SUBSTRAND = "substrand"
+    SUBTHEME = "subtheme"
     SUBTOPIC = "subtopic"
+    TERM = "term"
     THEME = "theme"
     TOPIC = "topic"  # e.g., "Topic" or sub-strand
     UNIT = "unit"

@@ -353,6 +353,7 @@ def _filter_section_path_for_llm(
 
     for h in section_path:
         txt = (h.get("text") or "").strip()
+
         if not txt:
             continue
 
@@ -908,6 +909,11 @@ def _materialize_decision_structure(
 ) -> list[ContextFrame]:
     """Reconcile context stack, create grouping nodes, and materialize leaves/rows.
 
+    NB: For tables, a table decision may contain both decision.leaves[] (segment-level
+    statements) and decision.rows[] (row-wise statements). In these cases, emitting
+    leaves first makes them appear first in deterministic order_index order under that
+    parent. If we wanted to emit rows first, then we can just switch the if-statements.
+
     Parameters
     ----------
     active_context_stack
@@ -1019,27 +1025,140 @@ def _materialize_decision_structure(
             warnings=warnings,
         )
     elif segment.kind == "table":
-        _materialize_table_rows(
-            ancestor_keys=ancestor_keys,
-            child_to_parent=child_to_parent,
-            decision=decision,
-            doc_key=doc_key,
-            edges=edges,
-            edges_by_key=edges_by_key,
-            next_order_index=next_order_index,
-            nodes_by_id=nodes_by_id,
-            page_indices=page_indices,
-            parent_id=parent_id,
-            section_path_text=section_path_text,
-            segment_id=segment.segment_id,
-            warnings=warnings,
-        )
+        if not decision.leaves and not decision.rows:
+            msg = f"table_decision_emits_nothing:{segment.segment_id}:{decision.decision_id}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # Table decisions may emit leaves directly.
+        if decision.leaves:
+            _materialize_table_leaves(
+                ancestor_keys=ancestor_keys,
+                child_to_parent=child_to_parent,
+                decision=decision,
+                doc_key=doc_key,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                nodes_by_id=nodes_by_id,
+                page_indices=page_indices,
+                parent_id=parent_id,
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+                warnings=warnings,
+            )
+
+        # Preferred: row-level decisions.
+        if decision.rows:
+            _materialize_table_rows(
+                ancestor_keys=ancestor_keys,
+                child_to_parent=child_to_parent,
+                decision=decision,
+                doc_key=doc_key,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                nodes_by_id=nodes_by_id,
+                page_indices=page_indices,
+                parent_id=parent_id,
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+                warnings=warnings,
+            )
     else:
         msg = f"unknown_segment_kind:{segment.kind}:{segment.segment_id}"
         logger.warning(msg)
         warnings.append(msg)
 
     return active_context_stack
+
+
+def _materialize_table_leaves(
+    *,
+    ancestor_keys: list[str],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    parent_id: str,
+    section_path_text: list[str],
+    segment_id: str,
+    warnings: list[str],
+) -> None:
+    """Materialize table-level leaves (SegmentDecision.leaves) under the current
+    parent. This is used for TABLE segments where the LLM emits leaves directly
+    (fallback mode) instead of emitting RowDecision entries in SegmentDecision.rows[].
+
+    Parameters
+    ----------
+    ancestor_keys
+        The list of ancestor grouping keys.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    parent_id
+        The parent node ID.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for leaf in decision.leaves:
+        leaf_id = canonical_leaf_node_id(
+            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, leaf=leaf
+        )
+
+        node = CanonicalNode(
+            bbox=None,
+            body=TextUnit(language="und", text=leaf.body),
+            list_marker=leaf.list_marker,
+            local_code=leaf.local_code,
+            node_id=leaf_id,
+            normalized_text=_normalize_text(text=leaf.body),
+            page_indices=page_indices,
+            role=leaf.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision.decision_id],
+            source_label=leaf.source_label,
+            source_segment_ids=[segment_id],
+            source_type="table",  # IMPORTANT: keep provenance correct
+            title=None,
+        )
+
+        effective_leaf_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=effective_leaf_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=parent_id,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
 
 
 def _materialize_table_rows(
