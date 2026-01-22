@@ -31,7 +31,7 @@ from skg.canonical_ir.schemas import (
 from skg.config import Settings
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import CreateCanonicalConfig, RunCtx
+from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import (
     BlockType,
     CaptionFigurePrefixes,
@@ -436,6 +436,25 @@ def _detect_semantic_collision(
 ) -> bool:
     """Check for semantic conflicts between an existing node and a new node.
 
+    MB:
+
+    1. Node IDs are derived from *normalized* semantics (role + normalized title/body
+        + ancestor fingerprint + optional local_code). Therefore we only treat this as
+        a true collision when the normalized semantics differ.
+    2. Formatting-only differences (casing, punctuation, whitespace) should *not*
+        trigger collision handling because that creates duplicate canonical nodes.
+
+    Examples:
+
+    1. Without normalization, these would be treated as collisions (causing
+        duplicates):
+        - "Recognize letters." vs "Recognize letters"
+        - "Add and subtract" vs "add and subtract"
+        - bullet formatting differences
+        - small punctuation/whitespace changes
+    2. With normalization, only true semantic differences trigger collision handling:
+        - Normalized meaning differs (casefold + whitespace + dash normalize differs)
+
     Parameters
     ----------
     existing
@@ -454,7 +473,8 @@ def _detect_semantic_collision(
 
     collision = False
 
-    # Role mismatch.
+    # Role mismatch should never happen if node IDs are derived correctly, but we keep
+    # it as a hard collision to avoid merging incompatible nodes.
     if existing.role != node.role:
         msg = (
             f"node_semantic_conflict_same_id_different_role:"
@@ -463,51 +483,101 @@ def _detect_semantic_collision(
         )
         logger.warning(msg)
         warnings.append(msg)
+        return True
+
+    def _semantic_norm_text(n: CanonicalNode) -> str:
+        """Return the normalized semantic text that should define this node.
+
+        Parameters
+        ----------
+        n
+            The CanonicalNode to extract normalized semantic text from.
+
+        Returns
+        -------
+        str
+            The normalized semantic text.
+        """
+
+        # Prefer stored normalized_text (debug snapshot).
+        if n.normalized_text:
+            return n.normalized_text
+
+        # Otherwise derive it deterministically from the available text.
+        if n.title is not None and n.title.text:
+            return _normalize_text(n.title.text)
+
+        if n.body is not None and n.body.text:
+            return _normalize_text(n.body.text)
+
+        return ""
+
+    existing_norm = _semantic_norm_text(existing)
+    new_norm = _semantic_norm_text(node)
+
+    # True semantic mismatch (same deterministic ID but different normalized meaning).
+    if existing_norm and new_norm and existing_norm != new_norm:
+        msg = (
+            f"node_semantic_conflict_same_id_different_normalized_text:"
+            f"node_id={node.node_id} existing_norm={existing_norm!r} new_norm={new_norm!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
         collision = True
 
-    # Grouping title mismatch.
+    # Formatting-only mismatches: warn, but do NOT mark as collision.
     existing_title = existing.title.text if existing.title is not None else None
     new_title = node.title.text if node.title is not None else None
-
-    if existing_title and new_title and existing_title.strip() != new_title.strip():
+    if (
+        existing_title
+        and new_title
+        and existing_title.strip() != new_title.strip()
+        and existing_norm
+        and new_norm
+        and existing_norm == new_norm
+    ):
         msg = (
-            f"node_semantic_conflict_same_id_different_title:"
+            f"node_formatting_diff_same_id_title_semantics_equal:"
             f"node_id={node.node_id} existing_title={existing_title!r} new_title={new_title!r} "
             f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
-        logger.warning(msg)
+        logger.info(msg)
         warnings.append(msg)
-        collision = True
 
-    # Leaf/statement body mismatch.
     existing_body = existing.body.text if existing.body is not None else None
     new_body = node.body.text if node.body is not None else None
 
-    if existing_body and new_body and existing_body.strip() != new_body.strip():
+    if (
+        existing_body
+        and new_body
+        and existing_body.strip() != new_body.strip()
+        and existing_norm
+        and new_norm
+        and existing_norm == new_norm
+    ):
         msg = (
-            f"node_semantic_conflict_same_id_different_body:"
+            f"node_formatting_diff_same_id_body_semantics_equal:"
             f"node_id={node.node_id} existing_body={existing_body!r} new_body={new_body!r} "
             f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
-        logger.warning(msg)
+        logger.info(msg)
         warnings.append(msg)
-        collision = True
 
-    # Local code mismatch.
+    # Local code mismatch is treated as provenance/metadata drift, not a true collision.
     if (
         existing.local_code
         and node.local_code
         and existing.local_code.strip() != node.local_code.strip()
     ):
         msg = (
-            "node_semantic_conflict_same_id_different_local_code:"
+            f"node_local_code_diff_same_id_semantics_equal:"
             f"node_id={node.node_id} existing_local_code={existing.local_code!r} "
             f"new_local_code={node.local_code!r} "
             f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
-        logger.warning(msg)
+        logger.info(msg)
         warnings.append(msg)
-        collision = True
 
     return collision
 
@@ -820,6 +890,7 @@ def _materialize_block_leaves(
     page_indices: list[int],
     parent_id: str,
     section_path_text: list[str],
+    segment_bbox: Optional[BBox],
     segment_id: str,
     warnings: list[str],
 ) -> None:
@@ -849,6 +920,8 @@ def _materialize_block_leaves(
         The parent node ID.
     section_path_text
         The section path text for the segment.
+    segment_bbox
+        The segment bounding box.
     segment_id
         The segment ID.
     warnings
@@ -861,7 +934,7 @@ def _materialize_block_leaves(
         )
 
         node = CanonicalNode(
-            bbox=None,
+            bbox=segment_bbox,
             body=TextUnit(language="und", text=leaf.body),
             list_marker=leaf.list_marker,
             local_code=leaf.local_code,
@@ -975,7 +1048,7 @@ def _materialize_decision_structure(
         )
 
         node = CanonicalNode(
-            bbox=None,
+            bbox=_segment_first_bbox(segment),
             body=None,
             list_marker=None,
             local_code=g.local_code,
@@ -1023,6 +1096,7 @@ def _materialize_decision_structure(
             page_indices=page_indices,
             parent_id=parent_id,
             section_path_text=section_path_text,
+            segment_bbox=_segment_first_bbox(segment),
             segment_id=segment.segment_id,
             warnings=warnings,
         )
@@ -1046,6 +1120,7 @@ def _materialize_decision_structure(
                 page_indices=page_indices,
                 parent_id=parent_id,
                 section_path_text=section_path_text,
+                segment_bbox=_segment_first_bbox(segment),
                 segment_id=segment.segment_id,
                 warnings=warnings,
             )
@@ -1065,6 +1140,7 @@ def _materialize_decision_structure(
                 parent_id=parent_id,
                 section_path_text=section_path_text,
                 segment_id=segment.segment_id,
+                table_segment=segment,
                 warnings=warnings,
             )
     else:
@@ -1088,6 +1164,7 @@ def _materialize_table_leaves(
     page_indices: list[int],
     parent_id: str,
     section_path_text: list[str],
+    segment_bbox: Optional[BBox],
     segment_id: str,
     warnings: list[str],
 ) -> None:
@@ -1119,6 +1196,8 @@ def _materialize_table_leaves(
         The parent node ID.
     section_path_text
         The section path text for the segment.
+    segment_bbox
+        The segment bounding box.
     segment_id
         The segment ID.
     warnings
@@ -1131,7 +1210,7 @@ def _materialize_table_leaves(
         )
 
         node = CanonicalNode(
-            bbox=None,
+            bbox=segment_bbox,
             body=TextUnit(language="und", text=leaf.body),
             list_marker=leaf.list_marker,
             local_code=leaf.local_code,
@@ -1177,6 +1256,7 @@ def _materialize_table_rows(
     parent_id: str,
     section_path_text: list[str],
     segment_id: str,
+    table_segment: TableSegment,
     warnings: list[str],
 ) -> None:
     """Materialize rows and leaves for a table segment.
@@ -1207,13 +1287,16 @@ def _materialize_table_rows(
         The section path text for the segment.
     segment_id
         The segment ID.
+    table_segment
+        The TableSegment to materialize rows for.
     warnings
         The list of warnings to append to.
     """
 
     for row in sorted(decision.rows, key=lambda r: r.row_index):
-        row_parent_id = parent_id
         row_ancestor_keys = list(ancestor_keys)
+        row_bbox = _table_row_bbox(row_index=row.row_index, table_segment=table_segment)
+        row_parent_id = parent_id
 
         # Row groupings.
         for g in row.groupings:
@@ -1223,7 +1306,7 @@ def _materialize_table_rows(
             )
 
             node = CanonicalNode(
-                bbox=None,
+                bbox=row_bbox,
                 body=None,
                 list_marker=None,
                 local_code=g.local_code,
@@ -1264,7 +1347,7 @@ def _materialize_table_rows(
             )
 
             node = CanonicalNode(
-                bbox=None,
+                bbox=row_bbox,
                 body=TextUnit(language="und", text=leaf.body),
                 list_marker=leaf.list_marker,
                 local_code=leaf.local_code,
@@ -1660,6 +1743,26 @@ def _resolve_collision(
     return new_id
 
 
+def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
+    """Best-effort bbox for a segment.
+
+    NB: Segments can span pages; bboxes are page-local, so we only take the first
+    provenance bbox (deterministic + meaningful for debugging).
+
+    Parameters
+    ----------
+    segment
+        The Segment to extract the bbox from.
+
+    Returns
+    -------
+    Optional[BBox]
+        The first BBox if available, else None.
+    """
+
+    return segment.segment_provenance[0].bbox if segment.segment_provenance else None
+
+
 def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
     """Deterministic "stable union" for string lists:
 
@@ -1688,6 +1791,32 @@ def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
             seen.add(x)
 
     return out
+
+
+def _table_row_bbox(*, row_index: int, table_segment: TableSegment) -> Optional[BBox]:
+    """Best-effort bbox for a stitched table row.
+
+    Parameters
+    ----------
+    row_index
+        The row index to extract the bbox for.
+    table_segment
+        The TableSegment to extract the row bbox from.
+
+    Returns
+    -------
+    Optional[BBox]
+        The BBox for the row if available, else None.
+    """
+
+    if table_segment.row_provenance and 0 <= row_index < len(
+        table_segment.row_provenance
+    ):
+        rp = table_segment.row_provenance[row_index]
+
+        return rp.row_bbox or rp.bbox
+
+    return None
 
 
 def _validate_and_handle_unresolved(
@@ -2557,43 +2686,41 @@ def ensure_node(
 
     existing = nodes_by_id[node.node_id]
 
-    # Track whether this is a true semantic collision (same ID but different node).
-    collision = _detect_semantic_collision(
-        existing=existing, node=node, warnings=warnings
-    )
-
     # If we detected a collision, deterministically disambiguate the node_id and insert.
     # NB: Return the effective node_id so callers emit edges to the correct node.
-    if collision:
+    if _detect_semantic_collision(existing=existing, node=node, warnings=warnings):
         return _resolve_collision(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
 
     # No collision: Semantics match -> merge provenance (preserve first-seen order).
-    existing.page_indices = _stable_extend_unique(
-        base=existing.page_indices, extra=node.page_indices
+    list_fields = (
+        "page_indices",
+        "source_segment_ids",
+        "source_decision_ids",
+        "section_path_text",
     )
-    existing.source_segment_ids = _stable_extend_unique(
-        base=existing.source_segment_ids, extra=node.source_segment_ids
-    )
-    existing.source_decision_ids = _stable_extend_unique(
-        base=existing.source_decision_ids, extra=node.source_decision_ids
-    )
-    existing.section_path_text = _stable_extend_unique(
-        base=existing.section_path_text, extra=node.section_path_text
-    )
+    for field in list_fields:
+        base = getattr(existing, field)
+        extra = getattr(node, field)
+
+        # Update existing in-place.
+        setattr(existing, field, _stable_extend_unique(base=base, extra=extra))
 
     # Keep-first semantics, fill missing values if present.
-    if existing.normalized_text is None and node.normalized_text is not None:
-        existing.normalized_text = node.normalized_text
-
-    if existing.source_label is None and node.source_label is not None:
-        existing.source_label = node.source_label
-
-    if existing.source_type is None and node.source_type is not None:
-        existing.source_type = node.source_type
-
-    # Preserve bbox if missing (do NOT attempt union without a known bbox shape).
-    if existing.bbox is None and node.bbox is not None:
-        existing.bbox = node.bbox
+    scalar_fields = (
+        "normalized_text",
+        "source_label",
+        "source_type",
+        "title",
+        "body",
+        "local_code",
+        "list_marker",
+        "bbox",
+    )
+    for field in scalar_fields:
+        # Only overwrite if existing is None. If node.field is also None, this is a
+        # harmless no-op.
+        if getattr(existing, field) is None:
+            setattr(existing, field, getattr(node, field))
 
     return existing.node_id
 
@@ -3167,7 +3294,7 @@ def reconcile_context_stack(
         g_title = canonical_grouping_title(role=g.role, title=g.title)
 
         node = CanonicalNode(
-            bbox=None,
+            bbox=_segment_first_bbox(segment),
             body=None,
             list_marker=None,
             local_code=g.local_code,
