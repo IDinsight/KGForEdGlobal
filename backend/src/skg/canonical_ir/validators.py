@@ -744,12 +744,14 @@ def validate_context_groupings_supported_by_outer_evidence(
             )
         if title not in evidence_blob:
             raise QualityError(
-                f"context_groupings title not supported by OUTER evidence "
-                f"(section_path/caption/headers). It may be a row-local value.\n"
+                f"context_groupings title not supported by OUTER evidence (section_path/caption/header_rows). "
+                f"Fix: REMOVE this grouping from context_groupings[] or change it to a title that appears verbatim in "
+                f"section_path/caption/header_rows.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  unsupported_title: {g.title}\n"
                 f"  section_path_headings: {headings}\n"
+                f"  header_rows_canonical: {payload.get('header_rows_canonical')}\n"
                 f"  has_caption_text: {bool((caption or '').strip())}"
             )
 
