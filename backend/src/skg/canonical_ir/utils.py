@@ -42,12 +42,13 @@ from skg.utils.constants import (
     SegmentDecisionType,
     UnresolvedReason,
 )
-from skg.utils.general import make_dir, open_json_type, write_to_json
+from skg.utils.general import make_dir, normalize_text, open_json_type, write_to_json
 
 T = TypeVar("T")
 
 # Compiled regexes.
 _DASH_RE = re.compile(r"[‐-‒–—−]+")
+_SPLIT_SEP_RE = re.compile(r"\s*[:|]\s*|\s*[–—-]\s*", re.UNICODE)
 _STRUCTURAL_CONTEXT_CUE_RE = re.compile(
     r"\b("
     r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
@@ -246,9 +247,12 @@ def _check_structural_warnings(
     # Audit-only warning: segment.section_path suggests strong curriculum structure,
     # but the LLM provided an empty context_groupings snapshot. This does NOT
     # materialize any hierarchy; it only flags likely missed context.
+    leaf_count = _count_decision_leaves(decision)
+
     if (
         decision.decision_type
         not in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED)
+        and leaf_count > 0
         and not decision.context_groupings
         and section_path_text
     ):
@@ -329,61 +333,6 @@ def _classify_caption_kind(text: str) -> CaptionKind:
         return "figure"
 
     return "unknown"
-
-
-def _filter_section_path_for_llm(
-    section_path: list[dict[str, Any]] | None,
-) -> list[dict[str, Any]]:
-    """Remove front-matter/non-artifact headings from the section_path evidence shown
-    to the LLM.
-
-    Parameters
-    ----------
-    section_path
-        The section_path to filter.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        The filtered section_path.
-    """
-
-    if not section_path:
-        return []
-
-    output: list[dict[str, Any]] = []
-
-    for h in section_path:
-        txt = (h.get("text") or "").strip()
-
-        if not txt:
-            continue
-
-        norm = _normalize_text(text=txt)
-
-        if norm in NonArtifacts:
-            continue
-
-        output.append(h)
-
-    return output
-
-
-def _groupings_to_payload_dicts(gs: list[Any] | None) -> list[dict[str, Any]]:
-    """Convert a list of GroupingDecision to list of dicts for payload.
-
-    Parameters
-    ----------
-    gs
-        The list of GroupingDecision to convert.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        The converted list of dicts.
-    """
-
-    return [g.model_dump(mode="json") for g in (gs or [])]
 
 
 def _count_decision_leaves(d: SegmentDecision) -> int:
@@ -542,7 +491,7 @@ def _detect_semantic_collision(
             f"node_id={node.node_id} existing_title={existing_title!r} new_title={new_title!r} "
             f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
-        logger.info(msg)
+        logger.warning(msg)
         warnings.append(msg)
 
     existing_body = existing.body.text if existing.body is not None else None
@@ -561,7 +510,7 @@ def _detect_semantic_collision(
             f"node_id={node.node_id} existing_body={existing_body!r} new_body={new_body!r} "
             f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
-        logger.info(msg)
+        logger.warning(msg)
         warnings.append(msg)
 
     # Local code mismatch is treated as provenance/metadata drift, not a true collision.
@@ -576,7 +525,7 @@ def _detect_semantic_collision(
             f"new_local_code={node.local_code!r} "
             f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
-        logger.info(msg)
+        logger.warning(msg)
         warnings.append(msg)
 
     return collision
@@ -737,6 +686,44 @@ def _extract_table_headers(segment: Segment) -> list[str]:
     return output
 
 
+def _filter_section_path_for_llm(
+    section_path: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Remove front-matter/non-artifact headings from the section_path evidence shown
+    to the LLM.
+
+    Parameters
+    ----------
+    section_path
+        The section_path to filter.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The filtered section_path.
+    """
+
+    if not section_path:
+        return []
+
+    output: list[dict[str, Any]] = []
+
+    for h in section_path:
+        txt = (h.get("text") or "").strip()
+
+        if not txt:
+            continue
+
+        norm = _normalize_text(text=txt)
+
+        if norm in NonArtifacts:
+            continue
+
+        output.append(h)
+
+    return output
+
+
 def _format_page_indices(page_indices: list[int]) -> str:
     """Format page indices as a comma-separated string.
 
@@ -801,6 +788,23 @@ def _grouping_key(g: GroupingDecision) -> str:
     return f"{g.role.value}:{_normalize_text(text=title)}:{_normalize_text(text=code)}"
 
 
+def _groupings_to_payload_dicts(gs: list[Any] | None) -> list[dict[str, Any]]:
+    """Convert a list of GroupingDecision to list of dicts for payload.
+
+    Parameters
+    ----------
+    gs
+        The list of GroupingDecision to convert.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The converted list of dicts.
+    """
+
+    return [g.model_dump(mode="json") for g in (gs or [])]
+
+
 def _index_decisions_by_segment(
     *, segment_decisions: SegmentDecisionSet
 ) -> dict[str, list[SegmentDecision]]:
@@ -824,6 +828,31 @@ def _index_decisions_by_segment(
         decisions_by_segment[d.segment_id].append(d)
 
     return decisions_by_segment
+
+
+def _looks_like_grade_token(s: str) -> bool:
+    """Heuristic check if a string looks like a grade-level token.
+
+    Parameters
+    ----------
+    s
+        The string to check.
+
+    Returns
+    -------
+    bool
+        True if the string looks like a grade-level token, otherwise False.
+    """
+
+    s = normalize_text(s).lower()
+
+    return (
+        bool(re.match(r"^(grade|grades)\s+\d+(\s*[–-]\s*\d+)?$", s))
+        or bool(re.match(r"^p\d+$", s))
+        or bool(re.match(r"^(primary)\s+\d+$", s))
+        or bool(re.match(r"^(standard|std)\.?\s+[ivx]+$", s))
+        or bool(re.match(r"^(standard|std)\.?\s+\d+$", s))
+    )
 
 
 def _make_unresolved_sample(
@@ -935,7 +964,7 @@ def _materialize_block_leaves(
 
         node = CanonicalNode(
             bbox=segment_bbox,
-            body=TextUnit(language="und", text=leaf.body),
+            body=TextUnit(language="und", text=canonicalize_storage_text(leaf.body)),
             list_marker=leaf.list_marker,
             local_code=leaf.local_code,
             node_id=leaf_id,
@@ -1061,7 +1090,7 @@ def _materialize_decision_structure(
             source_label=g.source_label,
             source_segment_ids=[segment.segment_id],
             source_type=segment.kind,
-            title=TextUnit(language="und", text=g_title),
+            title=TextUnit(language="und", text=canonicalize_storage_text(g_title)),
         )
 
         effective_node_id = ensure_node(
@@ -1211,7 +1240,7 @@ def _materialize_table_leaves(
 
         node = CanonicalNode(
             bbox=segment_bbox,
-            body=TextUnit(language="und", text=leaf.body),
+            body=TextUnit(language="und", text=canonicalize_storage_text(leaf.body)),
             list_marker=leaf.list_marker,
             local_code=leaf.local_code,
             node_id=leaf_id,
@@ -1319,7 +1348,7 @@ def _materialize_table_rows(
                 source_label=g.source_label,
                 source_segment_ids=[segment_id],
                 source_type="table",
-                title=TextUnit(language="und", text=g_title),
+                title=TextUnit(language="und", text=canonicalize_storage_text(g_title)),
             )
 
             effective_node_id = ensure_node(
@@ -1348,7 +1377,9 @@ def _materialize_table_rows(
 
             node = CanonicalNode(
                 bbox=row_bbox,
-                body=TextUnit(language="und", text=leaf.body),
+                body=TextUnit(
+                    language="und", text=canonicalize_storage_text(leaf.body)
+                ),
                 list_marker=leaf.list_marker,
                 local_code=leaf.local_code,
                 node_id=leaf_id,
@@ -2355,13 +2386,39 @@ def canonical_leaf_node_id(
     return uuidv5_from_key(key)
 
 
+def canonicalize_storage_text(text: Optional[str]) -> str:
+    """Canonicalize text for storage in CanonicalNode.{title,body}.text. The goal here
+    is to remove meaningless formatting noise while preserving original casing. This
+    reduces formatting-diff warnings and makes merges stable.
+
+    Parameters
+    ----------
+    text
+        The text to canonicalize.
+
+    Returns
+    -------
+    str
+        The canonicalized text.
+    """
+
+    if not text:
+        return ""
+
+    text = unicodedata.normalize("NFKC", text)
+    text = _DASH_RE.sub("-", text)
+    text = _WS_RE.sub(" ", text).strip()
+
+    return text
+
+
 def compile_canonical_ir(
     *,
     doc_key: str,
     document_ir: DocumentIR,
-    low_conf_threshold: float = 0.80,
+    low_conf_threshold: float,
     segment_decisions: SegmentDecisionSet,
-    structural_leaf_warn_threshold: float = 0.80,
+    structural_leaf_warn_threshold: float,
 ) -> CanonicalIR:
     """Compile a CanonicalIR from DocumentIR and SegmentDecisionSet.
 
@@ -2425,7 +2482,7 @@ def compile_canonical_ir(
         source_label=None,
         source_segment_ids=[],
         source_type=None,
-        title=TextUnit(language="und", text=framework_title),
+        title=TextUnit(language="und", text=canonicalize_storage_text(framework_title)),
     )
     effective_root_id = ensure_node(
         node=framework_node, nodes_by_id=nodes_by_id, warnings=warnings
@@ -2680,6 +2737,14 @@ def ensure_node(
         The effective node_id.
     """
 
+    node = node.model_copy(deep=True)
+
+    if node.title is not None:
+        node.title.text = canonicalize_storage_text(node.title.text)
+
+    if node.body is not None:
+        node.body.text = canonicalize_storage_text(node.body.text)
+
     if node.node_id not in nodes_by_id:
         nodes_by_id[node.node_id] = node
         return node.node_id
@@ -2723,6 +2788,45 @@ def ensure_node(
             setattr(existing, field, getattr(node, field))
 
     return existing.node_id
+
+
+def expand_grouping(g: GroupingDecision) -> list[GroupingDecision]:
+    """Expand a GroupingDecision into one or more GroupingDecisions, handling composite
+    titles (e.g., "GRADE 1-3 | MATH").
+
+    Parameters
+    ----------
+    g
+        The GroupingDecision to expand.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The expanded list of GroupingDecisions.
+    """
+
+    # Always normalize title text.
+    title = normalize_text(g.title)
+
+    # Split grade composite headings.
+    if g.role == NodeRole.GRADE_LEVEL:
+        grade_title, subject = split_grade_subject(title)
+
+        if subject:
+            g_grade = g.model_copy(update={"title": grade_title})
+            g_subject = GroupingDecision(
+                local_code=None,
+                role=NodeRole.SUBJECT,
+                source_label=g.source_label,  # Keep provenance
+                title=subject,
+            )
+
+            return [g_grade, g_subject]
+
+        return [g.model_copy(update={"title": grade_title})]
+
+    # For other roles, just normalized title.
+    return [g.model_copy(update={"title": title})]
 
 
 def load_segment_decision_set(
@@ -3043,6 +3147,94 @@ def merge_nodes_postpass(
     return list(merged.values())
 
 
+def normalize_decision_set(decision_set: SegmentDecisionSet) -> SegmentDecisionSet:
+    """Normalize a SegmentDecisionSet by expanding composite groupings and deduping
+    exact duplicates.
+
+    Parameters
+    ----------
+    decision_set
+        The SegmentDecisionSet to normalize.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The normalized SegmentDecisionSet.
+    """
+
+    normalized_decisions = []
+
+    for d in decision_set.decisions:
+        d2 = d.model_copy()
+
+        d2.context_groupings = normalize_groupings(d2.context_groupings)
+        d2.groupings = normalize_groupings(d2.groupings)
+
+        if d2.rows:
+            rows2 = []
+
+            for r in d2.rows:
+                r2 = r.model_copy()
+                r2.groupings = normalize_groupings(r2.groupings)
+                rows2.append(r2)
+
+            d2.rows = rows2
+
+        normalized_decisions.append(d2)
+
+    # NB: Recompute decision_set_id so validation stays correct.
+    new_decision_set_id = compute_decision_set_id(decisions=normalized_decisions)
+
+    # Rebuild (validates duplicate decision_id, fingerprint, etc.).
+    payload = decision_set.model_dump(mode="json")
+    payload["decisions"] = [d.model_dump(mode="json") for d in normalized_decisions]
+    payload["decision_set_id"] = new_decision_set_id
+
+    # Tag generator for audit trail.
+    if payload.get("generator"):
+        payload["generator"] = payload["generator"] + "|normalized:v1"
+    else:
+        payload["generator"] = "normalized:v1"
+
+    return SegmentDecisionSet.model_validate(payload)
+
+
+def normalize_groupings(groupings: list[GroupingDecision]) -> list[GroupingDecision]:
+    """Normalize a list of GroupingDecisions by expanding composites and deduping exact
+    duplicates.
+
+    Parameters
+    ----------
+    groupings
+        The list of GroupingDecisions to normalize.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The normalized list of GroupingDecisions.
+    """
+
+    output: list[GroupingDecision] = []
+
+    for g in groupings:
+        output.extend(expand_grouping(g))
+
+    # Collapse exact duplicates while preserving order.
+    deduped = []
+    seen = set()
+
+    for g in output:
+        key = (g.role, normalize_text(g.title).lower(), (g.local_code or "").strip())
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(g)
+
+    return deduped
+
+
 def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -> str:
     """Create a short stable fingerprint of the ancestor grouping key sequence.
 
@@ -3070,9 +3262,14 @@ def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -
 def perform_postpass_hygiene(canonical_ir: CanonicalIR) -> CanonicalIR:
     """Perform post-pass hygiene on a CanonicalIR:
 
-    1. Node merge
-    2. Edge dedupe
-    3. Sanity checks
+    The process is as follows:
+
+    1. Merge nodes
+    2. Dedupe edges
+    3. Prune empty grouping containers
+    4. Prune nodes/edges not reachable from root
+    5. Reindex order_index under each parent (remove gaps after pruning)
+    6. Perform sanity checks
 
     Parameters
     ----------
@@ -3087,22 +3284,50 @@ def perform_postpass_hygiene(canonical_ir: CanonicalIR) -> CanonicalIR:
 
     warnings = list(canonical_ir.warnings)
 
+    # 1.
     nodes_merged = merge_nodes_postpass(nodes=canonical_ir.nodes, warnings=warnings)
     node_ids = {n.node_id for n in nodes_merged}
 
+    # 2.
     edges_merged = dedupe_edges_postpass(
         edges=canonical_ir.edges, node_ids=node_ids, warnings=warnings
     )
 
-    sanity_checks_postpass(
+    # 3.
+    nodes_pruned_empty, edges_pruned_empty = prune_empty_groupings(
         edges=edges_merged,
         nodes=nodes_merged,
         root_id=canonical_ir.root_id,
         warnings=warnings,
     )
 
+    # 4.
+    nodes_pruned_reachable, edges_pruned_reachable = prune_unreachable_nodes(
+        edges=edges_pruned_empty,
+        nodes=nodes_pruned_empty,
+        root_id=canonical_ir.root_id,
+        warnings=warnings,
+    )
+
+    # 5.
+    edges_reindexed = reindex_order_indices_postpass(
+        edges=edges_pruned_reachable, warnings=warnings
+    )
+
+    # 6.
+    sanity_checks_postpass(
+        edges=edges_reindexed,
+        nodes=nodes_pruned_reachable,
+        root_id=canonical_ir.root_id,
+        warnings=warnings,
+    )
+
     return canonical_ir.model_copy(
-        update={"nodes": nodes_merged, "edges": edges_merged, "warnings": warnings}
+        update={
+            "nodes": nodes_pruned_reachable,
+            "edges": edges_reindexed,
+            "warnings": warnings,
+        }
     )
 
 
@@ -3209,6 +3434,168 @@ def process_segment_decisions(
     )
 
 
+def prune_empty_groupings(
+    *,
+    edges: list[CanonicalEdge],
+    nodes: list[CanonicalNode],
+    root_id: str,
+    warnings: list[str],
+) -> tuple[list[CanonicalNode], list[CanonicalEdge]]:
+    """Remove grouping nodes (NodeRole) that have *zero* outgoing children.
+
+    This is an iterative bottom-up prune:
+
+    1. If a grouping has no children, drop it.
+    2. After dropping, its parent may become empty -> repeat until stable.
+    3. Root is never pruned.
+
+    This **should** be safe because:
+
+    1. It only removes empty containers (no standards/leaves underneath).
+    2. It makes the CanonicalIR cleaner for export (Step 5).
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges.
+    nodes
+        The list of CanonicalNodes.
+    root_id
+        The root node ID.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    tuple[list[CanonicalNode], list[CanonicalEdge]]
+        The (pruned_nodes, pruned_edges).
+    """
+
+    # Build lookup: node_id -> CanonicalNode.
+    nodes_by_id = {n.node_id: n for n in nodes}
+
+    removed_total = 0
+
+    while True:
+        # Compute out-degree (children count) for each parent.
+        out_degree: dict[str, int] = {nid: 0 for nid in nodes_by_id.keys()}
+
+        for e in edges:
+            # CanonicalEdge.rel is always "hasChild", but keep this chec, just in case.
+            if e.rel == "hasChild" and e.parent_id in out_degree:
+                out_degree[e.parent_id] += 1
+
+        # Identify empty grouping nodes (0 children), excluding root.
+        prunable_ids: set[str] = set()
+
+        for nid, node in nodes_by_id.items():
+            if nid == root_id:
+                continue
+
+            if isinstance(node.role, NodeRole) and out_degree.get(nid, 0) == 0:
+                prunable_ids.add(nid)
+
+        if not prunable_ids:
+            break
+
+        removed_total += len(prunable_ids)
+
+        # Remove nodes.
+        for nid in prunable_ids:
+            nodes_by_id.pop(nid, None)
+
+        # Remove any edges touching removed nodes (either as parent or child).
+        edges = [
+            e
+            for e in edges
+            if e.parent_id not in prunable_ids and e.child_id not in prunable_ids
+        ]
+
+    if removed_total > 0:
+        msg = f"empty_groupings_pruned:count={removed_total}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return list(nodes_by_id.values()), edges
+
+
+def prune_unreachable_nodes(
+    *,
+    edges: list[CanonicalEdge],
+    nodes: list[CanonicalNode],
+    root_id: str,
+    warnings: list[str],
+) -> tuple[list[CanonicalNode], list[CanonicalEdge]]:
+    """Drop any nodes/edges that are not reachable from the CanonicalIR root.
+
+    This removes orphan "islands" created by:
+
+    1. Inconsistent context snapshots
+    2. Dropped parent edges from keep-first-parent enforcement
+    3. Partial materialization/unresolved segments
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges.
+    nodes
+        The list of CanonicalNodes.
+    root_id
+        The root node ID.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    tuple[list[CanonicalNode], list[CanonicalEdge]]
+        The (pruned_nodes, pruned_edges).
+    """
+
+    nodes_by_id = {n.node_id: n for n in nodes}
+
+    # Build adjacency list: parent -> children.
+    children_by_parent: dict[str, list[str]] = {}
+
+    for e in edges:
+        if e.rel != "hasChild":
+            continue
+
+        children_by_parent.setdefault(e.parent_id, []).append(e.child_id)
+
+    # Traverse from root and mark reachable nodes.
+    reachable: set[str] = set()
+    stack: list[str] = [root_id]
+
+    while stack:
+        nid = stack.pop()
+
+        if nid in reachable:
+            continue
+
+        reachable.add(nid)
+
+        for child_id in children_by_parent.get(nid, []):
+            # Only traverse into nodes that actually exist.
+            if child_id in nodes_by_id and child_id not in reachable:
+                stack.append(child_id)
+
+    # Filter nodes + edges to reachable set.
+    nodes_pruned = [n for n in nodes if n.node_id in reachable]
+    edges_pruned = [
+        e for e in edges if e.parent_id in reachable and e.child_id in reachable
+    ]
+
+    removed_nodes = len(nodes) - len(nodes_pruned)
+    removed_edges = len(edges) - len(edges_pruned)
+
+    if removed_nodes > 0 or removed_edges > 0:
+        msg = f"unreachable_pruned:nodes={removed_nodes},edges={removed_edges}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return nodes_pruned, edges_pruned
+
+
 def reconcile_context_stack(
     *,
     active_stack: list[ContextFrame],
@@ -3307,7 +3694,7 @@ def reconcile_context_stack(
             source_label=g.source_label,
             source_segment_ids=[seg_id],
             source_type=seg_kind,
-            title=TextUnit(language="und", text=g_title),
+            title=TextUnit(language="und", text=canonicalize_storage_text(g_title)),
         )
 
         effective_node_id = ensure_node(
@@ -3333,6 +3720,67 @@ def reconcile_context_stack(
 
     # After reconciliation, new_stack should EXACTLY matches desired_context snapshot.
     return parent_id, ancestor_keys, new_stack
+
+
+def reindex_order_indices_postpass(
+    *, edges: list[CanonicalEdge], warnings: list[str]
+) -> list[CanonicalEdge]:
+    """Reindex sibling `order_index` values so they are contiguous 0...N-1 under each
+    parent.
+
+    The process is as follows:
+
+    1. For each parent, sort children by (existing order_index, child_id).
+    2. Rewrite order_index based on that deterministic order.
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    list[CanonicalEdge]
+        The updated list of CanonicalEdges with reindexed order_index values.
+    """
+
+    # Group edges by parent.
+    edges_by_parent: dict[str, list["CanonicalEdge"]] = {}
+
+    for e in edges:
+        if e.rel != "hasChild":
+            continue
+
+        edges_by_parent.setdefault(e.parent_id, []).append(e)
+
+    num_reindexed = 0
+
+    for parent_edges in edges_by_parent.values():
+        # Sort deterministically:
+        #   - Primary: existing order_index (None treated as large number)
+        #   - Secondary: child_id to break ties deterministically
+        parent_edges_sorted = sorted(
+            parent_edges,
+            key=lambda e: (
+                e.order_index if e.order_index is not None else 10**9,
+                e.child_id,
+            ),
+        )
+
+        # Rewrite order_index to be contiguous.
+        for new_idx, e in enumerate(parent_edges_sorted):
+            if e.order_index != new_idx:
+                num_reindexed += 1
+                e.order_index = new_idx
+
+    if num_reindexed > 0:
+        msg = f"order_index_reindexed:edges_updated={num_reindexed}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return edges
 
 
 def sanity_checks_postpass(
@@ -3373,7 +3821,13 @@ def sanity_checks_postpass(
     _check_order_indices(edges=edges, warnings=warnings)
 
 
-def save_canonical_ir(*, canonical_ir: CanonicalIR, canonical_ir_fp: Path) -> None:
+def save_canonical_ir(
+    *,
+    canonical_ir: CanonicalIR,
+    canonical_ir_fp: Path,
+    low_conf_threshold: float,
+    structural_leaf_warn_threshold: float,
+) -> None:
     """Export the canonical IR to a JSON file.
 
     Parameters
@@ -3382,6 +3836,10 @@ def save_canonical_ir(*, canonical_ir: CanonicalIR, canonical_ir_fp: Path) -> No
         The CanonicalIR to serialize.
     canonical_ir_fp
         The output file path for the CanonicalIR JSON.
+    low_conf_threshold
+        The low confidence threshold used during canonicalization.
+    structural_leaf_warn_threshold
+        The structural leaf warning threshold used during canonicalization.
     """
 
     write_to_json(fp=canonical_ir_fp, json_info=canonical_ir)
@@ -3399,7 +3857,8 @@ def save_canonical_ir(*, canonical_ir: CanonicalIR, canonical_ir_fp: Path) -> No
         json_info={
             "doc_key": canonical_ir.doc_key,
             "decision_set_id": canonical_ir.decision_set_id,
-            "threshold": 0.80,  # Fixed for now to align with LLM prompt
+            "low_conf_threshold": low_conf_threshold,
+            "structural_leaf_warn_threshold": structural_leaf_warn_threshold,
             "count": len(structural_leaf_warnings),
             "warnings": structural_leaf_warnings,
         },
@@ -3432,6 +3891,37 @@ def save_segment_decision_set(
     write_to_json(fp=segment_decisions_fp, json_info=decision_set)
 
     return decision_set
+
+
+def split_grade_subject(title: str) -> tuple[str, str | None]:
+    """Split a title into (grade, subject) if it matches expected patterns.
+
+    Parameters
+    ----------
+    title
+        The title text to split.
+
+    Returns
+    -------
+    tuple[str, str | None]
+        A tuple of (grade, subject) if split is successful, otherwise (title, None).
+    """
+
+    t = normalize_text(title)
+    parts = _SPLIT_SEP_RE.split(t, maxsplit=1)
+
+    if len(parts) != 2:
+        return t, None
+
+    left, right = normalize_text(parts[0]), normalize_text(parts[1])
+
+    if not left or not right:
+        return t, None
+
+    if _looks_like_grade_token(left):
+        return left, right
+
+    return t, None
 
 
 def table_chunks_for_segment(

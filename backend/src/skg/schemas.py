@@ -235,6 +235,12 @@ class CreateCanonicalConfig(BaseSchema):
         False,
         description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
     )
+    low_conf_threshold: float = Field(
+        0.75,
+        description="The low confidence threshold for warnings. This is reflected in the system prompt for the LLM.",
+        ge=0.0,
+        le=1.0,
+    )
     max_table_rows_per_decision: int | None = Field(
         default=None,
         description="If set, only TABLE segments with *body rows* > this value are chunked into multiple SegmentDecisions. Blocks are never chunked.",
@@ -243,6 +249,12 @@ class CreateCanonicalConfig(BaseSchema):
         "gpt-5.2-2025-12-11", description="OpenAI model for canonical IR."
     )
     overwrite: bool = Field(False, description="Overwrite existing canonical IR JSON.")
+    structural_leaf_warn_threshold: float = Field(
+        0.75,
+        description="The confidence threshold below which structural leaves will emit warnings.",
+        ge=0.0,
+        le=1.0,
+    )
 
 
 class RunConfig(BaseSchema):
