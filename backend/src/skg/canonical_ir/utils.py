@@ -125,7 +125,7 @@ def _gkey_tuple(
 
 
 def _build_mapping_index(
-    *, mapping: GroupingCanonicalizationMap, min_confidence: float
+    *, canonical_grouping_min_confidence: float, mapping: GroupingCanonicalizationMap
 ) -> dict[
     tuple[str, str, str, str],
     GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
@@ -134,10 +134,10 @@ def _build_mapping_index(
 
     Parameters
     ----------
+    canonical_grouping_min_confidence
+        The minimum confidence threshold for applying mapping actions.
     mapping
         The GroupingCanonicalizationMap to index.
-    min_confidence
-        The minimum confidence threshold to consider an entry valid.
 
     Returns
     -------
@@ -158,7 +158,7 @@ def _build_mapping_index(
     ] = {}
 
     for item in mapping.items:
-        if item.confidence < min_confidence:
+        if item.confidence < canonical_grouping_min_confidence:
             continue  # Treat as KEEP
 
         inp = item.input
@@ -2291,9 +2291,9 @@ def apply_caption_binding_to_table_payload(
 
 def apply_grouping_canonicalization_map(
     *,
+    canonical_grouping_min_confidence: float,
     creation_dirs: CanonicalIRDirs,
     mapping: GroupingCanonicalizationMap,
-    min_confidence: float = 0.0,
     segment_decisions: SegmentDecisionSet,
 ) -> SegmentDecisionSet:
     """Deterministically apply a GroupingCanonicalizationMap to all grouping lists in a
@@ -2320,12 +2320,12 @@ def apply_grouping_canonicalization_map(
 
     Parameters
     ----------
+    canonical_grouping_min_confidence
+        The minimum confidence threshold for applying canonical grouping.
     creation_dirs
         The canonical IR creation directories.
     mapping
         The GroupingCanonicalizationMap to apply.
-    min_confidence
-        The minimum confidence threshold for applying mapping entries.
     segment_decisions
         The SegmentDecisionSet to update.
 
@@ -2335,7 +2335,10 @@ def apply_grouping_canonicalization_map(
         The updated SegmentDecisionSet.
     """
 
-    mapping_index = _build_mapping_index(mapping=mapping, min_confidence=min_confidence)
+    mapping_index = _build_mapping_index(
+        canonical_grouping_min_confidence=canonical_grouping_min_confidence,
+        mapping=mapping,
+    )
     new_decisions: list[SegmentDecision] = []
 
     for decision in segment_decisions.decisions:
@@ -2389,7 +2392,9 @@ def apply_grouping_canonicalization_map(
     normalized_segment_decisions_fp = (
         creation_dirs.root / "segment_decisions_normalized.json"
     )
-    write_to_json(fp=normalized_segment_decisions_fp, json_info=segment_decisions)
+    write_to_json(
+        fp=normalized_segment_decisions_fp, json_info=normalized_segment_decisions
+    )
 
     logger.info(
         f"Saved normalized segment decisions to: {normalized_segment_decisions_fp}"

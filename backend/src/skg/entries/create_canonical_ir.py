@@ -208,9 +208,9 @@ def create_canonical_ir(
     logger.success("Finished generating grouping canonicalization map!")
 
     segment_decisions = apply_grouping_canonicalization_map(
+        canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
         creation_dirs=creation_dirs,
         mapping=mapping,
-        min_confidence=config.canonical_grouping_min_confidence,
         segment_decisions=segment_decisions,
     )
 
