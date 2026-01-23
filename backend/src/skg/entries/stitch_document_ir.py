@@ -179,7 +179,6 @@ def stitch_document_ir(
                 )
                 logger.warning(text)
                 warnings.append(text)
-                input(999)
 
             # Build the continuation chains.
             chain = build_continuation_chain(

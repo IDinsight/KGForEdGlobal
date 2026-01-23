@@ -1257,7 +1257,7 @@ def test__process_next_table_slice_explicit_header_drop() -> None:
     assert result["slice"].dropped_header_rows == 2
     assert result["slice"].repeats_header is True
 
-    # Ensure no warnings (and thus no input() calls).
+    # Ensure no warnings.
     assert len(warnings) == 0
 
 
