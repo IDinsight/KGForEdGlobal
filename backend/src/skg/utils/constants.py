@@ -75,6 +75,23 @@ class FrontMatterHeadings(str, Enum):
     VISION = "vision"
 
 
+class GroupingCanonicalizationAction(str, Enum):
+    """Canonicalization action for curriculum groupings.
+
+    Options are:
+
+    1. DROP -> drop this grouping entirely (output must be empty)
+    2. KEEP -> keep as-is (output must be empty or exactly the same as input)
+    3. REPLACE -> replace with exactly 1 canonical grouping (same role)
+    4. SPLIT -> replace with 2+ canonical groupings (roles may differ)
+    """
+
+    DROP = "drop"
+    KEEP = "keep"
+    REPLACE = "replace"
+    SPLIT = "split"
+
+
 class ItemBoundary(str, Enum):
     """Enumeration for item boundary states on a page.
 

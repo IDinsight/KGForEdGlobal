@@ -34,10 +34,11 @@
 	},
 	"canonical_ir": {
 		"always_double_check_first_attempt": true,
-		"low_conf_threshold": 0.60,
+		"canonical_grouping_min_confidence": 0.80,
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
+		"segment_decision_conf_threshold": 0.60,
 		"structural_leaf_warn_threshold": 0.60
 	}
 }

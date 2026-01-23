@@ -12,6 +12,7 @@ from typing import Any
 from dotmap import DotMap
 
 # Package Library
+from skg.canonical_ir.schemas import GroupingCanonicalizationKey
 from skg.utils.constants import BlockType, NodeRole, SegmentDecisionType, StatementRole
 
 
@@ -375,4 +376,50 @@ When you are confident in your answer, return a complete `SegmentDecision` that 
 
     return DotMap(
         {"system_message": system_message, "user_message": user_message.strip()}
+    )
+
+
+def grouping_canonicalization_instructions(
+    *, grouping_keys: list[GroupingCanonicalizationKey]
+) -> DotMap:
+    """Return the grouping canonicalization instructions.
+
+    Parameters
+    ----------
+    grouping_keys
+        The list of GroupingCanonicalizationKey objects to be canonicalized.
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    system_message = dedent(
+        """You are canonicalizing curriculum grouping nodes globally for a single curriculum document.
+
+You will receive a list of grouping candidates, each with a role + title.
+
+Return a GroupingCanonicalizationMap with EXACTLY one item per input grouping.
+Each item must specify an action: KEEP, REPLACE, SPLIT, or DROP.
+
+Rules:
+
+1. Do NOT invent new curriculum concepts that are not present in the input.
+2. Prefer minimal changes: whitespace/casing/punctuation normalization and synonym folding.
+3. REPLACE must keep the same role.
+4. SPLIT may emit multiple outputs (roles can differ) when the title is clearly composite.
+5. If unsure, choose KEEP.
+        """
+    )
+
+    user_message = dedent(
+        f"""Canonicalize the following grouping keys:
+
+{[k.model_dump() for k in grouping_keys]}
+        """
+    )
+
+    return DotMap(
+        {"system_message": system_message.strip(), "user_message": user_message.strip()}
     )

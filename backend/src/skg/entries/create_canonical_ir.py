@@ -19,7 +19,7 @@ import traceback
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Third Party Library
 import typer
@@ -35,15 +35,17 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.canonical_ir.llm import generate_grouping_canonicalization_map
 from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
+    apply_grouping_canonicalization_map,
     build_caption_bindings,
     build_context_hint_from_decision,
+    clean_up_segment_decisions,
+    collect_unique_grouping_keys,
     compile_canonical_ir,
-    decision_key,
     load_segment_decision_set,
-    normalize_decision_set,
     persist_canonical_run,
     process_segment_decisions,
     save_canonical_ir,
@@ -108,19 +110,20 @@ def create_canonical_ir(
         # Initialize decision set.
         decision_set = SegmentDecisionSet.model_validate(
             {
-                "pdf_name": document_ir.pdf_name,
-                "doc_key": doc_key,
                 "decision_set_id": compute_decision_set_id(decisions=[]),
                 "decisions": [],
+                "doc_key": doc_key,
+                "generator": config.model,
+                "pdf_name": document_ir.pdf_name,
             }
         )
 
         # Generate decisions for any undecided segments in DocumentIR order.
         context_hint: list[dict[str, Any]] = []
+        existing_keys: set[tuple[str, Optional[int], Optional[int]]] = set()
         num_segments = len(document_ir.segments)
-        existing_keys = {decision_key(d) for d in decision_set.decisions}
-        segment_warnings_fp = creation_dirs.root / "segment_warnings.json"
         segment_warnings_by_segment: dict[str, list[str]] = {}
+        segment_warnings_fp = creation_dirs.root / "segment_warnings.json"
 
         for i, segment in enumerate(document_ir.segments, 1):
             logger.info(
@@ -146,8 +149,8 @@ def create_canonical_ir(
             if new_decisions:
                 last = new_decisions[-1]
                 if last.decision_type in {
-                    SegmentDecisionType.EMIT_GROUPINGS_ONLY,
                     SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
+                    SegmentDecisionType.EMIT_GROUPINGS_ONLY,
                     SegmentDecisionType.EMIT_LEAVES_ONLY,
                 }:
                     context_hint = build_context_hint_from_decision(last)
@@ -185,36 +188,42 @@ def create_canonical_ir(
         f"expected={doc_key}"
     )
 
-    # Normalize the segment decisions and validate.
-    normalized_segment_decisions_fp = (
-        creation_dirs.root / "segment_decisions_normalized.json"
+    # Clean up segment decisions before LLM canonicalization.
+    segment_decisions = clean_up_segment_decisions(
+        creation_dirs=creation_dirs, segment_decisions=segment_decisions
     )
-    segment_decisions = normalize_decision_set(segment_decisions)
-    write_to_json(fp=normalized_segment_decisions_fp, json_info=segment_decisions)
-    logger.info(
-        f"Saved normalized segment decisions to: {normalized_segment_decisions_fp}"
+
+    # Collect unique grouping keys for validation later.
+    grouping_keys = collect_unique_grouping_keys(
+        creation_dirs=creation_dirs, segment_decisions=segment_decisions
+    )
+
+    # Generate and apply grouping canonicalization map.
+    logger.info("Generating grouping canonicalization map...")
+
+    mapping = generate_grouping_canonicalization_map(
+        doc_key=doc_key, grouping_keys=grouping_keys, model=config.model
+    )
+
+    logger.success("Finished generating grouping canonicalization map!")
+
+    segment_decisions = apply_grouping_canonicalization_map(
+        creation_dirs=creation_dirs,
+        mapping=mapping,
+        min_confidence=config.canonical_grouping_min_confidence,
+        segment_decisions=segment_decisions,
     )
 
     # Decision-set level validation for chunked tables.
-    decisions_by_segment_id: dict[str, list[Any]] = {}
-    for d in segment_decisions.decisions:
-        assert isinstance(d.segment_id, str), f"Decision missing segment_id: {d}"
-        decisions_by_segment_id.setdefault(d.segment_id, []).append(d)
-
-    for seg in document_ir.segments:
-        if seg.kind != "table":
-            continue
-
-        validate_table_chunk_coverage_and_overlap(
-            decisions_for_segment=decisions_by_segment_id.get(seg.segment_id, []),
-            segment=seg,
-        )
+    validate_table_chunk_coverage_and_overlap(
+        document_ir=document_ir, segment_decisions=segment_decisions
+    )
 
     # Parse the segment decisions into a canonical IR.
     canonical_ir = compile_canonical_ir(
         doc_key=doc_key,
         document_ir=document_ir,
-        low_conf_threshold=config.low_conf_threshold,
+        segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         segment_decisions=segment_decisions,
         structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
     )
@@ -223,7 +232,7 @@ def create_canonical_ir(
     save_canonical_ir(
         canonical_ir=canonical_ir,
         canonical_ir_fp=canonical_ir_fp,
-        low_conf_threshold=config.low_conf_threshold,
+        segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
     )
 

@@ -1845,12 +1845,9 @@ def persist_verification_run(
     """
 
     verification_dirs = create_page_ir_verification_dirs(output_dir=output_dir)
+    exclude_keys = {"model", "overwrite"}
     verification_run = RunCtx(
-        extra={
-            "end_page_cli": config.end_page,  # Keep original config value (may be None)
-            "min_confidence_to_patch": config.min_confidence_to_patch,
-            "start_page_cli": config.start_page,
-        },
+        extra={k: v for k, v in config.model_dump().items() if k not in exclude_keys},
         models=[config.model],
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
