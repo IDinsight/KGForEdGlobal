@@ -43,6 +43,7 @@ from skg.canonical_ir.utils import (
     compile_canonical_ir,
     decision_key,
     load_segment_decision_set,
+    normalize_decision_set,
     persist_canonical_run,
     process_segment_decisions,
     save_canonical_ir,
@@ -172,7 +173,7 @@ def create_canonical_ir(
             f"({len(decision_set.decisions)} decisions total)."
         )
 
-    # Load the segment decisions.
+    # Load the raw segment decisions.
     segment_decisions = load_segment_decision_set(
         expected_doc_key=doc_key,
         pdf_name=document_ir.pdf_name,
@@ -182,6 +183,16 @@ def create_canonical_ir(
         f"SegmentDecisionSet.doc_key != expected doc_key\n"
         f"decision_set.doc_key={segment_decisions.doc_key}\n"
         f"expected={doc_key}"
+    )
+
+    # Normalize the segment decisions and validate.
+    normalized_segment_decisions_fp = (
+        creation_dirs.root / "segment_decisions_normalized.json"
+    )
+    segment_decisions = normalize_decision_set(segment_decisions)
+    write_to_json(fp=normalized_segment_decisions_fp, json_info=segment_decisions)
+    logger.info(
+        f"Saved normalized segment decisions to: {normalized_segment_decisions_fp}"
     )
 
     # Decision-set level validation for chunked tables.
@@ -201,11 +212,20 @@ def create_canonical_ir(
 
     # Parse the segment decisions into a canonical IR.
     canonical_ir = compile_canonical_ir(
-        doc_key=doc_key, document_ir=document_ir, segment_decisions=segment_decisions
+        doc_key=doc_key,
+        document_ir=document_ir,
+        low_conf_threshold=config.low_conf_threshold,
+        segment_decisions=segment_decisions,
+        structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
     )
 
     # Write results to file.
-    save_canonical_ir(canonical_ir=canonical_ir, canonical_ir_fp=canonical_ir_fp)
+    save_canonical_ir(
+        canonical_ir=canonical_ir,
+        canonical_ir_fp=canonical_ir_fp,
+        low_conf_threshold=config.low_conf_threshold,
+        structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
+    )
 
 
 @cli.command()
