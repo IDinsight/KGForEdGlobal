@@ -7,7 +7,11 @@ import unicodedata
 from typing import Any, Optional
 
 # Package Library
-from skg.canonical_ir.schemas import SegmentDecision, SegmentDecisionSet
+from skg.canonical_ir.schemas import (
+    GroupingDecision,
+    SegmentDecision,
+    SegmentDecisionSet,
+)
 from skg.document_ir.schemas import DocumentIR, Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import (
@@ -1004,6 +1008,150 @@ def validate_context_groupings_supported_by_outer_evidence(
             )
 
 
+def validate_emitted_statements_have_outer_anchor(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """If a decision emits ANY leaves (block leaves or table row leaves), require at
+    least one outer anchor role (grade/stage/subject/etc.) to exist in
+    context_groupings OR emitted groupings. This prevents 'floating strands/topics'
+    attached directly to the framework root.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        return
+
+    # Check if leaves are emitted.
+    emits_block_leaves = bool(segment_decision.leaves)
+    emits_row_leaves = any((r.leaves or []) for r in (segment_decision.rows or []))
+
+    if not (emits_block_leaves or emits_row_leaves):
+        return  # groupings-only is fine
+
+    OUTER_ANCHORS = {
+        NodeRole.GRADE_LEVEL,
+        NodeRole.STAGE,
+        NodeRole.LEARNING_AREA,
+        NodeRole.SUBJECT,
+        NodeRole.THEME,
+        NodeRole.UNIT,
+        NodeRole.WEEK,
+    }
+
+    def has_anchor(groupings: list[GroupingDecision]) -> bool:
+        """Check if any grouping has an outer anchor role.
+
+        Parameters
+        ----------
+        groupings
+            The list of grouping models to check.
+
+        Returns
+        -------
+        bool
+            True if any grouping has an outer anchor role.
+        """
+
+        return any((g.role in OUTER_ANCHORS) for g in (groupings or []))
+
+    if (
+        not has_anchor(segment_decision.context_groupings)
+        and not has_anchor(segment_decision.groupings)
+        and not any(has_anchor(r.groupings) for r in (segment_decision.rows or []))
+    ):
+        raise QualityError(
+            f"emitted_leaves_missing_outer_anchor\n"
+            f"segment_id={segment.segment_id}\n"
+            f"decision_id={segment_decision.decision_id}\n"
+            f"Fix: include at least one of: {NodeRole.GRADE_LEVEL.value}, {NodeRole.STAGE.value}, {NodeRole.LEARNING_AREA.value}, {NodeRole.SUBJECT.value}, {NodeRole.THEME.value}, {NodeRole.UNIT.value}, {NodeRole.WEEK.value} "
+            f"in context_groupings or emitted groupings (or mark unresolved)."
+        )
+
+
+def validate_groupings_not_outer_than_context(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Since groupings[] are children under the context stack tip, they must not be
+    OUTER than the deepest role in context_groupings[]. This prevents SUBJECT -> GRADE
+    inversions like: context=[SUBJECT], groupings=[GRADE_LEVEL].
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if (
+        segment_decision.decision_type
+        in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        )
+        or not segment_decision.context_groupings
+    ):
+        return
+
+    context_roles = [g.role for g in (segment_decision.context_groupings or [])]
+    context_max = max(CONTEXT_GROUPINGS_ROLE_PRECEDENCE[r] for r in context_roles)
+
+    def check(groupings: list[GroupingDecision], where: str) -> None:
+        """Check that no grouping is outer than context.
+
+        Parameters
+        ----------
+        groupings
+            The list of grouping models to check.
+        where
+            The location description for error messages.
+
+        Raises
+        ------
+        QualityError
+            If any grouping is outer than context.
+        """
+
+        for g in groupings or []:
+            if g.role not in CONTEXT_GROUPINGS_ROLE_PRECEDENCE:
+                continue
+
+            if CONTEXT_GROUPINGS_ROLE_PRECEDENCE[g.role] < context_max:
+                raise QualityError(
+                    f"grouping_outer_than_context\n"
+                    f"segment_id={segment.segment_id}\n"
+                    f"decision_id={segment_decision.decision_id}\n"
+                    f"where={where}\n"
+                    f"context_roles={[r.value for r in context_roles]}\n"
+                    f"bad_grouping={(g.role.value, g.title)}\n"
+                    f"Fix: move this grouping into context_groupings OR reorder so outer roles are emitted first."
+                )
+
+    check(segment_decision.groupings, "decision.groupings")
+
+    for r in segment_decision.rows or []:
+        check(r.groupings, f"row[{r.row_index}].groupings")
+
+
 def validate_heading_segments_emit_groupings(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
@@ -1535,7 +1683,7 @@ def validate_table_chunk_coverage_and_overlap(
 
         # Not a chunked table (either unchunked decision or no decisions yet).
         if not chunk_decisions:
-            return
+            continue
 
         # Disallow mixing chunked + unchunked decisions for the same table segment.
         has_unchunked = any(
