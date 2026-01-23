@@ -359,13 +359,29 @@ In particular, ensure that:
     - For TABLE segments and for any decision that emits leaf statements, prefer a non-empty `context_groupings[]` when supported by evidence (grade/stage/subject/theme/unit via section_path/caption/header_rows).
     - If the only outer evidence is institutional/front-matter metadata, use `context_groupings=[]` (attach to framework root).
     - Reminder: the compiler will not create nodes from segment.section_path automatically.
+  - You may use prior_context_groupings, prev_segment_hint, and next_segment_hint to determine whether this segment continues the prior context or begins a new context.
+  - You may also use prev_segment_hint.section_path/next_segment_hint.section_path as supporting evidence when the current segment is a continuation.
 
-10. **Grade label check**
+10 .**Outer anchor requirement (IMPORTANT):**
+  - If you emit any EXPECTATION/DESCRIPTOR/GUIDANCE leaves (block leaves or table row leaves), your decision MUST include at least ONE “outer anchor” grouping somewhere in:
+    - `context_groupings[]` OR
+    - emitted `groupings[]` OR
+    - `rows[].groupings[]`
+  - Outer anchors include: `GRADE_LEVEL`, `STAGE`, `LEARNING_AREA`, `SUBJECT`, `THEME`, `UNIT`, `WEEK`.
+  - If no outer anchor is supported by evidence, return `decision_type="unresolved"`.
+
+11. **No outer-than-context groupings:**
+  - `groupings[]` are *children under the context stack tip.*
+  - Therefore, never emit a grouping whose role is OUTER than the deepest role in `context_groupings[]`.
+  - Example (bad): `context_groupings=[SUBJECT]` and `groupings=[GRADE_LEVEL]`.
+  - Fix: either include grade in `context_groupings`, or emit both in `groupings[]` in correct outer→inner order.
+
+12. **Grade label check**
   - If role=GRADE_LEVEL contains extra narrative words beyond the grade identifier/band, rewrite it so grade_level is only the grade label.
   - Only emit an additional grouping for the remaining phrase if it is meaningful curriculum structure (e.g., Topic/Unit/Strand); otherwise omit it.
   - Do NOT emit SECTION for generic document-type leftovers (e.g., "Syllabus", "Curriculum", "Framework").
 
-11. **SECTION usage guardrail (IMPORTANT)**
+13. **SECTION usage guardrail (IMPORTANT)**
   - role=SECTION is NOT a default fallback.
   - Use SECTION only for meaningful curriculum structure labels that are not better captured as STAGE/GRADE_LEVEL/LEARNING_AREA/SUBJECT/THEME/UNIT/WEEK/STRAND/TOPIC.
   - Do NOT emit SECTION for generic document-type words that do not add hierarchy signal, such as: "syllabus/syllabi", "curriculum", "framework", "guide", "teacher's guide", "national curriculum", "table of contents", "foreword", "preface", "acknowledgements".

@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 # Third Party Library
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
@@ -27,8 +27,11 @@ from skg.schemas import BaseSchema, ExportDialect
 from skg.utils.constants import NodeRole, NormalizedStatementType, StatementRole
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
-AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
+AllowedEntityKeys = {"identifier", "caseIdentifierUUID"}
+ExportDialect = Literal["lc_public_strict", "global_relaxed"]
 MetadataT = dict[str, Any]
+ProgressionGranularity = Literal["coarse", "fine", "auto"]
+ProgressionSource = Literal["progression_ir", "llm"]
 ValidationLevel = Literal["error", "warning", "info"]
 
 
@@ -259,6 +262,156 @@ class StandardsFramework(BaseSchema):
     def _strip_and_require_non_empty(cls, v: str) -> str:
         """Strip whitespace and require non-empty string for required fields.
 
+# Schemas for nodes.
+class StandardsFramework(BaseModelKG):
+    """Root node for a standards framework (typically one per PDF).
+
+    This represents the top-level standards document/container in the LC KG. All
+    StandardsFrameworkItems (SFIs) should be reachable from this framework via
+    `hasChild` relationships.
+    """
+
+    academic_subject: str = Field(
+        alias="academicSubject",
+        description=(
+            "High-level academic subject classification for the framework "
+            "(e.g., Mathematics, English Language Arts, Science). "
+            "In `lc_public_strict`, this should conform to LC enum values; "
+            "in `global_relaxed`, free-form values are allowed."
+        ),
+    )
+    adoption_status: str = Field(
+        alias="adoptionStatus",
+        description=(
+            "Adoption status of the framework (e.g., Draft, Adopted). "
+            "In `lc_public_strict`, this should conform to LC enum values; "
+            "in `global_relaxed`, free-form values are allowed."
+        ),
+    )
+    attribution_statement: str = Field(
+        alias="attributionStatement",
+        description=(
+            "Attribution text required to credit the original publisher/owner "
+            "of the standards framework (e.g., Ministry of Education, year, source)."
+        ),
+    )
+    author: str = Field(
+        description=(
+            "Human or organization name considered the author/owner of the framework "
+            "(e.g., 'Ministry of Education (Zambia)')."
+        ),
+    )
+    case_identifier_uri: str = Field(
+        alias="caseIdentifierURI",
+        description=(
+            "Stable URI identifier for the framework object. LC KG aligns with "
+            "CASE-style identifiers; for non-CASE sources this may be a synthetic "
+            "deterministic URI/URN minted by the pipeline (e.g., urn:uuid:<uuid>)."
+        ),
+    )
+    case_identifier_uuid: UUID = Field(
+        alias="caseIdentifierUUID",
+        description=(
+            "Stable UUID identifier for the framework object. In LC KG/CASE contexts, "
+            "this is used as a stable cross-system identifier. For non-CASE sources, "
+            "this may be a synthetic deterministic UUIDv5 minted by the pipeline."
+        ),
+    )
+    date_created: Optional[str] = Field(
+        alias="dateCreated",
+        default=None,
+        description=(
+            "Creation timestamp for the framework (ISO-8601 string), if known. "
+            "Optional; often unavailable for PDFs."
+        ),
+    )
+    date_modified: Optional[str] = Field(
+        alias="dateModified",
+        default=None,
+        description=(
+            "Last-modified timestamp for the framework (ISO-8601 string), if known. "
+            "Optional; often unavailable for PDFs."
+        ),
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable description of the framework. Optional; may be generated "
+            "from document metadata or left empty."
+        ),
+    )
+    identifier: UUID = Field(
+        description=(
+            "Primary internal identifier for this entity in the export. Must be "
+            "deterministic across reruns (UUIDv5 recommended)."
+        ),
+    )
+    in_language: str = Field(
+        alias="inLanguage",
+        description=(
+            "Language tag for the framework (e.g., en-US). In `lc_public_strict`, "
+            "this should conform to LC enum values; in `global_relaxed`, any valid "
+            "BCP-47 language tag is allowed."
+        ),
+    )
+    jurisdiction: str = Field(
+        description=(
+            "Jurisdiction that issued the framework (e.g., Zambia, Uganda). "
+            "In `lc_public_strict`, this may require an LC-safe fallback "
+            "(with the true value stored in provenance)."
+        ),
+    )
+    license: str = Field(
+        description=(
+            "License string for the framework content. This may be an SPDX-like label "
+            "or a publisher-defined license statement; must be present even if it is "
+            "a conservative placeholder."
+        ),
+    )
+    metadata: MetadataT = Field(
+        default_factory=dict,
+        description=(
+            "Free-form metadata for pipeline/internal use (e.g., doc_key, source PDF name, "
+            "dialect fallback details). This should not be relied on as LC KG canonical fields."
+        ),
+    )
+    name: str = Field(
+        description=(
+            "Human-readable name/title of the framework, typically derived from the PDF title "
+            "or cover page (e.g., 'Lower Primary Education Syllabi Grade 1–3 (2024)')."
+        ),
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional notes field for additional human-readable context. "
+            "This is not always populated; use for brief clarifications."
+        ),
+    )
+    provider: str = Field(
+        description=(
+            "Provider/host name for the exported KG dataset (often your organization/product). "
+            "Used for attribution and provenance in downstream systems."
+        ),
+    )
+
+    @field_validator(
+        "academic_subject",
+        "adoption_status",
+        "attribution_statement",
+        "author",
+        "case_identifier_uri",
+        "in_language",
+        "jurisdiction",
+        "license",
+        "name",
+        "provider",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty string for required fields.
+
         Parameters
         ----------
         v
@@ -291,30 +444,30 @@ class StandardsFramework(BaseSchema):
     @field_validator("case_identifier_uri")
     @classmethod
     def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
-        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
+        """Validate caseIdentifierURI looks like a URI/URN (supports http(s), urn,
         etc.).
 
         Parameters
         ----------
         v
-            The case_identifier_uri string to validate.
+            The caseIdentifierURI string to validate.
 
         Returns
         -------
         str
-            The validated case_identifier_uri string.
+            The validated caseIdentifierURI string.
 
         Raises
         ------
         ValueError
-            If the case_identifier_uri does not include a URI scheme.
+            If the caseIdentifierURI does not include a URI scheme.
         """
 
         parsed = urlparse(v)
 
         if not parsed.scheme:
             raise ValueError(
-                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
+                "caseIdentifierURI must include a URI scheme (e.g., urn:, http:, https:)"
             )
 
         return v
@@ -363,7 +516,7 @@ class StandardsFramework(BaseSchema):
 
     @model_validator(mode="after")
     def _check_case_uri_contains_uuid(self) -> StandardsFramework:
-        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
+        """Validate that caseIdentifierURI includes caseIdentifierUUID (deterministic
         traceability).
 
         Returns
@@ -379,6 +532,30 @@ class StandardsFramework(BaseSchema):
 
         if str(self.case_identifier_uuid) not in self.case_identifier_uri:
             raise ValueError("case_identifier_uri must include case_identifier_uuid")
+
+        return self
+
+    @model_validator(mode="after")
+    def _check_modified_not_before_created(self) -> StandardsFramework:
+        """If both dates exist, ensure dateModified >= dateCreated.
+
+        Returns
+        -------
+        StandardsFramework
+            The validated StandardsFramework object.
+
+        Raises
+        ------
+        ValueError
+            If dateModified is before dateCreated.
+        """
+
+        if self.date_created and self.date_modified:
+            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
+            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
+
+            if modified < created:
+                raise ValueError("dateModified must be >= dateCreated")
 
         return self
 
@@ -1235,7 +1412,77 @@ class Relationship(BaseSchema):
             self.source_entity_key != "case_identifier_uuid"
             or self.target_entity_key != "case_identifier_uuid"
         ):
-            raise ValueError("hasChild must use case_identifier_uuid endpoints")
+            raise ValueError("hasChild must use caseIdentifierUUID endpoints")
+
+    def _validate_common_schema(self) -> None:
+        """Validate generic allowed values for types and keys.
+
+        Raises
+        ------
+        ValueError
+            If any common schema validation fails.
+        """
+
+        if self.relationship_type not in AllowedRelationshipTypes:
+            raise ValueError(
+                f"Unsupported relationshipType: {self.relationship_type}\n"
+                f"Valid relationship types are: {AllowedRelationshipTypes}"
+            )
+
+        if self.source_entity_key not in AllowedEntityKeys:
+            raise ValueError(f"Invalid sourceEntityKey: {self.source_entity_key}")
+
+        if self.target_entity_key not in AllowedEntityKeys:
+            raise ValueError(f"Invalid targetEntityKey: {self.target_entity_key}")
+
+    def _validate_data_integrity(self) -> None:
+        """Validate that entity values are valid UUIDs.
+
+        Parameters
+        -------
+        Raises
+        ------
+        ValueError
+            If any entity value is not a valid UUID.
+        """
+
+        try:
+            UUID(str(self.source_entity_value))
+        except Exception as e:  # pylint: disable=broad-except
+            raise ValueError(
+                f"sourceEntityValue is not a UUID: {self.source_entity_value}"
+            ) from e
+
+        try:
+            UUID(str(self.target_entity_value))
+        except Exception as e:  # pylint: disable=broad-except
+            raise ValueError(
+                f"targetEntityValue is not a UUID: {self.target_entity_value}"
+            ) from e
+
+    def _validate_progression(self) -> None:
+        """Validate 'buildsTowards'/'relatesTo' specific constraints.
+
+        Raises
+        ------
+        ValueError
+            If any progression validation fails.
+        """
+
+        if (
+            self.source_entity != "StandardsFrameworkItem"
+            or self.target_entity != "StandardsFrameworkItem"
+        ):
+            raise ValueError(
+                f"{self.relationship_type} must be StandardsFrameworkItem -> StandardsFrameworkItem"
+            )
+        if (
+            self.source_entity_key != "caseIdentifierUUID"
+            or self.target_entity_key != "caseIdentifierUUID"
+        ):
+            raise ValueError(
+                f"{self.relationship_type} must use caseIdentifierUUID endpoints"
+            )
 
     def _validate_supports(self) -> None:
         """Validate 'supports' constraints: LearningComponent -> StandardsFrameworkItem.
@@ -1428,76 +1675,71 @@ class Relationship(BaseSchema):
 
 
 # Schemas for provenance.
-class BBox(BaseSchema):
+class BBox(BaseModelKG):
     """Bounding box in pixel coordinates."""
 
     coord_space: Literal["px"] = "px"
     x0: float = Field(..., description="Left coordinate in pixels.", ge=0.0)
-    x1: float = Field(..., description="Right coordinate in pixels.", ge=0.0)
     y0: float = Field(..., description="Top coordinate in pixels.", ge=0.0)
+    x1: float = Field(..., description="Right coordinate in pixels.", ge=0.0)
     y1: float = Field(..., description="Bottom coordinate in pixels.", ge=0.0)
 
 
-class EntityProvenance(BaseSchema):
-    """Provenance information for a node."""
+class EntityProvenance(BaseModelKG):
+    """Provenance information for a node or relationship."""
 
     bbox: Optional[BBox] = None
-    canonical_node_id: str
-    dialect_fallbacks: dict[str, str] = Field(default_factory=dict)
-    entity_identifier: UUID
-    local_code: Optional[str] = Field(default=None)
-    page_indices: list[int] = Field(default_factory=list)
-    role: NodeRole | StatementRole
-    section_path_text: list[str] = Field(default_factory=list)
-    source_decision_ids: list[str] = Field(default_factory=list)
-    source_segment_ids: list[str] = Field(default_factory=list)
-    text: Optional[TextUnit] = None
+    canonical_node_id: str = Field(alias="canonicalNodeId")
+    dialect_fallbacks: dict[str, str] = Field(
+        alias="dialectFallbacks", default_factory=dict
+    )
+    entity_identifier: UUID = Field(alias="entityIdentifier")
+    local_code: Optional[str] = Field(alias="localCode", default=None)
+    page_indices: list[int] = Field(alias="pageIndices", default_factory=list)
+    role: str
+    section_path_text: list[str] = Field(alias="sectionPathText", default_factory=list)
+    source_decision_ids: list[str] = Field(
+        alias="sourceDecisionIds", default_factory=list
+    )
+    source_segment_ids: list[str] = Field(
+        alias="sourceSegmentIds", default_factory=list
+    )
+    text: Optional[str] = None
+    text_en: Optional[str] = Field(alias="textEn", default=None)
 
 
-class LearningProgressionProvenance(BaseSchema):
-    """Provenance information for a learning progression relationship."""
+class ProgressionProvenance(BaseModelKG):
+    """Provenance information for a progression relationship."""
 
     confidence: float = Field(ge=0.0, le=1.0)
-    evidence_node_ids: list[str] = Field(default_factory=list)
+    evidence_node_ids: list[str] = Field(alias="evidenceNodeIds", default_factory=list)
     explanation: Optional[str] = None
-    inference_source: Literal["inferred", "llm"]
+    inference_source: Literal["progression_ir", "llm"] = Field(alias="inferenceSource")
     granularity: Literal["coarse", "fine"] = "coarse"
-    llm_model: Optional[str] = Field(default=None)
-    relationship_identifier: UUID
+    llm_model: Optional[str] = Field(alias="llmModel", default=None)
+    prompt_hash: Optional[str] = Field(alias="promptHash", default=None)
+    relationship_identifier: UUID = Field(alias="relationshipIdentifier")
 
 
-class RelationshipProvenance(BaseSchema):
+class RelationshipProvenance(BaseModelKG):
     """Provenance information for a relationship."""
 
-    evidence_node_ids: list[str] = Field(default_factory=list)
-    evidence_page_indices: list[int] = Field(default_factory=list)
-    relationship_identifier: UUID
-    relationship_type: str
-    source_uuid: UUID
-    target_uuid: UUID
-
-
-# Schemas for export configurations.
-class EntityProvenanceExport(BaseSchema):
-    """Schema for entity provenance export."""
-
-    entities: list[EntityProvenance] = Field(
-        default_factory=list, description="List of entities."
+    evidence_node_ids: list[str] = Field(alias="evidenceNodeIds", default_factory=list)
+    evidence_page_indices: list[int] = Field(
+        alias="evidencePageIndices", default_factory=list
     )
+    relationship_identifier: UUID = Field(alias="relationshipIdentifier")
+    relationship_type: str = Field(alias="relationshipType")
+    source_uuid: UUID = Field(alias="sourceUuid")
+    target_uuid: UUID = Field(alias="targetUuid")
 
 
-class HierarchyOrderExport(BaseSchema):
-    """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
-
-    order: dict[str, list[str]] = Field(
-        default_factory=dict, description="Order of child SFIs."
-    )
-
-
-class KnowledgeGraphExport(BaseSchema):
+# Schemas for knowledge graph export.
+class KnowledgeGraphExport(BaseModelKG):
     """Schema for Knowledge Graph export."""
 
     export_dialect: ExportDialect = Field(
+        alias="exportDialect",
         default="global_relaxed",
         description="Export validation mode: strict LC enums vs relaxed global strings.",
     )
@@ -1739,8 +1981,49 @@ class KnowledgeGraphExport(BaseSchema):
 class LearningProgressionProvenanceExport(BaseSchema):
     """Schema for progression provenance export."""
 
-    learning_progressions: list[LearningProgressionProvenance] = Field(
-        default_factory=list, description="List of learning progressions."
+    Notes
+    -----
+    1. export_dialect defaults to "shape_only". We *can* keep "strict" as an option for
+        internal experiments, but the schemas/models are intentionally non-US-centric.
+    2. namespace_uuid MUST be pinned and never changed once you start generating IDs.
+    """
+
+    academic_subject_default: str
+    adoption_status: str
+    attribution_statement: str
+    author: str
+    case_uri_base: str = Field(
+        default="urn:lc:case:",
+        description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
+    )
+    description_text_policy: Literal["source", "prefer_text_en"] = "source"
+    export_dialect: ExportDialect = "global_relaxed"
+    export_in_language_policy: Literal["default", "source"] = "source"
+    include_descriptors: bool = True
+    include_guidance: bool = False
+    generate_learning_components: bool = True
+    generate_progressions: bool = True
+    jurisdiction_default: str
+    language_default: str
+    learning_component_policy: Literal["1_to_1", "split_bullets"] = "1_to_1"
+    lc_max_splits_per_standard: int = Field(
+        default=25,
+        description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
+        ge=1,
+    )
+    license: str
+    max_progression_edges_per_node: int = Field(default=3, ge=1)
+    namespace_uuid: UUID = Field(
+        default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
+        description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
+    )
+    progression_granularity: ProgressionGranularity = "auto"
+    progression_min_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    progression_source: ProgressionSource = "llm"
+    provider: str
+    prune_empty_groupings: bool = Field(
+        default=True,
+        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering, repeating to a fixpoint. No reattachment is performed.",
     )
 
 
@@ -1750,6 +2033,30 @@ class RelationshipProvenanceExport(BaseSchema):
     relationships: list[RelationshipProvenance] = Field(
         default_factory=list, description="List of relationships."
     )
+
+
+class EntityProvenanceExport(BaseModelKG):
+    """Schema for entity provenance export."""
+
+    entities: list[EntityProvenance] = Field(default_factory=list)
+
+
+class RelationshipProvenanceExport(BaseModelKG):
+    """Schema for relationship provenance export."""
+
+    relationships: list[RelationshipProvenance] = Field(default_factory=list)
+
+
+class ProgressionProvenanceExport(BaseModelKG):
+    """Schema for progression provenance export."""
+
+    progressions: list[ProgressionProvenance] = Field(default_factory=list)
+
+
+class HierarchyOrderExport(BaseModelKG):
+    """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
+
+    order: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # Schemas for graph validation reporting.

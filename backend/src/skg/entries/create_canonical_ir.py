@@ -49,6 +49,7 @@ from skg.canonical_ir.utils import (
     persist_canonical_run,
     process_segment_decisions,
     save_canonical_ir,
+    segment_hint,
 )
 from skg.canonical_ir.validators import validate_table_chunk_coverage_and_overlap
 from skg.document_ir.schemas import DocumentIR
@@ -132,6 +133,16 @@ def create_canonical_ir(
 
             prev_number_decisions = len(decision_set.decisions)
             warnings: list[str] = []
+
+            prev_seg = document_ir.segments[i - 2] if i > 1 else None
+            next_seg = document_ir.segments[i] if i < num_segments else None
+            prev_hint = (
+                segment_hint(prev_seg.model_dump(mode="json")) if prev_seg else None
+            )
+            next_hint = (
+                segment_hint(next_seg.model_dump(mode="json")) if next_seg else None
+            )
+
             decision_set = process_segment_decisions(
                 caption_bindings=caption_bindings,
                 config=config,
@@ -139,6 +150,8 @@ def create_canonical_ir(
                 decision_set=decision_set,
                 doc_key=doc_key,
                 existing_keys=existing_keys,
+                next_segment_hint=next_hint,
+                prev_segment_hint=prev_hint,
                 segment=segment,
                 segment_decisions_fp=segment_decisions_fp,
                 warnings=warnings,

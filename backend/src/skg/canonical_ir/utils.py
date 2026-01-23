@@ -1224,7 +1224,7 @@ def _materialize_decision_structure(
     """Reconcile context stack, create grouping nodes, and materialize leaves/rows.
 
     NB: For tables, a table decision may contain both decision.leaves[] (segment-level
-    statements) and decision.rows[] (row-wise statements). In these cases, emitting
+    statements) OR decision.rows[] (row-wise statements). In these cases, emitting
     leaves first makes them appear first in deterministic order_index order under that
     parent. If we wanted to emit rows first, then we can just switch the if-statements.
 
@@ -1671,6 +1671,8 @@ def _process_block_segment(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
+    next_segment_hint: dict[str, Any] | None = None,
+    prev_segment_hint: dict[str, Any] | None = None,
     segment: Segment,
     segment_decisions_fp: Path,
 ) -> SegmentDecisionSet:
@@ -1688,6 +1690,10 @@ def _process_block_segment(
         The document key.
     existing_keys
         The set of existing decision keys.
+    next_segment_hint
+        The next segment hint to apply.
+    prev_segment_hint
+        The previous segment hint to apply.
     segment
         The Segment to process.
     segment_decisions_fp
@@ -1708,6 +1714,8 @@ def _process_block_segment(
         segment_payload.get("section_path")
     )
     segment_payload["prior_context_groupings"] = [dict(x) for x in (context_hint or [])]
+    segment_payload["prev_segment_hint"] = prev_segment_hint
+    segment_payload["next_segment_hint"] = next_segment_hint
 
     segment_decision = generate_segment_decision(
         always_double_check_first_attempt=config.always_double_check_first_attempt,
@@ -1733,6 +1741,8 @@ def _process_table_segment(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
+    next_segment_hint: dict[str, Any] | None = None,
+    prev_segment_hint: dict[str, Any] | None = None,
     segment: Segment,
     segment_decisions_fp: Path,
     warnings: list[str],
@@ -1753,6 +1763,10 @@ def _process_table_segment(
         The document key.
     existing_keys
         The set of existing decision keys.
+    next_segment_hint
+        The next segment hint to apply.
+    prev_segment_hint
+        The previous segment hint to apply.
     segment
         The Segment to process.
     segment_decisions_fp
@@ -1809,6 +1823,8 @@ def _process_table_segment(
             table_payload["prior_context_groupings"] = [
                 dict(x) for x in (context_hint or [])
             ]
+            table_payload["prev_segment_hint"] = prev_segment_hint
+            table_payload["next_segment_hint"] = next_segment_hint
 
             segment_decision = generate_segment_decision(
                 always_double_check_first_attempt=config.always_double_check_first_attempt,
@@ -1868,6 +1884,8 @@ def _process_table_segment(
             else (context_hint or [])
         )
         table_payload["prior_context_groupings"] = [dict(x) for x in prior]
+        table_payload["prev_segment_hint"] = prev_segment_hint
+        table_payload["next_segment_hint"] = next_segment_hint
 
         segment_decision = generate_segment_decision(
             always_double_check_first_attempt=config.always_double_check_first_attempt,
@@ -3803,6 +3821,8 @@ def process_segment_decisions(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
+    prev_segment_hint: dict[str, Any] | None = None,
+    next_segment_hint: dict[str, Any] | None = None,
     segment: Segment,
     segment_decisions_fp: Path,
     warnings: list[str],
@@ -3823,6 +3843,10 @@ def process_segment_decisions(
         The expected document key for all page IRs.
     existing_keys
         The set of existing decision keys to avoid duplicates.
+    prev_segment_hint
+        The previous segment hint to include in the segment decision payload.
+    next_segment_hint
+        The next segment hint to include in the segment decision payload.
     segment
         The Segment to process.
     segment_decisions_fp
@@ -3848,6 +3872,8 @@ def process_segment_decisions(
             decision_set=decision_set,
             doc_key=doc_key,
             existing_keys=existing_keys,
+            next_segment_hint=next_segment_hint,
+            prev_segment_hint=prev_segment_hint,
             segment=segment,
             segment_decisions_fp=segment_decisions_fp,
         )
@@ -3859,6 +3885,8 @@ def process_segment_decisions(
         decision_set=decision_set,
         doc_key=doc_key,
         existing_keys=existing_keys,
+        next_segment_hint=next_segment_hint,
+        prev_segment_hint=prev_segment_hint,
         segment=segment,
         segment_decisions_fp=segment_decisions_fp,
         warnings=warnings,
@@ -4322,6 +4350,41 @@ def save_segment_decision_set(
     write_to_json(fp=segment_decisions_fp, json_info=decision_set)
 
     return decision_set
+
+
+def segment_hint(segment: dict[str, Any]) -> dict[str, Any]:
+    """Generate a compact hint dictionary for a segment.
+
+    NB: Keep this SMALL (only things that help context).
+
+    Parameters
+    ----------
+    segment
+        The segment dictionary.
+
+    Returns
+    -------
+    dict[str, Any]
+        The compact hint dictionary.
+    """
+
+    hint = {
+        "segment_id": segment.get("segment_id"),
+        "kind": segment.get("kind"),
+        "page_indices": segment.get("page_indices", []),
+        "section_path": segment.get("section_path", [])[-8:],  # Last few only
+        "caption_text": (segment.get("caption_text") or "")[:300],
+    }
+
+    if segment.get("kind") == "table":
+        hint["header_rows_canonical"] = (segment.get("header_rows_canonical") or [])[:2]
+
+        # Optional: first 1–2 rows of text-only to hint topic/subtopic patterns.
+        hint["row_count"] = len(segment.get("rows_canonical") or [])
+    else:
+        hint["text_preview"] = (segment.get("text") or "")[:400]
+
+    return hint
 
 
 def table_chunks_for_segment(

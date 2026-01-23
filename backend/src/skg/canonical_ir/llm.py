@@ -32,6 +32,8 @@ from skg.canonical_ir.validators import (
     validate_context_groupings_required_for_emit,
     validate_context_groupings_role_order,
     validate_context_groupings_supported_by_outer_evidence,
+    validate_emitted_statements_have_outer_anchor,
+    validate_groupings_not_outer_than_context,
     validate_heading_segments_emit_groupings,
     validate_ignore_unresolved_emit_nothing,
     validate_leaf_codes_use_local_code,
@@ -446,6 +448,7 @@ def generate_grouping_canonicalization_map(
     known_canonical_set: set[tuple[str, str]] = set()
 
     all_canonical_items = []
+    batch_size = min(batch_size, len(grouping_keys))
 
     for i in range(0, len(grouping_keys), batch_size):
         batch_keys = grouping_keys[i : i + batch_size]
@@ -795,5 +798,11 @@ def verify_segment_decision_quality(
         segment=segment, segment_decision=segment_decision
     )
     validate_leaf_codes_use_local_code(
+        segment=segment, segment_decision=segment_decision
+    )
+    validate_emitted_statements_have_outer_anchor(
+        segment=segment, segment_decision=segment_decision
+    )
+    validate_groupings_not_outer_than_context(
         segment=segment, segment_decision=segment_decision
     )
