@@ -274,6 +274,7 @@ def _process_canonicalization_batch(
     known_canonicals_list: list[dict[str, str]],
     max_retries: int,
     model: str,
+    num_grouping_keys: int,
 ) -> GroupingCanonicalizationMap:
     """Process a single batch with retries and error handling.
 
@@ -291,6 +292,8 @@ def _process_canonicalization_batch(
         Maximum number of retries for quality errors.
     model
         The OpenAI model to use.
+    num_grouping_keys
+        The total number of grouping keys being processed.
 
     Returns
     -------
@@ -300,7 +303,8 @@ def _process_canonicalization_batch(
 
     logger.info(
         f"Processing canonical grouping batch {batch_index} "
-        f"({len(batch_keys)} items). "
+        f"({len(batch_keys)} grouping keys). "
+        f"Total number of grouping keys: {num_grouping_keys}. "
         f"Number of known canonicals: {len(known_canonicals_list)}"
     )
 
@@ -435,6 +439,7 @@ def generate_grouping_canonicalization_map(
         grouping_keys,
         key=lambda k: (-len(k.title or ""), k.role.value, (k.title or "")),
     )
+    num_grouping_keys = len(grouping_keys)
 
     # Maintain a unique set of (role, title) tuples established as output standards to
     # pass as context to subsequent batches.
@@ -460,6 +465,7 @@ def generate_grouping_canonicalization_map(
             known_canonicals_list=known_canonicals_list,
             max_retries=max_retries,
             model=model,
+            num_grouping_keys=num_grouping_keys,
         )
         all_canonical_items.extend(batch_result.items)
 
