@@ -21,6 +21,8 @@ from skg.canonical_ir.schemas import (
     CanonicalEdge,
     CanonicalIR,
     CanonicalNode,
+    GroupingCanonicalizationKey,
+    GroupingCanonicalizationMap,
     GroupingDecision,
     LeafDecision,
     SegmentDecision,
@@ -33,22 +35,28 @@ from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegm
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import (
+    CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
     BlockType,
     CaptionFigurePrefixes,
     CaptionKind,
     CaptionTablePrefixes,
+    GroupingCanonicalizationAction,
     NodeRole,
     NonArtifacts,
     SegmentDecisionType,
     UnresolvedReason,
 )
-from skg.utils.general import make_dir, normalize_text, open_json_type, write_to_json
+from skg.utils.general import (
+    QUOTES_TRANSLATION,
+    make_dir,
+    open_json_type,
+    write_to_json,
+)
 
 T = TypeVar("T")
 
 # Compiled regexes.
 _DASH_RE = re.compile(r"[‐-‒–—−]+")
-_SPLIT_SEP_RE = re.compile(r"\s*[:|]\s*|\s*[–—-]\s*", re.UNICODE)
 _STRUCTURAL_CONTEXT_CUE_RE = re.compile(
     r"\b("
     r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
@@ -87,6 +95,95 @@ class ContextFrame:
 
     grouping_key: str
     node_id: str
+
+
+def _gkey_tuple(
+    *,
+    role: NodeRole,
+    title: str,
+    local_code: Optional[str],
+    source_label: Optional[str],
+) -> tuple[str, str, str, str]:
+    """Create a grouping key tuple.
+
+    Parameters
+    ----------
+    role
+        The NodeRole of the grouping.
+    title
+        The title of the grouping.
+    local_code
+        The local code of the grouping.
+    source_label
+        The source label of the grouping.
+
+    Returns
+    -------
+    tuple[str, str, str, str]
+        The grouping key tuple.
+    """
+
+    return role.value, title, local_code or "", source_label or ""
+
+
+def _build_mapping_index(
+    *, mapping: GroupingCanonicalizationMap, min_confidence: float
+) -> dict[
+    tuple[str, str, str, str],
+    GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+]:
+    """Build a fast lookup index for grouping canonicalization mapping.
+
+    Parameters
+    ----------
+    mapping
+        The GroupingCanonicalizationMap to index.
+    min_confidence
+        The minimum confidence threshold to consider an entry valid.
+
+    Returns
+    -------
+    dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ]
+        An index as follows:
+          - None means DROP
+          - GroupingKey means REPLACE (1)
+          - list[GroupingKey] means SPLIT (2+)
+          - Missing entry means KEEP
+    """
+
+    index: dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ] = {}
+
+    for item in mapping.items:
+        if item.confidence < min_confidence:
+            continue  # Treat as KEEP
+
+        inp = item.input
+        k = _gkey_tuple(
+            local_code=inp.local_code,
+            role=inp.role,
+            source_label=inp.source_label,
+            title=inp.title,
+        )
+
+        if item.action == GroupingCanonicalizationAction.DROP:
+            index[k] = None
+        elif item.action == GroupingCanonicalizationAction.KEEP:
+            # not stored -> interpreted as KEEP
+            continue
+        elif item.action == GroupingCanonicalizationAction.REPLACE:
+            index[k] = item.output[0]
+        elif item.action == GroupingCanonicalizationAction.SPLIT:
+            index[k] = item.output
+        else:
+            continue
+
+    return index
 
 
 def _check_cycles(*, child_to_parent: dict[str, str], warnings: list[str]) -> None:
@@ -335,6 +432,65 @@ def _classify_caption_kind(text: str) -> CaptionKind:
     return "unknown"
 
 
+def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
+    """Apply cleaning to GroupingDecision fields.
+
+    Parameters
+    ----------
+    g
+        The GroupingDecision to clean.
+
+    Returns
+    -------
+    GroupingDecision
+        The cleaned GroupingDecision.
+    """
+
+    title = _clean_text(g.title) or g.title.strip()
+
+    return g.model_copy(
+        update={
+            "local_code": _clean_text(g.local_code),
+            "source_label": _clean_text(g.source_label),
+            "title": title,
+        }
+    )
+
+
+def _clean_text(text: Optional[str]) -> Optional[str]:
+    """Clean text as follows:
+
+    1. NFKC unicode normalization
+    2. Normalize curly quotes to ASCII
+    3. Unify dash variants to '-'
+    4. Collapse whitespace
+    5. Strip
+
+    NB: Do not include curriculum-specific heuristics here.
+
+    Parameters
+    ----------
+    text
+        The text to clean.
+
+    Returns
+    -------
+    Optional[str]
+        The cleaned text, or None if input was None or normalized to empty.
+    """
+
+    if text is None:
+        return None
+
+    t = unicodedata.normalize("NFKC", text)
+    t = t.translate(QUOTES_TRANSLATION)
+    t = _DASH_RE.sub("-", t)
+    t = _WS_RE.sub(" ", t).strip()
+
+    # Preserve None for optional fields when they normalize to empty.
+    return t or None
+
+
 def _count_decision_leaves(d: SegmentDecision) -> int:
     """Count statement leaves emitted by this decision (block leaves + table row
     leaves).
@@ -380,12 +536,46 @@ def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
     return start, end, decision_id
 
 
+def _dedupe_preserve_order(groupings: list[GroupingDecision]) -> list[GroupingDecision]:
+    """Deduplicate GroupingDecisions while preserving order.
+
+    Parameters
+    ----------
+    groupings
+        The list of GroupingDecisions to deduplicate.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The deduplicated list of GroupingDecisions.
+    """
+
+    output: list[GroupingDecision] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    for g in groupings:
+        key = _gkey_tuple(
+            local_code=g.local_code,
+            role=g.role,
+            source_label=g.source_label,
+            title=g.title,
+        )
+
+        if key in seen:
+            continue
+
+        output.append(g)
+        seen.add(key)
+
+    return output
+
+
 def _detect_semantic_collision(
     *, existing: CanonicalNode, node: CanonicalNode, warnings: list[str]
 ) -> bool:
     """Check for semantic conflicts between an existing node and a new node.
 
-    MB:
+    NB:
 
     1. Node IDs are derived from *normalized* semantics (role + normalized title/body
         + ancestor fingerprint + optional local_code). Therefore we only treat this as
@@ -529,6 +719,37 @@ def _detect_semantic_collision(
         warnings.append(msg)
 
     return collision
+
+
+def _drop_duplicate_roles_keep_first(
+    groupings: list[GroupingDecision],
+) -> list[GroupingDecision]:
+    """Drop duplicate roles, keeping the first occurrence.
+
+    Parameters
+    ----------
+    groupings
+        The list of GroupingDecisions to process.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The filtered list of GroupingDecisions.
+    """
+
+    output: list[GroupingDecision] = []
+    seen_roles: set[str] = set()
+
+    for g in groupings:
+        role_value = g.role.value
+
+        if role_value in seen_roles:
+            continue
+
+        output.append(g)
+        seen_roles.add(role_value)
+
+    return output
 
 
 def _emit_edge(
@@ -788,23 +1009,6 @@ def _grouping_key(g: GroupingDecision) -> str:
     return f"{g.role.value}:{_normalize_text(text=title)}:{_normalize_text(text=code)}"
 
 
-def _groupings_to_payload_dicts(gs: list[Any] | None) -> list[dict[str, Any]]:
-    """Convert a list of GroupingDecision to list of dicts for payload.
-
-    Parameters
-    ----------
-    gs
-        The list of GroupingDecision to convert.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        The converted list of dicts.
-    """
-
-    return [g.model_dump(mode="json") for g in (gs or [])]
-
-
 def _index_decisions_by_segment(
     *, segment_decisions: SegmentDecisionSet
 ) -> dict[str, list[SegmentDecision]]:
@@ -830,29 +1034,37 @@ def _index_decisions_by_segment(
     return decisions_by_segment
 
 
-def _looks_like_grade_token(s: str) -> bool:
-    """Heuristic check if a string looks like a grade-level token.
+def _iter_all_grouping_decisions(
+    decision_set: SegmentDecisionSet,
+) -> Iterable[GroupingDecision]:
+    """Yield every GroupingDecision present anywhere in the decision set:
+
+    1. context_groupings
+    2. segment-level groupings
+    3. row-level groupings
 
     Parameters
     ----------
-    s
-        The string to check.
+    decision_set
+        The SegmentDecisionSet to iterate over.
 
-    Returns
+    Yields
     -------
-    bool
-        True if the string looks like a grade-level token, otherwise False.
+    GroupingDecision
+        The next GroupingDecision.
     """
 
-    s = normalize_text(s).lower()
+    for d in decision_set.decisions:
+        if d.context_groupings:
+            yield from d.context_groupings
 
-    return (
-        bool(re.match(r"^(grade|grades)\s+\d+(\s*[–-]\s*\d+)?$", s))
-        or bool(re.match(r"^p\d+$", s))
-        or bool(re.match(r"^(primary)\s+\d+$", s))
-        or bool(re.match(r"^(standard|std)\.?\s+[ivx]+$", s))
-        or bool(re.match(r"^(standard|std)\.?\s+\d+$", s))
-    )
+        if d.groupings:
+            yield from d.groupings
+
+        if d.rows:
+            for r in d.rows:
+                if r.groupings:
+                    yield from r.groupings
 
 
 def _make_unresolved_sample(
@@ -882,8 +1094,6 @@ def _make_unresolved_sample(
 
     if rationale:
         parts.append(f"rationale={rationale}")
-
-    segment_text: str | None = None
 
     if isinstance(segment, BlockSegment):
         segment_text = _extract_block_segment_text(segment)
@@ -1463,7 +1673,6 @@ def _process_block_segment(
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
     segment: Segment,
     segment_decisions_fp: Path,
-    warnings: list[str],
 ) -> SegmentDecisionSet:
     """Helper to process block segments.
 
@@ -1483,8 +1692,6 @@ def _process_block_segment(
         The Segment to process.
     segment_decisions_fp
         The file path to save segment decisions to.
-    warnings
-        The list of warnings to append to.
 
     Returns
     -------
@@ -1493,12 +1700,7 @@ def _process_block_segment(
     """
 
     key: tuple[str, int | None, int | None] = (segment.segment_id, None, None)
-
-    if key in existing_keys:
-        msg = f"Skipping block segment {segment.segment_id}: decision already exists."
-        logger.warning(msg)
-        warnings.append(msg)
-        return decision_set
+    assert key not in existing_keys, f"Duplicate segment block key found: {key}"
 
     # Filter the outer evidence shown to the LLM so it matches validator policy.
     segment_payload = segment.model_dump(mode="json")
@@ -1571,12 +1773,9 @@ def _process_table_segment(
     # Table segments: chunk only if needed. If an unchunked table decision already
     # exists, do NOT mix chunked + unchunked.
     unchunked_key = (segment.segment_id, None, None)
-
-    if unchunked_key in existing_keys:
-        msg = f"Skipping table segment {segment.segment_id}: unchunked decision already exists."
-        logger.warning(msg)
-        warnings.append(msg)
-        return decision_set
+    assert (
+        unchunked_key not in existing_keys
+    ), f"Duplicate unchunked table key found: {unchunked_key}"
 
     # Determine table chunks.
     chunks = table_chunks_for_segment(
@@ -1774,6 +1973,91 @@ def _resolve_collision(
     return new_id
 
 
+def _rewrite_grouping_list(
+    *,
+    enforce_unique_roles: bool,
+    groupings: list[GroupingDecision] | None,
+    mapping_index: dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ],
+    sort_by_precedence: bool,
+) -> list[GroupingDecision] | None:
+    """Rewrite a list of GroupingDecisions using a mapping index.
+
+    Parameters
+    ----------
+    enforce_unique_roles
+        Whether to enforce unique roles in the output list.
+    groupings
+        The list of GroupingDecisions to rewrite.
+    mapping_index
+        The mapping index for rewriting groupings.
+    sort_by_precedence
+        Whether to sort the output list by context precedence.
+
+    Returns
+    -------
+    list[GroupingDecision] | None
+        The rewritten list of GroupingDecisions.
+    """
+
+    if not groupings:
+        return groupings
+
+    rewritten: list[GroupingDecision] = []
+
+    for g in groupings:
+        key = _gkey_tuple(
+            local_code=g.local_code,
+            role=g.role,
+            source_label=g.source_label,
+            title=g.title,
+        )
+
+        if key not in mapping_index:
+            rewritten.append(g)
+            continue
+
+        repl = mapping_index[key]
+
+        if repl is None:  # Drop
+            continue
+
+        if isinstance(repl, list):  # Split
+            rewritten.extend(
+                [
+                    GroupingDecision(
+                        local_code=k.local_code,
+                        role=k.role,
+                        source_label=k.source_label,
+                        title=k.title,
+                    )
+                    for k in repl
+                ]
+            )
+        else:  # Replace
+            rewritten.append(
+                GroupingDecision(
+                    local_code=repl.local_code,
+                    role=repl.role,
+                    source_label=repl.source_label,
+                    title=repl.title,
+                )
+            )
+
+    # Deduplicate while preserving order.
+    rewritten = _dedupe_preserve_order(rewritten)
+
+    if enforce_unique_roles:
+        rewritten = _drop_duplicate_roles_keep_first(rewritten)
+
+    if sort_by_precedence:
+        rewritten = _sort_by_context_precedence(rewritten)
+
+    return rewritten
+
+
 def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
     """Best-effort bbox for a segment.
 
@@ -1792,6 +2076,42 @@ def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
     """
 
     return segment.segment_provenance[0].bbox if segment.segment_provenance else None
+
+
+def _sort_by_context_precedence(
+    groupings: list[GroupingDecision],
+) -> list[GroupingDecision]:
+    """Sort groupings by the global precedence order used for context_groupings.
+    Unknown roles fall to the end deterministically.
+
+    Parameters
+    ----------
+    groupings
+        The list of GroupingDecisions to sort.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The sorted list of GroupingDecisions.
+    """
+
+    def key_fn(g: GroupingDecision) -> tuple[int, str]:
+        """Key function for sorting groupings by precedence and title.
+
+        Parameters
+        ----------
+        g
+            The GroupingDecision to generate a sort key for.
+
+        Returns
+        -------
+        tuple[int, str]
+            The sort key as (precedence, title).
+        """
+
+        return CONTEXT_GROUPINGS_ROLE_PRECEDENCE.get(g.role, 10_000), g.title
+
+    return sorted(groupings, key=key_fn)
 
 
 def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
@@ -1853,10 +2173,10 @@ def _table_row_bbox(*, row_index: int, table_segment: TableSegment) -> Optional[
 def _validate_and_handle_unresolved(
     *,
     decision: SegmentDecision,
-    low_conf_threshold: float,
     page_indices: list[int],
     section_path_text: list[str],
     segment: Segment,
+    segment_decision_conf_threshold: float,
     unresolved: list[UnresolvedItem],
     warnings: list[str],
 ) -> bool:
@@ -1866,14 +2186,14 @@ def _validate_and_handle_unresolved(
     ----------
     decision
         The SegmentDecision to validate.
-    low_conf_threshold
-        The low confidence threshold.
     page_indices
         The list of page indices for the segment.
     section_path_text
         The section path text for the segment.
     segment
         The Segment to validate.
+    segment_decision_conf_threshold
+        The low confidence threshold for segment decisions.
     unresolved
         The list of UnresolvedItems to append to.
     warnings
@@ -1912,12 +2232,12 @@ def _validate_and_handle_unresolved(
         return False
 
     # Confidence gating.
-    if decision.confidence < low_conf_threshold:
+    if decision.confidence < segment_decision_conf_threshold:
         msg = (
             f"low_confidence_decision_not_materialized:"
             f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
             f"kind={segment.kind} conf={decision.confidence:.3f} "
-            f"threshold={low_conf_threshold:.3f}"
+            f"threshold={segment_decision_conf_threshold:.3f}"
         )
         logger.warning(msg)
         warnings.append(msg)
@@ -1971,6 +2291,115 @@ def apply_caption_binding_to_table_payload(
     return table_payload
 
 
+def apply_grouping_canonicalization_map(
+    *,
+    creation_dirs: CanonicalIRDirs,
+    mapping: GroupingCanonicalizationMap,
+    min_confidence: float = 0.0,
+    segment_decisions: SegmentDecisionSet,
+) -> SegmentDecisionSet:
+    """Deterministically apply a GroupingCanonicalizationMap to all grouping lists in a
+    decision set.
+
+    Applies to:
+
+    1. SegmentDecision.context_groupings
+    2. SegmentDecision.groupings
+    3. RowDecision.groupings
+
+    The mapping is as follows:
+
+    1. KEEP: no-op
+    2. DROP: remove the grouping
+    3. REPLACE: replace with 1 canonical grouping (same role)
+    4. SPLIT: replace with 2+ canonical groupings (may change roles)
+
+    The process is as follows:
+
+    1. Dedupe exact duplicates (stable)
+    2. Enforce unique roles for context_groupings + row groupings (keep-first)
+    3. Sort context_groupings by global outer→inner precedence for stability
+
+    Parameters
+    ----------
+    creation_dirs
+        The canonical IR creation directories.
+    mapping
+        The GroupingCanonicalizationMap to apply.
+    min_confidence
+        The minimum confidence threshold for applying mapping entries.
+    segment_decisions
+        The SegmentDecisionSet to update.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The updated SegmentDecisionSet.
+    """
+
+    mapping_index = _build_mapping_index(mapping=mapping, min_confidence=min_confidence)
+    new_decisions: list[SegmentDecision] = []
+
+    for decision in segment_decisions.decisions:
+        updates = {}
+
+        # Context groupings: enforce precedence + no duplicate roles.
+        if decision.context_groupings:
+            updates["context_groupings"] = _rewrite_grouping_list(
+                enforce_unique_roles=True,
+                groupings=decision.context_groupings,
+                mapping_index=mapping_index,
+                sort_by_precedence=True,
+            )
+
+        # Segment-level groupings: keep order by default.
+        if decision.groupings:
+            updates["groupings"] = _rewrite_grouping_list(
+                enforce_unique_roles=False,
+                groupings=decision.groupings,
+                mapping_index=mapping_index,
+                sort_by_precedence=False,
+            )
+
+        # Row-level groupings: enforce unique roles.
+        if decision.rows:
+            new_rows = []
+
+            for row in decision.rows:
+                if row.groupings:
+                    new_groupings = _rewrite_grouping_list(
+                        enforce_unique_roles=True,
+                        groupings=row.groupings,
+                        mapping_index=mapping_index,
+                        sort_by_precedence=False,
+                    )
+                    new_rows.append(row.model_copy(update={"groupings": new_groupings}))
+                else:
+                    new_rows.append(row)
+
+            updates["rows"] = new_rows
+
+        new_decisions.append(decision.model_copy(update=updates))
+
+    # NB: Recompute decision set ID since decisions have changed.
+    new_id = compute_decision_set_id(decisions=new_decisions)
+
+    # Save updated decision set.
+    normalized_segment_decisions = segment_decisions.model_copy(
+        update={"decision_set_id": new_id, "decisions": new_decisions}
+    )
+    normalized_segment_decisions_fp = (
+        creation_dirs.root / "segment_decisions_normalized.json"
+    )
+    write_to_json(fp=normalized_segment_decisions_fp, json_info=segment_decisions)
+
+    logger.info(
+        f"Saved normalized segment decisions to: {normalized_segment_decisions_fp}"
+    )
+
+    return normalized_segment_decisions
+
+
 def attach_caption_binding_to_segment_decision(
     *, caption_binding: CaptionBinding | None, segment_decision: SegmentDecision
 ) -> SegmentDecision:
@@ -2009,7 +2438,33 @@ def build_caption_bindings(
     max_gap_segments: int = 2,
     max_page_distance: int = 1,
 ) -> dict[str, CaptionBinding]:
-    """Bind Caption block to next Table segment (within limits).
+    """Build deterministic caption→table bindings *before* LLM interpretation.
+
+    Many curriculum PDFs place a short caption/label block immediately before a table.
+    That caption is usually not curriculum content itself, but it often contains
+    critical context (grade, subject, theme/unit, table meaning) needed to interpret
+    the table.
+
+    This function:
+
+    1. Scans DocumentIR.segments[] in order and one-shot binds each CAPTION block to
+        the *next* table segment (within configured gap/page limits).
+    2. Produces a stable mapping: table_segment_id -> CaptionBinding(...).
+    3. Emits warnings for captions that cannot be bound (e.g., dangling captions).
+
+    We call this function before calling the LLM so that we can:
+
+    1. Improve the LLM accuracy by injecting caption context into table payloads,
+        helping it choose correct context_groupings[] and statement roles.
+    2. Avoid asking the LLM to infer cross-segment relationships, keeping behavior
+        deterministic and replayable.
+    3. Enforce the policy that captions are provenance-only: captions provide evidence
+        but never become canonical nodes.
+    4. Stabilize chunked-table processing by ensuring all chunks of a table receive the
+        same caption metadata.
+
+    The resulting bindings are applied when constructing LLM inputs for table segments
+    and are stored as provenance/audit context (or attached to unresolved items).
 
     Parameters
     ----------
@@ -2037,11 +2492,7 @@ def build_caption_bindings(
     pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
 
     for index, segment in enumerate(document_ir.segments):
-        page_index = (
-            segment.slices[0].page_index
-            if segment.slices
-            else segment.segment_provenance[0].page_index
-        )
+        page_index = segment.slices[0].page_index
         assert isinstance(page_index, int) and page_index >= 0
 
         # Explicit caption candidate.
@@ -2412,11 +2863,136 @@ def canonicalize_storage_text(text: Optional[str]) -> str:
     return text
 
 
+def clean_up_segment_decisions(
+    *, creation_dirs: CanonicalIRDirs, segment_decisions: SegmentDecisionSet
+) -> SegmentDecisionSet:
+    """
+    Apply universal (non-heuristic) hygiene to all grouping fields in a decision set.
+
+    This is intended to run BEFORE the LLM-based global grouping canonicalization step
+    so that the mapping operates on stable strings (whitespace/quote/dash noise removed).
+
+    IMPORTANT:
+      - does NOT split/combine groupings
+      - does NOT do Zambia-specific parsing
+      - only cleans context_groupings/groupings/rows.groupings
+    """
+
+    new_segment_decisions = []
+
+    for d in segment_decisions.decisions:
+        updates = {}
+
+        if d.context_groupings:
+            updates["context_groupings"] = [
+                _clean_grouping(g) for g in d.context_groupings
+            ]
+
+        if d.groupings:
+            updates["groupings"] = [_clean_grouping(g) for g in d.groupings]
+
+        if d.rows:
+            new_rows = []
+
+            for r in d.rows:
+                if r.groupings:
+                    new_rows.append(
+                        r.model_copy(
+                            update={
+                                "groupings": [_clean_grouping(g) for g in r.groupings]
+                            }
+                        )
+                    )
+                else:
+                    new_rows.append(r)
+
+            updates["rows"] = new_rows
+
+        new_segment_decisions.append(d.model_copy(update=updates))
+
+    # NB: Recompute decision_set_id since decision content changed.
+    new_id = compute_decision_set_id(decisions=new_segment_decisions)
+
+    # Save cleaned decisions.
+    segment_decisions_cleaned = segment_decisions.model_copy(
+        update={"decision_set_id": new_id, "decisions": new_segment_decisions}
+    )
+    segment_decisions_cleaned_fp = creation_dirs.root / "segment_decisions_cleaned.json"
+    write_to_json(fp=segment_decisions_cleaned_fp, json_info=segment_decisions_cleaned)
+
+    logger.info(f"Saved cleaned segment decisions to: {segment_decisions_cleaned_fp}")
+
+    return segment_decisions_cleaned
+
+
+def collect_unique_grouping_keys(
+    *, creation_dirs: CanonicalIRDirs, segment_decisions: SegmentDecisionSet
+) -> list[GroupingCanonicalizationKey]:
+    """Collect the set of unique grouping candidates
+    (role/title/local_code/source_label) from a SegmentDecisionSet to feed into the
+    LLM-based global grouping canonicalizer.
+
+    The process ensures:
+
+    1. Input traversal is stable
+    2. Dedupe uses exact tuple matching
+
+    Parameters
+    ----------
+    creation_dirs
+        The canonical IR creation directories.
+    segment_decisions
+        The SegmentDecisionSet to extract grouping keys from.
+
+    Returns
+    -------
+    list[GroupingCanonicalizationKey]
+        The list of unique grouping keys.
+    """
+
+    grouping_keys: list[GroupingCanonicalizationKey] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    for g in _iter_all_grouping_decisions(segment_decisions):
+        role = g.role
+        title = (g.title or "").strip()
+        assert title, f"GroupingDecision with empty title found: {g}"
+
+        local_code = (g.local_code or "").strip()
+        source_label = (g.source_label or "").strip()
+
+        dedupe_key = (role.value, title, local_code, source_label)
+
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        grouping_keys.append(
+            GroupingCanonicalizationKey(
+                local_code=(local_code or None),
+                role=role,
+                source_label=(source_label or None),
+                title=title,
+            )
+        )
+
+    grouping_keys.sort(
+        key=lambda x: (x.role.value, x.title, x.local_code or "", x.source_label or "")
+    )
+    write_to_json(
+        fp=creation_dirs.root / "grouping_keys_unique.json", json_info=grouping_keys
+    )
+
+    logger.info(f"Saved unique grouping keys to: {creation_dirs.root}")
+
+    return grouping_keys
+
+
 def compile_canonical_ir(
     *,
     doc_key: str,
     document_ir: DocumentIR,
-    low_conf_threshold: float,
+    segment_decision_conf_threshold: float,
     segment_decisions: SegmentDecisionSet,
     structural_leaf_warn_threshold: float,
 ) -> CanonicalIR:
@@ -2436,9 +3012,9 @@ def compile_canonical_ir(
         The document key.
     document_ir
         The DocumentIR to process.
-    low_conf_threshold
-        The low confidence threshold for warnings (this comes from the system prompt
-        for the LLM).
+    segment_decision_conf_threshold
+        The low confidence threshold for segment decisions (this ties into the segment
+        decision system prompt).
     segment_decisions
         The SegmentDecisionSet to apply.
     structural_leaf_warn_threshold
@@ -2531,10 +3107,10 @@ def compile_canonical_ir(
             # Check ignore/unresolved/low confidence.
             should_continue = _validate_and_handle_unresolved(
                 decision=decision,
-                low_conf_threshold=low_conf_threshold,
                 page_indices=page_indices,
                 section_path_text=section_path_text,
                 segment=segment,
+                segment_decision_conf_threshold=segment_decision_conf_threshold,
                 unresolved=unresolved,
                 warnings=warnings,
             )
@@ -2618,29 +3194,6 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
 
     return CanonicalIRDirs(
         root=root, canonical_ir=canonical_ir, segment_decisions=segment_decisions
-    )
-
-
-def decision_key(
-    segment_decision: SegmentDecision,
-) -> tuple[str, int | None, int | None]:
-    """Compute a unique key for a SegmentDecision based on segment_id and row range.
-
-    Parameters
-    ----------
-    segment_decision
-        The SegmentDecision to compute the key for.
-
-    Returns
-    -------
-    tuple[str, int | None, int | None]
-        The unique key as (segment_id, row_range_start, row_range_end).
-    """
-
-    return (
-        segment_decision.segment_id or "",
-        segment_decision.row_range_start,
-        segment_decision.row_range_end,
     )
 
 
@@ -2788,45 +3341,6 @@ def ensure_node(
             setattr(existing, field, getattr(node, field))
 
     return existing.node_id
-
-
-def expand_grouping(g: GroupingDecision) -> list[GroupingDecision]:
-    """Expand a GroupingDecision into one or more GroupingDecisions, handling composite
-    titles (e.g., "GRADE 1-3 | MATH").
-
-    Parameters
-    ----------
-    g
-        The GroupingDecision to expand.
-
-    Returns
-    -------
-    list[GroupingDecision]
-        The expanded list of GroupingDecisions.
-    """
-
-    # Always normalize title text.
-    title = normalize_text(g.title)
-
-    # Split grade composite headings.
-    if g.role == NodeRole.GRADE_LEVEL:
-        grade_title, subject = split_grade_subject(title)
-
-        if subject:
-            g_grade = g.model_copy(update={"title": grade_title})
-            g_subject = GroupingDecision(
-                local_code=None,
-                role=NodeRole.SUBJECT,
-                source_label=g.source_label,  # Keep provenance
-                title=subject,
-            )
-
-            return [g_grade, g_subject]
-
-        return [g.model_copy(update={"title": grade_title})]
-
-    # For other roles, just normalized title.
-    return [g.model_copy(update={"title": title})]
 
 
 def load_segment_decision_set(
@@ -3147,94 +3661,6 @@ def merge_nodes_postpass(
     return list(merged.values())
 
 
-def normalize_decision_set(decision_set: SegmentDecisionSet) -> SegmentDecisionSet:
-    """Normalize a SegmentDecisionSet by expanding composite groupings and deduping
-    exact duplicates.
-
-    Parameters
-    ----------
-    decision_set
-        The SegmentDecisionSet to normalize.
-
-    Returns
-    -------
-    SegmentDecisionSet
-        The normalized SegmentDecisionSet.
-    """
-
-    normalized_decisions = []
-
-    for d in decision_set.decisions:
-        d2 = d.model_copy()
-
-        d2.context_groupings = normalize_groupings(d2.context_groupings)
-        d2.groupings = normalize_groupings(d2.groupings)
-
-        if d2.rows:
-            rows2 = []
-
-            for r in d2.rows:
-                r2 = r.model_copy()
-                r2.groupings = normalize_groupings(r2.groupings)
-                rows2.append(r2)
-
-            d2.rows = rows2
-
-        normalized_decisions.append(d2)
-
-    # NB: Recompute decision_set_id so validation stays correct.
-    new_decision_set_id = compute_decision_set_id(decisions=normalized_decisions)
-
-    # Rebuild (validates duplicate decision_id, fingerprint, etc.).
-    payload = decision_set.model_dump(mode="json")
-    payload["decisions"] = [d.model_dump(mode="json") for d in normalized_decisions]
-    payload["decision_set_id"] = new_decision_set_id
-
-    # Tag generator for audit trail.
-    if payload.get("generator"):
-        payload["generator"] = payload["generator"] + "|normalized:v1"
-    else:
-        payload["generator"] = "normalized:v1"
-
-    return SegmentDecisionSet.model_validate(payload)
-
-
-def normalize_groupings(groupings: list[GroupingDecision]) -> list[GroupingDecision]:
-    """Normalize a list of GroupingDecisions by expanding composites and deduping exact
-    duplicates.
-
-    Parameters
-    ----------
-    groupings
-        The list of GroupingDecisions to normalize.
-
-    Returns
-    -------
-    list[GroupingDecision]
-        The normalized list of GroupingDecisions.
-    """
-
-    output: list[GroupingDecision] = []
-
-    for g in groupings:
-        output.extend(expand_grouping(g))
-
-    # Collapse exact duplicates while preserving order.
-    deduped = []
-    seen = set()
-
-    for g in output:
-        key = (g.role, normalize_text(g.title).lower(), (g.local_code or "").strip())
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        deduped.append(g)
-
-    return deduped
-
-
 def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -> str:
     """Create a short stable fingerprint of the ancestor grouping key sequence.
 
@@ -3351,8 +3777,9 @@ def persist_canonical_run(
     """
 
     creation_dirs = create_canonical_ir_dirs(output_dir=output_dir)
+    exclude_keys = {"model", "overwrite"}
     creation_run = RunCtx(
-        extra={},
+        extra={k: v for k, v in config.model_dump().items() if k not in exclude_keys},
         models=[config.model],
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
@@ -3418,7 +3845,6 @@ def process_segment_decisions(
             existing_keys=existing_keys,
             segment=segment,
             segment_decisions_fp=segment_decisions_fp,
-            warnings=warnings,
         )
 
     return _process_table_segment(
@@ -3825,7 +4251,7 @@ def save_canonical_ir(
     *,
     canonical_ir: CanonicalIR,
     canonical_ir_fp: Path,
-    low_conf_threshold: float,
+    segment_decision_conf_threshold: float,
     structural_leaf_warn_threshold: float,
 ) -> None:
     """Export the canonical IR to a JSON file.
@@ -3836,8 +4262,8 @@ def save_canonical_ir(
         The CanonicalIR to serialize.
     canonical_ir_fp
         The output file path for the CanonicalIR JSON.
-    low_conf_threshold
-        The low confidence threshold used during canonicalization.
+    segment_decision_conf_threshold
+        The low confidence threshold used for segment decisions.
     structural_leaf_warn_threshold
         The structural leaf warning threshold used during canonicalization.
     """
@@ -3850,16 +4276,16 @@ def save_canonical_ir(
         w for w in canonical_ir.warnings if w.startswith("structural_leaf_review:")
     ]
     structural_leaf_warnings_fp = canonical_ir_fp.with_name(
-        canonical_ir_fp.stem + ".structural_leaf_warnings.json"
+        canonical_ir_fp.stem + "_structural_leaf_warnings.json"
     )
     write_to_json(
         fp=structural_leaf_warnings_fp,
         json_info={
-            "doc_key": canonical_ir.doc_key,
-            "decision_set_id": canonical_ir.decision_set_id,
-            "low_conf_threshold": low_conf_threshold,
-            "structural_leaf_warn_threshold": structural_leaf_warn_threshold,
             "count": len(structural_leaf_warnings),
+            "decision_set_id": canonical_ir.decision_set_id,
+            "doc_key": canonical_ir.doc_key,
+            "segment_decision_conf_threshold": segment_decision_conf_threshold,
+            "structural_leaf_warn_threshold": structural_leaf_warn_threshold,
             "warnings": structural_leaf_warnings,
         },
     )
@@ -3891,37 +4317,6 @@ def save_segment_decision_set(
     write_to_json(fp=segment_decisions_fp, json_info=decision_set)
 
     return decision_set
-
-
-def split_grade_subject(title: str) -> tuple[str, str | None]:
-    """Split a title into (grade, subject) if it matches expected patterns.
-
-    Parameters
-    ----------
-    title
-        The title text to split.
-
-    Returns
-    -------
-    tuple[str, str | None]
-        A tuple of (grade, subject) if split is successful, otherwise (title, None).
-    """
-
-    t = normalize_text(title)
-    parts = _SPLIT_SEP_RE.split(t, maxsplit=1)
-
-    if len(parts) != 2:
-        return t, None
-
-    left, right = normalize_text(parts[0]), normalize_text(parts[1])
-
-    if not left or not right:
-        return t, None
-
-    if _looks_like_grade_token(left):
-        return left, right
-
-    return t, None
 
 
 def table_chunks_for_segment(

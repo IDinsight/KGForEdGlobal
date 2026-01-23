@@ -23,6 +23,20 @@ import langcodes
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
+QUOTES_TRANSLATION = str.maketrans(
+    {
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "’": "'",
+        "‘": "'",
+        "‚": "'",
+        "‛": "'",
+        "\u00a0": " ",  # NBSP -> space
+    }
+)
+
 
 class Valid(BaseModel):
     """Pydantic model for global valid values."""

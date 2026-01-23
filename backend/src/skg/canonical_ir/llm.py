@@ -21,7 +21,11 @@ from tenacity import (
 )
 
 # Package Library
-from skg.canonical_ir.schemas import SegmentDecision
+from skg.canonical_ir.schemas import (
+    GroupingCanonicalizationKey,
+    GroupingCanonicalizationMap,
+    SegmentDecision,
+)
 from skg.canonical_ir.validators import (
     validate_chunked_table_context_matches_prior_context,
     validate_context_groupings_no_duplicate_roles,
@@ -44,11 +48,98 @@ from skg.canonical_ir.validators import (
 )
 from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
-from skg.prompts.canonical_ir import decide_on_segment, double_check_decision_on_segment
+from skg.prompts.canonical_ir import (
+    decide_on_segment,
+    double_check_decision_on_segment,
+    grouping_canonicalization_instructions,
+)
 from skg.schemas import Limits
 
 limits = Limits(max_retry_attempts=5)
 openai_client = OpenAI()
+
+
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(
+        (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+    ),
+    stop=stop_after_attempt(limits.max_retry_attempts),
+    wait=wait_random_exponential(min=1, max=60),
+)
+def _call_openai_api_to_canonicalize_groupings(
+    *,
+    doc_key: str,
+    input_items: list[Any],
+    instructions: str,
+    grouping_keys: list[GroupingCanonicalizationKey],
+    model: str,
+) -> GroupingCanonicalizationMap:
+    """Wrapper for grouping canonicalization API calls with retries.
+
+    Parameters
+    ----------
+    doc_key
+        The document key.
+    input_items
+        The list of messages to send to the OpenAI API.
+    instructions
+        The extraction instructions to include.
+    grouping_keys
+        The list of grouping canonicalization keys to process.
+    model
+        The OpenAI model to use.
+
+    Returns
+    -------
+    GroupingCanonicalizationMap
+        The generated GroupingCanonicalizationMap.
+
+    Raises
+    ------
+    QualityError
+        If the response could not be parsed or failed quality checks.
+    """
+
+    response = openai_client.responses.parse(
+        input=input_items,
+        instructions=instructions,
+        model=model,
+        temperature=0,
+        text_format=GroupingCanonicalizationMap,
+        top_p=1,
+    )
+
+    parsed = getattr(response, "output_parsed", None)
+    output_text = getattr(response, "output_text", None)
+
+    if parsed is None:
+        raise QualityError(
+            "Grouping canonicalization returned no parsed output.",
+            failed_content=output_text,
+        )
+
+    parsed.doc_key = doc_key
+    parsed.generator = model
+
+    try:
+        parsed = GroupingCanonicalizationMap.model_validate(parsed.model_dump())
+        verify_grouping_canonicalization_map_quality(
+            grouping_keys=grouping_keys, mapping=parsed
+        )
+    except (ValidationError, QualityError) as e:
+        # Attach the raw output so the correction attempt can see what it wrote.
+        raise QualityError(str(e), failed_content=output_text) from e
+
+    return parsed
 
 
 @retry(
@@ -172,6 +263,139 @@ def _call_openai_api_to_decide_on_segment(
         raise QualityError(str(e), failed_content=output_text) from e
 
     return parsed
+
+
+def generate_grouping_canonicalization_map(
+    *,
+    doc_key: str,
+    grouping_keys: list[GroupingCanonicalizationKey],
+    max_retries: int = 2,
+    model: str,
+) -> GroupingCanonicalizationMap:
+    """Generate a global GroupingCanonicalizationMap for all unique grouping keys in a
+    doc.
+
+    Parameters
+    ----------
+    doc_key
+        The document key.
+    grouping_keys
+        The list of grouping canonicalization keys to process.
+    max_retries
+        Maximum number of retries for quality errors.
+    model
+        The OpenAI model to use.
+
+    Returns
+    -------
+    GroupingCanonicalizationMap
+        The generated GroupingCanonicalizationMap.
+    """
+
+    if not grouping_keys:
+        return GroupingCanonicalizationMap(doc_key=doc_key, generator=model, items=[])
+
+    prompts = grouping_canonicalization_instructions(grouping_keys=grouping_keys)
+    instructions = prompts.system_message
+    input_items = [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompts.user_message}],
+        },
+    ]
+
+    for attempt in range(max_retries + 1):
+        try:
+            return _call_openai_api_to_canonicalize_groupings(
+                doc_key=doc_key,
+                input_items=input_items,
+                instructions=instructions,
+                grouping_keys=grouping_keys,
+                model=model,
+            )
+        except QualityError as e:
+            if attempt >= max_retries:
+                logger.error(
+                    "Grouping canonicalization failed after exhausting retries."
+                )
+                raise  # Re-raise the final quality error
+
+            # Append the assistant's failed attempt to history first. Without this, the
+            # model doesn't know what it's correcting.
+            if e.failed_content:
+                logger.error(
+                    f"Grouping canonicalization failed content: {e.failed_content}"
+                )
+                input_items.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": e.failed_content}],
+                    }
+                )
+
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"Your previous output had issues and must be corrected.\n"
+                                f"ERROR: {str(e)}\n\n"
+                                f"Return a complete GroupingCanonicalizationMap that matches the schema and fixes the issue."
+                            ),
+                        }
+                    ],
+                }
+            )
+            continue
+        except Exception as e:  # pylint: disable=broad-except
+            # Let transient errors propagate (tenacity should cover most of these).
+            if isinstance(
+                e,
+                (
+                    TimeoutError,
+                    ConnectionError,
+                    OSError,
+                    APIConnectionError,
+                    APITimeoutError,
+                    RateLimitError,
+                    InternalServerError,
+                ),
+            ):
+                raise
+
+            # Handle general exceptions (like Pydantic ValidationErrors) that bubble up
+            # from the API call but might not have attached text.
+            last_error = QualityError(f"Structured parse/validation failed: {e}")
+
+            if attempt >= max_retries:
+                raise last_error from e
+
+            # If possible, we should try to add the assistant's context here too, but
+            # standard Python Exceptions won't carry the model output unless we wrap
+            # them in _call_openai_api_for_page_ir_extraction. For now, we proceed with
+            # the Error feedback.
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"The previous response failed structured parsing/validation.\n"
+                                f"ERROR: {e.__class__.__name__}: {e}\n\n"
+                                f"Return a complete GroupingCanonicalizationMap that matches the schema exactly."
+                            ),
+                        }
+                    ],
+                }
+            )
+            continue
+
+    raise QualityError(
+        f"Grouping canonicalization failed after {max_retries + 1} attempts."
+    )
 
 
 def generate_segment_decision(
@@ -334,6 +558,63 @@ def generate_segment_decision(
             continue
 
     raise QualityError(f"Segment decision failed after {max_retries + 1} attempts.")
+
+
+def verify_grouping_canonicalization_map_quality(
+    *,
+    grouping_keys: list[GroupingCanonicalizationKey],
+    mapping: GroupingCanonicalizationMap,
+) -> None:
+    """Deterministic quality checks:
+
+    1. Mapping covers ALL input keys exactly once.
+    2. Mapping contains no unknown extra inputs.
+
+    Parameters
+    ----------
+    grouping_keys
+        The expected grouping canonicalization input keys.
+    mapping
+        The GroupingCanonicalizationMap to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    def _grouping_key_tuple(
+        k: GroupingCanonicalizationKey,
+    ) -> tuple[str, str, str, str]:
+        """Convert a GroupingCanonicalizationKey to a comparable tuple.
+
+        Parameters
+        ----------
+        k
+            The GroupingCanonicalizationKey to convert.
+
+        Returns
+        -------
+        tuple[str, str, str, str]
+            The comparable tuple representation.
+        """
+
+        return k.role.value, k.title, k.local_code or "", k.source_label or ""
+
+    expected = {_grouping_key_tuple(k) for k in grouping_keys}
+    got = {_grouping_key_tuple(item.input) for item in mapping.items}
+    missing = expected - got
+    extra = got - expected
+
+    if missing or extra:
+        msg = []
+
+        if missing:
+            msg.append(f"Missing {len(missing)} input keys in mapping.")
+        if extra:
+            msg.append(f"Found {len(extra)} unexpected input keys in mapping.")
+
+        raise QualityError(" ".join(msg))
 
 
 def verify_segment_decision_quality(

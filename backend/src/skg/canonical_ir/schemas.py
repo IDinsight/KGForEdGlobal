@@ -21,6 +21,7 @@ from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import (
     BlockType,
     CaptionKind,
+    GroupingCanonicalizationAction,
     NodeRole,
     SegmentDecisionType,
     StatementRole,
@@ -662,6 +663,188 @@ class SegmentDecisionSet(BaseSchema):
                 f"  expected: {expected}\n"
                 "This usually means the file was edited or regenerated without updating decision_set_id."
             )
+
+        return self
+
+
+# Schemas for canonicalization of segment decisions.
+class GroupingCanonicalizationKey(BaseSchema):
+    """The minimal identity of a grouping candidate that we want to canonicalize.
+
+    NB:
+
+    1. role + title is usually enough.
+    2. local_code/source_label are optional but useful to preserve provenance and
+        disambiguate weird cases.
+    """
+
+    local_code: Optional[str] = Field(
+        default=None, description="Optional local code associated with this grouping."
+    )
+    role: NodeRole = Field(
+        ..., description="Grouping node role (GRADE_LEVEL, SUBJECT, THEME, etc.)"
+    )
+    source_label: Optional[str] = Field(
+        default=None,
+        description="Optional verbatim label that introduced this grouping (e.g. 'Topic', 'Strand').",
+    )
+    title: str = Field(
+        ...,
+        description="Grouping title as emitted by the segment-decision LLM (may be noisy).",
+    )
+
+    @model_validator(mode="after")
+    def _validate_title_nonempty(self) -> GroupingCanonicalizationKey:
+        """Ensure title is non-empty after trimming whitespace.
+
+        Returns
+        -------
+        GroupingCanonicalizationKey
+            The validated GroupingCanonicalizationKey object.
+
+        Raises
+        ------
+        ValueError
+            If the title is empty after trimming.
+        """
+
+        t = (self.title or "").strip()
+
+        if not t:
+            raise ValueError("GroupingKey.title must be non-empty.")
+
+        self.title = t
+
+        if self.local_code is not None:
+            self.local_code = self.local_code.strip() or None
+
+        if self.source_label is not None:
+            self.source_label = self.source_label.strip() or None
+
+        return self
+
+
+class GroupingCanonicalizationItem(BaseSchema):
+    """Canonicalization rewrite rule for grouping candidates.
+
+    We just have one rewrite rule: input grouping -> action -> output grouping(s).
+    Matching should be done deterministically in Python (exact match on
+    role/title/local_code/source_label).
+    """
+
+    action: GroupingCanonicalizationAction = Field(
+        ..., description="Canonicalization action to apply."
+    )
+    confidence: float = Field(
+        default=1.0,
+        description="Confidence in this rewrite. If below threshold, you may choose not to apply automatically.",
+        ge=0.0,
+        le=1.0,
+    )
+    input: GroupingCanonicalizationKey = Field(
+        ..., description="Original grouping candidate (verbatim-ish from decisions)."
+    )
+    output: list[GroupingCanonicalizationKey] = Field(
+        default_factory=list,
+        description="Canonical grouping(s) that replace the input. Empty for KEEP/DROP.",
+    )
+    rationale: Optional[str] = Field(
+        default=None,
+        description="Short justification for audit/debugging (not used for determinism).",
+    )
+
+    @model_validator(mode="after")
+    def _validate_action_output_contract(self) -> GroupingCanonicalizationItem:
+        """Enforce action/output consistency rules.
+
+        Returns
+        -------
+        GroupingCanonicalizationItem
+            The validated GroupingCanonicalizationItem object.
+
+        Raises
+        ------
+        ValueError
+            If the action/output combination is inconsistent.
+        """
+
+        if self.action == GroupingCanonicalizationAction.DROP and self.output:
+            raise ValueError("DROP requires output=[]")
+
+        if (
+            self.action == GroupingCanonicalizationAction.KEEP
+            and self.output
+            and self.output != [self.input]
+        ):
+            raise ValueError("KEEP requires output=[] (preferred) or output=[input]")
+
+        if self.action == GroupingCanonicalizationAction.REPLACE:
+            if len(self.output) != 1:
+                raise ValueError("REPLACE requires exactly one output grouping")
+            if self.output[0].role != self.input.role:
+                raise ValueError(
+                    "REPLACE must not change role (use SPLIT if role must change)"
+                )
+        elif (
+            self.action == GroupingCanonicalizationAction.SPLIT and len(self.output) < 2
+        ):
+            raise ValueError("SPLIT requires 2+ output groupings")
+
+        return self
+
+
+class GroupingCanonicalizationMap(BaseSchema):
+    """Top-level LLM response: a full mapping for all unique groupings found in a
+    decision set.
+
+    This mapping should be applied deterministically to:
+
+    1. SegmentDecision.context_groupings
+    2. SegmentDecision.groupings
+    3. RowDecision.groupings
+    """
+
+    doc_key: Optional[str] = Field(
+        default=None,
+        description="Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex). This should be populated by the Python pipeline; it may be null.",
+    )
+    generator: Optional[str] = Field(
+        default=None,
+        description="Model identifier for audit/debugging. This should be populated by the Python pipeline; it may be null.",
+    )
+    items: list[GroupingCanonicalizationItem] = Field(
+        default_factory=list,
+        description="Rewrite rules covering all unique input groupings.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_no_duplicate_inputs(self) -> GroupingCanonicalizationMap:
+        """Ensure no duplicate inputs in the mapping.
+
+        Returns
+        -------
+        GroupingCanonicalizationMap
+
+        Raises
+        ------
+        ValueError
+            If duplicate mapping inputs are detected.
+        """
+
+        seen = set()
+
+        for item in self.items:
+            key = (
+                item.input.role.value,
+                item.input.title,
+                item.input.local_code or "",
+                item.input.source_label or "",
+            )
+
+            if key in seen:
+                raise ValueError(f"Duplicate mapping input detected for {key}")
+
+            seen.add(key)
 
         return self
 

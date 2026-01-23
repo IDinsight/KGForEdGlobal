@@ -204,20 +204,9 @@ def persist_extraction_run(
     extraction_dirs = create_page_ir_extraction_dirs(
         doc_key=doc_key, output_dir=config.output_dir
     )
+    exclude_keys = {"model", "overwrite"}
     extraction_run = RunCtx(
-        extra={
-            "country": config.country,
-            "doc_key": doc_key,
-            "dpi": config.dpi,
-            "end_page_cli": config.end_page,  # Keep original config value (may be None)
-            "languages": config.languages,
-            "output_dir": config.output_dir,
-            "pdf_fp": config.pdf_fp,
-            "pdf_name": config.pdf_fp.name,
-            "start_page": config.start_page,
-            "use_text_layer_hints": config.use_text_layer_hints,
-            "year": config.year,
-        },
+        extra={k: v for k, v in config.model_dump().items() if k not in exclude_keys},
         models=[config.model],
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),

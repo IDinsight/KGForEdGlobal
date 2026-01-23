@@ -7,8 +7,8 @@ import unicodedata
 from typing import Any, Optional
 
 # Package Library
-from skg.canonical_ir.schemas import SegmentDecision
-from skg.document_ir.schemas import Segment
+from skg.canonical_ir.schemas import SegmentDecision, SegmentDecisionSet
+from skg.document_ir.schemas import DocumentIR, Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
@@ -75,8 +75,7 @@ def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
 def _extract_marker_numbers(
     *, allow_roman: bool, regex: re.Pattern, text_norm: str
 ) -> set[int]:
-    """Extract numeric designators (e.g., grade/week/term numbers) from normalized
-    text.
+    """Extract numeric designators (e.g., grade/week/term numbers) from normalized text.
 
     Parameters
     ----------
@@ -386,6 +385,7 @@ def _outer_evidence_supports_title(
     """Return True if the context grouping title is supported by outer evidence.
 
     Default policy: strict substring match.
+
     Mild normalization policy:
       - For GRADE_LEVEL: allow numeric equivalence across aliases
         (P1 ~ Primary 1 ~ Grade 1 ~ Std I).
@@ -582,7 +582,7 @@ def validate_chunked_table_context_matches_prior_context(
 
     Rule: ONLY enforce for truly chunked table payloads (i.e. chunk payloads that
     include context_rows_before/after metadata). For those:
-      - if chunking.is_first_chunk == False and prior_context_groupings[] is non-empty,
+      - If chunking.is_first_chunk == False and prior_context_groupings[] is non-empty,
         then decision.context_groupings[] must match prior_context_groupings[].
 
     This prevents context drift across table chunks.
@@ -903,9 +903,10 @@ def validate_context_groupings_supported_by_outer_evidence(
     segment_payload: dict[str, Any] | None,
 ) -> None:
     """`context_groupings[]` must be supported by OUTER evidence:
-        - section_path texts
-        - caption_text
-        - header_rows_canonical
+
+    - section_path texts
+    - caption_text
+    - header_rows_canonical
 
     This discourages the model from promoting row-local values into outer context.
 
@@ -1013,6 +1014,18 @@ def validate_heading_segments_emit_groupings(
     `context_groupings[]` and skip emitting the actual heading node, which causes
     hierarchy/order drift. The decision can still be IGNORE/UNRESOLVED (e.g.,
     false-positive running headers).
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
     """
 
     if segment.kind != "block":
@@ -1086,6 +1099,7 @@ def validate_leaf_codes_use_local_code(
     LeafDecision.local_code and not embedded in LeafDecision.body.
 
     NB:
+
     1. list_marker is ONLY for bullets/enumerators (a), i), 1.).
     2. local_code is for stable document identifiers like 3.9.4.1.
 
@@ -1380,9 +1394,9 @@ def validate_row_leaf_hierarchy_not_flattened(
 def validate_section_titles_not_front_matter(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
-    """Reject NodeRole.SECTION groupings that are actually document-prose headings
-    like Vision/Introduction/Assessment/Time Allocation/etc. If the model wants to
-    preserve these, it should emit NodeRole.PROSE instead.
+    """Reject NodeRole.SECTION groupings that are actually document-prose headings like
+    Vision/Introduction/Assessment/Time Allocation/etc. If the model wants to preserve
+    these, it should emit NodeRole.PROSE instead.
 
     Parameters
     ----------
@@ -1473,7 +1487,7 @@ def validate_segment_kind_coherence(
 
 
 def validate_table_chunk_coverage_and_overlap(
-    *, decisions_for_segment: list[SegmentDecision], segment: Segment
+    *, document_ir: DocumentIR, segment_decisions: SegmentDecisionSet
 ) -> None:
     """Validate that chunked-table SegmentDecisions cover the whole table body with no
     overlaps.
@@ -1490,72 +1504,81 @@ def validate_table_chunk_coverage_and_overlap(
 
     Parameters
     ----------
-    decisions_for_segment
-        All SegmentDecision objects whose segment_id == segment.segment_id.
-    segment
-        The DocumentIR segment (must be a table segment).
+    document_ir
+        The DocumentIR containing table segments.
+    segment_decisions
+        The SegmentDecisionSet containing all SegmentDecisions.
 
     Raises
     ------
     QualityError
-        If any chunk coverage / overlap checks fail.
+        If any chunk coverage/overlap checks fail.
     """
 
-    assert segment.kind == "table", f"Segment kind must be 'table'. Got: {segment.kind}"
+    decisions_by_segment_id: dict[str, list[Any]] = {}
+    for d in segment_decisions.decisions:
+        assert isinstance(d.segment_id, str), f"Decision missing segment_id: {d}"
+        decisions_by_segment_id.setdefault(d.segment_id, []).append(d)
 
-    # Decisions with explicit chunk ranges.
-    chunk_decisions = [
-        d
-        for d in (decisions_for_segment or [])
-        if d.row_range_start is not None and d.row_range_end is not None
-    ]
+    for segment in document_ir.segments:
+        if segment.kind != "table":
+            continue
 
-    # Not a chunked table (either unchunked decision or no decisions yet).
-    if not chunk_decisions:
-        return
+        decisions_for_segment = decisions_by_segment_id.get(segment.segment_id, [])
 
-    # Disallow mixing chunked + unchunked decisions for the same table segment.
-    has_unchunked = any(
-        (d.row_range_start is None and d.row_range_end is None)
-        for d in (decisions_for_segment or [])
-    )
-    if has_unchunked:
-        raise QualityError(
-            f"Chunked + unchunked SegmentDecisions detected for the same table segment. "
-            f"This can happen if you generated chunked decisions with one config and later "
-            f"generated an unchunked decision (or vice-versa).\n"
-            f"  segment_id: {segment.segment_id}\n"
-            f"  chunk_decision_count: {len(chunk_decisions)}"
+        # Decisions with explicit chunk ranges.
+        chunk_decisions = [
+            d
+            for d in (decisions_for_segment or [])
+            if d.row_range_start is not None and d.row_range_end is not None
+        ]
+
+        # Not a chunked table (either unchunked decision or no decisions yet).
+        if not chunk_decisions:
+            return
+
+        # Disallow mixing chunked + unchunked decisions for the same table segment.
+        has_unchunked = any(
+            (d.row_range_start is None and d.row_range_end is None)
+            for d in (decisions_for_segment or [])
         )
+        if has_unchunked:
+            raise QualityError(
+                f"Chunked + unchunked SegmentDecisions detected for the same table segment. "
+                f"This can happen if you generated chunked decisions with one config and later "
+                f"generated an unchunked decision (or vice-versa).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  chunk_decision_count: {len(chunk_decisions)}"
+            )
 
-    # Build interval to decision_id list map to detect duplicates.
-    interval_to_ids: dict[tuple[int, int], list[str]] = {}
+        # Build interval to decision_id list map to detect duplicates.
+        interval_to_ids: dict[tuple[int, int], list[str]] = {}
 
-    for d in chunk_decisions:
-        assert d.row_range_start is not None and d.row_range_end is not None
-        interval = (int(d.row_range_start), int(d.row_range_end))
-        interval_to_ids.setdefault(interval, []).append(d.decision_id)
+        for d in chunk_decisions:
+            assert d.row_range_start is not None and d.row_range_end is not None
+            interval = (int(d.row_range_start), int(d.row_range_end))
+            interval_to_ids.setdefault(interval, []).append(d.decision_id)
 
-    duplicate_intervals = {k: v for k, v in interval_to_ids.items() if len(v) > 1}
+        duplicate_intervals = {k: v for k, v in interval_to_ids.items() if len(v) > 1}
 
-    if duplicate_intervals:
-        sample = list(duplicate_intervals.items())[:5]
-        raise QualityError(
-            f"Duplicate chunk intervals detected for the same table segment.\n"
-            f"  segment_id: {segment.segment_id}\n"
-            f"  duplicates(sample): {sample}"
+        if duplicate_intervals:
+            sample = list(duplicate_intervals.items())[:5]
+            raise QualityError(
+                f"Duplicate chunk intervals detected for the same table segment.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  duplicates(sample): {sample}"
+            )
+
+        # Sort intervals by start/end.
+        intervals = sorted(interval_to_ids.keys(), key=lambda t: (t[0], t[1]))
+
+        # Validate contiguous, non-overlapping coverage of the table body rows.
+        _validate_chunk_sequence(
+            intervals=intervals,
+            segment=segment,
+            expected_start=segment.header_row_count,
+            expected_end=len(segment.rows),
         )
-
-    # Sort intervals by start/end.
-    intervals = sorted(interval_to_ids.keys(), key=lambda t: (t[0], t[1]))
-
-    # Validate contiguous, non-overlapping coverage of the table body rows.
-    _validate_chunk_sequence(
-        intervals=intervals,
-        segment=segment,
-        expected_start=segment.header_row_count,
-        expected_end=len(segment.rows),
-    )
 
 
 def validate_table_row_index(
