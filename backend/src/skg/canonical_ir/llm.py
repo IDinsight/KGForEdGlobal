@@ -344,7 +344,7 @@ def verify_segment_decision_quality(
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None = None,
 ) -> None:
-    """Validate the semantic consistency of a continuity verdict.
+    """Validate the quality of a segment decision.
 
     Parameters
     ----------

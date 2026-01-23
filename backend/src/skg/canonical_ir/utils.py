@@ -858,7 +858,7 @@ def _make_unresolved_sample(
         segment_text = _extract_block_segment_text(segment)
     else:
         # Fallback: best-effort (mostly useful for some segment variants)
-        text_or_none = segment.text
+        text_or_none = getattr(segment, "text", None)
         segment_text = text_or_none.text if isinstance(text_or_none, TextUnit) else None
 
     if segment_text and segment_text.strip():
