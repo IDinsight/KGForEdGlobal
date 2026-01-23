@@ -54,6 +54,7 @@ from skg.prompts.canonical_ir import (
     grouping_canonicalization_instructions,
 )
 from skg.schemas import Limits
+from skg.utils.constants import GroupingCanonicalizationAction
 
 limits = Limits(max_retry_attempts=5)
 openai_client = OpenAI()
@@ -265,22 +266,27 @@ def _call_openai_api_to_decide_on_segment(
     return parsed
 
 
-def generate_grouping_canonicalization_map(
+def _process_canonicalization_batch(
     *,
+    batch_index: int,
+    batch_keys: list[GroupingCanonicalizationKey],
     doc_key: str,
-    grouping_keys: list[GroupingCanonicalizationKey],
-    max_retries: int = 2,
+    known_canonicals_list: list[dict[str, str]],
+    max_retries: int,
     model: str,
 ) -> GroupingCanonicalizationMap:
-    """Generate a global GroupingCanonicalizationMap for all unique grouping keys in a
-    doc.
+    """Process a single batch with retries and error handling.
 
     Parameters
     ----------
+    batch_index
+        The index of the current batch.
+    batch_keys
+        The list of grouping canonicalization keys in the batch.
     doc_key
         The document key.
-    grouping_keys
-        The list of grouping canonicalization keys to process.
+    known_canonicals_list
+        The list of known canonical keys for context.
     max_retries
         Maximum number of retries for quality errors.
     model
@@ -289,51 +295,53 @@ def generate_grouping_canonicalization_map(
     Returns
     -------
     GroupingCanonicalizationMap
-        The generated GroupingCanonicalizationMap.
+        The generated GroupingCanonicalizationMap for the batch.
     """
 
-    if not grouping_keys:
-        return GroupingCanonicalizationMap(doc_key=doc_key, generator=model, items=[])
+    logger.info(
+        f"Processing canonical grouping batch {batch_index} "
+        f"({len(batch_keys)} items). "
+        f"Number of known canonicals: {len(known_canonicals_list)}"
+    )
 
-    prompts = grouping_canonicalization_instructions(grouping_keys=grouping_keys)
-    instructions = prompts.system_message
-    input_items = [
+    prompts = grouping_canonicalization_instructions(
+        grouping_keys=batch_keys, known_canonical_keys=known_canonicals_list
+    )
+    base_input_items = [
         {
             "role": "user",
             "content": [{"type": "input_text", "text": prompts.user_message}],
         },
     ]
+    retry_context: list[dict[str, Any]] = []
 
     for attempt in range(max_retries + 1):
+        current_input_items = base_input_items + retry_context
+
         try:
             return _call_openai_api_to_canonicalize_groupings(
                 doc_key=doc_key,
-                input_items=input_items,
-                instructions=instructions,
-                grouping_keys=grouping_keys,
+                input_items=current_input_items,
+                instructions=prompts.system_message,
+                grouping_keys=batch_keys,
                 model=model,
             )
+
         except QualityError as e:
             if attempt >= max_retries:
-                logger.error(
-                    "Grouping canonicalization failed after exhausting retries."
-                )
-                raise  # Re-raise the final quality error
+                logger.error(f"Batch {batch_index} failed final retry.")
+                raise
 
-            # Append the assistant's failed attempt to history first. Without this, the
-            # model doesn't know what it's correcting.
+            retry_context = []  # Reset context
             if e.failed_content:
-                logger.error(
-                    f"Grouping canonicalization failed content: {e.failed_content}"
-                )
-                input_items.append(
+                retry_context.append(
                     {
                         "role": "assistant",
                         "content": [{"type": "output_text", "text": e.failed_content}],
                     }
                 )
 
-            input_items.append(
+            retry_context.append(
                 {
                     "role": "user",
                     "content": [
@@ -365,18 +373,11 @@ def generate_grouping_canonicalization_map(
             ):
                 raise
 
-            # Handle general exceptions (like Pydantic ValidationErrors) that bubble up
-            # from the API call but might not have attached text.
-            last_error = QualityError(f"Structured parse/validation failed: {e}")
-
             if attempt >= max_retries:
-                raise last_error from e
+                raise QualityError(f"Structured parse/validation failed: {e}") from e
 
-            # If possible, we should try to add the assistant's context here too, but
-            # standard Python Exceptions won't carry the model output unless we wrap
-            # them in _call_openai_api_for_page_ir_extraction. For now, we proceed with
-            # the Error feedback.
-            input_items.append(
+            # Handle structural/parsing errors.
+            retry_context = [
                 {
                     "role": "user",
                     "content": [
@@ -390,11 +391,97 @@ def generate_grouping_canonicalization_map(
                         }
                     ],
                 }
-            )
+            ]
             continue
 
-    raise QualityError(
-        f"Grouping canonicalization failed after {max_retries + 1} attempts."
+    raise QualityError(f"Batch {batch_index} failed unexpectedly.")
+
+
+def generate_grouping_canonicalization_map(
+    *,
+    batch_size: int = 100,
+    doc_key: str,
+    grouping_keys: list[GroupingCanonicalizationKey],
+    max_retries: int = 2,
+    model: str,
+) -> GroupingCanonicalizationMap:
+    """Generate a global GroupingCanonicalizationMap, using incremental batching to
+    maintain context across limits.
+
+    Parameters
+    ----------
+    batch_size
+        Number of items to process per LLM call.
+    doc_key
+        The document key.
+    grouping_keys
+        The list of grouping canonicalization keys to process.
+    max_retries
+        Maximum number of retries for quality errors.
+    model
+        The OpenAI model to use.
+
+    Returns
+    -------
+    GroupingCanonicalizationMap
+        The generated GroupingCanonicalizationMap.
+    """
+
+    if not grouping_keys:
+        return GroupingCanonicalizationMap(doc_key=doc_key, generator=model, items=[])
+
+    # Sort keys to ensure high-quality anchors come first.
+    grouping_keys = sorted(
+        grouping_keys,
+        key=lambda k: (-len(k.title or ""), k.role.value, (k.title or "")),
+    )
+
+    # Maintain a unique set of (role, title) tuples established as output standards to
+    # pass as context to subsequent batches.
+    known_canonical_set: set[tuple[str, str]] = set()
+
+    all_canonical_items = []
+
+    for i in range(0, len(grouping_keys), batch_size):
+        batch_keys = grouping_keys[i : i + batch_size]
+        batch_index = (i // batch_size) + 1
+
+        # Prepare context for this batch.
+        known_canonicals_list = [
+            {"role": r, "title": t}
+            for r, t in sorted(known_canonical_set, key=lambda x: (x[0], x[1]))
+        ]
+
+        # Process the batch.
+        batch_result = _process_canonicalization_batch(
+            batch_index=batch_index,
+            batch_keys=batch_keys,
+            doc_key=doc_key,
+            known_canonicals_list=known_canonicals_list,
+            max_retries=max_retries,
+            model=model,
+        )
+        all_canonical_items.extend(batch_result.items)
+
+        # Update the context set for the next batch.
+        for item in batch_result.items:
+            # DROP produces no canonical outputs.
+            if item.action == GroupingCanonicalizationAction.DROP:
+                continue
+
+            # KEEP often has output=[], but the input IS the canonical anchor.
+            if item.action == GroupingCanonicalizationAction.KEEP:
+                canonical_outputs = [item.input]
+            else:
+                # REPLACE/MERGE: outputs are the new canonical groupings.
+                canonical_outputs = item.output or []
+
+            for out in canonical_outputs:
+                if out.title:
+                    known_canonical_set.add((out.role.value, out.title.strip()))
+
+    return GroupingCanonicalizationMap(
+        doc_key=doc_key, generator=model, items=all_canonical_items
     )
 
 
