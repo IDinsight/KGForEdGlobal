@@ -207,6 +207,8 @@ CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.STRAND,
     NodeRole.SUBSTRAND,
     NodeRole.THEME,
+    NodeRole.SUBTHEME,
+    NodeRole.TERM,
     NodeRole.UNIT,
     NodeRole.WEEK,
     NodeRole.TOPIC,
