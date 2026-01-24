@@ -19,6 +19,7 @@ from pydantic import Field, model_validator
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import (
+    CONTEXT_GROUPINGS_ROLE_ORDER,
     BlockType,
     CaptionKind,
     GroupingCanonicalizationAction,
@@ -27,6 +28,8 @@ from skg.utils.constants import (
     StatementRole,
     UnresolvedReason,
 )
+
+ROLE_PRECEDENCE = {role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)}
 
 
 def compute_decision_set_id(
@@ -763,6 +766,94 @@ class GroupingCanonicalizationItem(BaseSchema):
         description="Short justification for audit/debugging (not used for determinism).",
     )
 
+    def _ensure_unique_outputs(self) -> None:
+        """Ensure no duplicate keys in the output list.
+
+        Raises
+        ------
+        ValueError
+            If duplicate output groupings are detected.
+        """
+
+        output_seen = set()
+
+        for o in self.output:
+            # Create a hashable tuple key for the object.
+            k = (o.role.value, o.title, o.local_code or "", o.source_label or "")
+
+            if k in output_seen:
+                raise ValueError(f"Duplicate output grouping in mapping item: {k}")
+
+            output_seen.add(k)
+
+    def _validate_drop(self) -> None:
+        """Validate DROP action.
+
+        Raises
+        ------
+        ValueError
+            If the output is not empty for DROP action.
+        """
+
+        if self.output:
+            raise ValueError("DROP requires output=[]")
+
+    def _validate_keep(self) -> None:
+        """Validate KEEP action.
+
+        Raises
+        ------
+        ValueError
+            If the output is not empty or not equal to input for KEEP action.
+        """
+
+        if self.output and self.output != [self.input]:
+            raise ValueError("KEEP requires output=[] (preferred) or output=[input]")
+
+    def _validate_replace(self) -> None:
+        """Validate REPLACE action.
+
+        Raises
+        ------
+        ValueError
+            If the output does not meet REPLACE action requirements.
+        """
+
+        if len(self.output) != 1:
+            raise ValueError("REPLACE requires exactly one output grouping")
+
+        target = self.output[0]
+
+        if target.role != self.input.role:
+            raise ValueError(
+                "REPLACE must not change role (use SPLIT if role must change)"
+            )
+
+        if target == self.input:
+            raise ValueError("REPLACE identical to input; use KEEP instead.")
+
+    def _validate_split(self) -> None:
+        """Validate SPLIT action.
+
+        Raises
+        ------
+        ValueError
+            If the output does not meet SPLIT action requirements.
+        """
+
+        if len(self.output) < 2:
+            raise ValueError("SPLIT requires 2+ output groupings")
+
+        # Validate precedence.
+        idxs = [ROLE_PRECEDENCE[o.role] for o in self.output]
+
+        if idxs != sorted(idxs):
+            roles = [o.role.value for o in self.output]
+
+            raise ValueError(
+                f"SPLIT output roles must follow precedence order: {roles}"
+            )
+
     @model_validator(mode="after")
     def _validate_action_output_contract(self) -> GroupingCanonicalizationItem:
         """Enforce action/output consistency rules.
@@ -778,27 +869,18 @@ class GroupingCanonicalizationItem(BaseSchema):
             If the action/output combination is inconsistent.
         """
 
-        if self.action == GroupingCanonicalizationAction.DROP and self.output:
-            raise ValueError("DROP requires output=[]")
+        self._ensure_unique_outputs()
 
-        if (
-            self.action == GroupingCanonicalizationAction.KEEP
-            and self.output
-            and self.output != [self.input]
-        ):
-            raise ValueError("KEEP requires output=[] (preferred) or output=[input]")
+        validators = {
+            GroupingCanonicalizationAction.DROP: self._validate_drop,
+            GroupingCanonicalizationAction.KEEP: self._validate_keep,
+            GroupingCanonicalizationAction.REPLACE: self._validate_replace,
+            GroupingCanonicalizationAction.SPLIT: self._validate_split,
+        }
+        validator_func = validators.get(self.action)
 
-        if self.action == GroupingCanonicalizationAction.REPLACE:
-            if len(self.output) != 1:
-                raise ValueError("REPLACE requires exactly one output grouping")
-            if self.output[0].role != self.input.role:
-                raise ValueError(
-                    "REPLACE must not change role (use SPLIT if role must change)"
-                )
-        elif (
-            self.action == GroupingCanonicalizationAction.SPLIT and len(self.output) < 2
-        ):
-            raise ValueError("SPLIT requires 2+ output groupings")
+        if validator_func:
+            validator_func()
 
         return self
 

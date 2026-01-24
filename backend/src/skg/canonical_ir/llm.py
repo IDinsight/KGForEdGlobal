@@ -34,6 +34,8 @@ from skg.canonical_ir.validators import (
     validate_context_groupings_role_order,
     validate_context_groupings_supported_by_outer_evidence,
     validate_emitted_statements_have_outer_anchor,
+    validate_established_canonicals,
+    validate_grouping_canonicalization_coverage,
     validate_groupings_not_outer_than_context,
     validate_heading_segments_emit_groupings,
     validate_ignore_unresolved_emit_nothing,
@@ -86,6 +88,7 @@ def _call_openai_api_to_canonicalize_groupings(
     input_items: list[Any],
     instructions: str,
     grouping_keys: list[GroupingCanonicalizationKey],
+    known_canonicals_list: list[dict[str, str]] | None = None,
     model: str,
 ) -> GroupingCanonicalizationMap:
     """Wrapper for grouping canonicalization API calls with retries.
@@ -100,6 +103,9 @@ def _call_openai_api_to_canonicalize_groupings(
         The extraction instructions to include.
     grouping_keys
         The list of grouping canonicalization keys to process.
+    known_canonicals_list
+        The known canonical keys provided as context (for established canonicals
+        validation).
     model
         The OpenAI model to use.
 
@@ -138,7 +144,9 @@ def _call_openai_api_to_canonicalize_groupings(
     try:
         parsed = GroupingCanonicalizationMap.model_validate(parsed.model_dump())
         verify_grouping_canonicalization_map_quality(
-            grouping_keys=grouping_keys, mapping=parsed
+            grouping_keys=grouping_keys,
+            known_canonicals_list=known_canonicals_list,
+            mapping=parsed,
         )
     except (ValidationError, QualityError) as e:
         # Attach the raw output so the correction attempt can see what it wrote.
@@ -332,6 +340,7 @@ def _process_canonicalization_batch(
                 input_items=current_input_items,
                 instructions=prompts.system_message,
                 grouping_keys=batch_keys,
+                known_canonicals_list=known_canonicals_list,
                 model=model,
             )
 
@@ -659,6 +668,7 @@ def generate_segment_decision(
 def verify_grouping_canonicalization_map_quality(
     *,
     grouping_keys: list[GroupingCanonicalizationKey],
+    known_canonicals_list: list[dict[str, str]] | None = None,
     mapping: GroupingCanonicalizationMap,
 ) -> None:
     """Deterministic quality checks:
@@ -670,6 +680,9 @@ def verify_grouping_canonicalization_map_quality(
     ----------
     grouping_keys
         The expected grouping canonicalization input keys.
+    known_canonicals_list
+        The known canonical keys provided as context (for established canonicals
+        validation).
     mapping
         The GroupingCanonicalizationMap to validate.
 
@@ -711,6 +724,15 @@ def verify_grouping_canonicalization_map_quality(
             msg.append(f"Found {len(extra)} unexpected input keys in mapping.")
 
         raise QualityError(" ".join(msg))
+
+    validate_grouping_canonicalization_coverage(
+        grouping_keys=grouping_keys, mapping=mapping
+    )
+
+    if known_canonicals_list:
+        validate_established_canonicals(
+            known_canonicals_list=known_canonicals_list, mapping=mapping
+        )
 
 
 def verify_segment_decision_quality(
