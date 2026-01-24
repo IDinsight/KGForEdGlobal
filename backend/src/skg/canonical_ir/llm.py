@@ -28,6 +28,7 @@ from skg.canonical_ir.schemas import (
 )
 from skg.canonical_ir.validators import (
     validate_chunked_table_context_matches_prior_context,
+    validate_chunked_table_outer_anchors_in_context_groupings,
     validate_context_groupings_no_duplicate_roles,
     validate_context_groupings_required_for_emit,
     validate_context_groupings_role_order,
@@ -779,6 +780,11 @@ def verify_segment_decision_quality(
         segment=segment, segment_decision=segment_decision
     )
     validate_chunked_table_context_matches_prior_context(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_payload=segment_payload,
+    )
+    validate_chunked_table_outer_anchors_in_context_groupings(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
