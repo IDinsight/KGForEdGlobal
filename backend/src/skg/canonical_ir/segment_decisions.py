@@ -990,10 +990,10 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
 
     if use_filldown:
         table_payload["rows_original"] = rows
-        table_payload["rows"] = (
-            rows_filldown  # Store rows_filldown here before removing
-        )
         table_payload["rows_original_preserved"] = True
+
+        # Store rows_filldown here before removing.
+        table_payload["rows"] = table_payload["rows_filldown"]
     else:
         table_payload["rows_original_preserved"] = False
 
@@ -1006,7 +1006,7 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
 
     # Add abs_row_index to every row (headers included).
     for abs_i, row in enumerate(rows):
-        assert isinstance(row, dict), f"{rows = }"
+        assert isinstance(row, TableRow), f"{rows = }\n{row = }"
         row["abs_row_index"] = abs_i
 
     table_payload["rows"] = rows
@@ -1192,7 +1192,7 @@ def segment_hint(segment: Segment) -> dict[str, Any]:
         body_samples: list[list[str]] = []
         start = min(header_row_count, len(rows))
         for row in rows[start : start + 2]:
-            assert isinstance(row, TableRow), f"{rows = }"
+            assert isinstance(row, TableRow), f"{rows = }\n{row = }"
             body_samples.append(_row_to_text(max_cols=6, row=row))
 
         hint["table"] = {

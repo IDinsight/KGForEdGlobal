@@ -410,7 +410,7 @@ def generate_grouping_canonicalization_map(
     batch_size: int = 100,
     doc_key: str,
     grouping_keys: list[GroupingCanonicalizationKey],
-    max_retries: int = 2,
+    max_retries: int = 3,
     model: str,
 ) -> GroupingCanonicalizationMap:
     """Generate a global GroupingCanonicalizationMap, using incremental batching to
@@ -500,7 +500,7 @@ def generate_segment_decision(
     *,
     always_double_check_first_attempt: bool,
     doc_key: str,
-    max_retries: int = 2,
+    max_retries: int = 3,
     model: str,
     row_range_end: int | None = None,
     row_range_start: int | None = None,

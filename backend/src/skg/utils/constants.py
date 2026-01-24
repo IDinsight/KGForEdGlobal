@@ -180,6 +180,7 @@ class UnresolvedReason(str, Enum):
     """Reasons why a segment decision could not be resolved."""
 
     ID_COLLISION = "id_collision"
+    FLAGGED_UNRESOLVED = "flagged_unresolved"
     LOW_CONFIDENCE_TABLE_MAPPING = "low_confidence_table_mapping"
     LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED = (
         "low_confidence_decision_not_materialized"
