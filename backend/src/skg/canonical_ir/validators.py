@@ -863,8 +863,6 @@ def validate_context_groupings_required_for_emit(
     has_meaningful_section_path = bool(meaningful_heading_texts)
     has_caption = bool((payload.get("caption_text") or "").strip())
 
-    # Allow context_groupings=[] if the decision emits a strong "outer anchor" grouping
-    # (e.g., SUBJECT/GRADE/STAGE/THEME/UNIT/WEEK) in groupings[] or row groupings[].
     outer_anchor_roles = {
         NodeRole.GRADE_LEVEL,
         NodeRole.STAGE,
@@ -875,6 +873,7 @@ def validate_context_groupings_required_for_emit(
         NodeRole.WEEK,
     }
 
+    # Check if any outer anchor grouping is emitted.
     emits_outer_anchor_grouping = any(
         (g.role in outer_anchor_roles) for g in (segment_decision.groupings or [])
     )
@@ -1831,6 +1830,42 @@ def validate_table_chunk_coverage_and_overlap(
             segment=segment,
             expected_start=segment.header_row_count,
             expected_end=len(segment.rows),
+        )
+
+
+def validate_table_context_groupings_exclude_row_local_roles(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """For table segments, forbid row-local roles from appearing in
+    `context_groupings[]`. Row-local roles (e.g., TOPIC/SUBTOPIC) should be emitted in
+    `RowDecision.groupings[]` so they can vary per row without corrupting the outer
+    context stack.
+    """
+
+    if (
+        segment_decision.decision_type
+        in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        )
+        or segment.kind != "table"
+    ):
+        return
+
+    bad = [
+        g
+        for g in (segment_decision.context_groupings or [])
+        if g.role in {NodeRole.TOPIC, NodeRole.SUBTOPIC}
+    ]
+
+    if bad:
+        roles = ", ".join(sorted({g.role.value for g in bad}))
+        raise QualityError(
+            f"table_context_groupings_contains_row_local_roles\n"
+            f"segment_id={segment.segment_id}\n"
+            f"decision_id={segment_decision.decision_id}\n"
+            f"forbidden_roles={roles}\n"
+            f"Fix: move these roles into RowDecision.groupings[] (row-level), not context_groupings."
         )
 
 

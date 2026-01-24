@@ -44,6 +44,7 @@ from skg.canonical_ir.validators import (
     validate_row_leaf_hierarchy_not_flattened,
     validate_section_titles_not_front_matter,
     validate_segment_kind_coherence,
+    validate_table_context_groupings_exclude_row_local_roles,
     validate_table_header_rows_not_emitted,
     validate_table_row_index,
     validate_table_split_explosion,
@@ -788,6 +789,9 @@ def verify_segment_decision_quality(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
+    )
+    validate_table_context_groupings_exclude_row_local_roles(
+        segment=segment, segment_decision=segment_decision
     )
     validate_row_groupings_supported_by_row_cells(
         segment=segment,
