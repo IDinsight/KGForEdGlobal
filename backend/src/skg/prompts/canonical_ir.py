@@ -154,12 +154,17 @@ Every `context_groupings[i].title` MUST be directly supported by OUTER evidence:
     - `caption_text`, OR
     - `header_rows_canonical`
 
+EXCEPTION (chunked tables after the first chunk):
+  - If `segment.chunking.is_first_chunk=false` AND `prior_context_groupings[]` contains the same role/title,
+    you MAY keep that title in `context_groupings[]` even if it does not reappear verbatim in OUTER evidence,
+    as long as there is no clear contradiction in section_path/caption/header_rows.
+
 If unsupported, DELETE that grouping.
 
 IMPORTANT OVERRIDE:
-  - This outer-evidence rule OVERRIDES prior_context_groupings.
-  - Even if `prior_context_groupings[]` contains a title, you MUST NOT copy it into `context_groupings[]`
-    unless it is supported by the OUTER evidence for THIS segment/chunk.
+  - On the FIRST chunk of a chunked table, this outer-evidence rule OVERRIDES prior_context_groupings.
+  - For later chunks, you MAY carry forward prior_context_groupings to keep table context stable,
+    unless there is a clear contradiction in THIS chunk’s OUTER evidence.
 
 Table-specific guidance:
   - If `header_rows_canonical[0]` is a single merged label (e.g., "WRITING", "READING"),
@@ -182,7 +187,10 @@ For TABLE segments (including chunked slices):
 1. The payload may include prior_context_groupings[] (active context stack from the immediately previous decided segment).
 2. If segment.chunking exists AND prior_context_groupings[] is present and non-empty:
 
-  - Start from prior_context_groupings[] as a *hint*, but APPLY THE OUTER-EVIDENCE SUPPORT RULE ABOVE. If any prior grouping title is not supported by THIS segment's OUTER evidence, DROP it (do not copy it forward).
+  - Start from prior_context_groupings[] as a *hint*.
+    * If chunking.is_first_chunk=true: apply the outer-evidence support rule above and DROP any unsupported prior grouping.
+    * If chunking.is_first_chunk=false: you MAY keep prior grouping titles for carry roles to maintain stability,
+      unless there is a clear contradiction in this chunk’s OUTER evidence.
 
   - If THIS segment's OUTER evidence explicitly indicates a DIFFERENT value for a carried role
     (especially SUBJECT/STRAND/THEME/UNIT/WEEK), you MUST override the prior value with the evidence-supported value.
@@ -359,8 +367,14 @@ In particular, ensure that:
     - For TABLE segments and for any decision that emits leaf statements, prefer a non-empty `context_groupings[]` when supported by evidence (grade/stage/subject/theme/unit via section_path/caption/header_rows).
     - If the only outer evidence is institutional/front-matter metadata, use `context_groupings=[]` (attach to framework root).
     - Reminder: the compiler will not create nodes from segment.section_path automatically.
-  - You may use prior_context_groupings, prev_segment_hint, and next_segment_hint to determine whether this segment continues the prior context or begins a new context.
-  - You may also use prev_segment_hint.section_path/next_segment_hint.section_path as supporting evidence when the current segment is a continuation.
+  - You may use prior_context_groupings, prev_segment_hint, next_segment_hint ONLY as continuity hints
+    (to decide whether this segment continues the prior context or begins a new context).
+  - Do NOT treat prev_segment_hint / next_segment_hint as OUTER evidence.
+    Only use groupings that are supported by THIS segment’s OUTER evidence:
+      - segment.section_path
+      - caption_text
+      - header_rows_canonical
+    (and for chunked tables after the first chunk, prior_context_groupings may be carried forward unless contradicted).
 
 10 .**Outer anchor requirement (IMPORTANT):**
   - If you emit any EXPECTATION/DESCRIPTOR/GUIDANCE leaves (block leaves or table row leaves), your decision MUST include at least ONE “outer anchor” grouping somewhere in:
