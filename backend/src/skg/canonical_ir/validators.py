@@ -619,14 +619,7 @@ def validate_chunked_table_context_matches_prior_context(
     # NB: Only enforce this rule for chunked-table payloads (i.e. payloads that were
     # produced by make_table_chunk_payload). Full-table payloads also include a
     # lightweight chunking object for absolute indices, but they are not "chunked".
-    is_actually_chunked = (
-        "context_rows_before_count" in chunking
-        or "context_rows_after_count" in chunking
-        or "context_rows_before" in segment_payload
-        or "context_rows_after" in segment_payload
-    )
-
-    if not is_actually_chunked:
+    if not bool(chunking.get("is_chunked", False)):
         return
 
     # Treat row_range_start==0 as first chunk if is_first_chunk is missing.
@@ -652,13 +645,86 @@ def validate_chunked_table_context_matches_prior_context(
 
     if decision_fp != prior_fp:
         raise QualityError(
-            f"Chunked table context drift detected: context_groupings[] does not match prior_context_groupings[].\n"
+            f"chunked_table_context_must_match_prior_exactly\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
-            f"chunk_row_range_start={chunking.get('row_range_start')}, chunk_row_range_end={chunking.get('row_range_end')}\n"
+            f"chunk_row_range_start={chunking.get('row_range_start')}, "
+            f"chunk_row_range_end={chunking.get('row_range_end')}\n"
             f"prior_context_groupings={prior_fp}\n"
-            f"decision_context_groupings={decision_fp}"
+            f"decision_context_groupings={decision_fp}\n"
+            "Fix: repeat prior_context_groupings exactly OR mark unresolved if contradictory."
         )
+
+
+def validate_chunked_table_outer_anchors_in_context_groupings(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
+) -> None:
+    """For CHUNKED table segments, require table-wide OUTER anchor groupings to be
+    expressed in `context_groupings[]`, not segment-level `groupings[]`.
+
+    The reason is because:
+
+    1. Chunk #1 is the only safe moment to decide table-wide context.
+    2. Later chunks must reuse the exact same context stack to prevent drift.
+
+    We only enforce this for truly chunked payloads (chunking.is_chunked == True).
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_payload is None or segment.kind != "table":
+        return
+
+    chunking = segment_payload.get("chunking") or {}
+
+    if not bool(chunking.get("is_chunked", False)):
+        return
+
+    OUTER_CONTEXT_ROLES = {
+        NodeRole.GRADE_LEVEL,
+        NodeRole.STAGE,
+        NodeRole.LEARNING_AREA,
+        NodeRole.SUBJECT,
+        NodeRole.THEME,
+        NodeRole.UNIT,
+        NodeRole.TERM,
+        NodeRole.WEEK,
+        NodeRole.STRAND,
+        NodeRole.SUBSTRAND,
+        NodeRole.SECTION,
+    }
+
+    bad = [
+        g
+        for g in (segment_decision.groupings or [])
+        if getattr(g, "role", None) in OUTER_CONTEXT_ROLES
+    ]
+
+    if not bad:
+        return
+
+    examples = ", ".join([f"{g.role.value}:{g.title}" for g in bad[:5]])
+
+    raise QualityError(
+        f"Chunked table emitted table-wide OUTER anchor(s) in segment-level groupings[]. "
+        f"Move these into context_groupings[] instead so chunked tables have stable context. "
+        f"Found: {examples}"
+    )
 
 
 def validate_context_groupings_no_duplicate_roles(
@@ -811,10 +877,6 @@ def validate_context_groupings_required_for_emit(
 
     emits_outer_anchor_grouping = any(
         (g.role in outer_anchor_roles) for g in (segment_decision.groupings or [])
-    ) or any(
-        (g.role in outer_anchor_roles)
-        for r in (segment_decision.rows or [])
-        for g in (r.groupings or [])
     )
 
     if (
@@ -982,7 +1044,8 @@ def validate_context_groupings_supported_by_outer_evidence(
         prior = payload.get("prior_context_groupings") or []
         chunking = payload.get("chunking") or {}
         is_first_chunk = bool(chunking.get("is_first_chunk", False))
-        allow_prior_titles = bool(chunking) and not is_first_chunk
+        is_chunked = bool(chunking.get("is_chunked", False))
+        allow_prior_titles = is_chunked and (not is_first_chunk)
         prior_titles_norm: set[str] = set()
 
         for pg in prior:
@@ -1038,9 +1101,16 @@ def validate_emitted_statements_have_outer_anchor(
         If any quality checks fail.
     """
 
-    if segment_decision.decision_type in (
-        SegmentDecisionType.IGNORE,
-        SegmentDecisionType.UNRESOLVED,
+    # NB: For BLOCK segments, framework-root attachment is allowed when the PDF lacks
+    # anchors. We only strictly enforce this for TABLE segments to prevent floating
+    # table-derived leaves.
+    if (
+        segment_decision.decision_type
+        in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        )
+        or segment.kind != "table"
     ):
         return
 
@@ -1231,6 +1301,15 @@ def validate_ignore_unresolved_emit_nothing(
         SegmentDecisionType.UNRESOLVED,
     ):
         return
+
+    if segment_decision.context_groupings:
+        raise QualityError(
+            f"ignore_or_unresolved_must_have_empty_context_groupings\n"
+            f"segment_id={segment.segment_id}\n"
+            f"decision_id={segment_decision.decision_id}\n"
+            f"decision_type={segment_decision.decision_type.value}\n"
+            f"context_groupings_count={len(segment_decision.context_groupings or [])}"
+        )
 
     has_groupings = bool(segment_decision.groupings)
     has_leaves = bool(segment_decision.leaves)
@@ -1460,6 +1539,24 @@ def validate_row_groupings_supported_by_row_cells(
                     f"  row_index: {rd.row_index}\n"
                     f"  unsupported_title: {g.title}"
                 )
+
+    chunking = payload.get("chunking") or {}
+    if chunking.get("row_index_is_absolute") and segment_decision.rows:
+        missing = sorted(
+            {
+                rd.row_index
+                for rd in segment_decision.rows
+                if rd.row_index not in row_text_map
+            }
+        )
+        if missing:
+            raise QualityError(
+                f"row_index_not_absolute_or_not_in_payload\n"
+                f"segment_id={segment.segment_id}\n"
+                f"decision_id={segment_decision.decision_id}\n"
+                f"missing_row_indices={missing[:20]}\n"
+                f"hint=RowDecision.row_index MUST equal row.abs_row_index values shown in the payload."
+            )
 
 
 def validate_row_leaf_hierarchy_not_flattened(

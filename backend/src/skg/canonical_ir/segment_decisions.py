@@ -29,6 +29,7 @@ from skg.utils.constants import (
     CaptionFigurePrefixes,
     CaptionKind,
     CaptionTablePrefixes,
+    NodeRole,
     NonArtifacts,
     SegmentDecisionType,
 )
@@ -89,6 +90,85 @@ def _clip(s: str | None, n: int) -> str:
     s = s or ""
 
     return s[:n]
+
+
+def _determine_stable_context(
+    *,
+    chunk_range: tuple[int, int],
+    decision: SegmentDecision,
+    fallback_hint: list[dict[str, Any]] | None,
+    segment_id: str,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    """Extract stable context roles from the first chunk decision.
+
+    Parameters
+    ----------
+    chunk_range
+        The (start, end) row range for logging.
+    decision
+        The SegmentDecision to extract context from.
+    fallback_hint
+        The fallback context hint to use if no stable context is found.
+    segment_id
+        The segment ID for logging.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The stable context groupings.
+    """
+
+    STABLE_CONTEXT_ROLES = {
+        NodeRole.GRADE_LEVEL,
+        NodeRole.STAGE,
+        NodeRole.LEARNING_AREA,
+        NodeRole.SUBJECT,
+        NodeRole.THEME,
+        NodeRole.UNIT,
+        NodeRole.TERM,
+        NodeRole.WEEK,
+        NodeRole.STRAND,
+        NodeRole.SUBSTRAND,
+        NodeRole.SECTION,
+    }
+
+    stable_models = list(decision.context_groupings or [])
+    stable_models.extend(
+        [g for g in (decision.groupings or []) if g.role in STABLE_CONTEXT_ROLES]
+    )
+
+    seen: set[tuple[str, str]] = set()
+    stable_hint: list[dict[str, Any]] = []
+
+    for g in stable_models:
+        role = str(getattr(g, "role", "")).strip().lower()
+        title = str(getattr(g, "title", "")).strip().lower()
+        key_fp = (role, title)
+
+        if role and title and key_fp not in seen:
+            seen.add(key_fp)
+            stable_hint.append(g.model_dump(mode="json"))
+
+    usable = decision.decision_type not in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ) and bool(stable_hint)
+
+    if usable:
+        return [dict(x) for x in stable_hint]
+
+    msg = (
+        f"Chunked table first-chunk produced no usable context_groupings; "
+        f"falling back to context_hint for segment_id={segment_id}, "
+        f"row_range_start={chunk_range[0]}, row_range_end={chunk_range[1]}."
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+
+    return [dict(x) for x in (fallback_hint or [])]
 
 
 def _filter_section_path_for_llm(
@@ -258,6 +338,131 @@ def _process_block_segment(
     )
 
 
+def _process_chunked_table(
+    *,
+    binding: CaptionBinding | None,
+    chunks: list[tuple[int | None, int | None]],
+    config: CreateCanonicalConfig,
+    context_hint: list[dict[str, Any]] | None,
+    decision_set: SegmentDecisionSet,
+    doc_key: str,
+    existing_keys: set[tuple[str, int | None, int | None]],
+    next_segment_hint: dict[str, Any] | None,
+    prev_segment_hint: dict[str, Any] | None,
+    segment: Segment,
+    segment_decisions_fp: Path,
+    warnings: list[str],
+) -> SegmentDecisionSet:
+    """Process chunked table segments.
+
+    Parameters
+    ----------
+    binding
+        The CaptionBinding to apply, or None to skip.
+    chunks
+        The list of (start, end) row index tuples for each chunk.
+    config
+        The CreateCanonicalConfig to use.
+    context_hint
+        The context hint to apply.
+    decision_set
+        The SegmentDecisionSet to update.
+    doc_key
+        The document key.
+    existing_keys
+        The set of existing decision keys.
+    next_segment_hint
+        The next segment hint to apply.
+    prev_segment_hint
+        The previous segment hint to apply.
+    segment
+        The Segment to process.
+    segment_decisions_fp
+        The file path to save segment decisions to.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The updated SegmentDecisionSet.
+    """
+
+    unchunked_key = (segment.segment_id, None, None)
+    assert (
+        unchunked_key not in existing_keys
+    ), f"Duplicate unchunked key: {unchunked_key}"
+
+    stable_table_prior_context: list[dict[str, Any]] | None = None
+
+    # Ensure deterministic order.
+    chunks_sorted = sorted(
+        [(s, e) for (s, e) in chunks if s is not None and e is not None],
+        key=lambda x: (x[0], x[1]),
+    )
+
+    for start, end in chunks_sorted:
+        key = (segment.segment_id, start, end)
+        table_payload = make_table_chunk_payload(end=end, segment=segment, start=start)
+
+        # Mark first chunk for validation.
+        table_payload.setdefault("chunking", {})
+        table_payload["chunking"]["is_first_chunk"] = start == chunks_sorted[0][0]
+
+        table_payload = apply_caption_binding_to_table_payload(
+            caption_binding=binding, table_payload=table_payload
+        )
+
+        # Chunked table == N decisions.
+        #
+        # For chunked tables we want a stable "prior_context_groupings" across ALL chunks
+        # of the SAME table segment. The best anchor is the context_groupings decided for
+        # the FIRST chunk of that table.
+        #
+        # This avoids drift where chunk 1 gets a rich context (e.g. Learning Area + Subject)
+        # but chunk 2+ gets a smaller/different context depending on what segment preceded
+        # the table.
+        prior = (
+            stable_table_prior_context
+            if stable_table_prior_context is not None
+            else (context_hint or [])
+        )
+        table_payload["prior_context_groupings"] = [dict(x) for x in prior]
+        table_payload["prev_segment_hint"] = prev_segment_hint
+        table_payload["next_segment_hint"] = next_segment_hint
+
+        segment_decision = generate_segment_decision(
+            always_double_check_first_attempt=config.always_double_check_first_attempt,
+            doc_key=doc_key,
+            model=config.model,
+            row_range_end=end,
+            row_range_start=start,
+            segment=segment,
+            segment_payload=table_payload,
+        )
+        segment_decision = attach_caption_binding_to_segment_decision(
+            caption_binding=binding, segment_decision=segment_decision
+        )
+
+        # Update stable context if this was the first chunk.
+        if stable_table_prior_context is None:
+            stable_table_prior_context = _determine_stable_context(
+                chunk_range=(start, end),
+                decision=segment_decision,
+                fallback_hint=context_hint,
+                segment_id=segment.segment_id,
+                warnings=warnings,
+            )
+
+        decision_set.decisions.append(segment_decision)
+        existing_keys.add(key)
+        decision_set = save_segment_decision_set(
+            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+        )
+
+    return decision_set
+
+
 def _process_table_segment(
     *,
     caption_bindings: dict[str, CaptionBinding | None],
@@ -309,153 +514,135 @@ def _process_table_segment(
     # caption -> Use .get().
     binding: CaptionBinding | None = caption_bindings.get(segment.segment_id)
 
-    # Table segments: chunk only if needed. If an unchunked table decision already
-    # exists, do NOT mix chunked + unchunked.
-    unchunked_key = (segment.segment_id, None, None)
-    assert (
-        unchunked_key not in existing_keys
-    ), f"Duplicate unchunked table key found: {unchunked_key}"
-
     # Determine table chunks.
     chunks = table_chunks_for_segment(
         max_body_rows=config.max_table_rows_per_decision, segment=segment
     )
 
-    # Unchunked table == 1 decision.
     if len(chunks) == 1 and chunks[0] == (None, None):
-        # Do NOT create an unchunked decision if ANY chunked decisions already exist
-        # for this segment (else we would mix chunked + unchunked representations).
-        existing_chunked_for_segment = any(
-            sid == segment.segment_id and row_start is not None
-            for (sid, row_start, _row_end) in existing_keys
+        return _process_unchunked_table(
+            binding=binding,
+            config=config,
+            context_hint=context_hint,
+            decision_set=decision_set,
+            doc_key=doc_key,
+            existing_keys=existing_keys,
+            next_segment_hint=next_segment_hint,
+            prev_segment_hint=prev_segment_hint,
+            segment=segment,
+            segment_decisions_fp=segment_decisions_fp,
+            warnings=warnings,
         )
-        if existing_chunked_for_segment:
-            msg = (
-                f"Skipping unchunked decision for table segment {segment.segment_id} "
-                f"because chunked decisions already exist (avoid mixing chunked + unchunked)."
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-            return decision_set
 
-        if unchunked_key not in existing_keys:
-            # Apply caption binding and pass the payload even for UNCHUNKED tables so
-            # the LLM sees caption_text/caption_kind etc.
-            table_payload = make_table_full_payload(segment=segment)
-            table_payload = apply_caption_binding_to_table_payload(
-                caption_binding=binding, table_payload=table_payload
-            )
-            table_payload["prior_context_groupings"] = [
-                dict(x) for x in (context_hint or [])
-            ]
-            table_payload["prev_segment_hint"] = prev_segment_hint
-            table_payload["next_segment_hint"] = next_segment_hint
-
-            segment_decision = generate_segment_decision(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                doc_key=doc_key,
-                model=config.model,
-                segment=segment,
-                segment_payload=table_payload,
-            )
-            segment_decision = attach_caption_binding_to_segment_decision(
-                caption_binding=binding, segment_decision=segment_decision
-            )
-
-            decision_set.decisions.append(segment_decision)
-            existing_keys.add(unchunked_key)
-
-            return save_segment_decision_set(
-                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
-            )
-
-        return decision_set
-
-    # Chunked table == N decisions.
-    #
-    # For chunked tables we want a stable "prior_context_groupings" across ALL chunks
-    # of the SAME table segment. The best anchor is the context_groupings decided for
-    # the FIRST chunk of that table.
-    #
-    # This avoids drift where chunk 1 gets a rich context (e.g. Learning Area + Subject)
-    # but chunk 2+ gets a smaller/different context depending on what segment preceded
-    # the table.
-    stable_table_prior_context: list[dict[str, Any]] | None = None
-
-    # Ensure deterministic chunk traversal order.
-    chunks_sorted = sorted(
-        [(s, e) for (s, e) in chunks if s is not None and e is not None],
-        key=lambda x: (x[0], x[1]),
+    return _process_chunked_table(
+        binding=binding,
+        chunks=chunks,
+        config=config,
+        context_hint=context_hint,
+        decision_set=decision_set,
+        doc_key=doc_key,
+        existing_keys=existing_keys,
+        next_segment_hint=next_segment_hint,
+        prev_segment_hint=prev_segment_hint,
+        segment=segment,
+        segment_decisions_fp=segment_decisions_fp,
+        warnings=warnings,
     )
 
-    for start, end in chunks_sorted:
-        key = (segment.segment_id, start, end)
-        table_payload = make_table_chunk_payload(end=end, segment=segment, start=start)
 
-        # Mark whether this is the first chunk (used by validators to enforce context
-        # stability).
-        table_payload.setdefault("chunking", {})
-        table_payload["chunking"]["is_first_chunk"] = start == chunks_sorted[0][0]
+def _process_unchunked_table(
+    *,
+    binding: CaptionBinding | None,
+    config: CreateCanonicalConfig,
+    context_hint: list[dict[str, Any]] | None,
+    decision_set: SegmentDecisionSet,
+    doc_key: str,
+    existing_keys: set[tuple[str, int | None, int | None]],
+    next_segment_hint: dict[str, Any] | None,
+    prev_segment_hint: dict[str, Any] | None,
+    segment: Segment,
+    segment_decisions_fp: Path,
+    warnings: list[str],
+) -> SegmentDecisionSet:
+    """Process unchunked table segments.
 
-        table_payload = apply_caption_binding_to_table_payload(
-            caption_binding=binding, table_payload=table_payload
+    Parameters
+    ----------
+    binding
+        The CaptionBinding to apply, or None to skip.
+    config
+        The CreateCanonicalConfig to use.
+    context_hint
+        The context hint to apply.
+    decision_set
+        The SegmentDecisionSet to update.
+    doc_key
+        The document key.
+    existing_keys
+        The set of existing decision keys.
+    next_segment_hint
+        The next segment hint to apply.
+    prev_segment_hint
+        The previous segment hint to apply.
+    segment
+        The Segment to process.
+    segment_decisions_fp
+        The file path to save segment decisions to.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The updated SegmentDecisionSet.
+    """
+
+    unchunked_key = (segment.segment_id, None, None)
+    assert (
+        unchunked_key not in existing_keys
+    ), f"Duplicate unchunked key: {unchunked_key}"
+
+    # Do NOT create unchunked decision if chunked ones already exist.
+    existing_chunked_for_segment = any(
+        sid == segment.segment_id and row_start is not None
+        for (sid, row_start, _row_end) in existing_keys
+    )
+    if existing_chunked_for_segment:
+        msg = (
+            f"Skipping unchunked decision for {segment.segment_id} because chunked "
+            f"decisions already exist."
         )
+        logger.warning(msg)
+        warnings.append(msg)
+        return decision_set
 
-        # NB: For chunked tables, chunk #2+ should see the context that was decided for
-        # chunk #1 of the SAME table.
-        prior = (
-            stable_table_prior_context
-            if stable_table_prior_context is not None
-            else (context_hint or [])
-        )
-        table_payload["prior_context_groupings"] = [dict(x) for x in prior]
-        table_payload["prev_segment_hint"] = prev_segment_hint
-        table_payload["next_segment_hint"] = next_segment_hint
+    # Build table payload.
+    table_payload = make_table_full_payload(segment=segment)
+    table_payload = apply_caption_binding_to_table_payload(
+        caption_binding=binding, table_payload=table_payload
+    )
+    table_payload["prior_context_groupings"] = [dict(x) for x in (context_hint or [])]
+    table_payload["prev_segment_hint"] = prev_segment_hint
+    table_payload["next_segment_hint"] = next_segment_hint
 
-        segment_decision = generate_segment_decision(
-            always_double_check_first_attempt=config.always_double_check_first_attempt,
-            doc_key=doc_key,
-            model=config.model,
-            row_range_end=end,
-            row_range_start=start,
-            segment=segment,
-            segment_payload=table_payload,
-        )
-        segment_decision = attach_caption_binding_to_segment_decision(
-            caption_binding=binding, segment_decision=segment_decision
-        )
+    # Generate segment decision.
+    segment_decision = generate_segment_decision(
+        always_double_check_first_attempt=config.always_double_check_first_attempt,
+        doc_key=doc_key,
+        model=config.model,
+        segment=segment,
+        segment_payload=table_payload,
+    )
+    segment_decision = attach_caption_binding_to_segment_decision(
+        caption_binding=binding, segment_decision=segment_decision
+    )
 
-        # Freeze the table prior context from the FIRST generated chunk decision, but
-        # only if it produced a usable outer context.
-        if stable_table_prior_context is None:
-            stable_hint = [
-                g.model_dump(mode="json")
-                for g in (segment_decision.context_groupings or [])
-            ]
-            usable = segment_decision.decision_type not in (
-                SegmentDecisionType.IGNORE,
-                SegmentDecisionType.UNRESOLVED,
-            ) and bool(stable_hint)
-            if usable:
-                stable_table_prior_context = [dict(x) for x in stable_hint]
-            else:
-                stable_table_prior_context = [dict(x) for x in (context_hint or [])]
-                msg = (
-                    f"Chunked table first-chunk produced no usable context_groupings; "
-                    f"falling back to context_hint for segment_id={segment.segment_id}, "
-                    f"row_range_start={start}, row_range_end={end}."
-                )
-                logger.warning(msg)
-                warnings.append(msg)
+    decision_set.decisions.append(segment_decision)
+    existing_keys.add(unchunked_key)
 
-        decision_set.decisions.append(segment_decision)
-        existing_keys.add(key)
-
-        decision_set = save_segment_decision_set(
-            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
-        )
-
-    return decision_set
+    return save_segment_decision_set(
+        decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+    )
 
 
 def _row_to_text(row: dict[str, Any], max_cols: int = 6) -> list[str]:
@@ -922,6 +1109,7 @@ def make_table_chunk_payload(
         seg.pop("rows_filldown", None)
 
     seg["chunking"] = {
+        "is_chunked": True,
         "row_range_start": start,
         "row_range_end": end,
         "row_range_end_is_exclusive": True,
@@ -994,6 +1182,7 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
 
     seg["rows"] = rows
     seg["chunking"] = {
+        "is_chunked": False,
         "row_range_start": 0,
         "row_range_end": len(rows),
         "row_range_end_is_exclusive": True,

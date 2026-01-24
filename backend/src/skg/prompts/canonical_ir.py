@@ -97,6 +97,18 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
   - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
   - Therefore, you MUST explicitly provide the hierarchy context snapshot in `context_groupings[]` when there is clear curriculum structure evidence.
 
+16. TABLE-WIDE OUTER CONTEXT (IMPORTANT):
+  - If the segment is a TABLE and you see table-wide anchors (Grade/Stage/Learning Area/Subject/Theme/Unit/Term/Week/Strand/Substrand) that apply to the WHOLE table,
+    you MUST place them in `context_groupings[]` (outer-to-inner order).
+  - For CHUNKED tables (chunking.is_chunked == true): you MUST place table-wide anchors in `context_groupings[]`
+    and MUST NOT place them in segment-level `groupings[]`.
+  - For NON-CHUNKED tables: prefer placing table-wide anchors in `context_groupings[]`, but placing a merged-header
+    anchor in segment-level `groupings[]` is allowed.
+  - For CHUNKED tables (chunking.is_chunked == true):
+    * On the FIRST chunk: decide the full, stable `context_groupings[]` for the whole table.
+    * On ALL later chunks: repeat `context_groupings[]` EXACTLY as `prior_context_groupings[]` (do not override or modify it).
+    * If evidence in a later chunk appears to contradict the established context, choose decision_type="unresolved" and explain.
+
 ## SOURCE LABELS (REQUIRED WHEN AVAILABLE)
 1. When you emit any GroupingDecision or LeafDecision, also emit `source_label` whenever you can.
 2. `source_label` MUST be copied VERBATIM from visible evidence in the segment payload:
@@ -193,7 +205,8 @@ For TABLE segments (including chunked slices):
       unless there is a clear contradiction in this chunk’s OUTER evidence.
 
   - If THIS segment's OUTER evidence explicitly indicates a DIFFERENT value for a carried role
-    (especially SUBJECT/STRAND/THEME/UNIT/WEEK), you MUST override the prior value with the evidence-supported value.
+    (especially SUBJECT/STRAND/THEME/UNIT/WEEK), DO NOT override mid-table.
+    Instead choose decision_type="unresolved" and explain the contradiction using only OUTER evidence.
 
   - Clear contradiction includes:
     * section_path/caption/header_rows naming a different subject/strand/theme/unit/week than prior_context_groupings[].
@@ -319,6 +332,9 @@ In particular, ensure that:
     - OUTER context must go in `context_groupings[]` (supported by section_path/caption/header_rows).
     - Row-local context must go in `RowDecision.groupings[]` (topic/subtopic/code/week/etc).
     - Do NOT put TOPIC/SUBTOPIC into context_groupings[] for tables (they belong in RowDecision.groupings[]).
+    - CHUNKED TABLE RULE:
+      If chunking.is_chunked == true, table-wide anchors (Grade/Stage/Learning Area/Subject/Theme/Unit/Term/Week/Strand/Substrand)
+      MUST be in context_groupings[] and MUST NOT be emitted in segment-level groupings[].
 
   - **HARD RULE: outer-evidence support for context_groupings**
     - Every `context_groupings[i].title` MUST be directly supported by OUTER evidence:
@@ -327,23 +343,27 @@ In particular, ensure that:
         - `caption_text`, OR
         - `header_rows_canonical`
     - If a context_groupings title is unsupported, DELETE that grouping (do NOT guess and do NOT carry it over from memory).
-    - If `header_rows_canonical[0]` is a single merged label (e.g., "WRITING", "READING"), treat it as strong outer evidence for STRAND.
-      You MUST emit it as a STRAND grouping:
-        * Prefer placing it in `context_groupings[]` when the table is chunked (for stability), OR
-        * Place it in segment-level `groupings[]` when the table is not chunked.
-    - If prior_context_groupings contains a STRAND and the merged header label is different, that is a contradiction → override STRAND to the merged header label.
-    - This rule OVERRIDES prior_context_groupings. Do NOT carry over prior_context_groupings titles unless they are supported by THIS segment's OUTER evidence.
+    - If header_rows_canonical[0] is a single merged label (e.g., "WRITING", "READING"): treat it as strong OUTER evidence for a stable table-scoped grouping. It is often STRAND, but may sometimes be SUBJECT or THEME — choose the best-fitting OUTER anchor role.
+    - If prior_context_groupings contains a STRAND and the merged header label is different:
+      - If this is the FIRST chunk: use the merged header label (evidence wins) and explain in rationale.
+      - If this is NOT the first chunk: do NOT override mid-table. Mark decision_type="unresolved" and cite the contradiction.
+    - For chunked tables: apply strict outer-evidence support on the FIRST chunk.
+      For later chunks: repeat context_groupings[] EXACTLY as prior_context_groupings[].
+      If outer evidence in a later chunk contradicts the prior context, return decision_type="unresolved".
 
   - **Context ordering + stability (IMPORTANT)**
     - context_groupings[] must be ordered OUTER→INNER using this fixed role order:
       STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → TOPIC → SUBTOPIC → SECTION → PROSE
     - Do not repeat the same NodeRole more than once in context_groupings[].
     - If segment.chunking exists and prior_context_groupings[] is provided and non-empty:
-      - Start from prior_context_groupings[] as a hint, BUT APPLY the outer-evidence support rule:
-          * Drop any prior grouping titles that are NOT supported by THIS segment’s OUTER evidence.
-      - If THIS segment’s OUTER evidence explicitly indicates a DIFFERENT value for a carried role
-        (especially SUBJECT/STRAND/THEME/UNIT/WEEK), you MUST override the prior value with the evidence-supported value.
-      - Clear contradiction includes: section_path/caption/header_rows explicitly naming a different subject/strand/theme/unit/week than prior_context_groupings[].
+      - If chunking.is_first_chunk=true:
+        * Apply the outer-evidence support rule strictly; DROP unsupported prior groupings.
+      - If chunking.is_first_chunk=false:
+        * Keep prior_context_groupings roles+titles unchanged for stability UNLESS this chunk’s OUTER evidence explicitly contradicts it.
+     - If contradicted by this chunk’s OUTER evidence:
+       - If this is the FIRST chunk: apply outer evidence and adjust context_groupings accordingly (explain in rationale).
+       - If this is NOT the first chunk: do NOT override mid-table. Return decision_type="unresolved".
+     - Clear contradiction includes: section_path/caption/header_rows explicitly naming a different subject/strand/theme/unit/week than prior_context_groupings[].
 
   - If a row lists multiple same-level siblings (e.g., multiple subjects/topics in one cell), emit multiple RowDecisions with the SAME row_index, one per sibling; do not stack siblings into one groupings[] path.
 
