@@ -192,7 +192,7 @@ def verify_page_ir_continuity_verdict(
 def verify_page_ir_pairs(
     *,
     always_double_check_first_attempt: bool,
-    max_retries: int = 2,
+    max_retries: int = 3,
     model: str,
     next_item: dict[str, Any],
     next_item_excerpt: dict[str, Any],

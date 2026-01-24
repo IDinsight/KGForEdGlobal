@@ -267,7 +267,7 @@ def extract_page_ir(
     image_height: int,
     image_width: int,
     languages: list[str],
-    max_retries: int = 2,
+    max_retries: int = 3,
     model: str,
     page_index: int,
     png_fp: Path,
