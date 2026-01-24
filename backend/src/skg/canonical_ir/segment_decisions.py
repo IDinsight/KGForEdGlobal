@@ -1006,7 +1006,6 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
 
     # Add abs_row_index to every row (headers included).
     for abs_i, row in enumerate(rows):
-        assert isinstance(row, TableRow), f"{rows = }\n{row = }"
         row["abs_row_index"] = abs_i
 
     table_payload["rows"] = rows

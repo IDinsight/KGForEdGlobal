@@ -13,7 +13,13 @@ from dotmap import DotMap
 
 # Package Library
 from skg.canonical_ir.schemas import GroupingCanonicalizationKey
-from skg.utils.constants import BlockType, NodeRole, SegmentDecisionType, StatementRole
+from skg.utils.constants import (
+    CONTEXT_GROUPINGS_ROLE_ORDER,
+    BlockType,
+    NodeRole,
+    SegmentDecisionType,
+    StatementRole,
+)
 
 
 def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
@@ -407,51 +413,85 @@ def grouping_canonicalization_instructions(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
-    # Format the prior context if it exists.
+    # Build allowed roles/precedence strings.
+    allowed_roles = [r.value for r in CONTEXT_GROUPINGS_ROLE_ORDER]
+    precedence_str = " > ".join(allowed_roles)
+
     context_str = ""
 
     if known_canonical_keys:
-        # We only need role/title to establish the standard.
         formatted_keys = "\n".join(
             [f"- [{k['role']}] {k['title']}" for k in known_canonical_keys]
         )
         context_str = dedent(
             f"""## ESTABLISHED CANONICALS
 The following grouping nodes have ALREADY been established in this document.
-You MUST map the new inputs to these existing nodes whenever they are semantically equivalent (synonyms, typos, minor variations).
-Only create NEW canonical nodes if the input cannot map to this list.
-When you map to an established canonical, the output title MUST exactly match the established title string.
+
+- You MUST map to an established canonical WHEN semantically equivalent AND the ROLE matches exactly.
+- When mapping to an established canonical, the output title MUST match EXACTLY (string match).
+- Only create NEW canonical nodes if the input cannot map to this list.
 
 {formatted_keys}
-            """
+        """
         )
 
     system_message = dedent(
         f"""You are canonicalizing curriculum grouping nodes globally for a single curriculum document.
 
-You will receive a list of grouping candidates, each with a role + title.
+You will receive a list of grouping candidates, each with:
+- role (NodeRole enum)
+- title
+- optional local_code / source_label
 
-Return a GroupingCanonicalizationMap with EXACTLY one item per input grouping.
-Each item must specify an action: "keep", "replace", "split", or "drop".
+Return a GroupingCanonicalizationMap with:
+- items: list[GroupingCanonicalizationItem]
+- EXACTLY one item per input grouping key
+- items MUST be in the SAME ORDER as the input grouping keys
+
+## Allowed roles
+Roles MUST be one of:
+{", ".join(allowed_roles)}
+
+## Role precedence (outer → inner)
+For action=SPLIT, the output groupings MUST be ordered using this precedence:
+{precedence_str}
+
+Each GroupingCanonicalizationItem must contain:
+- action: keep | replace | split | drop
+- confidence: float in [0,1]
+- input: the original key (verbatim-ish)
+- output: list of GroupingCanonicalizationKey (empty for keep/drop)
+- rationale: short string (optional)
+
+## Action semantics (must satisfy validator rules)
+- keep: output MUST be [] (preferred) OR output=[input]
+- drop: output MUST be []
+- replace: output MUST have length 1 and output[0].role MUST equal input.role
+- split: output MUST have length >= 2 (roles may differ but must be allowed roles)
 
 {context_str}
 
 Rules:
-1. Do NOT invent new curriculum concepts that are not present in the input.
-2. Prefer minimal changes: whitespace/casing/punctuation normalization and synonym folding.
-3. REPLACE must keep the same role.
-4. SPLIT may emit multiple outputs (roles can differ) when the title is clearly composite.
-5. If unsure, choose KEEP.
-6. For action="keep", output should be [] (preferred) unless you must echo the identical input.
+1. Do NOT invent new curriculum concepts not present in the input.
+2. Prefer minimal changes: whitespace/punctuation normalization and synonym folding. Avoid casing changes unless required to match an established canonical exactly.
+3. REPLACE must not change role (validator enforces this).
+4. SPLIT only when the title clearly contains multiple groupings (e.g., "Grade 1 - Mathematics", "Theme 2: Plants") AND each split part is directly present as a substring. Do not paraphrase or infer.
+5. For SPLIT:
+   - output MUST be ordered outer→inner using the precedence list above.
+   - do NOT emit duplicate output groupings.
+6. If unsure, choose KEEP with lower confidence (e.g., 0.6–0.8). Do NOT DROP uncertain items.
+7. Mapping to ESTABLISHED CANONICALS:
+   - Only map if role matches exactly
+   - Canonical title must match exactly
         """
     )
 
     user_message = dedent(
-        f"""Canonicalize the following NEW grouping keys. Input is a JSON array. Return exactly one mapping item per input item.
+        f"""Canonicalize the following NEW grouping keys.
 
+Input keys (JSON array):
 ```json
 {json.dumps([k.model_dump(mode="json") for k in grouping_keys], ensure_ascii=False)}
-```
         """
     )
 

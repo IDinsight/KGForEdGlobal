@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 # Package Library
 from skg.canonical_ir.schemas import (
+    GroupingCanonicalizationKey,
+    GroupingCanonicalizationMap,
     GroupingDecision,
     SegmentDecision,
     SegmentDecisionSet,
@@ -1158,6 +1160,135 @@ def validate_emitted_statements_have_outer_anchor(
             f"decision_id={segment_decision.decision_id}\n"
             f"Fix: include at least one of: {NodeRole.GRADE_LEVEL.value}, {NodeRole.STAGE.value}, {NodeRole.LEARNING_AREA.value}, {NodeRole.SUBJECT.value}, {NodeRole.THEME.value}, {NodeRole.UNIT.value}, {NodeRole.WEEK.value} "
             f"in context_groupings or emitted groupings (or mark unresolved)."
+        )
+
+
+def validate_established_canonicals(
+    *, known_canonicals_list: list[dict[str, str]], mapping: GroupingCanonicalizationMap
+) -> None:
+    """Validate that a CanonicalizationMap only emits established canonical titles,
+    with exact matching.
+
+    Parameters
+    ----------
+    known_canonicals_list
+        The list of established canonical keys (role + title).
+    mapping
+        The GroupingCanonicalizationMap to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    known_exact: set[tuple[str, str]] = set()
+    known_norm: dict[str, dict[str, str]] = {}  # role -> norm -> exact_title
+
+    def _canon_title_key(s: str) -> str:
+        """Normalize a title for canonical matching.
+
+        Parameters
+        ----------
+        s
+            The input title.
+
+        Returns
+        -------
+        str
+            The normalized title key.
+        """
+
+        s = (s or "").strip().lower()
+        s = re.sub(r"\s+", " ", s)
+        s = re.sub(r"[.·•:;,_-]+$", "", s)  # trailing punctuation only
+
+        return s
+
+    for k in known_canonicals_list:
+        role = k["role"]
+        title = k["title"]
+        known_exact.add((role, title))
+        known_norm.setdefault(role, {})[_canon_title_key(title)] = title
+
+    violations: list[str] = []
+
+    for item in mapping.items:
+        for out in item.output:
+            role = out.role.value
+            title = out.title
+
+            if role not in known_norm:
+                continue
+
+            # If it's exactly established, OK
+            if (role, title) in known_exact:
+                continue
+
+            # If it normalizes to an established title, that's a violation
+            norm = _canon_title_key(title)
+            if norm in known_norm[role]:
+                established_title = known_norm[role][norm]
+                violations.append(
+                    f"Output [{role}] '{title}' should match established canonical exactly: '{established_title}'"
+                )
+
+    if violations:
+        raise QualityError(" ".join(violations))
+
+
+def validate_grouping_canonicalization_coverage(
+    *,
+    grouping_keys: list[GroupingCanonicalizationKey],
+    mapping: GroupingCanonicalizationMap,
+) -> None:
+    """Validate that a CanonicalizationMap covers all input grouping keys exactly.
+
+    Parameters
+    ----------
+    grouping_keys
+        The list of input GroupingCanonicalizationKey.
+    mapping
+        The GroupingCanonicalizationMap to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    expected = [
+        (k.role.value, k.title, k.local_code or "", k.source_label or "")
+        for k in grouping_keys
+    ]
+    got = [
+        (
+            i.input.role.value,
+            i.input.title,
+            i.input.local_code or "",
+            i.input.source_label or "",
+        )
+        for i in mapping.items
+    ]
+
+    if len(got) != len(expected):
+        raise QualityError(
+            f"CanonicalizationMap.items size mismatch: got={len(got)} expected={len(expected)}"
+        )
+
+    # Exact set match.
+    if set(got) != set(expected):
+        missing = set(expected) - set(got)
+        extra = set(got) - set(expected)
+
+        raise QualityError(
+            f"CanonicalizationMap coverage mismatch. missing={missing} extra={extra}"
+        )
+
+    # Require same order as inputs for determinism.
+    if got != expected:
+        raise QualityError(
+            "CanonicalizationMap.items are not in the same order as input grouping_keys"
         )
 
 
