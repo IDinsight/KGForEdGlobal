@@ -51,6 +51,7 @@ from skg.utils.general import (
 T = TypeVar("T")
 
 # Compiled regexes.
+_ACRONYM_RE = re.compile(r"^[A-Z0-9&/.\-]+$")
 _DASH_RE = re.compile(r"[‐-‒–—−]+")
 _STRUCTURAL_CONTEXT_CUE_RE = re.compile(
     r"\b("
@@ -408,13 +409,46 @@ def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
 
     title = _clean_text(g.title) or g.title.strip()
 
-    return g.model_copy(
+    g_new = g.model_copy(
         update={
             "local_code": _clean_text(g.local_code),
             "source_label": _clean_text(g.source_label),
             "title": title,
         }
     )
+
+    if getattr(g_new, "title", None):
+        g_new = g_new.model_copy(
+            update={"title": _to_title_case_keep_acronyms(g.title)}
+        )
+
+    return g_new
+
+
+def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
+    """Apply deterministic hygiene to LeafDecision.
+
+    Parameters
+    ----------
+    leaf
+        The LeafDecision to clean.
+
+    Returns
+    -------
+    LeafDecision
+        The cleaned LeafDecision.
+    """
+
+    updates = {}
+
+    if getattr(leaf, "body", None):
+        updates["body"] = _normalize_leaf_body(leaf.body)
+
+    # Optional: normalize list_marker whitespace if it exists.
+    if getattr(leaf, "list_marker", None):
+        updates["list_marker"] = re.sub(r"\s+", " ", leaf.list_marker).strip()
+
+    return leaf.model_copy(update=updates) if updates else leaf
 
 
 def _clean_text(text: Optional[str]) -> Optional[str]:
@@ -1542,6 +1576,41 @@ def _materialize_table_rows(
             )
 
 
+def _normalize_leaf_body(body: str) -> str:
+    """Normalize statement text. The goal here is to remove purely formatting-based
+    diffs that shouldn't create merge warnings.
+
+    The following are considered safe operations:
+
+    1. Unicode normalize
+    2. Collapse whitespace
+    3. Ensure a single space after ":" and capitalize the next letter
+    4. Capitalize the first letter (if it starts lowercase)
+
+    Parameters
+    ----------
+    body
+        The leaf body text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized leaf body text.
+    """
+
+    s = unicodedata.normalize("NFKC", body or "")
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Capitalize first alphabetic character if it's lowercase.
+    s = re.sub(r"^([a-z])", lambda m: m.group(1).upper(), s)
+
+    # Normalize ":" spacing and capitalization right after colon.
+    # "Reading skills: use blends" -> "Reading skills: Use blends"
+    s = re.sub(r":\s*([a-z])", lambda m: ": " + m.group(1).upper(), s)
+
+    return s
+
+
 def _normalize_text(text: Optional[str]) -> str:
     """Deterministic normalization for hashing/comparisons:
 
@@ -1842,6 +1911,43 @@ def _table_row_bbox(*, row_index: int, table_segment: TableSegment) -> Optional[
         return rp.row_bbox or rp.bbox
 
     return None
+
+
+def _to_title_case_keep_acronyms(title: str) -> str:
+    """Convert a string to title case while keeping acronyms intact.
+
+    Parameters
+    ----------
+    title
+        The title string to convert.
+
+    Returns
+    -------
+    str
+        The converted title string.
+    """
+
+    t = (title or "").strip()
+
+    if not t:
+        return t
+
+    # Keep acronyms/short all-caps tokens.
+    if t.isupper() and _ACRONYM_RE.match(t.replace(" ", "")):
+        return t
+
+    t = re.sub(r"\s+", " ", t)
+    parts = t.lower().split(" ")
+    output = []
+    small_words = {"and", "or", "of", "the", "to", "in", "for", "a", "an"}
+
+    for i, w in enumerate(parts):
+        if i > 0 and w in small_words:
+            output.append(w)
+        else:
+            output.append(w[:1].upper() + w[1:] if w else w)
+
+    return " ".join(output)
 
 
 def _validate_and_handle_unresolved(
@@ -2165,6 +2271,61 @@ def canonical_grade_level_title(title: str) -> str:
     return title.strip()
 
 
+def canonical_grouping_display_titles(
+    *, segment_decisions: SegmentDecisionSet
+) -> SegmentDecisionSet:
+    """Normalize grouping titles across all decisions so semantically-equal groupings
+    use the same display title (prevents casing-only merge warnings later).
+
+    Parameters
+    ----------
+    segment_decisions
+        The SegmentDecisionSet to normalize.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The updated SegmentDecisionSet.
+    """
+
+    def fix_grouping(g: GroupingDecision) -> GroupingDecision:
+        """Fix grouping title in place.
+
+        Parameters
+        ----------
+        g
+            The GroupingDecision to fix.
+
+        Returns
+        -------
+        GroupingDecision
+            The updated GroupingDecision.
+        """
+
+        # Only touch groupings with titles.
+        if getattr(g, "title", None):
+            g.title = _to_title_case_keep_acronyms(g.title)
+
+        return g
+
+    for d in segment_decisions.decisions:
+        # Context groupings.
+        if d.context_groupings:
+            d.context_groupings = [fix_grouping(g) for g in d.context_groupings]
+
+        # Segment-level groupings.
+        if d.groupings:
+            d.groupings = [fix_grouping(g) for g in d.groupings]
+
+        # Row-level groupings.
+        if d.rows:
+            for r in d.rows:
+                if r.groupings:
+                    r.groupings = [fix_grouping(g) for g in r.groupings]
+
+    return segment_decisions
+
+
 def canonical_grouping_node_id(
     *, ancestor_grouping_keys: list[str], doc_key: str, grouping: GroupingDecision
 ) -> str:
@@ -2274,6 +2435,41 @@ def canonical_key(
     )
 
 
+def canonical_leaf_body(body: str) -> str:
+    """Normalize statement text. The goal here is to remove purely formatting-based
+    diffs that shouldn't create merge warnings.
+
+    The following are considered safe operations:
+
+    1. Unicode normalize
+    2. Collapse whitespace
+    3. Ensure a single space after ":" and capitalize the next letter
+    4. Capitalize the first letter (if it starts lowercase)
+
+    Parameters
+    ----------
+    body
+        The leaf body text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized leaf body text.
+    """
+
+    s = unicodedata.normalize("NFKC", body or "")
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Capitalize first alphabetic character if it's lowercase.
+    s = re.sub(r"^([a-z])", lambda m: m.group(1).upper(), s)
+
+    # Normalize ":" spacing and capitalization right after colon.
+    # "Reading skills: use blends" -> "Reading skills: Use blends"
+    s = re.sub(r":\s*([a-z])", lambda m: ": " + m.group(1).upper(), s)
+
+    return s
+
+
 def canonical_leaf_node_id(
     *, ancestor_grouping_keys: list[str], doc_key: str, leaf: LeafDecision
 ) -> str:
@@ -2345,16 +2541,22 @@ def canonicalize_storage_text(text: Optional[str]) -> str:
 def clean_up_segment_decisions(
     *, creation_dirs: CanonicalIRDirs, segment_decisions: SegmentDecisionSet
 ) -> SegmentDecisionSet:
-    """
-    Apply universal (non-heuristic) hygiene to all grouping fields in a decision set.
+    """Apply universal (non-heuristic) hygiene to all grouping fields in a decision
+    set. This is intended to run BEFORE the LLM-based global grouping canonicalization
+    step so that the mapping operates on stable strings (whitespace/quote/dash noise
+    removed).
 
-    This is intended to run BEFORE the LLM-based global grouping canonicalization step
-    so that the mapping operates on stable strings (whitespace/quote/dash noise removed).
+    Parameters
+    ----------
+    creation_dirs
+        The canonical IR creation directories.
+    segment_decisions
+        The SegmentDecisionSet to clean.
 
-    IMPORTANT:
-      - does NOT split/combine groupings
-      - does NOT do Zambia-specific parsing
-      - only cleans context_groupings/groupings/rows.groupings
+    Returns
+    -------
+    SegmentDecisionSet
+        The cleaned SegmentDecisionSet.
     """
 
     new_segment_decisions = []
@@ -2370,18 +2572,23 @@ def clean_up_segment_decisions(
         if d.groupings:
             updates["groupings"] = [_clean_grouping(g) for g in d.groupings]
 
+        if d.leaves:
+            updates["leaves"] = [_clean_leaf(leaf) for leaf in d.leaves]
+
         if d.rows:
             new_rows = []
 
             for r in d.rows:
+                row_updates = {}
+
                 if r.groupings:
-                    new_rows.append(
-                        r.model_copy(
-                            update={
-                                "groupings": [_clean_grouping(g) for g in r.groupings]
-                            }
-                        )
-                    )
+                    row_updates["groupings"] = [_clean_grouping(g) for g in r.groupings]
+
+                if r.leaves:
+                    row_updates["leaves"] = [_clean_leaf(leaf) for leaf in r.leaves]
+
+                if row_updates:
+                    new_rows.append(r.model_copy(update=row_updates))
                 else:
                     new_rows.append(r)
 
