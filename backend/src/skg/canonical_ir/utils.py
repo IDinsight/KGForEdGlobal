@@ -1949,7 +1949,7 @@ def _validate_and_handle_unresolved(
                     _extract_table_headers(segment) if segment.kind == "table" else []
                 ),
                 kind=segment.kind,
-                local_code=getattr(segment, "local_code", None),
+                local_code=segment.local_code,
                 page_indices=page_indices,
                 reason=UnresolvedReason.FLAGGED_UNRESOLVED,
                 sample=_make_unresolved_sample(decision=decision, segment=segment),
@@ -1975,7 +1975,7 @@ def _validate_and_handle_unresolved(
                 kind=segment.kind,
                 page_indices=page_indices,
                 reason=reason,
-                sample=None,
+                sample=_make_unresolved_sample(decision=decision, segment=segment),
                 section_path_text=section_path_text,
                 segment_id=segment.segment_id,
             )
