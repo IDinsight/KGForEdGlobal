@@ -35,7 +35,6 @@ from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
-    CaptionKind,
     GroupingCanonicalizationAction,
     NodeRole,
     SegmentDecisionType,
@@ -70,19 +69,6 @@ class CanonicalIRDirs:
     root: Path
     canonical_ir: Path
     segment_decisions: Path
-
-
-@dataclass(frozen=True)
-class CaptionBinding:
-    """Dataclass for caption-to-table bindings."""
-
-    caption_kind: CaptionKind
-    caption_page_index: int | None
-    caption_segment_id: str
-    caption_text: str
-    gap_segments: int
-    table_page_index: int | None
-    table_segment_id: str
 
 
 @dataclass(frozen=True)

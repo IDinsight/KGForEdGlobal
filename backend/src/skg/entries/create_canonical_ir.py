@@ -155,12 +155,8 @@ def create_canonical_ir(
 
             prev_seg = document_ir.segments[i - 2] if i > 1 else None
             next_seg = document_ir.segments[i] if i < num_segments else None
-            prev_hint = (
-                segment_hint(prev_seg.model_dump(mode="json")) if prev_seg else None
-            )
-            next_hint = (
-                segment_hint(next_seg.model_dump(mode="json")) if next_seg else None
-            )
+            prev_seg_hint = segment_hint(prev_seg) if prev_seg else None
+            next_seg_hint = segment_hint(next_seg) if next_seg else None
 
             decision_set = process_segment_decisions(
                 caption_bindings=caption_bindings,
@@ -169,8 +165,8 @@ def create_canonical_ir(
                 decision_set=decision_set,
                 doc_key=doc_key,
                 existing_keys=existing_keys,
-                next_segment_hint=next_hint,
-                prev_segment_hint=prev_hint,
+                next_segment_hint=next_seg_hint,
+                prev_segment_hint=prev_seg_hint,
                 segment=segment,
                 segment_decisions_fp=segment_decisions_fp,
                 warnings=warnings,

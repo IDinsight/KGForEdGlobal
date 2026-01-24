@@ -1866,7 +1866,7 @@ class EntityProvenance(BaseModelKG):
     text_en: Optional[str] = Field(alias="textEn", default=None)
 
 
-class ProgressionProvenance(BaseModelKG):
+class LearningProgressionProvenance(BaseModelKG):
     """Provenance information for a progression relationship."""
 
     confidence: float = Field(ge=0.0, le=1.0)
@@ -2196,25 +2196,33 @@ class RelationshipProvenanceExport(BaseSchema):
 class EntityProvenanceExport(BaseModelKG):
     """Schema for entity provenance export."""
 
-    entities: list[EntityProvenance] = Field(default_factory=list)
+    entities: list[EntityProvenance] = Field(
+        default_factory=list, description="List of entities."
+    )
 
 
 class RelationshipProvenanceExport(BaseModelKG):
     """Schema for relationship provenance export."""
 
-    relationships: list[RelationshipProvenance] = Field(default_factory=list)
+    relationships: list[RelationshipProvenance] = Field(
+        default_factory=list, description="List of relationships."
+    )
 
 
-class ProgressionProvenanceExport(BaseModelKG):
+class LearningProgressionProvenanceExport(BaseModelKG):
     """Schema for progression provenance export."""
 
-    progressions: list[ProgressionProvenance] = Field(default_factory=list)
+    learning_progressions: list[LearningProgressionProvenance] = Field(
+        default_factory=list, description="List of learning progressions."
+    )
 
 
 class HierarchyOrderExport(BaseModelKG):
     """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
 
-    order: dict[str, list[str]] = Field(default_factory=dict)
+    order: dict[str, list[str]] = Field(
+        default_factory=dict, description="Order of child SFIs."
+    )
 
 
 # Schemas for graph validation reporting.
