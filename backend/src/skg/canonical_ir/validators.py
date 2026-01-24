@@ -381,6 +381,7 @@ def _normalize_text(text: Optional[str]) -> str:
 
 def _outer_evidence_supports_title(
     *,
+    allow_prior_titles: bool,
     evidence_blob_norm: str,
     prior_titles_norm: set[str],
     role: NodeRole,
@@ -397,6 +398,8 @@ def _outer_evidence_supports_title(
 
     Parameters
     ----------
+    allow_prior_titles
+        Whether to allow support from prior context grouping titles.
     evidence_blob_norm
         The normalized outer evidence text blob.
     prior_titles_norm
@@ -416,8 +419,10 @@ def _outer_evidence_supports_title(
     if title_norm and title_norm in evidence_blob_norm:
         return True
 
-    # 2. Also allow support from prior_context_groupings (chunk stability).
-    if title_norm and title_norm in prior_titles_norm:
+    # 2. Optionally allow support from prior_context_groupings (chunk stability).
+    #
+    # NB: Only enable this for chunked TABLE segments AFTER the first chunk.
+    if allow_prior_titles and title_norm and title_norm in prior_titles_norm:
         return True
 
     # 3. Mild role-aware numeric equivalence.
@@ -975,6 +980,9 @@ def validate_context_groupings_supported_by_outer_evidence(
             )
 
         prior = payload.get("prior_context_groupings") or []
+        chunking = payload.get("chunking") or {}
+        is_first_chunk = bool(chunking.get("is_first_chunk", False))
+        allow_prior_titles = bool(chunking) and not is_first_chunk
         prior_titles_norm: set[str] = set()
 
         for pg in prior:
@@ -987,6 +995,7 @@ def validate_context_groupings_supported_by_outer_evidence(
                 prior_titles_norm.add(pt)
 
         if not _outer_evidence_supports_title(
+            allow_prior_titles=allow_prior_titles,
             evidence_blob_norm=evidence_blob,
             prior_titles_norm=prior_titles_norm,
             role=g.role,
@@ -1201,9 +1210,8 @@ def validate_heading_segments_emit_groupings(
 def validate_ignore_unresolved_emit_nothing(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
-    """If decision_type is IGNORE or UNRESOLVED, it must not emit groupings/leaves/rows.
-    We still allow rationale/confidence/context_groupings for audit, but the decision
-    must not contain materializable outputs.
+    """If decision_type is IGNORE or UNRESOLVED, it must not emit
+    groupings/leaves/rows.
 
     Parameters
     ----------

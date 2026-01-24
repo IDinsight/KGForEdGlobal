@@ -37,19 +37,21 @@ if __name__ == "__main__":
 # Package Library
 from skg.canonical_ir.llm import generate_grouping_canonicalization_map
 from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
+from skg.canonical_ir.segment_decisions import (
+    build_caption_bindings,
+    process_segment_decisions,
+    segment_hint,
+)
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     apply_grouping_canonicalization_map,
-    build_caption_bindings,
     build_context_hint_from_decision,
     clean_up_segment_decisions,
     collect_unique_grouping_keys,
     compile_canonical_ir,
     load_segment_decision_set,
     persist_canonical_run,
-    process_segment_decisions,
     save_canonical_ir,
-    segment_hint,
 )
 from skg.canonical_ir.validators import validate_table_chunk_coverage_and_overlap
 from skg.document_ir.schemas import DocumentIR

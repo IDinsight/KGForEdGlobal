@@ -8,36 +8,31 @@ from typing import Any, Optional
 
 # Third Party Library
 from loguru import logger
-from pydantic import TypeAdapter
 
 # Package Library
 from skg.canonical_ir.llm import generate_segment_decision
 from skg.canonical_ir.schemas import (
-    CaptionBinding,
     SegmentDecision,
     SegmentDecisionSet,
     compute_decision_set_id,
 )
-from skg.canonical_ir.utils import CanonicalIRDirs, _extract_block_segment_text
-from skg.document_ir.schemas import (
-    BlockSegment,
-    DocumentIR,
-    SectionHeadingRef,
-    Segment,
-    TableSegment,
+from skg.canonical_ir.utils import (
+    CanonicalIRDirs,
+    CaptionBinding,
+    _extract_block_segment_text,
+    _normalize_text,
 )
-from skg.page_ir_extraction.schemas import TableCell, TableRow, TextUnit
+from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
 from skg.schemas import CreateCanonicalConfig
 from skg.utils.constants import (
     BlockType,
     CaptionFigurePrefixes,
     CaptionKind,
     CaptionTablePrefixes,
-    FrontMatterHeadings,
     NonArtifacts,
     SegmentDecisionType,
 )
-from skg.utils.general import open_json_type, write_to_json
+from skg.utils.general import write_to_json
 
 
 def _classify_caption_kind(text: str) -> CaptionKind:
@@ -75,97 +70,37 @@ def _classify_caption_kind(text: str) -> CaptionKind:
     return "unknown"
 
 
-def _determine_stable_context(
-    *,
-    chunk_range: tuple[int, int],
-    decision: SegmentDecision,
-    fallback_hint: list[dict[str, Any]] | None,
-    segment_id: str,
-    warnings: list[str],
-) -> list[dict[str, Any]]:
-    """Extract stable context roles from the first chunk decision.
+def _clip(s: str | None, n: int) -> str:
+    """Truncate a string to the first n characters.
 
     Parameters
     ----------
-    chunk_range
-        The (start, end) row range for logging.
-    decision
-        The SegmentDecision to extract context from.
-    fallback_hint
-        The fallback context hint to use if no stable context is found.
-    segment_id
-        The segment ID for logging.
-    warnings
-        The list of warnings to append to.
+    s
+        The input string. Handles None by converting to empty string.
+    n
+        The maximum number of characters to return.
 
     Returns
     -------
-    list[dict[str, Any]]
-        The stable context groupings.
+    str
+        The clipped string.
     """
 
-    stable_models = list(decision.context_groupings or [])
+    s = s or ""
 
-    seen: set[tuple[str, str]] = set()
-    stable_hint: list[dict[str, Any]] = []
-
-    for g in stable_models:
-        role = str(getattr(g, "role", "")).strip().lower()
-        title = str(getattr(g, "title", "")).strip().lower()
-        key_fp = (role, title)
-
-        if role and title and key_fp not in seen:
-            seen.add(key_fp)
-            stable_hint.append(g.model_dump(mode="json"))
-
-    usable = decision.decision_type not in (
-        SegmentDecisionType.IGNORE,
-        SegmentDecisionType.UNRESOLVED,
-    ) and bool(stable_hint)
-
-    if usable:
-        return [dict(x) for x in stable_hint]
-
-    msg = (
-        f"Chunked table first-chunk produced no usable context_groupings; "
-        f"falling back to context_hint for segment_id={segment_id}, "
-        f"row_range_start={chunk_range[0]}, row_range_end={chunk_range[1]}."
-    )
-    logger.warning(msg)
-    warnings.append(msg)
-
-    return [dict(x) for x in (fallback_hint or [])]
+    return s[:n]
 
 
 def _filter_section_path_for_llm(
-    *,
-    max_items: int = 5,
-    max_page_distance: int = 3,
-    section_paths: list[SectionHeadingRef],
-    segment_item_index: int,
-    segment_page_index: int,
+    section_path: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    """Reduce section_path to only the *relevant, nearby* headings for the LLM.
-
-    NB:
-
-    1. Never include headings that occur AFTER the segment (future context).
-    2. Prefer headings on the same page or within the last N pages.
-    3. Keep only the tail max_items after filtering.
-    4. De-dupe consecutive identical headings.
+    """Remove front-matter/non-artifact headings from the section_path evidence shown
+    to the LLM.
 
     Parameters
     ----------
-    max_items
-        The maximum number of section headings to keep.
-    max_page_distance
-        The maximum page distance to keep.
-    section_paths
-        A list of SectionHeadingRef objects.
-    segment_item_index
-        The segment item index.
-    segment_page_index
-        The segment page index.
+    section_path
+        The section_path to filter.
 
     Returns
     -------
@@ -173,54 +108,85 @@ def _filter_section_path_for_llm(
         The filtered section_path.
     """
 
-    if not section_paths:
+    if not section_path:
         return []
 
-    filtered: list[SectionHeadingRef] = []
+    output: list[dict[str, Any]] = []
 
-    for section_path in section_paths:
-        text_cf = section_path.text.casefold().strip()
+    for h in section_path:
+        txt = (h.get("text") or "").strip()
 
-        if text_cf in (FrontMatterHeadings, NonArtifacts):
+        if not txt:
             continue
 
-        # Drop headings that are after the segment or that are too far away.
-        if (
-            section_path.page_index > segment_page_index
-            or (
-                section_path.page_index == segment_page_index
-                and segment_item_index is not None
-                and section_path.item_index > segment_item_index
-            )
-            or (segment_page_index - section_path.page_index) > max_page_distance
-        ):
+        norm = _normalize_text(text=txt)
+
+        if norm in NonArtifacts:
             continue
 
-        filtered.append(section_path)
+        output.append(h)
 
-    # If we filtered too aggressively, keep the closest prior heading as a fallback.
-    if not filtered:
-        for section_path in reversed(section_paths):
-            if section_path.page_index <= segment_page_index:
-                filtered = [section_path]
-                break
+    return output
 
-    output = [sp.model_dump(mode="json") for sp in filtered]
 
-    # De-dupe consecutive identical heading texts.
-    deduped: list[dict[str, Any]] = []
-    prev_norm: str | None = None
+def _list_preview(seg: dict[str, Any], n: int = 3) -> list[str] | None:
+    """Generate a preview of the first few list items.
 
-    for item in output:
-        norm = " ".join(item["text"].split()).casefold()
+    Parameters
+    ----------
+    seg
+        The segment dictionary.
+    n
+        The number of list items to sample, by default 3.
 
-        if norm == prev_norm:
-            continue
+    Returns
+    -------
+    list[str] | None
+        A list of clipped item strings, or None if no items exist.
+    """
 
-        prev_norm = norm
-        deduped.append(item)
+    items = seg.get("list_items") or []
+    if not items:
+        return None
 
-    return deduped[-max_items:]
+    output: list[str] = []
+
+    for it in items[:n]:
+        if isinstance(it, dict):
+            # ListItem likely has text: TextUnit; but be defensive.
+            tu = it.get("text") or {}
+            body = (tu.get("text") or it.get("body") or "").strip()
+            if body:
+                output.append(_clip(body, 140))
+
+    return output or None
+
+
+def _page_span(seg: dict[str, Any]) -> list[int] | None:
+    """Calculate the min and max page indices for the segment.
+
+    Parameters
+    ----------
+    seg
+        The segment dictionary.
+
+    Returns
+    -------
+    list[int] | None
+        A list containing [min_page, max_page], or None if no provenance exists.
+    """
+
+    prov = seg.get("segment_provenance") or []
+    pages: list[int] = []
+
+    for p in prov:
+        if isinstance(p, dict) and isinstance(p.get("page_index"), int):
+            pages.append(p["page_index"])
+
+    if not pages:
+        return None
+
+    return [min(pages), max(pages)]
 
 
 def _process_block_segment(
@@ -267,16 +233,10 @@ def _process_block_segment(
     key: tuple[str, int | None, int | None] = (segment.segment_id, None, None)
     assert key not in existing_keys, f"Duplicate segment block key found: {key}"
 
-    # Filter payload evidence that is not helpful to the LLM.
-    segment_payload = segment.model_dump(
-        exclude={"segment_id", "segment_provenance", "slices"}, mode="json"
-    )
-
-    # Add additional payload evidence that is helpful to the LLM.
+    # Filter the outer evidence shown to the LLM so it matches validator policy.
+    segment_payload = segment.model_dump(mode="json")
     segment_payload["section_path"] = _filter_section_path_for_llm(
-        section_paths=segment.section_path,
-        segment_item_index=segment.slices[0].item_index,
-        segment_page_index=segment.slices[0].page_index,
+        segment_payload.get("section_path")
     )
     segment_payload["prior_context_groupings"] = [dict(x) for x in (context_hint or [])]
     segment_payload["prev_segment_hint"] = prev_segment_hint
@@ -296,133 +256,6 @@ def _process_block_segment(
     return save_segment_decision_set(
         decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
     )
-
-
-def _process_chunked_table(
-    *,
-    caption_binding: CaptionBinding | None,
-    chunks: list[tuple[int | None, int | None]],
-    config: CreateCanonicalConfig,
-    context_hint: list[dict[str, Any]] | None,
-    decision_set: SegmentDecisionSet,
-    doc_key: str,
-    existing_keys: set[tuple[str, int | None, int | None]],
-    next_segment_hint: dict[str, Any] | None,
-    prev_segment_hint: dict[str, Any] | None,
-    segment: Segment,
-    segment_decisions_fp: Path,
-    warnings: list[str],
-) -> SegmentDecisionSet:
-    """Process chunked table segments.
-
-    Parameters
-    ----------
-    caption_binding
-        The CaptionBinding to apply, or None to skip.
-    chunks
-        The list of (start, end) row index tuples for each chunk.
-    config
-        The CreateCanonicalConfig to use.
-    context_hint
-        The context hint to apply.
-    decision_set
-        The SegmentDecisionSet to update.
-    doc_key
-        The document key.
-    existing_keys
-        The set of existing decision keys.
-    next_segment_hint
-        The next segment hint to apply.
-    prev_segment_hint
-        The previous segment hint to apply.
-    segment
-        The Segment to process.
-    segment_decisions_fp
-        The file path to save segment decisions to.
-    warnings
-        The list of warnings to append to.
-
-    Returns
-    -------
-    SegmentDecisionSet
-        The updated SegmentDecisionSet.
-    """
-
-    unchunked_key = (segment.segment_id, None, None)
-    assert (
-        unchunked_key not in existing_keys
-    ), f"Duplicate unchunked key: {unchunked_key}"
-
-    stable_table_prior_context: list[dict[str, Any]] | None = None
-
-    # Ensure deterministic order.
-    chunks_sorted = sorted(
-        [(s, e) for (s, e) in chunks if s is not None and e is not None],
-        key=lambda x: (x[0], x[1]),
-    )
-
-    for i, (start, end) in enumerate(chunks_sorted):
-        key = (segment.segment_id, start, end)
-        assert key not in existing_keys, f"Duplicate chunk key found: {key}"
-        table_payload = make_table_chunk_payload(end=end, segment=segment, start=start)
-
-        # Mark first chunk for validation.
-        table_payload.setdefault("chunking", {})
-        table_payload["chunking"]["is_first_chunk"] = i == 0
-
-        table_payload = apply_caption_binding_to_table_payload(
-            caption_binding=caption_binding, table_payload=table_payload
-        )
-
-        # Chunked table == N decisions.
-        #
-        # For chunked tables we want a stable "prior_context_groupings" across ALL
-        # chunks of the SAME table segment. The best anchor is the context_groupings
-        # decided for the FIRST chunk of that table.
-        #
-        # This avoids drift where chunk 1 gets a rich context (e.g. Learning Area +
-        # Subject) but chunk 2+ gets a smaller/different context depending on what
-        # segment preceded the table.
-        prior = (
-            stable_table_prior_context
-            if stable_table_prior_context is not None
-            else (context_hint or [])
-        )
-        table_payload["prior_context_groupings"] = [dict(x) for x in prior]
-        table_payload["prev_segment_hint"] = prev_segment_hint
-        table_payload["next_segment_hint"] = next_segment_hint
-
-        segment_decision = generate_segment_decision(
-            always_double_check_first_attempt=config.always_double_check_first_attempt,
-            doc_key=doc_key,
-            model=config.model,
-            row_range_end=end,
-            row_range_start=start,
-            segment=segment,
-            segment_payload=table_payload,
-        )
-        segment_decision = attach_caption_binding_to_segment_decision(
-            caption_binding=caption_binding, segment_decision=segment_decision
-        )
-
-        # Update stable context if this was the first chunk.
-        if stable_table_prior_context is None:
-            stable_table_prior_context = _determine_stable_context(
-                chunk_range=(start, end),
-                decision=segment_decision,
-                fallback_hint=context_hint,
-                segment_id=segment.segment_id,
-                warnings=warnings,
-            )
-
-        decision_set.decisions.append(segment_decision)
-        existing_keys.add(key)
-
-        decision_set = save_segment_decision_set(
-            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
-        )
-
-    return decision_set
 
 
 def _process_table_segment(
@@ -472,132 +305,168 @@ def _process_table_segment(
         The updated SegmentDecisionSet.
     """
 
-    # caption_bindings is keyed by TABLE segment_id, and some tables may not have
-    # captions.
-    caption_binding = caption_bindings.get(segment.segment_id)
+    # Caption bindings dict is keyed by TABLE segment_id, and many tables have NO
+    # caption -> Use .get().
+    binding: CaptionBinding | None = caption_bindings.get(segment.segment_id)
+
+    # Table segments: chunk only if needed. If an unchunked table decision already
+    # exists, do NOT mix chunked + unchunked.
+    unchunked_key = (segment.segment_id, None, None)
+    assert (
+        unchunked_key not in existing_keys
+    ), f"Duplicate unchunked table key found: {unchunked_key}"
 
     # Determine table chunks.
     chunks = table_chunks_for_segment(
         max_body_rows=config.max_table_rows_per_decision, segment=segment
     )
 
+    # Unchunked table == 1 decision.
     if len(chunks) == 1 and chunks[0] == (None, None):
-        return _process_unchunked_table(
-            caption_binding=caption_binding,
-            config=config,
-            context_hint=context_hint,
-            decision_set=decision_set,
-            doc_key=doc_key,
-            existing_keys=existing_keys,
-            next_segment_hint=next_segment_hint,
-            prev_segment_hint=prev_segment_hint,
-            segment=segment,
-            segment_decisions_fp=segment_decisions_fp,
+        # Do NOT create an unchunked decision if ANY chunked decisions already exist
+        # for this segment (else we would mix chunked + unchunked representations).
+        existing_chunked_for_segment = any(
+            sid == segment.segment_id and row_start is not None
+            for (sid, row_start, _row_end) in existing_keys
+        )
+        if existing_chunked_for_segment:
+            msg = (
+                f"Skipping unchunked decision for table segment {segment.segment_id} "
+                f"because chunked decisions already exist (avoid mixing chunked + unchunked)."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+            return decision_set
+
+        if unchunked_key not in existing_keys:
+            # Apply caption binding and pass the payload even for UNCHUNKED tables so
+            # the LLM sees caption_text/caption_kind etc.
+            table_payload = make_table_full_payload(segment=segment)
+            table_payload = apply_caption_binding_to_table_payload(
+                caption_binding=binding, table_payload=table_payload
+            )
+            table_payload["prior_context_groupings"] = [
+                dict(x) for x in (context_hint or [])
+            ]
+            table_payload["prev_segment_hint"] = prev_segment_hint
+            table_payload["next_segment_hint"] = next_segment_hint
+
+            segment_decision = generate_segment_decision(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
+                doc_key=doc_key,
+                model=config.model,
+                segment=segment,
+                segment_payload=table_payload,
+            )
+            segment_decision = attach_caption_binding_to_segment_decision(
+                caption_binding=binding, segment_decision=segment_decision
+            )
+
+            decision_set.decisions.append(segment_decision)
+            existing_keys.add(unchunked_key)
+
+            return save_segment_decision_set(
+                decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+            )
+
+        return decision_set
+
+    # Chunked table == N decisions.
+    #
+    # For chunked tables we want a stable "prior_context_groupings" across ALL chunks
+    # of the SAME table segment. The best anchor is the context_groupings decided for
+    # the FIRST chunk of that table.
+    #
+    # This avoids drift where chunk 1 gets a rich context (e.g. Learning Area + Subject)
+    # but chunk 2+ gets a smaller/different context depending on what segment preceded
+    # the table.
+    stable_table_prior_context: list[dict[str, Any]] | None = None
+
+    # Ensure deterministic chunk traversal order.
+    chunks_sorted = sorted(
+        [(s, e) for (s, e) in chunks if s is not None and e is not None],
+        key=lambda x: (x[0], x[1]),
+    )
+
+    for start, end in chunks_sorted:
+        key = (segment.segment_id, start, end)
+        table_payload = make_table_chunk_payload(end=end, segment=segment, start=start)
+
+        # Mark whether this is the first chunk (used by validators to enforce context
+        # stability).
+        table_payload.setdefault("chunking", {})
+        table_payload["chunking"]["is_first_chunk"] = start == chunks_sorted[0][0]
+
+        table_payload = apply_caption_binding_to_table_payload(
+            caption_binding=binding, table_payload=table_payload
         )
 
-    return _process_chunked_table(
-        caption_binding=caption_binding,
-        chunks=chunks,
-        config=config,
-        context_hint=context_hint,
-        decision_set=decision_set,
-        doc_key=doc_key,
-        existing_keys=existing_keys,
-        next_segment_hint=next_segment_hint,
-        prev_segment_hint=prev_segment_hint,
-        segment=segment,
-        segment_decisions_fp=segment_decisions_fp,
-        warnings=warnings,
-    )
+        # NB: For chunked tables, chunk #2+ should see the context that was decided for
+        # chunk #1 of the SAME table.
+        prior = (
+            stable_table_prior_context
+            if stable_table_prior_context is not None
+            else (context_hint or [])
+        )
+        table_payload["prior_context_groupings"] = [dict(x) for x in prior]
+        table_payload["prev_segment_hint"] = prev_segment_hint
+        table_payload["next_segment_hint"] = next_segment_hint
+
+        segment_decision = generate_segment_decision(
+            always_double_check_first_attempt=config.always_double_check_first_attempt,
+            doc_key=doc_key,
+            model=config.model,
+            row_range_end=end,
+            row_range_start=start,
+            segment=segment,
+            segment_payload=table_payload,
+        )
+        segment_decision = attach_caption_binding_to_segment_decision(
+            caption_binding=binding, segment_decision=segment_decision
+        )
+
+        # Freeze the table prior context from the FIRST generated chunk decision, but
+        # only if it produced a usable outer context.
+        if stable_table_prior_context is None:
+            stable_hint = [
+                g.model_dump(mode="json")
+                for g in (segment_decision.context_groupings or [])
+            ]
+            usable = segment_decision.decision_type not in (
+                SegmentDecisionType.IGNORE,
+                SegmentDecisionType.UNRESOLVED,
+            ) and bool(stable_hint)
+            if usable:
+                stable_table_prior_context = [dict(x) for x in stable_hint]
+            else:
+                stable_table_prior_context = [dict(x) for x in (context_hint or [])]
+                msg = (
+                    f"Chunked table first-chunk produced no usable context_groupings; "
+                    f"falling back to context_hint for segment_id={segment.segment_id}, "
+                    f"row_range_start={start}, row_range_end={end}."
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+
+        decision_set.decisions.append(segment_decision)
+        existing_keys.add(key)
+
+        decision_set = save_segment_decision_set(
+            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+        )
+
+    return decision_set
 
 
-def _process_unchunked_table(
-    *,
-    caption_binding: CaptionBinding | None,
-    config: CreateCanonicalConfig,
-    context_hint: list[dict[str, Any]] | None,
-    decision_set: SegmentDecisionSet,
-    doc_key: str,
-    existing_keys: set[tuple[str, int | None, int | None]],
-    next_segment_hint: dict[str, Any] | None,
-    prev_segment_hint: dict[str, Any] | None,
-    segment: Segment,
-    segment_decisions_fp: Path,
-) -> SegmentDecisionSet:
-    """Process unchunked table segments.
-
-    Parameters
-    ----------
-    caption_binding
-        The CaptionBinding to apply, or None to skip.
-    config
-        The CreateCanonicalConfig to use.
-    context_hint
-        The context hint to apply.
-    decision_set
-        The SegmentDecisionSet to update.
-    doc_key
-        The document key.
-    existing_keys
-        The set of existing decision keys.
-    next_segment_hint
-        The next segment hint to apply.
-    prev_segment_hint
-        The previous segment hint to apply.
-    segment
-        The Segment to process.
-    segment_decisions_fp
-        The file path to save segment decisions to.
-
-    Returns
-    -------
-    SegmentDecisionSet
-        The updated SegmentDecisionSet.
-    """
-
-    unchunked_key = (segment.segment_id, None, None)
-    assert (
-        unchunked_key not in existing_keys
-    ), f"Duplicate unchunked key: {unchunked_key}"
-
-    # Build table payload.
-    table_payload = make_table_full_payload(segment=segment)
-    table_payload = apply_caption_binding_to_table_payload(
-        caption_binding=caption_binding, table_payload=table_payload
-    )
-    table_payload["prior_context_groupings"] = [dict(x) for x in (context_hint or [])]
-    table_payload["prev_segment_hint"] = prev_segment_hint
-    table_payload["next_segment_hint"] = next_segment_hint
-
-    # Generate segment decision.
-    segment_decision = generate_segment_decision(
-        always_double_check_first_attempt=config.always_double_check_first_attempt,
-        doc_key=doc_key,
-        model=config.model,
-        segment=segment,
-        segment_payload=table_payload,
-    )
-    segment_decision = attach_caption_binding_to_segment_decision(
-        caption_binding=caption_binding, segment_decision=segment_decision
-    )
-
-    decision_set.decisions.append(segment_decision)
-    existing_keys.add(unchunked_key)
-
-    return save_segment_decision_set(
-        decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
-    )
-
-
-def _row_to_text(*, max_cols: int = 6, row: TableRow) -> list[str]:
+def _row_to_text(row: dict[str, Any], max_cols: int = 6) -> list[str]:
     """Convert a table row dictionary into a list of cell texts.
 
     Parameters
     ----------
+    row
+        The row dictionary containing cells.
     max_cols
         Maximum number of columns to process, by default 6.
-    row
-        The TableRow dictionary to process.
 
     Returns
     -------
@@ -605,40 +474,32 @@ def _row_to_text(*, max_cols: int = 6, row: TableRow) -> list[str]:
         A list of strings representing cell content, with trailing empty cells removed.
     """
 
-    texts: list[str] = []
+    cells = row.get("cells") or []
+    txts: list[str] = []
 
-    for cell in row.cells[:max_cols]:
-        assert isinstance(cell, TableCell), f"{row = } {cell = }"
-        text_unit_or_none = cell.text
-        text = (
-            (text_unit_or_none.text or "").strip()
-            if isinstance(text_unit_or_none, TextUnit)
-            else ""
-        )
-        texts.append(text[:500])
+    for c in cells[:max_cols]:
+        if not isinstance(c, dict):
+            continue
+
+        tu = c.get("text") or {}
+        t = (tu.get("text") or "").strip()
+        txts.append(_clip(t, 120))
 
     # Trim trailing empties for compactness.
-    while texts and not texts[-1]:
-        texts.pop()
+    while txts and not txts[-1]:
+        txts.pop()
+    return txts
 
-    return texts
 
-
-def _section_path_texts(
-    *, k: int = 6, segment: Segment, segment_item_index: int, segment_page_index: int
-) -> list[str]:
+def _section_path_texts(seg: dict[str, Any], k: int = 6) -> list[str]:
     """Extract recent section headings from the segment path.
 
     Parameters
     ----------
+    seg
+        The segment dictionary.
     k
         The number of recent sections to include, by default 6.
-    segment
-        The Segment to extract from.
-    segment_item_index
-        The segment item index.
-    segment_page_index
-        The segment page index.
 
     Returns
     -------
@@ -647,19 +508,104 @@ def _section_path_texts(
     """
 
     # SectionHeadingRef has .text; keep only recent ones.
-    section_paths = _filter_section_path_for_llm(
-        section_paths=segment.section_path,
-        segment_item_index=segment_item_index,
-        segment_page_index=segment_page_index,
-    )
+    sp = _filter_section_path_for_llm(seg.get("section_path")) or []
     texts: list[str] = []
 
-    for sp in section_paths[-k:]:
-        text = sp["text"].strip()
-        assert text, f"{section_paths = }"
-        texts.append(text)
+    for ref in sp[-k:]:
+        if isinstance(ref, dict):
+            t = (ref.get("text") or "").strip()
+            if t:
+                texts.append(t)
 
     return texts
+
+
+def _table_sample(seg: dict[str, Any]) -> dict[str, Any]:
+    """Generate a structural summary and data sample for a table segment.
+
+    Parameters
+    ----------
+    seg
+        The segment dictionary representing a table.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing metadata (cols, rows) and body samples.
+    """
+
+    header_rows_canonical = seg.get("header_rows_canonical") or []
+    header_row_count = int(seg.get("header_row_count") or 0)
+    n_cols = seg.get("n_cols")
+
+    # Prefer filldown sample for “topic/subtopic/strand” signals if present.
+    rows = seg.get("rows_filldown") or seg.get("rows") or []
+    row_count = len(seg.get("rows") or [])
+
+    # Sample 2 body rows immediately after headers.
+    body_samples: list[list[str]] = []
+    start = min(header_row_count, len(rows))
+    for r in rows[start : start + 2]:
+        if isinstance(r, dict):
+            body_samples.append(_row_to_text(r, max_cols=6))
+
+    return {
+        "columns_signature": seg.get("columns_signature"),
+        "header_rows_canonical": header_rows_canonical[:2],
+        "header_row_count": header_row_count,
+        "n_cols": n_cols,
+        "row_count": row_count,
+        "body_row_samples": body_samples,
+        "has_rows_grid": bool(seg.get("rows_grid")),
+        "has_rows_filldown": bool(seg.get("rows_filldown")),
+    }
+
+
+def _tail(s: str | None, n: int) -> str:
+    """Return the suffix of a string.
+
+    Parameters
+    ----------
+    s
+        The input string. Handles None by converting to empty string.
+    n
+        The number of characters to return from the end.
+
+    Returns
+    -------
+    str
+        The last n characters, or the whole string if length < n.
+    """
+
+    s = s or ""
+
+    return s[-n:] if len(s) > n else s
+
+
+def _text_preview_for_block(seg: dict[str, Any]) -> dict[str, str]:
+    """Generate a preview of text content (head and tail).
+
+    Parameters
+    ----------
+    seg
+        The segment dictionary.
+
+    Returns
+    -------
+    dict[str, str]
+        A dictionary with 'text_head' and 'text_tail' keys.
+    """
+
+    # Prefer combined_text if present (stitched blocks), otherwise TextUnit.text.
+    combined = (seg.get("combined_text") or "").strip()
+    text_unit = seg.get("text") or {}
+    raw = (text_unit.get("text") or "").strip()
+    src = combined if combined else raw
+
+    return {
+        "text_head": _clip(src, 260),
+        "text_tail": _tail(src, 120),
+    }
 
 
 def apply_caption_binding_to_table_payload(
@@ -722,17 +668,15 @@ def attach_caption_binding_to_segment_decision(
     return segment_decision
 
 
-def load_or_build_caption_bindings(
+def build_caption_bindings(
     *,
     bind_unknown_caption: bool = True,
     creation_dirs: CanonicalIRDirs,
     document_ir: DocumentIR,
     max_gap_segments: int = 2,
     max_page_distance: int = 1,
-    overwrite: bool,
 ) -> dict[str, CaptionBinding]:
-    """Load existing caption-to-table bindings or build deterministic caption-to-table
-    bindings *before* LLM interpretation.
+    """Build deterministic caption→table bindings *before* LLM interpretation.
 
     Many curriculum PDFs place a short caption/label block immediately before a table.
     That caption is usually not curriculum content itself, but it often contains
@@ -772,26 +716,12 @@ def load_or_build_caption_bindings(
         The maximum number of non-table segments allowed between caption and table.
     max_page_distance
         The maximum page distance allowed between caption and table.
-    overwrite
-        Whether to overwrite existing caption bindings.
 
     Returns
     -------
     dict[str, CaptionBinding]
         The computed caption bindings, keyed by table segment ID.
     """
-
-    caption_bindings_fp = creation_dirs.canonical_ir / "caption_bindings.json"
-    warnings_fp = creation_dirs.segment_decisions / "caption_binding_warnings.json"
-
-    if not overwrite and caption_bindings_fp.exists() and warnings_fp.exists():
-        logger.warning(
-            f"Caption bindings already exists at: {caption_bindings_fp}. "
-            f"If you wish to overwrite, pass the --overwrite flag."
-        )
-        adapter = TypeAdapter(dict[str, CaptionBinding])
-        caption_bindings_json = open_json_type(caption_bindings_fp)
-        return adapter.validate_python(caption_bindings_json)
 
     caption_bindings: dict[str, CaptionBinding] = {}
     warnings: list[str] = []
@@ -807,11 +737,7 @@ def load_or_build_caption_bindings(
         if segment.kind == "block":
             caption_text = _extract_block_segment_text(segment)
 
-            # NB: Sometimes, headings contain the actual caption text for the table.
-            if (
-                segment.block_type in (BlockType.CAPTION, BlockType.HEADING)
-                and caption_text
-            ):
+            if segment.block_type == BlockType.CAPTION and caption_text:
                 kind = _classify_caption_kind(caption_text)
 
                 # Don't bind figure captions to tables.
@@ -846,11 +772,8 @@ def load_or_build_caption_bindings(
                 )
             else:
                 msg = (
-                    f"Dangling caption dropped:\n"
-                    f"caption={cap_seg.segment_id}\n"
-                    f"gap={gap}\n"
-                    f"page_index={page_index}\n"
-                    f"segment_index={index}"
+                    f"Dangling caption dropped: "
+                    f"caption={cap_seg.segment_id} gap={gap} page_dist={page_dist}"
                 )
                 logger.warning(msg)
                 warnings.append(msg)
@@ -859,21 +782,18 @@ def load_or_build_caption_bindings(
 
             continue
 
-        # Expire pending caption if too far. NB: pending_caption[4] is cap_index.
-        if (
-            pending_caption is not None
-            and max(0, index - pending_caption[4] - 1) > max_gap_segments
-        ):
-            cap_seg, _, _, _, cap_index = pending_caption
-            msg = (
-                f"Dangling caption dropped:\n"
-                f"caption={cap_seg.segment_id} gap_exceeded={max(0, index - cap_index - 1)}\n"
-                f"page_index={page_index}\n"
-                f"segment_index={index}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-            pending_caption = None
+        # Expire pending caption if too far.
+        if pending_caption is not None:
+            cap_seg, _cap_text, _cap_kind, _cap_page, cap_index = pending_caption
+            gap = max(0, index - cap_index - 1)
+            if gap > max_gap_segments:
+                msg = (
+                    f"Dangling caption dropped: "
+                    f"caption={cap_seg.segment_id} gap_exceeded={gap}"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+                pending_caption = None
 
     if pending_caption is not None:
         cap_seg, *_ = pending_caption
@@ -881,10 +801,7 @@ def load_or_build_caption_bindings(
         logger.warning(msg)
         warnings.append(msg)
 
-    write_to_json(
-        fp=caption_bindings_fp,
-        json_info={k: v.model_dump() for k, v in caption_bindings.items()},
-    )
+    warnings_fp = creation_dirs.root / "caption_binding_warnings.json"
     write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
 
     return caption_bindings
@@ -931,14 +848,8 @@ def make_table_chunk_payload(
         The table chunk payload.
     """
 
-    seg = segment.model_dump(
-        exclude={"segment_id", "segment_provenance", "slices"}, mode="json"
-    )
-    seg["section_path"] = _filter_section_path_for_llm(
-        section_paths=segment.section_path,
-        segment_item_index=segment.slices[0].item_index,
-        segment_page_index=segment.slices[0].page_index,
-    )
+    seg = segment.model_dump(mode="json")
+    seg["section_path"] = _filter_section_path_for_llm(seg.get("section_path"))
 
     # NB: Chunk payload should not include full-table derived views that can leak
     # information outside the chunk. NB: We intentionally KEEP rows_filldown here (if
@@ -1011,7 +922,6 @@ def make_table_chunk_payload(
         seg.pop("rows_filldown", None)
 
     seg["chunking"] = {
-        "is_chunked": True,
         "row_range_start": start,
         "row_range_end": end,
         "row_range_end_is_exclusive": True,
@@ -1050,52 +960,47 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
         The full table payload.
     """
 
-    table_payload = segment.model_dump(
-        exclude={"segment_id", "segment_provenance", "slices"}, mode="json"
-    )
-    table_payload["section_path"] = _filter_section_path_for_llm(
-        section_paths=segment.section_path,
-        segment_item_index=segment.slices[0].item_index,
-        segment_page_index=segment.slices[0].page_index,
-    )
+    seg = segment.model_dump(mode="json")
+    seg["section_path"] = _filter_section_path_for_llm(seg.get("section_path"))
 
     # Prefer fill-down view if it exists.
-    rows = segment.rows
-    assert rows, f"{segment = }"
-    rows_filldown = segment.rows_filldown
+    rows_raw = seg.get("rows") or []
+    rows_filldown = seg.get("rows_filldown")
 
-    use_filldown = isinstance(rows_filldown, list) and len(rows_filldown) == len(rows)
+    use_filldown = (
+        isinstance(rows_filldown, list)
+        and len(rows_filldown) == len(rows_raw)
+        and len(rows_raw) > 0
+    )
 
     if use_filldown:
-        table_payload["rows_original"] = [r.model_dump(mode="json") for r in rows]
-        table_payload["rows_original_preserved"] = True
-
-        # Store rows_filldown here before removing.
-        table_payload["rows"] = table_payload["rows_filldown"]
+        seg["rows_original"] = rows_raw
+        seg["rows"] = rows_filldown  # Store rows_filldown here before removing
+        seg["rows_original_preserved"] = True
     else:
-        table_payload["rows_original_preserved"] = False
+        seg["rows_original_preserved"] = False
 
     # NB: Remove derived structures that bloat the prompt. We intentionally keep the
     # filldown effect by swapping seg["rows"] above.
     for k in ("rows_grid", "rows_filldown", "grid_sources", "row_provenance"):
-        table_payload.pop(k, None)
+        seg.pop(k, None)
 
-    rows = table_payload.get("rows") or []
+    rows = seg.get("rows") or []
 
     # Add abs_row_index to every row (headers included).
     for abs_i, row in enumerate(rows):
-        row["abs_row_index"] = abs_i
+        if isinstance(row, dict):
+            row["abs_row_index"] = abs_i
 
-    table_payload["rows"] = rows
-    table_payload["chunking"] = {
-        "is_chunked": False,
+    seg["rows"] = rows
+    seg["chunking"] = {
         "row_range_start": 0,
         "row_range_end": len(rows),
         "row_range_end_is_exclusive": True,
         "row_index_is_absolute": True,
     }
 
-    return table_payload
+    return seg
 
 
 def process_segment_decisions(
@@ -1205,7 +1110,7 @@ def save_segment_decision_set(
     return decision_set
 
 
-def segment_hint(segment: Segment) -> dict[str, Any]:
+def segment_hint(segment: dict[str, Any]) -> dict[str, Any]:
     """Generate a compact hint dictionary for a segment.
 
     NB: Keep this SMALL (only things that help context).
@@ -1213,7 +1118,7 @@ def segment_hint(segment: Segment) -> dict[str, Any]:
     Parameters
     ----------
     segment
-        The Segment to generate a hint for.
+        The segment dictionary.
 
     Returns
     -------
@@ -1221,72 +1126,29 @@ def segment_hint(segment: Segment) -> dict[str, Any]:
         The compact hint dictionary.
     """
 
-    kind = segment.kind
+    kind = segment.get("kind")
     assert kind in ("block", "table")
 
-    pages: list[int] = [p.page_index for p in segment.segment_provenance]
-    page_span = [min(pages), max(pages)] if pages else None
-
     hint: dict[str, Any] = {
+        "segment_id": segment.get("segment_id"),
         "kind": kind,
-        "local_code": segment.local_code,
-        "page_span": page_span,
-        "section_path_texts": _section_path_texts(
-            k=6,
-            segment=segment,
-            segment_item_index=segment.slices[0].item_index,
-            segment_page_index=segment.slices[0].page_index,
-        ),
+        "local_code": segment.get("local_code"),
+        "page_span": _page_span(segment),
+        "section_path_texts": _section_path_texts(segment, k=6),
     }
 
     if kind == "block":
-        hint["block_type"] = segment.block_type.value
+        hint["block_type"] = segment.get("block_type")
+        hint.update(_text_preview_for_block(segment))
 
-        # Prefer combined_text if present (stitched blocks), otherwise TextUnit.text.
-        combined_text = (segment.combined_text or "").strip()
-        text_unit_or_none = segment.text
-        text = (
-            (text_unit_or_none.text or "").strip()
-            if isinstance(text_unit_or_none, TextUnit)
-            else ""
-        )
-        hint["text_preview"] = (combined_text or text)[:500]
+        lp = _list_preview(segment, n=3)
+        if lp:
+            hint["list_item_samples"] = lp
 
-        list_items = segment.list_items
-        hint["list_item_samples"] = (
-            [list_item.text.text[:500] for list_item in list_items[:5]]
-            if list_items
-            else None
-        )
-
-        hint["figure_content"] = segment.figure
+        if segment.get("figure") is not None:
+            hint["has_figure"] = True
     else:
-        header_rows_canonical = segment.header_rows_canonical
-        header_row_count = segment.header_row_count
-        n_cols = segment.n_cols
-
-        # Prefer filldown sample for “topic/subtopic/strand” signals if present.
-        rows = segment.rows_filldown or segment.rows
-        row_count = len(segment.rows)
-        assert rows and row_count, f"{segment = }"
-
-        # Sample 2 body rows immediately after headers.
-        body_samples: list[list[str]] = []
-        start = min(header_row_count, len(rows))
-        for row in rows[start : start + 2]:
-            assert isinstance(row, TableRow), f"{rows = }\n{row = }"
-            body_samples.append(_row_to_text(max_cols=6, row=row))
-
-        hint["table"] = {
-            "columns_signature": segment.columns_signature,
-            "header_rows_canonical": header_rows_canonical[:2],
-            "header_row_count": header_row_count,
-            "n_cols": n_cols,
-            "row_count": row_count,
-            "body_row_samples": body_samples,
-            "has_rows_grid": bool(segment.rows_grid),
-            "has_rows_filldown": bool(segment.rows_filldown),
-        }
+        hint["table"] = _table_sample(segment)
 
     return hint
 
@@ -1314,7 +1176,7 @@ def table_chunks_for_segment(
     if not max_body_rows or max_body_rows <= 0:
         return [(None, None)]
 
-    header_n = segment.header_row_count
+    header_n = segment.header_row_count or 0
     total_rows = len(segment.rows)
     body_rows = max(0, total_rows - header_n)
 
@@ -1322,7 +1184,7 @@ def table_chunks_for_segment(
         return [(None, None)]
 
     chunks = []
-    start = header_n  # Chunk only body rows (skip header rows)
+    start = header_n  # Chunk only body rows (skip headers)
 
     while start < total_rows:
         end = min(total_rows, start + max_body_rows)

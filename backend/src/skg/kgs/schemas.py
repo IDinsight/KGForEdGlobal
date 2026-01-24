@@ -584,7 +584,7 @@ class StandardsFramework(BaseModelKG):
         return self
 
 
-class StandardsFrameworkItem(BaseSchema):
+class StandardsFrameworkItem(BaseModelKG):
     """Standards item or grouping within a standards framework.
 
     This is the primary node type in the academic standards hierarchy. Both
@@ -594,6 +594,7 @@ class StandardsFrameworkItem(BaseSchema):
     """
 
     academic_subject: str = Field(
+        alias="academicSubject",
         description=(
             "High-level academic subject classification for the item. "
             "In strict exports this should conform to LC enums; "
@@ -601,6 +602,7 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     attribution_statement: str = Field(
+        alias="attributionStatement",
         description=(
             "Attribution text required to credit the original publisher/owner "
             "of the standards content that this item derives from."
@@ -615,6 +617,7 @@ class StandardsFrameworkItem(BaseSchema):
 
     # LC KG conventions (relationships commonly key off CASE ids).
     case_identifier_uri: str = Field(
+        alias="caseIdentifierURI",
         description=(
             "Stable URI identifier for this standards item. LC KG commonly aligns with "
             "CASE-style URIs. For non-CASE sources, this may be a synthetic deterministic "
@@ -623,6 +626,7 @@ class StandardsFrameworkItem(BaseSchema):
     )
 
     case_identifier_uuid: UUID = Field(
+        alias="caseIdentifierUUID",
         description=(
             "Stable UUID identifier for this standards item. Used by LC KG exports as a "
             "canonical cross-object key for relationships (hasChild/buildsTowards/relatesTo). "
@@ -630,12 +634,14 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     date_created: Optional[str] = Field(
+        alias="dateCreated",
         default=None,
         description=(
             "Creation timestamp for this item (ISO-8601 string), if known. Optional."
         ),
     )
     date_modified: Optional[str] = Field(
+        alias="dateModified",
         default=None,
         description=(
             "Last-modified timestamp for this item (ISO-8601 string), if known. Optional."
@@ -654,6 +660,7 @@ class StandardsFrameworkItem(BaseSchema):
 
     # LC KG: gradeLevel is 0...n.
     grade_level: list[str] = Field(
+        alias="gradeLevel",
         default_factory=list,
         description=(
             "Zero or more grade-level tags associated with this item (e.g., ['Grade 2']). "
@@ -675,6 +682,7 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     in_language: str = Field(
+        alias="inLanguage",
         description=(
             "Language tag for the item text (e.g., en-US). "
             "In strict exports this should conform to LC enums; "
@@ -694,6 +702,7 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     normalized_statement_type: NormalizedStatementType = Field(
+        alias="normalizedStatementType",
         description=(
             "Normalized LC statement classification. Typical values include: "
             "'Standard' for normative expectations, 'Standard Grouping' for organizational "
@@ -710,10 +719,20 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     statement_code: Optional[str] = Field(
+        alias="statementCode",
         default=None,
         description=(
             "Stable code/notation for this item from the source framework, if available "
             "(e.g., '2.1.5.1'). This is a key traceability aid and may support progression inference."
+        ),
+    )
+    statement_type: Optional[str] = Field(
+        alias="statementType",
+        default=None,
+        description=(
+            "Human-readable source label for the item (e.g., 'Subject', 'Topic', "
+            "'Specific competence', 'Expected Standard', 'Indicator'). "
+            "This is not the normalized LC type; it preserves source semantics."
         ),
     )
     statement_type: Optional[str] = Field(
@@ -919,9 +938,203 @@ class StandardsFrameworkItem(BaseSchema):
 
         return cleaned
 
+    @field_validator(
+        "academic_subject",
+        "attribution_statement",
+        "author",
+        "case_identifier_uri",
+        "description",
+        "in_language",
+        "jurisdiction",
+        "license",
+        "provider",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty string for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+
+        Raises
+        ------
+        ValueError
+            If the input value is None or an empty string after stripping.
+        """
+
+        if v is None:
+            raise ValueError("Required field cannot be None")
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string")
+
+        v2 = v.strip()
+
+        if not v2:
+            raise ValueError("Required string field cannot be empty")
+
+        return v2
+
+    @field_validator("statement_code", "statement_type", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip whitespace for optional string fields; treat empty as None.
+
+        Parameters
+        ----------
+        v
+            The input optional string value to validate.
+
+        Returns
+        -------
+        Optional[str]
+            The validated and stripped string value, or None.
+
+        Raises
+        ------
+        TypeError
+            If the input is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string or None")
+
+        v2 = v.strip()
+
+        return v2 if v2 else None
+
+    @field_validator("case_identifier_uri")
+    @classmethod
+    def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
+        """Validate caseIdentifierURI looks like a URI/URN (supports http(s), urn,
+        etc.).
+
+        Parameters
+        ----------
+        v
+            The caseIdentifierURI string to validate.
+
+        Returns
+        -------
+        str
+            The validated caseIdentifierURI string.
+
+        Raises
+        ------
+        ValueError
+            If the caseIdentifierURI does not include a URI scheme.
+        """
+
+        parsed = urlparse(v)
+
+        if not parsed.scheme:
+            raise ValueError(
+                "caseIdentifierURI must include a URI scheme (e.g., urn:, http:, https:)"
+            )
+
+        return v
+
+    @field_validator("date_created", "date_modified")
+    @classmethod
+    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
+        """Validate ISO-8601 parseability for timestamps if provided.
+
+        Parameters
+        ----------
+        v
+            The date string to validate.
+
+        Returns
+        -------
+        Optional[str]
+            The validated date string or None.
+
+        Raises
+        ------
+        TypeError
+            If the input is not a string or None.
+        ValueError
+            If the input string is not a valid ISO-8601 datetime.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
+
+        v2 = v.strip()
+
+        if not v2:
+            return None
+
+        try:
+            datetime.fromisoformat(v2.replace("Z", "+00:00"))
+        except Exception as e:
+            raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
+
+        return v2
+
+    @field_validator("grade_level")
+    @classmethod
+    def _validate_grade_level(cls, v: list[str]) -> list[str]:
+        """Ensure gradeLevel entries are non-empty strings, de-duplicated, and
+        stable-ordered.
+
+        Parameters
+        ----------
+        v
+            The list of grade level strings to validate.
+
+        Returns
+        -------
+        list[str]
+            The validated list of grade level strings.
+
+        Raises
+        ------
+        TypeError
+            If the input is not a list of strings or contains non-string items.
+        """
+
+        if v is None:
+            return []
+
+        if not isinstance(v, list):
+            raise TypeError("gradeLevel must be a list of strings")
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for item in v:
+            if not isinstance(item, str):
+                raise TypeError("gradeLevel must contain only strings")
+
+            s = item.strip()
+
+            if not s:
+                continue
+
+            if s not in seen:
+                cleaned.append(s)
+                seen.add(s)
+
+        return cleaned
+
     @model_validator(mode="after")
     def _check_case_uri_contains_uuid(self) -> StandardsFrameworkItem:
-        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
+        """Validate that caseIdentifierURI includes caseIdentifierUUID (deterministic
         traceability).
 
         Returns
@@ -985,7 +1198,7 @@ class StandardsFrameworkItem(BaseSchema):
         return self
 
 
-class LearningComponent(BaseSchema):
+class LearningComponent(BaseModelKG):
     """Granular skill/concept aligned to one or more standards items via `supports`.
 
     LearningComponents represent skill/concept units that can be aligned to
@@ -995,6 +1208,7 @@ class LearningComponent(BaseSchema):
     """
 
     academic_subject: str = Field(
+        alias="academicSubject",
         description=(
             "High-level academic subject classification for the component "
             "(e.g., Mathematics, English Language Arts). In strict exports this should "
@@ -1002,6 +1216,7 @@ class LearningComponent(BaseSchema):
         ),
     )
     attribution_statement: str = Field(
+        alias="attributionStatement",
         description=(
             "Attribution text required to credit the original publisher/owner of the "
             "source curriculum content that this component derives from."
@@ -1014,12 +1229,14 @@ class LearningComponent(BaseSchema):
         ),
     )
     date_created: Optional[str] = Field(
+        alias="dateCreated",
         default=None,
         description=(
             "Creation timestamp for the component (ISO-8601 string), if known. Optional."
         ),
     )
     date_modified: Optional[str] = Field(
+        alias="dateModified",
         default=None,
         description=(
             "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
@@ -1039,6 +1256,7 @@ class LearningComponent(BaseSchema):
         ),
     )
     in_language: str = Field(
+        alias="inLanguage",
         description=(
             "Language tag for the component text (e.g., en-US). In strict exports this should "
             "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
@@ -1177,7 +1395,7 @@ class LearningComponent(BaseSchema):
 
 
 # Schemas for relationship.
-class Relationship(BaseSchema):
+class Relationship(BaseModelKG):
     """LC KG relationship record (shared schema across relationship types).
 
     Relationships connect two entities in the LC KG export. The meaning of the edge is
@@ -1185,6 +1403,7 @@ class Relationship(BaseSchema):
     """
 
     attribution_statement: str = Field(
+        alias="attributionStatement",
         description=(
             "Attribution text required to credit the original publisher/owner of the "
             "source content that this relationship derives from."
@@ -1197,10 +1416,12 @@ class Relationship(BaseSchema):
         ),
     )
     date_created: Optional[str] = Field(
+        alias="dateCreated",
         default=None,
         description="Creation timestamp for this relationship (ISO-8601 string), if known. Optional.",
     )
     date_modified: Optional[str] = Field(
+        alias="dateModified",
         default=None,
         description="Last-modified timestamp for this relationship (ISO-8601 string), if known. Optional.",
     )
@@ -1237,37 +1458,44 @@ class Relationship(BaseSchema):
         ),
     )
     relationship_type: str = Field(
+        alias="relationshipType",
         description=(
             "Normalized relationship label defining the semantic meaning of the connection "
             "(e.g., hasChild, supports, buildsTowards, relatesTo)."
         ),
     )
     source_entity: str = Field(
+        alias="sourceEntity",
         description=(
             "Entity type where the relationship originates (e.g., StandardsFramework, "
             "StandardsFrameworkItem, LearningComponent)."
         ),
     )
     source_entity_key: str = Field(
+        alias="sourceEntityKey",
         description=(
             "The identifier property name on the source entity used by this relationship "
-            "(e.g., identifier, case_identifier_uuid)."
+            "(e.g., identifier, caseIdentifierUUID)."
         ),
     )
     source_entity_value: str = Field(
-        description="The identifier value of the source entity (string UUID)."
+        alias="sourceEntityValue",
+        description="The identifier value of the source entity (string UUID).",
     )
     target_entity: str = Field(
+        alias="targetEntity",
         description="Entity type where the relationship points (destination node type).",
     )
     target_entity_key: str = Field(
+        alias="targetEntityKey",
         description=(
             "The identifier property name on the target entity used by this relationship "
-            "(e.g., identifier, case_identifier_uuid)."
+            "(e.g., identifier, caseIdentifierUUID)."
         ),
     )
     target_entity_value: str = Field(
-        description="The identifier value of the target entity (string UUID)."
+        alias="targetEntityValue",
+        description="The identifier value of the target entity (string UUID).",
     )
 
     @field_validator(
@@ -1414,76 +1642,6 @@ class Relationship(BaseSchema):
         ):
             raise ValueError("hasChild must use caseIdentifierUUID endpoints")
 
-    def _validate_common_schema(self) -> None:
-        """Validate generic allowed values for types and keys.
-
-        Raises
-        ------
-        ValueError
-            If any common schema validation fails.
-        """
-
-        if self.relationship_type not in AllowedRelationshipTypes:
-            raise ValueError(
-                f"Unsupported relationshipType: {self.relationship_type}\n"
-                f"Valid relationship types are: {AllowedRelationshipTypes}"
-            )
-
-        if self.source_entity_key not in AllowedEntityKeys:
-            raise ValueError(f"Invalid sourceEntityKey: {self.source_entity_key}")
-
-        if self.target_entity_key not in AllowedEntityKeys:
-            raise ValueError(f"Invalid targetEntityKey: {self.target_entity_key}")
-
-    def _validate_data_integrity(self) -> None:
-        """Validate that entity values are valid UUIDs.
-
-        Parameters
-        -------
-        Raises
-        ------
-        ValueError
-            If any entity value is not a valid UUID.
-        """
-
-        try:
-            UUID(str(self.source_entity_value))
-        except Exception as e:  # pylint: disable=broad-except
-            raise ValueError(
-                f"sourceEntityValue is not a UUID: {self.source_entity_value}"
-            ) from e
-
-        try:
-            UUID(str(self.target_entity_value))
-        except Exception as e:  # pylint: disable=broad-except
-            raise ValueError(
-                f"targetEntityValue is not a UUID: {self.target_entity_value}"
-            ) from e
-
-    def _validate_progression(self) -> None:
-        """Validate 'buildsTowards'/'relatesTo' specific constraints.
-
-        Raises
-        ------
-        ValueError
-            If any progression validation fails.
-        """
-
-        if (
-            self.source_entity != "StandardsFrameworkItem"
-            or self.target_entity != "StandardsFrameworkItem"
-        ):
-            raise ValueError(
-                f"{self.relationship_type} must be StandardsFrameworkItem -> StandardsFrameworkItem"
-            )
-        if (
-            self.source_entity_key != "caseIdentifierUUID"
-            or self.target_entity_key != "caseIdentifierUUID"
-        ):
-            raise ValueError(
-                f"{self.relationship_type} must use caseIdentifierUUID endpoints"
-            )
-
     def _validate_supports(self) -> None:
         """Validate 'supports' constraints: LearningComponent -> StandardsFrameworkItem.
 
@@ -1503,10 +1661,10 @@ class Relationship(BaseSchema):
 
         if not (
             self.source_entity_key == "identifier"
-            and self.target_entity_key == "case_identifier_uuid"
+            and self.target_entity_key == "caseIdentifierUUID"
         ):
             raise ValueError(
-                "supports must use source identifier + target case_identifier_uuid"
+                "supports must use source identifier + target caseIdentifierUUID"
             )
 
     def _validate_progression(self) -> None:
@@ -1528,11 +1686,11 @@ class Relationship(BaseSchema):
             )
 
         if (
-            self.source_entity_key != "case_identifier_uuid"
-            or self.target_entity_key != "case_identifier_uuid"
+            self.source_entity_key != "caseIdentifierUUID"
+            or self.target_entity_key != "caseIdentifierUUID"
         ):
             raise ValueError(
-                f"{self.relationship_type} must use case_identifier_uuid endpoints"
+                f"{self.relationship_type} must use caseIdentifierUUID endpoints"
             )
 
     def _validate_common_schema(self) -> None:
