@@ -58,7 +58,7 @@ from skg.prompts.canonical_ir import (
     grouping_canonicalization_instructions,
 )
 from skg.schemas import Limits
-from skg.utils.constants import GroupingCanonicalizationAction
+from skg.utils.constants import GroupingCanonicalizationAction, SegmentDecisionType
 
 limits = Limits(max_retry_attempts=5)
 openai_client = OpenAI()
@@ -541,9 +541,7 @@ def generate_segment_decision(
         If segment decision fails after retries.
     """
 
-    prompts = decide_on_segment(
-        segment=segment_payload or segment.model_dump(mode="json")
-    )
+    prompts = decide_on_segment(segment=segment_payload)
     instructions = prompts.system_message
     input_items = [
         {
@@ -764,6 +762,20 @@ def verify_segment_decision_quality(
         segment=segment, segment_decision=segment_decision
     )
     validate_table_split_explosion(segment=segment, segment_decision=segment_decision)
+
+    # Internal context sanity checks (safe to enforce even for flagged_unresolved).
+    validate_context_groupings_role_order(
+        segment=segment, segment_decision=segment_decision
+    )
+    validate_context_groupings_no_duplicate_roles(
+        segment=segment, segment_decision=segment_decision
+    )
+
+    # For flagged_unresolved: accept candidate outputs without enforcing strict
+    # "must be supported by outer evidence"/"must include context anchors".
+    if segment_decision.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
+        return
+
     validate_context_groupings_required_for_emit(
         segment=segment,
         segment_decision=segment_decision,

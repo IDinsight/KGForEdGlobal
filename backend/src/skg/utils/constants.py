@@ -160,6 +160,7 @@ class NodeRole(str, Enum):
 class SegmentDecisionType(str, Enum):
     """Enumeration of high-level actions for segment decisions."""
 
+    EMIT_FLAGGED_UNRESOLVED = "emit_flagged_unresolved"
     EMIT_GROUPINGS_AND_LEAVES = "emit_groupings_and_leaves"
     EMIT_GROUPINGS_ONLY = "emit_groupings_only"
     EMIT_LEAVES_ONLY = "emit_leaves_only"

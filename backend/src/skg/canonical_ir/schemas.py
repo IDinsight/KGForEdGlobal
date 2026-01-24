@@ -567,6 +567,16 @@ class SegmentDecision(BaseSchema):
                 "context_groupings/groupings/leaves/rows must be empty."
             )
 
+        # "emit_flagged_unresolved" is allowed to carry candidate outputs, but it must
+        # carry *something* (otherwise it should be UNRESOLVED).
+        if self.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED and not (
+            self.context_groupings or self.groupings or self.leaves or self.rows
+        ):
+            raise ValueError(
+                "Decision type is 'emit_flagged_unresolved', so at least one of "
+                "context_groupings/groupings/leaves/rows must be non-empty."
+            )
+
         if (
             self.segment_kind == "block"
             and self.decision_type

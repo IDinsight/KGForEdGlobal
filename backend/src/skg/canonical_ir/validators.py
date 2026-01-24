@@ -633,10 +633,11 @@ def validate_chunked_table_context_matches_prior_context(
     if bool(is_first_chunk):
         return
 
-    prior = segment_payload.get("prior_context_groupings") or []
+    prior = segment_payload.get("prior_context_groupings")
 
-    if not prior:
-        return
+    # Always enforce exact match (including empty) to prevent drift.
+    if prior is None:
+        prior = []
 
     prior_fp = _fingerprint_groupings_for_compare(prior)
     decision_fp = _fingerprint_groupings_models_for_compare(
