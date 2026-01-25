@@ -218,28 +218,33 @@ def create_canonical_ir(
 
     # 8.
     segment_decisions = clean_up_segment_decisions(
-        creation_dirs=creation_dirs, segment_decisions=segment_decisions
+        creation_dirs=creation_dirs,
+        overwrite=config.overwrite,
+        segment_decisions=segment_decisions,
     )
 
     # 9.
     grouping_keys = collect_unique_grouping_keys(
-        creation_dirs=creation_dirs, segment_decisions=segment_decisions
+        creation_dirs=creation_dirs,
+        overwrite=config.overwrite,
+        segment_decisions=segment_decisions,
     )
 
     # 10.
-    logger.info("Generating grouping canonicalization map...")
-
     mapping = generate_grouping_canonicalization_map(
-        doc_key=doc_key, grouping_keys=grouping_keys, model=config.model
+        creation_dirs=creation_dirs,
+        doc_key=doc_key,
+        grouping_keys=grouping_keys,
+        model=config.model,
+        overwrite=config.overwrite,
     )
-
-    logger.success("Finished generating grouping canonicalization map!")
 
     # 11.
     segment_decisions = apply_grouping_canonicalization_map(
         canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
         creation_dirs=creation_dirs,
         mapping=mapping,
+        overwrite=config.overwrite,
         segment_decisions=segment_decisions,
     )
 

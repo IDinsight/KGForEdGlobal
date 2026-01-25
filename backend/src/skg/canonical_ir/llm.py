@@ -26,6 +26,7 @@ from skg.canonical_ir.schemas import (
     GroupingCanonicalizationMap,
     SegmentDecision,
 )
+from skg.canonical_ir.utils import CanonicalIRDirs
 from skg.canonical_ir.validators import (
     validate_chunked_table_context_matches_prior_context,
     validate_chunked_table_outer_anchors_in_context_groupings,
@@ -61,6 +62,7 @@ from skg.prompts.canonical_ir import (
 )
 from skg.schemas import Limits
 from skg.utils.constants import GroupingCanonicalizationAction, SegmentDecisionType
+from skg.utils.general import open_json_type, write_to_json
 
 limits = Limits(max_retry_attempts=5)
 openai_client = OpenAI()
@@ -416,11 +418,13 @@ def _process_canonicalization_batch(
 
 def generate_grouping_canonicalization_map(
     *,
-    batch_size: int = 100,
+    batch_size: int = 300,
+    creation_dirs: CanonicalIRDirs,
     doc_key: str,
     grouping_keys: list[GroupingCanonicalizationKey],
     max_retries: int = 3,
     model: str,
+    overwrite: bool,
 ) -> GroupingCanonicalizationMap:
     """Generate a global GroupingCanonicalizationMap, using incremental batching to
     maintain context across limits.
@@ -429,6 +433,8 @@ def generate_grouping_canonicalization_map(
     ----------
     batch_size
         Number of items to process per LLM call.
+    creation_dirs
+        The CanonicalIRDirs for this document.
     doc_key
         The document key.
     grouping_keys
@@ -437,6 +443,8 @@ def generate_grouping_canonicalization_map(
         Maximum number of retries for quality errors.
     model
         The OpenAI model to use.
+    overwrite
+        Whether to overwrite any existing canonicalization map (currently unused).
 
     Returns
     -------
@@ -446,6 +454,22 @@ def generate_grouping_canonicalization_map(
 
     if not grouping_keys:
         return GroupingCanonicalizationMap(doc_key=doc_key, generator=model, items=[])
+
+    group_canonicalization_mapping_fp = (
+        creation_dirs.root / "group_canonicalization_map.json"
+    )
+
+    if not overwrite and group_canonicalization_mapping_fp.exists():
+        logger.warning(
+            f"Group canonicalization mapping JSON already exists at {group_canonicalization_mapping_fp}. "
+            f"Reusing existing group canonicalization mapping. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return GroupingCanonicalizationMap.model_validate(
+            open_json_type(group_canonicalization_mapping_fp)
+        )
+
+    logger.info("Generating grouping canonicalization map...")
 
     # Sort keys to ensure high-quality anchors come first.
     grouping_keys = sorted(
@@ -500,9 +524,18 @@ def generate_grouping_canonicalization_map(
                 if out.title:
                     known_canonical_set.add((out.role.value, out.title.strip()))
 
-    return GroupingCanonicalizationMap(
+    logger.success("Finished generating grouping canonicalization map!")
+
+    mapping = GroupingCanonicalizationMap(
         doc_key=doc_key, generator=model, items=all_canonical_items
     )
+    write_to_json(fp=group_canonicalization_mapping_fp, json_info=mapping)
+
+    logger.success(
+        f"Saved grouping canonicalization mapping: {group_canonicalization_mapping_fp}"
+    )
+
+    return mapping
 
 
 def generate_segment_decision(

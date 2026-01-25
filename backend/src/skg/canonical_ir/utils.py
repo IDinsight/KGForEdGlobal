@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, TypeVar
 
 # Third Party Library
+from graveyard.for_upload.schemas import RowDecision
 from loguru import logger
 
 # Package Library
@@ -376,6 +377,39 @@ def _check_structural_warnings(
     )
     logger.warning(msg)
     warnings.append(msg)
+
+
+def _clean_decision_rows(rows: list[RowDecision]) -> list[RowDecision]:
+    """Clean a list of decision rows.
+
+    Parameters
+    ----------
+    rows
+        The list of SegmentDecisionRow to clean.
+
+    Returns
+    -------
+    list[RowDecision]
+        The cleaned list of decision rows.
+    """
+
+    new_rows = []
+
+    for r in rows:
+        row_updates = {}
+
+        if r.groupings:
+            row_updates["groupings"] = [_clean_grouping(g) for g in r.groupings]
+
+        if r.leaves:
+            row_updates["leaves"] = [_clean_leaf(leaf) for leaf in r.leaves]
+
+        if row_updates:
+            new_rows.append(r.model_copy(update=row_updates))
+        else:
+            new_rows.append(r)
+
+    return new_rows
 
 
 def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
@@ -2017,6 +2051,7 @@ def apply_grouping_canonicalization_map(
     canonical_grouping_min_confidence: float,
     creation_dirs: CanonicalIRDirs,
     mapping: GroupingCanonicalizationMap,
+    overwrite: bool,
     segment_decisions: SegmentDecisionSet,
 ) -> SegmentDecisionSet:
     """Deterministically apply a GroupingCanonicalizationMap to all grouping lists in a
@@ -2049,6 +2084,8 @@ def apply_grouping_canonicalization_map(
         The canonical IR creation directories.
     mapping
         The GroupingCanonicalizationMap to apply.
+    overwrite
+        Whether to overwrite existing normalized decisions.
     segment_decisions
         The SegmentDecisionSet to update.
 
@@ -2057,6 +2094,20 @@ def apply_grouping_canonicalization_map(
     SegmentDecisionSet
         The updated SegmentDecisionSet.
     """
+
+    normalized_segment_decisions_fp = (
+        creation_dirs.root / "segment_decisions_normalized.json"
+    )
+
+    if not overwrite and normalized_segment_decisions_fp.exists():
+        logger.warning(
+            f"Normalized segment decisions JSON already exists at {normalized_segment_decisions_fp}. "
+            f"Reusing existing normalized segment decisions. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return SegmentDecisionSet.model_validate(
+            open_json_type(normalized_segment_decisions_fp)
+        )
 
     mapping_index = _build_mapping_index(
         canonical_grouping_min_confidence=canonical_grouping_min_confidence,
@@ -2112,14 +2163,11 @@ def apply_grouping_canonicalization_map(
     normalized_segment_decisions = segment_decisions.model_copy(
         update={"decision_set_id": new_id, "decisions": new_decisions}
     )
-    normalized_segment_decisions_fp = (
-        creation_dirs.root / "segment_decisions_normalized.json"
-    )
     write_to_json(
         fp=normalized_segment_decisions_fp, json_info=normalized_segment_decisions
     )
 
-    logger.info(
+    logger.success(
         f"Saved normalized segment decisions to: {normalized_segment_decisions_fp}"
     )
 
@@ -2420,7 +2468,10 @@ def canonical_storage_text(text: Optional[str]) -> str:
 
 
 def clean_up_segment_decisions(
-    *, creation_dirs: CanonicalIRDirs, segment_decisions: SegmentDecisionSet
+    *,
+    creation_dirs: CanonicalIRDirs,
+    overwrite: bool,
+    segment_decisions: SegmentDecisionSet,
 ) -> SegmentDecisionSet:
     """Apply universal (non-heuristic) hygiene to all grouping fields in a decision
     set. This is intended to run BEFORE the LLM-based global grouping canonicalization
@@ -2431,6 +2482,8 @@ def clean_up_segment_decisions(
     ----------
     creation_dirs
         The canonical IR creation directories.
+    overwrite
+        Whether to overwrite existing cleaned decisions.
     segment_decisions
         The SegmentDecisionSet to clean.
 
@@ -2439,6 +2492,18 @@ def clean_up_segment_decisions(
     SegmentDecisionSet
         The cleaned SegmentDecisionSet.
     """
+
+    segment_decisions_cleaned_fp = creation_dirs.root / "segment_decisions_cleaned.json"
+
+    if not overwrite and segment_decisions_cleaned_fp.exists():
+        logger.warning(
+            f"Cleaned segment decisions JSON already exists at {segment_decisions_cleaned_fp}. "
+            f"Reusing existing cleaned segment decisions. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return SegmentDecisionSet.model_validate(
+            open_json_type(segment_decisions_cleaned_fp)
+        )
 
     new_segment_decisions = []
 
@@ -2457,23 +2522,7 @@ def clean_up_segment_decisions(
             updates["leaves"] = [_clean_leaf(leaf) for leaf in d.leaves]
 
         if d.rows:
-            new_rows = []
-
-            for r in d.rows:
-                row_updates = {}
-
-                if r.groupings:
-                    row_updates["groupings"] = [_clean_grouping(g) for g in r.groupings]
-
-                if r.leaves:
-                    row_updates["leaves"] = [_clean_leaf(leaf) for leaf in r.leaves]
-
-                if row_updates:
-                    new_rows.append(r.model_copy(update=row_updates))
-                else:
-                    new_rows.append(r)
-
-            updates["rows"] = new_rows
+            updates["rows"] = _clean_decision_rows(d.rows)
 
         new_segment_decisions.append(d.model_copy(update=updates))
 
@@ -2484,16 +2533,20 @@ def clean_up_segment_decisions(
     segment_decisions_cleaned = segment_decisions.model_copy(
         update={"decision_set_id": new_id, "decisions": new_segment_decisions}
     )
-    segment_decisions_cleaned_fp = creation_dirs.root / "segment_decisions_cleaned.json"
     write_to_json(fp=segment_decisions_cleaned_fp, json_info=segment_decisions_cleaned)
 
-    logger.info(f"Saved cleaned segment decisions to: {segment_decisions_cleaned_fp}")
+    logger.success(
+        f"Saved cleaned segment decisions to: {segment_decisions_cleaned_fp}"
+    )
 
     return segment_decisions_cleaned
 
 
 def collect_unique_grouping_keys(
-    *, creation_dirs: CanonicalIRDirs, segment_decisions: SegmentDecisionSet
+    *,
+    creation_dirs: CanonicalIRDirs,
+    overwrite: bool,
+    segment_decisions: SegmentDecisionSet,
 ) -> list[GroupingCanonicalizationKey]:
     """Collect the set of unique grouping candidates
     (role/title/local_code/source_label) from a SegmentDecisionSet to feed into the
@@ -2508,6 +2561,8 @@ def collect_unique_grouping_keys(
     ----------
     creation_dirs
         The canonical IR creation directories.
+    overwrite
+        Whether to overwrite existing unique grouping keys.
     segment_decisions
         The SegmentDecisionSet to extract grouping keys from.
 
@@ -2516,6 +2571,19 @@ def collect_unique_grouping_keys(
     list[GroupingCanonicalizationKey]
         The list of unique grouping keys.
     """
+
+    grouping_keys_unique_fp = creation_dirs.root / "grouping_keys_unique.json"
+
+    if not overwrite and grouping_keys_unique_fp.exists():
+        logger.warning(
+            f"Unique grouping keys JSON already exists at {grouping_keys_unique_fp}. "
+            f"Reusing existing unique grouping keys. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return [
+            GroupingCanonicalizationKey.model_validate(item)
+            for item in open_json_type(grouping_keys_unique_fp)
+        ]
 
     grouping_keys: list[GroupingCanonicalizationKey] = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -2546,11 +2614,9 @@ def collect_unique_grouping_keys(
     grouping_keys.sort(
         key=lambda x: (x.role.value, x.title, x.local_code or "", x.source_label or "")
     )
-    write_to_json(
-        fp=creation_dirs.root / "grouping_keys_unique.json", json_info=grouping_keys
-    )
+    write_to_json(fp=grouping_keys_unique_fp, json_info=grouping_keys)
 
-    logger.info(f"Saved unique grouping keys to: {creation_dirs.root}")
+    logger.success(f"Saved unique grouping keys to: {creation_dirs.root}")
 
     return grouping_keys
 
