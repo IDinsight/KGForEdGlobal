@@ -989,7 +989,7 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
     use_filldown = isinstance(rows_filldown, list) and len(rows_filldown) == len(rows)
 
     if use_filldown:
-        table_payload["rows_original"] = rows
+        table_payload["rows_original"] = [r.model_dump(mode="json") for r in rows]
         table_payload["rows_original_preserved"] = True
 
         # Store rows_filldown here before removing.
