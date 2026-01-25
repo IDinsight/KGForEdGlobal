@@ -42,7 +42,7 @@
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
-		"segment_decision_conf_threshold": 0.75,
-		"structural_leaf_warn_threshold": 0.75
+		"segment_decision_conf_threshold": 0.60,
+		"structural_leaf_warn_threshold": 0.60
 	}
 }

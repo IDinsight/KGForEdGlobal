@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, TypeVar
 
 # Third Party Library
-from graveyard.for_upload.schemas import RowDecision
 from loguru import logger
 
 # Package Library
@@ -25,6 +24,7 @@ from skg.canonical_ir.schemas import (
     GroupingCanonicalizationMap,
     GroupingDecision,
     LeafDecision,
+    RowDecision,
     SegmentDecision,
     SegmentDecisionSet,
     UnresolvedItem,
