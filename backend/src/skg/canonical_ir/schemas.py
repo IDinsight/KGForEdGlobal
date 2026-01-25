@@ -348,7 +348,7 @@ class SegmentDecision(BaseSchema):
     )
     context_groupings: list[GroupingDecision] = Field(
         default_factory=list,
-        description="Optional typed interpretation of Step-3 section_path into grouping decisions (very useful for context anchoring).",
+        description="Optional typed interpretation of section_path into grouping decisions (very useful for context anchoring).",
     )
     created_at: datetime | None = Field(
         default=None,
