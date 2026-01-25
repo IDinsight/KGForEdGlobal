@@ -3154,6 +3154,7 @@ def perform_postpass_hygiene(canonical_ir: CanonicalIR) -> CanonicalIR:
     nodes_pruned_empty, edges_pruned_empty = prune_empty_groupings(
         edges=edges_merged,
         nodes=nodes_merged,
+        prune_roles={NodeRole.PROSE, NodeRole.SECTION},
         root_id=canonical_ir.root_id,
         warnings=warnings,
     )
@@ -3225,6 +3226,7 @@ def prune_empty_groupings(
     *,
     edges: list[CanonicalEdge],
     nodes: list[CanonicalNode],
+    prune_roles: set[NodeRole] | None = None,
     root_id: str,
     warnings: list[str],
 ) -> tuple[list[CanonicalNode], list[CanonicalEdge]]:
@@ -3247,6 +3249,8 @@ def prune_empty_groupings(
         The list of CanonicalEdges.
     nodes
         The list of CanonicalNodes.
+    prune_roles
+        The set of NodeRoles to prune. If None, all grouping roles are pruned.
     root_id
         The root node ID.
     warnings
@@ -3279,7 +3283,11 @@ def prune_empty_groupings(
             if nid == root_id:
                 continue
 
-            if isinstance(node.role, NodeRole) and out_degree.get(nid, 0) == 0:
+            if (
+                isinstance(node.role, NodeRole)
+                and (prune_roles is None or node.role in prune_roles)
+                and out_degree.get(nid, 0) == 0
+            ):
                 prunable_ids.add(nid)
 
         if not prunable_ids:

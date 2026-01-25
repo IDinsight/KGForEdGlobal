@@ -418,7 +418,7 @@ def _process_canonicalization_batch(
 
 def generate_grouping_canonicalization_map(
     *,
-    batch_size: int = 500,
+    batch_size: int = 600,
     creation_dirs: CanonicalIRDirs,
     doc_key: str,
     grouping_keys: list[GroupingCanonicalizationKey],
