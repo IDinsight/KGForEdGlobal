@@ -112,14 +112,21 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
       - Use decision_type="{SegmentDecisionType.UNRESOLVED.value}" only if you cannot safely parse anything without guessing.
   - For NON-CHUNKED tables: prefer placing table-wide anchors in `context_groupings[]`, but placing a merged-header anchor in segment-level `groupings[]` is allowed.
 19. If caption_text is present, it describes the TABLE and is useful context; do not emit it as a node.
-20. Every `context_groupings[i].title` MUST be directly supported by OUTER evidence:
-  - It must appear verbatim in at least one of:
+20. Every `context_groupings[i].title` MUST be directly supported by OUTER evidence OR safe carry-forward evidence:
+  A) OUTER EVIDENCE SUPPORT (default rule)
+  - The title must appear verbatim in at least one of:
     - `segment.section_path[]`, OR
     - `caption_text`, OR
     - `header_rows_canonical`
-  - EXCEPTION (chunked tables after the first chunk):
-    - If `segment.chunking.is_first_chunk=false` AND `prior_context_groupings[]` contains the same role/title, you MAY keep that title in `context_groupings[]` even if it does not reappear verbatim in OUTER evidence, as long as there is no clear contradiction in section_path/caption/header_rows.
-  - If unsupported, DELETE that grouping.
+  B) SAFE CARRY-FORWARD SUPPORT (allowed for stable outer roles)
+  - If `prior_context_groupings[]` contains the SAME role/title, you MAY keep that role/title in `context_groupings[]`
+    even if it does not reappear verbatim in OUTER evidence, as long as ALL are true:
+      1) The role is one of these stable carry roles: STAGE, GRADE_LEVEL, LEARNING_AREA, SUBJECT, THEME, UNIT, WEEK, TERM
+      2) There is NO clear contradiction in this segment’s OUTER evidence (section_path/caption/header_rows explicitly naming a different value for that role).
+      3) You are NOT introducing governmental/institutional metadata (country/ministry/publisher).
+      4) You are not adding TOPIC/SUBTOPIC via carry-forward.
+  - If unsupported by (A) or (B), DELETE that grouping.
+  - If you use carry-forward support (B), you MUST mention it explicitly in `rationale`.
 
 ## SOURCE LABELS (REQUIRED WHEN AVAILABLE)
 1. When you emit any GroupingDecision or LeafDecision, also emit `source_label` whenever you can.
@@ -196,15 +203,16 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 
 ## PRIOR CONTEXT GROUPINGS (for chunked stability)
 1. The payload may include prior_context_groupings[] (active context stack from the immediately previous decided segment).
-2. If segment.chunking exists AND prior_context_groupings[] is present and non-empty:
-  - Start from prior_context_groupings[] as a *hint*.
-    - If chunking.is_first_chunk=true: apply the outer-evidence support rule above and DROP any unsupported prior grouping.
-    - If chunking.is_first_chunk=false: you MAY keep prior grouping titles for carry roles to maintain stability, unless there is a clear contradiction in this chunk’s OUTER evidence.
-  - If THIS segment's OUTER evidence explicitly indicates a DIFFERENT value for a carried role (especially SUBJECT/STRAND/THEME/UNIT/WEEK), DO NOT override mid-table.
-    - Prefer decision_type="{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" so you can still emit candidate row parsing, but clearly explain the contradiction using only OUTER evidence.
+2. If prior_context_groupings[] is present and non-empty:
+  - Start from prior_context_groupings[] as a hint for stable outer context.
+  - You MAY carry-forward stable outer roles using Rule 20(B), even if not repeated verbatim in this segment.
+  - If segment.chunking exists:
+    - If chunking.is_first_chunk=true: apply the outer-evidence support rule and DROP any unsupported prior grouping.
+    - If chunking.is_first_chunk=false: you SHOULD repeat prior_context_groupings[] EXACTLY unless there is a clear contradiction.
+  - If THIS segment's OUTER evidence explicitly indicates a DIFFERENT value for a carried role:
+    - Prefer decision_type="{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}"
+      so you can still emit candidate parsing but explain the contradiction.
     - Use decision_type="{SegmentDecisionType.UNRESOLVED.value}" only if you cannot safely emit candidate outputs.
-  - Clear contradiction includes section_path/caption/header_rows naming a different subject/strand/theme/unit/week than prior_context_groupings[].
-  - If you change context_groupings[] (dropping unsupported prior context OR overriding due to contradiction), explain the change in rationale using only OUTER evidence.
 
 ## BLOCK-SPECIFIC GUIDANCE
 1. Use segment.block_type to guide your decision.
