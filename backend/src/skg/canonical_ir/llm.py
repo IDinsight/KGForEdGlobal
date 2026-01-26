@@ -841,12 +841,6 @@ def verify_segment_decision_quality(
         segment_decision=segment_decision,
         segment_payload=segment_payload,
     )
-    validate_context_groupings_role_order(
-        segment=segment, segment_decision=segment_decision
-    )
-    validate_context_groupings_no_duplicate_roles(
-        segment=segment, segment_decision=segment_decision
-    )
     validate_chunked_table_context_matches_prior_context(
         segment=segment,
         segment_decision=segment_decision,

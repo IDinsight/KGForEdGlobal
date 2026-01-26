@@ -36,6 +36,7 @@ from skg.utils.constants import (
     CaptionFigurePrefixes,
     CaptionKind,
     CaptionTablePrefixes,
+    FrontMatterHeadings,
     NonArtifacts,
     SegmentDecisionType,
 )
@@ -172,6 +173,13 @@ def _filter_section_path_for_llm(
     if not section_paths:
         return []
 
+    # Treat front-matter headings (e.g., INTRODUCTION, ASSESSMENT) as *non-curriculum*
+    # evidence. These headings often appear in the PDF section_path but should not
+    # influence outer curriculum context decisions.
+    front_matter_norm: set[str] = {
+        _normalize_text(text=h.value) for h in FrontMatterHeadings
+    }
+
     output: list[dict[str, Any]] = []
 
     for sp in section_paths:
@@ -179,7 +187,7 @@ def _filter_section_path_for_llm(
         assert text, f"{section_paths = }"
         norm = _normalize_text(text=text)
 
-        if norm in NonArtifacts:
+        if norm in NonArtifacts or norm in front_matter_norm:
             continue
 
         output.append(sp.model_dump(mode="json"))

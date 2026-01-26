@@ -1,19 +1,25 @@
-"""This module contains the entry point for exporting Learning Commons knowledge graphs
-from a canonical IR JSON file. This is step 5.
+"""This module contains the entry point for exporting a *shape-only* Learning Commons
+KG from CanonicalIR. This is step 5.
 
 Step 5 does the following:
 
-1. Loads the canonical IR JSON and validates it.
-2. Builds the knowledge graph export context.
-3. Exports academic standards to the knowledge graphs.
-4. Exports Learning Components KG and writes combined Standards + Learning Components
-    graph bundle.
-5. Optionally exports Learning Progressions KG and writes combined Standards +
-    Learning Components + Learning Progressions graph bundle.
+1. Persist KG creation run metadata.
+2. Check for existing outputs; skip if present and not overwriting.
+3. Load KG config.
+4. Create knowledge graphs:
+    4a. Deterministically filter CanonicalIR nodes/edges.
+    4b. Map CanonicalIR nodes to StandardsFramework and StandardsFrameworkItems.
+    4c. Rebuild hasChild relationships with deterministic tree policy.
+    4d. Optionally generate LearningComponents and supports relationships.
+5. Write:
+    - knowledge_graph.json
+    - graph_stats.json
+    - graph_validation.json
+6. Persist KG creation run metadata.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_kgs.py ../examples/tanzania/config.json
+python src/skg/entries/create_knowledge_graphs.py ../examples/examples/kg_config.json /path/to/canonical_ir_run_results
 """
 
 # Standard Library
@@ -38,235 +44,222 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR
-from skg.kgs.export_academic_standards import export_academic_standards
-from skg.kgs.export_learning_components import export_learning_components
-from skg.kgs.export_learning_progressions import export_learning_progressions
-from skg.kgs.utils import (
-    KGDirs,
-    build_kg_export_context,
-    get_page_image_dims,
-    merge_graph_bundles,
-    persist_kg_run,
+from skg.kgs.schemas import (
+    GraphValidationReport,
+    KnowledgeGraphConfig,
+    KnowledgeGraphExport,
 )
-from skg.schemas import CreateKGConfig, RunConfig, RunCtx
+from skg.kgs.utils import (
+    DefaultsResolver,
+    DeterministicIdRegistry,
+    KGDirs,
+    build_graph_stats,
+    build_has_child_relationships,
+    build_index,
+    build_learning_components,
+    filter_canonical_ir,
+    map_canonical_to_entities,
+    merge_validation_reports,
+    persist_kg_run,
+    sort_export_lists_in_place,
+)
 from skg.utils.general import open_json_type, write_to_json
-from skg.utils.pdf import compute_doc_key
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
 
 
-def create_kgs(
-    *,
-    canonical_ir_fp: Path,
-    config: CreateKGConfig,
-    kg_dirs: KGDirs,
-    provenance_context: dict | None = None,
-) -> None:
-    """Create Learning Commons knowledge graphs from a single CanonicalIR JSON.
-
-    The process is as follows:
-
-    1. Load the CanonicalIR JSON and validate it.
-    2. Build the knowledge graph export context.
-    3. Export academic standards to the knowledge graphs.
-    4. Export Learning Components KG and write combined Standards + Learning Components
-        graph bundle.
-    5. Optionally export Learning Progressions KG and write combined Standards +
-        Learning Components + Learning Progressions graph bundle.
+def create_knowledge_graphs(
+    *, canonical_ir_fp: Path, kg_config: KnowledgeGraphConfig, kg_dirs: KGDirs
+) -> dict[str, Path]:
+    """Create (shape-only) Learning Commons knowledge graphs from CanonicalIR JSON.
 
     Parameters
     ----------
     canonical_ir_fp
-        The file path to the CanonicalIR JSON.
-    config
-        The knowledge graph run configuration.
+        File path to the CanonicalIR JSON.
+    kg_config
+        Knowledge graph configuration.
     kg_dirs
-        The knowledge graph run directories.
-    provenance_context
-        An optional dictionary containing provenance context information to be included
-        in the knowledge graphs.
+        Knowledge graph creation directories.
+
+    Returns
+    -------
+    dict[str, Path]
+        File paths to created knowledge graph artifacts.
     """
 
-    # 1.
-    canonical_ir = CanonicalIR.model_validate(open_json_type(canonical_ir_fp))
-
-    # 2.
-    kg_export_ctx = build_kg_export_context(canonical_ir=canonical_ir, config=config)
-
-    # 3.
-    academic_standards = export_academic_standards(
-        canonical_ir_created_at=canonical_ir.created_at,
-        config=config,
-        ctx=kg_export_ctx,
-        decision_set_id=canonical_ir.decision_set_id,
-        kg_dirs=kg_dirs,
-        provenance_context=provenance_context,
-    )
-    logger.info(
-        f"Exported Academic Standards KG: "
-        f"{len(academic_standards.items)} items, "
-        f"{len(academic_standards.relationships)} `hasChild` relationships"
+    # Load, validate, and index canonical IR JSON.
+    canonical_ir_index = build_index(
+        canonical_ir=CanonicalIR.model_validate(open_json_type(canonical_ir_fp))
     )
 
-    # 4.
-    learning_components = export_learning_components(
-        academic_standards=academic_standards,
-        config=config,
-        ctx=kg_export_ctx,
-        kg_dirs=kg_dirs,
+    # Filter canonical IR according to KG config.
+    filtered = filter_canonical_ir(config=kg_config, index=canonical_ir_index)
+    base_report = filtered.report.model_copy(deep=True)
+
+    # Shared wiring.
+    defaults = DefaultsResolver(config=kg_config)
+    ids = DeterministicIdRegistry(config=kg_config, doc_key=filtered.canonical.doc_key)
+
+    # Map CanonicalNode to entities (framework and SFIs).
+    mapping = map_canonical_to_entities(
+        config=kg_config, defaults=defaults, filtered=filtered, ids=ids
+    )
+    report: GraphValidationReport = merge_validation_reports(
+        base=base_report, other=mapping.report
     )
 
-    logger.info(
-        f"Exported Learning Components KG: "
-        f"{len(learning_components.learning_components)} components, "
-        f"{len(learning_components.supports_relationships)} `supports` relationships"
+    # Build hasChild relationships (tree policy enforced).
+    hierarchy = build_has_child_relationships(
+        defaults=defaults,
+        filtered=filtered,
+        framework=mapping.framework,
+        ids=ids,
+        sfi_uuid_by_canonical_id=mapping.sfi_uuid_by_canonical_id,
+        sfis=mapping.standards_framework_items,
     )
+    report = merge_validation_reports(base=report, other=hierarchy.report)
 
-    academic_bundle = open_json_type(
-        kg_dirs.academic_standards / "academic_standards_kg.json"
+    # Build LearningComponents and supports relationships.
+    lc = build_learning_components(
+        config=kg_config,
+        defaults=defaults,
+        ids=ids,
+        report=report,
+        sfis=mapping.standards_framework_items,
     )
-    lc_bundle = open_json_type(
-        kg_dirs.learning_components / "learning_components_kg.json"
+    report = lc.report
+
+    # Assemble final export and deterministic ordering.
+    export = KnowledgeGraphExport(
+        exportDialect="shape_only",
+        frameworks=[mapping.framework],
+        learningComponents=lc.learning_components,
+        relationships=[*hierarchy.relationships, *lc.supports_relationships],
+        standardsFrameworkItems=mapping.standards_framework_items,
     )
-    combined_bundle = merge_graph_bundles(
-        bundles=[academic_bundle, lc_bundle],
-        doc_key=kg_export_ctx.doc_key,
-        export_dialect=str(config.export_dialect),
-    )
+    sort_export_lists_in_place(export)
+
+    # Write results to file.
+    kg_fp = kg_dirs.root / "knowledge_graph.json"
     write_to_json(
-        fp=kg_dirs.combined / "academic_standards_plus_learning_components_kg.json",
-        json_info=combined_bundle,
+        fp=kg_fp,
+        json_info=export.model_dump(by_alias=True, exclude_none=True, mode="json"),
     )
 
-    # 5.
-    if config.generate_progressions is True:
-        learning_progressions = export_learning_progressions(
-            academic_standards=academic_standards,
-            config=config,
-            ctx=kg_export_ctx,
-            kg_dirs=kg_dirs,
-        )
+    graph_validation_fp = kg_dirs.root / "graph_validation.json"
+    write_to_json(
+        fp=graph_validation_fp,
+        json_info=report.model_dump(by_alias=True, exclude_none=True, mode="json"),
+    )
 
-        logger.info(
-            f"Exported Learning Progressions KG: "
-            f"{len(learning_progressions.builds_towards_relationships)} `buildsTowards` relationships, "
-            f"{len(learning_progressions.relates_to_relationships)} `relatesTo` relationships"
-        )
+    stats = build_graph_stats(
+        canonical_doc_key=filtered.canonical.doc_key, export=export, report=report
+    )
 
-        lp_bundle = open_json_type(
-            kg_dirs.learning_progressions / "learning_progressions_kg.json"
-        )
-        combined_bundle = merge_graph_bundles(
-            bundles=[academic_bundle, lc_bundle, lp_bundle],
-            doc_key=kg_export_ctx.doc_key,
-            export_dialect=str(config.export_dialect),
-        )
-        write_to_json(
-            fp=kg_dirs.combined
-            / "academic_standards_plus_learning_components_plus_learning_progressions_kg.json",
-            json_info=combined_bundle,
-        )
+    graph_stats_fp = kg_dirs.root / "graph_stats.json"
+    write_to_json(fp=graph_stats_fp, json_info=stats)
+
+    return {
+        "graph_stats": graph_stats_fp,
+        "graph_validation": graph_validation_fp,
+        "knowledge_graph": kg_fp,
+    }
 
 
 @cli.command()
-def create(
-    config_fp: Path = typer.Argument(
+def create_kgs(
+    kg_config_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
         exists=True,
         file_okay=True,
-        help="The file path to the global config file for the pipeline.",
+        help="File path to kg_config.json.",
         readable=True,
         resolve_path=True,
-    )
+    ),
+    canonical_ir_run_results_dir: Path = typer.Argument(
+        ...,
+        dir_okay=True,
+        exists=True,
+        file_okay=False,
+        help="The canonical IR run results directory.",
+        resolve_path=True,
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Overwrite existing output files if present."
+    ),
 ) -> None:
-    """Create LC KGs from the CanonicalIR JSON.
+    """Create (shape-only) LC KGs from the CanonicalIR JSON.
 
     The process is as follows:
 
-    1. Load config and validate extraction run existence.
-    2. Check doc_key consistency.
-    3. Persist KG creation run metadata.
-    4. Create Learning Commons knowledge graphs.
+    1. Persist KG creation run metadata.
+    2. Check for existing outputs; skip if present and not overwriting.
+    3. Load KG config.
+    4. Create knowledge graphs:
+        4a. Deterministically filter CanonicalIR nodes/edges.
+        4b. Map CanonicalIR nodes to StandardsFramework and StandardsFrameworkItems.
+        4c. Rebuild hasChild relationships with deterministic tree policy.
+        4d. Optionally generate LearningComponents and supports relationships.
+    5. Write:
+        - knowledge_graph.json
+        - graph_stats.json
+        - graph_validation.json
+    6. Persist KG creation run metadata.
 
     Parameters
     ----------
-    config_fp
-        The file path to the global config file for the pipeline.
-
-    Raises
-    ------
-    Exception
-        If any part of the knowledge graph creation process fails.
-    ValueError
-        If the computed doc_key from the PDF does not match the doc_key in the
-        canonical IR run metadata.
+    kg_config_fp
+        File path to a custom KG config JSON.
+    canonical_ir_run_results_dir
+        Directory containing the canonical IR run results.
+    overwrite
+        Whether to overwrite existing output files if present.
     """
 
+    canonical_ir_run_results_dir = canonical_ir_run_results_dir.resolve()
+    canonical_ir_fp = canonical_ir_run_results_dir / "canonical_ir.json"
+    creation_config_fp = canonical_ir_run_results_dir / "creation_run.json"
+    creation_run_config = open_json_type(creation_config_fp)
+    kg_results_dir = canonical_ir_run_results_dir.parent / "kgs"
+
     # 1.
-    run_config = RunConfig.model_validate(open_json_type(config_fp))
-    config = run_config.kgs
-    extraction_config = run_config.page_ir_extraction
-    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
-    extraction_run_results_dir = (
-        extraction_config.output_dir / computed_doc_key / "extraction"
-    )
-    canonical_ir_fp = (
-        extraction_config.output_dir
-        / computed_doc_key
-        / "canonical"
-        / "canonical_ir"
-        / "canonical_ir.json"
-    )
-    extraction_run_config = RunCtx.model_validate(
-        open_json_type(extraction_run_results_dir / "extraction_run.json")
-    )
+    kg_dirs, kg_run = persist_kg_run(output_dir=kg_results_dir, **creation_run_config)
 
     # 2.
-    expected_doc_key = extraction_run_config.extra["doc_key"]
-
-    if computed_doc_key != expected_doc_key:
-        raise ValueError(
-            f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
-            f"  computed doc_key:          {computed_doc_key}\n"
-            f"  extraction_run.json key:    {expected_doc_key}\n"
-            f"You are likely creating KGs using a different PDF than the one used to "
-            f"create the canonical IR. Pass the same PDF used in the canonical IR run "
-            f"or re-run the canonical IR."
+    expected_outputs = [
+        kg_dirs.root / "knowledge_graph.json",
+        kg_dirs.root / "graph_stats.json",
+        kg_dirs.root / "graph_validation.json",
+    ]
+    if not overwrite and [p for p in expected_outputs if p.exists()]:
+        logger.warning(
+            "One or more KG outputs already exist. Skipping KG creation. If you wish "
+            "to overwrite, pass the --overwrite flag."
         )
+        return
 
-    kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
-
-    # 3.
-    kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
+    logger.info(
+        f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
+    )
+    logger.info(f"Loaded creation run config: {creation_config_fp}")
+    logger.info(f"Saving KG results to: {kg_results_dir}")
 
     try:
-        # 4.
-        logger.info(
-            f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
-        )
+        # 3.
+        config_dict = open_json_type(kg_config_fp)
+        kg_config = KnowledgeGraphConfig.model_validate(config_dict)
 
-        create_kgs(
-            canonical_ir_fp=canonical_ir_fp,
-            config=config,
-            kg_dirs=kg_dirs,
-            provenance_context={
-                "bbox": {
-                    "coord_space": "px",
-                    "format": "[x0, y0, x1, y1]",
-                    "note": (
-                        "BBox coords are absolute pixels in rendered page images. "
-                        "Use page_index+width_px/height_px for normalization when available."
-                    ),
-                    "origin": "top_left",
-                    "page_images": get_page_image_dims(extraction_run_results_dir),
-                    "render_dpi": extraction_config.dpi,
-                }
-            },
+        # 4.
+        kg_outputs = create_knowledge_graphs(
+            canonical_ir_fp=canonical_ir_fp, kg_config=kg_config, kg_dirs=kg_dirs
         )
         kg_run.extra["status"] = "success"
+
+        # 5.
+        kg_run.extra["outputs"] = {k: str(v) for k, v in kg_outputs.items()}
         logger.success("KG creation completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
         kg_run.extra["status"] = "error"
@@ -277,6 +270,7 @@ def create(
         }
         raise
     finally:
+        # 6.
         kg_run.completed_at = datetime.now(timezone.utc)
         write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
 
