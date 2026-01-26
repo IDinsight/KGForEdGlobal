@@ -101,8 +101,20 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 17. Always include the field `context_groupings[]` in your output. It MAY be empty.
   - The deterministic compiler WILL NOT create hierarchy nodes from `segment.section_path[]`.
   - Therefore, you MUST explicitly provide the hierarchy context snapshot in `context_groupings[]` when there is clear curriculum structure evidence.
-18. TABLE-WIDE OUTER CONTEXT (IMPORTANT):
-  - If the segment is a TABLE and you see table-wide anchors (Grade/Stage/Learning Area/Subject/Theme/Unit/Term/Week/Strand/Substrand) that apply to the WHOLE table, you MUST place them in `context_groupings[]` (outer-to-inner order).
+18.CONTEXT SNAPSHOT CONSERVATISM
+  A) Table of Contents suppression:
+  - If any outer heading indicates "Table of Contents"/"Contents":
+    - decision_type MUST be "{SegmentDecisionType.IGNORE.value}"
+    - context_groupings[] MUST be []
+    - groupings/leaves/rows MUST be empty
+  B) Nearest-headings-only rule:
+  - Prefer the nearest headings in segment.section_path[] as evidence for context_groupings[].
+  - Default: use the LAST 3 items.
+  - Exception (allowed): you MAY use up to the LAST 8 items **only if needed** to recover stable curriculum anchors (e.g., Grade/Subject) that are missing from the last 3.
+  - If you use any heading beyond the last 3, you MUST mention this explicitly in `rationale`.
+19. TABLE-WIDE OUTER CONTEXT (IMPORTANT):
+  - If the segment is a TABLE and you see table-wide anchors (...) that apply to the WHOLE table AND they are supported by NEAREST outer evidence (not TOC/front-matter), you MUST place them in context_groupings[].
+  - If outer context is ambiguous/noisy, prefer context_groupings=[] and parse row-local groupings/leaves only.
   - For CHUNKED tables (chunking.is_chunked == true)
     - You MUST place table-wide anchors in `context_groupings[]` and MUST NOT place them in segment-level `groupings[]`.
     - On the FIRST chunk: decide the full, stable `context_groupings[]` for the whole table.
@@ -111,8 +123,8 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
       - Prefer decision_type="{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" so you can still emit candidate row parsing, but do NOT commit to changing context mid-table.
       - Use decision_type="{SegmentDecisionType.UNRESOLVED.value}" only if you cannot safely parse anything without guessing.
   - For NON-CHUNKED tables: prefer placing table-wide anchors in `context_groupings[]`, but placing a merged-header anchor in segment-level `groupings[]` is allowed.
-19. If caption_text is present, it describes the TABLE and is useful context; do not emit it as a node.
-20. Every `context_groupings[i].title` MUST be directly supported by OUTER evidence OR safe carry-forward evidence:
+20. If caption_text is present, it describes the TABLE and is useful context; do not emit it as a node.
+21. Every `context_groupings[i].title` MUST be directly supported by OUTER evidence OR safe carry-forward evidence:
   A) OUTER EVIDENCE SUPPORT (default rule)
   - The title must appear verbatim in at least one of:
     - `segment.section_path[]`, OR
