@@ -28,7 +28,7 @@ from skg.utils.constants import (
     SpineSplitApplyTo,
     SpineViolationPolicy,
 )
-from skg.utils.general import open_json_type, write_to_json
+from skg.utils.general import write_to_json
 
 
 @dataclass
@@ -1535,10 +1535,9 @@ def _relocate_table_local_only_roles(
                         SpineCorrection(kind="relocate_conflict", detail=msg)
                     )
                     if spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED:
-                        # NB: Do NOT flip the entire decision to
-                        # EMIT_FLAGGED_UNRESOLVED for a single row-level contradiction.
-                        # We can still materialize the table by simply not injecting
-                        # the conflicting moved role into this row.
+                        decision.decision_type = (
+                            SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
+                        )
                         flagged = True
 
                     # Do not add conflicting mg.
@@ -1589,7 +1588,6 @@ def apply_spine_policy_to_decision_set(
     creation_dirs: CanonicalIRDirs,
     decision_set: SegmentDecisionSet,
     document_ir: DocumentIR,
-    overwrite: bool,
     spine: SpineConfig,
 ) -> SegmentDecisionSet:
     """Apply spine correction policy to a SegmentDecisionSet.
@@ -1604,8 +1602,6 @@ def apply_spine_policy_to_decision_set(
         The SegmentDecisionSet to correct.
     document_ir
         The DocumentIR corresponding to the decision set.
-    overwrite
-        If True, overwrite existing spine corrected decision set files.
     spine
         The SpineConfig defining the correction policy.
 
@@ -1615,17 +1611,8 @@ def apply_spine_policy_to_decision_set(
         The corrected SegmentDecisionSet.
     """
 
-    spine_out_fp = (
-        creation_dirs.segment_decisions / "segment_decisions_spine_corrected.json"
-    )
-    spine_report_fp = creation_dirs.segment_decisions / "spine_report.json"
-
-    if not overwrite and spine_out_fp.exists() and spine_report_fp.exists():
-        logger.warning(
-            f"Spine corrected JSON already exists at {spine_out_fp}. Skipping correction. "
-            f"If you wish to overwrite, pass the --overwrite flag."
-        )
-        return SegmentDecisionSet.model_validate(open_json_type(spine_out_fp))
+    spine_out_fp = creation_dirs.root / "segment_decisions_spine_corrected.json"
+    spine_report_fp = creation_dirs.root / "spine_report.json"
 
     # Group decisions by segment_id.
     decisions_by_segment: dict[str, list[SegmentDecision]] = {}

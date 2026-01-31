@@ -168,6 +168,31 @@ class SegmentDecisionType(str, Enum):
     UNRESOLVED = "unresolved"
 
 
+class SpineSplitApplyTo(str, Enum):
+    """Define where split rules may be applied."""
+
+    ANY = "any"
+    BLOCK_LOCAL = "block_local"  # SegmentDecision.groupings
+    OUTER_CONTEXT = "outer_context"  # SegmentDecision.context_groupings
+    TABLE_ROW_LOCAL = "table_row_local"  # RowDecision.groupings
+
+
+class SpineViolationPolicy(str, Enum):
+    """Define what to do when a decision cannot be normalized to the spine without
+    guessing.
+
+    Attributes
+    ----------
+    FLAG_UNRESOLVED
+        Set decision_type=EMIT_FLAGGED_UNRESOLVED
+    KEEP_AS_IS
+        Do not rewrite; allow compiler to proceed (rarely recommended)
+    """
+
+    FLAG_UNRESOLVED = "flag_unresolved"
+    KEEP_AS_IS = "keep_as_is"
+
+
 class StatementRole(str, Enum):
     """Semantic role of a KG node in the hierarchy."""
 

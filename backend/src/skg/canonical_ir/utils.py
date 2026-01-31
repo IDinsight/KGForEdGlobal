@@ -3021,6 +3021,12 @@ def load_segment_decision_set(
             f"  Decisions:  {decision_set.pdf_name}"
         )
 
+    assert decision_set.doc_key == expected_doc_key, (
+        f"SegmentDecisionSet.doc_key != expected doc_key\n"
+        f"decision_set.doc_key={decision_set.doc_key}\n"
+        f"expected={expected_doc_key}"
+    )
+
     return decision_set
 
 

@@ -100,6 +100,26 @@ def compute_decision_set_id(
 
 
 # Schemas for provenance.
+class CaptionBinding(BaseSchema):
+    """Represents a binding between a caption segment and a table segment in DocumentIR."""
+
+    caption_kind: CaptionKind = Field(
+        ..., description="Kind of caption (table/figure)."
+    )
+    caption_page_index: Optional[int] = Field(
+        None, description="Page index of the caption."
+    )
+    caption_segment_id: str = Field(..., description="Segment ID of the caption.")
+    caption_text: str = Field(..., description="Text of the caption.")
+    gap_segments: int = Field(
+        ..., description="Number of segments between caption and table.", ge=0
+    )
+    table_page_index: Optional[int] = Field(
+        None, description="Page index of the table."
+    )
+    table_segment_id: str = Field(..., description="Segment ID of the table.")
+
+
 class UnresolvedItem(BaseSchema):
     """Represents a DocumentIR segment (or part of one) that could not be resolved into
     canonical nodes/leaves with sufficient confidence.
