@@ -43,6 +43,50 @@
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
 		"segment_decision_conf_threshold": 0.60,
+		"spine_policy": {
+			"allow_partial_context": true,
+			"block_local_roles": [
+				"SECTION",
+				"TOPIC"
+			],
+			"disallowed_outer_roles": [
+				"STAGE",
+				"PROSE"
+			],
+			"normalize": {
+				"drop_stage_if_grade_present": true,
+				"drop_grade_bands": true,
+				"casefold_grouping_keys_for_ids": true
+			},
+			"outer_context_roles": [
+				"GRADE_LEVEL",
+				"LEARNING_AREA",
+				"SUBJECT",
+				"STRAND"
+			],
+			"row_roles": [
+				"TOPIC",
+				"SUBTOPIC"
+			],
+			"split_rules": [
+				{
+					"match": "^GRADE\\s+(\\d+)\\s*:\\s*(.+)$",
+					"emit": [
+						{
+							"role": "GRADE_LEVEL",
+							"title": "GRADE {1}"
+						},
+						{
+							"role": "SUBJECT",
+							"title": "{2}"
+						}
+					]
+				}
+			]
+		},
 		"structural_leaf_warn_threshold": 0.60
+	},
+	"kgs": {
+		"overwrite": false
 	}
 }

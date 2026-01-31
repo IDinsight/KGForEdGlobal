@@ -3,16 +3,17 @@
 # Standard Library
 import re
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 # Third Party Library
 from loguru import logger
+from pydantic import TypeAdapter
 
 # Package Library
 from skg.canonical_ir.llm import generate_segment_decision
 from skg.canonical_ir.schemas import (
+    CaptionBinding,
     SegmentDecision,
     SegmentDecisionSet,
     compute_decision_set_id,
@@ -40,20 +41,7 @@ from skg.utils.constants import (
     NonArtifacts,
     SegmentDecisionType,
 )
-from skg.utils.general import write_to_json
-
-
-@dataclass(frozen=True)
-class CaptionBinding:
-    """Dataclass for caption-to-table bindings."""
-
-    caption_kind: CaptionKind
-    caption_page_index: int | None
-    caption_segment_id: str
-    caption_text: str
-    gap_segments: int
-    table_page_index: int | None
-    table_segment_id: str
+from skg.utils.general import open_json_type, write_to_json
 
 
 def _classify_caption_kind(text: str) -> CaptionKind:
@@ -442,7 +430,7 @@ def _process_table_segment(
 
     # caption_bindings is keyed by TABLE segment_id, and some tables may not have
     # captions.
-    caption_binding: CaptionBinding | None = caption_bindings.get(segment.segment_id)
+    caption_binding = caption_bindings.get(segment.segment_id)
 
     # Determine table chunks.
     chunks = table_chunks_for_segment(
@@ -680,15 +668,17 @@ def attach_caption_binding_to_segment_decision(
     return segment_decision
 
 
-def build_caption_bindings(
+def load_or_build_caption_bindings(
     *,
     bind_unknown_caption: bool = True,
     creation_dirs: CanonicalIRDirs,
     document_ir: DocumentIR,
     max_gap_segments: int = 2,
     max_page_distance: int = 1,
+    overwrite: bool,
 ) -> dict[str, CaptionBinding]:
-    """Build deterministic caption→table bindings *before* LLM interpretation.
+    """Load existing caption-to-table bindings or build deterministic caption-to-table
+    bindings *before* LLM interpretation.
 
     Many curriculum PDFs place a short caption/label block immediately before a table.
     That caption is usually not curriculum content itself, but it often contains
@@ -728,12 +718,25 @@ def build_caption_bindings(
         The maximum number of non-table segments allowed between caption and table.
     max_page_distance
         The maximum page distance allowed between caption and table.
+    overwrite
+        Whether to overwrite existing caption bindings.
 
     Returns
     -------
     dict[str, CaptionBinding]
         The computed caption bindings, keyed by table segment ID.
     """
+
+    caption_bindings_fp = creation_dirs.root / "caption_bindings.json"
+
+    if not overwrite and caption_bindings_fp.exists():
+        logger.info(
+            f"Caption bindings already exists at: {caption_bindings_fp}. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        adapter = TypeAdapter(dict[str, CaptionBinding])
+        caption_bindings_json = open_json_type(caption_bindings_fp)
+        return adapter.validate_python(caption_bindings_json)
 
     caption_bindings: dict[str, CaptionBinding] = {}
     warnings: list[str] = []
@@ -801,26 +804,33 @@ def build_caption_bindings(
 
             continue
 
-        # Expire pending caption if too far.
-        if pending_caption is not None:
-            cap_seg, _cap_text, _cap_kind, _cap_page, cap_index = pending_caption
-            gap = max(0, index - cap_index - 1)
-            if gap > max_gap_segments:
-                msg = (
-                    f"Dangling caption dropped:\n"
-                    f"caption={cap_seg.segment_id} gap_exceeded={gap}\n"
-                    f"page_index={page_index}\n"
-                    f"segment_index={index}"
-                )
-                logger.warning(msg)
-                warnings.append(msg)
-                pending_caption = None
+        # Expire pending caption if too far. NB: pending_caption[4] is cap_index.
+        if (
+            pending_caption is not None
+            and max(0, index - pending_caption[4] - 1) > max_gap_segments
+        ):
+            cap_seg, _, _, _, cap_index = pending_caption
+            msg = (
+                f"Dangling caption dropped:\n"
+                f"caption={cap_seg.segment_id} gap_exceeded={max(0, index - cap_index - 1)}\n"
+                f"page_index={page_index}\n"
+                f"segment_index={index}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+            pending_caption = None
 
     if pending_caption is not None:
         cap_seg, *_ = pending_caption
         msg = f"Dangling caption dropped: caption={cap_seg.segment_id} end_of_document"
         logger.warning(msg)
         warnings.append(msg)
+
+    caption_bindings_fp = creation_dirs.root / "caption_bindings.json"
+    write_to_json(
+        fp=caption_bindings_fp,
+        json_info={k: v.model_dump() for k, v in caption_bindings.items()},
+    )
 
     warnings_fp = creation_dirs.root / "caption_binding_warnings.json"
     write_to_json(fp=warnings_fp, json_info={"warnings": warnings})

@@ -39,6 +39,71 @@
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
 		"segment_decision_conf_threshold": 0.60,
+		"spine_policy": {
+			"allow_partial_context": true,
+			"block_local_roles": [
+				"section",
+				"topic"
+			],
+			"disallowed_outer_roles": [
+				"prose"
+			],
+			"name": "zambia_competence_tables",
+			"normalize": {
+				"drop_stage_if_grade_present": false,
+				"drop_stage_if_matches_wrapper_patterns": true,
+				"stage_wrapper_title_patterns": [
+					"lower\\s+primary",
+					"upper\\s+primary",
+					"basic\\s+education",
+					"primary\\s+education",
+					"syllabi?"
+				],
+				"drop_grade_bands": true,
+				"grade_band_title_patterns": [
+					"^grades?\\s*\\d+\\s*[-–]\\s*\\d+\\b",
+					"^grade\\s*\\d+\\s*[-–]\\s*grade\\s*\\d+\\b",
+					"^grades?\\s*\\d+\\s*(to|through)\\s*\\d+\\b"
+				],
+				"casefold_titles_for_matching": true,
+				"normalize_whitespace": true
+			},
+			"outer_context_roles": [
+				"grade_level",
+				"learning_area",
+				"subject",
+				"strand"
+			],
+			"relocate_table_local_only_roles_to_rows": true,
+			"row_roles": [
+				"topic",
+				"subtopic"
+			],
+			"split_rules": [
+				{
+					"match": "^GRADE\\s+(\\d+)\\s*:\\s*(.+)$",
+					"apply_to": "any",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "GRADE \\1"
+						},
+						{
+							"role": "subject",
+							"title_template": "\\2"
+						}
+					]
+				}
+			],
+			"table_local_only_roles": [
+				"topic",
+				"subtopic"
+			],
+			"violation_policy": "flag_unresolved"
+		},
 		"structural_leaf_warn_threshold": 0.60
+	},
+	"kgs": {
+		"overwrite": false
 	}
 }

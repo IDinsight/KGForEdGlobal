@@ -19,7 +19,7 @@ Step 5 does the following:
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_knowledge_graphs.py ../examples/examples/kg_config.json /path/to/canonical_ir_run_results
+python src/skg/entries/create_kgs.py ../examples/tanzania/config.json
 """
 
 # Standard Library
@@ -63,7 +63,9 @@ from skg.kgs.utils import (
     persist_kg_run,
     sort_export_lists_in_place,
 )
+from skg.schemas import RunConfig, RunCtx
 from skg.utils.general import open_json_type, write_to_json
+from skg.utils.pdf import compute_doc_key
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
@@ -170,95 +172,92 @@ def create_knowledge_graphs(
 
 @cli.command()
 def create_kgs(
-    kg_config_fp: Path = typer.Argument(
+    config_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
         exists=True,
         file_okay=True,
-        help="File path to kg_config.json.",
+        help="The file path to the global config file for the pipeline.",
         readable=True,
         resolve_path=True,
-    ),
-    canonical_ir_run_results_dir: Path = typer.Argument(
-        ...,
-        dir_okay=True,
-        exists=True,
-        file_okay=False,
-        help="The canonical IR run results directory.",
-        resolve_path=True,
-    ),
-    overwrite: bool = typer.Option(
-        False, "--overwrite", help="Overwrite existing output files if present."
-    ),
+    )
 ) -> None:
-    """Create (shape-only) LC KGs from the CanonicalIR JSON.
+    """Create LC KGs from the CanonicalIR JSON.
 
     The process is as follows:
 
-    1. Persist KG creation run metadata.
-    2. Check for existing outputs; skip if present and not overwriting.
-    3. Load KG config.
+    1. Load config and validate extraction run existence.
+    2. Check doc_key consistency.
+    3. Persist KG creation run metadata.
     4. Create knowledge graphs:
         4a. Deterministically filter CanonicalIR nodes/edges.
         4b. Map CanonicalIR nodes to StandardsFramework and StandardsFrameworkItems.
         4c. Rebuild hasChild relationships with deterministic tree policy.
         4d. Optionally generate LearningComponents and supports relationships.
-    5. Write:
-        - knowledge_graph.json
-        - graph_stats.json
-        - graph_validation.json
-    6. Persist KG creation run metadata.
 
     Parameters
     ----------
-    kg_config_fp
-        File path to a custom KG config JSON.
-    canonical_ir_run_results_dir
-        Directory containing the canonical IR run results.
-    overwrite
-        Whether to overwrite existing output files if present.
+    config_fp
+        The file path to the global config file for the pipeline.
+
+    Raises
+    ------
+    Exception
+        If any part of the knowledge graph creation process fails.
+    ValueError
+        If the computed doc_key from the PDF does not match the doc_key in the
+        canonical IR run metadata.
     """
 
-    canonical_ir_run_results_dir = canonical_ir_run_results_dir.resolve()
-    canonical_ir_fp = canonical_ir_run_results_dir / "canonical_ir.json"
-    creation_config_fp = canonical_ir_run_results_dir / "creation_run.json"
-    creation_run_config = open_json_type(creation_config_fp)
-    kg_results_dir = canonical_ir_run_results_dir.parent / "kgs"
-
     # 1.
-    kg_dirs, kg_run = persist_kg_run(output_dir=kg_results_dir, **creation_run_config)
+    run_config = RunConfig.model_validate(open_json_type(config_fp))
+    config = run_config.canonical_ir
+    extraction_config = run_config.page_ir_extraction
+    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
+    extraction_run_results_dir = (
+        extraction_config.output_dir / computed_doc_key / "extraction"
+    )
+    canonical_ir_fp = (
+        extraction_config.output_dir
+        / computed_doc_key
+        / "canonical"
+        / "canonical_ir.json"
+    )
+    extraction_run_config = RunCtx.model_validate(
+        open_json_type(extraction_run_results_dir / "extraction_run.json")
+    )
 
     # 2.
-    expected_outputs = [
-        kg_dirs.root / "knowledge_graph.json",
-        kg_dirs.root / "graph_stats.json",
-        kg_dirs.root / "graph_validation.json",
-    ]
-    if not overwrite and [p for p in expected_outputs if p.exists()]:
-        logger.warning(
-            "One or more KG outputs already exist. Skipping KG creation. If you wish "
-            "to overwrite, pass the --overwrite flag."
-        )
-        return
+    expected_doc_key = extraction_run_config.extra["doc_key"]
 
-    logger.info(
-        f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
-    )
-    logger.info(f"Loaded creation run config: {creation_config_fp}")
-    logger.info(f"Saving KG results to: {kg_results_dir}")
+    if computed_doc_key != expected_doc_key:
+        raise ValueError(
+            f"PDF doc_key mismatch.\n"
+            f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
+            f"  computed doc_key:          {computed_doc_key}\n"
+            f"  stitching_run.json key:    {expected_doc_key}\n"
+            f"You are likely creating KGs using a different PDF than the one used to "
+            f"create the canonical IR. Pass the same PDF used in the canonical IR run "
+            f"or re-run the canonical IR."
+        )
+
+    kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
+
+    # 3.
+    kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
     try:
-        # 3.
-        config_dict = open_json_type(kg_config_fp)
-        kg_config = KnowledgeGraphConfig.model_validate(config_dict)
-
         # 4.
-        kg_outputs = create_knowledge_graphs(
-            canonical_ir_fp=canonical_ir_fp, kg_config=kg_config, kg_dirs=kg_dirs
+        logger.info(
+            f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
         )
-        kg_run.extra["status"] = "success"
+
+        kg_outputs = create_knowledge_graphs(
+            canonical_ir_fp=canonical_ir_fp, kg_config={}, kg_dirs=kg_dirs
+        )
 
         # 5.
+        kg_run.extra["status"] = "success"
         kg_run.extra["outputs"] = {k: str(v) for k, v in kg_outputs.items()}
         logger.success("KG creation completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
@@ -270,7 +269,6 @@ def create_kgs(
         }
         raise
     finally:
-        # 6.
         kg_run.completed_at = datetime.now(timezone.utc)
         write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
 
