@@ -486,7 +486,7 @@ Each GroupingCanonicalizationItem must contain:
 ## Action semantics (must satisfy validator rules)
 - keep: output MUST be [] (preferred) OR output=[input]
 - drop: output MUST be []
-- replace: output MUST have length 1 and output[0].role MUST equal input.role
+- replace: output MUST have length 1 and output[0].role MUST equal input.role AND output[0] MUST NOT be identical to input (if no change, use keep)
 - split: output MUST have length >= 2 (roles may differ but must be allowed roles)
 
 {context_str}
@@ -495,12 +495,13 @@ Rules:
 1. Do NOT invent new curriculum concepts not present in the input.
 2. Prefer minimal changes: whitespace/punctuation normalization and synonym folding. Avoid casing changes unless required to match an established canonical exactly.
 3. REPLACE must not change role (validator enforces this).
-4. SPLIT only when the title clearly contains multiple groupings (e.g., "Grade 1 - Mathematics", "Theme 2: Plants") AND each split part is directly present as a substring. Do not paraphrase or infer.
-5. For SPLIT:
+4. NEVER use REPLACE when output would be identical to input. Use KEEP instead. If input already exactly matches an established canonical (same role + exact title), use KEEP.
+5. SPLIT only when the title clearly contains multiple groupings (e.g., "Grade 1 - Mathematics", "Theme 2: Plants") AND each split part is directly present as a substring. Do not paraphrase or infer.
+6. For SPLIT:
    - output MUST be ordered outer→inner using the precedence list above.
    - do NOT emit duplicate output groupings.
-6. If unsure, choose KEEP with lower confidence (e.g., 0.6–0.8). Do NOT DROP uncertain items.
-7. Mapping to ESTABLISHED CANONICALS:
+7. If unsure, choose KEEP with lower confidence (e.g., 0.6–0.8). Do NOT DROP uncertain items.
+8. Mapping to ESTABLISHED CANONICALS:
    - Only map if role matches exactly
    - Canonical title must match exactly
         """

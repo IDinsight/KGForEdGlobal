@@ -18,11 +18,7 @@ from skg.canonical_ir.schemas import (
     SegmentDecisionSet,
     compute_decision_set_id,
 )
-from skg.canonical_ir.utils import (
-    CanonicalIRDirs,
-    _extract_block_segment_text,
-    _normalize_text,
-)
+from skg.canonical_ir.utils import CanonicalIRDirs, _extract_block_segment_text
 from skg.document_ir.schemas import (
     BlockSegment,
     DocumentIR,
@@ -142,15 +138,34 @@ def _determine_stable_context(
 
 
 def _filter_section_path_for_llm(
+    *,
+    max_items: int = 5,
+    max_page_distance: int = 3,
     section_paths: list[SectionHeadingRef],
+    segment_item_index: int,
+    segment_page_index: int,
 ) -> list[dict[str, Any]]:
-    """Remove front-matter/non-artifact headings from the section_path evidence shown
-    to the LLM.
+    """Reduce section_path to only the *relevant, nearby* headings for the LLM.
+
+    NB:
+
+    1. Never include headings that occur AFTER the segment (future context).
+    2. Prefer headings on the same page or within the last N pages.
+    3. Keep only the tail max_items after filtering.
+    4. De-dupe consecutive identical headings.
 
     Parameters
     ----------
+    max_items
+        The maximum number of section headings to keep.
+    max_page_distance
+        The maximum page distance to keep.
     section_paths
         A list of SectionHeadingRef objects.
+    segment_item_index
+        The segment item index.
+    segment_page_index
+        The segment page index.
 
     Returns
     -------
@@ -161,26 +176,51 @@ def _filter_section_path_for_llm(
     if not section_paths:
         return []
 
-    # Treat front-matter headings (e.g., INTRODUCTION, ASSESSMENT) as *non-curriculum*
-    # evidence. These headings often appear in the PDF section_path but should not
-    # influence outer curriculum context decisions.
-    front_matter_norm: set[str] = {
-        _normalize_text(text=h.value) for h in FrontMatterHeadings
-    }
+    filtered: list[SectionHeadingRef] = []
 
-    output: list[dict[str, Any]] = []
+    for section_path in section_paths:
+        text_cf = section_path.text.casefold().strip()
 
-    for sp in section_paths:
-        text = sp.text.strip()
-        assert text, f"{section_paths = }"
-        norm = _normalize_text(text=text)
-
-        if norm in NonArtifacts or norm in front_matter_norm:
+        if text_cf in (FrontMatterHeadings, NonArtifacts):
             continue
 
-        output.append(sp.model_dump(mode="json"))
+        # Drop headings that are after the segment or that are too far away.
+        if (
+            section_path.page_index > segment_page_index
+            or (
+                section_path.page_index == segment_page_index
+                and segment_item_index is not None
+                and section_path.item_index > segment_item_index
+            )
+            or (segment_page_index - section_path.page_index) > max_page_distance
+        ):
+            continue
 
-    return output
+        filtered.append(section_path)
+
+    # If we filtered too aggressively, keep the closest prior heading as a fallback.
+    if not filtered:
+        for section_path in reversed(section_paths):
+            if section_path.page_index <= segment_page_index:
+                filtered = [section_path]
+                break
+
+    output = [sp.model_dump(mode="json") for sp in filtered]
+
+    # De-dupe consecutive identical heading texts.
+    deduped: list[dict[str, Any]] = []
+    prev_norm: str | None = None
+
+    for item in output:
+        norm = " ".join(item["text"].split()).casefold()
+
+        if norm == prev_norm:
+            continue
+
+        prev_norm = norm
+        deduped.append(item)
+
+    return deduped[-max_items:]
 
 
 def _process_block_segment(
@@ -233,7 +273,11 @@ def _process_block_segment(
     )
 
     # Add additional payload evidence that is helpful to the LLM.
-    segment_payload["section_path"] = _filter_section_path_for_llm(segment.section_path)
+    segment_payload["section_path"] = _filter_section_path_for_llm(
+        section_paths=segment.section_path,
+        segment_item_index=segment.slices[0].item_index,
+        segment_page_index=segment.slices[0].page_index,
+    )
     segment_payload["prior_context_groupings"] = [dict(x) for x in (context_hint or [])]
     segment_payload["prev_segment_hint"] = prev_segment_hint
     segment_payload["next_segment_hint"] = next_segment_hint
@@ -580,7 +624,9 @@ def _row_to_text(*, max_cols: int = 6, row: TableRow) -> list[str]:
     return texts
 
 
-def _section_path_texts(*, k: int = 6, segment: Segment) -> list[str]:
+def _section_path_texts(
+    *, k: int = 6, segment: Segment, segment_item_index: int, segment_page_index: int
+) -> list[str]:
     """Extract recent section headings from the segment path.
 
     Parameters
@@ -589,6 +635,10 @@ def _section_path_texts(*, k: int = 6, segment: Segment) -> list[str]:
         The number of recent sections to include, by default 6.
     segment
         The Segment to extract from.
+    segment_item_index
+        The segment item index.
+    segment_page_index
+        The segment page index.
 
     Returns
     -------
@@ -597,7 +647,11 @@ def _section_path_texts(*, k: int = 6, segment: Segment) -> list[str]:
     """
 
     # SectionHeadingRef has .text; keep only recent ones.
-    section_paths = _filter_section_path_for_llm(segment.section_path)
+    section_paths = _filter_section_path_for_llm(
+        section_paths=segment.section_path,
+        segment_item_index=segment_item_index,
+        segment_page_index=segment_page_index,
+    )
     texts: list[str] = []
 
     for sp in section_paths[-k:]:
@@ -882,7 +936,11 @@ def make_table_chunk_payload(
     seg = segment.model_dump(
         exclude={"segment_id", "segment_provenance", "slices"}, mode="json"
     )
-    seg["section_path"] = _filter_section_path_for_llm(segment.section_path)
+    seg["section_path"] = _filter_section_path_for_llm(
+        section_paths=segment.section_path,
+        segment_item_index=segment.slices[0].item_index,
+        segment_page_index=segment.slices[0].page_index,
+    )
 
     # NB: Chunk payload should not include full-table derived views that can leak
     # information outside the chunk. NB: We intentionally KEEP rows_filldown here (if
@@ -997,7 +1055,11 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
     table_payload = segment.model_dump(
         exclude={"segment_id", "segment_provenance", "slices"}, mode="json"
     )
-    table_payload["section_path"] = _filter_section_path_for_llm(segment.section_path)
+    table_payload["section_path"] = _filter_section_path_for_llm(
+        section_paths=segment.section_path,
+        segment_item_index=segment.slices[0].item_index,
+        segment_page_index=segment.slices[0].page_index,
+    )
 
     # Prefer fill-down view if it exists.
     rows = segment.rows
@@ -1171,7 +1233,12 @@ def segment_hint(segment: Segment) -> dict[str, Any]:
         "kind": kind,
         "local_code": segment.local_code,
         "page_span": page_span,
-        "section_path_texts": _section_path_texts(k=6, segment=segment),
+        "section_path_texts": _section_path_texts(
+            k=6,
+            segment=segment,
+            segment_item_index=segment.slices[0].item_index,
+            segment_page_index=segment.slices[0].page_index,
+        ),
     }
 
     if kind == "block":

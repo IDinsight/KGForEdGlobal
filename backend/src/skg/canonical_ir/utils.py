@@ -1963,17 +1963,12 @@ def _validate_and_handle_unresolved(
     if decision.decision_type == SegmentDecisionType.IGNORE:
         return False
 
-    # SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED is a "review" decision. It must be
-    # persisted to the audit trail, but MUST NOT be materialized into CanonicalIR
-    # nodes/edges.
+    # SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED is a "review" decision. We ALWAYS
+    # emit an UnresolvedItem for audit/review. For competence-table PDFs (like Zambia),
+    # we still want to materialize table content when it exists (rows/leaves),
+    # otherwise we lose entire grade/subject subtrees. Confidence gating below still
+    # applies.
     if decision.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
-        msg = (
-            f"flagged_unresolved_decision_not_materialized:"
-            f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
-            f"kind={segment.kind} conf={decision.confidence:.3f}"
-        )
-        logger.warning(msg)
-        warnings.append(msg)
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
@@ -1989,7 +1984,26 @@ def _validate_and_handle_unresolved(
                 segment_id=segment.segment_id,
             )
         )
-        return False
+
+        # Materialize flagged *table* decisions if they still contain usable content.
+        # Do NOT return False; allow confidence gating and materialization.
+        if segment.kind == "table" and (decision.rows or decision.leaves):
+            msg = (
+                f"flagged_unresolved_table_materialized:"
+                f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
+                f"conf={decision.confidence:.3f} rows={len(decision.rows or [])}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+        else:
+            msg = (
+                f"flagged_unresolved_decision_not_materialized:"
+                f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
+                f"kind={segment.kind} conf={decision.confidence:.3f}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+            return False
 
     if decision.decision_type == SegmentDecisionType.UNRESOLVED:
         reason = (
@@ -2111,6 +2125,20 @@ def apply_grouping_canonicalization_map(
         canonical_grouping_min_confidence=canonical_grouping_min_confidence,
         mapping=mapping,
     )
+
+    # NB: Never canonicalize table-local roles (e.g., topic/subtopic). These roles
+    # carry local codes and are frequently reused across grades/areas, so global
+    # canonicalization causes incorrect merges (e.g., "3.9 NOUNS" -> "1.11 NOUNS").
+    _BLOCKED_CANONICALIZATION_ROLE_VALUES = {
+        NodeRole.TOPIC.value,
+        NodeRole.SUBTOPIC.value,
+    }
+    mapping_index = {
+        k: v
+        for k, v in mapping_index.items()
+        if k[0] not in _BLOCKED_CANONICALIZATION_ROLE_VALUES
+    }
+
     new_decisions: list[SegmentDecision] = []
 
     for decision in segment_decisions.decisions:
@@ -2143,7 +2171,7 @@ def apply_grouping_canonicalization_map(
                     new_groupings = _rewrite_grouping_list(
                         enforce_unique_roles=True,
                         groupings=row.groupings,
-                        mapping_index=mapping_index,
+                        mapping_index={},  # Don't canonicalize row-local groupings
                         sort_by_precedence=False,
                     )
                     new_rows.append(row.model_copy(update={"groupings": new_groupings}))

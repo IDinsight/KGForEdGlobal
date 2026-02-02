@@ -1535,9 +1535,10 @@ def _relocate_table_local_only_roles(
                         SpineCorrection(kind="relocate_conflict", detail=msg)
                     )
                     if spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED:
-                        decision.decision_type = (
-                            SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
-                        )
+                        # NB: Do NOT flip the entire decision to
+                        # EMIT_FLAGGED_UNRESOLVED for a single row-level contradiction.
+                        # We can still materialize the table by simply not injecting
+                        # the conflicting moved role into this row.
                         flagged = True
 
                     # Do not add conflicting mg.
