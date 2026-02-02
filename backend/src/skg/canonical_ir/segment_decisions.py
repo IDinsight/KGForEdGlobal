@@ -784,7 +784,7 @@ def load_or_build_caption_bindings(
     caption_bindings_fp = creation_dirs.root / "caption_bindings.json"
 
     if not overwrite and caption_bindings_fp.exists():
-        logger.info(
+        logger.warning(
             f"Caption bindings already exists at: {caption_bindings_fp}. "
             f"If you wish to overwrite, pass the --overwrite flag."
         )
