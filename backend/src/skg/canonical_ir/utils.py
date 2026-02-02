@@ -1963,12 +1963,17 @@ def _validate_and_handle_unresolved(
     if decision.decision_type == SegmentDecisionType.IGNORE:
         return False
 
-    # SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED is a "review" decision. We ALWAYS
-    # emit an UnresolvedItem for audit/review. For competence-table PDFs (like Zambia),
-    # we still want to materialize table content when it exists (rows/leaves),
-    # otherwise we lose entire grade/subject subtrees. Confidence gating below still
-    # applies.
+    # SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED is a "review" decision. It must be
+    # persisted to the audit trail, but MUST NOT be materialized into CanonicalIR
+    # nodes/edges.
     if decision.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
+        msg = (
+            f"flagged_unresolved_decision_not_materialized:"
+            f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
+            f"kind={segment.kind} conf={decision.confidence:.3f}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
@@ -1984,26 +1989,7 @@ def _validate_and_handle_unresolved(
                 segment_id=segment.segment_id,
             )
         )
-
-        # Materialize flagged *table* decisions if they still contain usable content.
-        # Do NOT return False; allow confidence gating and materialization.
-        if segment.kind == "table" and (decision.rows or decision.leaves):
-            msg = (
-                f"flagged_unresolved_table_materialized:"
-                f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
-                f"conf={decision.confidence:.3f} rows={len(decision.rows or [])}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-        else:
-            msg = (
-                f"flagged_unresolved_decision_not_materialized:"
-                f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
-                f"kind={segment.kind} conf={decision.confidence:.3f}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-            return False
+        return False
 
     if decision.decision_type == SegmentDecisionType.UNRESOLVED:
         reason = (
