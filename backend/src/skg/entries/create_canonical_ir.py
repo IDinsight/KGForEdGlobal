@@ -226,6 +226,7 @@ def create_canonical_ir(
         creation_dirs=creation_dirs,
         document_ir=document_ir,
         decision_set=segment_decisions,
+        overwrite=config.overwrite,
         spine=config.spine_policy,
     )
 
