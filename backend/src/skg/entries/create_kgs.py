@@ -31,8 +31,9 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.kgs.utils import persist_kg_run
-from skg.schemas import RunConfig, RunCtx
+from skg.canonical_ir.schemas import CanonicalIR
+from skg.kgs.utils import KGDirs, build_kg_export_context, persist_kg_run
+from skg.schemas import CreateKGConfig, RunConfig, RunCtx
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
@@ -40,8 +41,36 @@ from skg.utils.pdf import compute_doc_key
 cli = typer.Typer(no_args_is_help=True)
 
 
-@cli.command()
 def create_kgs(
+    *, canonical_ir_fp: Path, config: CreateKGConfig, kg_dirs: KGDirs
+) -> None:
+    """Create Learning Commons knowledge graphs from a single CanonicalIR JSON.
+
+    The process is as follows:
+
+    1. XXX
+
+    Parameters
+    ----------
+    canonical_ir_fp
+        The file path to the CanonicalIR JSON.
+    config
+        The knowledge graph run configuration.
+    kg_dirs
+        The knowledge graph run directories.
+    """
+
+    # 1.
+    canonical_ir = CanonicalIR.model_validate(open_json_type(canonical_ir_fp))
+
+    # 2.
+    kg_export_ctx = build_kg_export_context(canonical_ir=canonical_ir, config=config)
+    logger.info(f"{kg_dirs = }")
+    logger.info(f"{kg_export_ctx = }")
+
+
+@cli.command()
+def create(
     config_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
@@ -59,8 +88,7 @@ def create_kgs(
     1. Load config and validate extraction run existence.
     2. Check doc_key consistency.
     3. Persist KG creation run metadata.
-    4. Create Learning Commons knowledge graphs:
-        4a. XXX
+    4. Create Learning Commons knowledge graphs.
 
     Parameters
     ----------
@@ -119,7 +147,7 @@ def create_kgs(
             f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
         )
 
-        # 5.
+        create_kgs(canonical_ir_fp=canonical_ir_fp, config=config, kg_dirs=kg_dirs)
         kg_run.extra["status"] = "success"
         logger.success("KG creation completed successfully!")
     except Exception as e:  # pylint: disable=broad-except

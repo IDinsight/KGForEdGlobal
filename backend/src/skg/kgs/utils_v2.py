@@ -13,7 +13,6 @@ from typing import Any
 
 # Third Party Library
 from loguru import logger
-from PIL import Image
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR, SegmentDecision
@@ -211,10 +210,7 @@ class KGDirs:
     """Dataclass for KG directories."""
 
     root: Path
-    academic_standards: Path
-    learning_components: Path
-    learning_progressions: Path
-    combined: Path
+    cache: Path
 
 
 def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
@@ -455,27 +451,12 @@ def create_kg_dirs(*, output_dir: Path) -> KGDirs:
     """
 
     root = output_dir
-    academic_standards = root / "academic_standards"
-    learning_components = root / "learning_components"
-    learning_progressions = root / "learning_progressions"
-    combined = root / "combined"
+    cache = root / "cache"
 
-    for p in [
-        root,
-        academic_standards,
-        learning_components,
-        learning_progressions,
-        combined,
-    ]:
+    for p in [root, cache]:
         make_dir(p)
 
-    return KGDirs(
-        root=root,
-        academic_standards=academic_standards,
-        learning_components=learning_components,
-        learning_progressions=learning_progressions,
-        combined=combined,
-    )
+    return KGDirs(root=root, cache=cache)
 
 
 def build_kg_export_context(

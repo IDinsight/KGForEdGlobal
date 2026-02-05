@@ -19,11 +19,11 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 # Third Party Library
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import ExportDialect
+from skg.schemas import BaseSchema, ExportDialect
 from skg.utils.constants import NodeRole, NormalizedStatementType, StatementRole
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
@@ -32,235 +32,8 @@ MetadataT = dict[str, Any]
 ValidationLevel = Literal["error", "warning", "info"]
 
 
-# Schemas for LLM responses.
-class ProgressionEdge(BaseSchema):
-    """A single suggested edge between two StandardsFrameworkItems."""
-
-    confidence: float = Field(
-        description="0..1 calibrated confidence (higher = more certain).",
-        ge=0.0,
-        le=1.0,
-    )
-    rationale: str = Field(
-        description="Brief rationale for the edge (>= 50 chars).",
-        min_length=50,
-    )
-    source_sfi_uuid: str = Field(description="UUID string of the source SFI.")
-    target_sfi_uuid: str = Field(description="UUID string of the target SFI.")
-
-    @field_validator("rationale", mode="before")
-    @classmethod
-    def _strip_rationale(cls, v: Any) -> str:
-        """Strip whitespace and validate that rationale is a string of at least 50
-        characters.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped rationale string.
-
-        Raises
-        ------
-        ValueError
-            If the rationale is not a string or is less than 50 characters after
-            stripping.
-        """
-
-        s = str(v or "").strip()
-
-        if len(s) < 50:
-            raise ValueError("rationale must be >= 50 characters")
-
-        return s
-
-    @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
-    @classmethod
-    def _strip_uuid_str(cls, v: Any) -> str:
-        """Strip whitespace and validate that the value is a non-empty string for UUID
-        fields.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped string value.
-
-        Raises
-        ------
-        ValueError
-            If the input value is None or an empty string after stripping.
-        """
-
-        if v is None:
-            raise ValueError("UUID cannot be null")
-
-        s = str(v).strip()
-
-        if not s:
-            raise ValueError("UUID cannot be empty")
-
-        return s
-
-
-class ProgressionEdgesResponse(BaseSchema):
-    """Top-level structured response: a list of edges (may be empty)."""
-
-    edges: list[ProgressionEdge] = Field(default_factory=list)
-
-
 # Schemas for nodes.
 class StandardsFramework(BaseSchema):
-    """Root node for a standards framework (typically one per PDF).
-
-    This represents the top-level standards document/container in the LC KG. All
-    StandardsFrameworkItems (SFIs) should be reachable from this framework via
-    `hasChild` relationships.
-    """
-
-    academic_subject: str = Field(
-        description=(
-            "High-level academic subject classification for the framework "
-            "(e.g., Mathematics, English Language Arts, Science). "
-            "In `lc_public_strict`, this should conform to LC enum values; "
-            "in `global_relaxed`, free-form values are allowed."
-        ),
-    )
-    adoption_status: str = Field(
-        description=(
-            "Adoption status of the framework (e.g., Draft, Adopted). "
-            "In `lc_public_strict`, this should conform to LC enum values; "
-            "in `global_relaxed`, free-form values are allowed."
-        ),
-    )
-    attribution_statement: str = Field(
-        description=(
-            "Attribution text required to credit the original publisher/owner "
-            "of the standards framework (e.g., Ministry of Education, year, source)."
-        ),
-    )
-    author: str = Field(
-        description=(
-            "Human or organization name considered the author/owner of the framework "
-            "(e.g., 'Ministry of Education (Zambia)')."
-        ),
-    )
-    case_identifier_uri: str = Field(
-        description=(
-            "Stable URI identifier for the framework object. LC KG aligns with "
-            "CASE-style identifiers; for non-CASE sources this may be a synthetic "
-            "deterministic URI/URN minted by the pipeline (e.g., urn:uuid:<uuid>)."
-        ),
-    )
-    case_identifier_uuid: UUID = Field(
-        description=(
-            "Stable UUID identifier for the framework object. In LC KG/CASE contexts, "
-            "this is used as a stable cross-system identifier. For non-CASE sources, "
-            "this may be a synthetic deterministic UUIDv5 minted by the pipeline."
-        ),
-    )
-    date_created: Optional[str] = Field(
-        default=None,
-        description=(
-            "Creation timestamp for the framework (ISO-8601 string), if known. "
-            "Optional; often unavailable for PDFs."
-        ),
-    )
-    date_modified: Optional[str] = Field(
-        default=None,
-        description=(
-            "Last-modified timestamp for the framework (ISO-8601 string), if known. "
-            "Optional; often unavailable for PDFs."
-        ),
-    )
-    description: Optional[str] = Field(
-        default=None,
-        description=(
-            "Human-readable description of the framework. Optional; may be generated "
-            "from document metadata or left empty."
-        ),
-    )
-    identifier: UUID = Field(
-        description=(
-            "Primary internal identifier for this entity in the export. Must be "
-            "deterministic across reruns (UUIDv5 recommended)."
-        ),
-    )
-    in_language: str = Field(
-        description=(
-            "Language tag for the framework (e.g., en-US). In `lc_public_strict`, "
-            "this should conform to LC enum values; in `global_relaxed`, any valid "
-            "BCP-47 language tag is allowed."
-        ),
-    )
-    jurisdiction: str = Field(
-        description=(
-            "Jurisdiction that issued the framework (e.g., Zambia, Uganda). "
-            "In `lc_public_strict`, this may require an LC-safe fallback "
-            "(with the true value stored in provenance)."
-        ),
-    )
-    license: str = Field(
-        description=(
-            "License string for the framework content. This may be an SPDX-like label "
-            "or a publisher-defined license statement; must be present even if it is "
-            "a conservative placeholder."
-        ),
-    )
-    metadata: MetadataT = Field(
-        default_factory=dict,
-        description=(
-            "Free-form metadata for pipeline/internal use (e.g., doc_key, source PDF name, "
-            "dialect fallback details). This should not be relied on as LC KG canonical fields."
-        ),
-    )
-    name: str = Field(
-        description=(
-            "Human-readable name/title of the framework, typically derived from the PDF title "
-            "or cover page (e.g., 'Lower Primary Education Syllabi Grade 1–3 (2024)')."
-        ),
-    )
-    notes: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional notes field for additional human-readable context. "
-            "This is not always populated; use for brief clarifications."
-        ),
-    )
-    provider: str = Field(
-        description=(
-            "Provider/host name for the exported KG dataset (often your organization/product). "
-            "Used for attribution and provenance in downstream systems."
-        ),
-    )
-
-    @field_validator(
-        "academic_subject",
-        "adoption_status",
-        "attribution_statement",
-        "author",
-        "case_identifier_uri",
-        "in_language",
-        "jurisdiction",
-        "license",
-        "name",
-        "provider",
-        mode="before",
-    )
-    @classmethod
-    def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty string for required fields.
-
-# Schemas for nodes.
-class StandardsFramework(BaseModelKG):
     """Root node for a standards framework (typically one per PDF).
 
     This represents the top-level standards document/container in the LC KG. All
@@ -581,7 +354,7 @@ class StandardsFramework(BaseModelKG):
         return self
 
 
-class StandardsFrameworkItem(BaseModelKG):
+class StandardsFrameworkItem(BaseSchema):
     """Standards item or grouping within a standards framework.
 
     This is the primary node type in the academic standards hierarchy. Both
@@ -1195,7 +968,7 @@ class StandardsFrameworkItem(BaseModelKG):
         return self
 
 
-class LearningComponent(BaseModelKG):
+class LearningComponent(BaseSchema):
     """Granular skill/concept aligned to one or more standards items via `supports`.
 
     LearningComponents represent skill/concept units that can be aligned to
@@ -1392,7 +1165,7 @@ class LearningComponent(BaseModelKG):
 
 
 # Schemas for relationship.
-class Relationship(BaseModelKG):
+class Relationship(BaseSchema):
     """LC KG relationship record (shared schema across relationship types).
 
     Relationships connect two entities in the LC KG export. The meaning of the edge is
@@ -1830,7 +1603,7 @@ class Relationship(BaseModelKG):
 
 
 # Schemas for provenance.
-class BBox(BaseModelKG):
+class BBox(BaseSchema):
     """Bounding box in pixel coordinates."""
 
     coord_space: Literal["px"] = "px"
@@ -1840,7 +1613,7 @@ class BBox(BaseModelKG):
     y1: float = Field(..., description="Bottom coordinate in pixels.", ge=0.0)
 
 
-class EntityProvenance(BaseModelKG):
+class EntityProvenance(BaseSchema):
     """Provenance information for a node."""
 
     bbox: Optional[BBox] = None
@@ -1862,7 +1635,7 @@ class EntityProvenance(BaseModelKG):
     text: Optional[TextUnit] = None
 
 
-class LearningProgressionProvenance(BaseModelKG):
+class LearningProgressionProvenance(BaseSchema):
     """Provenance information for a learning progression relationship."""
 
     confidence: float = Field(ge=0.0, le=1.0)
@@ -1874,7 +1647,7 @@ class LearningProgressionProvenance(BaseModelKG):
     relationship_identifier: UUID = Field(alias="relationshipIdentifier")
 
 
-class RelationshipProvenance(BaseModelKG):
+class RelationshipProvenance(BaseSchema):
     """Provenance information for a relationship."""
 
     evidence_node_ids: list[str] = Field(alias="evidenceNodeIds", default_factory=list)
@@ -1888,7 +1661,7 @@ class RelationshipProvenance(BaseModelKG):
 
 
 # Schemas for export configurations.
-class EntityProvenanceExport(BaseModelKG):
+class EntityProvenanceExport(BaseSchema):
     """Schema for entity provenance export."""
 
     entities: list[EntityProvenance] = Field(
@@ -1896,7 +1669,7 @@ class EntityProvenanceExport(BaseModelKG):
     )
 
 
-class HierarchyOrderExport(BaseModelKG):
+class HierarchyOrderExport(BaseSchema):
     """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
 
     order: dict[str, list[str]] = Field(
@@ -1904,7 +1677,7 @@ class HierarchyOrderExport(BaseModelKG):
     )
 
 
-class KnowledgeGraphExport(BaseModelKG):
+class KnowledgeGraphExport(BaseSchema):
     """Schema for Knowledge Graph export."""
 
     export_dialect: ExportDialect = Field(
@@ -2147,7 +1920,7 @@ class KnowledgeGraphExport(BaseModelKG):
         return self
 
 
-class LearningProgressionProvenanceExport(BaseModelKG):
+class LearningProgressionProvenanceExport(BaseSchema):
     """Schema for progression provenance export."""
 
     learning_progressions: list[LearningProgressionProvenance] = Field(
@@ -2155,7 +1928,7 @@ class LearningProgressionProvenanceExport(BaseModelKG):
     )
 
 
-class RelationshipProvenanceExport(BaseModelKG):
+class RelationshipProvenanceExport(BaseSchema):
     """Schema for relationship provenance export."""
 
     relationships: list[RelationshipProvenance] = Field(
