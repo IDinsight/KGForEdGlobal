@@ -19,11 +19,11 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 # Third Party Library
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import ExportDialect
+from skg.schemas import BaseSchema, ExportDialect
 from skg.utils.constants import NodeRole, NormalizedStatementType, StatementRole
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
@@ -32,21 +32,8 @@ MetadataT = dict[str, Any]
 ValidationLevel = Literal["error", "warning", "info"]
 
 
-# Schemas for primitives.
-class BaseModelKG(BaseModel):
-    """Base model that enforces 'additionalProperties: false' in JSON schema for
-    compatibility with OpenAI Structured Outputs.
-    """
-
-    model_config = ConfigDict(
-        extra="forbid",
-        from_attributes=True,
-        populate_by_name=True,  # Allow snake case or JSON aliases on input
-    )
-
-
 # Schemas for nodes.
-class StandardsFramework(BaseModelKG):
+class StandardsFramework(BaseSchema):
     """Root node for a standards framework (typically one per PDF).
 
     This represents the top-level standards document/container in the LC KG. All
@@ -343,7 +330,7 @@ class StandardsFramework(BaseModelKG):
         return self
 
 
-class StandardsFrameworkItem(BaseModelKG):
+class StandardsFrameworkItem(BaseSchema):
     """Standards item or grouping within a standards framework.
 
     This is the primary node type in the academic standards hierarchy. Both
@@ -755,7 +742,7 @@ class StandardsFrameworkItem(BaseModelKG):
         return self
 
 
-class LearningComponent(BaseModelKG):
+class LearningComponent(BaseSchema):
     """Granular skill/concept aligned to one or more standards items via `supports`.
 
     LearningComponents represent skill/concept units that can be aligned to
@@ -952,7 +939,7 @@ class LearningComponent(BaseModelKG):
 
 
 # Schemas for relationship.
-class Relationship(BaseModelKG):
+class Relationship(BaseSchema):
     """LC KG relationship record (shared schema across relationship types).
 
     Relationships connect two entities in the LC KG export. The meaning of the edge is
@@ -1390,7 +1377,7 @@ class Relationship(BaseModelKG):
 
 
 # Schemas for provenance.
-class BBox(BaseModelKG):
+class BBox(BaseSchema):
     """Bounding box in pixel coordinates."""
 
     coord_space: Literal["px"] = "px"
@@ -1400,7 +1387,7 @@ class BBox(BaseModelKG):
     y1: float = Field(..., description="Bottom coordinate in pixels.", ge=0.0)
 
 
-class EntityProvenance(BaseModelKG):
+class EntityProvenance(BaseSchema):
     """Provenance information for a node."""
 
     bbox: Optional[BBox] = None
@@ -1422,7 +1409,7 @@ class EntityProvenance(BaseModelKG):
     text: Optional[TextUnit] = None
 
 
-class LearningProgressionProvenance(BaseModelKG):
+class LearningProgressionProvenance(BaseSchema):
     """Provenance information for a learning progression relationship."""
 
     confidence: float = Field(ge=0.0, le=1.0)
@@ -1434,7 +1421,7 @@ class LearningProgressionProvenance(BaseModelKG):
     relationship_identifier: UUID = Field(alias="relationshipIdentifier")
 
 
-class RelationshipProvenance(BaseModelKG):
+class RelationshipProvenance(BaseSchema):
     """Provenance information for a relationship."""
 
     evidence_node_ids: list[str] = Field(alias="evidenceNodeIds", default_factory=list)
@@ -1448,7 +1435,7 @@ class RelationshipProvenance(BaseModelKG):
 
 
 # Schemas for export configurations.
-class EntityProvenanceExport(BaseModelKG):
+class EntityProvenanceExport(BaseSchema):
     """Schema for entity provenance export."""
 
     entities: list[EntityProvenance] = Field(
@@ -1456,7 +1443,7 @@ class EntityProvenanceExport(BaseModelKG):
     )
 
 
-class HierarchyOrderExport(BaseModelKG):
+class HierarchyOrderExport(BaseSchema):
     """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
 
     order: dict[str, list[str]] = Field(
@@ -1464,7 +1451,7 @@ class HierarchyOrderExport(BaseModelKG):
     )
 
 
-class KnowledgeGraphExport(BaseModelKG):
+class KnowledgeGraphExport(BaseSchema):
     """Schema for Knowledge Graph export."""
 
     export_dialect: ExportDialect = Field(
@@ -1709,7 +1696,7 @@ class KnowledgeGraphExport(BaseModelKG):
         return self
 
 
-class LearningProgressionProvenanceExport(BaseModelKG):
+class LearningProgressionProvenanceExport(BaseSchema):
     """Schema for progression provenance export."""
 
     learning_progressions: list[LearningProgressionProvenance] = Field(
@@ -1717,7 +1704,7 @@ class LearningProgressionProvenanceExport(BaseModelKG):
     )
 
 
-class RelationshipProvenanceExport(BaseModelKG):
+class RelationshipProvenanceExport(BaseSchema):
     """Schema for relationship provenance export."""
 
     relationships: list[RelationshipProvenance] = Field(
@@ -1726,7 +1713,7 @@ class RelationshipProvenanceExport(BaseModelKG):
 
 
 # Schemas for graph validation reporting.
-class GraphValidationIssue(BaseModelKG):
+class GraphValidationIssue(BaseSchema):
     """A single validation finding."""
 
     code: str
@@ -1735,7 +1722,7 @@ class GraphValidationIssue(BaseModelKG):
     message: str
 
 
-class GraphValidationReport(BaseModelKG):
+class GraphValidationReport(BaseSchema):
     """Accumulates validation issues and basic knowledge graph building stats."""
 
     doc_key: Optional[str] = None
