@@ -50,23 +50,23 @@
 			],
 			"name": "zambia_competence_tables",
 			"normalize": {
+				"casefold_titles_for_matching": true,
+				"drop_grade_bands": true,
 				"drop_stage_if_grade_present": false,
 				"drop_stage_if_matches_wrapper_patterns": true,
+				"grade_band_title_patterns": [
+					"^grades?\\s*\\d+\\s*[-–]\\s*\\d+\\b",
+					"^grade\\s*\\d+\\s*[-–]\\s*grade\\s*\\d+\\b",
+					"^grades?\\s*\\d+\\s*(to|through)\\s*\\d+\\b"
+				],
+				"normalize_whitespace": true,
 				"stage_wrapper_title_patterns": [
 					"lower\\s+primary",
 					"upper\\s+primary",
 					"basic\\s+education",
 					"primary\\s+education",
 					"syllabi?"
-				],
-				"drop_grade_bands": true,
-				"grade_band_title_patterns": [
-					"^grades?\\s*\\d+\\s*[-–]\\s*\\d+\\b",
-					"^grade\\s*\\d+\\s*[-–]\\s*grade\\s*\\d+\\b",
-					"^grades?\\s*\\d+\\s*(to|through)\\s*\\d+\\b"
-				],
-				"casefold_titles_for_matching": true,
-				"normalize_whitespace": true
+				]
 			},
 			"outer_context_roles": [
 				"grade_level",
@@ -81,7 +81,6 @@
 			],
 			"split_rules": [
 				{
-					"match": "^GRADE\\s+(\\d+)\\s*:\\s*(.+)$",
 					"apply_to": "any",
 					"emit": [
 						{
@@ -92,7 +91,8 @@
 							"role": "subject",
 							"title_template": "\\2"
 						}
-					]
+					],
+					"match": "^GRADE\\s+(\\d+)\\s*:\\s*(.+)$"
 				}
 			],
 			"table_local_only_roles": [
@@ -104,6 +104,35 @@
 		"structural_leaf_warn_threshold": 0.60
 	},
 	"kgs": {
-		"overwrite": false
+		"academic_subject_default": "English Language Arts",
+		"adoption_status": "Adopted",
+		"attribution_statement": "© Ministry of Education (Zambia), 2024. Source: LOWER PRIMARY EDUCATION SYLLABI GRADE 1–3 (2024).",
+		"author": "Ministry of Education (Zambia)",
+		"aux_statement_parenting": "under_expectation",
+		"case_uri_base": "urn:lc:case:",
+		"export_dialect": "global_relaxed",
+		"descriptor_handling": "export_as_sfi_other",
+		"generate_learning_components": true,
+		"generate_progressions": true,
+		"guidance_handling": "export_as_sfi_other",
+		"jurisdiction_default": "Zambia",
+		"language_default": "en",
+		"lc_max_splits_per_standard": 25,
+		"learning_component_policy": "split_bullets",
+		"license": "All rights reserved (source PDF)",
+		"max_progression_edges_per_node": 10,
+		"overwrite": false,
+		"provider": "IDinsight | Learning Commons",
+		"non_standard_columns_signature": [
+			"cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday"
+		],
+		"non_standard_segment_drop_policy": [
+			"by_decision_type",
+			"by_columns_signature"
+		],
+		"progression_granularity": "auto",
+		"progression_source": "llm",
+		"progression_min_confidence": 0.8,
+		"prune_empty_groupings": true
 	}
 }

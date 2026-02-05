@@ -23,15 +23,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import BaseSchema, ExportDialect
+from skg.schemas import ExportDialect
 from skg.utils.constants import NodeRole, NormalizedStatementType, StatementRole
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 AllowedEntityKeys = {"identifier", "caseIdentifierUUID"}
-ExportDialect = Literal["lc_public_strict", "global_relaxed"]
 MetadataT = dict[str, Any]
-ProgressionGranularity = Literal["coarse", "fine", "auto"]
-ProgressionSource = Literal["progression_ir", "llm"]
 ValidationLevel = Literal["error", "warning", "info"]
 
 
@@ -1838,13 +1835,13 @@ class BBox(BaseModelKG):
 
     coord_space: Literal["px"] = "px"
     x0: float = Field(..., description="Left coordinate in pixels.", ge=0.0)
-    y0: float = Field(..., description="Top coordinate in pixels.", ge=0.0)
     x1: float = Field(..., description="Right coordinate in pixels.", ge=0.0)
+    y0: float = Field(..., description="Top coordinate in pixels.", ge=0.0)
     y1: float = Field(..., description="Bottom coordinate in pixels.", ge=0.0)
 
 
 class EntityProvenance(BaseModelKG):
-    """Provenance information for a node or relationship."""
+    """Provenance information for a node."""
 
     bbox: Optional[BBox] = None
     canonical_node_id: str = Field(alias="canonicalNodeId")
@@ -1854,7 +1851,7 @@ class EntityProvenance(BaseModelKG):
     entity_identifier: UUID = Field(alias="entityIdentifier")
     local_code: Optional[str] = Field(alias="localCode", default=None)
     page_indices: list[int] = Field(alias="pageIndices", default_factory=list)
-    role: str
+    role: NodeRole | StatementRole
     section_path_text: list[str] = Field(alias="sectionPathText", default_factory=list)
     source_decision_ids: list[str] = Field(
         alias="sourceDecisionIds", default_factory=list
@@ -1862,12 +1859,11 @@ class EntityProvenance(BaseModelKG):
     source_segment_ids: list[str] = Field(
         alias="sourceSegmentIds", default_factory=list
     )
-    text: Optional[str] = None
-    text_en: Optional[str] = Field(alias="textEn", default=None)
+    text: Optional[TextUnit] = None
 
 
 class LearningProgressionProvenance(BaseModelKG):
-    """Provenance information for a progression relationship."""
+    """Provenance information for a learning progression relationship."""
 
     confidence: float = Field(ge=0.0, le=1.0)
     evidence_node_ids: list[str] = Field(alias="evidenceNodeIds", default_factory=list)
@@ -1875,7 +1871,6 @@ class LearningProgressionProvenance(BaseModelKG):
     inference_source: Literal["progression_ir", "llm"] = Field(alias="inferenceSource")
     granularity: Literal["coarse", "fine"] = "coarse"
     llm_model: Optional[str] = Field(alias="llmModel", default=None)
-    prompt_hash: Optional[str] = Field(alias="promptHash", default=None)
     relationship_identifier: UUID = Field(alias="relationshipIdentifier")
 
 
@@ -1892,7 +1887,23 @@ class RelationshipProvenance(BaseModelKG):
     target_uuid: UUID = Field(alias="targetUuid")
 
 
-# Schemas for knowledge graph export.
+# Schemas for export configurations.
+class EntityProvenanceExport(BaseModelKG):
+    """Schema for entity provenance export."""
+
+    entities: list[EntityProvenance] = Field(
+        default_factory=list, description="List of entities."
+    )
+
+
+class HierarchyOrderExport(BaseModelKG):
+    """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
+
+    order: dict[str, list[str]] = Field(
+        default_factory=dict, description="Order of child SFIs."
+    )
+
+
 class KnowledgeGraphExport(BaseModelKG):
     """Schema for Knowledge Graph export."""
 
@@ -2136,79 +2147,6 @@ class KnowledgeGraphExport(BaseModelKG):
         return self
 
 
-class LearningProgressionProvenanceExport(BaseSchema):
-    """Schema for progression provenance export."""
-
-    Notes
-    -----
-    1. export_dialect defaults to "shape_only". We *can* keep "strict" as an option for
-        internal experiments, but the schemas/models are intentionally non-US-centric.
-    2. namespace_uuid MUST be pinned and never changed once you start generating IDs.
-    """
-
-    academic_subject_default: str
-    adoption_status: str
-    attribution_statement: str
-    author: str
-    case_uri_base: str = Field(
-        default="urn:lc:case:",
-        description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
-    )
-    description_text_policy: Literal["source", "prefer_text_en"] = "source"
-    export_dialect: ExportDialect = "global_relaxed"
-    export_in_language_policy: Literal["default", "source"] = "source"
-    include_descriptors: bool = True
-    include_guidance: bool = False
-    generate_learning_components: bool = True
-    generate_progressions: bool = True
-    jurisdiction_default: str
-    language_default: str
-    learning_component_policy: Literal["1_to_1", "split_bullets"] = "1_to_1"
-    lc_max_splits_per_standard: int = Field(
-        default=25,
-        description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
-        ge=1,
-    )
-    license: str
-    max_progression_edges_per_node: int = Field(default=3, ge=1)
-    namespace_uuid: UUID = Field(
-        default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
-        description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
-    )
-    progression_granularity: ProgressionGranularity = "auto"
-    progression_min_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
-    progression_source: ProgressionSource = "llm"
-    provider: str
-    prune_empty_groupings: bool = Field(
-        default=True,
-        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering, repeating to a fixpoint. No reattachment is performed.",
-    )
-
-
-class RelationshipProvenanceExport(BaseSchema):
-    """Schema for relationship provenance export."""
-
-    relationships: list[RelationshipProvenance] = Field(
-        default_factory=list, description="List of relationships."
-    )
-
-
-class EntityProvenanceExport(BaseModelKG):
-    """Schema for entity provenance export."""
-
-    entities: list[EntityProvenance] = Field(
-        default_factory=list, description="List of entities."
-    )
-
-
-class RelationshipProvenanceExport(BaseModelKG):
-    """Schema for relationship provenance export."""
-
-    relationships: list[RelationshipProvenance] = Field(
-        default_factory=list, description="List of relationships."
-    )
-
-
 class LearningProgressionProvenanceExport(BaseModelKG):
     """Schema for progression provenance export."""
 
@@ -2217,11 +2155,11 @@ class LearningProgressionProvenanceExport(BaseModelKG):
     )
 
 
-class HierarchyOrderExport(BaseModelKG):
-    """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
+class RelationshipProvenanceExport(BaseModelKG):
+    """Schema for relationship provenance export."""
 
-    order: dict[str, list[str]] = Field(
-        default_factory=dict, description="Order of child SFIs."
+    relationships: list[RelationshipProvenance] = Field(
+        default_factory=list, description="List of relationships."
     )
 
 
