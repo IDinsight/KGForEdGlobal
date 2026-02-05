@@ -339,7 +339,7 @@ def create(
             f"PDF doc_key mismatch.\n"
             f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
             f"  computed doc_key:          {computed_doc_key}\n"
-            f"  stitching_run.json key:    {expected_doc_key}\n"
+            f"  extraction_run.json key:   {expected_doc_key}\n"
             f"You are likely creating a canonical IR against a different PDF than the "
             f"one used for stitching. Pass the same PDF used in the stitching run or "
             f"re-run stitching."

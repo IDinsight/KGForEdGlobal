@@ -306,7 +306,7 @@ def stitch(
             f"PDF doc_key mismatch.\n"
             f"  PDF provided to verify():   {extraction_config.pdf_fp}\n"
             f"  computed doc_key:           {computed_doc_key}\n"
-            f"  verification_run.json key:  {expected_doc_key}\n"
+            f"  extraction_run.json key:    {expected_doc_key}\n"
             f"You are likely stitching against a different PDF than the one used for "
             f"verification. Pass the same PDF used in the verification step or re-run "
             f"verification."
