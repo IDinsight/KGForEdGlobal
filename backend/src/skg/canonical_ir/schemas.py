@@ -360,6 +360,10 @@ class SegmentDecision(BaseSchema):
         description="Number of segments between caption and table when bound. Audit-only.",
         ge=0,
     )
+    columns_signature: str | None = Field(
+        default=None,
+        description="The columns signature for table segments (taken from the document IR). This only applies to table segment kinds.",
+    )
     confidence: float = Field(
         ...,
         description="LLM confidence for this decision in [0,1]. Used for QA and human review, not determinism.",

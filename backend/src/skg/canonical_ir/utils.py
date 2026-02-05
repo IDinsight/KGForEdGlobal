@@ -2186,6 +2186,49 @@ def apply_grouping_canonicalization_map(
     return normalized_segment_decisions
 
 
+def apply_table_signatures(
+    *, decisions: list[SegmentDecision], document_ir: Any
+) -> list[SegmentDecision]:
+    """Iterate through segment decisions and update table segments with column
+    signatures found in the source DocumentIR.
+
+    Parameters
+    ----------
+    decisions
+        The list of SegmentDecisions to update.
+    document_ir
+        The source DocumentIR (dict or object form).
+
+    Returns
+    -------
+    list[SegmentDecision]
+        The updated list of SegmentDecisions.
+    """
+
+    segments = document_ir.segments
+    signature_map = {}
+
+    # Build the map for segment_id -> columns_signature.
+    for segment in segments:
+        seg_id = segment.segment_id
+        col_sig = getattr(segment, "columns_signature", None)
+
+        if seg_id and col_sig:
+            signature_map[seg_id] = col_sig
+
+    # Update decisions.
+    updated_decisions = []
+
+    for d in decisions:
+        # If it is a table and we have a signature for it, update the field.
+        if d.segment_kind == "table" and d.segment_id in signature_map:
+            d = d.model_copy(update={"columns_signature": signature_map[d.segment_id]})
+
+        updated_decisions.append(d)
+
+    return updated_decisions
+
+
 def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]:
     """Build context hint from a SegmentDecision.
 
@@ -2645,11 +2688,19 @@ def compile_canonical_ir(
 
     The process is as follows:
 
-    1. Iterate DocumentIR.segments in order.
-    2. Load all decisions for the segment.
-    3. Sort decisions by (row_range_start, row_range_end).
-    4. Materialize nodes + edges
-    5. Assign order_index by encounter order.
+    1. Initialize state containers.
+    2. Index decisions by segment ID.
+    3. Create Framework Root node.
+    4. Main traversal loop:
+        a. For each segment in DocumentIR:
+            i.   Prepare segment-level data.
+            ii.  If no decisions, log warning + add to unresolved.
+            iii. For each decision for the segment:
+                1. Validate decision; update unresolved/warnings; skip if not
+                    materializable.
+                2. Check for structural warnings; update warnings.
+                3. Materialize nodes; update state containers.
+    5. Final compilation of CanonicalIR.
 
     Parameters
     ----------
@@ -2671,7 +2722,7 @@ def compile_canonical_ir(
         The compiled CanonicalIR.
     """
 
-    # 1. Initialize state containers.
+    # 1.
     active_context_stack: list[ContextFrame] = []
     child_to_parent: dict[str, str] = {}
     edges: list[CanonicalEdge] = []
@@ -2681,12 +2732,12 @@ def compile_canonical_ir(
     unresolved: list[UnresolvedItem] = []
     warnings: list[str] = []
 
-    # 2. Index decisions.
+    # 2.
     decisions_by_segment = _index_decisions_by_segment(
         segment_decisions=segment_decisions
     )
 
-    # 3. Create Framework Root.
+    # 3.
     framework_title = segment_decisions.pdf_name
     root_id = uuidv5_from_key(f"lc:canonical:{doc_key}:framework")
     framework_node = CanonicalNode(
@@ -2709,7 +2760,7 @@ def compile_canonical_ir(
         node=framework_node, nodes_by_id=nodes_by_id, warnings=warnings
     )
 
-    # 4. Main traversal loop.
+    # 4.
     for segment in document_ir.segments:
         seg_id = segment.segment_id
         seg_decisions = decisions_by_segment.get(seg_id, [])
@@ -2791,7 +2842,7 @@ def compile_canonical_ir(
                 warnings=warnings,
             )
 
-    # 5. Final compilation.
+    # 5.
     canonical_ir = CanonicalIR(
         decision_set_id=segment_decisions.decision_set_id,
         doc_key=doc_key,
@@ -2803,7 +2854,9 @@ def compile_canonical_ir(
         unresolved=unresolved,
         warnings=warnings,
     )
-    canonical_ir = perform_postpass_hygiene(canonical_ir)
+    canonical_ir = perform_postpass_hygiene(
+        canonical_ir=canonical_ir, document_ir=document_ir
+    )
 
     logger.info(
         f"Compiled CanonicalIR:\n"
@@ -3136,7 +3189,9 @@ def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -
     return hashlib.sha256(joined.encode(encoding)).hexdigest()[:32]
 
 
-def perform_postpass_hygiene(canonical_ir: CanonicalIR) -> CanonicalIR:
+def perform_postpass_hygiene(
+    *, canonical_ir: CanonicalIR, document_ir: DocumentIR
+) -> CanonicalIR:
     """Perform post-pass hygiene on a CanonicalIR:
 
     The process is as follows:
@@ -3147,11 +3202,14 @@ def perform_postpass_hygiene(canonical_ir: CanonicalIR) -> CanonicalIR:
     4. Prune nodes/edges not reachable from root
     5. Reindex order_index under each parent (remove gaps after pruning)
     6. Perform sanity checks
+    7. Add `column_signature` from the document IR to the canonical IR.
 
     Parameters
     ----------
     canonical_ir
         The CanonicalIR to process.
+    document_ir
+        The DocumentIR (for column_signature lookup).
 
     Returns
     -------
@@ -3200,10 +3258,16 @@ def perform_postpass_hygiene(canonical_ir: CanonicalIR) -> CanonicalIR:
         warnings=warnings,
     )
 
+    # 7.
+    updated_decisions = apply_table_signatures(
+        decisions=canonical_ir.segment_decisions, document_ir=document_ir
+    )
+
     return canonical_ir.model_copy(
         update={
             "nodes": nodes_pruned_reachable,
             "edges": edges_reindexed,
+            "segment_decisions": updated_decisions,
             "warnings": warnings,
         }
     )

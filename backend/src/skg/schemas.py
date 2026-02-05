@@ -8,7 +8,8 @@ import re
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Callable, Optional, Self
+from typing import Annotated, Any, Callable, Literal, Optional, Self, cast
+from uuid import UUID
 
 # Third Party Library
 from pydantic import (
@@ -25,12 +26,16 @@ from pydantic import (
 from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_ORDER,
     NodeRole,
+    SegmentDecisionType,
     SpineSplitApplyTo,
     SpineViolationPolicy,
 )
 from skg.utils.general import make_dir, validate_bbox_order, validate_bcp47
 
 # Common fields with descriptions.
+AuxStatementHandling = Literal[
+    "drop", "export_as_sfi_other", "attach_to_expectation_metadata"
+]
 BBox = Annotated[
     list[float],
     AfterValidator(validate_bbox_order),
@@ -41,6 +46,7 @@ BBox = Annotated[
     ),
 ]
 BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
+ExportDialect = Literal["lc_public_strict", "global_relaxed"]
 LanguageField = Annotated[
     BCP47Str,
     Field(
@@ -555,9 +561,184 @@ class CreateCanonicalConfig(BaseSchema):
 
 
 class CreateKGConfig(BaseSchema):
-    """Configuration for knowledge graph creation from canonical IR."""
+    """Configuration for knowledge graph creation from canonical IR.
 
+    Notes
+    -----
+    1. export_dialect defaults to "global_relaxed". We *can* keep "lc_public_strict" as
+        an option for internal experiments, but the schemas/models are intentionally
+        non-US-centric.
+    2. namespace_uuid MUST be pinned and never changed once you start generating IDs.
+    """
+
+    academic_subject_default: str = Field(
+        description=(
+            "Default high-level academic subject classification for the framework "
+            "(e.g., Mathematics, English Language Arts, Science). Used when canonical "
+            "IR does not provide a subject (or when exporting a single subject partition)."
+        ),
+    )
+    adoption_status: str = Field(
+        description=(
+            "Adoption status of the framework (e.g., Draft, Adopted). "
+            "In `lc_public_strict`, this should conform to LC enum values; "
+            "in `global_relaxed`, free-form values are allowed."
+        ),
+    )
+    attribution_statement: str = Field(
+        description=(
+            "Attribution text required to credit the original publisher/owner "
+            "of the standards framework (e.g., Ministry of Education, year, source)."
+        ),
+    )
+    author: str = Field(
+        description=(
+            "Human or organization name considered the author/owner of the framework "
+            "(e.g., 'Ministry of Education (Zambia)')."
+        ),
+    )
+    aux_statement_parenting: Literal["as_siblings", "under_expectation"] = Field(
+        default="as_siblings",
+        description=(
+            "If exporting guidance/descriptors as SFIs, choose whether they remain "
+            "siblings under the grouping parent or are re-parented under the "
+            "expectation they belong to."
+        ),
+    )
+    case_uri_base: str = Field(
+        default="urn:lc:case:",
+        description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
+    )
+    description_text_policy: Literal["source", "prefer_text_en"] = "source"
+    descriptor_handling: AuxStatementHandling = Field(
+        default="export_as_sfi_other",
+        description="How to handle descriptor statements during KG export.",
+    )
+    export_dialect: ExportDialect = "global_relaxed"
+    export_in_language_policy: Literal["default", "source"] = "source"
+    generate_learning_components: bool = True
+    generate_progressions: bool = True
+    guidance_handling: AuxStatementHandling = Field(
+        default="drop",
+        description="How to handle guidance statements during KG export.",
+    )
+    jurisdiction_default: str = Field(
+        description=(
+            "Default jurisdiction that issued the framework (e.g., Zambia, Uganda). "
+            "Used when canonical IR does not provide jurisdiction."
+        ),
+    )
+    language_default: LanguageField
+    learning_component_policy: Literal["1_to_1", "split_bullets"] = "1_to_1"
+    lc_max_splits_per_standard: int = Field(
+        default=25,
+        description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
+        ge=1,
+    )
+    license: str = Field(
+        description=(
+            "License string for the framework content. This may be an SPDX-like label "
+            "or a publisher-defined license statement; must be present even if it is "
+            "a conservative placeholder."
+        ),
+    )
+    max_progression_edges_per_node: int = Field(default=3, ge=1)
+    namespace_uuid: UUID = Field(
+        default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
+        description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
+    )
+    non_standard_columns_signature: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Normalized columns signature that identify non-standards tables when "
+            "using by_columns_signature. Example columns signature: "
+            "'cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday'."
+        ),
+    )
+    non_standard_decision_types: set[SegmentDecisionType] = Field(
+        default_factory=lambda: {SegmentDecisionType.IGNORE},
+        description=(
+            "Decision types that should be treated as non-standards and dropped "
+            "when using by_decision_type."
+        ),
+    )
+    non_standard_segment_drop_policy: list[
+        Literal["by_columns_signature", "by_decision_type"]
+    ] = Field(
+        default_factory=lambda: cast(
+            list[Literal["by_columns_signature", "by_decision_type"]],
+            ["by_decision_type"],
+        ),
+        description=(
+            "One or more policies used to drop non-standards segments from KG export. "
+            "Policies are OR'ed together (if any policy matches -> drop)."
+        ),
+    )
     overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
+    progression_granularity: Literal["coarse", "fine", "auto"] = "auto"
+    progression_min_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    progression_source: Literal["progression_ir", "llm"] = "llm"
+    provider: str = Field(
+        description=(
+            "Provider/host name for the exported KG dataset (often the organization/product). "
+            "Used for attribution and provenance in downstream systems."
+        ),
+    )
+    prune_empty_groupings: bool = Field(
+        default=True,
+        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering, repeating to a fixpoint. No reattachment is performed.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_parenting_relevance(self) -> CreateKGConfig:
+        """Validate that aux_statement_parenting is compatible with guidance/descriptor
+        handling.
+
+        Returns
+        -------
+        CreateKGConfig
+            The validated CreateKGConfig object.
+
+        Raises
+        ------
+        ValueError
+            If aux_statement_parenting is 'under_expectation' but neither guidance nor
+            descriptor handling is set to export as SFI.
+        """
+
+        exporting_any = (
+            self.guidance_handling == "export_as_sfi_other"
+            or self.descriptor_handling == "export_as_sfi_other"
+        )
+
+        if self.aux_statement_parenting == "under_expectation" and not exporting_any:
+            raise ValueError(
+                "aux_statement_parenting='under_expectation' requires exporting "
+                "guidance/descriptors as SFIs (set guidance_handling or "
+                "descriptor_handling to 'export_as_sfi_other')."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_stable_bases(self) -> CreateKGConfig:
+        """Validate that case_uri_base is non-empty and stable.
+
+        Returns
+        -------
+        CreateKGConfig
+            The validated CreateKGConfig object.
+
+        Raises
+        ------
+        ValueError
+            If case_uri_base is empty.
+        """
+
+        if not self.case_uri_base:
+            raise ValueError("case_uri_base must be non-empty and stable.")
+
+        return self
 
 
 class RunConfig(BaseSchema):
