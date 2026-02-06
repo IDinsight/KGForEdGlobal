@@ -105,7 +105,7 @@ def create_canonical_ir(
     """
 
     canonical_ir_fp = creation_dirs.root / "canonical_ir.json"
-    segment_decisions_fp = creation_dirs.root / "segment_decisions.json"
+    segment_decisions_fp = creation_dirs.segment_decisions / "segment_decisions.json"
 
     if not config.overwrite and canonical_ir_fp.exists():
         logger.warning(
@@ -145,7 +145,7 @@ def create_canonical_ir(
         existing_keys: set[tuple[str, Optional[int], Optional[int]]] = set()
         num_segments = len(document_ir.segments)
         segment_warnings_by_segment: dict[str, list[str]] = {}
-        segment_warnings_fp = creation_dirs.root / "segment_warnings.json"
+        segment_warnings_fp = creation_dirs.segment_decisions / "segment_warnings.json"
 
         for i, segment in enumerate(document_ir.segments, 1):
             logger.info(

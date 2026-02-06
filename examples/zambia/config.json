@@ -114,6 +114,22 @@
 		"export_dialect": "global_relaxed",
 		"generate_learning_components": true,
 		"generate_progressions": false,
+		"grouping_role_policy": "whitelist",
+		"grouping_roles_whitelist": [
+			"stage",
+			"grade_level",
+			"learning_area",
+			"subject",
+			"strand",
+			"substrand",
+			"theme",
+			"subtheme",
+			"term",
+			"unit",
+			"week",
+			"topic",
+			"subtopic"
+		],
 		"guidance_handling": "drop",
 		"jurisdiction_default": "Zambia",
 		"language_default": "en",
@@ -122,6 +138,7 @@
 		"license": "All rights reserved (source PDF)",
 		"max_progression_edges_per_node": 5,
 		"model": "gpt-5.2-2025-12-11",
+		"non_grouping_role_handling": "drop",
 		"non_standard_columns_signature": [
 			"cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday",
 			"s/n|competence|descriptors",
@@ -140,6 +157,6 @@
 		"progression_min_confidence": 0.9,
 		"progression_source": "progression_ir",
 		"provider": "IDinsight | Learning Commons",
-		"prune_empty_groupings": true
+		"prune_empty_groupings": true,
 	}
 }

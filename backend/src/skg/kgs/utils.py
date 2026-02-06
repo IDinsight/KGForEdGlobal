@@ -13,6 +13,7 @@ from typing import Any
 
 # Third Party Library
 from loguru import logger
+from PIL import Image
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR, SegmentDecision
@@ -39,6 +40,9 @@ class ExportContext:
 
     _needs_order_disambiguator: set[tuple[str, str]] = field(
         default_factory=set, init=False
+    )
+    edge_metadata_by_pair: dict[tuple[str, str], dict[str, Any]] = field(
+        default_factory=dict
     )
     edge_order_index: dict[tuple[str, str], int] = field(default_factory=dict)
 
@@ -210,7 +214,7 @@ class KGDirs:
     """Dataclass for KG directories."""
 
     root: Path
-    cache: Path
+    academic_standards: Path
 
 
 def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
@@ -454,12 +458,12 @@ def create_kg_dirs(*, output_dir: Path) -> KGDirs:
     """
 
     root = output_dir
-    cache = root / "cache"
+    academic_standards = root / "academic_standards"
 
-    for p in [root, cache]:
+    for p in [root, academic_standards]:
         make_dir(p)
 
-    return KGDirs(root=root, cache=cache)
+    return KGDirs(root=root, academic_standards=academic_standards)
 
 
 def build_kg_export_context(
@@ -488,11 +492,6 @@ def build_kg_export_context(
     -------
     ExportContext
         The KG export context.
-
-    Raises
-    ------
-    ValueError
-        If the CanonicalIR structure is invalid.
     """
 
     # 1.
@@ -500,12 +499,11 @@ def build_kg_export_context(
         node.node_id: node.model_dump(mode="json") for node in canonical_ir.nodes
     }
     root_id = canonical_ir.root_id
-
-    if root_id not in nodes_by_id:
-        raise ValueError(f"root_id not found in nodes: {root_id}")
+    assert root_id not in nodes_by_id, f"Root ID missing from nodes: {root_id}"
 
     # 2.
     children_by_parent: dict[str, list[str]] = defaultdict(list)
+    edge_metadata_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
     edge_order_index: dict[tuple[str, str], int] = {}
     parent_by_child: dict[str, str] = {}
 
@@ -516,16 +514,26 @@ def build_kg_export_context(
         oi = edge.order_index
         pid = edge.parent_id
 
-        if pid not in nodes_by_id:
-            raise ValueError(f"Edge parent_id not found in nodes: {pid}")
-        if cid not in nodes_by_id:
-            raise ValueError(f"Edge child_id not found in nodes: {cid}")
+        assert pid not in nodes_by_id, f"Edge parent_id not found in nodes: {pid}"
+        assert cid not in nodes_by_id, f"Edge child_id not found in nodes: {cid}"
 
         children_by_parent[pid].append(cid)
         edge_order_index[(pid, cid)] = oi
 
-        if cid in parent_by_child:
-            raise ValueError(f"Node has multiple parents: {cid}")
+        # Preserve edge-level provenance if present (best-effort).
+        try:
+            edge_metadata_by_pair[(pid, cid)] = edge.model_dump(mode="json")
+        except Exception:  # pylint: disable=broad-except
+            edge_metadata_by_pair[(pid, cid)] = {
+                "child_id": cid,
+                "order_index": oi,
+                "parent_id": pid,
+                "rel": getattr(edge, "rel", None),
+                "source_decision_ids": getattr(edge, "source_decision_ids", None),
+                "source_segment_ids": getattr(edge, "source_segment_ids", None),
+            }
+
+        assert cid not in parent_by_child, f"Node has multiple parents: {cid}"
 
         parent_by_child[cid] = pid
 
@@ -569,6 +577,7 @@ def build_kg_export_context(
         decisions_by_id=decisions_by_id,
         decisions_by_segment_id=decisions_by_segment_id,
         doc_key=canonical_ir.doc_key,
+        edge_metadata_by_pair=edge_metadata_by_pair,
         edge_order_index=edge_order_index,
         kg_config=config,
         nodes_by_id=nodes_by_id,
@@ -583,6 +592,65 @@ def build_kg_export_context(
     _verify_columns_signature(ctx=ctx, segment_decisions=canonical_ir.segment_decisions)
 
     return ctx
+
+
+def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
+    """Get page image dimensions from extraction results. Page images from extraction
+    should always be in extraction_dir/page_images as PNGs named 0000.png, 0001.png, ...
+
+    Parameters
+    ----------
+    extraction_dir
+        The extraction results directory.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Per-page pixel dimensions keyed by 0-based page_index.
+    """
+
+    page_dir = extraction_dir / "page_images"
+    assert page_dir.exists(), f"Page images directory not found: {page_dir}"
+
+    pngs = list(page_dir.glob("*.png"))
+    assert pngs, f"No PNG page images found in: {page_dir}"
+
+    dims: list[dict] = []
+
+    # Sort by numeric stem to preserve true page order (0000, 0001, ...).
+    def _page_index(p: Path) -> int:
+        """Extract the page index from the filename stem.
+
+        Parameters
+        ----------
+        p
+            The Path object for the PNG file.
+
+        Returns
+        -------
+        int
+            The extracted page index.
+        """
+
+        return int(p.stem)
+
+    for p in sorted(pngs, key=_page_index):
+        page_index = int(p.stem)  # "0000" -> 0
+
+        with Image.open(p) as im:
+            w, h = im.size
+
+        dims.append(
+            {
+                "filename": p.name,
+                "height_px": h,
+                "page_index": page_index,
+                "relative_path": f"page_images/{p.name}",
+                "width_px": w,
+            }
+        )
+
+    return dims
 
 
 def persist_kg_run(

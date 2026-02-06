@@ -67,6 +67,8 @@ class CanonicalIRDirs:
     """Dataclass for canonical IR directories."""
 
     root: Path
+    canonical_ir: Path
+    segment_decisions: Path
 
 
 @dataclass(frozen=True)
@@ -2094,7 +2096,7 @@ def apply_grouping_canonicalization_map(
     """
 
     normalized_segment_decisions_fp = (
-        creation_dirs.root / "segment_decisions_normalized.json"
+        creation_dirs.segment_decisions / "segment_decisions_normalized.json"
     )
 
     if not overwrite and normalized_segment_decisions_fp.exists():
@@ -2548,7 +2550,9 @@ def clean_up_segment_decisions(
         The cleaned SegmentDecisionSet.
     """
 
-    segment_decisions_cleaned_fp = creation_dirs.root / "segment_decisions_cleaned.json"
+    segment_decisions_cleaned_fp = (
+        creation_dirs.segment_decisions / "segment_decisions_cleaned.json"
+    )
 
     if not overwrite and segment_decisions_cleaned_fp.exists():
         logger.warning(
@@ -2627,7 +2631,9 @@ def collect_unique_grouping_keys(
         The list of unique grouping keys.
     """
 
-    grouping_keys_unique_fp = creation_dirs.root / "grouping_keys_unique.json"
+    grouping_keys_unique_fp = (
+        creation_dirs.segment_decisions / "grouping_keys_unique.json"
+    )
 
     if not overwrite and grouping_keys_unique_fp.exists():
         logger.warning(
@@ -2884,11 +2890,15 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
     """
 
     root = output_dir
+    canonical_ir = root / "canonical_ir"
+    segment_decisions = root / "segment_decisions"
 
-    for p in [root]:
+    for p in [root, canonical_ir, segment_decisions]:
         make_dir(p)
 
-    return CanonicalIRDirs(root=root)
+    return CanonicalIRDirs(
+        root=root, canonical_ir=canonical_ir, segment_decisions=segment_decisions
+    )
 
 
 def dedupe_edges_postpass(

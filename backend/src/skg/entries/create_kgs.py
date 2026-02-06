@@ -32,7 +32,13 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR
-from skg.kgs.utils import KGDirs, build_kg_export_context, persist_kg_run
+from skg.kgs.export_academic_standards import export_academic_standards
+from skg.kgs.utils import (
+    KGDirs,
+    build_kg_export_context,
+    get_page_image_dims,
+    persist_kg_run,
+)
 from skg.schemas import CreateKGConfig, RunConfig, RunCtx
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
@@ -42,7 +48,11 @@ cli = typer.Typer(no_args_is_help=True)
 
 
 def create_kgs(
-    *, canonical_ir_fp: Path, config: CreateKGConfig, kg_dirs: KGDirs
+    *,
+    canonical_ir_fp: Path,
+    config: CreateKGConfig,
+    kg_dirs: KGDirs,
+    provenance_context: dict | None = None,
 ) -> None:
     """Create Learning Commons knowledge graphs from a single CanonicalIR JSON.
 
@@ -58,6 +68,9 @@ def create_kgs(
         The knowledge graph run configuration.
     kg_dirs
         The knowledge graph run directories.
+    provenance_context
+        An optional dictionary containing provenance context information to be included
+        in the knowledge graphs.
     """
 
     # 1.
@@ -65,8 +78,17 @@ def create_kgs(
 
     # 2.
     kg_export_ctx = build_kg_export_context(canonical_ir=canonical_ir, config=config)
-    logger.info(f"{kg_dirs = }")
-    logger.info(f"{kg_export_ctx = }")
+
+    # 3.
+    academic_standards = export_academic_standards(
+        canonical_ir_created_at=canonical_ir.created_at,
+        config=config,
+        ctx=kg_export_ctx,
+        decision_set_id=canonical_ir.decision_set_id,
+        kg_dirs=kg_dirs,
+        provenance_context=provenance_context,
+    )
+    logger.info(f"{academic_standards = }")
 
 
 @cli.command()
@@ -147,7 +169,24 @@ def create(
             f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
         )
 
-        create_kgs(canonical_ir_fp=canonical_ir_fp, config=config, kg_dirs=kg_dirs)
+        create_kgs(
+            canonical_ir_fp=canonical_ir_fp,
+            config=config,
+            kg_dirs=kg_dirs,
+            provenance_context={
+                "bbox": {
+                    "coord_space": "px",
+                    "format": "[x0, y0, x1, y1]",
+                    "note": (
+                        "BBox coords are absolute pixels in rendered page images. "
+                        "Use page_index+width_px/height_px for normalization when available."
+                    ),
+                    "origin": "top_left",
+                    "page_images": get_page_image_dims(extraction_run_results_dir),
+                    "render_dpi": extraction_config.dpi,
+                }
+            },
+        )
         kg_run.extra["status"] = "success"
         logger.success("KG creation completed successfully!")
     except Exception as e:  # pylint: disable=broad-except

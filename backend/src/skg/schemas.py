@@ -618,6 +618,22 @@ class CreateKGConfig(BaseSchema):
     export_in_language_policy: Literal["default", "source"] = "source"
     generate_learning_components: bool = True
     generate_progressions: bool = True
+    grouping_role_policy: Literal["loose", "whitelist"] = Field(
+        default="loose",
+        description=(
+            "How to interpret node roles as hierarchy groupings during standards export. "
+            "'loose' = current behavior (any non-statement role becomes a grouping). "
+            "'whitelist' = only roles in grouping_roles_whitelist are groupings."
+        ),
+    )
+    grouping_roles_whitelist: set[NodeRole] = Field(
+        default_factory=lambda: set(CONTEXT_GROUPINGS_ROLE_ORDER) - {NodeRole.PROSE},
+        description=(
+            "When grouping_role_policy='whitelist', only these roles count as groupings "
+            "(emitted as normalizedStatementType='Standard Grouping', eligible for pruning, "
+            "and used as aux-parenting anchors). Default excludes PROSE."
+        ),
+    )
     guidance_handling: AuxStatementHandling = Field(
         default="drop",
         description="How to handle guidance statements during KG export.",
@@ -647,6 +663,14 @@ class CreateKGConfig(BaseSchema):
     namespace_uuid: UUID = Field(
         default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
         description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
+    )
+    non_grouping_role_handling: Literal["drop", "export_as_sfi_other"] = Field(
+        default="drop",
+        description=(
+            "When grouping_role_policy='whitelist': what to do with nodes that are neither "
+            "statement roles (expectation/descriptor/guidance) nor allowed groupings. "
+            "'drop' removes them; 'export_as_sfi_other' emits them as SFIs with type 'Other'."
+        ),
     )
     non_standard_columns_signature: set[str] = Field(
         default_factory=set,
@@ -707,17 +731,71 @@ class CreateKGConfig(BaseSchema):
             descriptor handling is set to export as SFI.
         """
 
-        exporting_any = (
-            self.guidance_handling == "export_as_sfi_other"
-            or self.descriptor_handling == "export_as_sfi_other"
-        )
+        relevant_any = self.guidance_handling in {
+            "export_as_sfi_other",
+            "attach_to_expectation_metadata",
+        } or self.descriptor_handling in {
+            "export_as_sfi_other",
+            "attach_to_expectation_metadata",
+        }
 
-        if self.aux_statement_parenting == "under_expectation" and not exporting_any:
+        if self.aux_statement_parenting == "under_expectation" and not relevant_any:
             raise ValueError(
                 "aux_statement_parenting='under_expectation' requires exporting "
-                "guidance/descriptors as SFIs (set guidance_handling or "
-                "descriptor_handling to 'export_as_sfi_other')."
+                "or attaching guidance/descriptors to expectations (set guidance_handling "
+                "or descriptor_handling to 'export_as_sfi_other' or "
+                "'attach_to_expectation_metadata')."
             )
+
+        # attach-to-expectation requires the export-time anchor discovery implemented
+        # by aux_statement_parenting="under_expectation". If we leave
+        # aux_statement_parenting="as_siblings", export_academic_standards will skip
+        # emitting aux nodes (to avoid SFIs) but will never attach them -> silent loss.
+        attach_any = (
+            self.guidance_handling == "attach_to_expectation_metadata"
+            or self.descriptor_handling == "attach_to_expectation_metadata"
+        )
+        if attach_any and self.aux_statement_parenting != "under_expectation":
+            raise ValueError(
+                "guidance_handling/descriptor_handling='attach_to_expectation_metadata' "
+                "requires aux_statement_parenting='under_expectation' so aux statements "
+                "can be anchored to the most recent expectation during export."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_grouping_role_policy(self) -> CreateKGConfig:
+        """Validate that if grouping_role_policy is 'whitelist', then
+        grouping_roles_whitelist is non-empty and does not include
+        FRAMEWORK/UNRESOLVED.
+
+        Returns
+        -------
+        CreateKGConfig
+            The validated CreateKGConfig object.
+
+        Raises
+        ------
+        ValueError
+            If grouping_role_policy is 'whitelist' but grouping_roles_whitelist is
+            empty or includes disallowed roles.
+        """
+
+        if self.grouping_role_policy == "whitelist":
+            if not self.grouping_roles_whitelist:
+                raise ValueError(
+                    "grouping_role_policy='whitelist' requires a non-empty grouping_roles_whitelist."
+                )
+
+            # These should never be treated as hierarchy groupings.
+            disallowed = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
+            overlap = disallowed & set(self.grouping_roles_whitelist)
+
+            if overlap:
+                raise ValueError(
+                    f"grouping_roles_whitelist cannot include FRAMEWORK/UNRESOLVED: {overlap}"
+                )
 
         return self
 
