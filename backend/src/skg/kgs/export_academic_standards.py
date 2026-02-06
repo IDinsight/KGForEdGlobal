@@ -443,11 +443,10 @@ def _collect_grade_levels(
     Returns
     -------
     list[str]
-        The list of grade level tags collected from the ancestors of the given node, in
-        order from closest ancestor to farthest (but de-duped if the same grade level
-        appears multiple times in the ancestry). Grade level tags are determined by the
-        display text of ancestor nodes with role "grade_level". If no grade level
-        ancestors are found, returns an empty list.
+        A deduplicated list of grade level labels found in the node's ancestry, ordered
+        from the highest level (farthest ancestor) down to the lowest level (closest
+        ancestor). If no grade level nodes are encountered during the traversal, an
+        empty list is returned.
     """
 
     cur: Optional[str] = node_id
@@ -774,6 +773,21 @@ def _emit_sfi(
     node = ctx.nodes_by_id[node_id]
     prefer_en = config.description_text_policy == "prefer_text_en"
 
+    # Language policy:
+    # - default: Always use framework language
+    # - source: Prefer per-node language if present, else fall back to framework
+    sfi_in_language = str(fw_metadata.get("in_language") or "")
+
+    if config.export_in_language_policy == "source":
+        node_lang = (
+            node.get("in_language")
+            or node.get("language")
+            or (node.get("metadata") or {}).get("in_language")
+            or (node.get("metadata") or {}).get("language")
+        )
+        if node_lang:
+            sfi_in_language = str(node_lang)
+
     path_key = ctx.compute_path_key(node_id)
     sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
 
@@ -844,6 +858,7 @@ def _emit_sfi(
 
         # Code retrieval (should work across countries/canonicalizers).
         grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
+        stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
         code_raw = (
             node.get("local_code")
             or node.get("code")
@@ -859,7 +874,8 @@ def _emit_sfi(
             "grade_ordinal_low": grade_low,
             "grade_ordinal_high": grade_high,
             "stage_key": stage_key,
-            "stage_ordinal": _parse_ordinal(stage_key or "")[0],
+            "stage_ordinal_low": stage_low,
+            "stage_ordinal_high": stage_high,
             "topic_path_key": topic_path_key,
             "topic_path_parts": topic_path_parts,  # For debugging
             "canon_order_path": canon_order_path,
@@ -880,7 +896,7 @@ def _emit_sfi(
             ctx=ctx, node_id=node_id, prefer_text_en=prefer_en
         ),
         identifier=sfi_id,
-        in_language=fw_metadata["in_language"],
+        in_language=sfi_in_language,
         jurisdiction=fw_metadata["jurisdiction"],
         license=config.license,
         metadata=metadata,
@@ -1027,8 +1043,10 @@ def _keyify(label: str) -> str:
     Returns
     -------
     str
-        The normalized key string, suitable for use in IDs or codes. If the input is
-        empty or normalizes to empty, returns a hash-based fallback key.
+        A normalized, URL-safe string consisting of lowercase alphanumeric characters
+        and underscores. If the resulting string is empty after normalization, a
+        12-character hex hash prefixed with 'h' is returned to ensure a non-empty
+        deterministic key. The output is capped at 80 characters.
     """
 
     raw = " ".join(str(label or "").strip().split())
