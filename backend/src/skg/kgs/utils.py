@@ -667,6 +667,11 @@ def merge_graph_bundles(
     -------
     dict[str, Any]
         The merged KG graph bundle.
+
+    Raises
+    ------
+    ValueError
+        If there are ID collisions with differing properties.
     """
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -678,17 +683,72 @@ def merge_graph_bundles(
         included_graph_types.append(str(b.get("graph_type", "")))
 
         for n in b.get("nodes", []) or []:
-            nodes_by_id[str(n["id"])] = n
+            nid = str(n["id"])
+
+            if nid in nodes_by_id:
+                existing = nodes_by_id[nid]
+
+                if (existing.get("properties") or {}) != (n.get("properties") or {}):
+                    logger.error(
+                        f"Node ID collision with differing properties: "
+                        f"id={nid} "
+                        f"existing_labels={existing.get("labels")} "
+                        f"new_labels={n.get('labels')}"
+                    )
+                    raise ValueError(
+                        f"Node ID collision with differing properties: {nid}"
+                    )
+
+                merged_labels = sorted(
+                    set(existing.get("labels") or []) | set(n.get("labels") or [])
+                )
+                nodes_by_id[nid] = {
+                    "id": nid,
+                    "labels": merged_labels,
+                    "properties": existing.get("properties")
+                    or n.get("properties")
+                    or {},
+                }
+            else:
+                nodes_by_id[nid] = n
 
         for r in b.get("relationships", []) or []:
-            rels_by_id[str(r["id"])] = r
+            rid = str(r["id"])
+
+            if rid in rels_by_id:
+                existing = rels_by_id[rid]
+
+                if (existing.get("properties") or {}) != (r.get("properties") or {}):
+                    logger.error(
+                        f"Relationship ID collision with differing properties: "
+                        f"id={rid} "
+                        f"existing_type={existing.get('type')} "
+                        f"new_type={r.get('type')}"
+                    )
+                    raise ValueError(
+                        f"Relationship ID collision with differing properties: {rid}"
+                    )
+                if (
+                    existing.get("type") != r.get("type")
+                    or existing.get("start") != r.get("start")
+                    or existing.get("end") != r.get("end")
+                ):
+                    logger.error(
+                        f"Relationship ID collision with differing endpoints/type: "
+                        f"id={rid}"
+                    )
+                    raise ValueError(
+                        f"Relationship ID collision with differing endpoints/type: {rid}"
+                    )
+            else:
+                rels_by_id[rid] = r
 
     return {
         "doc_key": doc_key,
         "export_dialect": export_dialect,
         "generated_at": generated_at,
         "graph_type": "academic_standards_plus_learning_components",
-        "included_graph_types": included_graph_types,
+        "included_graph_types": sorted(set(included_graph_types)),
         "nodes": list(nodes_by_id.values()),
         "relationships": list(rels_by_id.values()),
     }
@@ -783,7 +843,7 @@ def persist_kg_run(
     return kg_dirs, kg_run
 
 
-def stable_text_hash(*, n: int = 12, s: str) -> str:
+def stable_text_hash(*, n: int = 32, s: str) -> str:
     """Generate a stable hash from a string.
 
     Parameters
