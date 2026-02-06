@@ -131,103 +131,118 @@ def _create_lcs_for_expectation(
         according to the specified policy. Each LC will have a deterministic UUID based
         on the doc_key, SFI UUID, split index, and split hash to ensure stable IDs
         across runs.
-
-    Raises
-    ------
-    ValueError
-        If the source text for the expectation is empty, preventing LC creation. The
-        source text is determined based on the SFI description and metadata, and if it
-        is empty, it indicates that there is no meaningful content to create a
-        LearningComponent from, which is a critical issue that must be addressed in the
-        data before LC creation can proceed.
     """
 
     policy = config.learning_component_policy
 
-    # Display text policy: for now, use SFI.description as exported by academic
-    # standards pipeline.
+    # Display text (human-facing): use SFI.description as exported by academic
+    # standards.
     display_text = normalize_ws(getattr(sfi, "description", "") or "")
 
-    # Source text for splitting/hashing: prefer stable normalized_text from metadata
-    # when present.
+    # Canonical ID text: ALWAYS prefer stable normalized_text from SFI.metadata so IDs
+    # don't change when description display policy/translations change.
     metadata = getattr(sfi, "metadata", {}) or {}
 
-    # Use display_text for splitting + LC.description so we preserve
-    # casing/punctuation. Fall back to normalized_text only if display_text is missing.
-    source_text = display_text or normalize_ws(
-        str(metadata.get("normalized_text") or "")
-    )
+    id_source_text = normalize_ws(str(metadata.get("normalized_text") or ""))
+    id_source_kind = "metadata.normalized_text"
+    if not id_source_text:
+        # Fallback only if canonical normalized_text is missing.
+        id_source_text = display_text
+        id_source_kind = "sfi.description_fallback"
 
-    if not source_text:
-        raise ValueError(
-            f"Empty expectation text for SFI {sfi.case_identifier_uuid}; cannot create LC."
-        )
-
-    parts: list[str]
+    # Build ID parts (used for hashing + UUIDv5 name strings).
+    id_parts: list[str]
 
     if policy == "split_bullets":
-        parts = _split_bullets_deterministic(text=source_text)
+        id_parts = _split_bullets_deterministic(text=id_source_text)
 
-        if not parts:
-            parts = [source_text]
+        if not id_parts:
+            id_parts = [id_source_text]
     else:
-        parts = [source_text]
+        id_parts = [id_source_text]
 
     # Enforce max splits deterministically (keep earliest parts).
     max_splits = int(config.lc_max_splits_per_standard)
     truncated = False
 
-    if len(parts) > max_splits:
-        parts = parts[:max_splits]
+    if len(id_parts) > max_splits:
+        id_parts = id_parts[:max_splits]
         truncated = True
 
-    # If everything is empty, fallback to SFI description.
-    parts = [p for p in parts if p]
+    # Drop empty ID parts.
+    id_parts = [p for p in id_parts if p]
 
-    if not parts:
-        parts = [display_text] if display_text else []
+    if not id_parts:
+        id_parts = [display_text] if display_text else []
+
+    # Build display parts (used for LC.description). Try to split display_text the same
+    # way as ID text so each LC gets a meaningful description.
+    display_source_text = display_text or id_source_text
+    display_parts: list[str]
+
+    if policy == "split_bullets":
+        display_parts = _split_bullets_deterministic(text=display_source_text)
+        display_parts = display_parts or [display_source_text]
+    else:
+        display_parts = [display_source_text]
+
+    if len(display_parts) > max_splits:
+        display_parts = display_parts[:max_splits]
+
+    display_parts = [p for p in display_parts if p]
+
+    # If the split counts don't match, fall back to using ID parts for descriptions
+    # (keeps determinism + avoids mismatched pairing).
+    paired_parts = (
+        list(zip(id_parts, display_parts))
+        if len(display_parts) == len(id_parts)
+        else [(p, p) for p in id_parts]
+    )
 
     lcs: list[LearningComponent] = []
     ns: UUID = config.namespace_uuid
 
-    for i, part in enumerate(parts):
-        split_hash = stable_text_hash(s=part)
-        lc_id = uuid5(
-            ns,
-            f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{i}:{split_hash}",
-        )
-
-        lc = LearningComponent(
-            academic_subject=str(
-                getattr(sfi, "academic_subject", None)
-                or fw_metadata["academic_subject_default"]
-            ),
-            attribution_statement=str(fw_metadata["attribution_statement"]),
-            author=str(fw_metadata["author"]),
-            description=part,
-            identifier=lc_id,
-            in_language=str(
-                getattr(sfi, "in_language", None) or fw_metadata["in_language"]
-            ),
-            license=str(fw_metadata["license"]),
-            metadata={
-                "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
-                "canonical_node_id": metadata.get("canonical_node_id"),
-                "split_policy": policy,
-                "split_index": i,
-                "split_hash": split_hash,
-                "split_truncated": truncated,
-                "provenance": {
-                    "page_indices": metadata.get("page_indices", []),
-                    "bbox": metadata.get("bbox"),
-                    "bbox_ref": metadata.get("bbox_ref"),
-                    "source_decision_ids": metadata.get("source_decision_ids", []),
-                    "source_segment_ids": metadata.get("source_segment_ids", []),
+    for i, (id_part, display_part) in enumerate(paired_parts):
+        # NB: split_hash (and thus lc_id) must be derived from canonical ID text.
+        split_hash = stable_text_hash(s=id_part)
+        lcs.append(
+            LearningComponent(
+                academic_subject=str(
+                    getattr(sfi, "academic_subject", None)
+                    or fw_metadata["academic_subject_default"]
+                ),
+                attribution_statement=str(fw_metadata["attribution_statement"]),
+                author=str(fw_metadata["author"]),
+                description=display_part,  # Human-facing description can be display-derived, but IDs are not
+                identifier=uuid5(
+                    ns,
+                    f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{i}:{split_hash}",
+                ),
+                in_language=str(
+                    getattr(sfi, "in_language", None) or fw_metadata["in_language"]
+                ),
+                license=str(fw_metadata["license"]),
+                metadata={
+                    "id_source_kind": id_source_kind,
+                    "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
+                    "canonical_node_id": metadata.get("canonical_node_id"),
+                    "split_policy": policy,
+                    "split_id_text": id_part,
+                    "split_display_text": display_part,
+                    "split_index": i,
+                    "split_hash": split_hash,
+                    "split_truncated": truncated,
+                    "provenance": {
+                        "page_indices": metadata.get("page_indices", []),
+                        "bbox": metadata.get("bbox"),
+                        "bbox_ref": metadata.get("bbox_ref"),
+                        "source_decision_ids": metadata.get("source_decision_ids", []),
+                        "source_segment_ids": metadata.get("source_segment_ids", []),
+                    },
                 },
-            },
-            provider=str(fw_metadata["provider"]),
+                provider=str(fw_metadata["provider"]),
+            )
         )
-        lcs.append(lc)
 
     return lcs
 
