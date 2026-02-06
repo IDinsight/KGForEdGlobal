@@ -34,12 +34,13 @@ from skg.kgs.schemas import (
     StandardsFramework,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs
+from skg.kgs.utils import ExportContext, KGDirs, node_display_text
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import write_to_json
 
 AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
+STATEMENT_ROLE_VALUES: set[str] = {item.value for item in StatementRole}
 
 
 @dataclass
@@ -123,16 +124,16 @@ def _build_relationships_and_order(
     ]
 
     for cid in root_children:
-        rel = _emit_has_child(
-            child_uuid=sfi_by_node[cid].case_identifier_uuid,
-            config=config,
-            doc_key=ctx.doc_key,
-            parent_uuid=framework_uuid,
-            relationship_metadata=_edge_metadata(ctx.root_id, cid),
+        relationships.append(
+            _emit_has_child(
+                child_uuid=sfi_by_node[cid].case_identifier_uuid,
+                config=config,
+                doc_key=ctx.doc_key,
+                parent_uuid=framework_uuid,
+                relationship_metadata=_edge_metadata(ctx.root_id, cid),
+                source_entity="StandardsFramework",
+            )
         )
-        rel.source_entity = "StandardsFramework"
-        rel.target_entity = "StandardsFrameworkItem"
-        relationships.append(rel)
 
     # SFI -> SFI edges.
     for pid, kids in export_children.items():
@@ -199,7 +200,7 @@ def _collect_grade_levels(
         node = ctx.nodes_by_id.get(cur) or {}
 
         if node.get("role") == "grade_level":
-            label = _node_display_text(node=node, prefer_text_en=prefer_text_en)
+            label = node_display_text(node=node, prefer_text_en=prefer_text_en)
 
             if label:
                 output.append(label)
@@ -314,7 +315,7 @@ def _emit_framework(
     metadata = ctx.get_framework_metadata()
     prefer_en = config.description_text_policy == "prefer_text_en"
     root_node = ctx.nodes_by_id.get(ctx.root_id, {})
-    name = _node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
+    name = node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
 
     return StandardsFramework(
         academic_subject=metadata["academic_subject_default"],
@@ -348,8 +349,9 @@ def _emit_has_child(
     doc_key: str,
     parent_uuid: UUID,
     relationship_metadata: Optional[dict[str, Any]] = None,
+    source_entity: str = "StandardsFrameworkItem",
 ) -> Relationship:
-    """Create a hasChild Relationship between two StandardsFrameworkItems.
+    """Create a hasChild Relationship.
 
     Parameters
     ----------
@@ -363,6 +365,9 @@ def _emit_has_child(
         The UUID of the parent StandardsFrameworkItem.
     relationship_metadata
         Optional metadata to attach to the relationship.
+    source_entity
+        The entity type of the parent. Pass ``"StandardsFramework"`` for root-level
+        edges and ``"StandardsFrameworkItem"`` (default) for SFI-to-SFI edges.
 
     Returns
     -------
@@ -381,7 +386,7 @@ def _emit_has_child(
         metadata=relationship_metadata or {},
         provider=config.provider,
         relationship_type="hasChild",
-        source_entity="StandardsFrameworkItem",  # May be overwritten for framework edges
+        source_entity=source_entity,
         source_entity_key="caseIdentifierUUID",
         source_entity_value=str(parent_uuid),
         target_entity="StandardsFrameworkItem",
@@ -396,6 +401,7 @@ def _emit_sfi(
     canonical_ir_created_at: Any,
     config: CreateKGConfig,
     ctx: ExportContext,
+    fw_metadata: dict[str, Any],
     node_id: str,
 ) -> StandardsFrameworkItem:
     """Emit a StandardsFrameworkItem for a given canonical node.
@@ -414,6 +420,9 @@ def _emit_sfi(
     ctx
         The ExportContext for the CanonicalIR, providing access to node properties and
         framework metadata.
+    fw_metadata
+        Pre-computed framework metadata dict (from ctx.get_framework_metadata()).
+        Passed in to avoid redundant recomputation per node.
     node_id
         The ID of the canonical node to emit as an SFI.
 
@@ -430,7 +439,9 @@ def _emit_sfi(
     sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
 
     role = str(node.get("role") or "")
-    desc = _node_display_text(node=node, prefer_text_en=prefer_en)
+    desc = node_display_text(node=node, prefer_text_en=prefer_en) or (
+        f"[{role or 'unknown'}:{node_id[:8]}]"
+    )
     bbox = node.get("bbox")
 
     metadata: dict[str, Any] = {
@@ -455,7 +466,7 @@ def _emit_sfi(
         metadata["aux_statements"] = aux_attachments
 
     return StandardsFrameworkItem(
-        academic_subject=ctx.get_framework_metadata()["academic_subject_default"],
+        academic_subject=fw_metadata["academic_subject_default"],
         attribution_statement=config.attribution_statement,
         author=config.author,
         case_identifier_uri=f"{config.case_uri_base}{sfi_id}",
@@ -467,8 +478,8 @@ def _emit_sfi(
             ctx=ctx, node_id=node_id, prefer_text_en=prefer_en
         ),
         identifier=sfi_id,
-        in_language=ctx.get_framework_metadata()["in_language"],
-        jurisdiction=ctx.get_framework_metadata()["jurisdiction"],
+        in_language=fw_metadata["in_language"],
+        jurisdiction=fw_metadata["jurisdiction"],
         license=config.license,
         metadata=metadata,
         normalized_statement_type=_normalized_statement_type(config=config, role=role),
@@ -508,6 +519,7 @@ def _emit_sfis(
         Mapping of canonical node ID to emitted SFI.
     """
 
+    fw_metadata = ctx.get_framework_metadata()  # Compute once for all SFIs
     sfi_by_node: dict[str, StandardsFrameworkItem] = {}
 
     for node_id, ok in emit_flag.items():
@@ -519,6 +531,7 @@ def _emit_sfis(
             canonical_ir_created_at=canonical_created_at_iso,
             config=config,
             ctx=ctx,
+            fw_metadata=fw_metadata,
             node_id=node_id,
         )
 
@@ -544,7 +557,7 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     if role == NodeRole.FRAMEWORK.value:
         return False
 
-    if role in {item.value for item in StatementRole}:
+    if role in STATEMENT_ROLE_VALUES:
         return False
 
     if config.grouping_role_policy == "loose":
@@ -553,37 +566,6 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     allowed = {r.value for r in config.grouping_roles_whitelist}
 
     return role in allowed
-
-
-def _node_display_text(*, node: dict[str, Any], prefer_text_en: bool) -> str:
-    """Determine display text for a node, preferring title over body, and falling back
-    to local_code or role if no text found.
-
-    Parameters
-    ----------
-    node
-        The node dictionary to extract text from.
-    prefer_text_en
-        If True, prefer "text_en" over "text" when extracting from title/body.
-
-    Returns
-    -------
-    str
-        The display text for the node.
-    """
-
-    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
-
-    if title:
-        return title
-
-    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
-
-    if body:
-        return body
-
-    # Last resort fallback: code or role.
-    return (node.get("local_code") or node.get("role") or "").strip()
 
 
 def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
@@ -613,37 +595,6 @@ def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
         return "Standard Grouping"
 
     return "Other"
-
-
-def _pick_text(*, prefer_text_en: bool, unit: Any) -> str:
-    """Retrieve text from a title/body unit.
-
-    NB: Canonical nodes store title/body as a dict like:
-        {"language": "...", "text": "...", "text_en": "..."}.
-
-    Parameters
-    ----------
-    prefer_text_en
-        If True, prefer "text_en" over "text" if both are present.
-    unit
-        The title/body unit to extract text from.
-
-    Returns
-    -------
-    str
-        The extracted text, or empty string if none found.
-    """
-
-    if not isinstance(unit, dict):
-        return ""
-
-    if prefer_text_en:
-        t = (unit.get("text_en") or "").strip()
-
-        if t:
-            return t
-
-    return ((unit.get("text") or "") or (unit.get("text_en") or "")).strip()
 
 
 def _prune_empty_groupings(
@@ -700,7 +651,7 @@ def _prune_empty_groupings(
 
     # Drop children that are no longer emitted.
     for pid, kids in list(export_children.items()):
-        export_children[pid] = [c for c in kids if c == ctx.root_id or c in emitted]
+        export_children[pid] = [c for c in kids if c in emitted]
 
     # Reflect pruning back into emit_flag.
     for nid in list(emit_flag.keys()):
@@ -765,7 +716,7 @@ def _reparent_aux_under_expectations(
                 aux_attach_to_expectation[last_expectation].append(
                     {
                         "role": role,
-                        "text": _node_display_text(node=node, prefer_text_en=prefer_en),
+                        "text": node_display_text(node=node, prefer_text_en=prefer_en),
                         "canonical_node_id": cid,
                         "page_indices": node.get("page_indices", []),
                         "source_decision_ids": node.get("source_decision_ids", []),
@@ -1079,7 +1030,7 @@ def should_emit_node(
     if (
         config.grouping_role_policy == "whitelist"
         and role != NodeRole.FRAMEWORK.value
-        and role not in {item.value for item in StatementRole}
+        and role not in STATEMENT_ROLE_VALUES
         and not _is_grouping_role(config=config, role=role)
     ):
         return config.non_grouping_role_handling != "drop"

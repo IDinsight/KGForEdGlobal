@@ -157,6 +157,6 @@
 		"progression_min_confidence": 0.9,
 		"progression_source": "progression_ir",
 		"provider": "IDinsight | Learning Commons",
-		"prune_empty_groupings": true,
+		"prune_empty_groupings": true
 	}
 }

@@ -138,6 +138,7 @@ def create(
         extraction_config.output_dir
         / computed_doc_key
         / "canonical"
+        / "canonical_ir"
         / "canonical_ir.json"
     )
     extraction_run_config = RunCtx.model_validate(

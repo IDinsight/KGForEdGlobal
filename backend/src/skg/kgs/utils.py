@@ -94,11 +94,13 @@ class ExportContext:
         # Build the base piece first (no early returns), then apply order
         # disambiguation if needed.
         if role in {item.value for item in StatementRole}:
-            text_for_hash = str(node.get("normalized_text") or _node_display_text(node))
+            text_for_hash = str(
+                node.get("normalized_text") or node_display_text(node=node)
+            )
             piece = f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
         else:
             label = _slugify(
-                s=str(node.get("normalized_text") or _node_display_text(node))
+                s=str(node.get("normalized_text") or node_display_text(node=node))
             )
             piece = f"{role}:{code}:{label}" if code else f"{role}:{label}"
 
@@ -244,12 +246,12 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
             # NB: include statement roles too, using the same base as _path_piece.
             if role in {item.value for item in StatementRole}:
                 text_for_hash = str(
-                    node.get("normalized_text") or _node_display_text(node)
+                    node.get("normalized_text") or node_display_text(node=node)
                 )
                 base = f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
             else:
                 label = _slugify(
-                    s=str(node.get("normalized_text") or _node_display_text(node))
+                    s=str(node.get("normalized_text") or node_display_text(node=node))
                 )
                 base = f"{role}:{code}:{label}" if code else f"{role}:{label}"
 
@@ -260,44 +262,6 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
                 seen[base] = cid
 
     return needs
-
-
-def _node_display_text(node: dict[str, Any]) -> str:
-    """Extract display text from a node dictionary.
-
-    Parameters
-    ----------
-    node
-        The node dictionary.
-
-    Returns
-    -------
-    str
-        The extracted display text.
-    """
-
-    title = node.get("title")
-
-    if isinstance(title, dict):
-        if title.get("text_en"):
-            return str(title["text_en"])
-
-        if title.get("text"):
-            return str(title["text"])
-
-    body = node.get("body")
-
-    if isinstance(body, dict):
-        if body.get("text_en"):
-            return str(body["text_en"])
-
-        if body.get("text"):
-            return str(body["text"])
-
-    if node.get("normalized_text"):
-        return str(node["normalized_text"])
-
-    return ""
 
 
 def _normalize_ws(s: str) -> str:
@@ -315,6 +279,37 @@ def _normalize_ws(s: str) -> str:
     """
 
     return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+def _pick_text(*, prefer_text_en: bool, unit: Any) -> str:
+    """Retrieve text from a title/body TextUnit dict.
+
+    Canonical nodes store title/body as a dict like:
+        {"language": "...", "text": "...", "text_en": "..."}.
+
+    Parameters
+    ----------
+    prefer_text_en
+        If True, prefer "text_en" over "text" when both are present.
+    unit
+        The title/body unit dict (or None).
+
+    Returns
+    -------
+    str
+        The extracted text, or empty string if none found.
+    """
+
+    if not isinstance(unit, dict):
+        return ""
+
+    if prefer_text_en:
+        t = (unit.get("text_en") or "").strip()
+
+        if t:
+            return t
+
+    return (unit.get("text") or unit.get("text_en") or "").strip()
 
 
 def _slugify(*, max_len: int = 80, s: str) -> str:
@@ -499,7 +494,7 @@ def build_kg_export_context(
         node.node_id: node.model_dump(mode="json") for node in canonical_ir.nodes
     }
     root_id = canonical_ir.root_id
-    assert root_id not in nodes_by_id, f"Root ID missing from nodes: {root_id}"
+    assert root_id in nodes_by_id, f"Root ID missing from nodes: {root_id}"
 
     # 2.
     children_by_parent: dict[str, list[str]] = defaultdict(list)
@@ -514,8 +509,8 @@ def build_kg_export_context(
         oi = edge.order_index
         pid = edge.parent_id
 
-        assert pid not in nodes_by_id, f"Edge parent_id not found in nodes: {pid}"
-        assert cid not in nodes_by_id, f"Edge child_id not found in nodes: {cid}"
+        assert pid in nodes_by_id, f"Edge parent_id not found in nodes: {pid}"
+        assert cid in nodes_by_id, f"Edge child_id not found in nodes: {cid}"
 
         children_by_parent[pid].append(cid)
         edge_order_index[(pid, cid)] = oi
@@ -651,6 +646,45 @@ def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
         )
 
     return dims
+
+
+def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
+    """Determine display text for a node, preferring title over body, and
+    falling back to normalized_text, then local_code or role if no text found.
+
+    Parameters
+    ----------
+    node
+        The node dictionary to extract text from.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when extracting from
+        title/body. Defaults to True for backward compatibility with
+        ID-generation callers.
+
+    Returns
+    -------
+    str
+        The display text for the node.
+    """
+
+    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
+
+    if title:
+        return title
+
+    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
+
+    if body:
+        return body
+
+    # Tertiary fallback: normalized_text (common on all canonical IR nodes).
+    nt = (node.get("normalized_text") or "").strip()
+
+    if nt:
+        return nt
+
+    # Last resort: code or role.
+    return (node.get("local_code") or node.get("role") or "").strip()
 
 
 def persist_kg_run(
