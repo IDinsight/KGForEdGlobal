@@ -219,6 +219,7 @@ class KGDirs:
     academic_standards: Path
     learning_components: Path
     learning_progressions: Path
+    combined: Path
 
 
 def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
@@ -441,8 +442,15 @@ def create_kg_dirs(*, output_dir: Path) -> KGDirs:
     academic_standards = root / "academic_standards"
     learning_components = root / "learning_components"
     learning_progressions = root / "learning_progressions"
+    combined = root / "combined"
 
-    for p in [root, academic_standards, learning_components, learning_progressions]:
+    for p in [
+        root,
+        academic_standards,
+        learning_components,
+        learning_progressions,
+        combined,
+    ]:
         make_dir(p)
 
     return KGDirs(
@@ -450,6 +458,7 @@ def create_kg_dirs(*, output_dir: Path) -> KGDirs:
         academic_standards=academic_standards,
         learning_components=learning_components,
         learning_progressions=learning_progressions,
+        combined=combined,
     )
 
 
@@ -638,6 +647,51 @@ def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
         )
 
     return dims
+
+
+def merge_graph_bundles(
+    *, bundles: list[dict[str, Any]], doc_key: str, export_dialect: str
+) -> dict[str, Any]:
+    """Merge multiple KG graph bundles into a single bundle.
+
+    Parameters
+    ----------
+    bundles
+        The list of KG graph bundles to merge.
+    doc_key
+        The document key for the merged bundle.
+    export_dialect
+        The export dialect for the merged bundle.
+
+    Returns
+    -------
+    dict[str, Any]
+        The merged KG graph bundle.
+    """
+
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    rels_by_id: dict[str, dict[str, Any]] = {}
+    included_graph_types: list[str] = []
+
+    for b in bundles:
+        included_graph_types.append(str(b.get("graph_type", "")))
+
+        for n in b.get("nodes", []) or []:
+            nodes_by_id[str(n["id"])] = n
+
+        for r in b.get("relationships", []) or []:
+            rels_by_id[str(r["id"])] = r
+
+    return {
+        "doc_key": doc_key,
+        "export_dialect": export_dialect,
+        "generated_at": generated_at,
+        "graph_type": "academic_standards_plus_learning_components",
+        "included_graph_types": included_graph_types,
+        "nodes": list(nodes_by_id.values()),
+        "relationships": list(rels_by_id.values()),
+    }
 
 
 def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:

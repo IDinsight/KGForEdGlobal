@@ -38,6 +38,7 @@ from skg.kgs.utils import (
     KGDirs,
     build_kg_export_context,
     get_page_image_dims,
+    merge_graph_bundles,
     persist_kg_run,
 )
 from skg.schemas import CreateKGConfig, RunConfig, RunCtx
@@ -63,6 +64,7 @@ def create_kgs(
     2. Build the knowledge graph export context.
     3. Export academic standards to the knowledge graphs.
     4. Optionally export Learning Components KG.
+        4a. Write combined Standards + LCs graph bundle.
     5. Optionally export Learning Progressions KG.
 
     Parameters
@@ -100,6 +102,8 @@ def create_kgs(
     )
 
     # 4.
+    learning_components = None
+
     if config.generate_learning_components is True:
         learning_components = export_learning_components(
             academic_standards=academic_standards,
@@ -111,6 +115,24 @@ def create_kgs(
             f"Exported Learning Components KG: "
             f"{len(learning_components.learning_components)} components, "
             f"{len(learning_components.supports_relationships)} `supports` relationships"
+        )
+
+        # 4a.
+        academic_bundle = open_json_type(
+            kg_dirs.academic_standards / "academic_standards_kg.json"
+        )
+        lc_bundle = open_json_type(
+            kg_dirs.learning_components / "learning_components_kg.json"
+        )
+
+        combined_bundle = merge_graph_bundles(
+            bundles=[academic_bundle, lc_bundle],
+            doc_key=kg_export_ctx.doc_key,
+            export_dialect=str(config.export_dialect),
+        )
+        write_to_json(
+            fp=kg_dirs.combined / "academic_standards_plus_learning_components_kg.json",
+            json_info=combined_bundle,
         )
 
 
