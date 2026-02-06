@@ -27,7 +27,7 @@ from skg.schemas import BaseSchema, ExportDialect
 from skg.utils.constants import NodeRole, NormalizedStatementType, StatementRole
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
-AllowedEntityKeys = {"identifier", "caseIdentifierUUID"}
+AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 MetadataT = dict[str, Any]
 ValidationLevel = Literal["error", "warning", "info"]
 
@@ -206,30 +206,30 @@ class StandardsFramework(BaseSchema):
     @field_validator("case_identifier_uri")
     @classmethod
     def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
-        """Validate caseIdentifierURI looks like a URI/URN (supports http(s), urn,
+        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
         etc.).
 
         Parameters
         ----------
         v
-            The caseIdentifierURI string to validate.
+            The case_identifier_uri string to validate.
 
         Returns
         -------
         str
-            The validated caseIdentifierURI string.
+            The validated case_identifier_uri string.
 
         Raises
         ------
         ValueError
-            If the caseIdentifierURI does not include a URI scheme.
+            If the case_identifier_uri does not include a URI scheme.
         """
 
         parsed = urlparse(v)
 
         if not parsed.scheme:
             raise ValueError(
-                "caseIdentifierURI must include a URI scheme (e.g., urn:, http:, https:)"
+                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
             )
 
         return v
@@ -278,7 +278,7 @@ class StandardsFramework(BaseSchema):
 
     @model_validator(mode="after")
     def _check_case_uri_contains_uuid(self) -> StandardsFramework:
-        """Validate that caseIdentifierURI includes caseIdentifierUUID (deterministic
+        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
         traceability).
 
         Returns
@@ -293,7 +293,7 @@ class StandardsFramework(BaseSchema):
         """
 
         if str(self.case_identifier_uuid) not in self.case_identifier_uri:
-            raise ValueError("caseIdentifierURI must include caseIdentifierUUID")
+            raise ValueError("case_identifier_uri must include case_identifier_uuid")
 
         return self
 
@@ -542,30 +542,30 @@ class StandardsFrameworkItem(BaseSchema):
     @field_validator("case_identifier_uri")
     @classmethod
     def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
-        """Validate caseIdentifierURI looks like a URI/URN (supports http(s), urn,
+        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
         etc.).
 
         Parameters
         ----------
         v
-            The caseIdentifierURI string to validate.
+            The case_identifier_uri string to validate.
 
         Returns
         -------
         str
-            The validated caseIdentifierURI string.
+            The validated case_identifier_uri string.
 
         Raises
         ------
         ValueError
-            If the caseIdentifierURI does not include a URI scheme.
+            If the case_identifier_uri does not include a URI scheme.
         """
 
         parsed = urlparse(v)
 
         if not parsed.scheme:
             raise ValueError(
-                "caseIdentifierURI must include a URI scheme (e.g., urn:, http:, https:)"
+                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
             )
 
         return v
@@ -659,7 +659,7 @@ class StandardsFrameworkItem(BaseSchema):
 
     @model_validator(mode="after")
     def _check_case_uri_contains_uuid(self) -> StandardsFrameworkItem:
-        """Validate that caseIdentifierURI includes caseIdentifierUUID (deterministic
+        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
         traceability).
 
         Returns
@@ -674,7 +674,7 @@ class StandardsFrameworkItem(BaseSchema):
         """
 
         if str(self.case_identifier_uuid) not in self.case_identifier_uri:
-            raise ValueError("caseIdentifierURI must include caseIdentifierUUID")
+            raise ValueError("case_identifier_uri must include case_identifier_uuid")
 
         return self
 
@@ -989,7 +989,7 @@ class Relationship(BaseSchema):
     source_entity_key: str = Field(
         description=(
             "The identifier property name on the source entity used by this relationship "
-            "(e.g., identifier, caseIdentifierUUID)."
+            "(e.g., identifier, case_identifier_uuid)."
         ),
     )
     source_entity_value: str = Field(
@@ -1001,7 +1001,7 @@ class Relationship(BaseSchema):
     target_entity_key: str = Field(
         description=(
             "The identifier property name on the target entity used by this relationship "
-            "(e.g., identifier, caseIdentifierUUID)."
+            "(e.g., identifier, case_identifier_uuid)."
         ),
     )
     target_entity_value: str = Field(
@@ -1147,10 +1147,10 @@ class Relationship(BaseSchema):
             )
 
         if (
-            self.source_entity_key != "caseIdentifierUUID"
-            or self.target_entity_key != "caseIdentifierUUID"
+            self.source_entity_key != "case_identifier_uuid"
+            or self.target_entity_key != "case_identifier_uuid"
         ):
-            raise ValueError("hasChild must use caseIdentifierUUID endpoints")
+            raise ValueError("hasChild must use case_identifier_uuid endpoints")
 
     def _validate_supports(self) -> None:
         """Validate 'supports' constraints: LearningComponent -> StandardsFrameworkItem.
@@ -1171,10 +1171,10 @@ class Relationship(BaseSchema):
 
         if not (
             self.source_entity_key == "identifier"
-            and self.target_entity_key == "caseIdentifierUUID"
+            and self.target_entity_key == "case_identifier_uuid"
         ):
             raise ValueError(
-                "supports must use source identifier + target caseIdentifierUUID"
+                "supports must use source identifier + target case_identifier_uuid"
             )
 
     def _validate_progression(self) -> None:
@@ -1196,11 +1196,11 @@ class Relationship(BaseSchema):
             )
 
         if (
-            self.source_entity_key != "caseIdentifierUUID"
-            or self.target_entity_key != "caseIdentifierUUID"
+            self.source_entity_key != "case_identifier_uuid"
+            or self.target_entity_key != "case_identifier_uuid"
         ):
             raise ValueError(
-                f"{self.relationship_type} must use caseIdentifierUUID endpoints"
+                f"{self.relationship_type} must use case_identifier_uuid endpoints"
             )
 
     def _validate_common_schema(self) -> None:
@@ -1517,8 +1517,8 @@ class KnowledgeGraphExport(BaseSchema):
         if rel.source_entity == "StandardsFramework":
             self._enforce_reference(
                 expected_entity="StandardsFramework",
-                expected_key="caseIdentifierUUID",
-                id_desc="StandardsFramework.caseIdentifierUUID",
+                expected_key="case_identifier_uuid",
+                id_desc="StandardsFramework.case_identifier_uuid",
                 rel=rel,
                 side="source",
                 valid_ids=id_maps["frameworks"],
@@ -1526,8 +1526,8 @@ class KnowledgeGraphExport(BaseSchema):
         elif rel.source_entity == "StandardsFrameworkItem":
             self._enforce_reference(
                 expected_entity="StandardsFrameworkItem",
-                expected_key="caseIdentifierUUID",
-                id_desc="StandardsFrameworkItem.caseIdentifierUUID",
+                expected_key="case_identifier_uuid",
+                id_desc="StandardsFrameworkItem.case_identifier_uuid",
                 rel=rel,
                 side="source",
                 valid_ids=id_maps["items"],
@@ -1540,8 +1540,8 @@ class KnowledgeGraphExport(BaseSchema):
         # Target: StandardsFrameworkItem.
         self._enforce_reference(
             expected_entity="StandardsFrameworkItem",
-            expected_key="caseIdentifierUUID",
-            id_desc="StandardsFrameworkItem.caseIdentifierUUID",
+            expected_key="case_identifier_uuid",
+            id_desc="StandardsFrameworkItem.case_identifier_uuid",
             rel=rel,
             side="target",
             valid_ids=id_maps["items"],
@@ -1563,8 +1563,8 @@ class KnowledgeGraphExport(BaseSchema):
         # Source.
         self._enforce_reference(
             expected_entity="StandardsFrameworkItem",
-            expected_key="caseIdentifierUUID",
-            id_desc="StandardsFrameworkItem.caseIdentifierUUID",
+            expected_key="case_identifier_uuid",
+            id_desc="StandardsFrameworkItem.case_identifier_uuid",
             rel=rel,
             side="source",
             valid_ids=id_maps["items"],
@@ -1573,8 +1573,8 @@ class KnowledgeGraphExport(BaseSchema):
         # Target.
         self._enforce_reference(
             expected_entity="StandardsFrameworkItem",
-            expected_key="caseIdentifierUUID",
-            id_desc="StandardsFrameworkItem.caseIdentifierUUID",
+            expected_key="case_identifier_uuid",
+            id_desc="StandardsFrameworkItem.case_identifier_uuid",
             rel=rel,
             side="target",
             valid_ids=id_maps["items"],
@@ -1623,11 +1623,11 @@ class KnowledgeGraphExport(BaseSchema):
             valid_ids=id_maps["components"],
         )
 
-        # Target: StandardsFrameworkItem (caseIdentifierUUID).
+        # Target: StandardsFrameworkItem (case_identifier_uuid).
         self._enforce_reference(
             expected_entity="StandardsFrameworkItem",
-            expected_key="caseIdentifierUUID",
-            id_desc="StandardsFrameworkItem.caseIdentifierUUID",
+            expected_key="case_identifier_uuid",
+            id_desc="StandardsFrameworkItem.case_identifier_uuid",
             rel=rel,
             side="target",
             valid_ids=id_maps["items"],

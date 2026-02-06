@@ -387,10 +387,10 @@ def _emit_has_child(
         provider=config.provider,
         relationship_type="hasChild",
         source_entity=source_entity,
-        source_entity_key="caseIdentifierUUID",
+        source_entity_key="case_identifier_uuid",
         source_entity_value=str(parent_uuid),
         target_entity="StandardsFrameworkItem",
-        target_entity_key="caseIdentifierUUID",
+        target_entity_key="case_identifier_uuid",
         target_entity_value=str(child_uuid),
     )
 
@@ -790,11 +790,6 @@ def _verify_standards_export(
         The list of exported Relationships.
     sfi_by_node
         The mapping of canonical node IDs to exported StandardsFrameworkItems.
-
-    Raises
-    ------
-    ValueError
-        If any integrity check fails.
     """
 
     # Check referential integrity.
@@ -804,43 +799,64 @@ def _verify_standards_export(
     for r in relationships:
         s_ok = (r.source_entity_value == fw_id) or (r.source_entity_value in sfi_ids)
         t_ok = r.target_entity_value in sfi_ids
-
-        if not s_ok or not t_ok:
-            raise ValueError(
-                f"Relationship references missing entity: {r.relationship_type} "
-                f"{r.source_entity_value} -> {r.target_entity_value}"
-            )
+        assert s_ok and t_ok, (
+            f"Relationship references missing entity: "
+            f"{r.relationship_type} {r.source_entity_value} -> {r.target_entity_value}"
+        )
 
     # Check ordering integrity.
     rel_children_by_parent: DefaultDict[str, set[str]] = defaultdict(set)
+
     for r in relationships:
         if r.relationship_type == "hasChild":
             rel_children_by_parent[r.source_entity_value].add(r.target_entity_value)
 
     for parent, kids in rel_children_by_parent.items():
         ordered = parent_to_children.get(parent)
+        assert ordered is not None, f"Missing hierarchy order for parent: {parent}"
+        assert set(ordered) == set(
+            kids
+        ), f"Hierarchy order child set mismatch for parent: {parent}"
 
-        if ordered is None:
-            raise ValueError(f"Missing hierarchy order for parent: {parent}")
+    # Check reachability: every emitted SFI must be reachable from the framework root
+    # via hasChild edges. This catches orphans caused by pruning/filters.
+    adj: DefaultDict[str, list[str]] = defaultdict(list)
 
-        if set(ordered) != set(kids):
-            raise ValueError(f"Hierarchy order child set mismatch for parent: {parent}")
+    for r in relationships:
+        if r.relationship_type == "hasChild":
+            adj[r.source_entity_value].append(r.target_entity_value)
+
+    stack: list[str] = [fw_id]
+    visited: set[str] = set()
+
+    while stack:
+        cur = stack.pop()
+
+        if cur not in visited:
+            visited.add(cur)
+
+            # Add all unvisited neighbors at once.
+            stack.extend(n for n in adj.get(cur, []) if n not in visited)
+
+    reachable_sfis = visited - {fw_id}
+    missing = sfi_ids - reachable_sfis
+
+    assert not missing, (
+        f"Reachability: {len(missing)} emitted SFIs unreachable from framework root. "
+        f"Examples: {sorted(missing)[:20]}"
+    )
 
     # Ensure at least one expectation ("Standard") exists. This prevents "successful"
     # exports that only contain groupings.
-    if not sfi_by_node:
-        raise ValueError("No StandardsFrameworkItems emitted; check drop policies.")
-
     has_any_standard = any(
         sfi.normalized_statement_type == "Standard" for sfi in sfi_by_node.values()
     )
-
-    if not has_any_standard:
-        raise ValueError(
-            "No expectation SFIs emitted (normalized_statement_type='Standard'). "
-            "Export produced only groupings/other items; check canonical IR roles and "
-            "drop/handling policies."
-        )
+    assert sfi_by_node, "No StandardsFrameworkItems emitted; check drop policies."
+    assert has_any_standard, (
+        "No expectation SFIs emitted (normalized_statement_type='Standard'). "
+        "Export produced only groupings/other items. "
+        "Check canonical IR roles and drop/handling policies."
+    )
 
 
 def export_academic_standards(
@@ -958,11 +974,35 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
+    # Stable ordering: make file outputs deterministic across runs.
+    items_sorted = sorted(
+        sfi_by_node.values(), key=lambda sfi: str(sfi.case_identifier_uuid)
+    )
+    relationships_sorted = sorted(
+        relationships,
+        key=lambda r: (
+            r.relationship_type,
+            r.source_entity_value,
+            r.target_entity_value,
+            str(r.identifier),
+        ),
+    )
+
+    # Preserve deterministic child ordering, but stabilize parent key ordering too.
+    fw_id = str(framework_uuid)
+    order_map_sorted: dict[str, list[str]] = {}
+
+    if fw_id in order_map:
+        order_map_sorted[fw_id] = order_map[fw_id]
+
+    for k in sorted(k for k in order_map if k != fw_id):
+        order_map_sorted[k] = order_map[k]
+
     academic_standards = AcademicStandardsExport(
         framework=framework,
-        items=list(sfi_by_node.values()),
-        order=HierarchyOrderExport(order=order_map),
-        relationships=relationships,
+        items=items_sorted,
+        order=HierarchyOrderExport(order=order_map_sorted),
+        relationships=relationships_sorted,
     )
 
     write_to_json(
