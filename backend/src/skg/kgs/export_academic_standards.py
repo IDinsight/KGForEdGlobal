@@ -958,7 +958,7 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
-    standards = AcademicStandardsExport(
+    academic_standards = AcademicStandardsExport(
         framework=framework,
         items=list(sfi_by_node.values()),
         order=HierarchyOrderExport(order=order_map),
@@ -966,23 +966,24 @@ def export_academic_standards(
     )
 
     write_to_json(
-        fp=kg_dirs.academic_standards / "standards_framework.json",
-        json_info=standards.framework,
+        fp=kg_dirs.academic_standards / "academic_standards_framework.json",
+        json_info=academic_standards.framework.model_dump(mode="json"),
     )
     write_to_json(
-        fp=kg_dirs.academic_standards / "standards_framework_items.json",
-        json_info=standards.items,
+        fp=kg_dirs.academic_standards / "academic_standards_framework_items.json",
+        json_info=[sfi.model_dump(mode="json") for sfi in academic_standards.items],
     )
     write_to_json(
-        fp=kg_dirs.academic_standards / "standards_has_child_relationships.json",
-        json_info=standards.relationships,
+        fp=kg_dirs.academic_standards
+        / "academic_standards_has_child_relationships.json",
+        json_info=[r.model_dump(mode="json") for r in academic_standards.relationships],
     )
     write_to_json(
-        fp=kg_dirs.academic_standards / "standards_hierarchy_order.json",
-        json_info=standards.order,
+        fp=kg_dirs.academic_standards / "academic_standards_hierarchy_order.json",
+        json_info=academic_standards.order.model_dump(mode="json"),
     )
 
-    return standards
+    return academic_standards
 
 
 def should_emit_node(
