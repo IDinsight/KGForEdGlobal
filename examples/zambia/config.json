@@ -113,7 +113,7 @@
 		"descriptor_handling": "export_as_sfi_other",
 		"export_dialect": "global_relaxed",
 		"generate_learning_components": true,
-		"generate_progressions": false,
+		"generate_progressions": true,
 		"grouping_role_policy": "whitelist",
 		"grouping_roles_whitelist": [
 			"stage",
@@ -153,9 +153,22 @@
 			"by_columns_signature"
 		],
 		"overwrite": false,
-		"progression_granularity": "auto",
-		"progression_min_confidence": 0.9,
-		"progression_source": "progression_ir",
+		"progression_allow_cross_subject": false,
+		"progression_candidate_pool_size_per_node": 25,
+		"progression_enforce_dag_builds_towards": true,
+		"progression_granularity": "fine",
+		"progression_inference_modules": [
+			"grade_order",
+			"scope_sequence",
+			"code_pattern"
+		],
+		"progression_llm_enabled": false,
+		"progression_llm_top_n_candidates": 5,
+		"progression_min_confidence": 0.7,
+		"progression_only_adjacent_levels": true,
+		"progression_sources": [
+			"inferred"
+		],
 		"provider": "IDinsight | Learning Commons",
 		"prune_empty_groupings": true
 	}
