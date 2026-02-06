@@ -723,7 +723,6 @@ class CreateKGConfig(BaseSchema):
             "stage_order",
             "scope_sequence",
             "code_pattern",
-            "semantic_similarity",
         ]
     ] = Field(
         default=["grade_order", "scope_sequence", "code_pattern"],
