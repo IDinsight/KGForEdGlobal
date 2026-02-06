@@ -456,7 +456,7 @@ def generate_grouping_canonicalization_map(
         return GroupingCanonicalizationMap(doc_key=doc_key, generator=model, items=[])
 
     group_canonicalization_mapping_fp = (
-        creation_dirs.root / "group_canonicalization_map.json"
+        creation_dirs.segment_decisions / "group_canonicalization_map.json"
     )
 
     if not overwrite and group_canonicalization_mapping_fp.exists():

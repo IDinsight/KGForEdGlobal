@@ -1615,8 +1615,10 @@ def apply_spine_policy_to_decision_set(
         The corrected SegmentDecisionSet.
     """
 
-    spine_out_fp = creation_dirs.root / "segment_decisions_spine_corrected.json"
-    spine_report_fp = creation_dirs.root / "spine_report.json"
+    spine_out_fp = (
+        creation_dirs.segment_decisions / "segment_decisions_spine_corrected.json"
+    )
+    spine_report_fp = creation_dirs.segment_decisions / "spine_report.json"
 
     if not overwrite and spine_out_fp.exists() and spine_report_fp.exists():
         logger.warning(

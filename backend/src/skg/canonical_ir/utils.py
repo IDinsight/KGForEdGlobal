@@ -2096,7 +2096,7 @@ def apply_grouping_canonicalization_map(
     """
 
     normalized_segment_decisions_fp = (
-        creation_dirs.root / "segment_decisions_normalized.json"
+        creation_dirs.segment_decisions / "segment_decisions_normalized.json"
     )
 
     if not overwrite and normalized_segment_decisions_fp.exists():
@@ -2550,7 +2550,9 @@ def clean_up_segment_decisions(
         The cleaned SegmentDecisionSet.
     """
 
-    segment_decisions_cleaned_fp = creation_dirs.root / "segment_decisions_cleaned.json"
+    segment_decisions_cleaned_fp = (
+        creation_dirs.segment_decisions / "segment_decisions_cleaned.json"
+    )
 
     if not overwrite and segment_decisions_cleaned_fp.exists():
         logger.warning(
@@ -2629,7 +2631,9 @@ def collect_unique_grouping_keys(
         The list of unique grouping keys.
     """
 
-    grouping_keys_unique_fp = creation_dirs.root / "grouping_keys_unique.json"
+    grouping_keys_unique_fp = (
+        creation_dirs.segment_decisions / "grouping_keys_unique.json"
+    )
 
     if not overwrite and grouping_keys_unique_fp.exists():
         logger.warning(

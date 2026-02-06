@@ -3,178 +3,27 @@ knowledge graph. It exports a shape-preserving Learning Commons Academic Standar
 knowledge graph from the CanonicalIR using ExportContext indexes and CreateKGConfig
 policies.
 
-Outputs
--------
+Outputs:
 
-## 1. academic_standards_framework.json
+1. StandardsFramework
+2. StandardsFrameworkItem[]
+3. Relationship[] (hasChild edges)
+4. HierarchyOrderExport (parent -> ordered children)
 
-### What it contains
+Notes:
 
-A single **`StandardsFramework`** object: the *root “document/framework” node* for the
-PDF. Typical contents:
-
-* Deterministic IDs (framework UUID + CASE UUID/URI fields)
-* Human metadata about the document:
-  * title, jurisdiction/country, publisher/ministry, year, grade range,
-    subjects/learning areas, etc.
-  * language info (and sometimes translation-related fields)
-* Provenance/source info (doc_key, file name, pipeline run metadata, etc.)
-
-### What questions it answers
-
-“About the framework/document as a whole”:
-
-* What curriculum document did we ingest?
-* Which country/ministry/year is this?
-* What grade range and subjects does it cover (if present)?
-* What is the framework’s stable ID to join all other files to?
-* What is the canonical reference for this export run?
-
-## 2. academic_standards_framework_items.json
-
-### What it contains
-
-An array of **`StandardsFrameworkItem` (SFI)** records, i.e. all the nodes under the
-framework that we chose to emit.
-
-This is where the bulk of the standards lives:
-
-* **Grouping SFIs** (normalized type: *“Standard Grouping”*)
-  * grade/stage/subject/theme/topic/etc.
-* **Expectation SFIs** (normalized type: *“Standard”*)
-  * the normative outcomes/competencies/objectives
-* **Aux SFIs** (normalized type: *“Other”*), only if we exported descriptors/guidance
-    as SFIs
-  * descriptors/benchmarks/indicators, guidance, etc.
-
-Also usually included:
-
-* Titles/statements (original + English if available)
-* Local codes/identifiers (when present)
-* Provenance pointers:
-  * `source_decision_ids`, `source_segment_ids`, page indices, bbox, section path
-
-### What questions it answers
-
-“About *what* the standards are”:
-
-* What are all the standards statements in this curriculum?
-* What are the groupings (grades/subjects/themes/topics) that structure the standards?
-* Show me every expectation in Grade 2 Mathematics (we’ll need the hierarchy links from
-    `academic_standards_has_child_relationships.json`/`academic_standards_hierarchy_order`
-    to filter effectively).
-* Where did this standard come from in the PDF (page/bbox/decision IDs)?
-* Which items were exported vs dropped (indirectly: only exported ones are present).
-
-## 3. `academic_standards_has_child_relationships.json`
-
-### What it contains
-
-An array of **relationship records** representing the *hierarchy edges*:
-
-* `(framework) -[:hasChild]-> (SFI)`
-* `(SFI) -[:hasChild]-> (SFI)`
-
-Each relationship typically includes:
-
-* Deterministic relationship ID (UUIDv5)
-* `rel="hasChild"`
-* `from_id` and `to_id` (parent/child export IDs)
-
-NB: This file encodes **structure**, but not reliable ordering by itself (even if we
-output edges in order, consumers shouldn’t assume it).
-
-### What questions it answers
-
-“About the tree/containment”:
-
-* What are the children of this grade/subject/theme node?
-* What is the parent of a given standards statement?
-* What is the path from the framework root to this expectation?
-* What are all descendants under a given subtree?
-* How many standards are under a specific grouping?
-
-## 4. `academic_standards_hierarchy_order.json`
-
-### What it contains
-
-An “ordering artifact” that explicitly captures **sibling order** for each parent node.
-
-Conceptually it is a list/map of:
-
-* `parent_id -> [child_id_1, child_id_2, ...]` in the intended order
-
-This order is sourced from `order_index` on CanonicalIR edges, and then filtered
-through:
-
-* `should_emit_node`
-* aux re-parenting (if enabled)
-* pruning empty groupings (if enabled)
-
-### What questions it answers
-
-“About sequence/reading order/scope-and-sequence hints”
-
-* In what order should I present the standards under this topic?
-* What is the “next” standard after this one within a grouping?
-* Does this curriculum imply sequencing by topic order/grade order/theme-week order?
-* Can I reconstruct a consistent traversal that matches the PDF’s intended flow?
-
-This is also crucial for:
-
-* **Learning progression inference modules** (grade/week ordering)
-* Generating UI displays that match the original syllabus structure
-
----
-
-## How these files all work together
-
-* **Framework** = “What document is this?”
-* **Items** = “What nodes exist and what do they say?”
-* **hasChild edges** = “How are those nodes connected hierarchically?”
-* **hierarchy_order** = “In what order should siblings be traversed/presented?”
-
-If we only had one file:
-
-* Framework alone can’t answer anything about standards content.
-* Items alone can list standards text but can’t reliably say “which Grade/Subject they
-    belong to” without hierarchy links.
-* hasChild edges can build the tree, but without items we don’t know what the nodes
-    mean.
-* hierarchy_order alone can’t build the tree (it assumes the child set per parent), and
-    it doesn’t contain text.
-
----
-
-## Example “question → which file(s) you need?”
-
-* “What’s the stable ID for the Zambia Grade 1–3 framework?”
-  → **framework.json**
-
-* “List all standards statements (expectations) in the whole document.”
-  → **framework_items.json**
-
-* “Which topic does this standard belong to?”
-  → **has_child_relationships.json + framework_items.json**
-
-* “Show me the Grade 2 → Subject → Topic path for this item.”
-  → **has_child_relationships.json + framework_items.json (+ framework.json for root)**
-
-* “What comes after this standard in the syllabus order?”
-  → **hierarchy_order.json (+ items for labels/text)**
+1. Deterministic IDs: UUIDv5 using config.namespace_uuid.
+2. Export-time transformations only (aux parenting and pruning do NOT mutate
+    CanonicalIR).
 """
 
 # Future Library
 from __future__ import annotations
 
 # Standard Library
-import hashlib
-import re
-import unicodedata
-
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, DefaultDict, Optional
 from uuid import UUID, uuid5
 
@@ -185,33 +34,12 @@ from skg.kgs.schemas import (
     StandardsFramework,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs, node_display_text
+from skg.kgs.utils import ExportContext, KGDirs
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import write_to_json
 
 AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
-ROMAN_MAP = {
-    "I": 1,
-    "II": 2,
-    "III": 3,
-    "IV": 4,
-    "V": 5,
-    "VI": 6,
-    "VII": 7,
-    "VIII": 8,
-    "IX": 9,
-    "X": 10,
-    "XI": 11,
-    "XII": 12,
-    "XIII": 13,
-    "XIV": 14,
-    "XV": 15,
-}
-ROMAN_RE = re.compile(
-    r"\b(XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)\b", re.IGNORECASE
-)
-STATEMENT_ROLE_VALUES: set[str] = {item.value for item in StatementRole}
 
 
 @dataclass
@@ -222,94 +50,6 @@ class AcademicStandardsExport:
     items: list[StandardsFrameworkItem]
     order: HierarchyOrderExport
     relationships: list[Relationship]
-
-
-def _build_academic_standards_graph_bundle(
-    *,
-    academic_standards: AcademicStandardsExport,
-    config: CreateKGConfig,
-    ctx: ExportContext,
-) -> dict[str, Any]:
-    """Build a single graph bundle JSON.
-
-    - Nodes: StandardsFramework + StandardsFrameworkItem
-    - Relationships: HAS_CHILD (from Relationships export)
-    - Ordering: add `order_index` on HAS_CHILD relationships based on
-        HierarchyOrderExport.order (parent -> ordered child ids).
-
-    Parameters
-    ----------
-    academic_standards
-        The exported Academic Standards artifacts.
-    config
-        The CreateKGConfig for export.
-    ctx
-        The ExportContext for the CanonicalIR.
-
-    Returns
-    -------
-    dict[str, Any]
-        The graph bundle dictionary.
-    """
-
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # Build (parent, child) -> order_index map from the ordering artifact.
-    order_index_by_edge: dict[tuple[str, str], int] = {}
-
-    for parent_id, child_ids in academic_standards.order.order.items():
-        for idx, child_id in enumerate(child_ids):
-            order_index_by_edge[(parent_id, child_id)] = idx
-
-    # Nodes: use case_identifier_uuid as the node key since relationships already key
-    # off case_identifier_uuid.
-    fw = academic_standards.framework
-    nodes: list[dict[str, Any]] = [
-        {
-            "id": str(fw.case_identifier_uuid),
-            "labels": ["StandardsFramework"],
-            "properties": fw.model_dump(mode="json"),
-        }
-    ]
-
-    for sfi in academic_standards.items:
-        nodes.append(
-            {
-                "id": str(sfi.case_identifier_uuid),
-                "labels": ["StandardsFrameworkItem"],
-                "properties": sfi.model_dump(mode="json"),
-            }
-        )
-
-    # Relationships: reuse Relationship export, but convert to edge shape and add
-    # order_index.
-    relationships: list[dict[str, Any]] = []
-
-    for r in academic_standards.relationships:
-        start_id = r.source_entity_value  # Already case_identifier_uuid as string
-        end_id = r.target_entity_value  # Already case_identifier_uuid as string
-
-        props = r.model_dump(mode="json")
-        props["order_index"] = order_index_by_edge.get((start_id, end_id))
-
-        relationships.append(
-            {
-                "id": str(r.identifier),
-                "type": "HAS_CHILD",
-                "start": start_id,
-                "end": end_id,
-                "properties": props,
-            }
-        )
-
-    return {
-        "doc_key": ctx.doc_key,
-        "export_dialect": config.export_dialect,
-        "generated_at": generated_at,
-        "graph_type": "academic_standards",
-        "nodes": nodes,
-        "relationships": relationships,
-    }
 
 
 def _build_relationships_and_order(
@@ -383,16 +123,16 @@ def _build_relationships_and_order(
     ]
 
     for cid in root_children:
-        relationships.append(
-            _emit_has_child(
-                child_uuid=sfi_by_node[cid].case_identifier_uuid,
-                config=config,
-                doc_key=ctx.doc_key,
-                parent_uuid=framework_uuid,
-                relationship_metadata=_edge_metadata(ctx.root_id, cid),
-                source_entity="StandardsFramework",
-            )
+        rel = _emit_has_child(
+            child_uuid=sfi_by_node[cid].case_identifier_uuid,
+            config=config,
+            doc_key=ctx.doc_key,
+            parent_uuid=framework_uuid,
+            relationship_metadata=_edge_metadata(ctx.root_id, cid),
         )
+        rel.source_entity = "StandardsFramework"
+        rel.target_entity = "StandardsFrameworkItem"
+        relationships.append(rel)
 
     # SFI -> SFI edges.
     for pid, kids in export_children.items():
@@ -443,10 +183,11 @@ def _collect_grade_levels(
     Returns
     -------
     list[str]
-        A deduplicated list of grade level labels found in the node's ancestry, ordered
-        from the highest level (farthest ancestor) down to the lowest level (closest
-        ancestor). If no grade level nodes are encountered during the traversal, an
-        empty list is returned.
+        The list of grade level tags collected from the ancestors of the given node, in
+        order from closest ancestor to farthest (but de-duped if the same grade level
+        appears multiple times in the ancestry). Grade level tags are determined by the
+        display text of ancestor nodes with role "grade_level". If no grade level
+        ancestors are found, returns an empty list.
     """
 
     cur: Optional[str] = node_id
@@ -458,7 +199,7 @@ def _collect_grade_levels(
         node = ctx.nodes_by_id.get(cur) or {}
 
         if node.get("role") == "grade_level":
-            label = node_display_text(node=node, prefer_text_en=prefer_text_en)
+            label = _node_display_text(node=node, prefer_text_en=prefer_text_en)
 
             if label:
                 output.append(label)
@@ -538,83 +279,6 @@ def _compute_export_children(
     return export_children, aux_attach_to_expectation
 
 
-def _compute_topic_path_key(
-    *,
-    ctx: ExportContext,
-    node_id: str,
-    prefer_text_en: bool,
-    role_allowlist: set[str] | None = None,
-) -> tuple[str | None, list[dict[str, Any]]]:
-    """Compute a deterministic topic_path_key for progression threading. If
-    role_allowlist is provided, only those roles contribute. Always excludes
-    grade/stage to allow matching across levels.
-
-    Parameters
-    ----------
-    ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        hierarchy.
-    node_id
-        The ID of the canonical node for which to compute the topic path key.
-    prefer_text_en
-        If True, prefer "text_en" over "text" when extracting display text for nodes.
-    role_allowlist
-        Optional set of roles to allow in the topic path key. If None, all roles are
-        allowed (except those always excluded).
-
-    Returns
-    -------
-    tuple
-        (topic_path_key, debug) where topic_path_key is the computed key string or None
-        if no valid key could be constructed, and debug is a list of dicts with role
-        and label info for each ancestor considered in the path construction (for
-        testing and verification purposes).
-    """
-
-    ancestry = _walk_ancestors(ctx=ctx, node_id=node_id)
-    debug: list[dict[str, Any]] = []
-    parts: list[str] = []
-
-    # Always excluded (structural/non-threading).
-    always_exclude = {
-        NodeRole.FRAMEWORK.value,
-        NodeRole.UNRESOLVED.value,
-        NodeRole.PROSE.value,
-        NodeRole.SECTION.value,
-        NodeRole.GRADE_LEVEL.value,
-        NodeRole.STAGE.value,
-    }
-
-    for aid in ancestry:
-        n = ctx.nodes_by_id.get(aid) or {}
-        r = str(n.get("role") or "")
-
-        if not r:
-            continue
-
-        if r in always_exclude:
-            continue
-
-        if role_allowlist is not None and r not in role_allowlist:
-            continue
-
-        label = n.get("normalized_text") or node_display_text(
-            node=n, prefer_text_en=prefer_text_en
-        )
-        label = " ".join(str(label or "").split())
-
-        if not label:
-            continue
-
-        parts.append(f"{r}={_keyify(label)}")
-        debug.append({"role": r, "label": label, "canonical_node_id": aid})
-
-    if not parts:
-        return None, debug
-
-    return "|".join(parts), debug
-
-
 def _emit_framework(
     *,
     canonical_ir_created_at: Optional[str],
@@ -650,7 +314,7 @@ def _emit_framework(
     metadata = ctx.get_framework_metadata()
     prefer_en = config.description_text_policy == "prefer_text_en"
     root_node = ctx.nodes_by_id.get(ctx.root_id, {})
-    name = node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
+    name = _node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
 
     return StandardsFramework(
         academic_subject=metadata["academic_subject_default"],
@@ -684,9 +348,8 @@ def _emit_has_child(
     doc_key: str,
     parent_uuid: UUID,
     relationship_metadata: Optional[dict[str, Any]] = None,
-    source_entity: str = "StandardsFrameworkItem",
 ) -> Relationship:
-    """Create a hasChild Relationship.
+    """Create a hasChild Relationship between two StandardsFrameworkItems.
 
     Parameters
     ----------
@@ -700,18 +363,12 @@ def _emit_has_child(
         The UUID of the parent StandardsFrameworkItem.
     relationship_metadata
         Optional metadata to attach to the relationship.
-    source_entity
-        The entity type of the parent. Pass ``"StandardsFramework"`` for root-level
-        edges and ``"StandardsFrameworkItem"`` (default) for SFI-to-SFI edges.
 
     Returns
     -------
     Relationship
         The constructed hasChild Relationship.
     """
-
-    relationship_metadata = dict(relationship_metadata or {})
-    relationship_metadata.setdefault("source_kg", "academic_standards")
 
     return Relationship(
         attribution_statement=config.attribution_statement,
@@ -721,14 +378,14 @@ def _emit_has_child(
             f"lc:curriculum:{doc_key}:rel:hasChild:{parent_uuid}:{child_uuid}",
         ),
         license=config.license,
-        metadata=relationship_metadata,
+        metadata=relationship_metadata or {},
         provider=config.provider,
         relationship_type="hasChild",
-        source_entity=source_entity,
-        source_entity_key="case_identifier_uuid",
+        source_entity="StandardsFrameworkItem",  # May be overwritten for framework edges
+        source_entity_key="caseIdentifierUUID",
         source_entity_value=str(parent_uuid),
         target_entity="StandardsFrameworkItem",
-        target_entity_key="case_identifier_uuid",
+        target_entity_key="caseIdentifierUUID",
         target_entity_value=str(child_uuid),
     )
 
@@ -739,7 +396,6 @@ def _emit_sfi(
     canonical_ir_created_at: Any,
     config: CreateKGConfig,
     ctx: ExportContext,
-    fw_metadata: dict[str, Any],
     node_id: str,
 ) -> StandardsFrameworkItem:
     """Emit a StandardsFrameworkItem for a given canonical node.
@@ -758,9 +414,6 @@ def _emit_sfi(
     ctx
         The ExportContext for the CanonicalIR, providing access to node properties and
         framework metadata.
-    fw_metadata
-        Pre-computed framework metadata dict (from ctx.get_framework_metadata()).
-        Passed in to avoid redundant recomputation per node.
     node_id
         The ID of the canonical node to emit as an SFI.
 
@@ -773,28 +426,11 @@ def _emit_sfi(
     node = ctx.nodes_by_id[node_id]
     prefer_en = config.description_text_policy == "prefer_text_en"
 
-    # Language policy:
-    # - default: Always use framework language
-    # - source: Prefer per-node language if present, else fall back to framework
-    sfi_in_language = str(fw_metadata.get("in_language") or "")
-
-    if config.export_in_language_policy == "source":
-        node_lang = (
-            node.get("in_language")
-            or node.get("language")
-            or (node.get("metadata") or {}).get("in_language")
-            or (node.get("metadata") or {}).get("language")
-        )
-        if node_lang:
-            sfi_in_language = str(node_lang)
-
     path_key = ctx.compute_path_key(node_id)
     sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
 
     role = str(node.get("role") or "")
-    desc = node_display_text(node=node, prefer_text_en=prefer_en) or (
-        f"[{role or 'unknown'}:{node_id[:8]}]"
-    )
+    desc = _node_display_text(node=node, prefer_text_en=prefer_en)
     bbox = node.get("bbox")
 
     metadata: dict[str, Any] = {
@@ -818,74 +454,8 @@ def _emit_sfi(
     if aux_attachments:
         metadata["aux_statements"] = aux_attachments
 
-    # Deterministic progression context keys (for Learning Progressions KG inference).
-    if role == StatementRole.EXPECTATION.value:
-        grade_key = _first_ancestor_label_for_role(
-            ctx=ctx,
-            node_id=node_id,
-            role=NodeRole.GRADE_LEVEL.value,
-            prefer_text_en=prefer_en,
-        )
-        stage_key = _first_ancestor_label_for_role(
-            ctx=ctx,
-            node_id=node_id,
-            role=NodeRole.STAGE.value,
-            prefer_text_en=prefer_en,
-        )
-
-        # Use the grouping whitelist if present so topic_path_key is consistent across
-        # countries/configs.
-        role_allowlist = None
-
-        if config.grouping_role_policy == "whitelist":
-            role_allowlist = {r.value for r in config.grouping_roles_whitelist}
-
-            # But never allow grade/stage into the path key.
-            role_allowlist -= {NodeRole.GRADE_LEVEL.value, NodeRole.STAGE.value}
-
-        topic_path_key, topic_path_parts = _compute_topic_path_key(
-            ctx=ctx,
-            node_id=node_id,
-            prefer_text_en=prefer_en,
-            role_allowlist=role_allowlist,
-        )
-
-        parent_id = ctx.parent_by_child.get(node_id)
-        order_index_within_parent = (
-            ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
-        )
-        canon_order_path = _walk_ancestors(ctx=ctx, node_id=node_id)
-
-        # Code retrieval (should work across countries/canonicalizers).
-        grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
-        stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
-        code_raw = (
-            node.get("local_code")
-            or node.get("code")
-            or (node.get("metadata") or {}).get("code")
-            or ""
-        )
-        code_features = _parse_code_features(
-            code=str(code_raw), grade_ordinal_low=grade_low
-        )
-
-        metadata["progression_context"] = {
-            "grade_key": grade_key,
-            "grade_ordinal_low": grade_low,
-            "grade_ordinal_high": grade_high,
-            "stage_key": stage_key,
-            "stage_ordinal_low": stage_low,
-            "stage_ordinal_high": stage_high,
-            "thread_key": _normalize_thread_key(topic_path_key=topic_path_key),
-            "topic_path_key": topic_path_key,
-            "topic_path_parts": topic_path_parts,  # For debugging
-            "canon_order_path": canon_order_path,
-            "order_index_within_parent": order_index_within_parent,
-            **code_features,
-        }
-
     return StandardsFrameworkItem(
-        academic_subject=fw_metadata["academic_subject_default"],
+        academic_subject=ctx.get_framework_metadata()["academic_subject_default"],
         attribution_statement=config.attribution_statement,
         author=config.author,
         case_identifier_uri=f"{config.case_uri_base}{sfi_id}",
@@ -897,8 +467,8 @@ def _emit_sfi(
             ctx=ctx, node_id=node_id, prefer_text_en=prefer_en
         ),
         identifier=sfi_id,
-        in_language=sfi_in_language,
-        jurisdiction=fw_metadata["jurisdiction"],
+        in_language=ctx.get_framework_metadata()["in_language"],
+        jurisdiction=ctx.get_framework_metadata()["jurisdiction"],
         license=config.license,
         metadata=metadata,
         normalized_statement_type=_normalized_statement_type(config=config, role=role),
@@ -938,7 +508,6 @@ def _emit_sfis(
         Mapping of canonical node ID to emitted SFI.
     """
 
-    fw_metadata = ctx.get_framework_metadata()  # Compute once for all SFIs
     sfi_by_node: dict[str, StandardsFrameworkItem] = {}
 
     for node_id, ok in emit_flag.items():
@@ -950,57 +519,10 @@ def _emit_sfis(
             canonical_ir_created_at=canonical_created_at_iso,
             config=config,
             ctx=ctx,
-            fw_metadata=fw_metadata,
             node_id=node_id,
         )
 
     return sfi_by_node
-
-
-def _first_ancestor_label_for_role(
-    *, ctx: ExportContext, node_id: str, role: str, prefer_text_en: bool
-) -> str | None:
-    """Find the closest ancestor (including self) with a given role and return its
-    label.
-
-    Parameters
-    ----------
-    ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        hierarchy.
-    node_id
-        The ID of the canonical node for which to find the ancestor.
-    role
-        The role string to match in ancestors.
-    prefer_text_en
-        If True, prefer "text_en" over "text" when extracting display text for the
-        ancestor node.
-
-    Returns
-    -------
-    str | None
-        The label of the closest ancestor with the given role, or None if no such
-        ancestor is found. The label is normalized by collapsing whitespace. If the
-        ancestor node has no displayable text, returns None.
-    """
-
-    cur: str | None = node_id
-    seen: set[str] = set()
-
-    while cur and cur != ctx.root_id and cur not in seen:
-        seen.add(cur)
-        n = ctx.nodes_by_id.get(cur) or {}
-
-        if n.get("role") == role:
-            label = n.get("normalized_text") or node_display_text(
-                node=n, prefer_text_en=prefer_text_en
-            )
-            label = " ".join(str(label or "").split())
-            return label or None
-
-        cur = ctx.parent_by_child.get(cur)
-
-    return None
 
 
 def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
@@ -1022,7 +544,7 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     if role == NodeRole.FRAMEWORK.value:
         return False
 
-    if role in STATEMENT_ROLE_VALUES:
+    if role in {item.value for item in StatementRole}:
         return False
 
     if config.grouping_role_policy == "loose":
@@ -1033,40 +555,35 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     return role in allowed
 
 
-def _keyify(label: str) -> str:
-    """Deterministically normalize a label into a compact key token.
+def _node_display_text(*, node: dict[str, Any], prefer_text_en: bool) -> str:
+    """Determine display text for a node, preferring title over body, and falling back
+    to local_code or role if no text found.
 
     Parameters
     ----------
-    label
-        The input label string to normalize.
+    node
+        The node dictionary to extract text from.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when extracting from title/body.
 
     Returns
     -------
     str
-        A normalized, URL-safe string consisting of lowercase alphanumeric characters
-        and underscores. If the resulting string is empty after normalization, a
-        12-character hex hash prefixed with 'h' is returned to ensure a non-empty
-        deterministic key. The output is capped at 80 characters.
+        The display text for the node.
     """
 
-    raw = " ".join(str(label or "").strip().split())
+    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
 
-    if not raw:
-        return ""
+    if title:
+        return title
 
-    # Normalize unicode and strip diacritics to ASCII where possible.
-    norm = unicodedata.normalize("NFKD", raw)
-    ascii_s = norm.encode("ascii", "ignore").decode("ascii")
+    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
 
-    s = " ".join(ascii_s.strip().split()).lower()
-    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    if body:
+        return body
 
-    if not s:
-        h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-        return f"h{h}"
-
-    return s[:80] if len(s) > 80 else s
+    # Last resort fallback: code or role.
+    return (node.get("local_code") or node.get("role") or "").strip()
 
 
 def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
@@ -1098,164 +615,35 @@ def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
     return "Other"
 
 
-def _normalize_thread_key(topic_path_key: str | None) -> str | None:
-    """Normalize a topic_path_key into a cross-level "thread" key.
+def _pick_text(*, prefer_text_en: bool, unit: Any) -> str:
+    """Retrieve text from a title/body unit.
 
-    Many curricula number topics/subtopics in their labels (e.g., "1.1 Exploring My
-    World", "2.5 Weather"). topic_path_key intentionally *excludes* grade/stage roles
-    so that it can be used for threading, but those numeric prefixes may still be
-    embedded in the keyified label itself (e.g., `topic=1_1_exploring_my_world`).
-
-    This normalization strips leading numeric-underscore prefixes from each segment's
-    value (e.g., ``1_1_``), producing a more stable thread key across levels.
-
-    NB:
-
-    1. This is *not* country-specific; it targets a common numbering pattern.
-    2. If a segment value becomes empty after stripping (rare), it falls back to the
-      original value.
-
-    TODO: Use an LLM to parse out numbering patterns more robustly, especially for
-    non-English labels.
+    NB: Canonical nodes store title/body as a dict like:
+        {"language": "...", "text": "...", "text_en": "..."}.
 
     Parameters
     ----------
-    topic_path_key
-        The original topic_path_key to normalize.
+    prefer_text_en
+        If True, prefer "text_en" over "text" if both are present.
+    unit
+        The title/body unit to extract text from.
 
     Returns
     -------
-    str | None
-        The normalized thread key, or None if the input key is None or results in no
-        valid segments after normalization.
+    str
+        The extracted text, or empty string if none found.
     """
 
-    if not topic_path_key:
-        return None
+    if not isinstance(unit, dict):
+        return ""
 
-    out_parts: list[str] = []
+    if prefer_text_en:
+        t = (unit.get("text_en") or "").strip()
 
-    for seg in str(topic_path_key).split("|"):
-        if "=" not in seg:
-            continue
+        if t:
+            return t
 
-        role, value = seg.split("=", 1)
-        v = str(value)
-        v_norm = re.sub(r"^(?:\d+_)+", "", v)
-        v_norm = v_norm if v_norm else v
-        out_parts.append(f"{role}={v_norm}")
-
-    return "|".join(out_parts) if out_parts else None
-
-
-def _parse_code_features(*, code: str, grade_ordinal_low: int | None) -> dict[str, Any]:
-    """Parse a local code into deterministic features for progression inference.
-
-    Supports:
-      - numeric codes with dots: 3.9.4.1
-      - mixed codes: M3-1a / ENG.P1.02
-      - roman segments: VI.2.1
-
-    Parameters
-    ----------
-    code
-        The local code string to parse.
-    grade_ordinal_low
-        Optional lower bound for grade ordinals to strip from the code stem (e.g., 1
-        for "Grade 1", 0 for "Kindergarten"). If provided, and if the first code
-        segment matches this grade ordinal (either as a digit or roman numeral), it
-        will be stripped from the `code_stem_without_grade` feature.
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary of parsed code features.
-    """
-
-    output: dict[str, Any] = {}
-    code = " ".join(str(code or "").strip().split())
-
-    if not code:
-        return output
-
-    # Split on common separators; keep alphanum segments.
-    segs = [s for s in re.split(r"[.\-_/\\\s]+", code) if s]
-
-    if not segs:
-        return output
-
-    tup: list[int | str] = [_to_int_or_roman(s) for s in segs]
-
-    output["code"] = code
-    output["code_segments"] = segs
-    output["code_tuple"] = tup
-
-    if len(segs) >= 2:
-        output["code_stem"] = ".".join(segs[:-1])
-        output["code_ordinal"] = segs[-1]
-
-    # If first segment matches grade_ordinal_low (numeric or roman), store stem without
-    # that prefix too.
-    if grade_ordinal_low is not None and segs:
-        first_val = _to_int_or_roman(segs[0])
-        if (
-            isinstance(first_val, int)
-            and first_val == grade_ordinal_low
-            and len(segs) >= 3
-        ):
-            output["code_stem_without_grade"] = ".".join(segs[1:-1])
-
-    return output
-
-
-def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
-    """Parse the primary/lower ordinal from a grade/stage label.
-
-    Handles:
-      - digits: "Grade 3" -> 3, "I–II" -> 1, "Std III-VI" -> 3
-      - embedded roman numerals: "Std VI" -> 6, "Standard III–VI" -> 3
-
-    Parameters
-    ----------
-    label
-        The input label string to parse.
-
-    Returns
-    -------
-    tuple[int | None, int | None]
-        A tuple of (ordinal_low, ordinal_high). If only one ordinal is found, both
-        values will be the same. If no ordinals are found, both values will be None.
-    """
-
-    if not label:
-        return None, None
-
-    s = " ".join(str(label).strip().split())
-
-    # Normalize dash variants to hyphen so range parsing works.
-    s_norm = s.replace("–", "-").replace("—", "-").replace("−", "-")
-
-    # Prefer digits if present.
-    nums = [int(x) for x in re.findall(r"(\d+)", s_norm)]
-
-    if nums:
-        if len(nums) >= 2:
-            return min(nums[0], nums[1]), max(nums[0], nums[1])
-        return nums[0], nums[0]
-
-    # Otherwise try roman numerals anywhere in the string.
-    romans = [ROMAN_MAP.get(m.group(1).upper()) for m in ROMAN_RE.finditer(s_norm)]
-    romans = [r for r in romans if r is not None]
-
-    if romans:
-        valid_romans: list[int] = [r for r in romans if r is not None]
-
-        if len(valid_romans) >= 2:
-            return min(valid_romans), max(valid_romans)
-        if valid_romans:
-            return valid_romans[0], valid_romans[0]
-
-    return None, None
+    return ((unit.get("text") or "") or (unit.get("text_en") or "")).strip()
 
 
 def _prune_empty_groupings(
@@ -1312,7 +700,7 @@ def _prune_empty_groupings(
 
     # Drop children that are no longer emitted.
     for pid, kids in list(export_children.items()):
-        export_children[pid] = [c for c in kids if c in emitted]
+        export_children[pid] = [c for c in kids if c == ctx.root_id or c in emitted]
 
     # Reflect pruning back into emit_flag.
     for nid in list(emit_flag.keys()):
@@ -1377,7 +765,7 @@ def _reparent_aux_under_expectations(
                 aux_attach_to_expectation[last_expectation].append(
                     {
                         "role": role,
-                        "text": node_display_text(node=node, prefer_text_en=prefer_en),
+                        "text": _node_display_text(node=node, prefer_text_en=prefer_en),
                         "canonical_node_id": cid,
                         "page_indices": node.get("page_indices", []),
                         "source_decision_ids": node.get("source_decision_ids", []),
@@ -1393,36 +781,6 @@ def _reparent_aux_under_expectations(
         new_kids.append(cid)
 
     return new_kids
-
-
-def _to_int_or_roman(s: str) -> int | str:
-    """Convert a string to an integer if it's purely digits, or to a Roman numeral
-    value if it matches a known Roman numeral.
-
-    Parameters
-    ----------
-    s
-        The input string to convert.
-
-    Returns
-    -------
-    int | str
-        The integer value if the string is purely digits, the integer value of the
-        Roman numeral if it matches a known Roman numeral, or the original string if
-        neither conversion applies.
-    """
-
-    if re.fullmatch(r"\d+", s):
-        try:
-            return int(s)
-        except ValueError:
-            return s
-
-    u = s.upper()
-
-    if u in ROMAN_MAP:
-        return ROMAN_MAP[u]
-    return s
 
 
 def _to_iso8601_or_none(v: Any) -> Optional[str]:
@@ -1481,6 +839,11 @@ def _verify_standards_export(
         The list of exported Relationships.
     sfi_by_node
         The mapping of canonical node IDs to exported StandardsFrameworkItems.
+
+    Raises
+    ------
+    ValueError
+        If any integrity check fails.
     """
 
     # Check referential integrity.
@@ -1490,96 +853,43 @@ def _verify_standards_export(
     for r in relationships:
         s_ok = (r.source_entity_value == fw_id) or (r.source_entity_value in sfi_ids)
         t_ok = r.target_entity_value in sfi_ids
-        assert s_ok and t_ok, (
-            f"Relationship references missing entity: "
-            f"{r.relationship_type} {r.source_entity_value} -> {r.target_entity_value}"
-        )
+
+        if not s_ok or not t_ok:
+            raise ValueError(
+                f"Relationship references missing entity: {r.relationship_type} "
+                f"{r.source_entity_value} -> {r.target_entity_value}"
+            )
 
     # Check ordering integrity.
     rel_children_by_parent: DefaultDict[str, set[str]] = defaultdict(set)
-
     for r in relationships:
         if r.relationship_type == "hasChild":
             rel_children_by_parent[r.source_entity_value].add(r.target_entity_value)
 
     for parent, kids in rel_children_by_parent.items():
         ordered = parent_to_children.get(parent)
-        assert ordered is not None, f"Missing hierarchy order for parent: {parent}"
-        assert set(ordered) == set(
-            kids
-        ), f"Hierarchy order child set mismatch for parent: {parent}"
 
-    # Check reachability: every emitted SFI must be reachable from the framework root
-    # via hasChild edges. This catches orphans caused by pruning/filters.
-    adj: DefaultDict[str, list[str]] = defaultdict(list)
+        if ordered is None:
+            raise ValueError(f"Missing hierarchy order for parent: {parent}")
 
-    for r in relationships:
-        if r.relationship_type == "hasChild":
-            adj[r.source_entity_value].append(r.target_entity_value)
-
-    stack: list[str] = [fw_id]
-    visited: set[str] = set()
-
-    while stack:
-        cur = stack.pop()
-
-        if cur not in visited:
-            visited.add(cur)
-
-            # Add all unvisited neighbors at once.
-            stack.extend(n for n in adj.get(cur, []) if n not in visited)
-
-    reachable_sfis = visited - {fw_id}
-    missing = sfi_ids - reachable_sfis
-
-    assert not missing, (
-        f"Reachability: {len(missing)} emitted SFIs unreachable from framework root. "
-        f"Examples: {sorted(missing)[:20]}"
-    )
+        if set(ordered) != set(kids):
+            raise ValueError(f"Hierarchy order child set mismatch for parent: {parent}")
 
     # Ensure at least one expectation ("Standard") exists. This prevents "successful"
     # exports that only contain groupings.
+    if not sfi_by_node:
+        raise ValueError("No StandardsFrameworkItems emitted; check drop policies.")
+
     has_any_standard = any(
         sfi.normalized_statement_type == "Standard" for sfi in sfi_by_node.values()
     )
-    assert sfi_by_node, "No StandardsFrameworkItems emitted; check drop policies."
-    assert has_any_standard, (
-        "No expectation SFIs emitted (normalized_statement_type='Standard'). "
-        "Export produced only groupings/other items. "
-        "Check canonical IR roles and drop/handling policies."
-    )
 
-
-def _walk_ancestors(*, ctx: ExportContext, node_id: str) -> list[str]:
-    """Return canonical node_id ancestry from root -> ... -> node_id (excluding root).
-
-    Parameters
-    ----------
-    ctx
-        The ExportContext for the CanonicalIR, providing access to parent-child mappings.
-    node_id
-        The ID of the canonical node for which to walk ancestors.
-
-    Returns
-    -------
-    list[str]
-        The list of ancestor node IDs from the root down to the given node (excluding
-        the root itself). If the node is not reachable from the root, returns the
-        ancestry up to the point where a cycle is detected or the root is reached.
-    """
-
-    chain: list[str] = []
-    cur: str | None = node_id
-    seen: set[str] = set()
-
-    while cur and cur != ctx.root_id and cur not in seen:
-        seen.add(cur)
-        chain.append(cur)
-        cur = ctx.parent_by_child.get(cur)
-
-    chain.reverse()
-
-    return chain
+    if not has_any_standard:
+        raise ValueError(
+            "No expectation SFIs emitted (normalized_statement_type='Standard'). "
+            "Export produced only groupings/other items; check canonical IR roles and "
+            "drop/handling policies."
+        )
 
 
 def export_academic_standards(
@@ -1697,62 +1007,31 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
-    # Stable ordering: make file outputs deterministic across runs.
-    items_sorted = sorted(
-        sfi_by_node.values(), key=lambda sfi: str(sfi.case_identifier_uuid)
-    )
-    relationships_sorted = sorted(
-        relationships,
-        key=lambda r: (
-            r.relationship_type,
-            r.source_entity_value,
-            r.target_entity_value,
-            str(r.identifier),
-        ),
-    )
-
-    # Preserve deterministic child ordering, but stabilize parent key ordering too.
-    fw_id = str(framework_uuid)
-    order_map_sorted: dict[str, list[str]] = {}
-
-    if fw_id in order_map:
-        order_map_sorted[fw_id] = order_map[fw_id]
-
-    for k in sorted(k for k in order_map if k != fw_id):
-        order_map_sorted[k] = order_map[k]
-
-    academic_standards = AcademicStandardsExport(
+    standards = AcademicStandardsExport(
         framework=framework,
-        items=items_sorted,
-        order=HierarchyOrderExport(order=order_map_sorted),
-        relationships=relationships_sorted,
+        items=list(sfi_by_node.values()),
+        order=HierarchyOrderExport(order=order_map),
+        relationships=relationships,
     )
 
     write_to_json(
-        fp=kg_dirs.academic_standards / "academic_standards_framework.json",
-        json_info=academic_standards.framework.model_dump(mode="json"),
+        fp=kg_dirs.academic_standards / "standards_framework.json",
+        json_info=standards.framework,
     )
     write_to_json(
-        fp=kg_dirs.academic_standards / "academic_standards_framework_items.json",
-        json_info=[sfi.model_dump(mode="json") for sfi in academic_standards.items],
+        fp=kg_dirs.academic_standards / "standards_framework_items.json",
+        json_info=standards.items,
     )
     write_to_json(
-        fp=kg_dirs.academic_standards
-        / "academic_standards_has_child_relationships.json",
-        json_info=[r.model_dump(mode="json") for r in academic_standards.relationships],
+        fp=kg_dirs.academic_standards / "standards_has_child_relationships.json",
+        json_info=standards.relationships,
     )
     write_to_json(
-        fp=kg_dirs.academic_standards / "academic_standards_hierarchy_order.json",
-        json_info=academic_standards.order.model_dump(mode="json"),
-    )
-    write_to_json(
-        fp=kg_dirs.academic_standards / "academic_standards_kg.json",
-        json_info=_build_academic_standards_graph_bundle(
-            academic_standards=academic_standards, config=config, ctx=ctx
-        ),
+        fp=kg_dirs.academic_standards / "standards_hierarchy_order.json",
+        json_info=standards.order,
     )
 
-    return academic_standards
+    return standards
 
 
 def should_emit_node(
@@ -1800,7 +1079,7 @@ def should_emit_node(
     if (
         config.grouping_role_policy == "whitelist"
         and role != NodeRole.FRAMEWORK.value
-        and role not in STATEMENT_ROLE_VALUES
+        and role not in {item.value for item in StatementRole}
         and not _is_grouping_role(config=config, role=role)
     ):
         return config.non_grouping_role_handling != "drop"
