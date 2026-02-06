@@ -649,17 +649,15 @@ def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
 
 
 def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
-    """Determine display text for a node, preferring title over body, and
-    falling back to normalized_text, then local_code or role if no text found.
+    """Determine display text for a node, preferring title over body, and falling back
+    to normalized_text, then local_code or role if no text found.
 
     Parameters
     ----------
     node
         The node dictionary to extract text from.
     prefer_text_en
-        If True, prefer "text_en" over "text" when extracting from
-        title/body. Defaults to True for backward compatibility with
-        ID-generation callers.
+        If True, prefer "text_en" over "text" when extracting from title/body.
 
     Returns
     -------

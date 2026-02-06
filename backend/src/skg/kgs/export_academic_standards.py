@@ -3,18 +3,165 @@ knowledge graph. It exports a shape-preserving Learning Commons Academic Standar
 knowledge graph from the CanonicalIR using ExportContext indexes and CreateKGConfig
 policies.
 
-Outputs:
+Outputs
+-------
 
-1. StandardsFramework
-2. StandardsFrameworkItem[]
-3. Relationship[] (hasChild edges)
-4. HierarchyOrderExport (parent -> ordered children)
+## 1. academic_standards_framework.json
 
-Notes:
+### What it contains
 
-1. Deterministic IDs: UUIDv5 using config.namespace_uuid.
-2. Export-time transformations only (aux parenting and pruning do NOT mutate
-    CanonicalIR).
+A single **`StandardsFramework`** object: the *root “document/framework” node* for the
+PDF. Typical contents:
+
+* Deterministic IDs (framework UUID + CASE UUID/URI fields)
+* Human metadata about the document:
+  * title, jurisdiction/country, publisher/ministry, year, grade range,
+    subjects/learning areas, etc.
+  * language info (and sometimes translation-related fields)
+* Provenance/source info (doc_key, file name, pipeline run metadata, etc.)
+
+### What questions it answers
+
+“About the framework/document as a whole”:
+
+* What curriculum document did we ingest?
+* Which country/ministry/year is this?
+* What grade range and subjects does it cover (if present)?
+* What is the framework’s stable ID to join all other files to?
+* What is the canonical reference for this export run?
+
+## 2. academic_standards_framework_items.json
+
+### What it contains
+
+An array of **`StandardsFrameworkItem` (SFI)** records, i.e. all the nodes under the
+framework that we chose to emit.
+
+This is where the bulk of the standards lives:
+
+* **Grouping SFIs** (normalized type: *“Standard Grouping”*)
+  * grade/stage/subject/theme/topic/etc.
+* **Expectation SFIs** (normalized type: *“Standard”*)
+  * the normative outcomes/competencies/objectives
+* **Aux SFIs** (normalized type: *“Other”*), only if we exported descriptors/guidance
+    as SFIs
+  * descriptors/benchmarks/indicators, guidance, etc.
+
+Also usually included:
+
+* Titles/statements (original + English if available)
+* Local codes/identifiers (when present)
+* Provenance pointers:
+  * `source_decision_ids`, `source_segment_ids`, page indices, bbox, section path
+
+### What questions it answers
+
+“About *what* the standards are”:
+
+* What are all the standards statements in this curriculum?
+* What are the groupings (grades/subjects/themes/topics) that structure the standards?
+* Show me every expectation in Grade 2 Mathematics (we’ll need the hierarchy links from
+    `academic_standards_has_child_relationships.json`/`academic_standards_hierarchy_order`
+    to filter effectively).
+* Where did this standard come from in the PDF (page/bbox/decision IDs)?
+* Which items were exported vs dropped (indirectly: only exported ones are present).
+
+## 3. `academic_standards_has_child_relationships.json`
+
+### What it contains
+
+An array of **relationship records** representing the *hierarchy edges*:
+
+* `(framework) -[:hasChild]-> (SFI)`
+* `(SFI) -[:hasChild]-> (SFI)`
+
+Each relationship typically includes:
+
+* Deterministic relationship ID (UUIDv5)
+* `rel="hasChild"`
+* `from_id` and `to_id` (parent/child export IDs)
+
+NB: This file encodes **structure**, but not reliable ordering by itself (even if we
+output edges in order, consumers shouldn’t assume it).
+
+### What questions it answers
+
+“About the tree/containment”:
+
+* What are the children of this grade/subject/theme node?
+* What is the parent of a given standards statement?
+* What is the path from the framework root to this expectation?
+* What are all descendants under a given subtree?
+* How many standards are under a specific grouping?
+
+## 4. `academic_standards_hierarchy_order.json`
+
+### What it contains
+
+An “ordering artifact” that explicitly captures **sibling order** for each parent node.
+
+Conceptually it is a list/map of:
+
+* `parent_id -> [child_id_1, child_id_2, ...]` in the intended order
+
+This order is sourced from `order_index` on CanonicalIR edges, and then filtered
+through:
+
+* `should_emit_node`
+* aux re-parenting (if enabled)
+* pruning empty groupings (if enabled)
+
+### What questions it answers
+
+“About sequence/reading order/scope-and-sequence hints”
+
+* In what order should I present the standards under this topic?
+* What is the “next” standard after this one within a grouping?
+* Does this curriculum imply sequencing by topic order/grade order/theme-week order?
+* Can I reconstruct a consistent traversal that matches the PDF’s intended flow?
+
+This is also crucial for:
+
+* **Learning progression inference modules** (grade/week ordering)
+* Generating UI displays that match the original syllabus structure
+
+---
+
+## How these files all work together
+
+* **Framework** = “What document is this?”
+* **Items** = “What nodes exist and what do they say?”
+* **hasChild edges** = “How are those nodes connected hierarchically?”
+* **hierarchy_order** = “In what order should siblings be traversed/presented?”
+
+If we only had one file:
+
+* Framework alone can’t answer anything about standards content.
+* Items alone can list standards text but can’t reliably say “which Grade/Subject they
+    belong to” without hierarchy links.
+* hasChild edges can build the tree, but without items we don’t know what the nodes
+    mean.
+* hierarchy_order alone can’t build the tree (it assumes the child set per parent), and
+    it doesn’t contain text.
+
+---
+
+## Example “question → which file(s) you need?”
+
+* “What’s the stable ID for the Zambia Grade 1–3 framework?”
+  → **framework.json**
+
+* “List all standards statements (expectations) in the whole document.”
+  → **framework_items.json**
+
+* “Which topic does this standard belong to?”
+  → **has_child_relationships.json + framework_items.json**
+
+* “Show me the Grade 2 → Subject → Topic path for this item.”
+  → **has_child_relationships.json + framework_items.json (+ framework.json for root)**
+
+* “What comes after this standard in the syllabus order?”
+  → **hierarchy_order.json (+ items for labels/text)**
 """
 
 # Future Library
@@ -51,6 +198,94 @@ class AcademicStandardsExport:
     items: list[StandardsFrameworkItem]
     order: HierarchyOrderExport
     relationships: list[Relationship]
+
+
+def _build_academic_standards_graph_bundle(
+    *,
+    academic_standards: AcademicStandardsExport,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+) -> dict[str, Any]:
+    """Build a single Neo4j-friendly graph bundle JSON.
+
+    - Nodes: StandardsFramework + StandardsFrameworkItem
+    - Relationships: HAS_CHILD (from Relationships export)
+    - Ordering: add `order_index` on HAS_CHILD relationships based on
+        HierarchyOrderExport.order (parent -> ordered child ids).
+
+    Parameters
+    ----------
+    academic_standards
+        The exported Academic Standards artifacts.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+
+    Returns
+    -------
+    dict[str, Any]
+        The Neo4j-friendly graph bundle dictionary.
+    """
+
+    generated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    # Build (parent, child) -> order_index map from the ordering artifact.
+    order_index_by_edge: dict[tuple[str, str], int] = {}
+
+    for parent_id, child_ids in academic_standards.order.order.items():
+        for idx, child_id in enumerate(child_ids):
+            order_index_by_edge[(parent_id, child_id)] = idx
+
+    # Nodes: use case_identifier_uuid as the Neo4j node key since relationships already
+    # key off case_identifier_uuid.
+    fw = academic_standards.framework
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": str(fw.case_identifier_uuid),
+            "labels": ["StandardsFramework"],
+            "properties": fw.model_dump(mode="json"),
+        }
+    ]
+
+    for sfi in academic_standards.items:
+        nodes.append(
+            {
+                "id": str(sfi.case_identifier_uuid),
+                "labels": ["StandardsFrameworkItem"],
+                "properties": sfi.model_dump(mode="json"),
+            }
+        )
+
+    # Relationships: reuse Relationship export, but convert to Neo4j edge shape and add
+    # order_index.
+    relationships: list[dict[str, Any]] = []
+
+    for r in academic_standards.relationships:
+        start_id = r.source_entity_value  # Already case_identifier_uuid as string
+        end_id = r.target_entity_value  # Already case_identifier_uuid as string
+
+        props = r.model_dump(mode="json")
+        props["order_index"] = order_index_by_edge.get((start_id, end_id))
+
+        relationships.append(
+            {
+                "id": str(r.identifier),
+                "type": "HAS_CHILD",  # Neo4j relationship type
+                "start": start_id,
+                "end": end_id,
+                "properties": props,
+            }
+        )
+
+    return {
+        "doc_key": ctx.doc_key,
+        "export_dialect": config.export_dialect,
+        "generated_at": generated_at,
+        "graph_type": "academic_standards",
+        "nodes": nodes,
+        "relationships": relationships,
+    }
 
 
 def _build_relationships_and_order(
@@ -375,6 +610,9 @@ def _emit_has_child(
         The constructed hasChild Relationship.
     """
 
+    relationship_metadata = dict(relationship_metadata or {})
+    relationship_metadata.setdefault("source_kg", "academic_standards")
+
     return Relationship(
         attribution_statement=config.attribution_statement,
         author=config.author,
@@ -383,7 +621,7 @@ def _emit_has_child(
             f"lc:curriculum:{doc_key}:rel:hasChild:{parent_uuid}:{child_uuid}",
         ),
         license=config.license,
-        metadata=relationship_metadata or {},
+        metadata=relationship_metadata,
         provider=config.provider,
         relationship_type="hasChild",
         source_entity=source_entity,
@@ -1021,6 +1259,12 @@ def export_academic_standards(
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_hierarchy_order.json",
         json_info=academic_standards.order.model_dump(mode="json"),
+    )
+    write_to_json(
+        fp=kg_dirs.academic_standards / "academic_standards_kg.json",
+        json_info=_build_academic_standards_graph_bundle(
+            academic_standards=academic_standards, config=config, ctx=ctx
+        ),
     )
 
     return academic_standards
