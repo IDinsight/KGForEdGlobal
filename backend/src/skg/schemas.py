@@ -643,6 +643,7 @@ class CreateKGConfig(BaseSchema):
         ),
     )
     max_progression_edges_per_node: int = Field(default=3, ge=1)
+    model: str = Field("gpt-5.2-2025-12-11", description="OpenAI model for KGs.")
     namespace_uuid: UUID = Field(
         default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
         description="Pinned UUID namespace used with uuid5 for deterministic IDs.",

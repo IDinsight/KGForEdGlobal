@@ -3301,7 +3301,11 @@ def persist_canonical_run(
     creation_dirs = create_canonical_ir_dirs(output_dir=output_dir)
     exclude_keys = {"model", "overwrite"}
     creation_run = RunCtx(
-        extra={k: v for k, v in config.model_dump().items() if k not in exclude_keys},
+        extra={
+            k: v
+            for k, v in config.model_dump(mode="json").items()
+            if k not in exclude_keys
+        },
         models=[config.model],
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),

@@ -145,7 +145,7 @@ class ExportContext:
 
         return "/".join(parts)
 
-    def resolve_framework_metadata(self) -> dict[str, Any]:
+    def get_framework_metadata(self) -> dict[str, Any]:
         """Resolve the framework-level metadata for the KG export.
 
         Returns
@@ -369,7 +369,10 @@ def _verify_columns_signature(
         return
 
     for d in segment_decisions:
-        if d.segment_kind != "table" or d.decision_type in {"ignore", "unresolved"}:
+        if d.segment_kind != "table" or d.decision_type.value in {
+            "ignore",
+            "unresolved",
+        }:
             continue
 
         if not d.columns_signature:
@@ -513,7 +516,7 @@ def build_kg_export_context(
 
     # 1.
     nodes_by_id: dict[str, dict[str, Any]] = {
-        node.node_id: node.model_dump() for node in canonical_ir.nodes
+        node.node_id: node.model_dump(mode="json") for node in canonical_ir.nodes
     }
     root_id = canonical_ir.root_id
 
@@ -559,7 +562,7 @@ def build_kg_export_context(
     decisions_by_id: dict[str, dict[str, Any]] = {}
     for d in canonical_ir.segment_decisions:
         assert d.decision_id, f"Missing decision_id for segment decision: {d}"
-        decisions_by_id[d.decision_id] = d.model_dump()
+        decisions_by_id[d.decision_id] = d.model_dump(mode="json")
 
     # 4.
     by_seg: dict[str, list[SegmentDecision]] = defaultdict(list)
@@ -577,7 +580,7 @@ def build_kg_export_context(
         )
 
         # Dump the best decision to a dict.
-        decisions_by_segment_id[sid] = ds_sorted[0].model_dump()
+        decisions_by_segment_id[sid] = ds_sorted[0].model_dump(mode="json")
 
     # 5.
     ctx = ExportContext(
@@ -622,7 +625,11 @@ def persist_kg_run(
     kg_dirs = create_kg_dirs(output_dir=output_dir)
     exclude_keys = {"model", "overwrite"}
     kg_run = RunCtx(
-        extra={k: v for k, v in config.model_dump().items() if k not in exclude_keys},
+        extra={
+            k: v
+            for k, v in config.model_dump(mode="json").items()
+            if k not in exclude_keys
+        },
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
     )

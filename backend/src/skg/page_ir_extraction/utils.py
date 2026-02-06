@@ -206,7 +206,11 @@ def persist_extraction_run(
     )
     exclude_keys = {"model", "overwrite"}
     extraction_run = RunCtx(
-        extra={k: v for k, v in config.model_dump().items() if k not in exclude_keys},
+        extra={
+            k: v
+            for k, v in config.model_dump(mode="json").items()
+            if k not in exclude_keys
+        },
         models=[config.model],
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
