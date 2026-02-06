@@ -58,7 +58,10 @@ def create_kgs(
 
     The process is as follows:
 
-    1. XXX
+    1. Load the CanonicalIR JSON and validate it.
+    2. Build the knowledge graph export context.
+    3. Export academic standards to the knowledge graphs.
+    4. XXX
 
     Parameters
     ----------
