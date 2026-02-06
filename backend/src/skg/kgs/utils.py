@@ -89,7 +89,7 @@ class ExportContext:
 
         role = node["role"]
         assert role, f"Node {child_id} is missing role in provenance: {node}"
-        code = _normalize_ws(str(node.get("local_code") or ""))
+        code = normalize_ws(str(node.get("local_code") or ""))
 
         # Build the base piece first (no early returns), then apply order
         # disambiguation if needed.
@@ -217,6 +217,8 @@ class KGDirs:
 
     root: Path
     academic_standards: Path
+    learning_components: Path
+    learning_progressions: Path
 
 
 def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
@@ -241,7 +243,7 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
         for cid in kids:
             node = ctx.nodes_by_id[cid]
             role = str(node.get("role") or "")
-            code = _normalize_ws(str(node.get("local_code") or ""))
+            code = normalize_ws(str(node.get("local_code") or ""))
 
             # NB: include statement roles too, using the same base as _path_piece.
             if role in {item.value for item in StatementRole}:
@@ -262,23 +264,6 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
                 seen[base] = cid
 
     return needs
-
-
-def _normalize_ws(s: str) -> str:
-    """Normalize whitespace in a string by collapsing multiple spaces and trim.
-
-    Parameters
-    ----------
-    s
-        The input string to normalize.
-
-    Returns
-    -------
-    str
-        The normalized string.
-    """
-
-    return re.sub(r"\s+", " ", (s or "")).strip()
 
 
 def _pick_text(*, prefer_text_en: bool, unit: Any) -> str:
@@ -328,7 +313,7 @@ def _slugify(*, max_len: int = 80, s: str) -> str:
         The slugified string.
     """
 
-    original = _normalize_ws(s)
+    original = normalize_ws(s)
     lower = original.lower()
 
     slug = re.sub(r"[^a-z0-9]+", "-", lower).strip("-")
@@ -454,11 +439,18 @@ def create_kg_dirs(*, output_dir: Path) -> KGDirs:
 
     root = output_dir
     academic_standards = root / "academic_standards"
+    learning_components = root / "learning_components"
+    learning_progressions = root / "learning_progressions"
 
-    for p in [root, academic_standards]:
+    for p in [root, academic_standards, learning_components, learning_progressions]:
         make_dir(p)
 
-    return KGDirs(root=root, academic_standards=academic_standards)
+    return KGDirs(
+        root=root,
+        academic_standards=academic_standards,
+        learning_components=learning_components,
+        learning_progressions=learning_progressions,
+    )
 
 
 def build_kg_export_context(
@@ -685,6 +677,23 @@ def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> s
     return (node.get("local_code") or node.get("role") or "").strip()
 
 
+def normalize_ws(s: str) -> str:
+    """Normalize whitespace in a string by collapsing multiple spaces and trim.
+
+    Parameters
+    ----------
+    s
+        The input string to normalize.
+
+    Returns
+    -------
+    str
+        The normalized string.
+    """
+
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+
 def persist_kg_run(
     *, config: CreateKGConfig, output_dir: Path
 ) -> tuple[KGDirs, RunCtx]:
@@ -736,6 +745,6 @@ def stable_text_hash(*, n: int = 12, s: str) -> str:
         The stable hash of the string.
     """
 
-    s = _normalize_ws(s).lower()
+    s = normalize_ws(s).lower()
 
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n]

@@ -33,6 +33,7 @@ if __name__ == "__main__":
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR
 from skg.kgs.export_academic_standards import export_academic_standards
+from skg.kgs.export_learning_components import export_learning_components
 from skg.kgs.utils import (
     KGDirs,
     build_kg_export_context,
@@ -61,7 +62,8 @@ def create_kgs(
     1. Load the CanonicalIR JSON and validate it.
     2. Build the knowledge graph export context.
     3. Export academic standards to the knowledge graphs.
-    4. XXX
+    4. Optionally export Learning Components KG.
+    5. Optionally export Learning Progressions KG.
 
     Parameters
     ----------
@@ -91,7 +93,25 @@ def create_kgs(
         kg_dirs=kg_dirs,
         provenance_context=provenance_context,
     )
-    logger.info(f"{academic_standards = }")
+    logger.info(
+        f"Exported Academic Standards KG: "
+        f"{len(academic_standards.items)} items, "
+        f"{len(academic_standards.relationships)} `hasChild` relationships"
+    )
+
+    # 4.
+    if config.generate_learning_components is True:
+        learning_components = export_learning_components(
+            academic_standards=academic_standards,
+            config=config,
+            ctx=kg_export_ctx,
+            kg_dirs=kg_dirs,
+        )
+        logger.info(
+            f"Exported Learning Components KG: "
+            f"{len(learning_components.learning_components)} components, "
+            f"{len(learning_components.supports_relationships)} `supports` relationships"
+        )
 
 
 @cli.command()

@@ -170,7 +170,7 @@ from __future__ import annotations
 # Standard Library
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, DefaultDict, Optional
 from uuid import UUID, uuid5
 
@@ -228,7 +228,7 @@ def _build_academic_standards_graph_bundle(
         The Neo4j-friendly graph bundle dictionary.
     """
 
-    generated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Build (parent, child) -> order_index map from the ordering artifact.
     order_index_by_edge: dict[tuple[str, str], int] = {}
