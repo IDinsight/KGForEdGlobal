@@ -121,6 +121,7 @@
 		"learning_component_policy": "split_bullets",
 		"license": "All rights reserved (source PDF)",
 		"max_progression_edges_per_node": 5,
+		"model": "gpt-5.2-2025-12-11",
 		"non_standard_columns_signature": [
 			"cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday",
 			"s/n|competence|descriptors",

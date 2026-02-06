@@ -2668,7 +2668,11 @@ def persist_stitching_run(
     stitching_dirs = create_document_ir_dirs(output_dir=output_dir)
     exclude_keys = {"model", "overwrite"}
     stitching_run = RunCtx(
-        extra={k: v for k, v in config.model_dump().items() if k not in exclude_keys},
+        extra={
+            k: v
+            for k, v in config.model_dump(mode="json").items()
+            if k not in exclude_keys
+        },
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
     )

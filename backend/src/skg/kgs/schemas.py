@@ -42,7 +42,6 @@ class StandardsFramework(BaseSchema):
     """
 
     academic_subject: str = Field(
-        alias="academicSubject",
         description=(
             "High-level academic subject classification for the framework "
             "(e.g., Mathematics, English Language Arts, Science). "
@@ -51,7 +50,6 @@ class StandardsFramework(BaseSchema):
         ),
     )
     adoption_status: str = Field(
-        alias="adoptionStatus",
         description=(
             "Adoption status of the framework (e.g., Draft, Adopted). "
             "In `lc_public_strict`, this should conform to LC enum values; "
@@ -59,7 +57,6 @@ class StandardsFramework(BaseSchema):
         ),
     )
     attribution_statement: str = Field(
-        alias="attributionStatement",
         description=(
             "Attribution text required to credit the original publisher/owner "
             "of the standards framework (e.g., Ministry of Education, year, source)."
@@ -72,7 +69,6 @@ class StandardsFramework(BaseSchema):
         ),
     )
     case_identifier_uri: str = Field(
-        alias="caseIdentifierURI",
         description=(
             "Stable URI identifier for the framework object. LC KG aligns with "
             "CASE-style identifiers; for non-CASE sources this may be a synthetic "
@@ -80,7 +76,6 @@ class StandardsFramework(BaseSchema):
         ),
     )
     case_identifier_uuid: UUID = Field(
-        alias="caseIdentifierUUID",
         description=(
             "Stable UUID identifier for the framework object. In LC KG/CASE contexts, "
             "this is used as a stable cross-system identifier. For non-CASE sources, "
@@ -88,7 +83,6 @@ class StandardsFramework(BaseSchema):
         ),
     )
     date_created: Optional[str] = Field(
-        alias="dateCreated",
         default=None,
         description=(
             "Creation timestamp for the framework (ISO-8601 string), if known. "
@@ -96,7 +90,6 @@ class StandardsFramework(BaseSchema):
         ),
     )
     date_modified: Optional[str] = Field(
-        alias="dateModified",
         default=None,
         description=(
             "Last-modified timestamp for the framework (ISO-8601 string), if known. "
@@ -117,7 +110,6 @@ class StandardsFramework(BaseSchema):
         ),
     )
     in_language: str = Field(
-        alias="inLanguage",
         description=(
             "Language tag for the framework (e.g., en-US). In `lc_public_strict`, "
             "this should conform to LC enum values; in `global_relaxed`, any valid "
@@ -340,7 +332,6 @@ class StandardsFrameworkItem(BaseSchema):
     """
 
     academic_subject: str = Field(
-        alias="academicSubject",
         description=(
             "High-level academic subject classification for the item. "
             "In strict exports this should conform to LC enums; "
@@ -348,7 +339,6 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     attribution_statement: str = Field(
-        alias="attributionStatement",
         description=(
             "Attribution text required to credit the original publisher/owner "
             "of the standards content that this item derives from."
@@ -363,7 +353,6 @@ class StandardsFrameworkItem(BaseSchema):
 
     # LC KG conventions (relationships commonly key off CASE ids).
     case_identifier_uri: str = Field(
-        alias="caseIdentifierURI",
         description=(
             "Stable URI identifier for this standards item. LC KG commonly aligns with "
             "CASE-style URIs. For non-CASE sources, this may be a synthetic deterministic "
@@ -372,7 +361,6 @@ class StandardsFrameworkItem(BaseSchema):
     )
 
     case_identifier_uuid: UUID = Field(
-        alias="caseIdentifierUUID",
         description=(
             "Stable UUID identifier for this standards item. Used by LC KG exports as a "
             "canonical cross-object key for relationships (hasChild/buildsTowards/relatesTo). "
@@ -380,14 +368,12 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     date_created: Optional[str] = Field(
-        alias="dateCreated",
         default=None,
         description=(
             "Creation timestamp for this item (ISO-8601 string), if known. Optional."
         ),
     )
     date_modified: Optional[str] = Field(
-        alias="dateModified",
         default=None,
         description=(
             "Last-modified timestamp for this item (ISO-8601 string), if known. Optional."
@@ -406,7 +392,6 @@ class StandardsFrameworkItem(BaseSchema):
 
     # LC KG: gradeLevel is 0...n.
     grade_level: list[str] = Field(
-        alias="gradeLevel",
         default_factory=list,
         description=(
             "Zero or more grade-level tags associated with this item (e.g., ['Grade 2']). "
@@ -428,7 +413,6 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     in_language: str = Field(
-        alias="inLanguage",
         description=(
             "Language tag for the item text (e.g., en-US). "
             "In strict exports this should conform to LC enums; "
@@ -448,7 +432,6 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     normalized_statement_type: NormalizedStatementType = Field(
-        alias="normalizedStatementType",
         description=(
             "Normalized LC statement classification. Typical values include: "
             "'Standard' for normative expectations, 'Standard Grouping' for organizational "
@@ -465,7 +448,6 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     statement_code: Optional[str] = Field(
-        alias="statementCode",
         default=None,
         description=(
             "Stable code/notation for this item from the source framework, if available "
@@ -473,7 +455,6 @@ class StandardsFrameworkItem(BaseSchema):
         ),
     )
     statement_type: Optional[str] = Field(
-        alias="statementType",
         default=None,
         description=(
             "Human-readable source label for the item (e.g., 'Subject', 'Topic', "
@@ -752,7 +733,6 @@ class LearningComponent(BaseSchema):
     """
 
     academic_subject: str = Field(
-        alias="academicSubject",
         description=(
             "High-level academic subject classification for the component "
             "(e.g., Mathematics, English Language Arts). In strict exports this should "
@@ -760,7 +740,6 @@ class LearningComponent(BaseSchema):
         ),
     )
     attribution_statement: str = Field(
-        alias="attributionStatement",
         description=(
             "Attribution text required to credit the original publisher/owner of the "
             "source curriculum content that this component derives from."
@@ -773,14 +752,12 @@ class LearningComponent(BaseSchema):
         ),
     )
     date_created: Optional[str] = Field(
-        alias="dateCreated",
         default=None,
         description=(
             "Creation timestamp for the component (ISO-8601 string), if known. Optional."
         ),
     )
     date_modified: Optional[str] = Field(
-        alias="dateModified",
         default=None,
         description=(
             "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
@@ -800,7 +777,6 @@ class LearningComponent(BaseSchema):
         ),
     )
     in_language: str = Field(
-        alias="inLanguage",
         description=(
             "Language tag for the component text (e.g., en-US). In strict exports this should "
             "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
@@ -947,7 +923,6 @@ class Relationship(BaseSchema):
     """
 
     attribution_statement: str = Field(
-        alias="attributionStatement",
         description=(
             "Attribution text required to credit the original publisher/owner of the "
             "source content that this relationship derives from."
@@ -960,12 +935,10 @@ class Relationship(BaseSchema):
         ),
     )
     date_created: Optional[str] = Field(
-        alias="dateCreated",
         default=None,
         description="Creation timestamp for this relationship (ISO-8601 string), if known. Optional.",
     )
     date_modified: Optional[str] = Field(
-        alias="dateModified",
         default=None,
         description="Last-modified timestamp for this relationship (ISO-8601 string), if known. Optional.",
     )
@@ -1002,44 +975,37 @@ class Relationship(BaseSchema):
         ),
     )
     relationship_type: str = Field(
-        alias="relationshipType",
         description=(
             "Normalized relationship label defining the semantic meaning of the connection "
             "(e.g., hasChild, supports, buildsTowards, relatesTo)."
         ),
     )
     source_entity: str = Field(
-        alias="sourceEntity",
         description=(
             "Entity type where the relationship originates (e.g., StandardsFramework, "
             "StandardsFrameworkItem, LearningComponent)."
         ),
     )
     source_entity_key: str = Field(
-        alias="sourceEntityKey",
         description=(
             "The identifier property name on the source entity used by this relationship "
             "(e.g., identifier, caseIdentifierUUID)."
         ),
     )
     source_entity_value: str = Field(
-        alias="sourceEntityValue",
-        description="The identifier value of the source entity (string UUID).",
+        description="The identifier value of the source entity (string UUID)."
     )
     target_entity: str = Field(
-        alias="targetEntity",
         description="Entity type where the relationship points (destination node type).",
     )
     target_entity_key: str = Field(
-        alias="targetEntityKey",
         description=(
             "The identifier property name on the target entity used by this relationship "
             "(e.g., identifier, caseIdentifierUUID)."
         ),
     )
     target_entity_value: str = Field(
-        alias="targetEntityValue",
-        description="The identifier value of the target entity (string UUID).",
+        description="The identifier value of the target entity (string UUID)."
     )
 
     @field_validator(
@@ -1391,21 +1357,15 @@ class EntityProvenance(BaseSchema):
     """Provenance information for a node."""
 
     bbox: Optional[BBox] = None
-    canonical_node_id: str = Field(alias="canonicalNodeId")
-    dialect_fallbacks: dict[str, str] = Field(
-        alias="dialectFallbacks", default_factory=dict
-    )
-    entity_identifier: UUID = Field(alias="entityIdentifier")
-    local_code: Optional[str] = Field(alias="localCode", default=None)
-    page_indices: list[int] = Field(alias="pageIndices", default_factory=list)
+    canonical_node_id: str
+    dialect_fallbacks: dict[str, str] = Field(default_factory=dict)
+    entity_identifier: UUID
+    local_code: Optional[str] = Field(default=None)
+    page_indices: list[int] = Field(default_factory=list)
     role: NodeRole | StatementRole
-    section_path_text: list[str] = Field(alias="sectionPathText", default_factory=list)
-    source_decision_ids: list[str] = Field(
-        alias="sourceDecisionIds", default_factory=list
-    )
-    source_segment_ids: list[str] = Field(
-        alias="sourceSegmentIds", default_factory=list
-    )
+    section_path_text: list[str] = Field(default_factory=list)
+    source_decision_ids: list[str] = Field(default_factory=list)
+    source_segment_ids: list[str] = Field(default_factory=list)
     text: Optional[TextUnit] = None
 
 
@@ -1413,25 +1373,23 @@ class LearningProgressionProvenance(BaseSchema):
     """Provenance information for a learning progression relationship."""
 
     confidence: float = Field(ge=0.0, le=1.0)
-    evidence_node_ids: list[str] = Field(alias="evidenceNodeIds", default_factory=list)
+    evidence_node_ids: list[str] = Field(default_factory=list)
     explanation: Optional[str] = None
-    inference_source: Literal["progression_ir", "llm"] = Field(alias="inferenceSource")
+    inference_source: Literal["progression_ir", "llm"]
     granularity: Literal["coarse", "fine"] = "coarse"
-    llm_model: Optional[str] = Field(alias="llmModel", default=None)
-    relationship_identifier: UUID = Field(alias="relationshipIdentifier")
+    llm_model: Optional[str] = Field(default=None)
+    relationship_identifier: UUID
 
 
 class RelationshipProvenance(BaseSchema):
     """Provenance information for a relationship."""
 
-    evidence_node_ids: list[str] = Field(alias="evidenceNodeIds", default_factory=list)
-    evidence_page_indices: list[int] = Field(
-        alias="evidencePageIndices", default_factory=list
-    )
-    relationship_identifier: UUID = Field(alias="relationshipIdentifier")
-    relationship_type: str = Field(alias="relationshipType")
-    source_uuid: UUID = Field(alias="sourceUuid")
-    target_uuid: UUID = Field(alias="targetUuid")
+    evidence_node_ids: list[str] = Field(default_factory=list)
+    evidence_page_indices: list[int] = Field(default_factory=list)
+    relationship_identifier: UUID
+    relationship_type: str
+    source_uuid: UUID
+    target_uuid: UUID
 
 
 # Schemas for export configurations.
@@ -1455,17 +1413,14 @@ class KnowledgeGraphExport(BaseSchema):
     """Schema for Knowledge Graph export."""
 
     export_dialect: ExportDialect = Field(
-        alias="exportDialect",
         default="global_relaxed",
         description="Export validation mode: strict LC enums vs relaxed global strings.",
     )
     frameworks: list[StandardsFramework] = Field(default_factory=list)
-    learning_components: list[LearningComponent] = Field(
-        alias="learningComponents", default_factory=list
-    )
+    learning_components: list[LearningComponent] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
     standards_framework_items: list[StandardsFrameworkItem] = Field(
-        alias="standardsFrameworkItems", default_factory=list
+        default_factory=list
     )
 
     def _build_id_maps(self) -> dict[str, set[str]]:
