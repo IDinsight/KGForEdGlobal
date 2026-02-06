@@ -168,6 +168,10 @@ If we only had one file:
 from __future__ import annotations
 
 # Standard Library
+import hashlib
+import re
+import unicodedata
+
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -187,6 +191,26 @@ from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import write_to_json
 
 AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
+ROMAN_MAP = {
+    "I": 1,
+    "II": 2,
+    "III": 3,
+    "IV": 4,
+    "V": 5,
+    "VI": 6,
+    "VII": 7,
+    "VIII": 8,
+    "IX": 9,
+    "X": 10,
+    "XI": 11,
+    "XII": 12,
+    "XIII": 13,
+    "XIV": 14,
+    "XV": 15,
+}
+ROMAN_RE = re.compile(
+    r"\b(XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)\b", re.IGNORECASE
+)
 STATEMENT_ROLE_VALUES: set[str] = {item.value for item in StatementRole}
 
 
@@ -515,6 +539,83 @@ def _compute_export_children(
     return export_children, aux_attach_to_expectation
 
 
+def _compute_topic_path_key(
+    *,
+    ctx: ExportContext,
+    node_id: str,
+    prefer_text_en: bool,
+    role_allowlist: set[str] | None = None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Compute a deterministic topic_path_key for progression threading. If
+    role_allowlist is provided, only those roles contribute. Always excludes
+    grade/stage to allow matching across levels.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties and
+        hierarchy.
+    node_id
+        The ID of the canonical node for which to compute the topic path key.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when extracting display text for nodes.
+    role_allowlist
+        Optional set of roles to allow in the topic path key. If None, all roles are
+        allowed (except those always excluded).
+
+    Returns
+    -------
+    tuple
+        (topic_path_key, debug) where topic_path_key is the computed key string or None
+        if no valid key could be constructed, and debug is a list of dicts with role
+        and label info for each ancestor considered in the path construction (for
+        testing and verification purposes).
+    """
+
+    ancestry = _walk_ancestors(ctx=ctx, node_id=node_id)
+    debug: list[dict[str, Any]] = []
+    parts: list[str] = []
+
+    # Always excluded (structural/non-threading).
+    always_exclude = {
+        NodeRole.FRAMEWORK.value,
+        NodeRole.UNRESOLVED.value,
+        NodeRole.PROSE.value,
+        NodeRole.SECTION.value,
+        NodeRole.GRADE_LEVEL.value,
+        NodeRole.STAGE.value,
+    }
+
+    for aid in ancestry:
+        n = ctx.nodes_by_id.get(aid) or {}
+        r = str(n.get("role") or "")
+
+        if not r:
+            continue
+
+        if r in always_exclude:
+            continue
+
+        if role_allowlist is not None and r not in role_allowlist:
+            continue
+
+        label = n.get("normalized_text") or node_display_text(
+            node=n, prefer_text_en=prefer_text_en
+        )
+        label = " ".join(str(label or "").split())
+
+        if not label:
+            continue
+
+        parts.append(f"{r}={_keyify(label)}")
+        debug.append({"role": r, "label": label, "canonical_node_id": aid})
+
+    if not parts:
+        return None, debug
+
+    return "|".join(parts), debug
+
+
 def _emit_framework(
     *,
     canonical_ir_created_at: Optional[str],
@@ -703,6 +804,69 @@ def _emit_sfi(
     if aux_attachments:
         metadata["aux_statements"] = aux_attachments
 
+    # Deterministic progression context keys (for Learning Progressions KG inference).
+    if role == StatementRole.EXPECTATION.value:
+        grade_key = _first_ancestor_label_for_role(
+            ctx=ctx,
+            node_id=node_id,
+            role=NodeRole.GRADE_LEVEL.value,
+            prefer_text_en=prefer_en,
+        )
+        stage_key = _first_ancestor_label_for_role(
+            ctx=ctx,
+            node_id=node_id,
+            role=NodeRole.STAGE.value,
+            prefer_text_en=prefer_en,
+        )
+
+        # Use the grouping whitelist if present so topic_path_key is consistent across
+        # countries/configs.
+        role_allowlist = None
+
+        if config.grouping_role_policy == "whitelist":
+            role_allowlist = {r.value for r in config.grouping_roles_whitelist}
+
+            # But never allow grade/stage into the path key.
+            role_allowlist -= {NodeRole.GRADE_LEVEL.value, NodeRole.STAGE.value}
+
+        topic_path_key, topic_path_parts = _compute_topic_path_key(
+            ctx=ctx,
+            node_id=node_id,
+            prefer_text_en=prefer_en,
+            role_allowlist=role_allowlist,
+        )
+
+        parent_id = ctx.parent_by_child.get(node_id)
+        order_index_within_parent = (
+            ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
+        )
+        canon_order_path = _walk_ancestors(ctx=ctx, node_id=node_id)
+
+        # Code retrieval (should work across countries/canonicalizers).
+        grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
+        code_raw = (
+            node.get("local_code")
+            or node.get("code")
+            or (node.get("metadata") or {}).get("code")
+            or ""
+        )
+        code_features = _parse_code_features(
+            code=str(code_raw), grade_ordinal_low=grade_low
+        )
+
+        metadata["progression_context"] = {
+            "grade_key": grade_key,
+            "grade_ordinal_low": grade_low,
+            "grade_ordinal_high": grade_high,
+            "stage_key": stage_key,
+            "stage_ordinal": _parse_ordinal(stage_key or "")[0],
+            "topic_path_key": topic_path_key,
+            "topic_path_parts": topic_path_parts,  # For debugging
+            "canon_order_path": canon_order_path,
+            "order_index_within_parent": order_index_within_parent,
+            **code_features,
+        }
+
     return StandardsFrameworkItem(
         academic_subject=fw_metadata["academic_subject_default"],
         attribution_statement=config.attribution_statement,
@@ -776,6 +940,52 @@ def _emit_sfis(
     return sfi_by_node
 
 
+def _first_ancestor_label_for_role(
+    *, ctx: ExportContext, node_id: str, role: str, prefer_text_en: bool
+) -> str | None:
+    """Find the closest ancestor (including self) with a given role and return its
+    label.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties and
+        hierarchy.
+    node_id
+        The ID of the canonical node for which to find the ancestor.
+    role
+        The role string to match in ancestors.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when extracting display text for the
+        ancestor node.
+
+    Returns
+    -------
+    str | None
+        The label of the closest ancestor with the given role, or None if no such
+        ancestor is found. The label is normalized by collapsing whitespace. If the
+        ancestor node has no displayable text, returns None.
+    """
+
+    cur: str | None = node_id
+    seen: set[str] = set()
+
+    while cur and cur != ctx.root_id and cur not in seen:
+        seen.add(cur)
+        n = ctx.nodes_by_id.get(cur) or {}
+
+        if n.get("role") == role:
+            label = n.get("normalized_text") or node_display_text(
+                node=n, prefer_text_en=prefer_text_en
+            )
+            label = " ".join(str(label or "").split())
+            return label or None
+
+        cur = ctx.parent_by_child.get(cur)
+
+    return None
+
+
 def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     """Determine if a role is a grouping role (not expectation/aux).
 
@@ -806,6 +1016,40 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     return role in allowed
 
 
+def _keyify(label: str) -> str:
+    """Deterministically normalize a label into a compact key token.
+
+    Parameters
+    ----------
+    label
+        The input label string to normalize.
+
+    Returns
+    -------
+    str
+        The normalized key string, suitable for use in IDs or codes. If the input is
+        empty or normalizes to empty, returns a hash-based fallback key.
+    """
+
+    raw = " ".join(str(label or "").strip().split())
+
+    if not raw:
+        return ""
+
+    # Normalize unicode and strip diacritics to ASCII where possible.
+    norm = unicodedata.normalize("NFKD", raw)
+    ascii_s = norm.encode("ascii", "ignore").decode("ascii")
+
+    s = " ".join(ascii_s.strip().split()).lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+
+    if not s:
+        h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+        return f"h{h}"
+
+    return s[:80] if len(s) > 80 else s
+
+
 def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
     """Normalize a node role to a statement type for
     StandardsFrameworkItem.statement_type.
@@ -833,6 +1077,116 @@ def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
         return "Standard Grouping"
 
     return "Other"
+
+
+def _parse_code_features(*, code: str, grade_ordinal_low: int | None) -> dict[str, Any]:
+    """Parse a local code into deterministic features for progression inference.
+
+    Supports:
+      - numeric codes with dots: 3.9.4.1
+      - mixed codes: M3-1a / ENG.P1.02
+      - roman segments: VI.2.1
+
+    Parameters
+    ----------
+    code
+        The local code string to parse.
+    grade_ordinal_low
+        Optional lower bound for grade ordinals to strip from the code stem (e.g., 1
+        for "Grade 1", 0 for "Kindergarten"). If provided, and if the first code
+        segment matches this grade ordinal (either as a digit or roman numeral), it
+        will be stripped from the `code_stem_without_grade` feature.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary of parsed code features.
+    """
+
+    output: dict[str, Any] = {}
+    code = " ".join(str(code or "").strip().split())
+
+    if not code:
+        return output
+
+    # Split on common separators; keep alphanum segments.
+    segs = [s for s in re.split(r"[.\-_/\\\s]+", code) if s]
+
+    if not segs:
+        return output
+
+    tup: list[int | str] = [_to_int_or_roman(s) for s in segs]
+
+    output["code"] = code
+    output["code_segments"] = segs
+    output["code_tuple"] = tup
+
+    if len(segs) >= 2:
+        output["code_stem"] = ".".join(segs[:-1])
+        output["code_ordinal"] = segs[-1]
+
+    # If first segment matches grade_ordinal_low (numeric or roman), store stem without
+    # that prefix too.
+    if grade_ordinal_low is not None and segs:
+        first_val = _to_int_or_roman(segs[0])
+        if (
+            isinstance(first_val, int)
+            and first_val == grade_ordinal_low
+            and len(segs) >= 3
+        ):
+            output["code_stem_without_grade"] = ".".join(segs[1:-1])
+
+    return output
+
+
+def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
+    """Parse the primary/lower ordinal from a grade/stage label.
+
+    Handles:
+      - digits: "Grade 3" -> 3, "I–II" -> 1, "Std III-VI" -> 3
+      - embedded roman numerals: "Std VI" -> 6, "Standard III–VI" -> 3
+
+    Parameters
+    ----------
+    label
+        The input label string to parse.
+
+    Returns
+    -------
+    tuple[int | None, int | None]
+        A tuple of (ordinal_low, ordinal_high). If only one ordinal is found, both
+        values will be the same. If no ordinals are found, both values will be None.
+    """
+
+    if not label:
+        return None, None
+
+    s = " ".join(str(label).strip().split())
+
+    # Normalize dash variants to hyphen so range parsing works.
+    s_norm = s.replace("–", "-").replace("—", "-").replace("−", "-")
+
+    # Prefer digits if present.
+    nums = [int(x) for x in re.findall(r"(\d+)", s_norm)]
+
+    if nums:
+        if len(nums) >= 2:
+            return min(nums[0], nums[1]), max(nums[0], nums[1])
+        return nums[0], nums[0]
+
+    # Otherwise try roman numerals anywhere in the string.
+    romans = [ROMAN_MAP.get(m.group(1).upper()) for m in ROMAN_RE.finditer(s_norm)]
+    romans = [r for r in romans if r is not None]
+
+    if romans:
+        valid_romans: list[int] = [r for r in romans if r is not None]
+
+        if len(valid_romans) >= 2:
+            return min(valid_romans), max(valid_romans)
+        if valid_romans:
+            return valid_romans[0], valid_romans[0]
+
+    return None, None
 
 
 def _prune_empty_groupings(
@@ -972,6 +1326,36 @@ def _reparent_aux_under_expectations(
     return new_kids
 
 
+def _to_int_or_roman(s: str) -> int | str:
+    """Convert a string to an integer if it's purely digits, or to a Roman numeral
+    value if it matches a known Roman numeral.
+
+    Parameters
+    ----------
+    s
+        The input string to convert.
+
+    Returns
+    -------
+    int | str
+        The integer value if the string is purely digits, the integer value of the
+        Roman numeral if it matches a known Roman numeral, or the original string if
+        neither conversion applies.
+    """
+
+    if re.fullmatch(r"\d+", s):
+        try:
+            return int(s)
+        except ValueError:
+            return s
+
+    u = s.upper()
+
+    if u in ROMAN_MAP:
+        return ROMAN_MAP[u]
+    return s
+
+
 def _to_iso8601_or_none(v: Any) -> Optional[str]:
     """Normalize a value to an ISO-8601 string if possible. LC KG export schemas
     require date fields to be strings (or None). CanonicalIR created_at is often parsed
@@ -1095,6 +1479,38 @@ def _verify_standards_export(
         "Export produced only groupings/other items. "
         "Check canonical IR roles and drop/handling policies."
     )
+
+
+def _walk_ancestors(*, ctx: ExportContext, node_id: str) -> list[str]:
+    """Return canonical node_id ancestry from root -> ... -> node_id (excluding root).
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext for the CanonicalIR, providing access to parent-child mappings.
+    node_id
+        The ID of the canonical node for which to walk ancestors.
+
+    Returns
+    -------
+    list[str]
+        The list of ancestor node IDs from the root down to the given node (excluding
+        the root itself). If the node is not reachable from the root, returns the
+        ancestry up to the point where a cycle is detected or the root is reached.
+    """
+
+    chain: list[str] = []
+    cur: str | None = node_id
+    seen: set[str] = set()
+
+    while cur and cur != ctx.root_id and cur not in seen:
+        seen.add(cur)
+        chain.append(cur)
+        cur = ctx.parent_by_child.get(cur)
+
+    chain.reverse()
+
+    return chain
 
 
 def export_academic_standards(
