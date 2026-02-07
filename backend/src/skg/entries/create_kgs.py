@@ -3,7 +3,13 @@ from a canonical IR JSON file. This is step 5.
 
 Step 5 does the following:
 
-1. XXX
+1. Loads the canonical IR JSON and validates it.
+2. Builds the knowledge graph export context.
+3. Exports academic standards to the knowledge graphs.
+4. Exports Learning Components KG and writes combined Standards + Learning Components
+    graph bundle.
+5. Optionally exports Learning Progressions KG and writes combined Standards +
+    Learning Components + Learning Progressions graph bundle.
 
 Invoke from the backend directory via:
 
@@ -34,6 +40,7 @@ if __name__ == "__main__":
 from skg.canonical_ir.schemas import CanonicalIR
 from skg.kgs.export_academic_standards import export_academic_standards
 from skg.kgs.export_learning_components import export_learning_components
+from skg.kgs.export_learning_progressions import export_learning_progressions
 from skg.kgs.utils import (
     KGDirs,
     build_kg_export_context,
@@ -63,9 +70,10 @@ def create_kgs(
     1. Load the CanonicalIR JSON and validate it.
     2. Build the knowledge graph export context.
     3. Export academic standards to the knowledge graphs.
-    4. Optionally export Learning Components KG.
-        4a. Write combined Standards + LCs graph bundle.
-    5. Optionally export Learning Progressions KG.
+    4. Export Learning Components KG and write combined Standards + Learning Components
+        graph bundle.
+    5. Optionally export Learning Progressions KG and write combined Standards +
+        Learning Components + Learning Progressions graph bundle.
 
     Parameters
     ----------
@@ -102,36 +110,61 @@ def create_kgs(
     )
 
     # 4.
-    learning_components = None
+    learning_components = export_learning_components(
+        academic_standards=academic_standards,
+        config=config,
+        ctx=kg_export_ctx,
+        kg_dirs=kg_dirs,
+    )
 
-    if config.generate_learning_components is True:
-        learning_components = export_learning_components(
+    logger.info(
+        f"Exported Learning Components KG: "
+        f"{len(learning_components.learning_components)} components, "
+        f"{len(learning_components.supports_relationships)} `supports` relationships"
+    )
+
+    academic_bundle = open_json_type(
+        kg_dirs.academic_standards / "academic_standards_kg.json"
+    )
+    lc_bundle = open_json_type(
+        kg_dirs.learning_components / "learning_components_kg.json"
+    )
+    combined_bundle = merge_graph_bundles(
+        bundles=[academic_bundle, lc_bundle],
+        doc_key=kg_export_ctx.doc_key,
+        export_dialect=str(config.export_dialect),
+    )
+    write_to_json(
+        fp=kg_dirs.combined / "academic_standards_plus_learning_components_kg.json",
+        json_info=combined_bundle,
+    )
+
+    # 5.
+    if config.generate_progressions is True:
+        learning_progressions = export_learning_progressions(
             academic_standards=academic_standards,
             config=config,
             ctx=kg_export_ctx,
             kg_dirs=kg_dirs,
         )
+
         logger.info(
-            f"Exported Learning Components KG: "
-            f"{len(learning_components.learning_components)} components, "
-            f"{len(learning_components.supports_relationships)} `supports` relationships"
+            f"Exported Learning Progressions KG: "
+            f"{len(learning_progressions.builds_towards_relationships)} `buildsTowards` relationships, "
+            f"{len(learning_progressions.relates_to_relationships)} `relatesTo` relationships"
         )
 
-        # 4a.
-        academic_bundle = open_json_type(
-            kg_dirs.academic_standards / "academic_standards_kg.json"
+        lp_bundle = open_json_type(
+            kg_dirs.learning_progressions / "learning_progressions_kg.json"
         )
-        lc_bundle = open_json_type(
-            kg_dirs.learning_components / "learning_components_kg.json"
-        )
-
         combined_bundle = merge_graph_bundles(
-            bundles=[academic_bundle, lc_bundle],
+            bundles=[academic_bundle, lc_bundle, lp_bundle],
             doc_key=kg_export_ctx.doc_key,
             export_dialect=str(config.export_dialect),
         )
         write_to_json(
-            fp=kg_dirs.combined / "academic_standards_plus_learning_components_kg.json",
+            fp=kg_dirs.combined
+            / "academic_standards_plus_learning_components_plus_learning_progressions_kg.json",
             json_info=combined_bundle,
         )
 

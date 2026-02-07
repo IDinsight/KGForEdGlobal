@@ -9,70 +9,58 @@ knowledge graph. It exports relationships between *exported* StandardsFrameworkI
 The export is *shape-preserving* for the LC Knowledge Graph ontology and is designed to
 work for non-US curriculum documents mapped into the LC "academic standards" shape.
 
-Phases (toggleable via CreateKGConfig):
+Design principles
+-----------------
 
-1. Within-grade buildsTowards
-2. Cross-grade buildsTowards (adjacent grades, normalized thread matching)
-3. Within-grade relatesTo (cross-subject within a grade; subject-pair sampling)
-4. Cross-grade relatesTo (adjacent grades within the same subject, excluding
-    buildsTowards pairs)
+1. Deterministic by default (stable ordering + UUIDv5 IDs).
+2. Bounded candidate generation (top-K per source) to avoid dense graphs.
+3. Optional LLM judging hook is non-blocking (skipped if disabled/unavailable).
+4. Strong provenance on every emitted edge (heuristics + evidence pointers).
+
+NB
+--
+
+1. Endpoints must reference exported SFI `case_identifier_uuid`.
+2. This exporter assumes Academic Standards export has populated
+    `sfi.metadata["progression_context"]` where possible (recommended).
 """
 
 # Standard Library
 import re
 
-from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from functools import partial
-from typing import Any, DefaultDict, Optional
+from typing import Any, Callable, Optional
 from uuid import UUID, uuid5
 
 # Third Party Library
 from loguru import logger
 
 # Package Library
-from skg.kgs.export_academic_standards import AcademicStandardsExport
-from skg.kgs.llm import infer_progression_edges
-from skg.kgs.schemas import (
-    ProgressionEdgesResponse,
-    Relationship,
-    StandardsFrameworkItem,
+from skg.kgs.export_academic_standards import (
+    AcademicStandardsExport,
+    _parse_code_features,
 )
-from skg.kgs.utils import ExportContext, KGDirs
-from skg.kgs.validators import (
-    validate_cross_grade_builds_towards,
-    validate_cross_grade_relates_to,
-    validate_within_grade_builds_towards,
-    validate_within_grade_relates_to,
-)
-from skg.prompts.learning_progressions import (
-    cross_grade_builds_towards,
-    cross_grade_relates_to,
-    cross_stage_builds_towards,
-    cross_stage_relates_to,
-    within_grade_builds_towards,
-    within_grade_relates_to,
-)
+from skg.kgs.schemas import Relationship, StandardsFrameworkItem
+from skg.kgs.utils import ExportContext, KGDirs, normalize_ws
 from skg.schemas import CreateKGConfig
+from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import write_to_json
-
-# Compiled regexes.
-GRADE_INT_RE = re.compile(r"\b(\d+)\b")
 
 
 @dataclass(frozen=True)
 class CandidateEdge:
     """Internal candidate edge representation (pre-Relationship emission)."""
 
-    confidence: float  # 0..1
+    confidence: float  # 0..1 heuristic or final
     evidence: dict[str, Any]
-    inference_source: str  # "llm"
-    inference_type: str
+    inference_source: str  # "inferred" | "llm"
+    inference_type: str  # Module name, e.g. "grade_order"
     metadata: dict[str, Any]
     rel_type: str  # "buildsTowards" | "relatesTo"
     source_sfi_uuid: UUID
     target_sfi_uuid: UUID
+    heuristic_confidence: Optional[float] = None
     llm_confidence: Optional[float] = None
 
 
@@ -86,148 +74,80 @@ class LearningProgressionsExport:
     report: dict[str, Any]
 
 
-def _allow_within_grade_inference(
-    *, bucket: dict[str, Any], config: CreateKGConfig
-) -> bool:
-    """Return True if Phase 1/3 within-grade inference should consider this bucket.
-
-    By default, we only run within-grade inference for single-grade buckets. If
-    progressions_within_grade_allow_banded_levels=True, banded/stage buckets are
-    allowed.
+def _bound_candidate_pool(
+    *, candidates: list[CandidateEdge], per_source: int
+) -> list[CandidateEdge]:
+    """Bound the candidate pool to top-K per source SFI, sorted by confidence then
+    target UUID.
 
     Parameters
     ----------
-    bucket
-        The bucket dictionary containing information about a thread of standards within
-        a grade, which may include grade bounds and other contextual information.
-    config
-        The knowledge graph run configuration.
+    candidates
+        List of candidate edges to filter.
+    per_source
+        Maximum number of outgoing edges to keep per source SFI. If <= 0, no filtering
+        is applied.
 
     Returns
     -------
-    bool
-        True if within-grade inference should be allowed for this bucket based on the
-        configuration and whether it represents a single grade or a banded level.
+    list[CandidateEdge]
+        Filtered list of candidate edges.
     """
 
-    if config.progressions_within_grade_allow_banded_levels:
-        return True
+    if per_source <= 0:
+        return candidates
 
-    return _is_single_grade_bucket(bucket)
+    grouped: dict[UUID, list[CandidateEdge]] = {}
 
+    for c in candidates:
+        grouped.setdefault(c.source_sfi_uuid, []).append(c)
 
-def _best_map(
-    resp: ProgressionEdgesResponse,
-) -> dict[tuple[UUID, UUID], tuple[float, str]]:
-    """Extract the best confidence and rationale for each canonicalized pair of UUIDs
-    regardless of edge direction, to facilitate bidirectional confirmation of relatesTo
-    edges between the two levels.
+    output: list[CandidateEdge] = []
 
-    Parameters
-    ----------
-    resp
-        The response from the infer_progression_edges call, containing a list of edges
-        with source and target UUIDs, confidence scores, and rationales.
+    for src in sorted(grouped.keys(), key=str):
+        cs = grouped[src]
+        cs_sorted = sorted(cs, key=lambda x: (-x.confidence, str(x.target_sfi_uuid)))
+        output.extend(cs_sorted[:per_source])
 
-    Returns
-    -------
-    dict[tuple[UUID, UUID], tuple[float, str]]
-        A dictionary mapping canonicalized pairs of UUIDs (as tuples) to their best
-        confidence score and corresponding rationale found in the response edges,
-        regardless of the direction of the edge (source -> target or target -> source).
-        This allows for easy comparison of confidence scores for the same pair of SFIs
-        across the lo -> hi and hi -> lo runs to confirm bidirectional relatesTo
-        relationships.
-    """
-
-    best: dict[tuple[UUID, UUID], tuple[float, str]] = {}
-
-    for ee in resp.edges:
-        u1 = _uuid(ee.source_sfi_uuid)
-        u2 = _uuid(ee.target_sfi_uuid)
-        a, b = _canon_uuid_pair(u1, u2)
-        c = float(ee.confidence)
-        r = str(ee.rationale or "")
-
-        if (a, b) not in best or c > best[(a, b)][0]:
-            best[(a, b)] = (c, r)
-
-    return best
+    return output
 
 
 def _build_learning_progressions_graph_bundle(
-    *,
-    academic_standards: AcademicStandardsExport,
-    ctx: ExportContext,
-    export_dialect: str,
-    relationships: list[Relationship],
+    *, ctx: ExportContext, export_dialect: str, relationships: list[Relationship]
 ) -> dict[str, Any]:
-    """Build a graph bundle for learning progressions.
+    """Build a shape-preserving graph bundle for Learning Progressions export.
 
     Parameters
     ----------
-    academic_standards
-        The exported Academic Standards KG artifacts, containing the framework and items
-        to include as nodes in the graph.
     ctx
-        The KG export context, providing information such as the document key for the
-        graph bundle metadata.
+        ExportContext (doc_key, framework metadata, indexes).
     export_dialect
-        A string indicating the export dialect or format of the graph bundle, to be
-        included in the bundle metadata.
+        Export dialect string to include in the bundle metadata.
     relationships
-        A list of Relationship objects representing the buildsTowards and relatesTo
-        relationships to include in the graph bundle.
+        List of Relationship objects to include in the bundle.
 
     Returns
     -------
     dict[str, Any]
-        A dictionary representing the graph bundle for learning progressions,
-        containing metadata such as the document key, export dialect, generation
-        timestamp, graph type, and the lists of nodes and relationships to be included
-        in the graph. The nodes include the StandardsFramework and
-        StandardsFrameworkItem entities from the academic standards export, while the
-        relationships include the inferred buildsTowards and relatesTo relationships
-        between the StandardsFrameworkItems.
+        Graph bundle dictionary ready for JSON serialization.
     """
 
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    generated_at = datetime.now(timezone.utc).isoformat()
     nodes: list[dict[str, Any]] = []
-
-    # Include framework + SFIs for standalone graph use.
-    fw = academic_standards.framework
-    nodes.append(
-        {
-            "id": str(fw.case_identifier_uuid),
-            "labels": ["StandardsFramework"],
-            "properties": fw.model_dump(mode="json"),
-        }
-    )
-
-    for sfi in academic_standards.items:
-        nodes.append(
-            {
-                "id": str(sfi.case_identifier_uuid),
-                "labels": ["StandardsFrameworkItem"],
-                "properties": sfi.model_dump(mode="json"),
-            }
-        )
-
     rels: list[dict[str, Any]] = []
 
-    for r in relationships:
-        start_id = r.source_entity_value
-        end_id = r.target_entity_value
-        rel_type = (
-            "BUILDS_TOWARDS" if r.relationship_type == "buildsTowards" else "RELATES_TO"
-        )
+    for rel in relationships:
         rels.append(
             {
-                "id": str(r.identifier),
-                "type": rel_type,
-                "start": start_id,
-                "end": end_id,
-                "properties": r.model_dump(mode="json"),
+                "id": str(rel.identifier),
+                "type": (
+                    "BUILDS_TOWARDS"
+                    if rel.relationship_type == "buildsTowards"
+                    else "RELATES_TO"
+                ),
+                "start": str(rel.source_entity_value),
+                "end": str(rel.target_entity_value),
+                "properties": rel.model_dump(mode="json"),
             }
         )
 
@@ -236,2199 +156,2084 @@ def _build_learning_progressions_graph_bundle(
         "export_dialect": export_dialect,
         "generated_at": generated_at,
         "graph_type": "learning_progressions",
+        "included_graph_types": ["learning_progressions"],
         "nodes": nodes,
         "relationships": rels,
     }
 
 
-def _build_relationship(
-    *,
-    config: CreateKGConfig,
-    metadata: dict[str, Any],
-    rel_type: str,
-    source: UUID,
-    target: UUID,
-) -> Relationship:
-    """Helper to build a Relationship object from a CandidateEdge, using config for
-    attribution and metadata from the CandidateEdge. The identifier is a UUID5 of the
-    source and target UUIDs and the relationship type, within a namespace UUID from the
-    config to ensure stability across runs. The relationship is always from source to
-    target, and the source and target entities are both "StandardsFrameworkItem" with
-    the key "case_identifier_uuid" and the value of the respective UUIDs as strings.
+def _canonicalize_edge(candidate: CandidateEdge) -> CandidateEdge:
+    """Ensure 'relatesTo' edges are stored as an undirected pair by enforcing a
+    deterministic (lexicographical) order of UUIDs.
 
     Parameters
     ----------
+    candidate
+        The CandidateEdge to canonicalize if it's a 'relatesTo' edge.
+
+    Returns
+    -------
+    CandidateEdge
+        A CandidateEdge with 'relatesTo' edges ordered by source and target UUIDs to
+        ensure undirected canonical form; other edges are returned unchanged.
+    """
+
+    if candidate.rel_type != "relatesTo":
+        return candidate
+
+    src = candidate.source_sfi_uuid
+    tgt = candidate.target_sfi_uuid
+
+    # If already in order, return original.
+    if str(src) <= str(tgt):
+        return candidate
+
+    # Swap to enforce undirected canonical form.
+    return CandidateEdge(
+        confidence=candidate.confidence,
+        evidence=candidate.evidence,
+        heuristic_confidence=candidate.heuristic_confidence,
+        inference_source=candidate.inference_source,
+        inference_type=candidate.inference_type,
+        llm_confidence=candidate.llm_confidence,
+        metadata=candidate.metadata,
+        rel_type="relatesTo",
+        source_sfi_uuid=tgt,  # Swapped
+        target_sfi_uuid=src,  # Swapped
+    )
+
+
+def _check_level_constraints(
+    *,
+    candidate: CandidateEdge,
+    config: CreateKGConfig,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+) -> str | None:
+    """Check if the edge violates adjacent level constraints.
+
+    Parameters
+    ----------
+    candidate
+        The CandidateEdge to check for level constraints.
     config
-        The knowledge graph run configuration, containing attribution and namespace
-        information.
-    metadata
-        A dictionary of metadata to include in the Relationship, typically derived from
-        the CandidateEdge.
-    rel_type
-        The type of relationship to create (e.g., "buildsTowards" or "relatesTo").
-    source
-        The UUID of the source StandardsFrameworkItem in the relationship.
-    target
-        The UUID of the target StandardsFrameworkItem in the relationship.
+        The CreateKGConfig containing settings for progression constraints.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used to determine
+        level ordinals for the source and target SFIs.
+
+    Returns
+    -------
+    str | None
+        A string indicating the reason for dropping the edge if it violates level
+        constraints (e.g., "non_adjacent_levels", "within_level_blocked",
+        "unknown_level_ordinal"), or None if the edge satisfies the constraints.
+    """
+
+    if not (
+        config.progression_only_adjacent_levels
+        and candidate.rel_type == "buildsTowards"
+    ):
+        return None
+
+    fs = features_by_uuid[candidate.source_sfi_uuid]
+    ft = features_by_uuid[candidate.target_sfi_uuid]
+    ls = fs.get("level_ordinal_low")
+    lt = ft.get("level_ordinal_low")
+
+    if not (isinstance(ls, int) and isinstance(lt, int)):
+        return "unknown_level_ordinal"
+
+    delta = lt - ls
+
+    if delta == 0:
+        if candidate.inference_type != "scope_sequence":
+            return "within_level_blocked"
+    elif delta != 1:
+        return "non_adjacent_levels"
+
+    return None
+
+
+def _check_subject_constraints(
+    *,
+    candidate: CandidateEdge,
+    config: CreateKGConfig,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+) -> str | None:
+    """Check if the edge violates subject constraints.
+
+    Parameters
+    ----------
+    candidate
+        The CandidateEdge to check for subject constraints.
+    config
+        The CreateKGConfig containing settings for progression constraints.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used to determine
+        the subjects for the source and target SFIs.
+
+    Returns
+    -------
+    str | None
+        A string indicating the reason for dropping the edge if it violates subject
+        constraints (e.g., "cross_subject_blocked"), or None if the edge satisfies the
+        constraints.
+    """
+
+    if config.progression_allow_cross_subject:
+        return None
+
+    def _get_subject_feature(uuid: UUID) -> str:
+        """Helper to extract the subject string for a given UUID.
+
+        Parameters
+        ----------
+        uuid
+            The UUID of the SFI for which to extract the subject.
+
+        Returns
+        -------
+        str
+            The subject string for the given UUID, extracted from features; defaults to
+            empty string if not found.
+        """
+
+        feats = features_by_uuid.get(uuid, {})
+        return feats.get("local_subject_key") or feats.get("academic_subject", "")
+
+    s_subj = _get_subject_feature(candidate.source_sfi_uuid)
+    t_subj = _get_subject_feature(candidate.target_sfi_uuid)
+
+    if normalize_ws(s_subj) != normalize_ws(t_subj):
+        return "cross_subject_blocked"
+
+    return None
+
+
+def _choose_granularity(
+    *,
+    configured: str,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    sfis: list[StandardsFrameworkItem],
+) -> str:
+    """Choose coarse/fine/auto granularity in a deterministic, simple way.
+
+    Parameters
+    ----------
+    configured
+        The granularity setting from the config ("coarse", "fine", or "auto").
+    features_by_uuid
+        Precomputed features for each SFI, keyed by case_identifier_uuid.
+    sfis
+        List of StandardsFrameworkItems to consider for auto heuristic.
+
+    Returns
+    -------
+    str
+        The chosen granularity ("coarse" or "fine").
+    """
+
+    if configured in {"coarse", "fine"}:
+        return configured
+
+    # `auto` heuristic: If we have multiple grade ordinals across expectation SFIs,
+    # prefer fine.
+    exp = [s for s in sfis if s.normalized_statement_type == "Standard"]
+    ords = []
+
+    for s in exp:
+        f = features_by_uuid.get(s.case_identifier_uuid) or {}
+        o = f.get("level_ordinal_low")
+
+        if isinstance(o, int):
+            ords.append(o)
+
+    distinct = sorted(set(ords))
+
+    if len(exp) >= 10 and len(distinct) >= 2:
+        return "fine"
+
+    return "coarse"
+
+
+def _choose_level_axis(
+    *,
+    grade_high: Optional[int],
+    grade_key: Optional[str],
+    grade_low: Optional[int],
+    stage_high: Optional[int],
+    stage_key: Optional[str],
+    stage_low: Optional[int],
+) -> tuple[str, str, Optional[int], Optional[int]]:
+    """Choose the primary level axis (grade vs. stage) for threading and reporting,
+    based on presence of grade vs. stage features. Prefer grade when available, else
+    stage, else none.
+
+    Parameters
+    ----------
+    grade_high
+        The high end of the grade ordinal range, if available.
+    grade_key
+        The grade key string, if available.
+    grade_low
+        The low end of the grade ordinal range, if available.
+    stage_high
+        The high end of the stage ordinal range, if available.
+    stage_key
+        The stage key string, if available.
+    stage_low
+        The low end of the stage ordinal range, if available.
+
+    Returns
+    -------
+    tuple[str, str, Optional[int], Optional[int]]
+        A tuple of (level_type, level_key, level_ordinal_low, level_ordinal_high).
+    """
+
+    if grade_low is not None:
+        return "grade", str(grade_key or ""), grade_low, grade_high
+
+    if stage_low is not None:
+        return "stage", str(stage_key or ""), stage_low, stage_high
+
+    return "none", "", None, None
+
+
+def _code_key_without_grade(
+    *, code_features: dict[str, Any], grade_low: Optional[int]
+) -> str:
+    """Exact code key with grade stripped when the first segment matches grade.
+
+    Parameters
+    ----------
+    code_features
+        The pre-parsed code features dictionary for an SFI.
+    grade_low
+        The low end of the grade ordinal range, if available.
+
+    Returns
+    -------
+    str
+        A string key representing the code without the grade segment, if it can be
+        determined; otherwise the full code key.
+    """
+
+    segs = code_features.get("code_segments") or []
+
+    if not isinstance(segs, list) or not segs:
+        return ""
+
+    if grade_low is None:
+        return ".".join([str(x) for x in segs])
+
+    # Best-effort: match numeric first segment.
+    try:
+        first = int(str(segs[0]))
+    except Exception:  # pylint: disable=broad-except
+        first = None
+
+    if first == grade_low and len(segs) >= 2:
+        return ".".join([str(x) for x in segs[1:]])
+
+    return ".".join([str(x) for x in segs])
+
+
+def _code_sort_key(f: dict[str, Any]) -> tuple[Any, ...]:
+    """Stable ordering by (level, code_tuple).
+
+    Parameters
+    ----------
+    f
+        The features dictionary for an SFI.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        A tuple key for sorting SFIs by level ordinal (with missing as very high) and
+        then code tuple (normalized to all strings, with missing as empty).
+    """
+
+    cf = f.get("code_features") or {}
+
+    # Level ordinal (defaulting to a very high value if missing).
+    lvl = f.get("level_ordinal_low")
+    lvl_key = int(lvl) if isinstance(lvl, int) else 10**9
+
+    # code_tuple normalization.
+    ct = cf.get("code_tuple")
+    if isinstance(ct, (list, tuple)):
+        # Normalize to (int_priority, value) to ensure ints and strings are comparable.
+        ct_key = tuple((0, x) if isinstance(x, int) else (1, str(x)) for x in ct)
+    else:
+        ct_key = ()
+
+    # Final key including UUID for absolute stability.
+    return lvl_key, ct_key, str(f.get("sfi_uuid"))
+
+
+def _compute_local_subject_key(*, ctx: ExportContext, node_id: str) -> str:
+    """Compute a deterministic 'local subject' key from canonical ancestry. Prefer the
+    nearest SUBJECT ancestor; else fall back to nearest LEARNING_AREA. Includes the
+    canonical node_id for stability (text changes/translation won't break it).
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext containing the node and edge indexes.
+    node_id
+        The node ID for which to compute the local subject key.
+
+    Returns
+    -------
+    str
+        A string representing the local subject key for the given node ID, constructed
+        by traversing up the node's ancestry to find the nearest SUBJECT or
+        LEARNING_AREA ancestor and including its role and canonical node_id (and
+        optionally slugified label for readability).
+    """
+
+    cur: Optional[str] = node_id
+    subject_id: Optional[str] = None
+    learning_area_id: Optional[str] = None
+
+    # Walk upward from the node toward root; first SUBJECT wins (nearest subject).
+    while cur and cur != ctx.root_id:
+        n = ctx.nodes_by_id.get(cur) or {}
+        role = str(n.get("role") or "")
+
+        if role == NodeRole.SUBJECT.value:
+            subject_id = cur
+            break
+
+        if role == NodeRole.LEARNING_AREA.value and learning_area_id is None:
+            learning_area_id = cur
+
+        cur = ctx.parent_by_child.get(cur)
+
+    # If we found a subject, optionally include the learning_area above it too (nice
+    # for debugging).
+    if subject_id:
+        subj_node = ctx.nodes_by_id.get(subject_id) or {}
+        subj_label = _node_label_for_path(subj_node) or ""
+        subj_part = (
+            f"{NodeRole.SUBJECT.value}:{subject_id}:{_slugify(subj_label)}"
+            if subj_label
+            else f"{NodeRole.SUBJECT.value}:{subject_id}"
+        )
+
+        if learning_area_id:
+            la_node = ctx.nodes_by_id.get(learning_area_id) or {}
+            la_label = _node_label_for_path(la_node) or ""
+            la_part = (
+                f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}:{_slugify(la_label)}"
+                if la_label
+                else f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}"
+            )
+            return f"{la_part}|{subj_part}"
+
+        return subj_part
+
+    if learning_area_id:
+        la_node = ctx.nodes_by_id.get(learning_area_id) or {}
+        la_label = _node_label_for_path(la_node) or ""
+        return (
+            f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}:{_slugify(la_label)}"
+            if la_label
+            else f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}"
+        )
+
+    return ""
+
+
+def _compute_module_stats(
+    *,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    module_name: str,
+    sfis_by_subject: dict[str, list[UUID]],
+) -> dict[str, Any]:
+    """Compute statistics about the presence of key features for a given inference
+    module, to help understand the coverage and potential impact of each module on the
+    candidate pool. The specific stats computed depend on the module type.
+
+    Parameters
+    ----------
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features.
+    module_name
+        The name of the inference module (e.g., "grade_order", "scope_sequence",
+        "code_pattern").
+    sfis_by_subject
+        A dictionary mapping academic subjects to lists of SFI UUIDs in that subject.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary of computed statistics relevant to the specified module.
+    """
+
+    total_sfis = sum(len(v) for v in sfis_by_subject.values())
+
+    # Map module names to their specific handler functions.
+    handlers: dict[str, Callable[..., dict[str, Any]]] = {
+        "grade_order": _stats_grade_order,
+        "stage_order": _stats_grade_order,
+        "scope_sequence": _stats_scope_sequence,
+        "code_pattern": _stats_code_pattern,
+    }
+
+    handler = handlers.get(module_name)
+
+    if handler:
+        stats = handler(features_by_uuid, sfis_by_subject)
+        stats["sfis_total"] = total_sfis
+        return stats
+
+    return {"sfis_total": total_sfis, "note": "unimplemented_or_unknown_module"}
+
+
+def _compute_topic_path_key(*, ctx: ExportContext, node_id: str) -> str:
+    """Compute a topic path key that excludes grade/stage and statement roles.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext containing the node and edge indexes.
+    node_id
+        The node ID for which to compute the topic path key.
+
+    Returns
+    -------
+    str
+        A string representing the topic path key for the given node ID, constructed by
+        traversing up the node's ancestry and concatenating role=slug(label) pairs,
+        while excluding certain roles.
+    """
+
+    exclude_roles = {
+        NodeRole.FRAMEWORK.value,
+        NodeRole.GRADE_LEVEL.value,
+        NodeRole.STAGE.value,
+        NodeRole.PROSE.value,
+        NodeRole.UNRESOLVED.value,
+        StatementRole.EXPECTATION.value,
+        StatementRole.DESCRIPTOR.value,
+        StatementRole.GUIDANCE.value,
+    }
+
+    chain: list[str] = []
+    cur: Optional[str] = node_id
+
+    while cur and cur != ctx.root_id:
+        chain.append(cur)
+        cur = ctx.parent_by_child.get(cur)
+
+    chain.reverse()  # root -> ... -> node
+
+    parts: list[str] = []
+
+    for nid in chain:
+        n = ctx.nodes_by_id.get(nid) or {}
+        role = str(n.get("role") or "")
+
+        if not role or role in exclude_roles:
+            continue
+
+        label = _node_label_for_path(n)
+
+        if not label:
+            continue
+
+        parts.append(f"{role}={_slugify(label)}")
+
+    return "|".join(parts)
+
+
+def _create_edge(
+    *,
+    conf: float,
+    extra_evidence: dict[str, Any],
+    inference_type: str,
+    src_uid: UUID,
+    subject_key: str,
+    tgt_uid: UUID,
+    thread_key: str,
+    thread_type: str,
+) -> CandidateEdge:
+    """Factory for creating CandidateEdge objects.
+
+    Parameters
+    ----------
+    conf
+        The confidence score for the edge (0..1).
+    extra_evidence
+        A dictionary of additional evidence to include in the edge's evidence field.
+    inference_type
+        A string indicating the type of inference (e.g., "grade_order", "code_pattern").
+    src_uid
+        The UUID of the source SFI.
+    subject_key
+        The local subject key associated with the edge, used for evidence.
+    tgt_uid
+        The UUID of the target SFI.
+    thread_key
+        The key of the thread (e.g., grade_key or stage_key) that this edge is part of,
+        used for evidence.
+    thread_type
+        The type of thread (e.g., "grade", "stage") that this edge is part of, used for
+        evidence.
+
+    Returns
+    -------
+    CandidateEdge
+        A CandidateEdge object constructed with the provided parameters and evidence.
+    """
+
+    return CandidateEdge(
+        confidence=conf,
+        evidence={
+            "thread_type": thread_type,
+            "thread_key": thread_key,
+            "adjacent_level": True,
+            "local_subject_key": subject_key,
+            **extra_evidence,
+        },
+        heuristic_confidence=conf,
+        inference_source="inferred",
+        inference_type=inference_type,
+        metadata={},
+        rel_type="buildsTowards",
+        source_sfi_uuid=src_uid,
+        target_sfi_uuid=tgt_uid,
+    )
+
+
+def _emit_progression_relationship(
+    *,
+    candidate: CandidateEdge,
+    config: CreateKGConfig,
+    doc_key: str,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    fw_metadata: dict[str, Any],
+    granularity: str,
+) -> Relationship:
+    """Emit a Relationship object for a candidate edge with deterministic UUIDv5.
+
+    Parameters
+    ----------
+    candidate
+        The CandidateEdge for which to emit a Relationship.
+    config
+        The CreateKGConfig containing attribution and namespace information.
+    doc_key
+        The document key for the export, used in UUID generation.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used for provenance.
+    fw_metadata
+        The metadata dictionary for the framework, to include in the relationship
+        metadata.
+    granularity
+        The chosen granularity ("coarse" or "fine") to include in the relationship
+        metadata.
 
     Returns
     -------
     Relationship
-        A Relationship object representing the specified relationship between the
-        source and target SFIs, with appropriate attribution, metadata, and a stable
-        identifier.
+        A Relationship object representing the candidate edge, with a deterministic
+        UUID and rich metadata for provenance.
     """
 
-    rid = uuid5(config.namespace_uuid, f"lp:{rel_type}:{source}:{target}")
+    rel_type = candidate.rel_type
+    src_uuid = candidate.source_sfi_uuid
+    tgt_uuid = candidate.target_sfi_uuid
+
+    # Canonicalize relatesTo ordering for deterministic IDs.
+    if rel_type == "relatesTo" and str(tgt_uuid) < str(src_uuid):
+        src_uuid, tgt_uuid = tgt_uuid, src_uuid
+
+    edge_id = uuid5(
+        config.namespace_uuid,
+        f"lc:curriculum:{doc_key}:rel:{rel_type}:{src_uuid}:{tgt_uuid}",
+    )
+
+    metadata: dict[str, Any] = {
+        "source_kg": "learning_progressions",
+        "framework": fw_metadata,
+        "learning_progression_provenance": {
+            "inference_source": candidate.inference_source,
+            "inference_type": candidate.inference_type,
+            "confidence": candidate.confidence,
+            "heuristic_confidence": candidate.heuristic_confidence,
+            "llm_confidence": candidate.llm_confidence,
+            "evidence": candidate.evidence,
+            "granularity": granularity,
+        },
+    }
+
+    # Attach canonical pointers when available.
+    fs = features_by_uuid.get(candidate.source_sfi_uuid, {})
+    ft = features_by_uuid.get(candidate.target_sfi_uuid, {})
+    metadata["learning_progression_provenance"]["canonical_pointers"] = {
+        "source": {
+            "canonical_node_id": fs.get("canonical_node_id"),
+            "topic_path_key": fs.get("topic_path_key"),
+            "grade_key": fs.get("grade_key"),
+            "stage_key": fs.get("stage_key"),
+        },
+        "target": {
+            "canonical_node_id": ft.get("canonical_node_id"),
+            "topic_path_key": ft.get("topic_path_key"),
+            "grade_key": ft.get("grade_key"),
+            "stage_key": ft.get("stage_key"),
+        },
+    }
 
     return Relationship(
         attribution_statement=config.attribution_statement,
         author=config.author,
-        date_created=None,
-        date_modified=None,
         description="",
-        identifier=rid,
+        identifier=edge_id,
         license=config.license,
         metadata=metadata,
         provider=config.provider,
         relationship_type=rel_type,
         source_entity="StandardsFrameworkItem",
         source_entity_key="case_identifier_uuid",
-        source_entity_value=str(source),
+        source_entity_value=str(src_uuid),
         target_entity="StandardsFrameworkItem",
         target_entity_key="case_identifier_uuid",
-        target_entity_value=str(target),
+        target_entity_value=str(tgt_uuid),
     )
 
 
-def _build_sfi_index(
-    *, by_grade: dict[str, list[dict[str, Any]]]
-) -> dict[str, dict[str, Any]]:
-    """Build a lookup table of SFI UUID -> context/provenance hints.
-
-    This is used to enrich emitted Relationship.metadata so downstream consumers can
-    reason about edges without having to join back to the source node payloads.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that grade, and
-        each thread contains items that represent individual StandardsFrameworkItems
-        with their UUIDs and other contextual information.
-
-    Returns
-    -------
-    dict[str, dict[str, Any]]
-        A dictionary mapping SFI UUIDs (as strings) to dictionaries of context and
-        provenance hints, such as grade label, subject label, topic path, statement
-        code, and page index. This index allows for quick lookup of relevant
-        information about an SFI when processing inferred relationships, enabling the
-        enrichment of Relationship.metadata with details about the source and target
-        SFIs without needing to reference the full node payloads.
-    """
-
-    index: dict[str, dict[str, Any]] = {}
-
-    for grade_label, grade_buckets in (by_grade or {}).items():
-        for b in grade_buckets or []:
-            for it in b.get("items") or []:
-                u = str(it.get("sfi_uuid") or "").strip()
-
-                if not u or u in index:
-                    continue
-
-                index[u] = {
-                    "grade_label": grade_label,
-                    "subject_label": b.get("subject_label"),
-                    "topic_path_key": b.get("topic_path_key"),
-                    "normalized_topic_path_key": b.get("normalized_topic_path_key"),
-                    "thread_key": b.get("thread_key"),
-                    "topic_path": b.get("topic_path"),
-                    "statement_code": it.get("statement_code"),
-                    "page_index": it.get("page_index"),
-                    "order_index_within_parent": it.get("order_index_within_parent"),
-                }
-
-    return index
-
-
-def _build_thread_map(
-    by_grade: dict[str, list[dict[str, Any]]],
-) -> dict[str, list[dict[str, Any]]]:
-    """Organize buckets by thread key and level-range order.
-
-    For cross-level inference we need to handle both:
-      - single-grade buckets (low==high) for true cross-grade adjacency, and
-      - banded buckets (low!=high) for cross-stage adjacency.
-
-    The returned mapping groups buckets by thread key and sorts them by
-    (grade_ordinal_low, grade_ordinal_high).
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that grade.
-
-    Returns
-    -------
-    dict[str, list[dict[str, Any]]]
-        A dictionary mapping thread keys to lists of bucket dictionaries, where each
-        list is sorted by (grade_ordinal_low, grade_ordinal_high) to facilitate
-        cross-grade and cross-stage buildsTowards inference. Buckets without integer
-        grade bounds are skipped and counted for logging purposes.
-
-    Raises
-    ------
-    ValueError
-        If any bucket is missing a valid thread key in its progression_context, since
-        the thread key is essential for grouping buckets for cross-grade inference.
-    """
-
-    thread_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    skipped_no_bounds = 0
-    missing_thread_key = 0
-    missing_thread_key_examples: list[str] = []
-
-    for grade_buckets in by_grade.values():
-        for b in grade_buckets:
-            lo, hi = _level_bounds(b)
-
-            if not isinstance(lo, int) or not isinstance(hi, int):
-                skipped_no_bounds += 1
-                continue
-
-            thread_key = b.get("thread_key")
-
-            if not isinstance(thread_key, str) or not thread_key.strip():
-                missing_thread_key += 1
-
-                if len(missing_thread_key_examples) < 3:
-                    missing_thread_key_examples.append(
-                        str(b.get("bucket_key") or b.get("topic_path_key") or "")
-                    )
-
-                continue
-
-            thread_key = thread_key.strip()
-            thread_map[thread_key].append(b)
-
-    for k in list(thread_map.keys()):
-        thread_map[k] = sorted(
-            thread_map[k],
-            key=lambda b: (
-                int(_level_bounds(b)[0] or 10**9),
-                int(_level_bounds(b)[1] or 10**9),
-                str(b.get("topic_path") or ""),
-                str(b.get("topic_path_key") or ""),
-            ),
-        )
-
-    if skipped_no_bounds > 0:
-        logger.warning(
-            f"Skipped {skipped_no_bounds} buckets without integer grade bounds "
-            f"(missing grade/stage ordinal data)."
-        )
-
-    if missing_thread_key > 0:
-        raise ValueError(
-            f"Missing progression_context.thread_key in "
-            f"{missing_thread_key} bucket(s). Re-export Academic Standards so each "
-            f"SFI has metadata.progression_context.thread_key. "
-            f"Examples: {missing_thread_key_examples}"
-        )
-
-    return thread_map
-
-
-def _canon_uuid_pair(a: UUID, b: UUID) -> tuple[UUID, UUID]:
-    """Return (min_uuid, max_uuid) using UUID.int ordering.
-
-    Parameters
-    ----------
-    a
-        The first UUID to compare and order.
-    b
-        The second UUID to compare and order.
-
-    Returns
-    -------
-    tuple[UUID, UUID]
-        A tuple containing the two UUIDs ordered by their integer value, with the
-        smaller (earlier) UUID first and the larger (later) UUID second. This is used
-        for canonicalizing pairs of UUIDs in undirected relationships like relatesTo,
-        where the order of source and target does not matter.
-    """
-
-    return (a, b) if a.int <= b.int else (b, a)
-
-
-def _compute_expected_phase1_calls(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
-) -> int:
-    """Count and log expected LLM calls for phase 1.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
-    config
-        The knowledge graph run configuration.
-
-    Returns
-    -------
-    int
-        The total number of buckets that contain 2 or more items, representing
-        the number of LLM calls required.
-    """
-
-    phase1_calls = sum(
-        1
-        for grade_buckets in by_grade.values()
-        for b in grade_buckets
-        if _allow_within_grade_inference(bucket=b, config=config)
-        and len(b.get("items", [])) >= 2
-    )
-
-    logger.info(
-        f"{phase1_calls} buckets with 2+ items for within-grade buildsTowards inference."
-    )
-
-    return phase1_calls
-
-
-def _compute_expected_phase2_calls(
-    *, config: CreateKGConfig, thread_map: dict[str, list[dict[str, Any]]]
-) -> int:
-    """Count and log expected LLM calls for phase 2 based on the normalized thread map.
-
-    Parameters
-    ----------
-    config
-        The knowledge graph run configuration.
-    thread_map
-        A nested dictionary mapping normalized thread keys to dictionaries that map
-        grade ordinals to their corresponding bucket dictionaries. This structure is
-        used to determine how many adjacent grade pairs exist for each thread, which in
-        turn indicates how many LLM calls will be made for cross-grade buildsTowards
-        inference in phase 2.
-
-    Returns
-    -------
-    int
-        The total number of expected LLM calls for phase 2, which corresponds to the
-        number of adjacent grade pairs with items for each normalized thread key.
-    """
-
-    cross_grade_calls = 0
-    cross_stage_calls = 0
-
-    for buckets in thread_map.values():
-        for lower, upper in zip(buckets, buckets[1:]):
-            if not _levels_adjacent(lower, upper):
-                continue
-
-            both_single = _is_single_grade_bucket(lower) and _is_single_grade_bucket(
-                upper
-            )
-
-            if both_single and config.progressions_cross_grade_builds_towards:
-                cross_grade_calls += 1
-            elif (not both_single) and config.progressions_cross_stage_builds_towards:
-                cross_stage_calls += 1
-
-    total = cross_grade_calls + cross_stage_calls
-
-    if config.progressions_cross_grade_builds_towards:
-        logger.info(
-            f"{cross_grade_calls} adjacent single-grade pairs for cross-grade buildsTowards inference."
-        )
-    if config.progressions_cross_stage_builds_towards:
-        logger.info(
-            f"{cross_stage_calls} adjacent level pairs for cross-stage buildsTowards inference."
-        )
-
-    return total
-
-
-def _compute_expected_phase3_calls(
-    *, grade_subject_threads: dict[str, dict[str, list[dict[str, Any]]]], max_items: int
-) -> int:
-    """Count and log expected LLM calls for phase 3.
-
-    Parameters
-    ----------
-    grade_subject_threads
-        A nested dictionary mapping grade labels to subject labels to lists of bucket
-        dictionaries, representing the organization of standards by grade and subject.
-    max_items
-        The maximum number of items to sample per subject for relatesTo inference,
-        which affects the number of LLM calls since pairs without enough items are
-        skipped.
-
-    Returns
-    -------
-    int
-        The total number of expected LLM calls for phase 3, which corresponds to the
-        number of cross-subject (subject_a, subject_b) pairs within each grade that
-        have enough sampled items to populate the LLM prompt.
-    """
-
-    def _sort_key(b: dict[str, Any]) -> tuple[str, str]:
-        """Sorting key for threads within a subject, to ensure deterministic sampling
-        of items for the LLM prompt. Sort by topic path, then topic path key as a
-        tiebreaker.
-
-        Parameters
-        ----------
-        b
-            A bucket dictionary containing information about a thread of standards,
-            which may include "topic_path" and "topic_path_key" keys.
-
-        Returns
-        -------
-        tuple[str, str]
-            A tuple containing the topic path and topic path key as strings, used for
-            sorting threads in a deterministic order for sampling.
-        """
-
-        return str(b.get("topic_path") or ""), str(b.get("topic_path_key") or "")
-
-    phase3_calls = 0
-
-    for by_subject in grade_subject_threads.values():
-        # Match Phase 3 runtime filtering in _infer_within_grade_relates_to().
-        # Otherwise the "expected calls" log over-counts by including placeholders.
-        subject_keys = [
-            s
-            for s in sorted(by_subject.keys())
-            if s not in {"UNSPECIFIED_SUBJECT", "UNKNOWN", ""}
-        ]
-
-        if len(subject_keys) < 2:
-            continue
-
-        for i, s1 in enumerate(subject_keys):
-            for s2 in subject_keys[i + 1 :]:
-                # Sample from each subject, then pair across.
-                sampled_a = _sample_items_across_threads(
-                    max_items=max_items,
-                    thread_buckets=sorted(by_subject[s1], key=_sort_key),
-                )
-                sampled_b = _sample_items_across_threads(
-                    max_items=max_items,
-                    thread_buckets=sorted(by_subject[s2], key=_sort_key),
-                )
-
-                if sampled_a and sampled_b:
-                    phase3_calls += 1
-
-    logger.info(
-        f"{phase3_calls} within-grade cross-subject pairs for relatesTo inference "
-        f"(bidirectional confirmation => {phase3_calls * 2} LLM calls)."
-    )
-
-    return phase3_calls * 2
-
-
-def _compute_expected_phase4_calls(
-    *,
-    config: CreateKGConfig,
-    subject_level_samples: dict[str, dict[tuple[int, int], dict[str, Any]]],
-) -> int:
-    """Count and log expected LLM calls for phase 4 (cross-grade and optional
-    cross-stage).
-
-    Parameters
-    ----------
-    config
-        The knowledge graph run configuration, containing flags for which types of
-        inference are enabled (cross-grade relatesTo and/or cross-stage relatesTo).
-    subject_level_samples
-        A nested dictionary mapping subject labels to dictionaries that map (grade_low,
-        grade_high) tuples to their corresponding bucket dictionaries, which include
-        the sampled items for each grade and subject. This structure is used to
-        determine how many adjacent grade pairs exist within each subject that have
-        enough items to be sampled for the LLM prompt, which in turn indicates how many
-        LLM calls will be made for cross-grade and cross-stage relatesTo inference in
-        phase 4.
-
-    Returns
-    -------
-    int
-        The total number of expected LLM calls for phase 4, which corresponds to the
-        number of adjacent grade pairs with sampled items for each subject label,
-        taking into account whether the pairs represent single-grade adjacency (for
-        cross-grade relatesTo) or banded-level adjacency (for cross-stage relatesTo),
-        and whether the respective inference types are enabled in the config.
-    """
-
-    cross_grade_calls = 0
-    cross_stage_calls = 0
-
-    for by_level in subject_level_samples.values():
-        keys = sorted(by_level.keys(), key=lambda k: (k[0], k[1]))
-
-        for k_lo, k_hi in zip(keys, keys[1:]):
-            lo_low, lo_high = k_lo
-            hi_low, hi_high = k_hi
-
-            if lo_high + 1 != hi_low:
-                continue
-
-            both_single = (lo_low == lo_high) and (hi_low == hi_high)
-
-            if both_single and config.progressions_cross_grade_relates_to:
-                cross_grade_calls += 1
-            elif (not both_single) and config.progressions_cross_stage_relates_to:
-                cross_stage_calls += 1
-
-    total = cross_grade_calls + cross_stage_calls
-
-    # Bidirectional confirmation doubles the number of LLM calls per (subject,
-    # adjacent-level) pair.
-    total_calls = total * 2
-
-    if config.progressions_cross_grade_relates_to:
-        logger.info(
-            f"{cross_grade_calls} adjacent single-grade pairs for cross-grade relatesTo inference."
-        )
-    if config.progressions_cross_stage_relates_to:
-        logger.info(
-            f"{cross_stage_calls} adjacent level pairs for cross-stage relatesTo inference."
-        )
-
-    return total_calls
-
-
-def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
-    """Deduplicate by (rel_type, canonical endpoints). Keep highest confidence.
-
-    Parameters
-    ----------
-    edges
-        A list of CandidateEdge instances that may contain duplicates based on their
-        relationship type and canonicalized endpoints.
-
-    Returns
-    -------
-    list[CandidateEdge]
-        A deduplicated list of CandidateEdge instances, where duplicates (edges with
-        the same relationship type and canonical endpoints) are resolved by keeping the
-        edge with the highest confidence score.
-    """
-
-    best: dict[tuple[str, UUID, UUID], CandidateEdge] = {}
-
-    for e in edges:
-        s, t = e.source_sfi_uuid, e.target_sfi_uuid
-
-        if e.rel_type == "relatesTo" and s.int > t.int:
-            s, t = t, s
-
-        k = (e.rel_type, s, t)
-
-        # If the endpoints were swapped, create a new edge object; otherwise reuse
-        # existing.
-        e2 = (
-            e
-            if (s, t) == (e.source_sfi_uuid, e.target_sfi_uuid)
-            else CandidateEdge(
-                confidence=e.confidence,
-                evidence=e.evidence,
-                inference_source=e.inference_source,
-                inference_type=e.inference_type,
-                llm_confidence=e.llm_confidence,
-                metadata=e.metadata,
-                rel_type=e.rel_type,
-                source_sfi_uuid=s,
-                target_sfi_uuid=t,
-            )
-        )
-
-        if k not in best or e2.confidence > best[k].confidence:
-            best[k] = e2
-
-    return list(best.values())
-
-
-def _format_learning_progressions_dict(
-    *,
-    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
-    drops: dict[str, list[dict[str, Any]]],
-) -> dict[str, Any]:
-    """Sort and structure the raw buckets.
-
-    Parameters
-    ----------
-    buckets
-        The raw buckets of standards grouped by grade and thread, as built by
-        group_standards_for_learning_progressions.
-    drops
-        The dropped items report, containing lists of items that were dropped due to
-        various data issues (e.g., missing topic path key, multiple grade tags, etc.).
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary containing the sorted and structured standards by grade and
-        thread, as well as the drops report, ready for use in the LLM prompt or output
-        artifacts.
-    """
-
-    by_grade: dict[str, list[dict[str, Any]]] = {}
-    by_thread: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-
-    for grade_label, per_thread in buckets.items():
-        grade_buckets: list[dict[str, Any]] = []
-
-        for tkey, b in per_thread.items():
-            b["items"] = sorted(b["items"], key=_sort_key_for_bucket_sfi)
-            grade_buckets.append(b)
-            by_thread[tkey][grade_label] = b
-
-        by_grade[grade_label] = sorted(
-            grade_buckets,
-            key=lambda x: (x.get("topic_path") or "", x["topic_path_key"]),
-        )
-
-    return {"by_grade": by_grade, "by_thread": dict(by_thread), "drops": drops}
-
-
-def _grade_label_and_ordinal(sfi: StandardsFrameworkItem) -> tuple[str, int | None]:
-    """Prefer progression_context grade ordinals when present; fall back to grade_level
-    tags.
-
-    Parameters
-    ----------
-    sfi
-        The StandardsFrameworkItem to extract grade information from.
-
-    Returns
-    -------
-    tuple[str, int | None]
-        A tuple containing the grade label and its corresponding ordinal (if available).
-    """
-
-    metadata = sfi.metadata or {}
-    progression_context = metadata.get("progression_context") or {}
-    grade_ordinal_low = progression_context.get("grade_ordinal_low")
-    grade_ordinal_high = progression_context.get("grade_ordinal_high")
-
-    # If this SFI belongs to a banded level (low != high), label it as a band/stage.
-    if (
-        isinstance(grade_ordinal_low, int)
-        and isinstance(grade_ordinal_high, int)
-        and grade_ordinal_high != grade_ordinal_low
-    ):
-        parts = progression_context.get("topic_path_parts") or []
-        stage_label = ""
-
-        if isinstance(parts, list):
-            stage_label = next(
-                (
-                    str(p.get("label") or "").strip()
-                    for p in parts
-                    if p.get("role") == "stage" and p.get("label")
-                ),
-                "",
-            )
-
-        label = stage_label or f"GRADES {grade_ordinal_low}–{grade_ordinal_high}"
-        return label, grade_ordinal_low
-
-    if isinstance(grade_ordinal_low, int):
-        return f"GRADE {grade_ordinal_low}", grade_ordinal_low
-
-    grade_level = sfi.grade_level or []
-
-    if grade_level:
-        label = str(grade_level[0]).strip().upper()
-        m = GRADE_INT_RE.search(label)
-        return label, int(m.group(1)) if m else None
-
-    return "UNSPECIFIED_GRADE", None
-
-
-def _group_threads_by_grade_and_subject(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
-) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    """Group threads by grade and subject, filtering invalid items.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that grade, and
-        may include a "subject_label" key indicating the subject of the thread.
-    config
-        The knowledge graph run configuration.
-
-    Returns
-    -------
-    dict[str, dict[str, list[dict[str, Any]]]]
-        A nested dictionary mapping grade labels to subject labels to lists of bucket
-        dictionaries, representing the organization of threads by grade and subject for
-        within-grade relatesTo inference. Only buckets that are allowed for
-        within-grade inference based on the configuration (e.g., single-grade buckets
-        if progressions_within_grade_allow_banded_levels=False) are included in the
-        output.
-    """
-
-    grade_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
-
-    for grade_label, grade_buckets in by_grade.items():
-        for b in grade_buckets:
-            if not _allow_within_grade_inference(bucket=b, config=config):
-                continue
-
-            subject = str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            grade_subject_threads[grade_label][subject].append(b)
-
-    return grade_subject_threads
-
-
-def _infer_cross_grade_builds_towards(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
-) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
-    """Perform Phase 2 inference: Cross-grade buildsTowards relationships with optional
-    cross-stage fallback.
-
-    1. If BOTH adjacent buckets represent single grades (low == high), run true
-        cross-grade.
-    2. If EITHER side is banded (low != high) and cross-stage is enabled, run
-        cross-stage.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
-    config
-        The knowledge graph run configuration.
-
-    Returns
-    -------
-    tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]
-        A tuple containing:
-            1. List of generated candidate edges.
-            2. List of provenance dictionaries.
-            3. Set of (source_uuid, target_uuid) tuples for use in exclusion logic in
-                Phase 4.
-    """
-
-    candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
-    cross_level_build_pairs: set[tuple[UUID, UUID]] = set()
-
-    if not (
-        config.progressions_cross_grade_builds_towards
-        or config.progressions_cross_stage_builds_towards
-    ):
-        return candidates, provenance_rows, cross_level_build_pairs
-
-    thread_map = _build_thread_map(by_grade)
-    total_calls = _compute_expected_phase2_calls(config=config, thread_map=thread_map)
-    current_call = 0
-
-    for thread_key, buckets in thread_map.items():
-        for b_lo, b_hi in zip(buckets, buckets[1:]):
-            if not _levels_adjacent(b_lo, b_hi):
-                continue
-
-            lower_items = b_lo.get("items") or []
-            upper_items = b_hi.get("items") or []
-
-            if not lower_items or not upper_items:
-                continue
-
-            both_single = _is_single_grade_bucket(b_lo) and _is_single_grade_bucket(
-                b_hi
-            )
-
-            if both_single:
-                if not config.progressions_cross_grade_builds_towards:
-                    continue
-
-                inference_type = "cross_grade_builds_towards"
-                prompt_builder = cross_grade_builds_towards
-            else:
-                if not config.progressions_cross_stage_builds_towards:
-                    continue
-
-                inference_type = "cross_stage_builds_towards"
-                prompt_builder = cross_stage_builds_towards
-
-            lo_label = _level_label(b_lo)
-            hi_label = _level_label(b_hi)
-            lo_lo, lo_hi = _level_bounds(b_lo)
-            hi_lo, hi_hi = _level_bounds(b_hi)
-
-            current_call += 1
-            logger.info(
-                f"Phase 2 Progress: {current_call}/{total_calls} "
-                f"({lo_label} -> {hi_label} | {thread_key} | {inference_type})"
-            )
-
-            lower_payload = [
-                {
-                    "sfi_uuid": it["sfi_uuid"],
-                    "statement_code": it.get("statement_code"),
-                    "description": it.get("description"),
-                    "notes": it.get("notes"),
-                    "page_index": it.get("page_index"),
-                    "order_index_within_parent": it.get("order_index_within_parent"),
-                }
-                for it in lower_items
-            ]
-            upper_payload = [
-                {
-                    "sfi_uuid": it["sfi_uuid"],
-                    "statement_code": it.get("statement_code"),
-                    "description": it.get("description"),
-                    "notes": it.get("notes"),
-                    "page_index": it.get("page_index"),
-                    "order_index_within_parent": it.get("order_index_within_parent"),
-                }
-                for it in upper_items
-            ]
-
-            prompt = prompt_builder(
-                lower_items=lower_payload,
-                lower_grade_label=lo_label,
-                thread_key=thread_key,
-                thread_path=str(b_hi.get("topic_path") or b_hi.get("topic_path_key")),
-                upper_grade_label=hi_label,
-                upper_items=upper_payload,
-            )
-
-            allowed_lo = {str(it["sfi_uuid"]) for it in lower_payload}
-            allowed_hi = {str(it["sfi_uuid"]) for it in upper_payload}
-
-            response = infer_progression_edges(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                instructions=prompt.system_message,
-                model=config.model,
-                user_message=prompt.user_message,
-                validator=partial(
-                    validate_cross_grade_builds_towards,
-                    allowed_lo=allowed_lo,
-                    allowed_hi=allowed_hi,
-                ),
-            )
-
-            for e in response.edges:
-                ce = CandidateEdge(
-                    confidence=float(e.confidence),
-                    evidence={"rationale": e.rationale},
-                    inference_source="llm",
-                    llm_confidence=float(e.confidence),
-                    inference_type=inference_type,
-                    metadata={
-                        "phase": 2,
-                        "lower_level_label": lo_label,
-                        "upper_level_label": hi_label,
-                        "lower_level_low": lo_lo,
-                        "lower_level_high": lo_hi,
-                        "upper_level_low": hi_lo,
-                        "upper_level_high": hi_hi,
-                        "thread_key": thread_key,
-                        "topic_path_key_upper": b_hi.get("topic_path_key"),
-                        "topic_path": b_hi.get("topic_path"),
-                        "subject_label": b_hi.get("subject_label"),
-                    },
-                    rel_type="buildsTowards",
-                    source_sfi_uuid=_uuid(e.source_sfi_uuid),
-                    target_sfi_uuid=_uuid(e.target_sfi_uuid),
-                )
-                candidates.append(ce)
-                cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
-                provenance_rows.append(
-                    {
-                        "confidence": ce.confidence,
-                        "lower_level": lo_label,
-                        "thread_key": thread_key,
-                        "rationale": e.rationale,
-                        "rel_type": "buildsTowards",
-                        "source": str(ce.source_sfi_uuid),
-                        "target": str(ce.target_sfi_uuid),
-                        "upper_level": hi_label,
-                        "inference_type": inference_type,
-                    }
-                )
-
-    return candidates, provenance_rows, cross_level_build_pairs
-
-
-def _infer_cross_grade_relates_to(
-    *,
-    by_grade: dict[str, list[dict[str, Any]]],
-    config: CreateKGConfig,
-    forbidden_builds_pairs: set[tuple[UUID, UUID]],
-) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 4 inference: Cross-grade relatesTo relationships with optional
-    cross-stage fallback.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
-    config
-        The knowledge graph run configuration.
-    forbidden_builds_pairs
-        A set of (source, target) UUID tuples representing existing buildsTowards
-        relationships which should be excluded from relatesTo inference.
-
-    Returns
-    -------
-    tuple[list[CandidateEdge], list[dict[str, Any]]]
-        A tuple containing the list of generated candidate edges and the list of
-        provenance dictionaries.
-    """
-
-    candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
-
-    if not (
-        config.progressions_cross_grade_relates_to
-        or config.progressions_cross_stage_relates_to
-    ):
-        return candidates, provenance_rows
-
-    max_items = int(config.progressions_cross_grade_relates_to_max_items_per_subject)
-    max_edges_per_sfi = int(config.progressions_relates_to_max_edges_per_sfi)
-
-    subject_level_samples = _prepare_subject_grade_samples(
-        by_grade=by_grade, max_items=max_items
-    )
-
-    total_calls = _compute_expected_phase4_calls(
-        config=config, subject_level_samples=subject_level_samples
-    )
-    current_call = 0
-
-    for subject_label, by_level in subject_level_samples.items():
-        level_keys = sorted(by_level.keys(), key=lambda k: (k[0], k[1]))
-
-        for k_lo, k_hi in zip(level_keys, level_keys[1:]):
-            lo_low, lo_high = k_lo
-            hi_low, hi_high = k_hi
-
-            if lo_high + 1 != hi_low:
-                continue
-
-            lower = by_level[k_lo]
-            upper = by_level[k_hi]
-            lower_items = lower["items"]
-            upper_items = upper["items"]
-
-            if not lower_items or not upper_items:
-                continue
-
-            both_single = (lo_low == lo_high) and (hi_low == hi_high)
-
-            if both_single:
-                if not config.progressions_cross_grade_relates_to:
-                    continue
-
-                inference_type = "cross_grade_relates_to"
-                prompt_builder = cross_grade_relates_to
-            else:
-                if not config.progressions_cross_stage_relates_to:
-                    continue
-
-                inference_type = "cross_stage_relates_to"
-                prompt_builder = cross_stage_relates_to
-
-            forbidden_pairs_set, forbidden_pairs = _resolve_forbidden_pairs(
-                forbidden_builds_pairs=forbidden_builds_pairs,
-                lower_items=lower_items,
-                upper_items=upper_items,
-            )
-
-            # Bidirectional confirmation: run lo→hi and hi→lo (swapped prompt inputs),
-            # then keep only edges that appear in both runs (canonicalized by UUID
-            # order).
-            prompt_lo_hi = prompt_builder(
-                forbidden_pairs=forbidden_pairs,
-                lower_grade_label=str(lower["level_label"]),
-                lower_items=lower_items,
-                max_edges_per_sfi=max_edges_per_sfi,
-                subject_label=subject_label,
-                upper_grade_label=str(upper["level_label"]),
-                upper_items=upper_items,
-            )
-
-            current_call += 1
-            logger.info(
-                f"Phase 4 Progress: {current_call}/{total_calls} "
-                f"({subject_label}: {lower['level_label']} -> {upper['level_label']} | {inference_type} | lo→hi)"
-            )
-
-            resp_lo_hi = infer_progression_edges(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                instructions=prompt_lo_hi.system_message,
-                model=config.model,
-                user_message=prompt_lo_hi.user_message,
-                validator=partial(
-                    validate_cross_grade_relates_to,
-                    allowed_lo={str(it["sfi_uuid"]) for it in lower_items},
-                    allowed_hi={str(it["sfi_uuid"]) for it in upper_items},
-                    forbidden_pairs=forbidden_pairs_set,
-                ),
-            )
-
-            prompt_hi_lo = prompt_builder(
-                forbidden_pairs=forbidden_pairs,
-                lower_grade_label=str(upper["level_label"]),
-                lower_items=upper_items,
-                max_edges_per_sfi=max_edges_per_sfi,
-                subject_label=subject_label,
-                upper_grade_label=str(lower["level_label"]),
-                upper_items=lower_items,
-            )
-
-            current_call += 1
-            logger.info(
-                f"Phase 4 Progress: {current_call}/{total_calls} "
-                f"({subject_label}: {lower['level_label']} -> {upper['level_label']} | {inference_type} | hi→lo)"
-            )
-
-            resp_hi_lo = infer_progression_edges(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                instructions=prompt_hi_lo.system_message,
-                model=config.model,
-                user_message=prompt_hi_lo.user_message,
-                validator=partial(
-                    validate_cross_grade_relates_to,
-                    allowed_lo={str(it["sfi_uuid"]) for it in upper_items},
-                    allowed_hi={str(it["sfi_uuid"]) for it in lower_items},
-                    forbidden_pairs=forbidden_pairs_set,
-                ),
-            )
-
-            m_lo_hi = _best_map(resp_lo_hi)
-            m_hi_lo = _best_map(resp_hi_lo)
-            common_pairs = sorted(
-                (set(m_lo_hi.keys()) & set(m_hi_lo.keys())),
-                key=lambda p: (p[0].int, p[1].int),
-            )
-
-            for a, b in common_pairs:
-                conf_lo_hi, rat_lo_hi = m_lo_hi[(a, b)]
-                conf_hi_lo, rat_hi_lo = m_hi_lo[(a, b)]
-                conf = min(conf_lo_hi, conf_hi_lo)
-
-                ce = CandidateEdge(
-                    confidence=float(conf),
-                    evidence={
-                        "rationale_lo_hi": rat_lo_hi,
-                        "rationale_hi_lo": rat_hi_lo,
-                        "confidence_lo_hi": float(conf_lo_hi),
-                        "confidence_hi_lo": float(conf_hi_lo),
-                        "bidirectional_confirmed": True,
-                    },
-                    inference_source="llm",
-                    llm_confidence=float(conf),
-                    inference_type=inference_type,
-                    metadata={
-                        "phase": 4,
-                        "bidirectional_confirmed": True,
-                        "subject_label": subject_label,
-                        "lower_level_label": lower["level_label"],
-                        "upper_level_label": upper["level_label"],
-                        "lower_level_low": lo_low,
-                        "lower_level_high": lo_high,
-                        "upper_level_low": hi_low,
-                        "upper_level_high": hi_high,
-                    },
-                    rel_type="relatesTo",
-                    source_sfi_uuid=a,
-                    target_sfi_uuid=b,
-                )
-                candidates.append(ce)
-                provenance_rows.append(
-                    {
-                        "phase": 4,
-                        "bidirectional_confirmed": True,
-                        "confidence": ce.confidence,
-                        "confidence_lo_hi": float(conf_lo_hi),
-                        "confidence_hi_lo": float(conf_hi_lo),
-                        "subject_label": subject_label,
-                        "lower_level": lower["level_label"],
-                        "upper_level": upper["level_label"],
-                        "rel_type": "relatesTo",
-                        "source": str(ce.source_sfi_uuid),
-                        "target": str(ce.target_sfi_uuid),
-                        "inference_type": inference_type,
-                        "rationale_lo_hi": rat_lo_hi,
-                        "rationale_hi_lo": rat_hi_lo,
-                    }
-                )
-
-    return candidates, provenance_rows
-
-
-def _infer_within_grade_builds_towards(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
-) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 1 inference: Within-grade buildsTowards relationships.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
-    config
-        The knowledge graph run configuration.
-
-    Returns
-    -------
-    tuple[list[CandidateEdge], list[dict[str, Any]]]
-        A tuple containing the list of generated candidate edges and the list of
-        provenance dictionaries.
-    """
-
-    candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
-
-    if not config.progressions_within_grade_builds_towards:
-        return candidates, provenance_rows
-
-    total_calls = _compute_expected_phase1_calls(by_grade=by_grade, config=config)
-    current_call = 0
-
-    for grade_label, grade_buckets in by_grade.items():
-        for bucket in grade_buckets:
-            if not _allow_within_grade_inference(bucket=bucket, config=config):
-                continue
-
-            items = bucket.get("items") or []
-
-            if len(items) < 2:
-                continue
-
-            current_call += 1
-            logger.info(
-                f"Phase 1 Progress: {current_call}/{total_calls} "
-                f"({grade_label} - {bucket.get('topic_path_key')})"
-            )
-
-            ordered_items = []
-            for item in items:
-                ordered_items.append(
-                    {
-                        "sfi_uuid": item["sfi_uuid"],
-                        "statement_code": item.get("statement_code"),
-                        "description": item.get("description"),
-                        "notes": item.get("notes"),
-                        "page_index": item.get("page_index"),
-                        "order_index_within_parent": item.get(
-                            "order_index_within_parent"
-                        ),
-                    }
-                )
-
-            prompt = within_grade_builds_towards(
-                grade_label=str(grade_label),
-                items=ordered_items,
-                thread_path=str(
-                    bucket.get("topic_path") or bucket.get("topic_path_key")
-                ),
-            )
-
-            pos = {str(it["sfi_uuid"]): idx for idx, it in enumerate(ordered_items)}
-            allowed = set(pos.keys())
-
-            response = infer_progression_edges(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                instructions=prompt.system_message,
-                model=config.model,
-                user_message=prompt.user_message,
-                validator=partial(
-                    validate_within_grade_builds_towards,
-                    allowed_uuids=allowed,
-                    uuid_positions=pos,
-                ),
-            )
-
-            for edge in response.edges:
-                candidate_edge = CandidateEdge(
-                    confidence=float(edge.confidence),
-                    evidence={"rationale": edge.rationale},
-                    inference_source="llm",
-                    inference_type="within_grade_builds_towards",
-                    llm_confidence=float(edge.confidence),
-                    metadata={
-                        "phase": 1,
-                        "grade_label": grade_label,
-                        "subject_label": bucket.get("subject_label"),
-                        "topic_path": bucket.get("topic_path"),
-                        "topic_path_key": bucket.get("topic_path_key"),
-                    },
-                    rel_type="buildsTowards",
-                    source_sfi_uuid=_uuid(edge.source_sfi_uuid),
-                    target_sfi_uuid=_uuid(edge.target_sfi_uuid),
-                )
-                candidates.append(candidate_edge)
-                provenance_rows.append(
-                    {
-                        "bucket_key": bucket.get("bucket_key"),
-                        "confidence": candidate_edge.confidence,
-                        "rationale": edge.rationale,
-                        "rel_type": "buildsTowards",
-                        "source": str(candidate_edge.source_sfi_uuid),
-                        "target": str(candidate_edge.target_sfi_uuid),
-                    }
-                )
-
-    return candidates, provenance_rows
-
-
-def _infer_within_grade_relates_to(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
-) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 3 inference: Within-grade cross-subject relatesTo relationships.
-
-    For each grade, compare *subjects* (not within-subject threads) to find
-    cross-curricular connections (i.e., the Coherence Map pattern). Within-subject
-    relatesTo is skipped---those connections are lower value and more likely to produce
-    noise.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
-    config
-        The knowledge graph run configuration.
-
-    Returns
-    -------
-    tuple[list[CandidateEdge], list[dict[str, Any]]]
-        A tuple containing the list of generated candidate edges and the list of
-        provenance dictionaries.
-    """
-
-    candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
-
-    if not config.progressions_within_grade_relates_to:
-        return candidates, provenance_rows
-
-    max_items = int(config.progressions_within_grade_relates_to_max_items_per_subject)
-    max_edges_per_sfi = int(config.progressions_relates_to_max_edges_per_sfi)
-
-    # Group threads by grade -> subject.
-    grade_subject_threads = _group_threads_by_grade_and_subject(
-        by_grade=by_grade, config=config
-    )
-
-    total_calls = _compute_expected_phase3_calls(
-        grade_subject_threads=grade_subject_threads, max_items=max_items
-    )
-    current_call = 0
-
-    for grade_label, by_subject in grade_subject_threads.items():
-        subject_keys = [
-            s
-            for s in sorted(by_subject.keys())
-            if s not in {"UNSPECIFIED_SUBJECT", "UNKNOWN", ""}
-        ]
-
-        if len(subject_keys) < 2:
-            continue
-
-        for i, subject_a in enumerate(subject_keys):
-            for subject_b in subject_keys[i + 1 :]:
-                threads_a = sorted(
-                    by_subject[subject_a],
-                    key=lambda b: (
-                        str(b.get("topic_path") or ""),
-                        str(b.get("topic_path_key") or ""),
-                    ),
-                )
-                threads_b = sorted(
-                    by_subject[subject_b],
-                    key=lambda b: (
-                        str(b.get("topic_path") or ""),
-                        str(b.get("topic_path_key") or ""),
-                    ),
-                )
-                thread_a_path = " | ".join(
-                    str(b.get("topic_path") or b.get("topic_path_key") or "").strip()
-                    for b in threads_a[:3]
-                    if (b.get("topic_path") or b.get("topic_path_key"))
-                )
-                thread_b_path = " | ".join(
-                    str(b.get("topic_path") or b.get("topic_path_key") or "").strip()
-                    for b in threads_b[:3]
-                    if (b.get("topic_path") or b.get("topic_path_key"))
-                )
-
-                sampled_a = _sample_items_across_threads(
-                    max_items=max_items, thread_buckets=threads_a
-                )
-                sampled_b = _sample_items_across_threads(
-                    max_items=max_items, thread_buckets=threads_b
-                )
-
-                if not sampled_a or not sampled_b:
-                    continue
-
-                # NB: Do not increment current_call here. Phase 3 progress should count
-                # only actual LLM calls (A -> B and B -> A), which are logged below.
-                logger.info(f"Phase 3 Pair: ({grade_label}: {subject_a} × {subject_b})")
-
-                items_a = [
-                    {
-                        "sfi_uuid": it["sfi_uuid"],
-                        "statement_code": it.get("statement_code"),
-                        "description": it.get("description"),
-                        "notes": it.get("notes"),
-                        "page_index": it.get("page_index"),
-                    }
-                    for it in sampled_a
-                ]
-                items_b = [
-                    {
-                        "sfi_uuid": it["sfi_uuid"],
-                        "statement_code": it.get("statement_code"),
-                        "description": it.get("description"),
-                        "notes": it.get("notes"),
-                        "page_index": it.get("page_index"),
-                    }
-                    for it in sampled_b
-                ]
-
-                allowed_a = {str(it["sfi_uuid"]) for it in items_a}
-                allowed_b = {str(it["sfi_uuid"]) for it in items_b}
-
-                # Bidirectional confirmation: run A ×B and B×A, then keep only edges
-                # that appear in both runs (canonicalized by UUID order).
-                prompt_ab = within_grade_relates_to(
-                    grade_label=str(grade_label),
-                    items_a=items_a,
-                    items_b=items_b,
-                    max_edges_per_sfi=max_edges_per_sfi,
-                    subject_label=f"{subject_a} × {subject_b}",
-                    thread_a_key=f"subject:{subject_a}",
-                    thread_b_key=f"subject:{subject_b}",
-                    thread_a_path=thread_a_path or subject_a,
-                    thread_b_path=thread_b_path or subject_b,
-                )
-
-                current_call += 1
-                logger.info(
-                    f"Phase 3 Progress: {current_call}/{total_calls} "
-                    f"({grade_label}: {subject_a} × {subject_b} | relatesTo | A -> B)"
-                )
-
-                resp_ab = infer_progression_edges(
-                    always_double_check_first_attempt=config.always_double_check_first_attempt,
-                    instructions=prompt_ab.system_message,
-                    model=config.model,
-                    user_message=prompt_ab.user_message,
-                    validator=partial(
-                        validate_within_grade_relates_to,
-                        allowed_uuids_a=allowed_a,
-                        allowed_uuids_b=allowed_b,
-                    ),
-                )
-
-                prompt_ba = within_grade_relates_to(
-                    grade_label=str(grade_label),
-                    items_a=items_b,
-                    items_b=items_a,
-                    max_edges_per_sfi=max_edges_per_sfi,
-                    subject_label=f"{subject_a} × {subject_b}",
-                    thread_a_key=f"subject:{subject_b}",
-                    thread_b_key=f"subject:{subject_a}",
-                    thread_a_path=thread_b_path or subject_b,
-                    thread_b_path=thread_a_path or subject_a,
-                )
-
-                current_call += 1
-                logger.info(
-                    f"Phase 3 Progress: {current_call}/{total_calls} "
-                    f"({grade_label}: {subject_a} × {subject_b} | relatesTo | B -> A)"
-                )
-
-                resp_ba = infer_progression_edges(
-                    always_double_check_first_attempt=config.always_double_check_first_attempt,
-                    instructions=prompt_ba.system_message,
-                    model=config.model,
-                    user_message=prompt_ba.user_message,
-                    validator=partial(
-                        validate_within_grade_relates_to,
-                        allowed_uuids_a=allowed_b,
-                        allowed_uuids_b=allowed_a,
-                    ),
-                )
-
-                m_ab = _best_map(resp_ab)
-                m_ba = _best_map(resp_ba)
-                common_pairs = sorted(
-                    (set(m_ab.keys()) & set(m_ba.keys())),
-                    key=lambda p: (p[0].int, p[1].int),
-                )
-
-                for u_a, u_b in common_pairs:
-                    conf_ab, rat_ab = m_ab[(u_a, u_b)]
-                    conf_ba, rat_ba = m_ba[(u_a, u_b)]
-                    conf = min(conf_ab, conf_ba)
-
-                    ce = CandidateEdge(
-                        confidence=float(conf),
-                        evidence={
-                            "rationale_ab": rat_ab,
-                            "rationale_ba": rat_ba,
-                            "confidence_ab": float(conf_ab),
-                            "confidence_ba": float(conf_ba),
-                            "bidirectional_confirmed": True,
-                        },
-                        inference_source="llm",
-                        inference_type="within_grade_cross_subject_relates_to",
-                        llm_confidence=float(conf),
-                        metadata={
-                            "phase": 3,
-                            "grade_label": grade_label,
-                            "subject_a": subject_a,
-                            "subject_b": subject_b,
-                            "bidirectional_confirmed": True,
-                        },
-                        rel_type="relatesTo",
-                        source_sfi_uuid=u_a,
-                        target_sfi_uuid=u_b,
-                    )
-                    candidates.append(ce)
-                    provenance_rows.append(
-                        {
-                            "phase": 3,
-                            "bidirectional_confirmed": True,
-                            "confidence": ce.confidence,
-                            "confidence_ab": float(conf_ab),
-                            "confidence_ba": float(conf_ba),
-                            "grade_label": grade_label,
-                            "rel_type": "relatesTo",
-                            "source": str(ce.source_sfi_uuid),
-                            "target": str(ce.target_sfi_uuid),
-                            "subject_a": subject_a,
-                            "subject_b": subject_b,
-                            "rationale_ab": rat_ab,
-                            "rationale_ba": rat_ba,
-                        }
-                    )
-
-    return candidates, provenance_rows
-
-
-def _is_single_grade_bucket(b: dict[str, Any]) -> bool:
-    """Determine if a bucket corresponds to a single grade level based on its grade
-    ordinal.
-
-    Parameters
-    ----------
-    b
-        A bucket dictionary that may contain grade ordinal information.
-
-    Returns
-    -------
-    bool
-        True if the bucket corresponds to a single grade level (i.e., low and high
-        ordinals are both integers and equal), False otherwise.
-    """
-
-    lo, hi = _level_bounds(b)
-    return isinstance(lo, int) and isinstance(hi, int) and lo == hi
-
-
-def _level_bounds(b: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
-    """Return (low, high) ordinals for a bucket when available.
-
-    Parameters
-    ----------
-    b
-        A bucket dictionary that may contain "grade_ordinal_low", "grade_ordinal_high",
-        or "grade_ordinal" keys representing the grade level information for the
-        standards contained in the bucket.
-
-    Returns
-    -------
-    tuple[Optional[int], Optional[int]]
-        A tuple containing the low and high grade ordinals for the bucket. If both
-        "grade_ordinal_low" and "grade_ordinal_high" are present and valid integers,
-        those values are returned. If only "grade_ordinal" is present and valid, it is
-        returned as both the low and high ordinal. If neither is available or valid,
-        (None, None) is returned, indicating that the grade level information is not
-        available for this bucket.
-    """
-
-    lo = b.get("grade_ordinal_low")
-    hi = b.get("grade_ordinal_high")
-
-    if isinstance(lo, int) and isinstance(hi, int):
-        return lo, hi
-
-    ord_ = b.get("grade_ordinal")
-
-    if isinstance(ord_, int):
-        return int(ord_), int(ord_)
-
-    return None, None
-
-
-def _level_label(b: dict[str, Any]) -> str:
-    """Human-readable label for grade or banded stage buckets.
-
-    Parameters
-    ----------
-    b
-        A bucket dictionary that may contain grade level information, including
-        "grade_ordinal_low", "grade_ordinal_high", "grade_level", and
-        "topic_path_parts" keys.
-
-    Returns
-    -------
-    str
-        A human-readable label for the grade or banded stage represented by the bucket.
-    """
-
-    lo, hi = _level_bounds(b)
-
-    if isinstance(lo, int) and isinstance(hi, int) and hi != lo:
-        parts = b.get("topic_path_parts") or []
-
-        if isinstance(parts, list):
-            stage = next(
-                (
-                    str(p.get("label") or "")
-                    for p in parts
-                    if p.get("role") == "stage" and p.get("label")
-                ),
-                "",
-            ).strip()
-
-            if stage:
-                return stage
-
-        return f"GRADES {lo}–{hi}"
-
-    return str(
-        b.get("grade_level")
-        or (f"GRADE {lo}" if isinstance(lo, int) else "UNSPECIFIED_GRADE")
-    )
-
-
-def _levels_adjacent(lower: dict[str, Any], upper: dict[str, Any]) -> bool:
-    """Determine if the grade levels of two buckets are adjacent based on their
-    ordinals.
-
-    Parameters
-    ----------
-    lower
-        A bucket dictionary representing the lower grade level, which may contain grade
-        ordinal information.
-    upper
-        A bucket dictionary representing the upper grade level, which may contain grade
-        ordinal information.
-
-    Returns
-    -------
-    bool
-        True if the grade levels of the two buckets are adjacent (i.e., the high
-        ordinal of the lower bucket is exactly one less than the low ordinal of the
-        upper bucket), False otherwise. If the necessary ordinal information is not
-        available or valid in either bucket, the function returns False, indicating
-        that adjacency cannot be determined.
-    """
-
-    lo_lo, lo_hi = _level_bounds(lower)
-    hi_lo, hi_hi = _level_bounds(upper)
-
-    if not isinstance(lo_lo, int) or not isinstance(lo_hi, int):
-        return False
-
-    if not isinstance(hi_lo, int) or not isinstance(hi_hi, int):
-        return False
-
-    return lo_hi + 1 == hi_lo
-
-
-def _limit_relates_to_edges_per_sfi(
-    *, edges: list[CandidateEdge], max_edges_per_sfi: int
-) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
-    """Greedy limit for undirected relatesTo edges per node.
-
-    Parameters
-    ----------
-    edges
-        A list of CandidateEdge instances representing proposed relatesTo relationships
-        between StandardsFrameworkItems (SFIs), which may include multiple edges
-        connected to the same SFI.
-    max_edges_per_sfi
-        The maximum number of relatesTo edges to allow per SFI (undirected cap). Must
-        be >= 1. To disable relatesTo inference, use the phase toggles
-        (progressions_within_grade_relates_to/progressions_cross_grade_relates_to).
-
-    Returns
-    -------
-    tuple[list[CandidateEdge], list[CandidateEdge]]
-        A tuple containing two lists of CandidateEdge instances: the first list
-        includes the edges that are kept after applying the limit, and the second list
-        includes the edges that are dropped due to exceeding the maximum allowed edges
-        per SFI.
-    """
-
-    counts: dict[UUID, int] = defaultdict(int)
-    kept: list[CandidateEdge] = []
-    dropped: list[CandidateEdge] = []
-
-    # Sort deterministically: highest confidence first, then UUID pair.
-    edges_sorted = sorted(
-        edges,
-        key=lambda e: (-e.confidence, str(e.source_sfi_uuid), str(e.target_sfi_uuid)),
-    )
-
-    for e in edges_sorted:
-        a, b = e.source_sfi_uuid, e.target_sfi_uuid
-
-        if counts[a] >= max_edges_per_sfi or counts[b] >= max_edges_per_sfi:
-            dropped.append(e)
-            continue
-
-        kept.append(e)
-        counts[a] += 1
-        counts[b] += 1
-
-    return kept, dropped
-
-
-def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
-    """Convert a list of topic path parts (with optional "role" and label" keys) into a
-    compact, stable-ish context string for the LLM.
-
-    Parameters
-    ----------
-    topic_path_parts
-        A list of dictionaries representing parts of a topic path, where each
-        dictionary may contain optional "role" and "label" keys.
-
-    Returns
-    -------
-    str
-         A compact, stable-ish context string for the LLM, constructed by concatenating
-         the role and label of each topic path part in a specific format.
-    """
-
-    chunks: list[str] = []
-
-    for p in topic_path_parts:
-        role = (p.get("role") or "").strip()
-        label = (p.get("label") or "").strip()
-
-        if role and label:
-            chunks.append(f"{role}:{label}")
-        elif label:
-            chunks.append(label)
-
-    return " -> ".join(chunks)
-
-
-def _prepare_subject_grade_samples(
-    *, by_grade: dict[str, list[dict[str, Any]]], max_items: int
-) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
-    """Group and sample items by subject and level range for Phase 4.
-
-    Instead of keying by a single grade ordinal, we key by (low, high) so stage-banded
-    buckets (e.g., III–VI) remain truthful in cross-level inference.
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket dictionary contains information about the subject, grade ordinal, topic
-        path, and items (standards) within that bucket.
-    max_items
-        The maximum number of items to sample across threads for each subject and grade
-        combination. If the total number of items across threads exceeds this limit, a
-        sampling strategy will be applied to select a representative subset of items
-        for use in the LLM prompt during Phase 4 inference.
-
-    Returns
-    -------
-    dict[str, dict[tuple[int, int], dict[str, Any]]]
-        A nested dictionary structured as follows:
-        {
-            subject_label: {
-                (level_low, level_high): {
-                    "grade_label": str,
-                    "level_label": str,
-                    "level_low": int,
-                    "level_high": int,
-                    "items": list[dict[str, Any]],  # Sampled items for this subject and level range
-                },
-                ...
-    """
-
-    subject_level_samples: dict[str, dict[tuple[int, int], dict[str, Any]]] = (
-        defaultdict(dict)
-    )
-
-    for grade_label, grade_buckets in by_grade.items():
-        buckets_by_subject: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        bounds: list[tuple[int, int]] = []
-        exemplar_bucket: Optional[dict[str, Any]] = None
-
-        for b in grade_buckets:
-            lo, hi = _level_bounds(b)
-
-            if isinstance(lo, int) and isinstance(hi, int):
-                bounds.append((lo, hi))
-                exemplar_bucket = exemplar_bucket or b
-
-            buckets_by_subject[
-                str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            ].append(b)
-
-        if not bounds:
-            continue
-
-        level_low = min(lo for lo, _ in bounds)
-        level_high = max(hi for _, hi in bounds)
-        level_key = (level_low, level_high)
-
-        if any((lo, hi) != level_key for lo, hi in bounds):
-            logger.warning(
-                f"Inconsistent grade bounds within '{grade_label}'. Using aggregated {level_key}."
-            )
-
-        level_label = _level_label(
-            exemplar_bucket
-            or {
-                "grade_level": grade_label,
-                "grade_ordinal_low": level_low,
-                "grade_ordinal_high": level_high,
-            }
-        )
-
-        for subject_label, thread_buckets in buckets_by_subject.items():
-            thread_buckets_sorted = sorted(
-                thread_buckets,
-                key=lambda b: (
-                    str(b.get("topic_path") or ""),
-                    str(b.get("topic_path_key") or ""),
-                ),
-            )
-            sampled = _sample_items_across_threads(
-                max_items=max_items, thread_buckets=thread_buckets_sorted
-            )
-
-            if not sampled:
-                continue
-
-            prompt_items = [
-                {
-                    "sfi_uuid": it["sfi_uuid"],
-                    "statement_code": it.get("statement_code"),
-                    "description": it.get("description"),
-                    "notes": it.get("notes"),
-                    "page_index": it.get("page_index"),
-                    "thread_key": it.get("_thread_key"),
-                }
-                for it in sampled
-            ]
-            subject_level_samples[subject_label][level_key] = {
-                "grade_label": grade_label,
-                "level_label": level_label,
-                "level_low": level_low,
-                "level_high": level_high,
-                "items": prompt_items,
-            }
-
-    return subject_level_samples
-
-
-def _process_and_filter_candidates(
-    *,
-    candidates: list[CandidateEdge],
-    config: CreateKGConfig,
-    sfi_index: Optional[dict[str, dict[str, Any]]] = None,
-) -> tuple[list[Relationship], list[Relationship], dict[str, int]]:
-    """Process candidates: dedupe, filter by confidence, limit, and convert.
+def _enforce_dag_builds_towards(
+    *, candidates: list[CandidateEdge], report: dict[str, Any]
+) -> list[CandidateEdge]:
+    """Remove the lowest-confidence edge in each detected cycle until acyclic.
 
     Parameters
     ----------
     candidates
-        The complete list of raw candidate edges from all inference phases.
-    config
-        The knowledge graph run configuration.
-    sfi_index
-        An optional index mapping SFI UUIDs to their corresponding data, which can be
-        used to enrich the metadata of the final relationships if needed. The structure
-        is expected to be {sfi_uuid: {"description": str, "statement_code": str, ...}}.
+        List of CandidateEdge objects representing the candidate progression edges.
+    report
+        A dictionary to which information about removed cycles will be added for
+        reporting.
 
     Returns
     -------
-    tuple[list[Relationship], list[Relationship], dict[str, int]]
-        A tuple containing:
-        1. List of final buildsTowards relationships.
-        2. List of final relatesTo relationships.
-        3. A dictionary of counts/statistics for the report.
+    list[CandidateEdge]
+        A list of CandidateEdge objects with cycles removed from the "buildsTowards"
+        edges.
     """
 
-    candidates = _dedupe_edges(candidates)
-
-    builds_candidates = [e for e in candidates if e.rel_type == "buildsTowards"]
-    relates_candidates = [e for e in candidates if e.rel_type == "relatesTo"]
-
-    # Confidence thresholds.
-    builds_kept = [
-        e
-        for e in builds_candidates
-        if e.confidence >= config.progressions_builds_towards_min_confidence
-    ]
-    builds_dropped_low = [
-        e
-        for e in builds_candidates
-        if e.confidence < config.progressions_builds_towards_min_confidence
-    ]
-
-    relates_kept_thr = [
-        e
-        for e in relates_candidates
-        if e.confidence >= config.progressions_relates_to_min_confidence
-    ]
-    relates_dropped_low = [
-        e
-        for e in relates_candidates
-        if e.confidence < config.progressions_relates_to_min_confidence
-    ]
-
-    # Limit relatesTo per SFI.
-    relates_kept, relates_dropped_cap = _limit_relates_to_edges_per_sfi(
-        edges=relates_kept_thr,
-        max_edges_per_sfi=int(config.progressions_relates_to_max_edges_per_sfi),
-    )
-
-    builds_relationships: list[Relationship] = []
-    relates_relationships: list[Relationship] = []
-
-    for e in builds_kept:
-        metadata = dict(e.metadata)
-        metadata.update(
-            {
-                "confidence": e.confidence,
-                "evidence": e.evidence,
-                "inference_source": e.inference_source,
-                "inference_type": e.inference_type,
-            }
-        )
-
-        if sfi_index:
-            metadata["source_sfi_context"] = sfi_index.get(str(e.source_sfi_uuid))
-            metadata["target_sfi_context"] = sfi_index.get(str(e.target_sfi_uuid))
-
-        builds_relationships.append(
-            _build_relationship(
-                config=config,
-                metadata=metadata,
-                rel_type="buildsTowards",
-                source=e.source_sfi_uuid,
-                target=e.target_sfi_uuid,
-            )
-        )
-
-    for e in relates_kept:
-        metadata = dict(e.metadata)
-        metadata.update(
-            {
-                "confidence": e.confidence,
-                "evidence": e.evidence,
-                "inference_source": e.inference_source,
-                "inference_type": e.inference_type,
-            }
-        )
-
-        if sfi_index:
-            metadata["source_sfi_context"] = sfi_index.get(str(e.source_sfi_uuid))
-            metadata["target_sfi_context"] = sfi_index.get(str(e.target_sfi_uuid))
-
-        relates_relationships.append(
-            _build_relationship(
-                config=config,
-                metadata=metadata,
-                rel_type="relatesTo",
-                source=e.source_sfi_uuid,
-                target=e.target_sfi_uuid,
-            )
-        )
-
-    stats = {
-        "candidate_edges_total_after_dedupe": len(candidates),
-        "candidate_builds_towards": len(builds_candidates),
-        "candidate_relates_to": len(relates_candidates),
-        "builds_kept": len(builds_kept),
-        "builds_dropped_low_conf": len(builds_dropped_low),
-        "relates_kept_after_threshold": len(relates_kept_thr),
-        "relates_dropped_low_conf": len(relates_dropped_low),
-        "relates_kept_after_cap": len(relates_kept),
-        "relates_dropped_cap": len(relates_dropped_cap),
+    builds = [c for c in candidates if c.rel_type == "buildsTowards"]
+    others = [c for c in candidates if c.rel_type != "buildsTowards"]
+    edge_map: dict[tuple[str, str], CandidateEdge] = {
+        (str(c.source_sfi_uuid), str(c.target_sfi_uuid)): c for c in builds
     }
 
-    return builds_relationships, relates_relationships, stats
+    def _adj_list() -> dict[str, list[str]]:
+        """Build adjacency list for current edges.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            A dictionary representing the adjacency list of the current "buildsTowards"
+            edges, where keys are source SFI UUIDs as strings and values are lists of
+            target SFI UUIDs as strings.
+        """
+
+        a: dict[str, list[str]] = {}
+
+        for s, t in edge_map.keys():
+            a.setdefault(s, []).append(t)
+
+        # Stable ordering.
+        for k in a:
+            a[k] = sorted(a[k])
+
+        return a
+
+    removed: list[dict[str, Any]] = []
+
+    while True:
+        cycle = _find_cycle(_adj_list())
+
+        if not cycle:
+            break
+
+        # Cycle is list of (src, tgt) string pairs -> remove the lowest-confidence edge
+        # among them.
+        worst = None
+        worst_conf = 10.0
+
+        for s, t in cycle:
+            e = edge_map.get((s, t))
+
+            if e and e.confidence < worst_conf:
+                worst = (s, t)
+                worst_conf = e.confidence
+
+        if worst is None:
+            break
+
+        e = edge_map.pop(worst)
+        removed.append(
+            {
+                "removed_edge": {
+                    "source": str(e.source_sfi_uuid),
+                    "target": str(e.target_sfi_uuid),
+                    "confidence": e.confidence,
+                    "inference_type": e.inference_type,
+                },
+                "cycle_edges": cycle,
+            }
+        )
+
+    if removed:
+        report["cycles_removed"] = removed
+
+    return list(edge_map.values()) + others
 
 
-def _process_single_standard(
-    *,
-    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
-    drops: dict[str, list[dict[str, Any]]],
-    include_provenance: bool,
-    sfi: Any,
-    strict_single_grade: bool,
-) -> None:
-    """Process a single standard item and sort it into buckets or drops.
+def _extract_progression_features(
+    *, ctx: ExportContext, sfi: StandardsFrameworkItem
+) -> dict[str, Any]:
+    """Extract deterministic progression features for an SFI. Prefer
+    `sfi.metadata["progression_context"]` if present.
 
     Parameters
     ----------
-    buckets
-        A nested dictionary for organizing standards into buckets based on grade and
-        topic path.
-    drops
-        A dictionary for collecting standards that are dropped due to validation issues,
-        categorized by the reason for dropping.
-    include_provenance
-        Whether to include provenance information (e.g., page index) in the payload for
-        LLM inference.
+    ctx
+        The ExportContext containing indexes for canonical pointers.
     sfi
-        The standard item to process, which is expected to have attributes such as
-        description, normalized_statement_type, grade_level, and metadata containing
-        progression context.
-    strict_single_grade
-        Whether to enforce that each standard item must be associated with exactly one
-        grade level. If True, items with multiple grade levels will be dropped; if
-        False, items with multiple grade levels will be processed but may be
-        categorized under a special "UNSPECIFIED_GRADE" label if their grade levels
-        cannot be clearly determined.
+        The StandardsFrameworkItem for which to extract features.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary of extracted features for the given SFI, including canonical
+        pointers, grade/stage information, topic path key, code features, and ordering
+        helpers.
     """
 
     metadata = sfi.metadata or {}
-    progression_context = metadata.get("progression_context") or {}
-    sfi_uuid = str(sfi.case_identifier_uuid or sfi.identifier)
+    pc = metadata.get("progression_context") or {}
 
-    # 1. Validation: We only want endpoints for buildsTowards (Standard).
-    if sfi.normalized_statement_type != "Standard":
-        drops["non_standard_item"].append(
-            {
-                "description": sfi.description,
-                "normalized_statement_type": sfi.normalized_statement_type,
-                "sfi_uuid": sfi_uuid,
-                "statement_type": sfi.statement_type,
-            }
-        )
-        return
+    # Resolve identity and provenance.
+    canonical_node_id = metadata.get("canonical_node_id") or metadata.get(
+        "canonical_node"
+    )
+    canonical_node_role = (
+        metadata.get("canonical_node_role") or metadata.get("role") or ""
+    )
+    provenance = _extract_provenance_fields(metadata)
 
-    # 2. Validation: grade placement.
-    grade_label, grade_ord = _grade_label_and_ordinal(sfi)
+    # Resolve grades and stages. NB: Stage keys come directly from PC; grade keys may
+    # require parsing SFI.
+    grade_info = _resolve_grade_info(pc=pc, sfi=sfi)
 
-    if grade_label == "UNSPECIFIED_GRADE":
-        drops["unassigned_grade"].append(
-            {"description": sfi.description, "sfi_uuid": sfi_uuid}
-        )
+    stage_key = pc.get("stage_key")
+    stage_low = pc.get("stage_ordinal_low")
+    stage_high = pc.get("stage_ordinal_high")
 
-        if strict_single_grade:
-            return
+    level_type, level_key, level_low, level_high = _choose_level_axis(
+        grade_key=grade_info["key"],
+        grade_low=grade_info["low"],
+        grade_high=grade_info["high"],
+        stage_key=stage_key,
+        stage_low=stage_low,
+        stage_high=stage_high,
+    )
 
-    grade_level = sfi.grade_level or []
+    # Resolve content keys.
+    topic_path_key = _resolve_topic_path(ctx=ctx, node_id=canonical_node_id, pc=pc)
+    local_subject_key = _resolve_subject_key(
+        ctx=ctx, node_id=canonical_node_id, pc=pc, sfi=sfi
+    )
 
-    if strict_single_grade and len(grade_level) != 1:
-        drops["multi_grade_item"].append(
-            {
-                "description": sfi.description,
-                "grade_level": grade_level,
-                "sfi_uuid": sfi_uuid,
-            }
-        )
-        return
+    # Resolve code features.
+    code_features = (
+        _resolve_code_features(grade_low=grade_info["low"], pc=pc, sfi=sfi) or {}
+    )
+    code_key_wo_grade = _code_key_without_grade(
+        code_features=code_features, grade_low=grade_info["low"]
+    )
 
-    # 3. Validation: topic path key.
-    topic_path_key = progression_context.get("topic_path_key") or ""
+    # Resolve ordering.
+    canon_order_path, order_index = _resolve_ordering(
+        ctx=ctx, node_id=canonical_node_id, pc=pc
+    )
 
-    if not isinstance(topic_path_key, str) or not topic_path_key.strip():
-        drops["missing_topic_path_key"].append(
-            {
-                "description": sfi.description,
-                "grade": grade_label,
-                "sfi_uuid": sfi_uuid,
-            }
-        )
-        return
-
-    # 4. Bucket management: get or create bucket.
-    topic_path_parts = progression_context.get("topic_path_parts") or []
-
-    if not isinstance(topic_path_parts, list):
-        topic_path_parts = []
-
-    b = buckets[grade_label].get(topic_path_key)
-
-    if not b:
-        # Prefer explicit subject over broader learning_area when both exist.
-        subject_label = next(
-            (
-                str(p.get("label") or "")
-                for p in topic_path_parts
-                if p.get("role") == "subject" and p.get("label")
-            ),
-            None,
-        ) or next(
-            (
-                str(p.get("label") or "")
-                for p in topic_path_parts
-                if p.get("role") == "learning_area" and p.get("label")
-            ),
-            "UNSPECIFIED_SUBJECT",
-        )
-        b = {
-            "bucket_key": f"{grade_label}::{topic_path_key}",
-            "grade_level": grade_label,
-            "grade_ordinal": grade_ord,
-            "grade_ordinal_low": (
-                progression_context.get("grade_ordinal_low")
-                if isinstance(progression_context.get("grade_ordinal_low"), int)
-                else grade_ord
-            ),
-            "grade_ordinal_high": (
-                progression_context.get("grade_ordinal_high")
-                if isinstance(progression_context.get("grade_ordinal_high"), int)
-                else (
-                    progression_context.get("grade_ordinal_low")
-                    if isinstance(progression_context.get("grade_ordinal_low"), int)
-                    else grade_ord
-                )
-            ),
-            "subject_label": subject_label,
-            "thread_key": progression_context.get("thread_key"),
-            "topic_path_key": topic_path_key,
-            "topic_path": _path_string(topic_path_parts),
-            "topic_path_parts": topic_path_parts,
-            "items": [],
-        }
-        buckets[grade_label][topic_path_key] = b
-
-    # 5. Build payload.
-    payload = {
+    return {
+        "academic_subject": sfi.academic_subject or "",
+        "bbox": provenance["bbox"],
+        "canon_order_path": canon_order_path,
+        "canonical_node_id": canonical_node_id,
+        "canonical_node_role": canonical_node_role,
+        "code_features": code_features,
+        "code_key_without_grade": code_key_wo_grade or "",
         "description": sfi.description,
-        "notes": sfi.notes,
-        "order_index_within_parent": progression_context.get(
-            "order_index_within_parent"
-        ),
-        "code_tuple": progression_context.get("code_tuple"),
-        "sfi_uuid": sfi_uuid,
-        "statement_code": sfi.statement_code,
-        "statement_type": sfi.statement_type,
+        "grade_key": grade_info["key"],
+        "grade_ordinal_high": grade_info["high"],
+        "grade_ordinal_low": grade_info["low"],
+        "level_key": level_key,
+        "level_ordinal_high": level_high,
+        "level_ordinal_low": level_low,
+        "level_type": level_type,
+        "local_subject_key": local_subject_key or "",
+        "normalized_statement_type": sfi.normalized_statement_type,
+        "order_index_within_parent": order_index,
+        "page_indices": provenance["page_indices"],
+        "sfi_uuid": sfi.case_identifier_uuid,
+        "statement_code": sfi.statement_code or "",
+        "source_decision_ids": provenance["source_decision_ids"],
+        "source_segment_ids": provenance["source_segment_ids"],
+        "stage_key": stage_key,
+        "stage_ordinal_high": stage_high,
+        "stage_ordinal_low": stage_low,
+        "topic_path_key": topic_path_key or "",
     }
 
-    if include_provenance:
-        page_indices = (
-            metadata.get("page_indices")
-            if isinstance(metadata.get("page_indices"), list)
-            else []
-        )
-        payload["page_index"] = min(page_indices) if page_indices else None
 
-    b["items"].append(payload)
+def _extract_provenance_fields(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Extract list-based provenance fields.
+
+    Parameters
+    ----------
+    metadata
+        The metadata dictionary from which to extract provenance fields.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the extracted provenance fields, including "bbox",
+        "page_indices", "source_segment_ids", and "source_decision_ids".
+    """
+
+    _raw_indices = metadata.get("page_indices")
+    page_indices = (
+        _raw_indices
+        if isinstance(_raw_indices, list)
+        and all(isinstance(x, int) for x in _raw_indices)
+        else []
+    )
+
+    def _get_list(key: str) -> list[str]:
+        """Helper to extract list-based fields.
+
+        Parameters
+        ----------
+        key
+            The key in the metadata dictionary to extract as a list of strings.
+
+        Returns
+        -------
+        list[str]
+            The value associated with the key if it is a list of strings; otherwise, an
+            empty list.
+        """
+
+        val = metadata.get(key)
+        return val if isinstance(val, list) else []
+
+    return {
+        "bbox": metadata.get("bbox"),
+        "page_indices": page_indices,
+        "source_segment_ids": _get_list("source_segment_ids"),
+        "source_decision_ids": _get_list("source_decision_ids"),
+    }
 
 
-def _resolve_forbidden_pairs(
+def _find_cycle(adj_list: dict[str, list[str]]) -> Optional[list[tuple[str, str]]]:
+    """Return one directed cycle as list of edges (src,tgt) if any.
+
+    Parameters
+    ----------
+    adj_list
+        Adjacency list representing the directed graph, where keys are node identifiers
+        and values are lists of adjacent node identifiers.
+
+    Returns
+    -------
+    Optional[list[tuple[str, str]]]
+        A list of edges (src, tgt) representing a detected cycle, or None if no cycle
+        exists.
+    """
+
+    parent: dict[str, str] = {}
+    stack: set[str] = set()
+    visited: set[str] = set()
+
+    def dfs(u: str) -> Optional[list[tuple[str, str]]]:
+        """Depth-first search to detect cycles starting from node u.
+
+        Parameters
+        ----------
+        u
+            The current node identifier being visited.
+
+        Returns
+        -------
+        Optional[list[tuple[str, str]]]
+            A list of edges (src, tgt) representing a detected cycle, or None if no
+            cycle is found starting from node u.
+        """
+
+        visited.add(u)
+        stack.add(u)
+
+        for v in adj_list.get(u, []):
+            if v not in visited:
+                parent[v] = u
+                cyc = dfs(v)
+
+                if cyc:
+                    return cyc
+            elif v in stack:
+                # Back edge u -> v forms a cycle.
+                cycle_edges: list[tuple[str, str]] = [(u, v)]
+                cur = u
+
+                while cur != v and cur in parent:
+                    p = parent[cur]
+                    cycle_edges.append((p, cur))
+                    cur = p
+
+                cycle_edges.reverse()
+                return cycle_edges
+
+        stack.remove(u)
+        return None
+
+    for u in sorted(adj_list.keys()):
+        if u in visited:
+            continue
+
+        cyc = dfs(u)
+
+        if cyc:
+            return cyc
+
+    return None
+
+
+def _infer_code_pattern(
     *,
-    forbidden_builds_pairs: set[tuple[UUID, UUID]],
-    lower_items: list[dict[str, Any]],
-    upper_items: list[dict[str, Any]],
-) -> tuple[set[tuple[str, str]], list[dict[str, Any]]]:
-    """Calculate forbidden pairs for the current level iteration.
+    config: CreateKGConfig,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    sfis_by_subject: dict[str, list[UUID]],
+) -> list[CandidateEdge]:
+    """Progression edges inferred from increasing code tuples within a thread.
 
     Parameters
     ----------
-    forbidden_builds_pairs
-        A set of tuples representing pairs of SFI UUIDs that are forbidden from being
-        connected by a buildsTowards relationship, based on prior iterations of the
-        inference process. Each tuple contains two UUIDs corresponding to Standards
-        Framework Items (SFIs) that should not be connected in the current inference
-        step.
-    lower_items
-        A list of dictionaries representing the Standards Framework Items (SFIs) in the
-        lower grade level bucket for the current iteration. Each dictionary contains
-        information about an SFI, including its UUID and other relevant fields.
-    upper_items
-        A list of dictionaries representing the Standards Framework Items (SFIs) in the
-        upper grade level bucket for the current iteration. Each dictionary contains
-        information about an SFI, including its UUID and other relevant fields.
+    config
+        The CreateKGConfig containing configuration options.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features.
+    sfis_by_subject
+        A dictionary mapping academic subjects to lists of SFI UUIDs in that subject.
 
     Returns
     -------
-    tuple[set[tuple[str, str]], list[dict[str, Any]]]
-        A tuple containing:
-        1. A set of tuples, where each tuple consists of two strings representing the
-           UUIDs of SFIs that are forbidden from being connected by a buildsTowards
-           relationship in the current inference step. The UUIDs in each tuple are
-           ordered lexicographically to ensure consistency.
-        2. A list of dictionaries, where each dictionary represents a forbidden pair of
-           SFIs with keys "a_sfi_uuid" and "b_sfi_uuid" corresponding to the UUIDs of
-           the two SFIs in the pair. This list is sorted by the UUID pairs for stable
-           output and can be used for reporting or debugging purposes.
+    list[CandidateEdge]
+        A list of CandidateEdge objects representing inferred progression edges based
+        on code patterns.
     """
 
-    allowed_lo = {str(it["sfi_uuid"]) for it in lower_items}
-    allowed_hi = {str(it["sfi_uuid"]) for it in upper_items}
-    forbidden_pairs_set: set[tuple[str, str]] = set()
+    output: list[CandidateEdge] = []
 
-    for s, t in forbidden_builds_pairs:
-        ss, tt = str(s), str(t)
+    for subj, uuids in sfis_by_subject.items():
+        threads: dict[str, list[UUID]] = {}
 
-        # Record forbidden pairs as *undirected* canonicalized UUID string tuples.
-        # Canonicalization is by string sort to match validator behavior.
-        if (ss in allowed_lo and tt in allowed_hi) or (
-            ss in allowed_hi and tt in allowed_lo
-        ):
-            a, b = sorted([ss, tt])
-            forbidden_pairs_set.add((a, b))
+        for uid in uuids:
+            f = features_by_uuid[uid]
+            cf = f.get("code_features") or {}
+            stem = normalize_ws(
+                str(cf.get("code_stem_without_grade") or cf.get("code_stem") or "")
+            )
 
-    forbidden_pairs_list = [
-        {"a_sfi_uuid": a, "b_sfi_uuid": b} for a, b in sorted(forbidden_pairs_set)
-    ]
+            if not stem or cf.get("code_tuple") is None:
+                continue
 
-    return forbidden_pairs_set, forbidden_pairs_list
+            threads.setdefault(stem, []).append(uid)
+
+        for stem, tids in threads.items():
+            ordered = sorted(tids, key=lambda u: _code_sort_key(features_by_uuid[u]))
+
+            if len(ordered) < 2:
+                continue
+
+            for a, b in zip(ordered, ordered[1:]):
+                fa = features_by_uuid[a]
+                fb = features_by_uuid[b]
+
+                # Adjacent levels rule (best-effort).
+                la = fa.get("level_ordinal_low")
+                lb = fb.get("level_ordinal_low")
+
+                is_adjacent: Optional[bool] = None
+
+                if isinstance(la, int) and isinstance(lb, int):
+                    is_adjacent = (lb - la) == 1
+
+                if config.progression_only_adjacent_levels is True:
+                    # If we can't prove adjacency, don't emit.
+                    if is_adjacent is not True:
+                        continue
+
+                    conf = 0.95
+                else:
+                    # Confidence: reserve 0.95 for truly-adjacent levels; otherwise
+                    # 0.88.
+                    conf = 0.95 if is_adjacent is True else 0.88
+
+                output.append(
+                    CandidateEdge(
+                        confidence=conf,
+                        evidence={
+                            "code_stem": stem,
+                            "local_subject_key": subj,
+                            "adjacent_level_enforced": bool(
+                                config.progression_only_adjacent_levels
+                            ),
+                            "is_adjacent_level": (
+                                bool(is_adjacent) if is_adjacent is not None else None
+                            ),
+                            "level_delta": (
+                                (lb - la)
+                                if isinstance(la, int) and isinstance(lb, int)
+                                else None
+                            ),
+                        },
+                        heuristic_confidence=conf,
+                        inference_source="inferred",
+                        inference_type="code_pattern",
+                        metadata={},
+                        rel_type="buildsTowards",
+                        source_sfi_uuid=a,
+                        target_sfi_uuid=b,
+                    )
+                )
+
+    return output
 
 
-def _sample_items_across_threads(
-    *, max_items: int, thread_buckets: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Round-robin sample up to max_items across multiple thread buckets. This keeps
-    calls bounded while retaining cross-thread diversity.
+def _infer_grade_order(
+    *,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    inference_type: str = "grade_order",
+    sfis_by_subject: dict[str, list[UUID]],
+) -> list[CandidateEdge]:
+    """Threaded grade/stage adjacency progression.
 
     Parameters
     ----------
-    max_items
-        The maximum number of items to sample across all threads.
-    thread_buckets
-        A list of thread buckets, where each bucket is a dictionary containing a
-        "topic_path_key" and a list of "items" (standards) belonging to that thread.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features.
+    inference_type
+        The type of inference being performed ("grade_order" or "stage_order").
+    sfis_by_subject
+        A dictionary mapping academic subjects to lists of SFI UUIDs in that subject.
 
     Returns
     -------
-    list[dict[str, Any]]
-        A flat list of sampled StandardsFrameworkItem dictionaries drawn across the
-        provided thread buckets. Each returned item preserves SFI fields and may
-        include helper keys like "_thread_key" and "_thread_path".
+    list[CandidateEdge]
+        A list of CandidateEdge objects representing inferred progression edges based
+        on grade or stage order.
     """
 
-    # Thread buckets should already be stable-sorted by caller.
-    per_thread = [(b["topic_path_key"], list(b["items"])) for b in thread_buckets]
-    path_by_key = {b["topic_path_key"]: b.get("topic_path", "") for b in thread_buckets}
+    output: list[CandidateEdge] = []
 
-    # Track per-thread index.
-    idxs = {t: 0 for t, _ in per_thread}
-    sampled: list[dict[str, Any]] = []
+    for subj, uuids in sfis_by_subject.items():
+        # Build threads keyed by (thread_type, thread_key).
+        threads: dict[tuple[str, str], list[UUID]] = {}
 
-    while len(sampled) < max_items:
-        progressed = False
+        for uid in uuids:
+            f = features_by_uuid[uid]
+            thread = _thread_key_for_grade_order(f)
 
-        for tkey, items in per_thread:
-            i = idxs[tkey]
+            if thread:
+                threads.setdefault(thread, []).append(uid)
 
-            if i < len(items):
-                sampled_item = dict(items[i])
-                sampled_item["_thread_key"] = tkey
-                sampled_item["_thread_path"] = str(path_by_key.get(tkey, ""))
-                sampled.append(sampled_item)
-                idxs[tkey] = i + 1
-                progressed = True
+        # Process each thread.
+        for (thread_type, thread_key), tids in threads.items():
+            edges = _process_thread_levels(
+                features_by_uuid=features_by_uuid,
+                inference_type=inference_type,
+                subject=subj,
+                thread_key=thread_key,
+                thread_type=thread_type,
+                tids=tids,
+            )
+            output.extend(edges)
 
-                if len(sampled) >= max_items:
-                    break
-
-        if not progressed:
-            break
-
-    return sampled
+    return output
 
 
-def _sort_key_for_bucket_sfi(
-    s: dict[str, Any],
-) -> tuple[int, int, tuple[int, ...], str, str]:
-    """Stable ordering inside a bucket. Prefer explicit order_index; fall back to
-    numeric code tuple (if available), then statement_code, then uuid.
+def _infer_scope_sequence(
+    *,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    sfis_by_subject: dict[str, list[UUID]],
+) -> list[CandidateEdge]:
+    """Within-level sequential progressions based on canonical order.
+
+    Parameters
+    ----------
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features.
+    sfis_by_subject
+        A dictionary mapping academic subjects to lists of SFI UUIDs in that subject.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        A list of CandidateEdge objects representing inferred progression edges based
+        on scope sequencing.
+    """
+
+    output: list[CandidateEdge] = []
+
+    for subj, uuids in sfis_by_subject.items():
+        # Group by level ordinal and thread key to avoid dense edges.
+        buckets: dict[tuple[int, str], list[UUID]] = {}
+
+        for uid in uuids:
+            f = features_by_uuid[uid]
+            lvl = f.get("level_ordinal_low")
+
+            if not isinstance(lvl, int):
+                continue
+
+            thread = _thread_key_for_scope_sequence(f)
+
+            if not thread:
+                continue
+
+            buckets.setdefault((lvl, thread), []).append(uid)
+
+        for (lvl, thread), tids in buckets.items():
+            # Require explicit ordering signals (otherwise we'd be sequencing by
+            # fallback keys).
+
+            def _has_order_signal(f: dict[str, Any]) -> bool:
+                """Check if the features indicate explicit ordering.
+
+                Parameters
+                ----------
+                f
+                    The features dictionary for an SFI.
+
+                Returns
+                -------
+                bool
+                    True if the SFI has explicit ordering signals; False otherwise.
+                """
+
+                canon_order_path = f.get("canon_order_path")
+                has_canon_order = (
+                    isinstance(canon_order_path, list)
+                    and len(canon_order_path) > 0
+                    and all(isinstance(x, int) for x in canon_order_path)
+                )
+                return f.get("order_index_within_parent") is not None or has_canon_order
+
+            tids_with_signal = [
+                u for u in tids if _has_order_signal(features_by_uuid[u])
+            ]
+
+            if len(tids_with_signal) < 2:
+                continue
+
+            ordered = sorted(
+                tids_with_signal,
+                key=lambda u: _within_level_sort_key(features_by_uuid[u]),
+            )
+
+            for a, b in zip(ordered, ordered[1:]):
+                # Base confidence only when we have ordering evidence.
+                conf = 0.85
+
+                # Strongest signal: both endpoints have explicit
+                # order_index_within_parent.
+                if (
+                    features_by_uuid[a].get("order_index_within_parent") is not None
+                    and features_by_uuid[b].get("order_index_within_parent") is not None
+                ):
+                    conf = 0.90
+
+                output.append(
+                    CandidateEdge(
+                        confidence=conf,
+                        evidence={
+                            "level_ordinal": lvl,
+                            "thread": thread,
+                            "local_subject_key": subj,
+                            "sequence_type": "canon_order",
+                        },
+                        heuristic_confidence=conf,
+                        inference_source="inferred",
+                        inference_type="scope_sequence",
+                        metadata={},
+                        rel_type="buildsTowards",
+                        source_sfi_uuid=a,
+                        target_sfi_uuid=b,
+                    )
+                )
+
+    return output
+
+
+def _match_by_code_key(
+    *,
+    base_args: dict[str, Any],
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    srcs: list[UUID],
+    tgts: list[UUID],
+) -> list[CandidateEdge]:
+    """Handle 1:1 matching logic for 'code' threads.
+
+    Parameters
+    ----------
+    base_args
+        A dictionary of base arguments to include in each CandidateEdge, such as
+        inference_type, thread_type, thread_key, and subject_key.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used for keying and
+        evidence.
+    srcs
+        A list of source SFI UUIDs, sorted by the appropriate within-thread ordering
+        key.
+    tgts
+        A list of target SFI UUIDs, sorted by the appropriate within-thread ordering
+        key.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        A list of CandidateEdge objects representing inferred progression edges based
+        on 1:1 matching of code keys within the thread.
+    """
+
+    edges = []
+    src_by_code: dict[str, list[UUID]] = {}
+    tgt_by_code: dict[str, list[UUID]] = {}
+
+    def _group_by_code(
+        *, uuids: list[UUID], target_dict: dict[str, list[UUID]]
+    ) -> None:
+        """Helper to group UUIDs by their code key without grade.
+
+        Parameters
+        ----------
+        target_dict
+            The dictionary in which to store the grouping, mapping code keys to lists of
+            UUIDs.
+        uuids
+            A list of SFI UUIDs to group by code key.
+        """
+
+        for u in uuids:
+            # Assumes normalize_ws is available in scope.
+            k = normalize_ws(
+                str(features_by_uuid[u].get("code_key_without_grade") or "")
+            )
+            if k:
+                target_dict.setdefault(k, []).append(u)
+
+    _group_by_code(target_dict=src_by_code, uuids=srcs)
+    _group_by_code(target_dict=tgt_by_code, uuids=tgts)
+
+    # Intersect keys.
+    common_keys = set(src_by_code.keys()) & set(tgt_by_code.keys())
+
+    for code_key in sorted(common_keys):
+        # Sort within the specific code bucket.
+        src_list = sorted(
+            src_by_code[code_key],
+            key=lambda u: _within_level_sort_key(features_by_uuid[u]),
+        )
+        tgt_list = sorted(
+            tgt_by_code[code_key],
+            key=lambda u: _within_level_sort_key(features_by_uuid[u]),
+        )
+
+        # 1:1 stable pairing.
+        for src_uid, tgt_uid in zip(src_list, tgt_list):
+            edges.append(
+                _create_edge(
+                    conf=0.95,
+                    extra_evidence={
+                        "match_policy": "code_key_1_to_1",
+                        "code_key": code_key,
+                    },
+                    src_uid=src_uid,
+                    tgt_uid=tgt_uid,
+                    **base_args,
+                )
+            )
+
+    return edges
+
+
+def _match_positionally(
+    *, base_args: dict[str, Any], srcs: list[UUID], tgts: list[UUID], thread_type: str
+) -> list[CandidateEdge]:
+    """Handle positional pairing for non-code threads.
+
+    Parameters
+    ----------
+    base_args
+        A dictionary of base arguments to include in each CandidateEdge, such as
+        inference_type, thread_type, thread_key, and subject_key.
+    srcs
+        A list of source SFI UUIDs, sorted by the appropriate within-thread ordering
+        key.
+    tgts
+        A list of target SFI UUIDs, sorted by the appropriate within-thread ordering
+        key.
+    thread_type
+        The type of thread (e.g., "grade_order" or "stage_order") being processed, used
+        to determine confidence levels.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        A list of CandidateEdge objects representing inferred progression edges based
+        on positional pairing of sources and targets within the thread.
+    """
+
+    edges = []
+    conf = 0.90 if thread_type in {"code_stem"} else 0.85
+
+    for src_uid, tgt_uid in zip(srcs, tgts):
+        edges.append(
+            _create_edge(
+                conf=conf,
+                extra_evidence={"match_policy": "positional_zip"},
+                src_uid=src_uid,
+                tgt_uid=tgt_uid,
+                **base_args,
+            )
+        )
+
+    return edges
+
+
+def _node_label_for_path(node: dict[str, Any]) -> str:
+    """Pick a display label for keying paths.
+
+    Parameters
+    ----------
+    node
+        The node dictionary from which to extract the label.
+
+    Returns
+    -------
+    str
+        The extracted label text for the node, or an empty string if none found.
+    """
+
+    # Canonical nodes store text units under title/body; fall back to normalized_text.
+    for k in ("normalized_text", "title", "body"):
+        v = node.get(k)
+        txt = v.get("text") or "" if isinstance(v, dict) else str(v or "")
+        txt = normalize_ws(txt)
+
+        if txt:
+            return txt
+
+    return ""
+
+
+def _parse_level_ordinal(s: str) -> Optional[int]:
+    """Best-effort parse of grade/stage ordinals from human tags.
 
     Parameters
     ----------
     s
-        The StandardsFrameworkItem dictionary to generate a sort key for.
+        The input string from which to parse the level ordinal, typically a grade or
+        stage tag.
 
     Returns
     -------
-    tuple[int, int, tuple[int, ...], str, str]
-        A tuple representing the sort key for the given StandardsFrameworkItem,
-        structured as follows:
-        1. An integer representing the order index within the parent context. If the
-           order index is not available or not an integer, a large default value (10^9)
-           is used to ensure it sorts last.
-        2. An integer indicating whether the code tuple is missing (1) or present (0).
-        3. A tuple of integers representing the code tuple extracted from the item. If
-           the code tuple is not available or not valid, a default tuple (10^9,) is
-           used to ensure it sorts last.
-        4. A string representing the statement code, stripped of leading and trailing
-           whitespace.
-        5. A string representing the SFI UUID or case identifier UUID, used as a
-           tiebreaker in sorting.
+    Optional[int]
+        The parsed level ordinal as an integer if successful, or None if parsing fails.
     """
 
-    order_index = s.get("order_index_within_parent")
-    order_index = order_index if isinstance(order_index, int) else 10**9
-    code = (s.get("statement_code") or "").strip()
+    s0 = normalize_ws(str(s)).lower()
+    m = re.search(r"(\d+)", s0)
 
-    # Prefer numeric tuple ordering over lexicographic string ordering.
-    ct = s.get("code_tuple")
-    code_tuple: tuple[int, ...] | None = None
-
-    if isinstance(ct, list) and ct and all(isinstance(x, int) for x in ct):
-        code_tuple = tuple(ct)
-    elif isinstance(ct, list) and ct and all(isinstance(x, str) for x in ct):
-        # Defensive: if upstream ever stores numeric segments as strings.
+    if m:
         try:
-            code_tuple = tuple(int(x) for x in ct)
+            return int(m.group(1))
         except Exception:  # pylint: disable=broad-except
-            code_tuple = None
+            return None
 
-    if code_tuple is None and code:
-        # Fallback: parse any digits from statement_code (e.g., "3.9.4.1" -> (3,9,4,1)).
-        nums = [int(x) for x in re.findall(r"\d+", code)]
-        code_tuple = tuple(nums) if nums else None
+    # Roman numerals (I, II, III, IV, V, VI, etc).
+    roman = {
+        "i": 1,
+        "ii": 2,
+        "iii": 3,
+        "iv": 4,
+        "v": 5,
+        "vi": 6,
+        "vii": 7,
+        "viii": 8,
+        "ix": 9,
+        "x": 10,
+        "xi": 11,
+        "xii": 12,
+    }
+    for k, v in roman.items():
+        if re.search(rf"\b{k}\b", s0):
+            return v
 
-    missing_code_tuple = 1 if code_tuple is None else 0
-    code_tuple_key = code_tuple if code_tuple is not None else (10**9,)
-    uuid_key = s.get("sfi_uuid") or s.get("case_identifier_uuid") or ""
-
-    return order_index, missing_code_tuple, code_tuple_key, code, uuid_key
+    return None
 
 
-def _uuid(x: str) -> UUID:
-    """Convert a string to a UUID, stripping whitespace. This is a helper function to
-    ensure that any SFI UUIDs or case identifier UUIDs are properly formatted as UUID
-    objects when creating CandidateEdge instances.
+def _process_thread_levels(
+    *,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    inference_type: str,
+    subject: str,
+    thread_key: str,
+    thread_type: str,
+    tids: list[UUID],
+) -> list[CandidateEdge]:
+    """Group SFIs by level and generate edges between adjacent levels.
 
     Parameters
     ----------
-    x
-        The string to convert to a UUID.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features.
+    inference_type
+        The type of inference being performed (e.g., "grade_order" or "stage_order
+        thread_type").
+    subject
+        The academic subject for which the thread is being processed, used for evidence
+        in the generated edges.
+    thread_key
+        The thread key (e.g., "Math|Algebra") for which to process levels, used for
+        evidence in the generated edges.
+    thread_type
+        The type of thread (e.g., "grade_order" or "stage_order") being processed, used
+        for evidence in the generated edges.
+    tids
+        A list of SFI UUIDs that belong to the thread being processed.
 
     Returns
     -------
-    UUID
-        The UUID object corresponding to the input string.
+    list[CandidateEdge]
+        A list of CandidateEdge objects representing inferred progression edges between
+        adjacent levels within the thread.
     """
 
-    return UUID(str(x).strip())
+    by_level: dict[int, list[UUID]] = {}
+
+    # Group by level.
+    for uid in tids:
+        f = features_by_uuid[uid]
+        lvl = f.get("level_ordinal_low")
+
+        if isinstance(lvl, int):
+            by_level.setdefault(lvl, []).append(uid)
+
+    if len(by_level) < 2:
+        return []
+
+    edges = []
+
+    # Iterate adjacent levels.
+    for lvl in sorted(by_level.keys()):
+        nxt = lvl + 1
+
+        if nxt not in by_level:
+            continue
+
+        # Sort sources and targets.
+        srcs = sorted(
+            by_level[lvl],
+            key=lambda u: _within_level_sort_key(features_by_uuid[u]),
+        )
+        tgts = sorted(
+            by_level[nxt],
+            key=lambda u: _within_level_sort_key(features_by_uuid[u]),
+        )
+
+        # Common arguments for edge creation.
+        base_args = {
+            "inference_type": inference_type,
+            "thread_type": thread_type,
+            "thread_key": thread_key,
+            "subject_key": subject,
+        }
+
+        # Dispatch to matching strategy.
+        if thread_type == "code":
+            edges.extend(
+                _match_by_code_key(
+                    base_args=base_args,
+                    features_by_uuid=features_by_uuid,
+                    srcs=srcs,
+                    tgts=tgts,
+                )
+            )
+        else:
+            edges.extend(
+                _match_positionally(
+                    base_args=base_args, srcs=srcs, tgts=tgts, thread_type=thread_type
+                )
+            )
+
+    return edges
+
+
+def _resolve_code_features(
+    *, grade_low: int | None, pc: dict[str, Any], sfi: StandardsFrameworkItem
+) -> dict[str, Any] | None:
+    """Extract code-related features from the progression context if available,
+    otherwise parse from the SFI's statement_code and grade information.
+
+    Parameters
+    ----------
+    grade_low
+        The low ordinal of the grade level, used for parsing code features when not
+        explicitly provided in the progression context.
+    pc
+        The progression context dictionary extracted from the SFI metadata, which may
+        contain explicit code-related features.
+    sfi
+        The StandardsFrameworkItem for which to resolve code features, used as a source
+        for the statement_code when parsing is needed.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        A dictionary containing code-related features such as "code", "code_segments",
+        "code_tuple", "code_stem", "code_ordinal", and "code_stem_without_grade" if
+        they can be resolved from the progression context or parsed from the SFI;
+        otherwise, None if no code features can be determined.
+    """
+
+    if pc:
+        # Check specific keys relevant to code features.
+        keys = (
+            "code",
+            "code_segments",
+            "code_tuple",
+            "code_stem",
+            "code_ordinal",
+            "code_stem_without_grade",
+        )
+
+        # Only construct if at least one key is present to avoid empty dict vs. None
+        # ambiguity.
+        features = {k: pc[k] for k in keys if k in pc}
+
+        if features:
+            return features
+
+    code = pc.get("code") or sfi.statement_code or ""
+    return _parse_code_features(code=str(code), grade_ordinal_low=grade_low)
+
+
+def _resolve_grade_info(
+    *, pc: dict[str, Any], sfi: StandardsFrameworkItem
+) -> dict[str, Any]:
+    """Determine grade key and ordinals from progression context or SFI tags.
+
+    Parameters
+    ----------
+    pc
+        The progression context dictionary extracted from the SFI metadata, which may
+        contain explicit grade key and ordinal information.
+    sfi
+        The StandardsFrameworkItem for which to resolve grade information.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the resolved grade key, low ordinal, and high ordinal,
+        determined from the progression context if available, or parsed from the SFI's
+        grade_level tags as a fallback.
+    """
+
+    key = pc.get("grade_key")
+    low = pc.get("grade_ordinal_low")
+    high = pc.get("grade_ordinal_high")
+
+    # If explicit progression context exists, prefer it.
+    if low is not None:
+        return {"key": key, "low": low, "high": high}
+
+    # Fallback: Parse from grade_level tags.
+    if sfi.grade_level:
+        parsed_ints = [
+            p for x in sfi.grade_level if (p := _parse_level_ordinal(x)) is not None
+        ]
+
+        if parsed_ints:
+            low = min(parsed_ints)
+            high = max(parsed_ints)
+
+            if not key:
+                cleaned = [
+                    normalize_ws(t).lower() for t in sfi.grade_level if normalize_ws(t)
+                ]
+                key = "|".join(sorted(set(cleaned)))
+
+    return {"key": key, "low": low, "high": high}
+
+
+def _resolve_ordering(
+    *, ctx: ExportContext, node_id: Any, pc: dict[str, Any]
+) -> tuple[list, int | None]:
+    """Resolve canonical ordering information for the SFI, preferring explicit
+    progression context and falling back to graph-based inference using the
+    ExportContext's indexes.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext containing indexes for canonical pointers and graph structure.
+    node_id
+        The node identifier for the SFI, used to look up ordering information in the
+        graph if not explicitly provided in the progression context.
+    pc
+        The progression context dictionary extracted from the SFI metadata, which may
+        contain explicit "canon_order_path" and "order_index_within_parent" values.
+
+    Returns
+    -------
+    tuple[list, int | None]
+        A tuple containing the canonical order path (a list of ancestor node
+        identifiers) and the order index within the parent, resolved from the
+        progression context if available or inferred from the graph structure using the
+        ExportContext's indexes.
+    """
+
+    canon_order_path = pc.get("canon_order_path") or []
+    order_index = pc.get("order_index_within_parent")
+
+    if order_index is None and node_id:
+        pid = ctx.parent_by_child.get(str(node_id))
+        if pid:
+            order_index = ctx.edge_order_index.get((pid, str(node_id)))
+
+    return canon_order_path, order_index
+
+
+def _resolve_subject_key(
+    *, ctx: ExportContext, node_id: Any, pc: dict[str, Any], sfi: StandardsFrameworkItem
+) -> str | None:
+    """Resolve a local subject key for the SFI, preferring explicit progression
+    context, then falling back to a computed key based on the node's position in the
+    framework graph, and finally normalizing the SFI's academic_subject.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext containing indexes for canonical pointers and graph structure.
+    node_id
+        The node identifier for the SFI, used to compute the subject key if not
+        explicitly provided in the progression context.
+    pc
+        The progression context dictionary extracted from the SFI metadata, which may
+        contain an explicit "local_subject_key".
+    sfi
+        The StandardsFrameworkItem for which to resolve the subject key, used as a
+        final fallback if no explicit key is provided and computation fails.
+
+    Returns
+    -------
+    str | None
+        The resolved local subject key, either from the progression context, computed
+        from the node's position in the graph, or normalized from the SFI's academic
+        subject, or None if it cannot be resolved.
+    """
+
+    if key := pc.get("local_subject_key"):
+        return key
+
+    if node_id:
+        if computed := _compute_local_subject_key(ctx=ctx, node_id=str(node_id)):
+            return computed
+
+    return normalize_ws(str(sfi.academic_subject or ""))
+
+
+def _resolve_topic_path(
+    *, ctx: ExportContext, node_id: Any, pc: dict[str, Any]
+) -> str | None:
+    """Resolve a topic path key for the SFI, preferring explicit progression context
+    and falling back to a computed path based on the node's position in the framework
+    graph.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext containing indexes for canonical pointers and graph structure.
+    node_id
+        The node identifier for the SFI, used to compute the topic path if not
+        explicitly provided in the progression context.
+    pc
+        The progression context dictionary extracted from the SFI metadata, which may
+        contain an explicit "topic_path_key".
+    Returns
+    -------
+    str | None
+        The resolved topic path key, either from the progression context or computed
+        from the node's position in the graph, or None if it cannot be resolved.
+    """
+
+    if key := pc.get("topic_path_key"):
+        return key
+
+    if node_id:
+        return _compute_topic_path_key(ctx=ctx, node_id=str(node_id))
+
+    return None
+
+
+def _slugify(s: str) -> str:
+    """Normalize a string to a slug suitable for keys.
+
+    Parameters
+    ----------
+    s
+        The input string to normalize into a slug.
+
+    Returns
+    -------
+    str
+        A normalized slug string derived from the input, with non-alphanumeric
+        characters replaced by underscores and multiple underscores collapsed.
+    """
+
+    s0 = normalize_ws(s).lower()
+    s0 = re.sub(r"[^a-z0-9]+", "_", s0)
+    s0 = re.sub(r"_+", "_", s0).strip("_")
+    return s0
+
+
+def _stats_code_pattern(
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    sfis_by_subject: dict[str, list[UUID]],
+) -> dict[str, Any]:
+    """Calculate statistics about the presence of code features relevant to code
+    pattern progression inference.
+
+    Parameters
+    ----------
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used to check for
+        the presence of code stems and code tuples.
+    sfis_by_subject
+        A dictionary mapping academic subjects to lists of SFI UUIDs in that subject,
+        used to group SFIs by subject for code pattern analysis.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing statistics about the number of SFIs with code stems and
+        code tuples, which are relevant for code pattern progression inference.
+    """
+
+    with_stem = 0
+    with_tuple = 0
+
+    for uuids in sfis_by_subject.values():
+        for uid in uuids:
+            f = features_by_uuid.get(uid) or {}
+            cf = f.get("code_features") or {}
+
+            raw_stem = cf.get("code_stem_without_grade") or cf.get("code_stem") or ""
+            stem = normalize_ws(str(raw_stem))
+
+            if stem:
+                with_stem += 1
+            if cf.get("code_tuple") is not None:
+                with_tuple += 1
+
+    return {"sfis_with_code_stem": with_stem, "sfis_with_code_tuple": with_tuple}
+
+
+def _stats_grade_order(
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    sfis_by_subject: dict[str, list[UUID]],
+) -> dict[str, Any]:
+    """Calculate statistics about the presence of grade/stage ordinals and threading
+    keys for grade order inference, as well as the potential adjacency of levels within
+    threads.
+
+    Parameters
+    ----------
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used to check for
+        the presence of level ordinals and threading keys.
+    sfis_by_subject
+        A dictionary mapping academic subjects to lists of SFI UUIDs in that subject,
+        used to group SFIs by subject for thread aggregation.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing statistics about the number of SFIs with level
+        ordinals, the number of SFIs with threading keys for grade order inference, the
+        number of threads identified, the number of threads with 2 or more levels, and
+        the number of adjacent level pairs possible within threads.
+    """
+
+    with_level = 0
+    with_thread = 0
+    levels_by_thread: dict[str, set[int]] = {}
+
+    for subj, uuids in sfis_by_subject.items():
+        for uid in uuids:
+            f = features_by_uuid.get(uid) or {}
+            lo = f.get("level_ordinal_low")
+            tk = _thread_key_for_grade_order(f)
+
+            if isinstance(lo, int):
+                with_level += 1
+            if tk:
+                with_thread += 1
+            if isinstance(lo, int) and tk:
+                key = f"{subj}||{tk}"
+                levels_by_thread.setdefault(key, set()).add(lo)
+
+    # Calculate adjacency statistics.
+    adjacent_pairs = 0
+    threads_2plus = 0
+
+    for s in levels_by_thread.values():
+        if len(s) >= 2:
+            threads_2plus += 1
+
+        for level in s:
+            if level + 1 in s:
+                adjacent_pairs += 1
+
+    return {
+        "sfis_with_level_ordinal": with_level,
+        "sfis_with_thread_key": with_thread,
+        "threads": len(levels_by_thread),
+        "threads_with_2plus_levels": threads_2plus,
+        "adjacent_level_pairs_possible": adjacent_pairs,
+    }
+
+
+def _stats_scope_sequence(
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    sfis_by_subject: dict[str, list[UUID]],
+) -> dict[str, Any]:
+    """Calculate statistics about the presence of level ordinals and threading keys for
+    scope sequence inference, as well as the potential adjacency of levels within
+    threads.
+
+    Parameters
+    ----------
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used to check for
+        the presence of level ordinals and threading keys.
+    sfis_by_subject
+        A dictionary mapping academic subjects to lists of SFI UUIDs in that subject,
+        used to group SFIs by subject for thread aggregation.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing statistics about the number of SFIs with level
+        ordinals, the number of SFIs with threading keys for scope sequence inference,
+        the number of threads identified, the number of threads with 2 or more levels,
+        and the number of adjacent level pairs possible within threads.
+    """
+
+    buckets: dict[str, int] = {}
+    with_level = 0
+    with_thread = 0
+
+    for subj, uuids in sfis_by_subject.items():
+        for uid in uuids:
+            f = features_by_uuid.get(uid) or {}
+            lo = f.get("level_ordinal_low")
+            scope_tk = _thread_key_for_scope_sequence(f)
+
+            is_valid_lo = isinstance(lo, int)
+
+            if is_valid_lo:
+                with_level += 1
+            if scope_tk:
+                with_thread += 1
+
+            if is_valid_lo and scope_tk:
+                key = f"{subj}||{lo}||{scope_tk}"
+                buckets[key] = buckets.get(key, 0) + 1
+
+    return {
+        "sfis_with_level_ordinal": with_level,
+        "sfis_with_thread_key": with_thread,
+        "buckets": len(buckets),
+        "buckets_with_2plus": sum(1 for n in buckets.values() if n >= 2),
+    }
+
+
+def _thread_key_for_grade_order(f: dict[str, Any]) -> Optional[tuple[str, str]]:
+    """Prefer code-key threading; fall back to topic path.
+
+    Parameters
+    ----------
+    f
+        The features dictionary for an SFI, from which to extract threading keys.
+
+    Returns
+    -------
+    Optional[tuple[str, str]]
+        A tuple of (thread_type, thread_key) for grade order threading, or None if no
+        suitable keys are found.
+    """
+
+    code_key = normalize_ws(str(f.get("code_key_without_grade") or ""))
+
+    if code_key:
+        return "code", code_key
+
+    cf = f.get("code_features") or {}
+    stem = normalize_ws(
+        str(cf.get("code_stem_without_grade") or cf.get("code_stem") or "")
+    )
+
+    if stem:
+        return "code_stem", stem
+
+    tp = normalize_ws(str(f.get("topic_path_key") or ""))
+
+    if tp:
+        return "topic", tp
+
+    return None
+
+
+def _thread_key_for_scope_sequence(f: dict[str, Any]) -> str:
+    """Thread key for within-level sequencing: prefer code stem, else topic path.
+
+    Parameters
+    ----------
+    f
+        The features dictionary for an SFI, from which to extract threading keys for
+        scope sequencing.
+
+    Returns
+    -------
+    str
+        A thread key for scope sequencing, preferring code stem if available, else
+        topic path, or an empty string if neither is available.
+    """
+
+    cf = f.get("code_features") or {}
+    stem = normalize_ws(
+        str(cf.get("code_stem_without_grade") or cf.get("code_stem") or "")
+    )
+
+    if stem:
+        return f"code_stem:{stem}"
+
+    tp = normalize_ws(str(f.get("topic_path_key") or ""))
+
+    if tp:
+        return f"topic:{tp}"
+
+    return ""
+
+
+def _with_endpoint_pointers(
+    *, edge: CandidateEdge, features_by_uuid: dict[UUID, dict[str, Any]]
+) -> CandidateEdge:
+    """Attach canonical pointers for source and target SFIs to the edge's evidence.
+
+    Parameters
+    ----------
+    edge
+        The CandidateEdge for which to attach endpoint pointers.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used to retrieve
+        canonical pointers for the source and target SFIs.
+
+    Returns
+    -------
+    CandidateEdge
+        A new CandidateEdge with canonical pointers for the source and target SFIs
+        added to the evidence under the "endpoint_pointers" key.
+    """
+
+    sf = features_by_uuid.get(edge.source_sfi_uuid) or {}
+    tf = features_by_uuid.get(edge.target_sfi_uuid) or {}
+
+    evidence = dict(edge.evidence or {})
+    evidence.setdefault("endpoint_pointers", {})
+
+    evidence["endpoint_pointers"]["source"] = {
+        "canonical_node_id": sf.get("canonical_node_id"),
+        "canonical_node_role": sf.get("canonical_node_role"),
+        "page_indices": sf.get("page_indices") or [],
+        "bbox": sf.get("bbox"),
+        "source_segment_ids": sf.get("source_segment_ids") or [],
+        "source_decision_ids": sf.get("source_decision_ids") or [],
+    }
+    evidence["endpoint_pointers"]["target"] = {
+        "canonical_node_id": tf.get("canonical_node_id"),
+        "canonical_node_role": tf.get("canonical_node_role"),
+        "page_indices": tf.get("page_indices") or [],
+        "bbox": tf.get("bbox"),
+        "source_segment_ids": tf.get("source_segment_ids") or [],
+        "source_decision_ids": tf.get("source_decision_ids") or [],
+    }
+
+    return replace(edge, evidence=evidence)
+
+
+def _within_level_sort_key(f: dict[str, Any]) -> tuple[Any, ...]:
+    """Stable within-level sort key used for threading.
+
+    Parameters
+    ----------
+    f
+        The features dictionary for an SFI, from which to extract components for the
+        sort key.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        A tuple representing the sort key for within-level ordering, preferring
+        canonical order path, then order index within parent, then statement code, then
+        finally SFI UUID for tie-breaking.
+    """
+
+    # Prefer canonical order, then statement code, then UUID.
+    canon_order_path = f.get("canon_order_path") or []
+
+    # Inlined check: must be a list and contain only integers.
+    is_valid_path = isinstance(canon_order_path, list) and all(
+        isinstance(x, int) for x in canon_order_path
+    )
+
+    canon_order_key = (
+        tuple(int(x) for x in canon_order_path) if is_valid_path else tuple()
+    )
+
+    code = normalize_ws(str(f.get("statement_code") or ""))
+
+    return (
+        canon_order_key,
+        (
+            f.get("order_index_within_parent")
+            if f.get("order_index_within_parent") is not None
+            else 10**9
+        ),
+        code,
+        str(f.get("sfi_uuid")),
+    )
 
 
 def export_learning_progressions(
@@ -2443,183 +2248,563 @@ def export_learning_progressions(
     Parameters
     ----------
     academic_standards
-        The exported Academic Standards KG artifacts.
+        Exported Academic Standards artifacts. Endpoints MUST be emitted SFIs.
     config
-        The knowledge graph run configuration.
+        CreateKGConfig (progression settings + namespace UUID).
     ctx
-        The KG export context.
+        ExportContext (doc_key, framework metadata, indexes).
     kg_dirs
-        The knowledge graph run directories.
+        Output directories.
 
     Returns
     -------
     LearningProgressionsExport
-        Emitted buildsTowards and relatesTo relationships and a report of the export
-        process.
+        Emitted buildsTowards + relatesTo relationships and a report dict.
+
+    Raises
+    ------
+    ValueError
+        If an unexpected relationship type is encountered during processing.
     """
 
-    buckets_info = group_standards_for_learning_progressions(
-        academic_standards=academic_standards, include_provenance=True
+    sfis = list(academic_standards.items)
+    sfi_by_uuid: dict[UUID, StandardsFrameworkItem] = {
+        s.case_identifier_uuid: s for s in sfis
+    }
+
+    # Gate LLM judging on both the boolean flag and progression_sources membership (the
+    # config validator enforces consistency, but this keeps the exporter robust if
+    # config objects are constructed programmatically).
+    llm_enabled = bool(config.progression_llm_enabled) and (
+        "llm" in list(getattr(config, "progression_sources", []))
     )
 
-    # Write the buckets artifact for debugging.
-    write_to_json(
-        fp=kg_dirs.learning_progressions / "learning_progressions_buckets.json",
-        json_info=buckets_info,
+    report: dict[str, Any] = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "doc_key": ctx.doc_key,
+        "pdf_name": ctx.pdf_name,
+        "total_sfis": len(sfis),
+        "modules_enabled": list(config.progression_inference_modules),
+        "candidates": {
+            "by_module": {},
+            "module_stats": {},
+            "pre_pool_total": 0,
+            "post_pool_total": 0,
+            "post_dedupe_total": 0,
+            "post_filter_total": 0,
+        },
+        "drops": {},
+        "truncations": {"per_node": {}, "total_nodes_truncated": 0},
+        "cycles_removed": [],
+        "llm": {"enabled": bool(llm_enabled), "failures": 0},
+        "granularity": {"configured": config.progression_granularity, "chosen": None},
+    }
+
+    # Precompute features.
+    features_by_uuid: dict[UUID, dict[str, Any]] = {}
+    for sfi in sfis:
+        features_by_uuid[sfi.case_identifier_uuid] = _extract_progression_features(
+            sfi=sfi, ctx=ctx
+        )
+
+    # Candidate generation (deterministic modules).
+    candidates = generate_candidate_edges(
+        config=config,
+        features_by_uuid=features_by_uuid,
+        report=report,
+        standards_export=academic_standards,
+    )
+    report["candidates"]["pre_pool_total"] = len(candidates)
+
+    # Pool bounding per source.
+    candidates = _bound_candidate_pool(
+        candidates=candidates,
+        per_source=config.progression_candidate_pool_size_per_node,
+    )
+    report["candidates"]["post_pool_total"] = len(candidates)
+
+    # Optional LLM judging.
+    if llm_enabled is True:
+        candidates = judge_candidates_with_llm(
+            candidates=candidates,
+            config=config,
+            features_by_uuid=features_by_uuid,
+            report=report,
+            sfi_by_uuid=sfi_by_uuid,
+        )
+
+    # Normalize + dedupe + stable ordering.
+    candidates = normalize_and_dedupe(
+        candidates=candidates,
+        config=config,
+        features_by_uuid=features_by_uuid,
+        report=report,
+        sfi_by_uuid=sfi_by_uuid,
+    )
+    report["candidates"]["post_dedupe_total"] = len(candidates)
+
+    # Granularity + thresholds + top-K caps.
+    chosen_granularity = _choose_granularity(
+        configured=config.progression_granularity,
+        features_by_uuid=features_by_uuid,
+        sfis=sfis,
+    )
+    report["granularity"]["chosen"] = chosen_granularity
+
+    candidates = filter_edges(
+        candidates=candidates,
+        chosen_granularity=chosen_granularity,
+        config=config,
+        report=report,
+        sfi_by_uuid=sfi_by_uuid,
+    )
+    report["candidates"]["post_filter_total"] = len(candidates)
+
+    # Optional: cycle protection for buildsTowards.
+    if config.progression_enforce_dag_builds_towards is True:
+        candidates = _enforce_dag_builds_towards(candidates=candidates, report=report)
+
+    # Emit relationships + provenance metadata.
+    fw_metadata = ctx.get_framework_metadata()
+
+    builds_towards: list[Relationship] = []
+    relates_to: list[Relationship] = []
+
+    for c in candidates:
+        rel = _emit_progression_relationship(
+            candidate=c,
+            config=config,
+            doc_key=ctx.doc_key,
+            features_by_uuid=features_by_uuid,
+            fw_metadata=fw_metadata,
+            granularity=chosen_granularity,
+        )
+
+        if rel.relationship_type == "buildsTowards":
+            builds_towards.append(rel)
+        elif rel.relationship_type == "relatesTo":
+            relates_to.append(rel)
+        else:
+            raise ValueError(
+                f"Unexpected progression rel type: {rel.relationship_type}"
+            )
+
+    # Deterministic ordering for output stability.
+    builds_towards = sorted(
+        builds_towards,
+        key=lambda r: (
+            str(r.source_entity_value),
+            str(r.target_entity_value),
+            str(r.identifier),
+        ),
     )
 
-    by_grade: dict[str, list[dict[str, Any]]] = buckets_info.get("by_grade") or {}
-    candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
-    sfi_index = _build_sfi_index(by_grade=by_grade)
-
-    # Phase 1: Within-grade buildsTowards.
-    p1_candidates, p1_prov = _infer_within_grade_builds_towards(
-        by_grade=by_grade, config=config
-    )
-    candidates.extend(p1_candidates)
-    provenance_rows.extend(p1_prov)
-
-    # Phase 2: Cross-grade buildsTowards.
-    p2_candidates, p2_prov, cross_level_build_pairs = _infer_cross_grade_builds_towards(
-        by_grade=by_grade, config=config
-    )
-    candidates.extend(p2_candidates)
-    provenance_rows.extend(p2_prov)
-
-    # Phase 3: Within-grade relatesTo.
-    p3_candidates, p3_prov = _infer_within_grade_relates_to(
-        by_grade=by_grade, config=config
-    )
-    candidates.extend(p3_candidates)
-    provenance_rows.extend(p3_prov)
-
-    # Phase 4: Cross-grade relatesTo.
-    p4_candidates, p4_prov = _infer_cross_grade_relates_to(
-        by_grade=by_grade, config=config, forbidden_builds_pairs=cross_level_build_pairs
-    )
-    candidates.extend(p4_candidates)
-    provenance_rows.extend(p4_prov)
-
-    # Dedupe, filter, limit, and emit final relationships, and gather stats for the report.
-    builds_rels, relates_rels, stats = _process_and_filter_candidates(
-        candidates=candidates, config=config, sfi_index=sfi_index
+    relates_to = sorted(
+        relates_to,
+        key=lambda r: (
+            str(r.source_entity_value),
+            str(r.target_entity_value),
+            str(r.identifier),
+        ),
     )
 
     # Write artifacts.
     write_to_json(
         fp=kg_dirs.learning_progressions
         / "learning_progressions_builds_towards_relationships.json",
-        json_info=[r.model_dump(mode="json") for r in builds_rels],
+        json_info=[r.model_dump(mode="json") for r in builds_towards],
     )
     write_to_json(
         fp=kg_dirs.learning_progressions
         / "learning_progressions_relates_to_relationships.json",
-        json_info=[r.model_dump(mode="json") for r in relates_rels],
-    )
-    write_to_json(
-        fp=kg_dirs.learning_progressions
-        / "learning_progressions_candidate_edges_provenance.json",
-        json_info=provenance_rows,
+        json_info=[r.model_dump(mode="json") for r in relates_to],
     )
 
-    # Include nodes for standalone use in graph bundle.
     graph_bundle = _build_learning_progressions_graph_bundle(
-        academic_standards=academic_standards,
         ctx=ctx,
         export_dialect=str(config.export_dialect),
-        relationships=(builds_rels + relates_rels),
+        relationships=(builds_towards + relates_to),
     )
     write_to_json(
         fp=kg_dirs.learning_progressions / "learning_progressions_kg.json",
         json_info=graph_bundle,
     )
 
-    report = {
-        "doc_key": ctx.doc_key,
-        "counts": stats,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "phase_toggles": {
-            "within_grade_builds_towards": config.progressions_within_grade_builds_towards,
-            "cross_grade_builds_towards": config.progressions_cross_grade_builds_towards,
-            "within_grade_relates_to": config.progressions_within_grade_relates_to,
-            "cross_grade_relates_to": config.progressions_cross_grade_relates_to,
-        },
-        "thresholds": {
-            "builds_towards_min_confidence": config.progressions_builds_towards_min_confidence,
-            "relates_to_min_confidence": config.progressions_relates_to_min_confidence,
-            "relates_to_max_edges_per_sfi": config.progressions_relates_to_max_edges_per_sfi,
-            "within_grade_relates_to_max_items_per_subject": config.progressions_within_grade_relates_to_max_items_per_subject,
-        },
-        "drops": buckets_info.get("drops") or {},
-    }
     write_to_json(
         fp=kg_dirs.learning_progressions / "learning_progressions_report.json",
         json_info=report,
     )
 
     return LearningProgressionsExport(
-        builds_towards_relationships=builds_rels,
+        builds_towards_relationships=builds_towards,
         graph_bundle=graph_bundle,
-        relates_to_relationships=relates_rels,
+        relates_to_relationships=relates_to,
         report=report,
     )
 
 
-def group_standards_for_learning_progressions(
+def filter_edges(
     *,
-    academic_standards: AcademicStandardsExport,
-    include_provenance: bool = True,
-    strict_single_grade: bool = False,
-) -> dict[str, Any]:
-    """Build learning progression buckets for the LLM.
+    candidates: list[CandidateEdge],
+    chosen_granularity: str,
+    config: CreateKGConfig,
+    report: dict[str, Any],
+    sfi_by_uuid: dict[UUID, StandardsFrameworkItem],
+) -> list[CandidateEdge]:
+    """Apply granularity, confidence threshold, and max edges per node caps.
 
     Parameters
     ----------
-    academic_standards
-        The exported Academic Standards KG artifacts.
-    include_provenance
-        Whether to include provenance metadata in the payload for each standard item,
-        which the LLM can use as signals when deciding buildsTowards relationships.
-        This will make the payload larger and may not be necessary if the standards
-        export is already well-structured and clean.
-    strict_single_grade
-        Whether to enforce that each standard item has exactly one grade_level tag. If
-        True, items with multiple grade_level tags will be dropped and recorded in the
-        report. This can help catch data issues in exports that are expected to have a
-        single grade tag per item, but may need to be relaxed for more complex or
-        non-US curricula.
+    candidates
+        The list of CandidateEdge objects to filter.
+    chosen_granularity
+        The granularity level chosen for filtering ("fine", "coarse", or "all").
+    config
+        The CreateKGConfig containing configuration options, including confidence
+        thresholds and max edges per node.
+    report
+        The report dictionary to update with drop and truncation statistics during
+        filtering.
+    sfi_by_uuid
+        A dictionary mapping SFI UUIDs to their corresponding StandardsFrameworkItem
+        objects, used for accessing SFI features needed for filtering decisions.
 
     Returns
     -------
-    dict[str, Any]
-        A dictionary containing grouped standards by grade and thread, as well as any
-        dropped items due to missing or non-standard data.
-
-    Raises
-    ------
-    ValueError
-        If strict_single_grade is True and an item has multiple grade_level tags.
+    list[CandidateEdge]
+        The list of CandidateEdge objects that passed the filtering criteria.
     """
 
-    # grade -> topic_path_key -> bucket.
-    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]] = defaultdict(
-        lambda: defaultdict(dict)
-    )
-    drops: dict[str, list[dict[str, Any]]] = {
-        "missing_topic_path_key": [],
-        "multi_grade_item": [],
-        "non_standard_item": [],
-        "unassigned_grade": [],
-    }
+    drops = report.setdefault("drops", {})
 
-    for sfi in academic_standards.items:
-        _process_single_standard(
-            buckets=buckets,
-            drops=drops,
-            include_provenance=include_provenance,
-            sfi=sfi,
-            strict_single_grade=strict_single_grade,
+    def _drop(reason: str) -> None:
+        """Helper function to record a dropped edge with a specific reason.
+
+        Parameters
+        ----------
+        reason
+            A string indicating the reason for dropping the edge, used for reporting
+            purposes.
+        """
+
+        drops[reason] = int(drops.get(reason, 0)) + 1
+
+    # Granularity filter.
+    filtered: list[CandidateEdge] = []
+
+    for c in candidates:
+        s = sfi_by_uuid[c.source_sfi_uuid]
+        t = sfi_by_uuid[c.target_sfi_uuid]
+
+        if chosen_granularity == "fine" and not (
+            s.normalized_statement_type == "Standard"
+            and t.normalized_statement_type == "Standard"
+        ):
+            _drop("granularity_non_standard")
+            continue
+
+        if chosen_granularity == "coarse" and not (
+            s.normalized_statement_type == "Standard Grouping"
+            and t.normalized_statement_type == "Standard Grouping"
+        ):
+            _drop("granularity_non_grouping")
+            continue
+
+        filtered.append(c)
+
+    # Confidence threshold.
+    filtered2: list[CandidateEdge] = []
+
+    for c in filtered:
+        if c.confidence < config.progression_min_confidence:
+            _drop("below_min_confidence")
+            continue
+
+        filtered2.append(c)
+
+    # Top-k per source.
+    grouped: dict[UUID, list[CandidateEdge]] = {}
+
+    for c in filtered2:
+        grouped.setdefault(c.source_sfi_uuid, []).append(c)
+
+    output: list[CandidateEdge] = []
+    trunc = report.setdefault("truncations", {}).setdefault("per_node", {})
+
+    for src in sorted(grouped.keys(), key=str):
+        cs = grouped[src]
+        cs_sorted = sorted(
+            cs, key=lambda x: (-x.confidence, x.rel_type, str(x.target_sfi_uuid))
         )
+        kept = cs_sorted[: config.max_progression_edges_per_node]
+        output.extend(kept)
 
-    return _format_learning_progressions_dict(buckets=buckets, drops=drops)
+        if len(cs_sorted) > len(kept):
+            trunc[str(src)] = len(cs_sorted) - len(kept)
+
+    report["truncations"]["total_nodes_truncated"] = len(trunc)
+
+    return output
+
+
+def generate_candidate_edges(
+    *,
+    config: CreateKGConfig,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    report: dict[str, Any],
+    standards_export: AcademicStandardsExport,
+) -> list[CandidateEdge]:
+    """Generate candidate progression edges via deterministic inference modules.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig containing configuration options, including which inference
+        modules are enabled.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used by inference
+        modules to generate candidate edges.
+    report
+        The report dictionary to update with statistics about candidate generation,
+        such as module-specific stats and counts of generated edges.
+    standards_export
+        The AcademicStandardsExport containing the SFIs for which to generate candidate
+        edges, used for partitioning and feature access during inference.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        A list of CandidateEdge objects representing inferred progression edges based
+        on the enabled deterministic inference modules.
+    """
+
+    candidates: list[CandidateEdge] = []
+
+    # Partition by subject for cheap blocking and nicer reports.
+    sfis_by_subject: dict[str, list[UUID]] = {}  # NB: actually "local subject" buckets
+
+    for sfi in standards_export.items:
+        f = features_by_uuid.get(sfi.case_identifier_uuid) or {}
+        subj = normalize_ws(str(f.get("local_subject_key") or "")) or normalize_ws(
+            sfi.academic_subject or ""
+        )
+        sfis_by_subject.setdefault(subj, []).append(sfi.case_identifier_uuid)
+
+    enabled = list(config.progression_inference_modules)
+    module_stats = report["candidates"].setdefault("module_stats", {})
+
+    def _add(*, edges: list[CandidateEdge], module_name: str) -> None:
+        """Helper to add generated edges for a specific module and record stats.
+
+        Parameters
+        ----------
+        edges
+            The list of CandidateEdge objects generated by the module, which will be
+            added to the overall candidates list and counted in the report.
+        module_name
+            The name of the inference module that generated the edges, used for
+            reporting.
+        """
+
+        # Always record the module, even if it produced 0 edges.
+        stats = _compute_module_stats(
+            features_by_uuid=features_by_uuid,
+            module_name=module_name,
+            sfis_by_subject=sfis_by_subject,
+        )
+        stats["generated_edges"] = len(edges)
+        module_stats[module_name] = stats
+
+        # Attach endpoint pointers into evidence.
+        edges2 = [
+            _with_endpoint_pointers(edge=e, features_by_uuid=features_by_uuid)
+            for e in edges
+        ]
+
+        report["candidates"]["by_module"][module_name] = len(edges2)
+        candidates.extend(edges2)
+
+    for module in enabled:
+        if module in {"grade_order", "stage_order"}:
+            _add(
+                edges=_infer_grade_order(
+                    features_by_uuid=features_by_uuid,
+                    inference_type=module,
+                    sfis_by_subject=sfis_by_subject,
+                ),
+                module_name=module,
+            )
+        elif module == "scope_sequence":
+            _add(
+                edges=_infer_scope_sequence(
+                    features_by_uuid=features_by_uuid, sfis_by_subject=sfis_by_subject
+                ),
+                module_name="scope_sequence",
+            )
+        elif module == "code_pattern":
+            _add(
+                edges=_infer_code_pattern(
+                    config=config,
+                    features_by_uuid=features_by_uuid,
+                    sfis_by_subject=sfis_by_subject,
+                ),
+                module_name="code_pattern",
+            )
+        else:
+            logger.warning(
+                f"Unknown progression inference module '{module}'; skipping."
+            )
+            _add(edges=[], module_name=str(module))
+            report["candidates"]["by_module"][str(module)] = 0
+
+    return candidates
+
+
+def judge_candidates_with_llm(
+    *,
+    candidates: list[CandidateEdge],
+    config: CreateKGConfig,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    report: dict[str, Any],
+    sfi_by_uuid: dict[UUID, StandardsFrameworkItem],
+) -> list[CandidateEdge]:
+    """Optional LLM judging hook.
+
+    Parameters
+    ----------
+    candidates
+        The list of CandidateEdge objects to judge with the LLM.
+    config
+        The CreateKGConfig containing configuration options, including LLM-related
+        settings.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, which may be used
+        to construct prompts for the LLM.
+    report
+        The report dictionary to update with statistics about LLM judging, such as
+        counts of failures or errors during LLM calls.
+    sfi_by_uuid
+        A dictionary mapping SFI UUIDs to their corresponding StandardsFrameworkItem
+        objects, which may be used to access SFI details needed for LLM judging.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        The list of CandidateEdge objects after LLM judging, which may be filtered or
+        modified based on the LLM's assessments.
+    """
+
+    # Just return inferred candidates.
+    logger.debug(f"{config = }")
+    logger.debug(f"{features_by_uuid = }")
+    logger.debug(f"{sfi_by_uuid = }")
+    logger.warning(
+        "progression_llm_enabled=True but no LLM client is wired in this codebase; "
+        "skipping LLM judging and exporting heuristic candidates only."
+    )
+    report["llm"]["failures"] = report["llm"].get("failures", 0) + 1
+    return candidates
+
+
+def normalize_and_dedupe(
+    *,
+    candidates: list[CandidateEdge],
+    config: CreateKGConfig,
+    features_by_uuid: dict[UUID, dict[str, Any]],
+    report: dict[str, Any],
+    sfi_by_uuid: dict[UUID, StandardsFrameworkItem],
+) -> list[CandidateEdge]:
+    """Apply global constraints, canonicalize relatesTo, and dedupe deterministically.
+
+    Parameters
+    ----------
+    candidates
+        The list of CandidateEdge objects to normalize and deduplicate.
+    config
+        The CreateKGConfig containing configuration options, including global
+        constraints such as whether to allow cross-subject edges and whether to only
+        allow adjacent levels.
+    features_by_uuid
+        A dictionary mapping SFI UUIDs to their extracted features, used for enforcing
+        constraints that depend on SFI attributes (e.g., subject keys, level ordinals).
+    report
+        The report dictionary to update with statistics about dropped edges during
+        normalization and deduplication, such as counts of drops for self-loops,
+        missing endpoints, cross-subject edges, non-adjacent levels, etc.
+    sfi_by_uuid
+        A dictionary mapping SFI UUIDs to their corresponding StandardsFrameworkItem
+        objects, used for validating the existence of endpoints and accessing features
+        needed for constraint enforcement during normalization and deduplication.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        A list of CandidateEdge objects that have been normalized and deduplicated,
+        with global constraints enforced and relatesTo edges canonicalized as
+        undirected pairs.
+    """
+
+    drops = report.setdefault("drops", {})
+
+    def _drop(reason: str) -> None:
+        """Helper function to record a dropped edge with a specific reason during
+        normalization and deduplication.
+
+        Parameters
+        ----------
+        reason
+            A string indicating the reason for dropping the edge, used for reporting
+            purposes (e.g., "self_loop", "missing_endpoint", "cross_subject_blocked
+            ", "non_adjacent_levels", etc.).
+        """
+
+        drops[reason] = int(drops.get(reason, 0)) + 1
+
+    dedup: dict[tuple[str, str, str], CandidateEdge] = {}
+
+    for c in candidates:
+        # Basic validity checks.
+        if c.source_sfi_uuid == c.target_sfi_uuid:
+            _drop("self_loop")
+            continue
+
+        if c.source_sfi_uuid not in sfi_by_uuid or c.target_sfi_uuid not in sfi_by_uuid:
+            _drop("missing_endpoint")
+            continue
+
+        # Configurable logic checks.
+        if reason := _check_subject_constraints(
+            candidate=c, config=config, features_by_uuid=features_by_uuid
+        ):
+            _drop(reason)
+            continue
+
+        if reason := _check_level_constraints(
+            candidate=c, config=config, features_by_uuid=features_by_uuid
+        ):
+            _drop(reason)
+            continue
+
+        # Edge canonicalization.
+        c = _canonicalize_edge(c)
+
+        # Dedupe.
+        key = (str(c.source_sfi_uuid), str(c.target_sfi_uuid), c.rel_type)
+        prev = dedup.get(key)
+
+        if prev is None or c.confidence > prev.confidence:
+            dedup[key] = c
+
+    output = sorted(
+        dedup.values(),
+        key=lambda x: (
+            -x.confidence,
+            x.rel_type,
+            x.inference_source,
+            x.inference_type,
+            str(x.source_sfi_uuid),
+            str(x.target_sfi_uuid),
+        ),
+    )
+
+    return output
