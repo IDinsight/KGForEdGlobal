@@ -328,6 +328,152 @@ def _slugify(*, max_len: int = 80, s: str) -> str:
     return slug[:max_len] if max_len else slug
 
 
+def _validate_decision_references(ctx: ExportContext) -> None:
+    """Ensure all decision IDs referenced by nodes exist in the context.
+
+    Parameters
+    ----------
+    ctx
+        The KG export context.
+
+    Raises
+    ------
+    ValueError
+        If there are nodes that reference missing decision IDs.
+    """
+
+    missing_decisions = []
+
+    for n in ctx.nodes_by_id.values():
+        for did in n.get("source_decision_ids", []):
+            if did not in ctx.decisions_by_id:
+                missing_decisions.append(did)
+                if len(missing_decisions) >= 10:
+                    break
+
+        if len(missing_decisions) >= 10:
+            break
+
+    if missing_decisions:
+        raise ValueError(
+            f"Nodes reference missing decision_ids (examples): {missing_decisions[:10]}"
+        )
+
+
+def _validate_no_cycles(ctx: ExportContext) -> None:
+    """Detect cycles by walking up parent links from every node.
+
+    Parameters
+    ----------
+    ctx
+        The KG export context.
+
+    Raises
+    ------
+    ValueError
+        If there are cycles detected in the parent-child relationships.
+    """
+
+    cycle_examples: list[str] = []
+
+    for nid in ctx.parent_by_child:
+        walk_seen: set[str] = set()
+        cur: str | None = nid
+
+        # Walk up towards root to check for circular parents.
+        while cur and cur != ctx.root_id:
+            if cur in walk_seen:
+                cycle_examples.append(nid)
+                break
+
+            walk_seen.add(cur)
+            cur = ctx.parent_by_child.get(cur)
+
+        if len(cycle_examples) >= 5:
+            break
+
+    if cycle_examples:
+        raise ValueError(
+            f"Tree integrity: cycle(s) detected in parent_by_child. "
+            f"{len(cycle_examples)} node(s) do not reach root. "
+            f"Examples: {cycle_examples[:5]}. "
+            f"This typically indicates a bug in the canonicalization step that "
+            f"produced circular hasChild edges."
+        )
+
+
+def _validate_reachability(ctx: ExportContext) -> None:
+    """Ensure all nodes in the context are reachable from the root.
+
+    Parameters
+    ----------
+    ctx
+        The KG export context.
+
+    Raises
+    ------
+    ValueError
+        If there are nodes that are not reachable from the root.
+    """
+
+    visited: set[str] = set()
+
+    def dfs(nid: str) -> None:
+        """Depth-first search to mark visited nodes.
+
+        Parameters
+        ----------
+        nid
+            The current node ID.
+        """
+
+        if nid in visited:
+            return
+
+        visited.add(nid)
+
+        for cid in ctx.children_by_parent.get(nid, []):
+            dfs(cid)
+
+    dfs(ctx.root_id)
+
+    all_nodes = set(ctx.nodes_by_id.keys())
+    if visited != all_nodes:
+        missing = sorted(all_nodes - visited)[:20]
+        raise ValueError(
+            f"Tree integrity: {len(all_nodes - visited)} nodes unreachable from root. "
+            f"Examples: {missing}"
+        )
+
+
+def _validate_root_structure(ctx: ExportContext) -> None:
+    """Ensure the root has no parent.
+
+    Parameters
+    ----------
+    ctx
+        The KG export context.
+    """
+
+    assert (
+        ctx.root_id not in ctx.parent_by_child
+    ), f"Root ID unexpectedly has a parent: {ctx.root_id}"
+
+
+def _detect_cycle_for_node(ctx: ExportContext, start_nid: str) -> bool:
+    """Helper to walk up the tree for a single node to check for cycles."""
+    walk_seen: set[str] = set()
+    cur: str | None = start_nid
+
+    while cur and cur != ctx.root_id:
+        if cur in walk_seen:
+            return True
+        walk_seen.add(cur)
+        cur = ctx.parent_by_child.get(cur)
+
+    return False
+
+
 def _verify_columns_signature(
     *, ctx: ExportContext, segment_decisions: list[SegmentDecision]
 ) -> None:
@@ -374,84 +520,10 @@ def _verify_tree_integrity(ctx: ExportContext) -> None:
         If the tree structure is invalid.
     """
 
-    root_id = ctx.root_id
-
-    assert (
-        root_id not in ctx.parent_by_child
-    ), f"Root ID unexpectedly has a parent: {root_id}"
-
-    visited: set[str] = set()
-
-    def dfs(nid: str) -> None:
-        """Depth-first search to mark visited nodes.
-
-        Parameters
-        ----------
-        nid
-            The current node ID.
-        """
-
-        if nid in visited:
-            return
-
-        visited.add(nid)
-
-        for cid in ctx.children_by_parent.get(nid, []):
-            dfs(cid)
-
-    dfs(root_id)
-
-    all_nodes = set(ctx.nodes_by_id.keys())
-
-    if visited != all_nodes:
-        missing = sorted(all_nodes - visited)[:20]
-        raise ValueError(
-            f"Tree integrity: {len(all_nodes - visited)} nodes unreachable from root. "
-            f"Examples: {missing}"
-        )
-
-    # Validate decision references.
-    missing_decisions = []
-
-    for n in ctx.nodes_by_id.values():
-        for did in n.get("source_decision_ids", []):
-            if did not in ctx.decisions_by_id:
-                missing_decisions.append(did)
-                if len(missing_decisions) >= 10:
-                    break
-
-    if missing_decisions:
-        raise ValueError(
-            f"Nodes reference missing decision_ids (examples): {missing_decisions[:10]}"
-        )
-
-    # Detect cycles in parent_by_child by walking each node to root. The DFS
-    # reachability check above does NOT catch cycles when all cycle nodes are reachable
-    # from root (e.g., root → X → A → B → C → A).
-    cycle_examples: list[str] = []
-
-    for nid in ctx.parent_by_child:
-        walk_seen: set[str] = set()
-        cur: str | None = nid
-
-        while cur and cur != root_id:
-            if cur in walk_seen:
-                cycle_examples.append(nid)
-                break
-            walk_seen.add(cur)
-            cur = ctx.parent_by_child.get(cur)
-
-        if len(cycle_examples) >= 5:
-            break
-
-    if cycle_examples:
-        raise ValueError(
-            f"Tree integrity: cycle(s) detected in parent_by_child. "
-            f"{len(cycle_examples)} node(s) do not reach root. "
-            f"Examples: {cycle_examples[:5]}. "
-            f"This typically indicates a bug in the canonicalization step that "
-            f"produced circular hasChild edges."
-        )
+    _validate_root_structure(ctx)
+    _validate_reachability(ctx)
+    _validate_decision_references(ctx)
+    _validate_no_cycles(ctx)
 
 
 def create_kg_dirs(*, output_dir: Path) -> KGDirs:

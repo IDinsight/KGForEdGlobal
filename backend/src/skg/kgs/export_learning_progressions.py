@@ -1755,7 +1755,6 @@ def _process_thread_levels(
             "thread_type": thread_type,
             "thread_key": thread_key,
             "subject_key": subject,
-            "level_field": level_field,
         }
 
         # Dispatch to matching strategy.
