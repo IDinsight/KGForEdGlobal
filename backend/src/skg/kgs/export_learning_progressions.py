@@ -237,8 +237,16 @@ def _check_level_constraints(
 
     fs = features_by_uuid[candidate.source_sfi_uuid]
     ft = features_by_uuid[candidate.target_sfi_uuid]
-    ls = fs.get("level_ordinal_low")
-    lt = ft.get("level_ordinal_low")
+
+    # For stage_order candidates, enforce adjacency using stage ordinals even if a
+    # grade axis is present (level_ordinal_* prefers grade when available).
+    level_field = (
+        "stage_ordinal_low"
+        if candidate.inference_type == "stage_order"
+        else "level_ordinal_low"
+    )
+    ls = fs.get(level_field)
+    lt = ft.get(level_field)
 
     if not (isinstance(ls, int) and isinstance(lt, int)):
         return "unknown_level_ordinal"
@@ -573,10 +581,22 @@ def _compute_module_stats(
 
     total_sfis = sum(len(v) for v in sfis_by_subject.values())
 
+    # Grade/stage modules need to be explicit about which ordinal axis they are
+    # measuring.
+    if module_name in {"grade_order", "stage_order"}:
+        level_field = (
+            "stage_ordinal_low" if module_name == "stage_order" else "level_ordinal_low"
+        )
+        stats = _stats_grade_order(
+            features_by_uuid=features_by_uuid,
+            level_field=level_field,
+            sfis_by_subject=sfis_by_subject,
+        )
+        stats["sfis_total"] = total_sfis
+        return stats
+
     # Map module names to their specific handler functions.
     handlers: dict[str, Callable[..., dict[str, Any]]] = {
-        "grade_order": _stats_grade_order,
-        "stage_order": _stats_grade_order,
         "scope_sequence": _stats_scope_sequence,
         "code_pattern": _stats_code_pattern,
     }
@@ -704,6 +724,60 @@ def _create_edge(
         rel_type="buildsTowards",
         source_sfi_uuid=src_uid,
         target_sfi_uuid=tgt_uid,
+    )
+
+
+def _dedupe_candidates_pre_pool(candidates: list[CandidateEdge]) -> list[CandidateEdge]:
+    """Deterministically dedupe candidates *before* pool bounding so duplicates don't
+    consume top-K slots.
+
+    Dedupe key is (source_uuid, target_uuid, rel_type) after canonicalizing relatesTo.
+    We keep the highest-confidence candidate; ties are broken deterministically by
+    (inference_source, inference_type).
+
+    Parameters
+    ----------
+    candidates
+        List of CandidateEdge objects to deduplicate.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        A deduplicated list of CandidateEdge objects, where duplicates (same source,
+        target, and relationship type) have been removed in favor of the highest
+        confidence edge, with ties broken by inference source and type.
+    """
+
+    best: dict[tuple[str, str, str], CandidateEdge] = {}
+
+    for c in candidates:
+        c = _canonicalize_edge(c)
+        key = (str(c.source_sfi_uuid), str(c.target_sfi_uuid), c.rel_type)
+        prev = best.get(key)
+
+        if prev is None:
+            best[key] = c
+            continue
+        if c.confidence > prev.confidence:
+            best[key] = c
+            continue
+        if c.confidence == prev.confidence:
+            if (c.inference_source, c.inference_type) < (
+                prev.inference_source,
+                prev.inference_type,
+            ):
+                best[key] = c
+
+    return sorted(
+        best.values(),
+        key=lambda x: (
+            str(x.source_sfi_uuid),
+            -x.confidence,
+            x.rel_type,
+            x.inference_source,
+            x.inference_type,
+            str(x.target_sfi_uuid),
+        ),
     )
 
 
@@ -1630,11 +1704,14 @@ def _process_thread_levels(
     """
 
     by_level: dict[int, list[UUID]] = {}
+    level_field = (
+        "stage_ordinal_low" if inference_type == "stage_order" else "level_ordinal_low"
+    )
 
     # Group by level.
     for uid in tids:
         f = features_by_uuid[uid]
-        lvl = f.get("level_ordinal_low")
+        lvl = f.get(level_field)
 
         if isinstance(lvl, int):
             by_level.setdefault(lvl, []).append(uid)
@@ -1667,6 +1744,7 @@ def _process_thread_levels(
             "thread_type": thread_type,
             "thread_key": thread_key,
             "subject_key": subject,
+            "level_field": level_field,
         }
 
         # Dispatch to matching strategy.
@@ -1962,6 +2040,7 @@ def _stats_code_pattern(
 def _stats_grade_order(
     features_by_uuid: dict[UUID, dict[str, Any]],
     sfis_by_subject: dict[str, list[UUID]],
+    level_field: str = "level_ordinal_low",
 ) -> dict[str, Any]:
     """Calculate statistics about the presence of grade/stage ordinals and threading
     keys for grade order inference, as well as the potential adjacency of levels within
@@ -1975,6 +2054,9 @@ def _stats_grade_order(
     sfis_by_subject
         A dictionary mapping academic subjects to lists of SFI UUIDs in that subject,
         used to group SFIs by subject for thread aggregation.
+    level_field
+        The specific feature field to check for level ordinals, either
+        "level_ordinal_low" for grade order or "stage_ordinal_low" for stage order.
 
     Returns
     -------
@@ -1992,7 +2074,7 @@ def _stats_grade_order(
     for subj, uuids in sfis_by_subject.items():
         for uid in uuids:
             f = features_by_uuid.get(uid) or {}
-            lo = f.get("level_ordinal_low")
+            lo = f.get(level_field)
             tk = _thread_key_for_grade_order(f)
 
             if isinstance(lo, int):
@@ -2016,6 +2098,7 @@ def _stats_grade_order(
                 adjacent_pairs += 1
 
     return {
+        "level_field_used": level_field,
         "sfis_with_level_ordinal": with_level,
         "sfis_with_thread_key": with_thread,
         "threads": len(levels_by_thread),
@@ -2289,6 +2372,7 @@ def export_learning_progressions(
             "by_module": {},
             "module_stats": {},
             "pre_pool_total": 0,
+            "post_pre_pool_dedupe_total": 0,
             "post_pool_total": 0,
             "post_dedupe_total": 0,
             "post_filter_total": 0,
@@ -2315,6 +2399,11 @@ def export_learning_progressions(
         standards_export=academic_standards,
     )
     report["candidates"]["pre_pool_total"] = len(candidates)
+
+    # Pre-pool dedupe so duplicates (e.g., from multiple modules) don't consume top-k
+    # slots.
+    candidates = _dedupe_candidates_pre_pool(candidates=candidates)
+    report["candidates"]["post_pre_pool_dedupe_total"] = len(candidates)
 
     # Pool bounding per source.
     candidates = _bound_candidate_pool(
