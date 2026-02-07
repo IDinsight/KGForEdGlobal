@@ -480,9 +480,8 @@ def _code_sort_key(f: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _compute_local_subject_key(*, ctx: ExportContext, node_id: str) -> str:
-    """Compute a deterministic 'local subject' key from canonical ancestry. Prefer the
-    nearest SUBJECT ancestor; else fall back to nearest LEARNING_AREA. Includes the
-    canonical node_id for stability (text changes/translation won't break it).
+    """Compute a local subject key for an SFI based on its nearest subject and learning
+    area ancestors.
 
     Parameters
     ----------
@@ -495,36 +494,44 @@ def _compute_local_subject_key(*, ctx: ExportContext, node_id: str) -> str:
     -------
     str
         A string representing the local subject key for the given node ID, constructed
-        by traversing up the node's ancestry to find the nearest SUBJECT or
-        LEARNING_AREA ancestor and including its role and canonical node_id (and
-        optionally slugified label for readability).
+        by traversing up the node's ancestry to find the nearest subject and learning
+        area, and building a key based on their labels or IDs.
     """
 
     cur: Optional[str] = node_id
     subject_id: Optional[str] = None
     learning_area_id: Optional[str] = None
+    seen: set[str] = set()
 
-    # Walk upward from the node toward root; first SUBJECT wins (nearest subject).
-    while cur and cur != ctx.root_id:
+    # Walk upward from the node toward root; capture nearest subject, and (optionally)
+    # learning area.
+    while cur and cur != ctx.root_id and cur not in seen:
+        seen.add(cur)
         n = ctx.nodes_by_id.get(cur) or {}
         role = str(n.get("role") or "")
 
-        if role == NodeRole.SUBJECT.value:
-            subject_id = cur
-            break
-
-        if role == NodeRole.LEARNING_AREA.value and learning_area_id is None:
+        if role == NodeRole.SUBJECT.value and subject_id is None:
+            subject_id = cur  # Nearest subject
+        elif role == NodeRole.LEARNING_AREA.value and learning_area_id is None:
             learning_area_id = cur
 
-        cur = ctx.parent_by_child.get(cur)
+        # If we have both, we can stop early.
+        if subject_id and learning_area_id:
+            break
 
-    # If we found a subject, optionally include the learning_area above it too (nice
-    # for debugging).
+        nxt = ctx.parent_by_child.get(cur)
+
+        if nxt == cur:  # Self-loop guard
+            break
+
+        cur = nxt
+
+    # Build label-based key parts (grade-insensitive).
     if subject_id:
         subj_node = ctx.nodes_by_id.get(subject_id) or {}
         subj_label = _node_label_for_path(subj_node) or ""
         subj_part = (
-            f"{NodeRole.SUBJECT.value}:{subject_id}:{_slugify(subj_label)}"
+            f"{NodeRole.SUBJECT.value}:{_slugify(subj_label)}"
             if subj_label
             else f"{NodeRole.SUBJECT.value}:{subject_id}"
         )
@@ -533,7 +540,7 @@ def _compute_local_subject_key(*, ctx: ExportContext, node_id: str) -> str:
             la_node = ctx.nodes_by_id.get(learning_area_id) or {}
             la_label = _node_label_for_path(la_node) or ""
             la_part = (
-                f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}:{_slugify(la_label)}"
+                f"{NodeRole.LEARNING_AREA.value}:{_slugify(la_label)}"
                 if la_label
                 else f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}"
             )
@@ -545,12 +552,13 @@ def _compute_local_subject_key(*, ctx: ExportContext, node_id: str) -> str:
         la_node = ctx.nodes_by_id.get(learning_area_id) or {}
         la_label = _node_label_for_path(la_node) or ""
         return (
-            f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}:{_slugify(la_label)}"
+            f"{NodeRole.LEARNING_AREA.value}:{_slugify(la_label)}"
             if la_label
             else f"{NodeRole.LEARNING_AREA.value}:{learning_area_id}"
         )
 
-    return ""
+    # Fallback: keep it deterministic and non-empty.
+    return f"node:{node_id}"
 
 
 def _compute_module_stats(
