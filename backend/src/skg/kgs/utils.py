@@ -130,13 +130,15 @@ class ExportContext:
 
         chain: list[str] = []
         cur: str | None = node_id
+        seen: set[str] = set()
 
-        while cur and cur != self.root_id:
+        while cur and cur != self.root_id and cur not in seen:
+            seen.add(cur)
             chain.append(cur)
-            cur = self.parent_by_child.get(cur)
-
-            if cur is None:
+            nxt = self.parent_by_child.get(cur)
+            if nxt == cur:  # self-loop guard
                 break
+            cur = nxt
 
         chain.reverse()
 
@@ -421,6 +423,34 @@ def _verify_tree_integrity(ctx: ExportContext) -> None:
     if missing_decisions:
         raise ValueError(
             f"Nodes reference missing decision_ids (examples): {missing_decisions[:10]}"
+        )
+
+    # Detect cycles in parent_by_child by walking each node to root. The DFS
+    # reachability check above does NOT catch cycles when all cycle nodes are reachable
+    # from root (e.g., root → X → A → B → C → A).
+    cycle_examples: list[str] = []
+
+    for nid in ctx.parent_by_child:
+        walk_seen: set[str] = set()
+        cur: str | None = nid
+
+        while cur and cur != root_id:
+            if cur in walk_seen:
+                cycle_examples.append(nid)
+                break
+            walk_seen.add(cur)
+            cur = ctx.parent_by_child.get(cur)
+
+        if len(cycle_examples) >= 5:
+            break
+
+    if cycle_examples:
+        raise ValueError(
+            f"Tree integrity: cycle(s) detected in parent_by_child. "
+            f"{len(cycle_examples)} node(s) do not reach root. "
+            f"Examples: {cycle_examples[:5]}. "
+            f"This typically indicates a bug in the canonicalization step that "
+            f"produced circular hasChild edges."
         )
 
 

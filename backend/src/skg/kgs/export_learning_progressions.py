@@ -520,10 +520,8 @@ def _compute_local_subject_key(*, ctx: ExportContext, node_id: str) -> str:
             break
 
         nxt = ctx.parent_by_child.get(cur)
-
         if nxt == cur:  # Self-loop guard
             break
-
         cur = nxt
 
     # Build label-based key parts (grade-insensitive).
@@ -650,10 +648,15 @@ def _compute_topic_path_key(*, ctx: ExportContext, node_id: str) -> str:
 
     chain: list[str] = []
     cur: Optional[str] = node_id
+    seen: set[str] = set()
 
-    while cur and cur != ctx.root_id:
+    while cur and cur != ctx.root_id and cur not in seen:
+        seen.add(cur)
         chain.append(cur)
-        cur = ctx.parent_by_child.get(cur)
+        nxt = ctx.parent_by_child.get(cur)
+        if nxt == cur:  # self-loop guard
+            break
+        cur = nxt
 
     chain.reverse()  # root -> ... -> node
 
