@@ -782,7 +782,9 @@ def merge_graph_bundles(
     included_graph_types: list[str] = []
 
     for b in bundles:
-        included_graph_types.append(str(b.get("graph_type", "")))
+        gt = str(b.get("graph_type", "")).strip()
+        if gt:
+            included_graph_types.append(gt)
 
         for n in b.get("nodes", []) or []:
             nid = str(n["id"])
@@ -845,12 +847,24 @@ def merge_graph_bundles(
             else:
                 rels_by_id[rid] = r
 
+    # Compute a correct merged graph_type from what was actually merged.
+    included_unique = sorted(set(included_graph_types))
+    preferred_order = [
+        "academic_standards",
+        "learning_components",
+        "learning_progressions",
+    ]
+    ordered = [t for t in preferred_order if t in included_unique] + sorted(
+        set(included_unique) - set(preferred_order)
+    )
+    merged_graph_type = "_plus_".join(ordered) if ordered else ""
+
     return {
         "doc_key": doc_key,
         "export_dialect": export_dialect,
         "generated_at": generated_at,
-        "graph_type": "academic_standards_plus_learning_components",
-        "included_graph_types": sorted(set(included_graph_types)),
+        "graph_type": merged_graph_type,
+        "included_graph_types": included_unique,
         "nodes": list(nodes_by_id.values()),
         "relationships": list(rels_by_id.values()),
     }
