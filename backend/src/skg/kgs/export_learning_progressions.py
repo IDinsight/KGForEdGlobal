@@ -2365,9 +2365,7 @@ def export_learning_progressions(
         s.case_identifier_uuid: s for s in sfis
     }
 
-    # Gate LLM judging on both the boolean flag and progression_sources membership (the
-    # config validator enforces consistency, but this keeps the exporter robust if
-    # config objects are constructed programmatically).
+    # Gate LLM judging on both the boolean flag and progression_sources membership.
     llm_enabled = bool(config.progression_llm_enabled) and (
         "llm" in list(getattr(config, "progression_sources", []))
     )
