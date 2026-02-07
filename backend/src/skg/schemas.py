@@ -616,7 +616,6 @@ class CreateKGConfig(BaseSchema):
     )
     export_dialect: ExportDialect = "global_relaxed"
     export_in_language_policy: Literal["default", "source"] = "source"
-    generate_learning_components: bool = True
     generate_progressions: bool = True
     grouping_role_policy: Literal["loose", "whitelist"] = Field(
         default="loose",
