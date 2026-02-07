@@ -112,7 +112,6 @@
 		"case_uri_base": "urn:lc:case:",
 		"descriptor_handling": "export_as_sfi_other",
 		"export_dialect": "global_relaxed",
-		"generate_learning_components": true,
 		"generate_progressions": true,
 		"grouping_role_policy": "whitelist",
 		"grouping_roles_whitelist": [
