@@ -692,7 +692,7 @@ def merge_graph_bundles(
                     logger.error(
                         f"Node ID collision with differing properties: "
                         f"id={nid} "
-                        f"existing_labels={existing.get("labels")} "
+                        f"existing_labels={existing.get('labels')} "
                         f"new_labels={n.get('labels')}"
                     )
                     raise ValueError(

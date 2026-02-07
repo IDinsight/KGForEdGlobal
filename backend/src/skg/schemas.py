@@ -701,7 +701,7 @@ class CreateKGConfig(BaseSchema):
     overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
     progression_allow_cross_subject: bool = Field(
         default=False,
-        description="If true, allow progression edges across different academic_subject values.",
+        description="If true, allow progression edges across local subject buckets.",
     )
     progression_candidate_pool_size_per_node: int = Field(
         default=25,
