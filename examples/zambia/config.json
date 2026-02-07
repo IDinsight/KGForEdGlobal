@@ -163,7 +163,7 @@
 		],
 		"progression_llm_enabled": false,
 		"progression_llm_top_n_candidates": 5,
-		"progression_min_confidence": 0.7,
+		"progression_min_confidence": 0.85,
 		"progression_only_adjacent_levels": true,
 		"progression_sources": [
 			"inferred"

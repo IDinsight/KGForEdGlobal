@@ -1375,7 +1375,7 @@ class LearningProgressionProvenance(BaseSchema):
     confidence: float = Field(ge=0.0, le=1.0)
     evidence_node_ids: list[str] = Field(default_factory=list)
     explanation: Optional[str] = None
-    inference_source: Literal["progression_ir", "llm"]
+    inference_source: Literal["inferred", "llm"]
     granularity: Literal["coarse", "fine"] = "coarse"
     llm_model: Optional[str] = Field(default=None)
     relationship_identifier: UUID
