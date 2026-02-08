@@ -263,7 +263,6 @@ CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
 CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
     role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)
 }
-CurriculumRelationshipTypes = Literal["hasEducationalAlignment"]
 NonArtifacts = {
     "abbreviations and acronyms",
     "acknowledgements",
@@ -278,4 +277,3 @@ NonArtifacts = {
     "table of contents",
 }
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
-RelationshipTypes = Literal["hasChild", "supports", "buildsTowards", "relatesTo"]
