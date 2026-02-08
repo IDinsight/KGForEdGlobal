@@ -135,7 +135,6 @@
 		"lc_max_splits_per_standard": 10,
 		"learning_component_policy": "split_bullets",
 		"license": "All rights reserved (source PDF)",
-		"max_progression_edges_per_node": 5,
 		"model": "gpt-5.2-2025-12-11",
 		"non_grouping_role_handling": "drop",
 		"non_standard_columns_signature": [
@@ -152,22 +151,6 @@
 			"by_columns_signature"
 		],
 		"overwrite": false,
-		"progression_allow_cross_subject": false,
-		"progression_candidate_pool_size_per_node": 25,
-		"progression_enforce_dag_builds_towards": true,
-		"progression_granularity": "fine",
-		"progression_inference_modules": [
-			"grade_order",
-			"scope_sequence",
-			"code_pattern"
-		],
-		"progression_llm_enabled": false,
-		"progression_llm_top_n_candidates": 5,
-		"progression_min_confidence": 0.85,
-		"progression_only_adjacent_levels": true,
-		"progression_sources": [
-			"inferred"
-		],
 		"provider": "IDinsight | Learning Commons",
 		"prune_empty_groupings": true
 	}

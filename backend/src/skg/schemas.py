@@ -657,7 +657,6 @@ class CreateKGConfig(BaseSchema):
             "a conservative placeholder."
         ),
     )
-    max_progression_edges_per_node: int = Field(default=3, ge=1)
     model: str = Field("gpt-5.2-2025-12-11", description="OpenAI model for KGs.")
     namespace_uuid: UUID = Field(
         default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
@@ -699,58 +698,6 @@ class CreateKGConfig(BaseSchema):
         ),
     )
     overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
-    progression_allow_cross_subject: bool = Field(
-        default=False,
-        description="If true, allow progression edges across local subject buckets.",
-    )
-    progression_candidate_pool_size_per_node: int = Field(
-        default=25,
-        description=(
-            "Max number of candidate targets to keep per source node after candidate "
-            "generation + blocking, before optional LLM judging and final filtering."
-        ),
-        ge=1,
-    )
-    progression_enforce_dag_builds_towards: bool = Field(
-        default=True,
-        description="If true, break cycles in buildsTowards by removing lowest-confidence edges.",
-    )
-    progression_granularity: Literal["coarse", "fine", "auto"] = "auto"
-    progression_inference_modules: list[
-        Literal[
-            "grade_order",
-            "stage_order",
-            "scope_sequence",
-            "code_pattern",
-        ]
-    ] = Field(
-        default=["grade_order", "scope_sequence", "code_pattern"],
-        description="Enabled inference modules used to generate candidate progression edges.",
-    )
-    progression_llm_enabled: bool = Field(
-        default=False,
-        description="If true, run an LLM judge over a bounded candidate set to classify/refine edges.",
-    )
-    progression_llm_top_n_candidates: int = Field(
-        default=5,
-        description="Per source node, number of top candidates to send to the LLM judge.",
-        ge=1,
-    )
-    progression_min_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
-    progression_only_adjacent_levels: bool = Field(
-        default=True,
-        description=(
-            "If true, inference modules may only connect adjacent grade/stage levels "
-            "(e.g., Grade 1 -> Grade 2)."
-        ),
-    )
-    progression_sources: list[Literal["inferred", "llm"]] = Field(
-        default=["inferred"],
-        description=(
-            "Sources used to produce progression edges. Default is purely inferred. "
-            "Add 'llm' to enable optional LLM judging of inferred candidates."
-        ),
-    )
     provider: str = Field(
         description=(
             "Provider/host name for the exported KG dataset (often the organization/product). "
@@ -843,48 +790,6 @@ class CreateKGConfig(BaseSchema):
                 "guidance_handling/descriptor_handling='attach_to_expectation_metadata' "
                 "requires aux_statement_parenting='under_expectation' so aux statements "
                 "can be anchored to the most recent expectation during export."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_progression_config(self) -> CreateKGConfig:
-        """Validate that progression-related config options are consistent.
-
-        Returns
-        -------
-        CreateKGConfig
-            The validated CreateKGConfig object.
-
-        Raises
-        ------
-        ValueError
-            If progression-related config options are inconsistent (e.g., LLM judge
-            enabled but not included in progression_sources, or 'inferred' not included
-            in progression_sources).
-        """
-
-        if not self.generate_progressions:
-            return self
-
-        # Ensure inferred is always present (LLM is a judge, not a standalone
-        # generator).
-        if "inferred" not in self.progression_sources:
-            raise ValueError(
-                "progression_sources must include 'inferred' (LLM is optional and bounded)."
-            )
-
-        # If LLM judge enabled, require 'llm' in progression_sources.
-        if self.progression_llm_enabled and "llm" not in self.progression_sources:
-            raise ValueError(
-                "progression_llm_enabled=True requires 'llm' in progression_sources."
-            )
-
-        # If 'llm' is listed but judge disabled, either allow it as a no-op or fail
-        # fast.
-        if (not self.progression_llm_enabled) and ("llm" in self.progression_sources):
-            raise ValueError(
-                "progression_sources includes 'llm' but progression_llm_enabled is False."
             )
 
         return self
