@@ -230,7 +230,7 @@ def _build_academic_standards_graph_bundle(
     config: CreateKGConfig,
     ctx: ExportContext,
 ) -> dict[str, Any]:
-    """Build a single Neo4j-friendly graph bundle JSON.
+    """Build a single graph bundle JSON.
 
     - Nodes: StandardsFramework + StandardsFrameworkItem
     - Relationships: HAS_CHILD (from Relationships export)
@@ -249,7 +249,7 @@ def _build_academic_standards_graph_bundle(
     Returns
     -------
     dict[str, Any]
-        The Neo4j-friendly graph bundle dictionary.
+        The graph bundle dictionary.
     """
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -261,8 +261,8 @@ def _build_academic_standards_graph_bundle(
         for idx, child_id in enumerate(child_ids):
             order_index_by_edge[(parent_id, child_id)] = idx
 
-    # Nodes: use case_identifier_uuid as the Neo4j node key since relationships already
-    # key off case_identifier_uuid.
+    # Nodes: use case_identifier_uuid as the node key since relationships already key
+    # off case_identifier_uuid.
     fw = academic_standards.framework
     nodes: list[dict[str, Any]] = [
         {
@@ -281,7 +281,7 @@ def _build_academic_standards_graph_bundle(
             }
         )
 
-    # Relationships: reuse Relationship export, but convert to Neo4j edge shape and add
+    # Relationships: reuse Relationship export, but convert to edge shape and add
     # order_index.
     relationships: list[dict[str, Any]] = []
 
@@ -295,7 +295,7 @@ def _build_academic_standards_graph_bundle(
         relationships.append(
             {
                 "id": str(r.identifier),
-                "type": "HAS_CHILD",  # Neo4j relationship type
+                "type": "HAS_CHILD",
                 "start": start_id,
                 "end": end_id,
                 "properties": props,

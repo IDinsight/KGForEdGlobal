@@ -32,6 +32,91 @@ MetadataT = dict[str, Any]
 ValidationLevel = Literal["error", "warning", "info"]
 
 
+# Schemas for LLM responses.
+class ProgressionEdge(BaseSchema):
+    """A single suggested edge between two StandardsFrameworkItems."""
+
+    confidence: float = Field(
+        description="0..1 calibrated confidence (higher = more certain).",
+        ge=0.0,
+        le=1.0,
+    )
+    rationale: str = Field(
+        description="Brief rationale for the edge (>= 50 chars).",
+        min_length=50,
+    )
+    source_sfi_uuid: str = Field(description="UUID string of the source SFI.")
+    target_sfi_uuid: str = Field(description="UUID string of the target SFI.")
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def _strip_rationale(cls, v: Any) -> str:
+        """Strip whitespace and validate that rationale is a string of at least 50
+        characters.
+
+        Parameters
+        ----------
+        v
+            The input value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped rationale string.
+
+        Raises
+        ------
+        ValueError
+            If the rationale is not a string or is less than 50 characters after
+            stripping.
+        """
+
+        s = str(v or "").strip()
+
+        if len(s) < 50:
+            raise ValueError("rationale must be >= 50 characters")
+
+        return s
+
+    @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
+    @classmethod
+    def _strip_uuid_str(cls, v: Any) -> str:
+        """Strip whitespace and validate that the value is a non-empty string for UUID
+        fields.
+
+        Parameters
+        ----------
+        v
+            The input value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+
+        Raises
+        ------
+        ValueError
+            If the input value is None or an empty string after stripping.
+        """
+
+        if v is None:
+            raise ValueError("UUID cannot be null")
+
+        s = str(v).strip()
+
+        if not s:
+            raise ValueError("UUID cannot be empty")
+
+        return s
+
+
+class ProgressionEdgesResponse(BaseSchema):
+    """Top-level structured response: a list of edges (may be empty)."""
+
+    edges: list[ProgressionEdge] = Field(default_factory=list)
+
+
 # Schemas for nodes.
 class StandardsFramework(BaseSchema):
     """Root node for a standards framework (typically one per PDF).

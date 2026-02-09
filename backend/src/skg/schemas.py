@@ -585,6 +585,10 @@ class CreateKGConfig(BaseSchema):
             "in `global_relaxed`, free-form values are allowed."
         ),
     )
+    always_double_check_first_attempt: bool = Field(
+        False,
+        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
+    )
     attribution_statement: str = Field(
         description=(
             "Attribution text required to credit the original publisher/owner "
@@ -698,6 +702,32 @@ class CreateKGConfig(BaseSchema):
         ),
     )
     overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
+    progressions_builds_towards_min_confidence: float = Field(
+        default=0.60,
+        description="Minimum confidence to emit buildsTowards relationships.",
+        ge=0.0,
+        le=1.0,
+    )
+    progressions_cross_grade_builds_towards: bool = True
+    progressions_cross_grade_relates_to: bool = True
+    progressions_relates_to_max_edges_per_sfi: int = Field(
+        default=3,
+        ge=0,
+        description="Cap the number of relatesTo edges per SFI (undirected cap).",
+    )
+    progressions_relates_to_min_confidence: float = Field(
+        default=0.80,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
+    )
+    progressions_within_grade_builds_towards: bool = True
+    progressions_within_grade_relates_to: bool = False
+    progressions_within_grade_relates_to_max_items_per_subject: int = Field(
+        default=5,
+        ge=1,
+        description="Within-grade relatesTo: max sampled Standards per subject (keeps LLM calls bounded).",
+    )
     provider: str = Field(
         description=(
             "Provider/host name for the exported KG dataset (often the organization/product). "

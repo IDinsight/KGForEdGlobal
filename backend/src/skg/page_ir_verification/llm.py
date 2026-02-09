@@ -363,8 +363,8 @@ def verify_page_ir_pairs(
 
             # If possible, we should try to add the assistant's context here too, but
             # standard Python Exceptions won't carry the model output unless we wrap
-            # them in _call_openai_api_for_page_ir_extraction. For now, we proceed with
-            # the Error feedback.
+            # them in _call_openai_api_for_page_ir_verification. For now, we proceed
+            # with the Error feedback.
             input_items.append(
                 {
                     "role": "user",
