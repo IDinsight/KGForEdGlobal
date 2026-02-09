@@ -744,11 +744,17 @@ class CreateKGConfig(BaseSchema):
     )
 
     progressions_within_grade_builds_towards: bool = True
-    progressions_within_grade_relates_to: bool = True
+    progressions_within_grade_relates_to: bool = Field(
+        default=True,
+        description=(
+            "Enable within-grade relatesTo inference (cross-subject only). "
+            "Threads within the same subject are skipped to reduce noise."
+        ),
+    )
     progressions_within_grade_relates_to_max_items_per_subject: int = Field(
         default=5,
+        description="Within-grade relatesTo (cross-subject only): max sampled standards per subject (keeps LLM calls bounded).",
         ge=1,
-        description="Within-grade relatesTo: max sampled Standards per subject (keeps LLM calls bounded).",
     )
 
     provider: str = Field(

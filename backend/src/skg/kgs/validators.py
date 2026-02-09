@@ -58,8 +58,9 @@ def validate_cross_grade_relates_to(
     allowed_hi
         The set of allowed SFI UUIDs for the upper grade.
     forbidden_pairs
-        The set of (source_uuid, target_uuid) pairs that are not allowed (e.g because
-        they already have a buildsTowards relationship).
+        The set of undirected (uuid_a, uuid_b) pairs that are not allowed (e.g.,
+        because they already have a buildsTowards relationship). Pairs are
+        canonicalized by sorting the two UUID strings.
 
     Raises
     ------
@@ -83,7 +84,10 @@ def validate_cross_grade_relates_to(
                 "upper-grade item."
             )
 
-        if (e.source_sfi_uuid, e.target_sfi_uuid) in forbidden_pairs:
+        # Treat forbidden_pairs as undirected (canonicalized pairs).
+        a, b = sorted([e.source_sfi_uuid, e.target_sfi_uuid])
+
+        if (a, b) in forbidden_pairs:
             raise QualityError("Edge is in forbidden_pairs (already buildsTowards).")
 
 
