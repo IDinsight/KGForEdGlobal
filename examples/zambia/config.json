@@ -156,6 +156,8 @@
 		"progressions_cross_grade_builds_towards": true,
 		"progressions_cross_grade_relates_to": true,
 		"progressions_cross_grade_relates_to_max_items_per_subject": 10,
+		"progressions_cross_stage_builds_towards": false,
+		"progressions_cross_stage_relates_to": false,
 		"progressions_relates_to_max_edges_per_sfi": 3,
 		"progressions_relates_to_min_confidence": 0.85,
 		"progressions_within_grade_builds_towards": true,
