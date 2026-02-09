@@ -34,7 +34,7 @@
 	},
 	"canonical_ir": {
 		"always_double_check_first_attempt": true,
-		"canonical_grouping_min_confidence": 0.80,
+		"canonical_grouping_min_confidence": 0.8,
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
@@ -101,11 +101,12 @@
 			],
 			"violation_policy": "flag_unresolved"
 		},
-		"structural_leaf_warn_threshold": 0.60
+		"structural_leaf_warn_threshold": 0.6
 	},
 	"kgs": {
 		"academic_subject_default": "Multiple Subjects",
 		"adoption_status": "Adopted",
+		"always_double_check_first_attempt": true,
 		"attribution_statement": "© Ministry of Education (Zambia), 2024. Source: LOWER PRIMARY EDUCATION SYLLABI GRADE 1–3 (2024).",
 		"author": "Ministry of Education (Zambia)",
 		"aux_statement_parenting": "under_expectation",
@@ -151,6 +152,14 @@
 			"by_columns_signature"
 		],
 		"overwrite": false,
+		"progressions_builds_towards_min_confidence": 0.7,
+		"progressions_cross_grade_builds_towards": true,
+		"progressions_cross_grade_relates_to": true,
+		"progressions_relates_to_max_edges_per_sfi": 3,
+		"progressions_relates_to_min_confidence": 0.85,
+		"progressions_within_grade_builds_towards": true,
+		"progressions_within_grade_relates_to": true,
+		"progressions_within_grade_relates_to_max_items_per_subject": 5,
 		"provider": "IDinsight | Learning Commons",
 		"prune_empty_groupings": true
 	}
