@@ -709,10 +709,15 @@ class CreateKGConfig(BaseSchema):
         le=1.0,
     )
     progressions_cross_grade_builds_towards: bool = True
+    progressions_cross_grade_relates_to_max_items_per_subject: int = Field(
+        default=10,
+        description="Cross-grade relatesTo: max sampled Standards per subject per grade.",
+        ge=1,
+    )
     progressions_cross_grade_relates_to: bool = True
     progressions_relates_to_max_edges_per_sfi: int = Field(
         default=3,
-        ge=0,
+        ge=1,
         description="Cap the number of relatesTo edges per SFI (undirected cap).",
     )
     progressions_relates_to_min_confidence: float = Field(
@@ -721,13 +726,15 @@ class CreateKGConfig(BaseSchema):
         le=1.0,
         description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
     )
+
     progressions_within_grade_builds_towards: bool = True
-    progressions_within_grade_relates_to: bool = False
+    progressions_within_grade_relates_to: bool = True
     progressions_within_grade_relates_to_max_items_per_subject: int = Field(
         default=5,
         ge=1,
         description="Within-grade relatesTo: max sampled Standards per subject (keeps LLM calls bounded).",
     )
+
     provider: str = Field(
         description=(
             "Provider/host name for the exported KG dataset (often the organization/product). "
