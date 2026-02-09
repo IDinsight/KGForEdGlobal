@@ -34,7 +34,11 @@ from loguru import logger
 # Package Library
 from skg.kgs.export_academic_standards import AcademicStandardsExport
 from skg.kgs.llm import infer_progression_edges
-from skg.kgs.schemas import Relationship, StandardsFrameworkItem
+from skg.kgs.schemas import (
+    ProgressionEdgesResponse,
+    Relationship,
+    StandardsFrameworkItem,
+)
 from skg.kgs.utils import ExportContext, KGDirs
 from skg.kgs.validators import (
     validate_cross_grade_builds_towards,
@@ -81,6 +85,45 @@ class LearningProgressionsExport:
     graph_bundle: dict[str, Any]
     relates_to_relationships: list[Relationship]
     report: dict[str, Any]
+
+
+def _best_map(
+    resp: ProgressionEdgesResponse,
+) -> dict[tuple[UUID, UUID], tuple[float, str]]:
+    """Extract the best confidence and rationale for each canonicalized pair of UUIDs
+    regardless of edge direction, to facilitate bidirectional confirmation of relatesTo
+    edges between the two levels.
+
+    Parameters
+    ----------
+    resp
+        The response from the infer_progression_edges call, containing a list of edges
+        with source and target UUIDs, confidence scores, and rationales.
+
+    Returns
+    -------
+    dict[tuple[UUID, UUID], tuple[float, str]]
+        A dictionary mapping canonicalized pairs of UUIDs (as tuples) to their best
+        confidence score and corresponding rationale found in the response edges,
+        regardless of the direction of the edge (source -> target or target -> source).
+        This allows for easy comparison of confidence scores for the same pair of SFIs
+        across the lo -> hi and hi -> lo runs to confirm bidirectional relatesTo
+        relationships.
+    """
+
+    best: dict[tuple[UUID, UUID], tuple[float, str]] = {}
+
+    for ee in resp.edges:
+        u1 = _uuid(ee.source_sfi_uuid)
+        u2 = _uuid(ee.target_sfi_uuid)
+        a, b = _canon_uuid_pair(u1, u2)
+        c = float(ee.confidence)
+        r = str(ee.rationale or "")
+
+        if (a, b) not in best or c > best[(a, b)][0]:
+            best[(a, b)] = (c, r)
+
+    return best
 
 
 def _build_learning_progressions_graph_bundle(
@@ -292,6 +335,79 @@ def _build_relationship(
     )
 
 
+def _build_sfi_index(
+    *, by_grade: dict[str, list[dict[str, Any]]]
+) -> dict[str, dict[str, Any]]:
+    """Build a lookup table of SFI UUID -> context/provenance hints.
+
+    This is used to enrich emitted Relationship.metadata so downstream consumers can
+    reason about edges without having to join back to the source node payloads.
+
+    Parameters
+    ----------
+    by_grade
+        Dictionary mapping grade labels to lists of bucket dictionaries, where each
+        bucket contains information about a thread of standards within that grade, and
+        each thread contains items that represent individual StandardsFrameworkItems
+        with their UUIDs and other contextual information.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        A dictionary mapping SFI UUIDs (as strings) to dictionaries of context and
+        provenance hints, such as grade label, subject label, topic path, statement
+        code, and page index. This index allows for quick lookup of relevant
+        information about an SFI when processing inferred relationships, enabling the
+        enrichment of Relationship.metadata with details about the source and target
+        SFIs without needing to reference the full node payloads.
+    """
+
+    index: dict[str, dict[str, Any]] = {}
+
+    for grade_label, grade_buckets in (by_grade or {}).items():
+        for b in grade_buckets or []:
+            for it in b.get("items") or []:
+                u = str(it.get("sfi_uuid") or "").strip()
+
+                if not u or u in index:
+                    continue
+
+                index[u] = {
+                    "grade_label": grade_label,
+                    "subject_label": b.get("subject_label"),
+                    "topic_path_key": b.get("topic_path_key"),
+                    "normalized_topic_path_key": b.get("normalized_topic_path_key"),
+                    "topic_path": b.get("topic_path"),
+                    "statement_code": it.get("statement_code"),
+                    "page_index": it.get("page_index"),
+                    "order_index_within_parent": it.get("order_index_within_parent"),
+                }
+
+    return index
+
+
+def _canon_uuid_pair(a: UUID, b: UUID) -> tuple[UUID, UUID]:
+    """Return (min_uuid, max_uuid) using UUID.int ordering.
+
+    Parameters
+    ----------
+    a
+        The first UUID to compare and order.
+    b
+        The second UUID to compare and order.
+
+    Returns
+    -------
+    tuple[UUID, UUID]
+        A tuple containing the two UUIDs ordered by their integer value, with the
+        smaller (earlier) UUID first and the larger (later) UUID second. This is used
+        for canonicalizing pairs of UUIDs in undirected relationships like relatesTo,
+        where the order of source and target does not matter.
+    """
+
+    return (a, b) if a.int <= b.int else (b, a)
+
+
 def _compute_expected_phase1_calls(by_grade: dict[str, list[dict[str, Any]]]) -> int:
     """Count and log expected LLM calls for phase 1.
 
@@ -441,10 +557,11 @@ def _compute_expected_phase3_calls(
                     phase3_calls += 1
 
     logger.info(
-        f"{phase3_calls} within-grade cross-subject pairs for relatesTo inference."
+        f"{phase3_calls} within-grade cross-subject pairs for relatesTo inference "
+        f"(bidirectional confirmation => {phase3_calls * 2} LLM calls)."
     )
 
-    return phase3_calls
+    return phase3_calls * 2
 
 
 def _compute_expected_phase4_calls(
@@ -501,6 +618,10 @@ def _compute_expected_phase4_calls(
 
     total = cross_grade_calls + cross_stage_calls
 
+    # Bidirectional confirmation doubles the number of LLM calls per (subject,
+    # adjacent-level) pair.
+    total_calls = total * 2
+
     if config.progressions_cross_grade_relates_to:
         logger.info(
             f"{cross_grade_calls} adjacent single-grade pairs for cross-grade relatesTo inference."
@@ -510,7 +631,7 @@ def _compute_expected_phase4_calls(
             f"{cross_stage_calls} adjacent level pairs for cross-stage relatesTo inference."
         )
 
-    return total
+    return total_calls
 
 
 def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
@@ -775,6 +896,7 @@ def _infer_cross_grade_builds_towards(
                     llm_confidence=float(e.confidence),
                     inference_type=inference_type,
                     metadata={
+                        "phase": 2,
                         "lower_level_label": lo_label,
                         "upper_level_label": hi_label,
                         "lower_level_low": lo_lo,
@@ -889,19 +1011,16 @@ def _infer_cross_grade_relates_to(
                 inference_type = "cross_stage_relates_to"
                 prompt_builder = cross_stage_relates_to
 
-            current_call += 1
-            logger.info(
-                f"Phase 4 Progress: {current_call}/{total_calls} "
-                f"({subject_label}: {lower['level_label']} -> {upper['level_label']} | {inference_type})"
-            )
-
             forbidden_pairs_set, forbidden_pairs = _resolve_forbidden_pairs(
                 forbidden_builds_pairs=forbidden_builds_pairs,
                 lower_items=lower_items,
                 upper_items=upper_items,
             )
 
-            prompt = prompt_builder(
+            # Bidirectional confirmation: run lo→hi and hi→lo (swapped prompt inputs),
+            # then keep only edges that appear in both runs (canonicalized by UUID
+            # order).
+            prompt_lo_hi = prompt_builder(
                 forbidden_pairs=forbidden_pairs,
                 lower_grade_label=str(lower["level_label"]),
                 lower_items=lower_items,
@@ -911,11 +1030,17 @@ def _infer_cross_grade_relates_to(
                 upper_items=upper_items,
             )
 
-            resp = infer_progression_edges(
+            current_call += 1
+            logger.info(
+                f"Phase 4 Progress: {current_call}/{total_calls} "
+                f"({subject_label}: {lower['level_label']} -> {upper['level_label']} | {inference_type} | lo→hi)"
+            )
+
+            resp_lo_hi = infer_progression_edges(
                 always_double_check_first_attempt=config.always_double_check_first_attempt,
-                instructions=prompt.system_message,
+                instructions=prompt_lo_hi.system_message,
                 model=config.model,
-                user_message=prompt.user_message,
+                user_message=prompt_lo_hi.user_message,
                 validator=partial(
                     validate_cross_grade_relates_to,
                     allowed_lo={str(it["sfi_uuid"]) for it in lower_items},
@@ -924,14 +1049,62 @@ def _infer_cross_grade_relates_to(
                 ),
             )
 
-            for e in resp.edges:
+            prompt_hi_lo = prompt_builder(
+                forbidden_pairs=forbidden_pairs,
+                lower_grade_label=str(upper["level_label"]),
+                lower_items=upper_items,
+                max_edges_per_sfi=max_edges_per_sfi,
+                subject_label=subject_label,
+                upper_grade_label=str(lower["level_label"]),
+                upper_items=lower_items,
+            )
+
+            current_call += 1
+            logger.info(
+                f"Phase 4 Progress: {current_call}/{total_calls} "
+                f"({subject_label}: {lower['level_label']} -> {upper['level_label']} | {inference_type} | hi→lo)"
+            )
+
+            resp_hi_lo = infer_progression_edges(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
+                instructions=prompt_hi_lo.system_message,
+                model=config.model,
+                user_message=prompt_hi_lo.user_message,
+                validator=partial(
+                    validate_cross_grade_relates_to,
+                    allowed_lo={str(it["sfi_uuid"]) for it in upper_items},
+                    allowed_hi={str(it["sfi_uuid"]) for it in lower_items},
+                    forbidden_pairs=forbidden_pairs_set,
+                ),
+            )
+
+            m_lo_hi = _best_map(resp_lo_hi)
+            m_hi_lo = _best_map(resp_hi_lo)
+            common_pairs = sorted(
+                (set(m_lo_hi.keys()) & set(m_hi_lo.keys())),
+                key=lambda p: (p[0].int, p[1].int),
+            )
+
+            for a, b in common_pairs:
+                conf_lo_hi, rat_lo_hi = m_lo_hi[(a, b)]
+                conf_hi_lo, rat_hi_lo = m_hi_lo[(a, b)]
+                conf = min(conf_lo_hi, conf_hi_lo)
+
                 ce = CandidateEdge(
-                    confidence=float(e.confidence),
-                    evidence={"rationale": e.rationale},
+                    confidence=float(conf),
+                    evidence={
+                        "rationale_lo_hi": rat_lo_hi,
+                        "rationale_hi_lo": rat_hi_lo,
+                        "confidence_lo_hi": float(conf_lo_hi),
+                        "confidence_hi_lo": float(conf_hi_lo),
+                        "bidirectional_confirmed": True,
+                    },
                     inference_source="llm",
-                    llm_confidence=float(e.confidence),
+                    llm_confidence=float(conf),
                     inference_type=inference_type,
                     metadata={
+                        "phase": 4,
+                        "bidirectional_confirmed": True,
                         "subject_label": subject_label,
                         "lower_level_label": lower["level_label"],
                         "upper_level_label": upper["level_label"],
@@ -941,21 +1114,26 @@ def _infer_cross_grade_relates_to(
                         "upper_level_high": hi_high,
                     },
                     rel_type="relatesTo",
-                    source_sfi_uuid=_uuid(e.source_sfi_uuid),
-                    target_sfi_uuid=_uuid(e.target_sfi_uuid),
+                    source_sfi_uuid=a,
+                    target_sfi_uuid=b,
                 )
                 candidates.append(ce)
                 provenance_rows.append(
                     {
+                        "phase": 4,
+                        "bidirectional_confirmed": True,
                         "confidence": ce.confidence,
+                        "confidence_lo_hi": float(conf_lo_hi),
+                        "confidence_hi_lo": float(conf_hi_lo),
                         "subject_label": subject_label,
                         "lower_level": lower["level_label"],
                         "upper_level": upper["level_label"],
-                        "rationale": e.rationale,
                         "rel_type": "relatesTo",
                         "source": str(ce.source_sfi_uuid),
                         "target": str(ce.target_sfi_uuid),
                         "inference_type": inference_type,
+                        "rationale_lo_hi": rat_lo_hi,
+                        "rationale_hi_lo": rat_hi_lo,
                     }
                 )
 
@@ -1049,6 +1227,7 @@ def _infer_within_grade_builds_towards(
                     inference_type="within_grade_builds_towards",
                     llm_confidence=float(edge.confidence),
                     metadata={
+                        "phase": 1,
                         "grade_label": grade_label,
                         "subject_label": bucket.get("subject_label"),
                         "topic_path": bucket.get("topic_path"),
@@ -1166,11 +1345,9 @@ def _infer_within_grade_relates_to(
                 if not sampled_a or not sampled_b:
                     continue
 
-                current_call += 1
-                logger.info(
-                    f"Phase 3 Progress: {current_call}/{total_calls} "
-                    f"({grade_label}: {subject_a} x {subject_b})"
-                )
+                # NB: Do not increment current_call here. Phase 3 progress should count
+                # only actual LLM calls (A -> B and B -> A), which are logged below.
+                logger.info(f"Phase 3 Pair: ({grade_label}: {subject_a} × {subject_b})")
 
                 items_a = [
                     {
@@ -1196,7 +1373,9 @@ def _infer_within_grade_relates_to(
                 allowed_a = {str(it["sfi_uuid"]) for it in items_a}
                 allowed_b = {str(it["sfi_uuid"]) for it in items_b}
 
-                prompt = within_grade_relates_to(
+                # Bidirectional confirmation: run A ×B and B×A, then keep only edges
+                # that appear in both runs (canonicalized by UUID order).
+                prompt_ab = within_grade_relates_to(
                     grade_label=str(grade_label),
                     items_a=items_a,
                     items_b=items_b,
@@ -1208,11 +1387,17 @@ def _infer_within_grade_relates_to(
                     thread_b_path=thread_b_path or subject_b,
                 )
 
-                response = infer_progression_edges(
+                current_call += 1
+                logger.info(
+                    f"Phase 3 Progress: {current_call}/{total_calls} "
+                    f"({grade_label}: {subject_a} × {subject_b} | relatesTo | A -> B)"
+                )
+
+                resp_ab = infer_progression_edges(
                     always_double_check_first_attempt=config.always_double_check_first_attempt,
-                    instructions=prompt.system_message,
+                    instructions=prompt_ab.system_message,
                     model=config.model,
-                    user_message=prompt.user_message,
+                    user_message=prompt_ab.user_message,
                     validator=partial(
                         validate_within_grade_relates_to,
                         allowed_uuids_a=allowed_a,
@@ -1220,33 +1405,87 @@ def _infer_within_grade_relates_to(
                     ),
                 )
 
-                for e in response.edges:
+                prompt_ba = within_grade_relates_to(
+                    grade_label=str(grade_label),
+                    items_a=items_b,
+                    items_b=items_a,
+                    max_edges_per_sfi=max_edges_per_sfi,
+                    subject_label=f"{subject_a} × {subject_b}",
+                    thread_a_key=f"subject:{subject_b}",
+                    thread_b_key=f"subject:{subject_a}",
+                    thread_a_path=thread_b_path or subject_b,
+                    thread_b_path=thread_a_path or subject_a,
+                )
+
+                current_call += 1
+                logger.info(
+                    f"Phase 3 Progress: {current_call}/{total_calls} "
+                    f"({grade_label}: {subject_a} × {subject_b} | relatesTo | B -> A)"
+                )
+
+                resp_ba = infer_progression_edges(
+                    always_double_check_first_attempt=config.always_double_check_first_attempt,
+                    instructions=prompt_ba.system_message,
+                    model=config.model,
+                    user_message=prompt_ba.user_message,
+                    validator=partial(
+                        validate_within_grade_relates_to,
+                        allowed_uuids_a=allowed_b,
+                        allowed_uuids_b=allowed_a,
+                    ),
+                )
+
+                m_ab = _best_map(resp_ab)
+                m_ba = _best_map(resp_ba)
+                common_pairs = sorted(
+                    (set(m_ab.keys()) & set(m_ba.keys())),
+                    key=lambda p: (p[0].int, p[1].int),
+                )
+
+                for u_a, u_b in common_pairs:
+                    conf_ab, rat_ab = m_ab[(u_a, u_b)]
+                    conf_ba, rat_ba = m_ba[(u_a, u_b)]
+                    conf = min(conf_ab, conf_ba)
+
                     ce = CandidateEdge(
-                        confidence=float(e.confidence),
-                        evidence={"rationale": e.rationale},
+                        confidence=float(conf),
+                        evidence={
+                            "rationale_ab": rat_ab,
+                            "rationale_ba": rat_ba,
+                            "confidence_ab": float(conf_ab),
+                            "confidence_ba": float(conf_ba),
+                            "bidirectional_confirmed": True,
+                        },
                         inference_source="llm",
                         inference_type="within_grade_cross_subject_relates_to",
-                        llm_confidence=float(e.confidence),
+                        llm_confidence=float(conf),
                         metadata={
+                            "phase": 3,
                             "grade_label": grade_label,
                             "subject_a": subject_a,
                             "subject_b": subject_b,
+                            "bidirectional_confirmed": True,
                         },
                         rel_type="relatesTo",
-                        source_sfi_uuid=_uuid(e.source_sfi_uuid),
-                        target_sfi_uuid=_uuid(e.target_sfi_uuid),
+                        source_sfi_uuid=u_a,
+                        target_sfi_uuid=u_b,
                     )
                     candidates.append(ce)
                     provenance_rows.append(
                         {
+                            "phase": 3,
+                            "bidirectional_confirmed": True,
                             "confidence": ce.confidence,
+                            "confidence_ab": float(conf_ab),
+                            "confidence_ba": float(conf_ba),
                             "grade_label": grade_label,
-                            "rationale": e.rationale,
                             "rel_type": "relatesTo",
                             "source": str(ce.source_sfi_uuid),
+                            "target": str(ce.target_sfi_uuid),
                             "subject_a": subject_a,
                             "subject_b": subject_b,
-                            "target": str(ce.target_sfi_uuid),
+                            "rationale_ab": rat_ab,
+                            "rationale_ba": rat_ba,
                         }
                     )
 
@@ -1580,7 +1819,10 @@ def _prepare_subject_grade_samples(
 
 
 def _process_and_filter_candidates(
-    *, candidates: list[CandidateEdge], config: CreateKGConfig
+    *,
+    candidates: list[CandidateEdge],
+    config: CreateKGConfig,
+    sfi_index: Optional[dict[str, dict[str, Any]]] = None,
 ) -> tuple[list[Relationship], list[Relationship], dict[str, int]]:
     """Process candidates: dedupe, filter by confidence, limit, and convert.
 
@@ -1590,6 +1832,10 @@ def _process_and_filter_candidates(
         The complete list of raw candidate edges from all inference phases.
     config
         The knowledge graph run configuration.
+    sfi_index
+        An optional index mapping SFI UUIDs to their corresponding data, which can be
+        used to enrich the metadata of the final relationships if needed. The structure
+        is expected to be {sfi_uuid: {"description": str, "statement_code": str, ...}}.
 
     Returns
     -------
@@ -1647,6 +1893,11 @@ def _process_and_filter_candidates(
                 "inference_type": e.inference_type,
             }
         )
+
+        if sfi_index:
+            metadata["source_sfi_context"] = sfi_index.get(str(e.source_sfi_uuid))
+            metadata["target_sfi_context"] = sfi_index.get(str(e.target_sfi_uuid))
+
         builds_relationships.append(
             _build_relationship(
                 config=config,
@@ -1667,6 +1918,11 @@ def _process_and_filter_candidates(
                 "inference_type": e.inference_type,
             }
         )
+
+        if sfi_index:
+            metadata["source_sfi_context"] = sfi_index.get(str(e.source_sfi_uuid))
+            metadata["target_sfi_context"] = sfi_index.get(str(e.target_sfi_uuid))
+
         relates_relationships.append(
             _build_relationship(
                 config=config,
@@ -1881,19 +2137,14 @@ def _resolve_forbidden_pairs(
     -------
     tuple[set[tuple[str, str]], list[dict[str, Any]]]
         A tuple containing:
-            1. A set of tuples, where each tuple consists of two strings representing
-                the UUIDs of SFIs that are forbidden from being connected by a
-                buildsTowards relationship in the current inference step. The UUIDs in
-                each tuple are ordered as (lower_sfi_uuid, upper_sfi_uuid) based on
-                their respective grade levels.
-            2. A list of dictionaries, where each dictionary represents a forbidden
-                pair of SFIs with keys "a_sfi_uuid" and "b_sfi_uuid" corresponding to
-                the UUIDs of the lower and upper SFIs, respectively. This list is
-                intended for inclusion in the LLM prompt to explicitly inform the model
-                of pairs that should not be connected in the current inference step,
-                helping to reduce false positives by providing negative examples of
-                buildsTowards relationships that have been ruled out based on prior
-                inference results.
+        1. A set of tuples, where each tuple consists of two strings representing the
+           UUIDs of SFIs that are forbidden from being connected by a buildsTowards
+           relationship in the current inference step. The UUIDs in each tuple are
+           ordered lexicographically to ensure consistency.
+        2. A list of dictionaries, where each dictionary represents a forbidden pair of
+           SFIs with keys "a_sfi_uuid" and "b_sfi_uuid" corresponding to the UUIDs of
+           the two SFIs in the pair. This list is sorted by the UUID pairs for stable
+           output and can be used for reporting or debugging purposes.
     """
 
     allowed_lo = {str(it["sfi_uuid"]) for it in lower_items}
@@ -1903,9 +2154,13 @@ def _resolve_forbidden_pairs(
     for s, t in forbidden_builds_pairs:
         ss, tt = str(s), str(t)
 
-        if ss in allowed_lo and tt in allowed_hi:
-            forbidden_pairs_set.add((ss, tt))
-            forbidden_pairs_set.add((tt, ss))
+        # Record forbidden pairs as *undirected* canonicalized UUID string tuples.
+        # Canonicalization is by string sort to match validator behavior.
+        if (ss in allowed_lo and tt in allowed_hi) or (
+            ss in allowed_hi and tt in allowed_lo
+        ):
+            a, b = sorted([ss, tt])
+            forbidden_pairs_set.add((a, b))
 
     forbidden_pairs_list = [
         {"a_sfi_uuid": a, "b_sfi_uuid": b} for a, b in sorted(forbidden_pairs_set)
@@ -2050,6 +2305,7 @@ def export_learning_progressions(
     by_grade: dict[str, list[dict[str, Any]]] = buckets_info.get("by_grade") or {}
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
+    sfi_index = _build_sfi_index(by_grade=by_grade)
 
     # Phase 1: Within-grade buildsTowards.
     p1_candidates, p1_prov = _infer_within_grade_builds_towards(
@@ -2081,7 +2337,7 @@ def export_learning_progressions(
 
     # Dedupe, filter, limit, and emit final relationships, and gather stats for the report.
     builds_rels, relates_rels, stats = _process_and_filter_candidates(
-        candidates=candidates, config=config
+        candidates=candidates, config=config, sfi_index=sfi_index
     )
 
     # Write artifacts.
