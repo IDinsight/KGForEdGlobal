@@ -160,6 +160,123 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
     )
 
 
+def cross_stage_builds_towards(
+    *,
+    lower_grade_label: str,
+    lower_items: list[dict[str, Any]],
+    normalized_thread_key: str,
+    thread_path: str,
+    upper_grade_label: str,
+    upper_items: list[dict[str, Any]],
+) -> DotMap:
+    """Cross-stage buildsTowards between non-adjacent grades within a normalized
+    thread.
+
+    This is a more exploratory prompt to identify potential "long-range" dependencies
+    that might be missed in the adjacent-grade prompt. The model should be encouraged
+    to identify strong dependencies even if they skip intermediate grades, but should
+    not be forced to invent edges if the progression is more linear.
+
+    Parameters
+    ----------
+    lower_grade_label
+        The label of the lower grade (e.g., "Grade 3").
+    lower_items
+        The list of items from the lower grade.
+    normalized_thread_key
+        The normalized thread key that both grades share (e.g., "math_geometry_shapes").
+    thread_path
+        The human-readable thread path for context (e.g., "Mathematics > Geometry >
+        Shapes").
+    upper_grade_label
+        The label of the upper grade (e.g., "Grade 5").
+    upper_items
+        The list of items from the upper grade.
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    p = cross_grade_builds_towards(
+        lower_items=lower_items,
+        lower_grade_label=lower_grade_label,
+        normalized_thread_key=normalized_thread_key,
+        thread_path=thread_path,
+        upper_grade_label=upper_grade_label,
+        upper_items=upper_items,
+    )
+
+    # Add one strong sentence so the model does not assume these are single grades.
+    p.system_message = (
+        p.system_message
+        + "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), not single grades. Treat this as adjacent level *ranges*; do not invent per-grade steps."
+    )
+    return p
+
+
+def cross_stage_relates_to(
+    *,
+    forbidden_pairs: list[dict[str, str]],
+    lower_grade_label: str,
+    lower_items: list[dict[str, Any]],
+    max_edges_per_sfi: int,
+    subject_label: str,
+    upper_grade_label: str,
+    upper_items: list[dict[str, Any]],
+) -> DotMap:
+    """Cross-stage relatesTo between non-adjacent grades within a subject, excluding
+    buildsTowards pairs.
+
+    This is a more exploratory prompt to identify potential "long-range" connections
+    that might be missed in the adjacent-grade prompt. The model should be encouraged
+    to identify strong connections even if they skip intermediate grades, but should
+    not be forced to invent edges if the connections are weak or superficial.
+
+    Parameters
+    ----------
+    forbidden_pairs
+        A list of item pairs (dicts with "lower_sfi_uuid" and "upper sfi_uuid") that
+        are already connected by buildsTowards and MUST NOT be returned as relatesTo.
+    lower_grade_label
+        The label of the lower grade (e.g., "Grade 3").
+    lower_items
+        The list of items from the lower grade.
+    max_edges_per_sfi
+        A soft cap on the number of relatesTo edges per item to keep the graph sparse.
+    subject_label
+        The subject label for context (e.g., "Mathematics").
+    upper_grade_label
+        The label of the upper grade (e.g., "Grade 5").
+    upper_items
+        The list of items from the upper grade.
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    p = cross_grade_relates_to(
+        forbidden_pairs=forbidden_pairs,
+        lower_grade_label=lower_grade_label,
+        lower_items=lower_items,
+        max_edges_per_sfi=max_edges_per_sfi,
+        subject_label=subject_label,
+        upper_grade_label=upper_grade_label,
+        upper_items=upper_items,
+    )
+
+    # Add one strong sentence so the model does not assume these are single grades.
+    p.system_message = (
+        p.system_message
+        + "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), not single grades. "
+        "Only emit relatesTo when the overlap is genuinely useful for teaching across these adjacent levels."
+    )
+    return p
+
+
 def double_check_learning_progressions() -> DotMap:
     """Extra user message to trigger a careful second pass.
 

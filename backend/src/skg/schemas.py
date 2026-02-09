@@ -715,6 +715,22 @@ class CreateKGConfig(BaseSchema):
         ge=1,
     )
     progressions_cross_grade_relates_to: bool = True
+    progressions_cross_stage_builds_towards: bool = Field(
+        default=False,
+        description=(
+            "Cross-grade buildsTowards fallback: if either adjacent level bucket is "
+            "banded (low != high), infer buildsTowards across adjacent level ranges "
+            "(e.g., I–II -> III–VI)."
+        ),
+    )
+    progressions_cross_stage_relates_to: bool = Field(
+        default=False,
+        description=(
+            "Cross-grade relatesTo fallback: if either adjacent level bucket is banded "
+            "(low!=high), infer relatesTo across adjacent level ranges "
+            "(e.g., I–II <-> III–VI)."
+        ),
+    )
     progressions_relates_to_max_edges_per_sfi: int = Field(
         default=3,
         ge=1,
