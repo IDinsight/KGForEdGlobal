@@ -14,7 +14,7 @@ def cross_grade_builds_towards(
     *,
     lower_grade_label: str,
     lower_items: list[dict[str, Any]],
-    normalized_thread_key: str,
+    thread_key: str,
     thread_path: str,
     upper_grade_label: str,
     upper_items: list[dict[str, Any]],
@@ -27,8 +27,8 @@ def cross_grade_builds_towards(
         The label of the lower grade (e.g., "Grade 3").
     lower_items
         The list of items from the lower grade.
-    normalized_thread_key
-        The normalized thread key that both grades share (e.g., "math_geometry_shapes").
+    thread_key
+        The normalized thread key for context (e.g., "math_geometry_shapes").
     thread_path
         The human-readable thread path for context (e.g., "Mathematics > Geometry >
         Shapes").
@@ -67,7 +67,7 @@ CONFIDENCE:
         {
             "lower_grade_label": lower_grade_label,
             "upper_grade_label": upper_grade_label,
-            "normalized_thread_key": normalized_thread_key,
+            "thread_key": thread_key,
             "thread_path": thread_path,
             "lower_grade_items": lower_items,
             "upper_grade_items": upper_items,
@@ -164,7 +164,7 @@ def cross_stage_builds_towards(
     *,
     lower_grade_label: str,
     lower_items: list[dict[str, Any]],
-    normalized_thread_key: str,
+    thread_key: str,
     thread_path: str,
     upper_grade_label: str,
     upper_items: list[dict[str, Any]],
@@ -183,8 +183,8 @@ def cross_stage_builds_towards(
         The label of the lower grade (e.g., "Grade 3").
     lower_items
         The list of items from the lower grade.
-    normalized_thread_key
-        The normalized thread key that both grades share (e.g., "math_geometry_shapes").
+    thread_key
+        The normalized thread key for context (e.g., "math_geometry_shapes").
     thread_path
         The human-readable thread path for context (e.g., "Mathematics > Geometry >
         Shapes").
@@ -202,7 +202,7 @@ def cross_stage_builds_towards(
     p = cross_grade_builds_towards(
         lower_items=lower_items,
         lower_grade_label=lower_grade_label,
-        normalized_thread_key=normalized_thread_key,
+        thread_key=thread_key,
         thread_path=thread_path,
         upper_grade_label=upper_grade_label,
         upper_items=upper_items,

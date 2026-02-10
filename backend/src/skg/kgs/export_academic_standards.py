@@ -876,6 +876,7 @@ def _emit_sfi(
             "stage_key": stage_key,
             "stage_ordinal_low": stage_low,
             "stage_ordinal_high": stage_high,
+            "thread_key": _normalize_thread_key(topic_path_key=topic_path_key),
             "topic_path_key": topic_path_key,
             "topic_path_parts": topic_path_parts,  # For debugging
             "canon_order_path": canon_order_path,
@@ -1095,6 +1096,53 @@ def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
         return "Standard Grouping"
 
     return "Other"
+
+
+def _normalize_thread_key(topic_path_key: str | None) -> str | None:
+    """Normalize a topic_path_key into a cross-level "thread" key.
+
+    Many curricula number topics/subtopics in their labels (e.g., "1.1 Exploring My
+    World", "2.5 Weather"). topic_path_key intentionally *excludes* grade/stage roles
+    so that it can be used for threading, but those numeric prefixes may still be
+    embedded in the keyified label itself (e.g., `topic=1_1_exploring_my_world`).
+
+    This normalization strips leading numeric-underscore prefixes from each segment's
+    value (e.g., ``1_1_``), producing a more stable thread key across levels.
+
+    NB:
+
+    1. This is *not* country-specific; it targets a common numbering pattern.
+    2. If a segment value becomes empty after stripping (rare), it falls back to the
+      original value.
+
+    Parameters
+    ----------
+    topic_path_key
+        The original topic_path_key to normalize.
+
+    Returns
+    -------
+    str | None
+        The normalized thread key, or None if the input key is None or results in no
+        valid segments after normalization.
+    """
+
+    if not topic_path_key:
+        return None
+
+    out_parts: list[str] = []
+
+    for seg in str(topic_path_key).split("|"):
+        if "=" not in seg:
+            continue
+
+        role, value = seg.split("=", 1)
+        v = str(value)
+        v_norm = re.sub(r"^(?:\d+_)+", "", v)
+        v_norm = v_norm if v_norm else v
+        out_parts.append(f"{role}={v_norm}")
+
+    return "|".join(out_parts) if out_parts else None
 
 
 def _parse_code_features(*, code: str, grade_ordinal_low: int | None) -> dict[str, Any]:

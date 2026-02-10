@@ -59,7 +59,6 @@ from skg.utils.general import write_to_json
 
 # Compiled regexes.
 GRADE_INT_RE = re.compile(r"\b(\d+)\b")
-LEADING_GRADE_PREFIX_RE = re.compile(r"^(?:\d+_)+")  # Strips 1_ or 1_2_ etc.
 
 
 @dataclass(frozen=True)
@@ -85,6 +84,36 @@ class LearningProgressionsExport:
     graph_bundle: dict[str, Any]
     relates_to_relationships: list[Relationship]
     report: dict[str, Any]
+
+
+def _allow_within_grade_inference(
+    *, bucket: dict[str, Any], config: CreateKGConfig
+) -> bool:
+    """Return True if Phase 1/3 within-grade inference should consider this bucket.
+
+    By default, we only run within-grade inference for single-grade buckets. If
+    progressions_within_grade_allow_banded_levels=True, banded/stage buckets are
+    allowed.
+
+    Parameters
+    ----------
+    bucket
+        The bucket dictionary containing information about a thread of standards within
+        a grade, which may include grade bounds and other contextual information.
+    config
+        The knowledge graph run configuration.
+
+    Returns
+    -------
+    bool
+        True if within-grade inference should be allowed for this bucket based on the
+        configuration and whether it represents a single grade or a banded level.
+    """
+
+    if config.progressions_within_grade_allow_banded_levels:
+        return True
+
+    return _is_single_grade_bucket(bucket)
 
 
 def _best_map(
@@ -212,69 +241,6 @@ def _build_learning_progressions_graph_bundle(
     }
 
 
-def _build_norm_map(
-    by_grade: dict[str, list[dict[str, Any]]],
-) -> dict[str, list[dict[str, Any]]]:
-    """Helper to organize buckets by normalized thread key and level-range order.
-
-    For cross-level inference we need to handle both:
-      - single-grade buckets (low==high) for true cross-grade adjacency, and
-      - banded buckets (low!=high) for cross-stage adjacency.
-
-    The returned mapping groups buckets by normalized thread key and sorts them by
-    (grade_ordinal_low, grade_ordinal_high).
-
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that grade.
-
-    Returns
-    -------
-    dict[str, list[dict[str, Any]]]
-        A dictionary mapping normalized thread keys to lists of bucket dictionaries,
-        where each list is sorted by (grade_ordinal_low, grade_ordinal_high) to
-        facilitate cross-grade and cross-stage buildsTowards inference. Buckets without
-        integer grade bounds are skipped and counted for logging purposes.
-    """
-
-    norm_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    skipped_no_bounds = 0
-
-    for grade_buckets in by_grade.values():
-        for b in grade_buckets:
-            lo, hi = _level_bounds(b)
-            if not isinstance(lo, int) or not isinstance(hi, int):
-                skipped_no_bounds += 1
-                continue
-
-            norm_key = str(
-                b.get("normalized_topic_path_key")
-                or normalize_thread_key(str(b.get("topic_path_key") or ""))
-            )
-            norm_map[norm_key].append(b)
-
-    for k in list(norm_map.keys()):
-        norm_map[k] = sorted(
-            norm_map[k],
-            key=lambda b: (
-                int(_level_bounds(b)[0] or 10**9),
-                int(_level_bounds(b)[1] or 10**9),
-                str(b.get("topic_path") or ""),
-                str(b.get("topic_path_key") or ""),
-            ),
-        )
-
-    if skipped_no_bounds > 0:
-        logger.warning(
-            f"Skipped {skipped_no_bounds} buckets without integer grade bounds "
-            f"(missing grade/stage ordinal data)."
-        )
-
-    return norm_map
-
-
 def _build_relationship(
     *,
     config: CreateKGConfig,
@@ -377,6 +343,7 @@ def _build_sfi_index(
                     "subject_label": b.get("subject_label"),
                     "topic_path_key": b.get("topic_path_key"),
                     "normalized_topic_path_key": b.get("normalized_topic_path_key"),
+                    "thread_key": b.get("thread_key"),
                     "topic_path": b.get("topic_path"),
                     "statement_code": it.get("statement_code"),
                     "page_index": it.get("page_index"),
@@ -384,6 +351,95 @@ def _build_sfi_index(
                 }
 
     return index
+
+
+def _build_thread_map(
+    by_grade: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Organize buckets by thread key and level-range order.
+
+    For cross-level inference we need to handle both:
+      - single-grade buckets (low==high) for true cross-grade adjacency, and
+      - banded buckets (low!=high) for cross-stage adjacency.
+
+    The returned mapping groups buckets by thread key and sorts them by
+    (grade_ordinal_low, grade_ordinal_high).
+
+    Parameters
+    ----------
+    by_grade
+        Dictionary mapping grade labels to lists of bucket dictionaries, where each
+        bucket contains information about a thread of standards within that grade.
+
+    Returns
+    -------
+    dict[str, list[dict[str, Any]]]
+        A dictionary mapping thread keys to lists of bucket dictionaries, where each
+        list is sorted by (grade_ordinal_low, grade_ordinal_high) to facilitate
+        cross-grade and cross-stage buildsTowards inference. Buckets without integer
+        grade bounds are skipped and counted for logging purposes.
+
+    Raises
+    ------
+    ValueError
+        If any bucket is missing a valid thread key in its progression_context, since
+        the thread key is essential for grouping buckets for cross-grade inference.
+    """
+
+    thread_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    skipped_no_bounds = 0
+    missing_thread_key = 0
+    missing_thread_key_examples: list[str] = []
+
+    for grade_buckets in by_grade.values():
+        for b in grade_buckets:
+            lo, hi = _level_bounds(b)
+
+            if not isinstance(lo, int) or not isinstance(hi, int):
+                skipped_no_bounds += 1
+                continue
+
+            thread_key = b.get("thread_key")
+
+            if not isinstance(thread_key, str) or not thread_key.strip():
+                missing_thread_key += 1
+
+                if len(missing_thread_key_examples) < 3:
+                    missing_thread_key_examples.append(
+                        str(b.get("bucket_key") or b.get("topic_path_key") or "")
+                    )
+
+                continue
+
+            thread_key = thread_key.strip()
+            thread_map[thread_key].append(b)
+
+    for k in list(thread_map.keys()):
+        thread_map[k] = sorted(
+            thread_map[k],
+            key=lambda b: (
+                int(_level_bounds(b)[0] or 10**9),
+                int(_level_bounds(b)[1] or 10**9),
+                str(b.get("topic_path") or ""),
+                str(b.get("topic_path_key") or ""),
+            ),
+        )
+
+    if skipped_no_bounds > 0:
+        logger.warning(
+            f"Skipped {skipped_no_bounds} buckets without integer grade bounds "
+            f"(missing grade/stage ordinal data)."
+        )
+
+    if missing_thread_key > 0:
+        raise ValueError(
+            f"Missing progression_context.thread_key in "
+            f"{missing_thread_key} bucket(s). Re-export Academic Standards so each "
+            f"SFI has metadata.progression_context.thread_key. "
+            f"Examples: {missing_thread_key_examples}"
+        )
+
+    return thread_map
 
 
 def _canon_uuid_pair(a: UUID, b: UUID) -> tuple[UUID, UUID]:
@@ -408,13 +464,17 @@ def _canon_uuid_pair(a: UUID, b: UUID) -> tuple[UUID, UUID]:
     return (a, b) if a.int <= b.int else (b, a)
 
 
-def _compute_expected_phase1_calls(by_grade: dict[str, list[dict[str, Any]]]) -> int:
+def _compute_expected_phase1_calls(
+    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
+) -> int:
     """Count and log expected LLM calls for phase 1.
 
     Parameters
     ----------
     by_grade
         Dictionary mapping grade labels to lists of bucket dictionaries.
+    config
+        The knowledge graph run configuration.
 
     Returns
     -------
@@ -427,7 +487,8 @@ def _compute_expected_phase1_calls(by_grade: dict[str, list[dict[str, Any]]]) ->
         1
         for grade_buckets in by_grade.values()
         for b in grade_buckets
-        if len(b.get("items", [])) >= 2
+        if _allow_within_grade_inference(bucket=b, config=config)
+        and len(b.get("items", [])) >= 2
     )
 
     logger.info(
@@ -438,17 +499,15 @@ def _compute_expected_phase1_calls(by_grade: dict[str, list[dict[str, Any]]]) ->
 
 
 def _compute_expected_phase2_calls(
-    *, config: CreateKGConfig, norm_map: dict[str, list[dict[str, Any]]]
+    *, config: CreateKGConfig, thread_map: dict[str, list[dict[str, Any]]]
 ) -> int:
     """Count and log expected LLM calls for phase 2 based on the normalized thread map.
 
     Parameters
     ----------
     config
-        The knowledge graph run configuration, containing flags for which types of
-        inference are enabled (cross-grade buildsTowards and/or cross-stage
-        buildsTowards).
-    norm_map
+        The knowledge graph run configuration.
+    thread_map
         A nested dictionary mapping normalized thread keys to dictionaries that map
         grade ordinals to their corresponding bucket dictionaries. This structure is
         used to determine how many adjacent grade pairs exist for each thread, which in
@@ -465,7 +524,7 @@ def _compute_expected_phase2_calls(
     cross_grade_calls = 0
     cross_stage_calls = 0
 
-    for buckets in norm_map.values():
+    for buckets in thread_map.values():
         for lower, upper in zip(buckets, buckets[1:]):
             if not _levels_adjacent(lower, upper):
                 continue
@@ -512,8 +571,8 @@ def _compute_expected_phase3_calls(
     -------
     int
         The total number of expected LLM calls for phase 3, which corresponds to the
-        number of cross-subject pairs of threads within each grade that have enough
-        items to be sampled for the LLM prompt.
+        number of cross-subject (subject_a, subject_b) pairs within each grade that
+        have enough sampled items to populate the LLM prompt.
     """
 
     def _sort_key(b: dict[str, Any]) -> tuple[str, str]:
@@ -746,6 +805,29 @@ def _grade_label_and_ordinal(sfi: StandardsFrameworkItem) -> tuple[str, int | No
     metadata = sfi.metadata or {}
     progression_context = metadata.get("progression_context") or {}
     grade_ordinal_low = progression_context.get("grade_ordinal_low")
+    grade_ordinal_high = progression_context.get("grade_ordinal_high")
+
+    # If this SFI belongs to a banded level (low != high), label it as a band/stage.
+    if (
+        isinstance(grade_ordinal_low, int)
+        and isinstance(grade_ordinal_high, int)
+        and grade_ordinal_high != grade_ordinal_low
+    ):
+        parts = progression_context.get("topic_path_parts") or []
+        stage_label = ""
+
+        if isinstance(parts, list):
+            stage_label = next(
+                (
+                    str(p.get("label") or "").strip()
+                    for p in parts
+                    if p.get("role") == "stage" and p.get("label")
+                ),
+                "",
+            )
+
+        label = stage_label or f"GRADES {grade_ordinal_low}–{grade_ordinal_high}"
+        return label, grade_ordinal_low
 
     if isinstance(grade_ordinal_low, int):
         return f"GRADE {grade_ordinal_low}", grade_ordinal_low
@@ -758,6 +840,46 @@ def _grade_label_and_ordinal(sfi: StandardsFrameworkItem) -> tuple[str, int | No
         return label, int(m.group(1)) if m else None
 
     return "UNSPECIFIED_GRADE", None
+
+
+def _group_threads_by_grade_and_subject(
+    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Group threads by grade and subject, filtering invalid items.
+
+    Parameters
+    ----------
+    by_grade
+        Dictionary mapping grade labels to lists of bucket dictionaries, where each
+        bucket contains information about a thread of standards within that grade, and
+        may include a "subject_label" key indicating the subject of the thread.
+    config
+        The knowledge graph run configuration.
+
+    Returns
+    -------
+    dict[str, dict[str, list[dict[str, Any]]]]
+        A nested dictionary mapping grade labels to subject labels to lists of bucket
+        dictionaries, representing the organization of threads by grade and subject for
+        within-grade relatesTo inference. Only buckets that are allowed for
+        within-grade inference based on the configuration (e.g., single-grade buckets
+        if progressions_within_grade_allow_banded_levels=False) are included in the
+        output.
+    """
+
+    grade_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+
+    for grade_label, grade_buckets in by_grade.items():
+        for b in grade_buckets:
+            if not _allow_within_grade_inference(bucket=b, config=config):
+                continue
+
+            subject = str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
+            grade_subject_threads[grade_label][subject].append(b)
+
+    return grade_subject_threads
 
 
 def _infer_cross_grade_builds_towards(
@@ -798,11 +920,11 @@ def _infer_cross_grade_builds_towards(
     ):
         return candidates, provenance_rows, cross_level_build_pairs
 
-    norm_map = _build_norm_map(by_grade)
-    total_calls = _compute_expected_phase2_calls(config=config, norm_map=norm_map)
+    thread_map = _build_thread_map(by_grade)
+    total_calls = _compute_expected_phase2_calls(config=config, thread_map=thread_map)
     current_call = 0
 
-    for norm_key, buckets in norm_map.items():
+    for thread_key, buckets in thread_map.items():
         for b_lo, b_hi in zip(buckets, buckets[1:]):
             if not _levels_adjacent(b_lo, b_hi):
                 continue
@@ -838,7 +960,7 @@ def _infer_cross_grade_builds_towards(
             current_call += 1
             logger.info(
                 f"Phase 2 Progress: {current_call}/{total_calls} "
-                f"({lo_label} -> {hi_label} | {norm_key} | {inference_type})"
+                f"({lo_label} -> {hi_label} | {thread_key} | {inference_type})"
             )
 
             lower_payload = [
@@ -867,7 +989,7 @@ def _infer_cross_grade_builds_towards(
             prompt = prompt_builder(
                 lower_items=lower_payload,
                 lower_grade_label=lo_label,
-                normalized_thread_key=norm_key,
+                thread_key=thread_key,
                 thread_path=str(b_hi.get("topic_path") or b_hi.get("topic_path_key")),
                 upper_grade_label=hi_label,
                 upper_items=upper_payload,
@@ -903,7 +1025,7 @@ def _infer_cross_grade_builds_towards(
                         "lower_level_high": lo_hi,
                         "upper_level_low": hi_lo,
                         "upper_level_high": hi_hi,
-                        "normalized_thread_key": norm_key,
+                        "thread_key": thread_key,
                         "topic_path_key_upper": b_hi.get("topic_path_key"),
                         "topic_path": b_hi.get("topic_path"),
                         "subject_label": b_hi.get("subject_label"),
@@ -918,7 +1040,7 @@ def _infer_cross_grade_builds_towards(
                     {
                         "confidence": ce.confidence,
                         "lower_level": lo_label,
-                        "normalized_thread_key": norm_key,
+                        "thread_key": thread_key,
                         "rationale": e.rationale,
                         "rel_type": "buildsTowards",
                         "source": str(ce.source_sfi_uuid),
@@ -1165,11 +1287,14 @@ def _infer_within_grade_builds_towards(
     if not config.progressions_within_grade_builds_towards:
         return candidates, provenance_rows
 
-    total_calls = _compute_expected_phase1_calls(by_grade)
+    total_calls = _compute_expected_phase1_calls(by_grade=by_grade, config=config)
     current_call = 0
 
     for grade_label, grade_buckets in by_grade.items():
         for bucket in grade_buckets:
+            if not _allow_within_grade_inference(bucket=bucket, config=config):
+                continue
+
             items = bucket.get("items") or []
 
             if len(items) < 2:
@@ -1257,9 +1382,10 @@ def _infer_within_grade_relates_to(
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
     """Perform Phase 3 inference: Within-grade cross-subject relatesTo relationships.
 
-    For each grade, compare threads from *different* subjects to find cross-curricular
-    connections (i.e., the Coherence Map pattern). Threads within the same subject are
-    skipped---those connections are lower value and more likely to produce noise.
+    For each grade, compare *subjects* (not within-subject threads) to find
+    cross-curricular connections (i.e., the Coherence Map pattern). Within-subject
+    relatesTo is skipped---those connections are lower value and more likely to produce
+    noise.
 
     Parameters
     ----------
@@ -1285,13 +1411,9 @@ def _infer_within_grade_relates_to(
     max_edges_per_sfi = int(config.progressions_relates_to_max_edges_per_sfi)
 
     # Group threads by grade -> subject.
-    grade_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
-        lambda: defaultdict(list)
+    grade_subject_threads = _group_threads_by_grade_and_subject(
+        by_grade=by_grade, config=config
     )
-    for grade_label, grade_buckets in by_grade.items():
-        for b in grade_buckets:
-            subject = str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            grade_subject_threads[grade_label][subject].append(b)
 
     total_calls = _compute_expected_phase3_calls(
         grade_subject_threads=grade_subject_threads, max_items=max_items
@@ -2076,8 +2198,8 @@ def _process_single_standard(
                     else grade_ord
                 )
             ),
-            "normalized_topic_path_key": normalize_thread_key(topic_path_key),
             "subject_label": subject_label,
+            "thread_key": progression_context.get("thread_key"),
             "topic_path_key": topic_path_key,
             "topic_path": _path_string(topic_path_parts),
             "topic_path_parts": topic_path_parts,
@@ -2092,6 +2214,7 @@ def _process_single_standard(
         "order_index_within_parent": progression_context.get(
             "order_index_within_parent"
         ),
+        "code_tuple": progression_context.get("code_tuple"),
         "sfi_uuid": sfi_uuid,
         "statement_code": sfi.statement_code,
         "statement_type": sfi.statement_type,
@@ -2222,9 +2345,11 @@ def _sample_items_across_threads(
     return sampled
 
 
-def _sort_key_for_bucket_sfi(s: dict[str, Any]) -> tuple[int, str, str]:
+def _sort_key_for_bucket_sfi(
+    s: dict[str, Any],
+) -> tuple[int, int, tuple[int, ...], str, str]:
     """Stable ordering inside a bucket. Prefer explicit order_index; fall back to
-    statement_code then uuid.
+    numeric code tuple (if available), then statement_code, then uuid.
 
     Parameters
     ----------
@@ -2233,17 +2358,49 @@ def _sort_key_for_bucket_sfi(s: dict[str, Any]) -> tuple[int, str, str]:
 
     Returns
     -------
-    tuple[int, str, str]
-        A tuple containing the order index (or a large default value if not present),
-        the stripped statement code (or an empty string if not present), and the SFI
-        UUID or case identifier UUID (or an empty string if neither is present).
+    tuple[int, int, tuple[int, ...], str, str]
+        A tuple representing the sort key for the given StandardsFrameworkItem,
+        structured as follows:
+        1. An integer representing the order index within the parent context. If the
+           order index is not available or not an integer, a large default value (10^9)
+           is used to ensure it sorts last.
+        2. An integer indicating whether the code tuple is missing (1) or present (0).
+        3. A tuple of integers representing the code tuple extracted from the item. If
+           the code tuple is not available or not valid, a default tuple (10^9,) is
+           used to ensure it sorts last.
+        4. A string representing the statement code, stripped of leading and trailing
+           whitespace.
+        5. A string representing the SFI UUID or case identifier UUID, used as a
+           tiebreaker in sorting.
     """
 
     order_index = s.get("order_index_within_parent")
     order_index = order_index if isinstance(order_index, int) else 10**9
     code = (s.get("statement_code") or "").strip()
 
-    return order_index, code, s.get("sfi_uuid") or s.get("case_identifier_uuid") or ""
+    # Prefer numeric tuple ordering over lexicographic string ordering.
+    ct = s.get("code_tuple")
+    code_tuple: tuple[int, ...] | None = None
+
+    if isinstance(ct, list) and ct and all(isinstance(x, int) for x in ct):
+        code_tuple = tuple(ct)
+    elif isinstance(ct, list) and ct and all(isinstance(x, str) for x in ct):
+        # Defensive: if upstream ever stores numeric segments as strings.
+        try:
+            code_tuple = tuple(int(x) for x in ct)
+        except Exception:  # pylint: disable=broad-except
+            code_tuple = None
+
+    if code_tuple is None and code:
+        # Fallback: parse any digits from statement_code (e.g., "3.9.4.1" -> (3,9,4,1)).
+        nums = [int(x) for x in re.findall(r"\d+", code)]
+        code_tuple = tuple(nums) if nums else None
+
+    missing_code_tuple = 1 if code_tuple is None else 0
+    code_tuple_key = code_tuple if code_tuple is not None else (10**9,)
+    uuid_key = s.get("sfi_uuid") or s.get("case_identifier_uuid") or ""
+
+    return order_index, missing_code_tuple, code_tuple_key, code, uuid_key
 
 
 def _uuid(x: str) -> UUID:
@@ -2457,40 +2614,3 @@ def group_standards_for_learning_progressions(
         )
 
     return _format_learning_progressions_dict(buckets=buckets, drops=drops)
-
-
-def normalize_thread_key(topic_path_key: str) -> str:
-    """Normalize a topic_path_key by stripping leading digit_ prefixes from each
-    segment value.
-
-    Example:
-      topic=1_1_exploring_my_world -> topic=exploring_my_world
-
-    Parameters
-    ----------
-    topic_path_key
-        The original topic_path_key string to normalize.
-
-    Returns
-    -------
-    str
-        The normalized topic_path_key string with leading digit_ prefixes removed from
-         each segment value.
-    """
-
-    parts = []
-
-    for seg in str(topic_path_key or "").split("|"):
-        if "=" not in seg:
-            parts.append(seg)
-            continue
-
-        k, v = seg.split("=", 1)
-        v2 = str(v)
-
-        if LEADING_GRADE_PREFIX_RE.match(v2):
-            v2 = LEADING_GRADE_PREFIX_RE.sub("", v2)
-
-        parts.append(f"{k}={v2}")
-
-    return "|".join(parts)

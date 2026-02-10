@@ -742,7 +742,15 @@ class CreateKGConfig(BaseSchema):
         le=1.0,
         description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
     )
-
+    progressions_within_grade_allow_banded_levels: bool = Field(
+        default=False,
+        description=(
+            "If false (default), Phase 1 and Phase 3 'within-grade' inference only runs "
+            "on single-level buckets where grade_ordinal_low == grade_ordinal_high. "
+            "If true, allow within-grade inference to also run on banded/stage buckets "
+            "(low != high), e.g., 'Std I–II'."
+        ),
+    )
     progressions_within_grade_builds_towards: bool = True
     progressions_within_grade_relates_to: bool = Field(
         default=True,
@@ -756,7 +764,6 @@ class CreateKGConfig(BaseSchema):
         description="Within-grade relatesTo (cross-subject only): max sampled standards per subject (keeps LLM calls bounded).",
         ge=1,
     )
-
     provider: str = Field(
         description=(
             "Provider/host name for the exported KG dataset (often the organization/product). "
