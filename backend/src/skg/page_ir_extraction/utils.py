@@ -205,12 +205,12 @@ def persist_extraction_run(
         doc_key=doc_key, output_dir=config.output_dir
     )
     exclude_keys = {"model", "overwrite"}
+    extra = {
+        k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys
+    }
+    extra["doc_key"] = doc_key
     extraction_run = RunCtx(
-        extra={
-            k: v
-            for k, v in config.model_dump(mode="json").items()
-            if k not in exclude_keys
-        },
+        extra=extra,
         models=[config.model],
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
