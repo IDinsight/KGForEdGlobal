@@ -1,4 +1,4 @@
-"""This module contains functionalities related to validating Lesson Progression KG
+"""This module contains functionalities related to validating Learning Progressions KG
 information.
 """
 
