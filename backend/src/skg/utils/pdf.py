@@ -220,7 +220,7 @@ def extract_text_layer_hints(
     for b in (b for b in blocks if b["type"] == 0):
         for line in b["lines"]:
             # Merge spans to get full line text and max font size.
-            text = " ".join("".join(s["text"] for s in line["spans"]).split())
+            text = " ".join(" ".join(s["text"] for s in line["spans"]).split())
             if not text:
                 continue
             size = max((s["size"] for s in line["spans"]), default=0)
@@ -266,6 +266,7 @@ def extract_text_layer_hints(
             output.append(
                 f"COLUMN_X0_PEAKS_PX={', '.join(f'{p * sx:.1f}' for p in peaks)}"
             )
+            output.extend(["LIKELY_MULTI_COLUMN_OR_TABLE=true"] * (len(peaks) >= 2))
 
     # 6.
     add_section_for_text_hint(

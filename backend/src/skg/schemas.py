@@ -420,7 +420,7 @@ class SpineConfig(BaseSchema):
         description="Human-readable spine template name (e.g., 'zambia_competence_tables').",
     )
     normalize: SpineNormalizeConfig = Field(
-        default_factory=SpineNormalizeConfig,
+        default_factory=SpineNormalizeConfig,  # type: ignore[arg-type]
         description="Deterministic normalization knobs.",
     )
     outer_context_roles: list[NodeRole] = Field(
@@ -887,8 +887,8 @@ class RunConfig(BaseSchema):
     page_ir_extraction: ExtractionConfig
     page_ir_verification: VerificationConfig
     document_ir: StitchingConfig
-    canonical_ir: CreateCanonicalConfig
-    kgs: CreateKGConfig
+    canonical_ir: Optional[CreateCanonicalConfig] = None
+    kgs: Optional[CreateKGConfig] = None
 
 
 class RunCtx(BaseSchema):

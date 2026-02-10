@@ -1,4 +1,5 @@
 repos:
+# Generic file checks
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0  # Use the revision sha / tag you want to point at
   hooks:
@@ -6,15 +7,6 @@ repos:
       args: [ "--unsafe" ]
     - id: end-of-file-fixer
     - id: trailing-whitespace
-
-# Black
--   repo: https://github.com/psf/black
-    rev: 25.9.0  # Use the revision sha / tag you want to point at
-    hooks:
-    - id: black
-      additional_dependencies: ["toml"]
-      files: ^(src|tests)/.*\.py$
-      language_version: python3.13
 
 # Detect secrets
 -   repo: https://github.com/Yelp/detect-secrets
@@ -24,50 +16,64 @@ repos:
         args: ['--baseline', '.secrets.baseline']
         exclude: '(frontend/pnpm-lock\.yaml|\.template\.env$)'
 
-# Env variables
+# Local hooks (scripts + Python linters/formatters).
+#
+# NB: All Python linters use `language: system` so they run from the project venv
+# (backend/.venv) and share the exact same tool versions as CI. Versions are pinned
+# once in backend/pyproject.toml---no more drift between pre-commit and CI.
+#
+# NB: We use `uv run --project backend` to execute tools using the backend environment
+# while keeping the execution root at the repo root so file paths align.
 - repo: local
   hooks:
-    -   id: env-template-sync
-        entry: python scripts/tools/check_env_template.py
-        name: Ensure .template.env and .env matches each other
-        language: python
-        pass_filenames: false
+    # Custom scripts
+    - id: env-template-sync
+      name: Ensure .template.env and .env matches each other
+      entry: uv run --project backend python scripts/tools/check_env_template.py
+      language: system
+      pass_filenames: false
 
-# Isort
--   repo: https://github.com/pycqa/isort
-    rev: 6.1.0  # Use the revision sha / tag you want to point at
-    hooks:
-    -   id: isort
-        args: ["--profile", "black"]
-        additional_dependencies: ["toml"]
-        files: ^(src|tests)/.*\.py$
+    # Formatters (auto-fix)
+    - id: black
+      name: black
+      entry: uv run --project backend black
+      language: system
+      types: [python]
+      files: ^backend/(src|tests)/.*\.py$
 
-# Interrogate
--   repo: https://github.com/econchick/interrogate
-    rev: 1.7.0 # Use the revision sha / tag you want to point at
-    hooks:
-      - id: interrogate
-        args: [--fail-under=100, -v]
-        exclude: (^|/)__init__\.py$
-        files: ^(src|tests)/.*\.py$
+    - id: isort
+      name: isort
+      entry: uv run --project backend isort
+      language: system
+      types: [python]
+      files: ^backend/(src|tests)/.*\.py$
 
-# Mypy
--   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.18.2
-    hooks:
-    - id: mypy
-      additional_dependencies:
-        - pydantic[mypy]
-        - types-aiofiles
-        - types-pyyaml
-        - types-requests
-      args: [--explicit-package-bases, --ignore-missing-imports, --show-error-codes]
-      files: ^(src|tests)/.*\.py$
-
-# Ruff
-- repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.13.3 # Use the revision sha / tag you want to point at
-  hooks:
+    # Linters
     - id: ruff
-      args: [--fix, --exit-non-zero-on-fix]
-      files: ^(src|tests)/.*\.py$
+      name: ruff
+      entry: uv run --project backend ruff check --fix --exit-non-zero-on-fix
+      language: system
+      types: [python]
+      files: ^backend/(src|tests)/.*\.py$
+
+    - id: interrogate
+      name: interrogate
+      entry: uv run --project backend interrogate -v
+      language: system
+      types: [python]
+      files: ^backend/(src|tests)/.*\.py$
+      exclude: (^|/)__init__\.py$
+
+    - id: mypy
+      name: mypy
+      entry: uv run --project backend mypy --explicit-package-bases --ignore-missing-imports --show-error-codes
+      language: system
+      types: [python]
+      files: ^backend/(src|tests)/.*\.py$
+
+    - id: pylint
+      name: pylint
+      entry: uv run --project backend pylint --rcfile=backend/.pylintrc
+      language: system
+      types: [python]
+      files: ^backend/(src|tests)/.*\.py$
