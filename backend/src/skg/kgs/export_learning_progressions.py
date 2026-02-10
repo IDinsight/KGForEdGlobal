@@ -598,7 +598,16 @@ def _compute_expected_phase3_calls(
     phase3_calls = 0
 
     for by_subject in grade_subject_threads.values():
-        subject_keys = sorted(by_subject.keys())
+        # Match Phase 3 runtime filtering in _infer_within_grade_relates_to().
+        # Otherwise the "expected calls" log over-counts by including placeholders.
+        subject_keys = [
+            s
+            for s in sorted(by_subject.keys())
+            if s not in {"UNSPECIFIED_SUBJECT", "UNKNOWN", ""}
+        ]
+
+        if len(subject_keys) < 2:
+            continue
 
         for i, s1 in enumerate(subject_keys):
             for s2 in subject_keys[i + 1 :]:
