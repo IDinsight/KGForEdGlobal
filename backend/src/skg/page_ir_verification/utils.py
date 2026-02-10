@@ -1657,7 +1657,6 @@ def make_verification_excerpt(
 ) -> dict[str, Any]:
     """Create a compact, verification-only excerpt of a PageIR item.
 
-
     Parameters
     ----------
     item

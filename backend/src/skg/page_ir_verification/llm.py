@@ -331,7 +331,7 @@ def verify_page_ir_pairs(
                                 "text": (
                                     f"Your previous output had issues and must be corrected.\n"
                                     f"ERROR: {str(e)}\n\n"
-                                    f"Return a complete PageIR that matches the schema and fixes the issue."
+                                    f"Return a complete PageIRContinuityVerdict that matches the schema and fixes the issue."
                                 ),
                             }
                         ],
