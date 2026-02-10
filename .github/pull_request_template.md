@@ -27,7 +27,7 @@ Fill with `x` for completed.
 (Delete any items below that are not relevant)
 
 - [ ] I have updated the test suite
-- [ ] I have updated requirements
+- [ ] I have updated dependencies
 - [ ] I have updated affected documentation (including READMEs)
 - [ ] I have updated scripts in `.github/`
 - [ ] I have updated CDK stacks

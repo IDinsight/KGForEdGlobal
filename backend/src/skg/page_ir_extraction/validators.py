@@ -13,7 +13,7 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.page_ir_extraction.schemas import PageIR, Table, TextUnit
+from skg.page_ir_extraction.schemas import FigureUnit, PageIR, Table, TextUnit
 from skg.page_ir_extraction.utils import (
     derive_boundary_state_from_items,
     is_full_page_bbox,
@@ -80,6 +80,35 @@ class QualityError(Exception):
         super().__init__(message)
 
         self.failed_content = failed_content
+
+
+def _validate_figure_caption(fig: FigureUnit, index: int) -> None:
+    """Validate figure caption constraints.
+
+    Parameters
+    ----------
+    fig
+        The figure unit to validate.
+    index
+        The index of the figure in items.
+
+    Raises
+    ------
+    QualityError
+        If the figure caption is invalid.
+    """
+
+    if fig.caption is not None:
+        validate_text_en_is_none(
+            text=fig.caption, where_=f"items[{index}].figure.caption"
+        )
+        cap = (fig.caption.text or "").strip()
+
+        if not cap:
+            raise QualityError(
+                f"Whitespace-only figure.caption at items[{index}].figure.caption; "
+                f"set caption=null or extract the real caption text."
+            )
 
 
 def _validate_single_table(*, index: int, table: Table) -> None:
@@ -372,6 +401,47 @@ def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> N
             raise QualityError(
                 f"Figure block must have list_items=null at items[{i}].list_items."
             )
+
+        fig = item.figure
+
+        # Require a non-empty alt_text for every FIGURE block. We want *some* surface
+        # description for provenance/searchability, even if generic.
+        alt = (fig.alt_text or "").strip()
+
+        if not alt:
+            raise QualityError(
+                f"Figure block must have a non-empty figure.alt_text at "
+                f"items[{i}].figure.alt_text. Provide a short surface description "
+                f"(e.g., 'bar chart', 'geometry diagram with labels', 'illustration of ...')."
+            )
+
+        # Enforce extraction rule: no translations during extraction (caption is
+        # already checked elsewhere, but keeping figure-related checks together is
+        # useful).
+        _validate_figure_caption(fig=fig, index=i)
+
+        if fig.embedded_text is not None:
+            validate_text_en_is_none(
+                text=fig.embedded_text, where_=f"items[{i}].figure.embedded_text"
+            )
+
+            # If embedded_text exists, contains_text should be true (not null).
+            if fig.contains_text is not True:
+                raise QualityError(
+                    f"Figure has embedded_text but contains_text is not true at "
+                    f"items[{i}].figure.contains_text. Set contains_text=true when "
+                    f"you provide embedded_text."
+                )
+
+            emb = (fig.embedded_text.text or "").strip()
+
+            if not emb:
+                raise QualityError(
+                    f"Figure contains_text=true but embedded_text is empty/whitespace at "
+                    f"items[{i}].figure.embedded_text. If there is visible text inside "
+                    f"the figure region, populate embedded_text with best-effort verbatim text. "
+                    f"If there is no visible text, set contains_text=false and embedded_text=null."
+                )
 
 
 def validate_footnote_blocks_are_plausible(ctx: PageIRExtractionQualityCtx) -> None:

@@ -27,16 +27,18 @@
 1. Install [direnv](https://direnv.net/docs/installation.html).
 2. If you are using `zsh`, then add `eval "$(direnv hook zsh)` to the end of your `~/.zshrc` file. If you are using `bash`, then add `eval "$(direnv hook bash)"` to the end of your `~/.bashrc` (or `~/.bash_profile`) file. Ensure you reload the file by running `source ~/.zshrc` or `source ~/.bashrc` (or `source ~/.bash_profile`).
 3. Install the latest version of [uv](https://docs.astral.sh/uv/) using: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-4. Run `git clone git@github.com:IDinsight/SenegalKG.git` and cd into the root directory of the repo.
-5. In the root `.envrc` file, ensure `PROJECT_ENV` is set to `local`.
-6. Copy the **root** `.template.env` to `.env` and update the following environment variables in `.env`:
+4. Install [pre-commit](https://pre-commit.com/) globally using: `uv tool install pre-commit`
+5. Run `git clone git@github.com:IDinsight/SenegalKG.git` and cd into the root directory of the repo.
+6. Run `pre-commit install` to set up the git hooks.
+7. In the root `.envrc` file, ensure `PROJECT_ENV` is set to `local`.
+8. Copy the **root** `.template.env` to `.env` and update the following environment variables in `.env`:
     1. `OPENAI_API_KEY`: Your OpenAI API key.
     2. `PATHS_PROJECT_DIR`: The absolute path to the root directory of the project.
-7. Copy the **root** `.template.env.local` to `.env.local`.
-8. Allow `direnv` to load the root environment variables by running `direnv allow`.
-9. Create a `data` folder in the root directory. This is where you should place the curriculum PDF files you want to process.
-10. Create a `results` folder in the root directory. This is where the output files for each step in the pipeline will be saved.
-11. cd into the backend directory of the repo and:
+9. Copy the **root** `.template.env.local` to `.env.local`.
+10. Allow `direnv` to load the root environment variables by running `direnv allow`.
+11. Create a `data` folder in the root directory. This is where you should place the curriculum PDF files you want to process.
+12. Create a `results` folder in the root directory. This is where the output files for each step in the pipeline will be saved.
+13. cd into the backend directory of the repo and:
     1. Copy `.template.env.local` to `.env.local`.
     2. Allow `direnv` to load the backend environment variables by running `direnv allow`.
 

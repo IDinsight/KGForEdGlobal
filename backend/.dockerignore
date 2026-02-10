@@ -8,7 +8,6 @@ examples/*.pkl
 .vscode
 
 # Directories
-.husky/
 cicd/
 !cicd/requirements/requirements.txt
 dist/

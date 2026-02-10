@@ -24,6 +24,10 @@ from tenacity import (
 )
 
 # Package Library
+from skg.page_ir_extraction.prompts import (
+    double_check_page_ir_extraction,
+    extract_page_ir_from_pdf_page,
+)
 from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
@@ -43,10 +47,6 @@ from skg.page_ir_extraction.validators import (
     validate_placeholder_bboxes,
     validate_table_integrity,
     validate_table_spans_are_sane,
-)
-from skg.prompts.page_ir_extraction import (
-    double_check_page_ir_extraction,
-    extract_page_ir_from_pdf_page,
 )
 from skg.schemas import Limits
 from skg.utils.constants import BlockType

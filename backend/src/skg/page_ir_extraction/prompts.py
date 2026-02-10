@@ -39,6 +39,9 @@ In particular, ensure that:
 4. Extracted bounding boxes are tight to the content and do not overlap significantly with other items.
 5. Extracted text is verbatim and does not contain hallucinated or invented content.
 6. All items are in correct visual reading order (left-to-right, top-to-bottom).
+7. If you emitted any FIGURE blocks:
+  - figure.alt_text MUST be present and non-empty.
+  - If figure.contains_text=true, figure.embedded_text MUST be present (verbatim).
 
 When you are confident in your answer, return a complete `PageIR` that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made.
         """
@@ -102,7 +105,7 @@ def extract_page_ir_from_pdf_page(
     text_layer_context = (
         ""
         if not text_layer_hints
-        else f"## TEXT LAYER HINTS\n{text_layer_hints}\nNB: Text layer hints are only hints and they may be incomplete. If TEXT LAYER HINTS contain multiple lines of non-header text (paragraph-like), treat the page as a text page unless the image clearly shows the text layer is wrong (e.g., OCR garbage not matching the visible page)."
+        else f"## TEXT LAYER HINTS\n{text_layer_hints}\nNB: Text layer hints are only hints and they may be incomplete. If TEXT LAYER HINTS contain multiple lines of non-header text (paragraph-like), treat the page as a text page unless the image clearly shows the text layer is wrong (e.g., OCR garbage not matching the visible page). If LIKELY_MULTI_COLUMN_OR_TABLE=true OR the page visually shows a grid/columns, you MUST extract a TableItem and use the image to determine rows/columns. Use text-layer hints only to fill cell text accurately."
     )
 
     system_message = dedent(
@@ -250,15 +253,19 @@ def extract_page_ir_from_pdf_page(
   - text=null
   - list_items=null
   - figure = {{
-      "alt_text": VERY short (<=200 chars) non-semantic description (e.g. "flowchart with arrows", "pyramid diagram"),
+      "alt_text": REQUIRED. Non-empty. VERY short (<=200 chars) surface description of what is visually present.
+        - Describe TYPE + key visible elements (e.g., "bar chart with 3 bars labeled A/B/C", "clock face showing 3:00", "flowchart with arrows and 4 labeled boxes", "geometry diagram with triangle and angle labels").
+        - Do NOT interpret purpose/meaning. Do NOT guess content not visible.
       "caption": null OR a TextUnit object ({{"language": "...", "text": "...", "text_en": null}}) ONLY if the caption is clearly inside the figure bbox,
       "contains_text": true/false/null,
       "figure_kind": one of {allowed_figure_kinds},
     }}
   - If you set figure.contains_text=true, you MUST also populate figure.embedded_text with best-effort verbatim text.
   - If you are not extracting embedded text, set figure.contains_text=false.
-2. Do NOT emit a figure for tiny decorative elements (small logos/ornaments) unless they are central content.
-3. Do NOT interpret diagram meanings. Do NOT convert diagram content into prose. Just preserve the region and light hints.
+2. If you emit multiple FIGURE blocks on a page, EACH must have its own non-empty alt_text.
+3. If a figure has a nearby caption extracted as a separate CAPTION block, you STILL must fill figure.alt_text.
+4. Do NOT emit a figure for tiny decorative elements (small logos/ornaments) unless they are central content.
+5. Do NOT interpret diagram meanings. Do NOT convert diagram content into prose. Just preserve the region and light hints.
 
 ## CAPTIONS
 1. If you see a caption like "Figure 2: ..." near a figure, prefer to extract it as its own block_type="caption" item (with text=TextUnit) in reading order.
@@ -280,6 +287,9 @@ Before outputting, verify:
 1. **Anti-Hallucination**: Did you invent text for a blank cell? (Set text: null instead).
 2. **Anti-Full-Page**: If you have exactly ONE item, is it strictly a full-page image/scan? If there is readable body text, you MUST split it into paragraph/heading blocks.
 3. **BBox Validity**: Ensure no bboxes are overlapping significantly or identical (unless nested), and all are within [0, 0, {image_width}, {image_height}].
+4. **Figures Complete**: For every FIGURE block:
+  - figure.alt_text is present and non-empty.
+  - if figure.contains_text=true then figure.embedded_text is present (verbatim).
         """
     )
 
