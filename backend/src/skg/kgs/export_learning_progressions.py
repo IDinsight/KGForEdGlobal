@@ -34,6 +34,14 @@ from loguru import logger
 # Package Library
 from skg.kgs.export_academic_standards import AcademicStandardsExport
 from skg.kgs.llm import infer_progression_edges
+from skg.kgs.prompts import (
+    cross_grade_builds_towards,
+    cross_grade_relates_to,
+    cross_stage_builds_towards,
+    cross_stage_relates_to,
+    within_grade_builds_towards,
+    within_grade_relates_to,
+)
 from skg.kgs.schemas import (
     ProgressionEdgesResponse,
     Relationship,
@@ -45,14 +53,6 @@ from skg.kgs.validators import (
     validate_cross_grade_relates_to,
     validate_within_grade_builds_towards,
     validate_within_grade_relates_to,
-)
-from skg.prompts.learning_progressions import (
-    cross_grade_builds_towards,
-    cross_grade_relates_to,
-    cross_stage_builds_towards,
-    cross_stage_relates_to,
-    within_grade_builds_towards,
-    within_grade_relates_to,
 )
 from skg.schemas import CreateKGConfig
 from skg.utils.general import write_to_json

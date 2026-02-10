@@ -21,6 +21,11 @@ from tenacity import (
 )
 
 # Package Library
+from skg.canonical_ir.prompts import (
+    decide_on_segment,
+    double_check_decision_on_segment,
+    grouping_canonicalization_instructions,
+)
 from skg.canonical_ir.schemas import (
     GroupingCanonicalizationKey,
     GroupingCanonicalizationMap,
@@ -55,11 +60,6 @@ from skg.canonical_ir.validators import (
 )
 from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
-from skg.prompts.canonical_ir import (
-    decide_on_segment,
-    double_check_decision_on_segment,
-    grouping_canonicalization_instructions,
-)
 from skg.schemas import Limits
 from skg.utils.constants import GroupingCanonicalizationAction, SegmentDecisionType
 from skg.utils.general import open_json_type, write_to_json

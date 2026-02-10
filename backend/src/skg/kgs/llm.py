@@ -22,9 +22,9 @@ from tenacity import (
 )
 
 # Package Library
+from skg.kgs.prompts import double_check_learning_progressions
 from skg.kgs.schemas import ProgressionEdgesResponse
 from skg.page_ir_extraction.validators import QualityError
-from skg.prompts.learning_progressions import double_check_learning_progressions
 from skg.schemas import Limits
 
 limits = Limits(max_retry_attempts=10)

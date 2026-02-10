@@ -25,16 +25,16 @@ from tenacity import (
 # Package Library
 from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
+from skg.page_ir_verification.prompts import (
+    double_check_page_ir_verification,
+    verify_page_ir_pairs_from_extraction,
+)
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.page_ir_verification.validators import (
     validate_item_continuation_kind,
     validate_page_continuation_kind,
     validate_repeats_header_logic,
     validate_semantic_flow,
-)
-from skg.prompts.page_ir_verification import (
-    double_check_page_ir_verification,
-    verify_page_ir_pairs_from_extraction,
 )
 from skg.schemas import Limits
 from skg.utils.general import encode_png_to_data_url
