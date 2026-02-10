@@ -1115,6 +1115,9 @@ def _normalize_thread_key(topic_path_key: str | None) -> str | None:
     2. If a segment value becomes empty after stripping (rare), it falls back to the
       original value.
 
+    TODO: Use an LLM to parse out numbering patterns more robustly, especially for
+    non-English labels.
+
     Parameters
     ----------
     topic_path_key
