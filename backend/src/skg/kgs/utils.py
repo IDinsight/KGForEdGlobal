@@ -1,161 +1,216 @@
-"""This module contains utility functions for knowledge graphs."""
+"""This module contains utility functions for creating knowledge graphs."""
 
 # Standard Library
+import hashlib
 import re
 import uuid
 
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
-from uuid import UUID, uuid5
+from typing import Any
 
 # Third Party Library
 from loguru import logger
+from PIL import Image
 
 # Package Library
-from skg.canonical_ir.schemas import CanonicalEdge, CanonicalIR, CanonicalNode
-from skg.kgs.schemas import (
-    GraphValidationReport,
-    KnowledgeGraphConfig,
-    KnowledgeGraphExport,
-    LearningComponent,
-    Relationship,
-    StandardsFramework,
-    StandardsFrameworkItem,
-)
-from skg.page_ir.schemas import TextUnit
-from skg.schemas import RunCtx
-from skg.utils.constants import RelationshipTypes, StatementRole
+from skg.canonical_ir.schemas import CanonicalIR, SegmentDecision
+from skg.schemas import CreateKGConfig, RunCtx
+from skg.utils.constants import StatementRole
 from skg.utils.general import make_dir, write_to_json
 
-_BULLET_LINE_PATTERNS: list[re.Pattern[str]] = [
-    # Common bullet glyphs or simple dash/star bullets.
-    re.compile(r"^\s*[\u2022\u2023\u25E6\u2043\u2219•·\-*–—]\s+(?P<rest>.+?)\s*$"),
-    # Numbered bullets: 1.  2)  3]  4-  etc.
-    re.compile(r"^\s*\d{1,3}\s*[\)\]\.\-:]\s+(?P<rest>.+?)\s*$"),
-    # Letter bullets: a)  b.  C]  etc.
-    re.compile(r"^\s*[A-Za-z]\s*[\)\]\.\-:]\s+(?P<rest>.+?)\s*$"),
-    # Roman numerals: i)  ii.  IV)  etc.
-    re.compile(
-        r"^\s*(?:[ivxlcdm]{1,6}|[IVXLCDM]{1,6})\s*[\)\]\.\-:]\s+(?P<rest>.+?)\s*$"
-    ),
-]
-_REL_TYPE_ORDER: dict[str, int] = {
-    "hasChild": 0,
-    "supports": 1,
-    "buildsTowards": 2,
-    "relatesTo": 3,
-}
-_ROLE_TO_NORMALIZED: dict[StatementRole, str] = {
-    StatementRole.DESCRIPTOR: "Other",
-    StatementRole.EXPECTATION: "Standard",
-    StatementRole.GRADE_LEVEL: "Standard Grouping",
-    StatementRole.GUIDANCE: "Other",
-    StatementRole.SECTION: "Standard Grouping",
-    StatementRole.STRAND: "Standard Grouping",
-    StatementRole.SUBJECT: "Standard Grouping",
-    StatementRole.TOPIC: "Standard Grouping",
-}
-_ROLE_TO_STATEMENT_TYPE: dict[StatementRole, str] = {
-    StatementRole.DESCRIPTOR: "Descriptor",
-    StatementRole.EXPECTATION: "Expectation",
-    StatementRole.GRADE_LEVEL: "Grade Level",
-    StatementRole.GUIDANCE: "Guidance",
-    StatementRole.SECTION: "Section",
-    StatementRole.STRAND: "Strand",
-    StatementRole.SUBJECT: "Subject",
-    StatementRole.TOPIC: "Topic",
-}
-_SFI_TYPE_ORDER: dict[str, int] = {"Standard Grouping": 0, "Standard": 1, "Other": 2}
 
+@dataclass
+class ExportContext:
+    """Internal helper model for KG export: indexes + deterministic helpers."""
 
-@dataclass(frozen=True)
-class CanonicalIRIndex:
-    """Indexed view of a CanonicalIR for deterministic access."""
+    doc_key: str
+    kg_config: CreateKGConfig
+    pdf_name: str
+    root_id: str
 
-    canonical_ir: CanonicalIR
+    # Indexes
     children_by_parent: dict[str, list[str]]
-    parents_by_child: dict[str, list[str]]
-    node_by_id: dict[str, CanonicalNode]
-    report: GraphValidationReport
+    decisions_by_id: dict[str, dict[str, Any]]
+    decisions_by_segment_id: dict[str, dict[str, Any]]
+    nodes_by_id: dict[str, dict[str, Any]]
+    parent_by_child: dict[str, str]
 
+    _needs_order_disambiguator: set[tuple[str, str]] = field(
+        default_factory=set, init=False
+    )
+    edge_metadata_by_pair: dict[tuple[str, str], dict[str, Any]] = field(
+        default_factory=dict
+    )
+    edge_order_index: dict[tuple[str, str], int] = field(default_factory=dict)
 
-@dataclass(frozen=True)
-class CaseIdentifiers:
-    """CASE Identifiers for an entity."""
+    def _infer_language_from_nodes(self) -> str | None:
+        """Infer the primary language from the nodes in the KG.
 
-    uri: str
-    uuid: UUID
+        None
+        Returns
+        -------
+        str | None
+            The inferred language code, or None if not found.
+        """
 
+        for n in self.nodes_by_id.values():
+            for key in ("title", "body"):
+                text_unit_or_none = n.get(key)
 
-@dataclass(frozen=True)
-class EntityMappingResult:
-    """Result of Step 6: CanonicalNode -> LC entities (Framework + SFIs)."""
+                if isinstance(text_unit_or_none, dict):
+                    lang = text_unit_or_none.get("language")
+                    if lang and lang != "und":
+                        return str(lang)
 
-    # Canonical node_ids dropped at mapping time (e.g., empty text).
-    dropped_node_ids: set[str]
-    dropped_node_reasons: dict[str, str]
-    framework: StandardsFramework
-    report: GraphValidationReport
+        return None
 
-    # Node_ids reclassified by the normative safety filter (old_role --> new_role).
-    role_overrides: dict[str, dict[str, str]]
+    def _path_piece(
+        self, *, child_id: str, node: dict[str, Any], parent_id: str
+    ) -> str:
+        """Compute a path piece for a node based on its role, local code, and text.
 
-    # Canonical node_id --> exported SFI identifier (entity identifier).
-    sfi_uuid_by_canonical_id: dict[str, UUID]
+        Parameters
+        ----------
+        child_id
+            The ID of the child node.
+        node
+            The node dictionary containing its attributes.
+        parent_id
+            The ID of the parent node.
 
-    # Canonical node_id --> exported SFI CASE UUID (used for hasChild endpoints).
-    sfi_case_uuid_by_canonical_id: dict[str, UUID]
+        Returns
+        -------
+        str
+            The computed path piece for the node.
+        """
 
-    standards_framework_items: list[StandardsFrameworkItem]
+        role = node["role"]
+        assert role, f"Node {child_id} is missing role in provenance: {node}"
+        code = normalize_ws(str(node.get("local_code") or ""))
 
+        # Build the base piece first (no early returns), then apply order
+        # disambiguation if needed.
+        if role in {item.value for item in StatementRole}:
+            text_for_hash = str(
+                node.get("normalized_text") or node_display_text(node=node)
+            )
+            piece = f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
+        else:
+            label = _slugify(
+                s=str(node.get("normalized_text") or node_display_text(node=node))
+            )
+            piece = f"{role}:{code}:{label}" if code else f"{role}:{label}"
 
-@dataclass(frozen=True)
-class FilteredCanonicalIRIndex:
-    """Filtered view of CanonicalIR suitable for export mapping.
+        if (parent_id, child_id) in self._needs_order_disambiguator:
+            oi = self.edge_order_index.get((parent_id, child_id), 0)
+            piece = f"{piece}~{oi}"
 
-    NB: kept_nodes/edges are the ONLY content allowed to flow into mapping/export.
-    dropped_* includes deterministic reasons for auditing.
-    """
+        return piece
 
-    canonical: Any  # CanonicalIR
-    children_by_parent: dict[str, list[str]]
-    dropped_edges: list[dict[str, Any]]  # edge and reason
-    dropped_node_ids: set[str]
-    dropped_node_reasons: dict[str, str]  # node_id --> reason code
-    kept_edges: list[CanonicalEdge]
-    kept_node_ids: set[str]
-    kept_nodes: list[CanonicalNode]
-    parents_by_child: dict[str, list[str]]
-    report: GraphValidationReport
+    def compute_path_key(self, node_id: str) -> str:
+        """Compute a deterministic path key for a node based on its position in the
+        hierarchy.
 
+        Parameters
+        ----------
+        node_id
+            The ID of the node to compute the path key for.
 
-@dataclass(frozen=True)
-class HasChildBuildResult:
-    """hasChild relationships from CanonicalIR edges."""
+        Returns
+        -------
+        str
+            The computed path key for the node.
+        """
 
-    dropped_edges: list[dict[str, Any]]
-    relationships: list[Relationship]
-    report: GraphValidationReport
+        if node_id == self.root_id:
+            return "framework"
 
+        chain: list[str] = []
+        cur: str | None = node_id
+        seen: set[str] = set()
 
-@dataclass(frozen=True)
-class LCSplitCandidate:
-    """A single LearningComponent split candidate produced from a Standard SFI."""
+        while cur and cur != self.root_id and cur not in seen:
+            seen.add(cur)
+            chain.append(cur)
+            nxt = self.parent_by_child.get(cur)
+            if nxt == cur:  # self-loop guard
+                break
+            cur = nxt
 
-    split_index: int
-    split_key: str
-    text: str
+        chain.reverse()
 
+        parts: list[str] = []
+        parent = self.root_id
 
-@dataclass(frozen=True)
-class LearningComponentBuildResult:
-    """LearningComponents and supports relationships."""
+        for nid in chain:
+            node = self.nodes_by_id[nid]
+            parts.append(self._path_piece(child_id=nid, node=node, parent_id=parent))
+            parent = nid
 
-    learning_components: list[LearningComponent]
-    supports_relationships: list[Relationship]
-    report: GraphValidationReport
+        return "/".join(parts)
+
+    def get_framework_metadata(self) -> dict[str, Any]:
+        """Resolve the framework-level metadata for the KG export.
+
+        Returns
+        -------
+        dict[str, Any]
+            The framework metadata dictionary.
+        """
+
+        return {
+            "academic_subject_default": self.kg_config.academic_subject_default,
+            "adoption_status": self.kg_config.adoption_status,
+            "attribution_statement": self.kg_config.attribution_statement,
+            "author": self.kg_config.author,
+            "case_uri_base": self.kg_config.case_uri_base,
+            "doc_key": self.doc_key,
+            "export_dialect": self.kg_config.export_dialect,
+            "in_language": (
+                self.kg_config.language_default
+                if self.kg_config.export_in_language_policy == "default"
+                else self._infer_language_from_nodes()
+                or self.kg_config.language_default
+            ),
+            "jurisdiction": self.kg_config.jurisdiction_default,
+            "license": self.kg_config.license,
+            "namespace_uuid": str(self.kg_config.namespace_uuid),
+            "pdf_name": self.pdf_name,
+            "provider": self.kg_config.provider,
+        }
+
+    def should_drop_segment(self, decision: dict[str, Any]) -> bool:
+        """Determine if a segment should be dropped based on non-standard policies.
+
+        Parameters
+        ----------
+        decision
+            The decision dictionary for the segment.
+
+        Returns
+        -------
+        bool
+            True if the segment should be dropped, False otherwise.
+        """
+
+        policies = set(self.kg_config.non_standard_segment_drop_policy or [])
+
+        if "by_decision_type" in policies:
+            dt = decision.get("decision_type")
+
+            if dt in {t.value for t in self.kg_config.non_standard_decision_types}:
+                return True
+
+        if "by_columns_signature" in policies:
+            sig = decision.get("columns_signature")
+
+            if sig and sig in (self.kg_config.non_standard_columns_signature or set()):
+                return True
+
+        return False
 
 
 @dataclass(frozen=True)
@@ -163,3254 +218,312 @@ class KGDirs:
     """Dataclass for KG directories."""
 
     root: Path
-    cache: Path
+    academic_standards: Path
+    learning_components: Path
+    learning_progressions: Path
+    combined: Path
 
 
-@dataclass(frozen=True)
-class ResolvedText:
-    """Selected text for export with language defaults applied.
-
-    No translation is performed here. This is simply a deterministic selection of
-    the best available text unit and the best available language tag (prefer the text
-    unit's language tag, else config default).
-    """
-
-    in_language: str
-    source_language: str
-    source_text: str
-    text: str
-    english_text: Optional[str] = None
-    english_language: Optional[str] = None
-
-
-class DefaultsResolver:
-    """Resolve required metadata defaults for export objects."""
-
-    def __init__(self, *, config: KnowledgeGraphConfig) -> None:
-        """Initialize DefaultsResolver with KnowledgeGraphConfig.
-
-        Parameters
-        ----------
-        config
-            The KnowledgeGraphConfig to use for defaults.
-        """
-
-        self.config = config
-
-    def academic_subject(self, *, override: Optional[str] = None) -> str:
-        """Return the academic_subject for entities.
-
-        Parameters
-        ----------
-        override
-            An optional override academic subject.
-
-        Returns
-        -------
-        str
-            The resolved academic_subject.
-        """
-
-        if override is not None and override.strip():
-            return override.strip()
-
-        return (self.config.academic_subject_default or "General").strip()
-
-    def adoption_status(self, *, override: Optional[str] = None) -> str:
-        """Return the adoption_status for StandardsFramework entities.
-
-        Parameters
-        ----------
-        override
-            An optional override adoption status.
-
-        Returns
-        -------
-        str
-            The resolved adoption_status.
-
-        Raises
-        ------
-        ValueError
-            If adoption_status is required but not provided.
-        """
-
-        if override is not None:
-            return override
-
-        if self.config.adoption_status is None:
-            raise ValueError(
-                "adoption_status is required for StandardsFramework exports."
-            )
-
-        return self.config.adoption_status
-
-    def common(self) -> dict[str, str]:
-        """Return common required metadata fields shared by all entities/relationships.
-
-        Returns
-        -------
-        dict[str, str]
-            The common metadata fields.
-        """
-
-        return {
-            "attribution_statement": self.config.attribution_statement,
-            "author": self.config.author,
-            "license": self.config.license,
-            "provider": self.config.provider,
-        }
-
-    @staticmethod
-    def framework_title(*, canonical_pdf_name: str | None) -> str:
-        """Return the title for the StandardsFramework entity.
-
-        Parameters
-        ----------
-        canonical_pdf_name
-            The canonical PDF name from the CanonicalIR.
-
-        Returns
-        -------
-        str
-            The resolved framework title.
-        """
-
-        if canonical_pdf_name and canonical_pdf_name.strip():
-            return canonical_pdf_name.strip()
-
-        return "Curriculum Framework"
-
-    def jurisdiction(self, *, override: Optional[str] = None) -> str:
-        """Return the jurisdiction for entities.
-
-        Parameters
-        ----------
-        override
-            An optional override jurisdiction.
-
-        Returns
-        -------
-        str
-            The resolved jurisdiction.
-        """
-
-        return override or self.config.jurisdiction_default
-
-    @staticmethod
-    def relationship_description(*, rel_type: str) -> str:
-        """Return a default description for a relationship type.
-
-        Parameters
-        ----------
-        rel_type
-            The relationship type.
-
-        Returns
-        -------
-        str
-            The relationship description.
-        """
-
-        if rel_type == "hasChild":
-            return "Parent-child hierarchy relationship derived from CanonicalIR."
-
-        if rel_type == "supports":
-            return "LearningComponent supports a StandardsFrameworkItem."
-
-        return f"Relationship of type '{rel_type}'."
-
-
-class DeterministicIdRegistry:
-    """Deterministic UUID registry for KG export. All IDs are derived via
-    uuid5(namespace_uuid, seed_string). Seeds include doc_key so IDs are unique across
-    PDFs even if canonical IDs collide.
-    """
-
-    def __init__(self, *, config: KnowledgeGraphConfig, doc_key: str) -> None:
-        """Initialize DeterministicIdRegistry.
-
-        Parameters
-        ----------
-        config
-            The KnowledgeGraphConfig to use for namespace UUID.
-        doc_key
-            The CanonicalIR doc_key to scope the IDs.
-        """
-
-        self._cfg = config
-        self._doc_key = doc_key.strip().lower()
-        self._ns = config.namespace_uuid
-
-    def case_identifiers_for_framework(self) -> CaseIdentifiers:
-        """CASE identifier for the framework.
-
-        Returns
-        -------
-        CaseIdentifiers
-            The CASE identifiers for the framework.
-        """
-
-        case_uuid = uuid5(self._ns, _seed(self._doc_key, "case", "framework"))
-
-        return CaseIdentifiers(
-            uri=self._cfg.case_uri_base + str(case_uuid), uuid=case_uuid
-        )
-
-    def case_identifiers_for_sfi(self, *, canonical_node_id: str) -> CaseIdentifiers:
-        """CASE identifier for an item (derived from CanonicalIR node id).
-
-        Parameters
-        ----------
-        canonical_node_id
-            The CanonicalIR node_id for the SFI.
-
-        Returns
-        -------
-        CaseIdentifiers
-            The CASE identifiers for the SFI.
-        """
-
-        case_uuid = uuid5(
-            self._ns, _seed(self._doc_key, "case", "sfi", canonical_node_id)
-        )
-
-        return CaseIdentifiers(
-            uri=self._cfg.case_uri_base + str(case_uuid), uuid=case_uuid
-        )
-
-    def framework_id(self) -> UUID:
-        """UUID for the StandardsFramework (one per PDF by default).
-
-        Returns
-        -------
-        UUID
-            UUID for the StandardsFramework.
-        """
-
-        return uuid5(self._ns, _seed(self._doc_key, "entity", "framework"))
-
-    def learning_component_id(
-        self, *, split_key: str = "0", standard_sfi_id: UUID
-    ) -> UUID:
-        """UUID for a LearningComponent. Derived from the target standard SFI UUID (not
-        text) to keep stability under translation/minor wording changes.
-
-        Parameters
-        ----------
-        split_key
-            The split key for the LearningComponent. "0" for 1-to-1 mapping. Otherwise,
-            a deterministic split identifier (e.g. "bullet-2" or hash).
-        standard_sfi_id
-            The UUID of the StandardsFrameworkItem that this LearningComponent supports.
-
-        Returns
-        -------
-        UUID
-            UUID for the LearningComponent.
-        """
-
-        return uuid5(
-            self._ns,
-            _seed(self._doc_key, "entity", "lc", str(standard_sfi_id), split_key),
-        )
-
-    def relationship_id(
-        self, *, from_id: UUID, rel_type: RelationshipTypes | str, to_id: UUID
-    ) -> UUID:
-        """UUID for a relationship record (type + endpoints), doc-scoped.
-
-        Parameters
-        ----------
-        from_id
-            The UUID of the source entity.
-        rel_type
-            The relationship type.
-        to_id
-            The UUID of the target entity.
-
-        Returns
-        -------
-        UUID
-            UUID for the relationship.
-        """
-
-        return uuid5(
-            self._ns,
-            _seed(self._doc_key, "rel", str(rel_type), str(from_id), str(to_id)),
-        )
-
-    def sfi_id(self, *, canonical_node_id: str) -> UUID:
-        """UUID for a StandardsFrameworkItem derived from a CanonicalIR node_id.
-
-        Parameters
-        ----------
-        canonical_node_id
-            The CanonicalIR node_id for the SFI.
-
-        Returns
-        -------
-        UUID
-            UUID for the StandardsFrameworkItem.
-        """
-
-        return uuid5(self._ns, _seed(self._doc_key, "entity", "sfi", canonical_node_id))
-
-
-class SubjectResolver:
-    """Deterministically find nearest subject ancestor for a node."""
-
-    def __init__(
-        self,
-        *,
-        config: KnowledgeGraphConfig,
-        node_by_id: dict[str, CanonicalNode],
-        parents_by_child: dict[str, list[str]],
-        root_id: str,
-    ) -> None:
-        """Initialize SubjectResolver.
-
-        Parameters
-        ----------
-        config
-            The KnowledgeGraphConfig to use for text resolution.
-        node_by_id
-            Mapping of node_id to CanonicalNode.
-        parents_by_child
-            Mapping of child_id to list of parent_ids.
-        root_id
-            The root node_id of the framework.
-        """
-
-        self._cache: dict[str, Optional[str]] = {}
-        self.config = config
-        self.node_by_id = node_by_id
-
-        # Single-parent traversal: follow the FIRST parent in filtered.parents_by_child.
-        self.parent_by_child = {
-            child_id: parents[0]
-            for child_id, parents in parents_by_child.items()
-            if parents
-        }
-
-        self.root_id = root_id
-
-    def get_subject(self, *, start_node_id: str) -> Optional[str]:
-        """Walk up parents to find nearest SUBJECT ancestor, deterministically.
-
-        Parameters
-        ----------
-        start_node_id
-            The starting CanonicalNode node_id.
-
-        Returns
-        -------
-        Optional[str]
-            The resolved subject text, or None if not found.
-        """
-
-        if start_node_id in self._cache:
-            return self._cache[start_node_id]
-
-        cur = start_node_id
-        seen: set[str] = set()
-        visited: list[str] = []
-
-        while True:
-            # Cycle protection; shouldn't happen, but keep deterministic behavior.
-            if cur in seen:
-                for v in visited:
-                    self._cache[v] = None
-                return None
-
-            seen.add(cur)
-            visited.append(cur)
-
-            n = self.node_by_id.get(cur)
-            if n is not None and n.role == StatementRole.SUBJECT:
-                r = _resolve_text(config=self.config, node=n)
-                subj = r.text if r else None
-                for v in visited:
-                    self._cache[v] = subj
-                return subj
-
-            p = self.parent_by_child.get(cur)
-            if not p or p == self.root_id:
-                for v in visited:
-                    self._cache[v] = None
-                return None
-            cur = p
-
-
-def _build_adjacency_maps(
-    *,
-    canonical_ir: CanonicalIR,
-    node_by_id: dict[str, CanonicalNode],
-    report: GraphValidationReport,
-) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """Build parent/child adjacency lists and validate edge endpoints.
+def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
+    """Detect sibling nodes that may require order disambiguation.
 
     Parameters
     ----------
-    canonical_ir
-        The CanonicalIR to process.
-    node_by_id
-        Mapping of node_id to CanonicalNode.
-    report
-        The GraphValidationReport to log warnings/errors to.
+    ctx
+        The KG export context.
 
     Returns
     -------
-    tuple[dict[str, list[str]], dict[str, list[str]]]
-        Tuple containing (children_by_parent, parents_by_child).
+    set[tuple[str, str]]
+        A set of (parent_id, child_id) tuples that require order disambiguation.
     """
 
-    _children_seen: dict[str, set[str]] = {}
-    _parents_seen: dict[str, set[str]] = {}
+    needs: set[tuple[str, str]] = set()
 
-    children_by_parent: dict[str, list[str]] = {}
-    parents_by_child: dict[str, list[str]] = {}
+    for pid, kids in ctx.children_by_parent.items():
+        seen: dict[str, str] = {}
 
-    missing_endpoint_edges: list[dict[str, str]] = []
-    non_haschild_edges: list[dict[str, str]] = []
+        for cid in kids:
+            node = ctx.nodes_by_id[cid]
+            role = str(node.get("role") or "")
+            code = normalize_ws(str(node.get("local_code") or ""))
 
-    for e in canonical_ir.edges:
-        if e.rel != "hasChild":
-            non_haschild_edges.append(
-                {"parent_id": e.parent_id, "child_id": e.child_id, "rel": e.rel}
-            )
-            continue
+            # NB: include statement roles too, using the same base as _path_piece.
+            if role in {item.value for item in StatementRole}:
+                text_for_hash = str(
+                    node.get("normalized_text") or node_display_text(node=node)
+                )
+                base = f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
+            else:
+                label = _slugify(
+                    s=str(node.get("normalized_text") or node_display_text(node=node))
+                )
+                base = f"{role}:{code}:{label}" if code else f"{role}:{label}"
 
-        if e.parent_id not in node_by_id or e.child_id not in node_by_id:
-            missing_endpoint_edges.append(
-                {"parent_id": e.parent_id, "child_id": e.child_id}
-            )
-            continue
+            if base in seen:
+                needs.add((pid, seen[base]))
+                needs.add((pid, cid))
+            else:
+                seen[base] = cid
 
-        # Children list.
-        if e.parent_id not in children_by_parent:
-            _children_seen[e.parent_id] = set()
-            children_by_parent[e.parent_id] = []
-        if e.child_id not in _children_seen[e.parent_id]:
-            _children_seen[e.parent_id].add(e.child_id)
-            children_by_parent[e.parent_id].append(e.child_id)
-
-        # Parents list.
-        if e.child_id not in parents_by_child:
-            _parents_seen[e.child_id] = set()
-            parents_by_child[e.child_id] = []
-        if e.parent_id not in _parents_seen[e.child_id]:
-            _parents_seen[e.child_id].add(e.parent_id)
-            parents_by_child[e.child_id].append(e.parent_id)
-
-    if non_haschild_edges:
-        report.warn(
-            "unexpected_edge_rel",
-            "Found edges whose rel is not 'hasChild'. These were ignored in adjacency build.",
-            {"examples": non_haschild_edges[:25], "n": len(non_haschild_edges)},
-        )
-
-    if missing_endpoint_edges:
-        report.error(
-            "edge_missing_endpoint",
-            "One or more edges reference missing parent/child node IDs.",
-            {"examples": missing_endpoint_edges[:25], "n": len(missing_endpoint_edges)},
-        )
-
-    return children_by_parent, parents_by_child
+    return needs
 
 
-def _build_filtered_adjacency_step(
-    *, kept_edges: list[CanonicalEdge], report: GraphValidationReport
-) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """Build adjacency maps for kept edges and check for tree violations.
+def _pick_text(*, prefer_text_en: bool, unit: Any) -> str:
+    """Retrieve text from a title/body TextUnit dict.
+
+    Canonical nodes store title/body as a dict like:
+        {"language": "...", "text": "...", "text_en": "..."}.
 
     Parameters
     ----------
-    kept_edges
-        The list of kept CanonicalEdge objects.
-    report
-        The GraphValidationReport to log warnings/errors to.
-
-    Returns
-    -------
-    tuple[dict[str, list[str]], dict[str, list[str]]]
-        Tuple containing (children_by_parent, parents_by_child).
-    """
-
-    _seen_child: dict[str, set[str]] = {}
-    _seen_parent: dict[str, set[str]] = {}
-
-    children_by_parent: dict[str, list[str]] = {}
-    parents_by_child: dict[str, list[str]] = {}
-
-    for e in kept_edges:
-        if e.parent_id not in children_by_parent:
-            _seen_child[e.parent_id] = set()
-            children_by_parent[e.parent_id] = []
-        if e.child_id not in _seen_child[e.parent_id]:
-            _seen_child[e.parent_id].add(e.child_id)
-            children_by_parent[e.parent_id].append(e.child_id)
-        if e.child_id not in parents_by_child:
-            _seen_parent[e.child_id] = set()
-            parents_by_child[e.child_id] = []
-        if e.parent_id not in _seen_parent[e.child_id]:
-            _seen_parent[e.child_id].add(e.parent_id)
-            parents_by_child[e.child_id].append(e.parent_id)
-
-    # Early warning: multi-parents remain after filtering.
-    multi_parent_after: list[dict[str, Any]] = []
-    for child_id, parents in parents_by_child.items():
-        if len(parents) > 1:
-            multi_parent_after.append({"child_id": child_id, "parents": parents})
-    if multi_parent_after:
-        report.warn(
-            "multiple_parents_after_filtering",
-            "After filtering, some nodes still have multiple parents (tree violation).",
-            {"n": len(multi_parent_after), "examples": multi_parent_after[:25]},
-        )
-
-    return children_by_parent, parents_by_child
-
-
-def _build_node_map(
-    *, canonical_ir: CanonicalIR, report: GraphValidationReport
-) -> dict[str, CanonicalNode]:
-    """Build node_id to CanonicalNode map and check for duplicates.
-
-    Parameters
-    ----------
-    canonical_ir
-        The CanonicalIR to process.
-    report
-        The GraphValidationReport to log warnings/errors to.
-
-    Returns
-    -------
-    dict[str, CanonicalNode]
-        Mapping of node_id to CanonicalNode.
-    """
-
-    duplicate_node_ids: list[str] = []
-    node_by_id: dict[str, CanonicalNode] = {}
-
-    for n in canonical_ir.nodes:
-        if n.node_id in node_by_id:
-            duplicate_node_ids.append(n.node_id)
-        else:
-            node_by_id[n.node_id] = n
-
-    if duplicate_node_ids:
-        report.error(
-            "duplicate_node_id",
-            "CanonicalIR contains duplicate node_id values.",
-            {"duplicate_node_ids": sorted(set(duplicate_node_ids))[:50]},
-        )
-
-    return node_by_id
-
-
-def _get_bullet_content(*, line: str) -> Optional[str]:
-    """Check if a line matches a bullet pattern and return the content.
-
-    Parameters
-    ----------
-    line
-        The line to check.
-
-    Returns
-    -------
-    Optional[str]
-        The captured content if matched, otherwise None.
-    """
-
-    for pat in _BULLET_LINE_PATTERNS:
-        m = pat.match(line)
-
-        if m:
-            return m.group("rest")
-
-    return None
-
-
-def _check_connectivity(
-    *,
-    adjacency: dict[UUID, list[UUID]],
-    exported_sfi_identifiers: set[UUID],
-    root_identifier: UUID,
-) -> list[str]:
-    """Perform BFS to find unreachable SFIs.
-
-    Parameters
-    ----------
-    adjacency
-        Adjacency list mapping from parent SFI identifier to list of child SFI
-    exported_sfi_identifiers
-        Set of all exported SFI identifiers.
-    root_identifier
-        The root framework identifier.
-
-    Returns
-    -------
-    list[str]
-        Sorted list of unreachable SFI identifiers as strings.
-    """
-
-    queue: list[UUID] = [root_identifier]
-    reachable: set[UUID] = set()
-
-    while queue:
-        cur = queue.pop(0)
-
-        if cur in reachable:
-            continue
-
-        reachable.add(cur)
-
-        for nxt in adjacency.get(cur, []):
-            if nxt not in reachable:
-                queue.append(nxt)
-
-    return sorted(
-        [str(sid) for sid in (exported_sfi_identifiers - reachable)], key=lambda x: x
-    )
-
-
-def _check_english_text_policy(
-    *,
-    canonical_doc_key: str,
-    canonical_pdf_name: Optional[str],
-    canonical_root_id: str,
-    config: KnowledgeGraphConfig,
-    kept_nodes: list[CanonicalNode],
-    report: GraphValidationReport,
-) -> None:
-    """Validate and log stats regarding the English text preference policy.
-
-    Parameters
-    ----------
-    canonical_doc_key
-        The canonical document key.
-    canonical_pdf_name
-        The canonical PDF name.
-    canonical_root_id
-        The root node ID (skipped during scan).
-    config
-        The KnowledgeGraphConfig.
-    kept_nodes
-        The list of nodes kept after filtering.
-    report
-        The GraphValidationReport to update.
-    """
-
-    if config.description_text_policy != "prefer_text_en":
-        return
-
-    nodes_with_text_en = 0
-    nodes_scanned = 0
-
-    for n in kept_nodes:
-        if n.node_id == canonical_root_id:
-            continue
-
-        nodes_scanned += 1
-
-        # Check BOTH title/body units for usable text_en.
-        for unit in (getattr(n, "title", None), getattr(n, "body", None)):
-            if unit and (getattr(unit, "text_en", None) or "").strip():
-                nodes_with_text_en += 1
-                break
-
-    report.stats.setdefault("text_resolution", {})
-    report.stats["text_resolution"].update(
-        {
-            "description_text_policy": config.description_text_policy,
-            "nodes_scanned": nodes_scanned,
-            "nodes_with_text_en": nodes_with_text_en,
-        }
-    )
-
-    if nodes_with_text_en == 0:
-        report.warn(
-            "description_text_policy_no_text_en",
-            'description_text_policy="prefer_text_en" but CanonicalIR contains no '
-            "usable text_en; exporter will fall back to source text.",
-            {
-                "pdf_name": canonical_pdf_name,
-                "doc_key": canonical_doc_key,
-                "description_text_policy": config.description_text_policy,
-            },
-        )
-
-
-def _collapse_whitespace(*, text: str) -> str:
-    """Collapse internal whitespace and trim.
-
-    Parameters
-    ----------
-    text
-        The input text.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when both are present.
+    unit
+        The title/body unit dict (or None).
 
     Returns
     -------
     str
-        The collapsed text.
+        The extracted text, or empty string if none found.
     """
 
-    return re.sub(r"\s+", " ", (text or "").strip())
+    if not isinstance(unit, dict):
+        return ""
+
+    if prefer_text_en:
+        t = (unit.get("text_en") or "").strip()
+
+        if t:
+            return t
+
+    return (unit.get("text") or unit.get("text_en") or "").strip()
 
 
-def _compute_reachability_from_edges(
-    *, edges: list[CanonicalEdge], root_id: str
-) -> set[str]:
-    """Compute the set of reachable node IDs from the root via the provided edges.
+def _slugify(*, max_len: int = 80, s: str) -> str:
+    """Generate a slug from a string.
 
     Parameters
     ----------
-    edges
-        The edges to traverse.
-    root_id
-        The starting root node ID.
+    max_len
+        The maximum length of the slug.
+    s
+        The input string to slugify.
 
     Returns
     -------
-    set[str]
-        Set of reachable node IDs.
+    str
+        The slugified string.
     """
 
-    adj: dict[str, list[str]] = {}
-    for e in edges:
-        adj.setdefault(e.parent_id, []).append(e.child_id)
+    original = normalize_ws(s)
+    lower = original.lower()
 
-    reachable: set[str] = {root_id}
-    queue: list[str] = [root_id]
+    slug = re.sub(r"[^a-z0-9]+", "-", lower).strip("-")
 
-    while queue:
-        nid = queue.pop()
-        for child_id in adj.get(nid, []):
-            if child_id not in reachable:
-                reachable.add(child_id)
-                queue.append(child_id)
+    # Fallback: if everything got stripped (e.g., non-Latin text), use a short stable
+    # hash. The prefix avoids empty/pure-digit oddities.
+    slug = slug or f"h{stable_text_hash(s=original)}"
 
-    return reachable
+    return slug[:max_len] if max_len else slug
 
 
-def _create_framework_entity(
-    *,
-    canonical_doc_key: str,
-    canonical_pdf_name: Optional[str],
-    config: KnowledgeGraphConfig,
-    defaults: DefaultsResolver,
-    ids: DeterministicIdRegistry,
-    root_node: CanonicalNode,
-) -> tuple[StandardsFramework, Optional[str]]:
-    """Create the StandardsFramework entity.
+def _validate_decision_references(ctx: ExportContext) -> None:
+    """Ensure all decision IDs referenced by nodes exist in the context.
 
     Parameters
     ----------
-    canonical_doc_key
-        The canonical document key.
-    canonical_pdf_name
-        The canonical PDF name from the CanonicalIR.
-    config
-        The KnowledgeGraphConfig to use for text resolution.
-    defaults
-        DefaultsResolver instance.
-    ids
-        DeterministicIdRegistry instance.
-    root_node
-        The root CanonicalNode of the framework.
+    ctx
+        The KG export context.
 
-    Returns
-    -------
-    tuple[StandardsFramework, Optional[str]]
-        The framework entity and an optional warning reason if fallback title used.
+    Raises
+    ------
+    ValueError
+        If there are nodes that reference missing decision IDs.
     """
 
-    fw_resolved = _resolve_text(config=config, node=root_node)
-    warning_reason = None
+    missing_decisions = []
 
-    if fw_resolved is None:
-        fallback = defaults.framework_title(canonical_pdf_name=canonical_pdf_name)
+    for n in ctx.nodes_by_id.values():
+        for did in n.get("source_decision_ids", []):
+            if did not in ctx.decisions_by_id:
+                missing_decisions.append(did)
+                if len(missing_decisions) >= 10:
+                    break
 
-        # Keep fallback language deterministic and consistent with the export policy.
-        fallback_in_lang = (
-            (config.language_default or "und").strip() or "und"
-            if config.export_in_language_policy == "default"
-            else "und"
+        if len(missing_decisions) >= 10:
+            break
+
+    if missing_decisions:
+        raise ValueError(
+            f"Nodes reference missing decision_ids (examples): {missing_decisions[:10]}"
         )
 
-        fw_resolved = ResolvedText(
-            in_language=fallback_in_lang,
-            source_language="und",
-            source_text=fallback,
-            text=fallback,
-            english_text=None,
-            english_language=None,
-        )
-        warning_reason = "framework_title_missing"
 
-    fw_identifier = ids.framework_id()
-    fw_case = ids.case_identifiers_for_framework()
-    common = defaults.common()
-
-    metadata = {
-        "docKey": canonical_doc_key,
-        "canonicalNodeId": root_node.node_id,
-        "canonicalRole": _role_str(root_node.role),
-        "pageIndices": root_node.page_indices,
-        "bbox": root_node.bbox,
-        "sourceIds": root_node.source_ids,
-        "sourceText": fw_resolved.source_text,
-        "sourceLanguage": fw_resolved.source_language,
-    }
-
-    # Use the resolved english fields.
-    if fw_resolved.english_text:
-        metadata["englishText"] = fw_resolved.english_text
-        metadata["englishLanguage"] = fw_resolved.english_language or "en"
-
-    framework = StandardsFramework(
-        academic_subject=defaults.academic_subject(),
-        adoption_status=defaults.adoption_status(),
-        attribution_statement=common["attribution_statement"],
-        author=common["author"],
-        case_identifier_uri=fw_case.uri,
-        case_identifier_uuid=fw_case.uuid,
-        description=None,
-        identifier=fw_identifier,
-        in_language=fw_resolved.in_language,
-        license=common["license"],
-        metadata=metadata,
-        name=fw_resolved.text,
-        jurisdiction=defaults.jurisdiction(),
-        provider=common["provider"],
-    )
-    return framework, warning_reason
-
-
-def _create_lc_base_metadata(
-    *, policy: str, sfi: StandardsFrameworkItem
-) -> dict[str, Any]:
-    """Create base metadata for LearningComponents.
+def _validate_no_cycles(ctx: ExportContext) -> None:
+    """Detect cycles by walking up parent links from every node.
 
     Parameters
     ----------
-    policy
-        The LC generation policy name.
-    sfi
-        The StandardsFrameworkItem being supported.
+    ctx
+        The KG export context.
 
-    Returns
-    -------
-    dict[str, Any]
-        The base metadata dictionary.
+    Raises
+    ------
+    ValueError
+        If there are cycles detected in the parent-child relationships.
     """
 
-    sfi_meta = sfi.metadata or {}
-    base_meta: dict[str, Any] = {
-        "policy": f"lc_{policy}",
-        "supportsStandardIdentifier": str(sfi.identifier),
-        "supportsStandardCaseIdentifierUUID": str(sfi.case_identifier_uuid),
-        "docKey": sfi_meta.get("docKey"),
-        "canonicalNodeId": sfi_meta.get("canonicalNodeId"),
-        "pageIndices": sfi_meta.get("pageIndices"),
-        "sourceText": sfi_meta.get("sourceText"),
-        "sourceLanguage": sfi_meta.get("sourceLanguage"),
-    }
-
-    # Only add English fields if present (keeps metadata clean + deterministic).
-    if sfi_meta.get("englishText"):
-        base_meta["englishText"] = sfi_meta.get("englishText")
-        base_meta["englishLanguage"] = sfi_meta.get("englishLanguage") or "en"
-
-    # Add a compact source standard summary (useful for debugging and ordering).
-    base_meta["sourceStandard"] = {
-        "identifier": str(sfi.identifier),
-        "caseIdentifierUUID": str(sfi.case_identifier_uuid),
-        "statementType": sfi.statement_type,
-        "statementCode": sfi.statement_code,
-        "normalizedStatementType": sfi.normalized_statement_type,
-    }
-
-    return base_meta
-
-
-def _create_relationship(
-    *,
-    canonical_doc_key: str,
-    common_metadata: dict[str, str],
-    defaults: DefaultsResolver,
-    edge: CanonicalEdge,
-    from_case_uuid: UUID,
-    from_identifier: UUID,
-    ids: DeterministicIdRegistry,
-    source_entity: str,
-    to_case_uuid: UUID,
-    to_identifier: UUID,
-) -> Relationship:
-    """Create a generic hasChild Relationship object.
-
-    Parameters
-    ----------
-    canonical_doc_key
-        The canonical document key.
-    common_metadata
-        Common metadata dictionary.
-    defaults
-        DefaultsResolver instance.
-    edge
-        The CanonicalEdge being processed.
-    from_case_uuid
-        The source CASE UUID.
-    from_identifier
-        The source entity identifier.
-    ids
-        DeterministicIdRegistry instance.
-    source_entity
-        The source entity type string.
-    to_case_uuid
-        The target CASE UUID.
-    to_identifier
-        The target entity identifier.
-
-    Returns
-    -------
-    Relationship
-        The created Relationship object.
-    """
-
-    rel_identifier = ids.relationship_id(
-        from_id=from_case_uuid, rel_type="hasChild", to_id=to_case_uuid
-    )
-
-    return Relationship(
-        attribution_statement=common_metadata["attribution_statement"],
-        author=common_metadata["author"],
-        description=defaults.relationship_description(rel_type="hasChild"),
-        identifier=rel_identifier,
-        license=common_metadata["license"],
-        metadata={
-            "docKey": canonical_doc_key,
-            "canonicalParentId": edge.parent_id,
-            "canonicalChildId": edge.child_id,
-            "sourceIdentifier": str(from_identifier),
-            "targetIdentifier": str(to_identifier),
-            "sourceCaseUUID": str(from_case_uuid),
-            "targetCaseUUID": str(to_case_uuid),
-            "policy": "tree_keep_first_parent_in_edge_order",
-        },
-        provider=common_metadata["provider"],
-        relationship_type="hasChild",
-        source_entity=source_entity,
-        source_entity_key="caseIdentifierUUID",
-        source_entity_value=str(from_case_uuid),
-        target_entity="StandardsFrameworkItem",
-        target_entity_key="caseIdentifierUUID",
-        target_entity_value=str(to_case_uuid),
-    )
-
-
-def _create_sfi_entity(
-    *,
-    defaults: DefaultsResolver,
-    effective_role: StatementRole,
-    ids: DeterministicIdRegistry,
-    node: CanonicalNode,
-    resolved: ResolvedText,
-    subject_text: Optional[str],
-) -> tuple[StandardsFrameworkItem, UUID, UUID]:
-    """Create a StandardsFrameworkItem entity.
-
-    Parameters
-    ----------
-    defaults
-        DefaultsResolver instance.
-    effective_role
-        The effective StatementRole for the node.
-    ids
-        DeterministicIdRegistry instance.
-    node
-        The CanonicalNode being processed.
-    resolved
-        The ResolvedText for the node.
-    subject_text
-        The resolved subject text for the node.
-
-    Returns
-    -------
-    tuple[StandardsFrameworkItem, UUID, UUID]
-        The SFI entity, its identifier UUID, and its CASE UUID.
-    """
-
-    normalized = _ROLE_TO_NORMALIZED[effective_role]
-    statement_type = _ROLE_TO_STATEMENT_TYPE.get(
-        effective_role, _role_str(effective_role)
-    )
-
-    sfi_identifier = ids.sfi_id(canonical_node_id=node.node_id)
-    sfi_case = ids.case_identifiers_for_sfi(canonical_node_id=node.node_id)
-
-    academic_subject = defaults.academic_subject(override=subject_text)
-    grade_level = [resolved.text] if effective_role == StatementRole.GRADE_LEVEL else []
-    common = defaults.common()
-
-    metadata = {
-        "docKey": node.doc_key,
-        "canonicalNodeId": node.node_id,
-        "canonicalRole": _role_str(node.role),
-        "effectiveRole": _role_str(effective_role),
-        "pageIndices": node.page_indices,
-        "bbox": node.bbox,
-        "sourceIds": node.source_ids,
-        "sourceText": resolved.source_text,
-        "sourceLanguage": resolved.source_language,
-    }
-
-    if resolved.english_text:
-        metadata["englishText"] = resolved.english_text
-        metadata["englishLanguage"] = resolved.english_language or "en"
-
-    sfi = StandardsFrameworkItem(
-        academic_subject=academic_subject,
-        attribution_statement=common["attribution_statement"],
-        author=common["author"],
-        case_identifier_uri=sfi_case.uri,
-        case_identifier_uuid=sfi_case.uuid,
-        description=resolved.text,
-        grade_level=grade_level,
-        identifier=sfi_identifier,
-        in_language=resolved.in_language,
-        jurisdiction=defaults.jurisdiction(),
-        license=common["license"],
-        metadata=metadata,
-        normalized_statement_type=normalized,
-        provider=common["provider"],
-        statement_code=node.list_id,
-        statement_type=statement_type,
-    )
-
-    return sfi, sfi_identifier, sfi_case.uuid
-
-
-def _deep_merge_dict(*, dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
-    """Deep-merge src into dst (mutates dst). src wins on conflicts.
-
-    Parameters
-    ----------
-    dst
-        The destination dictionary to merge into.
-    src
-        The source dictionary to merge from.
-
-    Returns
-    -------
-    dict[str, Any]
-        The merged dictionary (same as dst).
-    """
-
-    for k, v in src.items():
-        if k in dst and isinstance(dst[k], dict) and isinstance(v, dict):
-            _deep_merge_dict(dst=dst[k], src=v)
-        else:
-            dst[k] = v
-
-    return dst
-
-
-def _filter_edges(
-    *,
-    canonical_edges: list[CanonicalEdge],
-    dropped_node_reasons: dict[str, str],
-    kept_node_ids: set[str],
-    report: GraphValidationReport,
-) -> tuple[list[CanonicalEdge], list[dict[str, Any]]]:
-    """Filter edges based on kept nodes and populate report stats.
-
-    Parameters
-    ----------
-    canonical_edges
-        The list of CanonicalEdge objects to filter.
-    dropped_node_reasons
-        Mapping of dropped node_id to drop reason code.
-    kept_node_ids
-        Set of kept node IDs.
-    report
-        The GraphValidationReport to log warnings/errors to.
-
-    Returns
-    -------
-    tuple[list[CanonicalEdge], list[dict[str, Any]]]
-        Tuple containing the list of kept edges and list of dropped edge info dicts.
-    """
-
-    kept_edges: list[CanonicalEdge] = []
-    dropped_edges: list[dict[str, Any]] = []
-
-    for e in canonical_edges:
-        if e.rel != "hasChild":
-            dropped_edges.append(
-                {
-                    "parent_id": e.parent_id,
-                    "child_id": e.child_id,
-                    "rel": e.rel,
-                    "reason": "drop_non_haschild_edge",
-                }
-            )
-            continue
-
-        parent_kept = e.parent_id in kept_node_ids
-        child_kept = e.child_id in kept_node_ids
-
-        if parent_kept and child_kept:
-            kept_edges.append(e)
-        else:
-            reason = "drop_edge_missing_endpoint_after_filter"
-            if not parent_kept and not child_kept:
-                reason = "drop_edge_parent_and_child_dropped"
-            elif not parent_kept:
-                reason = "drop_edge_parent_dropped"
-            elif not child_kept:
-                reason = "drop_edge_child_dropped"
-
-            dropped_edges.append(
-                {
-                    "parent_id": e.parent_id,
-                    "child_id": e.child_id,
-                    "rel": e.rel,
-                    "reason": reason,
-                    "parent_drop_reason": dropped_node_reasons.get(e.parent_id),
-                    "child_drop_reason": dropped_node_reasons.get(e.child_id),
-                }
-            )
-
-    if dropped_edges:
-        # Log examples; keep it bounded for report size.
-        report.info(
-            "edges_dropped_by_filtering",
-            "Some hasChild edges were dropped because one or both endpoints were filtered out.",
-            {"n_dropped_edges": len(dropped_edges), "examples": dropped_edges[:25]},
-        )
-
-    report.stats.setdefault("filtering", {})
-    report.stats["filtering"].update(
-        {"kept_edges": len(kept_edges), "dropped_edges": len(dropped_edges)}
-    )
-
-    return kept_edges, dropped_edges
-
-
-def _filter_edges_by_kept_nodes(
-    *, drop_reason: str, edges: list[CanonicalEdge], kept_node_ids: set[str]
-) -> tuple[list[CanonicalEdge], list[dict[str, Any]]]:
-    """Filter edges, keeping only those where both parent and child are in
-    kept_node_ids.
-
-    Parameters
-    ----------
-    drop_reason
-        The reason string to assign to dropped edges.
-    edges
-        The list of edges to filter.
-    kept_node_ids
-        The set of valid node IDs.
-
-    Returns
-    -------
-    tuple[list[CanonicalEdge], list[dict[str, Any]]]
-        (kept_edges, dropped_edges_dicts)
-    """
-
-    kept: list[CanonicalEdge] = []
-    dropped: list[dict[str, Any]] = []
-
-    for e in edges:
-        if (e.parent_id in kept_node_ids) and (e.child_id in kept_node_ids):
-            kept.append(e)
-        else:
-            dropped.append(
-                {
-                    "parent_id": e.parent_id,
-                    "child_id": e.child_id,
-                    "rel": e.rel,
-                    "reason": drop_reason,
-                }
-            )
-
-    return kept, dropped
-
-
-def _filter_nodes(
-    *,
-    canonical: CanonicalIR,
-    config: KnowledgeGraphConfig,
-    index: CanonicalIRIndex,
-    report: GraphValidationReport,
-) -> tuple[list[CanonicalNode], set[str], set[str], dict[str, str]]:
-    """Filter nodes based on config and role policies, and populate report stats.
-
-    Parameters
-    ----------
-    canonical
-        The CanonicalIR to filter.
-    config
-        The KnowledgeGraphConfig to use for filtering rules.
-    index
-        The CanonicalIRIndex for node lookup.
-    report
-        The GraphValidationReport to log warnings/errors to.
-
-    Returns
-    -------
-    tuple[list[CanonicalNode], set[str], set[str], dict[str, str]]
-        Tuple containing (kept_nodes, kept_node_ids, dropped_node_ids, dropped_node_re
-    """
-
-    dropped_node_ids: set[str] = set()
-    dropped_node_reasons: dict[str, str] = {}
-    kept_node_ids: set[str] = set()
-    kept_nodes: list[CanonicalNode] = []
-
-    for node in canonical.nodes:
-        reason = _node_drop_reason(config=config, node=node)
-        if reason is None:
-            kept_nodes.append(node)
-            kept_node_ids.add(node.node_id)
-        else:
-            dropped_node_ids.add(node.node_id)
-            dropped_node_reasons[node.node_id] = reason
-
-    # Ensure root is kept (hard requirement for export).
-    if canonical.root_id not in kept_node_ids:
-        root_node = index.node_by_id.get(canonical.root_id)
-        root_role = _role_str(root_node.role) if root_node else None
-        report.error(
-            "root_dropped",
-            "CanonicalIR.root_id was dropped by filtering; cannot export deterministically.",
-            {
-                "root_id": canonical.root_id,
-                "root_role": root_role,
-                "root_drop_reason": dropped_node_reasons.get(canonical.root_id),
-            },
-        )
-        report.raise_if_errors()
-
-    # Log unresolved[] exclusion (separate from UNRESOLVED role nodes).
-    n_unresolved_blocks = len(getattr(canonical, "unresolved", []) or [])
-    if n_unresolved_blocks:
-        report.info(
-            "unresolved_blocks_excluded",
-            "CanonicalIR.unresolved[] blocks are excluded from export by default.",
-            {"n_unresolved_blocks": n_unresolved_blocks},
-        )
-
-    # Role-based stats (dropped/kept).
-    dropped_role_counts: dict[str, int] = {}
-    kept_role_counts: dict[str, int] = {}
-
-    for n in kept_nodes:
-        rs = _role_str(n.role)
-        kept_role_counts[rs] = kept_role_counts.get(rs, 0) + 1
-
-    for node_id in dropped_node_ids:
-        rs = _role_str(index.node_by_id[node_id].role)
-        dropped_role_counts[rs] = dropped_role_counts.get(rs, 0) + 1
-
-    report.stats.update(
-        {
-            "filtering": {
-                "include_descriptors": config.include_descriptors,
-                "include_guidance": config.include_guidance,
-                "kept_nodes": len(kept_nodes),
-                "dropped_nodes": len(dropped_node_ids),
-                "kept_role_counts": kept_role_counts,
-                "dropped_role_counts": dropped_role_counts,
-            }
-        }
-    )
-
-    return kept_nodes, kept_node_ids, dropped_node_ids, dropped_node_reasons
-
-
-def _finalize_has_child_report(
-    *,
-    drop_counters: dict[str, int],
-    dropped_edges: list[dict[str, Any]],
-    exported_sfi_identifiers: set[UUID],
-    relationships: list[Relationship],
-    report: GraphValidationReport,
-    sfis: list[StandardsFrameworkItem],
-    unreachable_sfis: list[str],
-) -> None:
-    """Log warnings and update stats for hasChild build results.
-
-    Parameters
-    ----------
-    drop_counters
-        Mapping of drop reason codes to counts.
-    dropped_edges
-        List of dropped edge info dicts.
-    exported_sfi_identifiers
-        Set of all exported SFI identifiers.
-    relationships
-        List of created hasChild Relationship objects.
-    report
-        The GraphValidationReport to log warnings/errors to.
-    sfis
-        List of created StandardsFrameworkItem entities.
-    unreachable_sfis
-        List of unreachable SFI identifier strings.
-    """
-
-    if not relationships:
-        report.warn(
-            "no_haschild_relationships",
-            "No hasChild relationships were produced. The exported graph will be disconnected.",
-            {"n_sfis": len(sfis)},
-        )
-
-    if unreachable_sfis:
-        report.warn(
-            "unreachable_sfis",
-            "Some exported StandardsFrameworkItems are not reachable from the framework via hasChild.",
-            {"n_unreachable": len(unreachable_sfis), "examples": unreachable_sfis[:25]},
-        )
-
-    if dropped_edges:
-        report.info(
-            "haschild_edges_dropped",
-            "Some hasChild edges were dropped due to missing endpoints or tree constraints.",
-            {"n_dropped": len(dropped_edges), "examples": dropped_edges[:25]},
-        )
-
-    report.stats.setdefault("hierarchy", {})
-    report.stats["hierarchy"].update(
-        {
-            "hasChild_relationships": len(relationships),
-            "dropped_edges_total": len(dropped_edges),
-            "dropped_missing_endpoint": drop_counters["missing_endpoint"],
-            "dropped_child_is_root": drop_counters["child_is_root"],
-            "dropped_self_loop": drop_counters["self_loop"],
-            "dropped_multi_parent": drop_counters["multi_parent"],
-            "dropped_duplicates": drop_counters["duplicates"],
-            "reachable_sfi_count": len(exported_sfi_identifiers)
-            - len(unreachable_sfis),
-            "unreachable_sfi_count": len(unreachable_sfis),
-        }
-    )
-
-
-def _flush_bullet_buffer(*, buffer: list[str], items: list[str]) -> None:
-    """Flush the current line buffer into the items list.
-
-    Parameters
-    ----------
-    buffer
-        The list of strings accumulating the current bullet's text.
-        This list is cleared after flushing.
-    items
-        The list of completed bullet items.
-    """
-
-    if not buffer:
-        return
-
-    # Join accumulated lines and collapse whitespace.
-    text = " ".join(buffer)
-    cleaned = _collapse_whitespace(text=text)
-
-    if cleaned:
-        items.append(cleaned)
-
-    buffer.clear()
-
-
-def _generate_lc_splits_for_standard(
-    *, config: KnowledgeGraphConfig, sfi: StandardsFrameworkItem
-) -> tuple[str, list[LCSplitCandidate], dict[str, int]]:
-    """Generate LearningComponent split candidates for a single Standard SFI.
-
-    Parameters
-    ----------
-    config
-        The KnowledgeGraphConfig to use for split policy.
-    sfi
-        The StandardsFrameworkItem to process.
-
-    Returns
-    -------
-    tuple[str, list[LCSplitCandidate], dict[str, int]]
-        (effective_policy_name, candidates, split_stats)
-    """
-
-    policy = getattr(config, "learning_component_policy", "1_to_1")
-    text = sfi.description or ""
-
-    # Base candidates (pre-dedupe/cap).
-    if policy == "split_bullets":
-        bullets = _try_parse_bullets(text=text)
-        if bullets:
-            candidates = [
-                LCSplitCandidate(split_index=i, split_key=f"bullet-{i}", text=b)
-                for i, b in enumerate(bullets)
-            ]
-            used_fallback = 0
-        else:
-            candidates = [LCSplitCandidate(split_index=0, split_key="0", text=text)]
-            used_fallback = 1
-    else:
-        # Default is 1_to_1.
-        policy = "1_to_1"
-        candidates = [LCSplitCandidate(split_index=0, split_key="0", text=text)]
-        used_fallback = 0
-
-    # Deterministic de-duplication (based on normalized text).
-    seen: set[str] = set()
-    deduped: list[LCSplitCandidate] = []
-    duplicates_removed = 0
-    for c in candidates:
-        norm = _collapse_whitespace(text=c.text).lower()
-        if not norm:
-            duplicates_removed += 1
-            continue
-        if norm in seen:
-            duplicates_removed += 1
-            continue
-        seen.add(norm)
-        deduped.append(c)
-
-    # Safety cap per standard.
-    cap = int(getattr(config, "lc_max_splits_per_standard", 25) or 25)
-    truncated = 0
-    if 1 <= cap < len(deduped):
-        truncated = len(deduped) - cap
-        deduped = deduped[:cap]
-
-    # Guarantee at least one candidate.
-    if not deduped:
-        deduped = [LCSplitCandidate(split_index=0, split_key="0", text=text)]
-
-    stats = {
-        "duplicates_removed": duplicates_removed,
-        "truncated": truncated,
-        "used_fallback": used_fallback,
-        "n_candidates": len(deduped),
-    }
-
-    return policy, deduped, stats
-
-
-def _get_lc_sort_key(
-    *, lc: LearningComponent, sfi_sort_map: dict[str, tuple[Any, ...]]
-) -> tuple[Any, ...]:
-    """Generate sort key for LearningComponents.
-
-    Parameters
-    ----------
-    lc
-        The LearningComponent.
-    sfi_sort_map
-        Mapping of CASE UUID to parent SFI sort key.
-
-    Returns
-    -------
-    tuple[Any, ...]
-        The sort key tuple.
-    """
-
-    meta = lc.metadata or {}
-    target_case_uuid = str(meta.get("supportsStandardCaseIdentifierUUID") or "")
-    standard_key = sfi_sort_map.get(target_case_uuid, (10**9, 9, "", ""))
-    split_index_i = _get_split_index(meta=meta)
-
-    return (*standard_key, split_index_i, str(lc.identifier))
-
-
-def _get_min_page_index(*, meta: dict[str, Any] | None) -> int:
-    """Get the minimum page index from metadata, or a large number if not present.
-
-    Parameters
-    ----------
-    meta
-        The metadata dictionary.
-
-    Returns
-    -------
-    int
-        The minimum page index, or a large number if not present.
-    """
-
-    if not meta:
-        return 10**9
-
-    raw = meta.get("pageIndices")
-
-    if isinstance(raw, list):
-        ints = [p for p in raw if isinstance(p, int)]
-        return min(ints) if ints else 10**9
-
-    if isinstance(raw, int):
-        return raw
-
-    return 10**9
-
-
-def _get_rel_sort_key(
-    *, rel: Relationship, sfi_sort_map: dict[str, tuple[Any, ...]]
-) -> tuple[Any, ...]:
-    """Generate sort key for Relationships.
-
-    Parameters
-    ----------
-    rel
-        The Relationship.
-    sfi_sort_map
-        Mapping of CASE UUID to SFI sort keys.
-
-    Returns
-    -------
-    tuple[Any, ...]
-        The sort key tuple.
-    """
-
-    r_order = _REL_TYPE_ORDER.get(rel.relationship_type, 99)
-    identifier_str = str(rel.identifier)
-
-    if rel.relationship_type == "supports":
-        meta = rel.metadata or {}
-        target_case_uuid = str(rel.target_entity_value or "")
-        standard_key = sfi_sort_map.get(target_case_uuid, (10**9, 9, "", ""))
-        split_index_i = _get_split_index(meta=meta)
-
-        return r_order, *standard_key, split_index_i, identifier_str
-
-    if rel.relationship_type == "hasChild":
-        src_case_uuid = str(rel.source_entity_value or "")
-        tgt_case_uuid = str(rel.target_entity_value or "")
-
-        if rel.source_entity == "StandardsFramework":
-            src_key = (-1, 0, "", "")  # Framework edges first
-        else:
-            src_key = sfi_sort_map.get(src_case_uuid, (10**9, 9, "", ""))
-
-        tgt_key = sfi_sort_map.get(tgt_case_uuid, (10**9, 9, "", ""))
-        return (r_order, *src_key, *tgt_key, identifier_str)
-
-    # Default fallback for other types
-    return r_order, identifier_str
-
-
-def _get_sfi_sort_key(sfi: StandardsFrameworkItem) -> tuple[Any, ...]:
-    """Generate sort key for StandardsFrameworkItems.
-
-    Parameters
-    ----------
-    sfi
-        The StandardsFrameworkItem.
-
-    Returns
-    -------
-    tuple[Any, ...]
-        The sort key tuple.
-    """
-
-    meta = sfi.metadata or {}
-
-    return (
-        _get_min_page_index(meta=meta),
-        _SFI_TYPE_ORDER.get(sfi.normalized_statement_type, 9),
-        str(meta.get("canonicalNodeId") or ""),
-        str(sfi.identifier),
-    )
-
-
-def _get_split_index(*, meta: dict[str, Any]) -> int:
-    """Safely extract splitIndex from metadata.
-
-    Parameters
-    ----------
-    meta
-        The metadata dictionary.
-
-    Returns
-    -------
-    int
-        The split index, or 0 if not present or invalid.
-    """
-
-    split_index = meta.get("splitIndex")
-
-    try:
-        return int(split_index) if split_index is not None else 0
-    except Exception:  # pylint: disable=broad-except
-        return 0
-
-
-def _has_alpha(text: str) -> bool:
-    """Return True if text has any alphabetic characters.
-
-    Parameters
-    ----------
-    text
-        The text to evaluate.
-
-    Returns
-    -------
-    bool
-        True if text has any alphabetic characters, else False.
-    """
-
-    return any(ch.isalpha() for ch in (text or ""))
-
-
-def _has_heading_provenance(node: CanonicalNode) -> bool:
-    """Return True if node has heading provenance cues.
-
-    Parameters
-    ----------
-    node
-        The CanonicalNode to evaluate.
-
-    Returns
-    -------
-    bool
-        True if node has heading provenance cues, else False.
-    """
-
-    return any(sid.startswith("block:heading") for sid in node.source_ids)
-
-
-def _has_paragraph_provenance(node: CanonicalNode) -> bool:
-    """Return True if node has paragraph provenance cues.
-
-    Parameters
-    ----------
-    node
-        The CanonicalNode to evaluate.
-
-    Returns
-    -------
-    bool
-        True if node has paragraph provenance cues, else False.
-    """
-
-    return any(sid.startswith("block:paragraph") for sid in node.source_ids)
-
-
-def _identify_dead_group_ids(
-    *,
-    children_by_parent: dict[str, list[str]],
-    kept_nodes: list[CanonicalNode],
-    root_id: str,
-) -> set[str]:
-    """Identify grouping nodes that have no EXPECTATION descendants.
-
-    Parameters
-    ----------
-    children_by_parent
-        Adjacency list.
-    kept_nodes
-        List of currently kept nodes.
-    root_id
-        The framework root ID.
-
-    Returns
-    -------
-    set[str]
-        Set of node IDs identified as 'dead' groupings.
-    """
-
-    group_roles: set[StatementRole] = {
-        StatementRole.GRADE_LEVEL,
-        StatementRole.SECTION,
-        StatementRole.STRAND,
-        StatementRole.SUBJECT,
-        StatementRole.TOPIC,
-    }
-
-    expectation_ids = {
-        n.node_id for n in kept_nodes if n.role == StatementRole.EXPECTATION
-    }
-
-    # Postorder traversal from root to ensure children processed before parents.
-    postorder: list[str] = []
-    stack: list[str] = [root_id]
-    seen: set[str] = set()
-
-    while stack:
-        nid = stack.pop()
-        if nid in seen:
-            continue
-        seen.add(nid)
-        postorder.append(nid)
-        for child_id in children_by_parent.get(nid, []):
-            stack.append(child_id)
-
-    has_expect_desc: dict[str, bool] = {}
-
-    # Iterate in reverse postorder (leaves first).
-    for nid in reversed(postorder):
-        # Is this node an expectation?
-        is_expect = nid in expectation_ids
-
-        # Does it have any children that are/have expectations?
-        child_has_expect = False
-        for child_id in children_by_parent.get(nid, []):
-            if has_expect_desc.get(child_id, False):
-                child_has_expect = True
+    cycle_examples: list[str] = []
+
+    for nid in ctx.parent_by_child:
+        walk_seen: set[str] = set()
+        cur: str | None = nid
+
+        # Walk up towards root to check for circular parents.
+        while cur and cur != ctx.root_id:
+            if cur in walk_seen:
+                cycle_examples.append(nid)
                 break
 
-        has_expect_desc[nid] = is_expect or child_has_expect
+            walk_seen.add(cur)
+            cur = ctx.parent_by_child.get(cur)
 
-    dead_group_ids = {
-        n.node_id
-        for n in kept_nodes
-        if (n.role in group_roles) and (not has_expect_desc.get(n.node_id, False))
-    }
+        if len(cycle_examples) >= 5:
+            break
 
-    return dead_group_ids
+    if cycle_examples:
+        raise ValueError(
+            f"Tree integrity: cycle(s) detected in parent_by_child. "
+            f"{len(cycle_examples)} node(s) do not reach root. "
+            f"Examples: {cycle_examples[:5]}. "
+            f"This typically indicates a bug in the canonicalization step that "
+            f"produced circular hasChild edges."
+        )
 
 
-def _is_table_derived(node: CanonicalNode) -> bool:
-    """Return True if node has table-derived provenance cues.
+def _validate_reachability(ctx: ExportContext) -> None:
+    """Ensure all nodes in the context are reachable from the root.
 
     Parameters
     ----------
-    node
-        The CanonicalNode to evaluate.
+    ctx
+        The KG export context.
 
-    Returns
-    -------
-    bool
-        True if node has table-derived provenance cues, else False.
+    Raises
+    ------
+    ValueError
+        If there are nodes that are not reachable from the root.
     """
 
-    for sid in node.source_ids:
-        if sid.startswith("prov:table_spec=") or sid.startswith("table:"):
+    visited: set[str] = set()
+
+    def dfs(nid: str) -> None:
+        """Depth-first search to mark visited nodes.
+
+        Parameters
+        ----------
+        nid
+            The current node ID.
+        """
+
+        if nid in visited:
+            return
+
+        visited.add(nid)
+
+        for cid in ctx.children_by_parent.get(nid, []):
+            dfs(cid)
+
+    dfs(ctx.root_id)
+
+    all_nodes = set(ctx.nodes_by_id.keys())
+    if visited != all_nodes:
+        missing = sorted(all_nodes - visited)[:20]
+        raise ValueError(
+            f"Tree integrity: {len(all_nodes - visited)} nodes unreachable from root. "
+            f"Examples: {missing}"
+        )
+
+
+def _validate_root_structure(ctx: ExportContext) -> None:
+    """Ensure the root has no parent.
+
+    Parameters
+    ----------
+    ctx
+        The KG export context.
+    """
+
+    assert (
+        ctx.root_id not in ctx.parent_by_child
+    ), f"Root ID unexpectedly has a parent: {ctx.root_id}"
+
+
+def _detect_cycle_for_node(ctx: ExportContext, start_nid: str) -> bool:
+    """Helper to walk up the tree for a single node to check for cycles."""
+    walk_seen: set[str] = set()
+    cur: str | None = start_nid
+
+    while cur and cur != ctx.root_id:
+        if cur in walk_seen:
             return True
+        walk_seen.add(cur)
+        cur = ctx.parent_by_child.get(cur)
 
     return False
 
 
-def _log_dropped_nodes(
-    *,
-    dropped_node_ids: set[str],
-    dropped_node_reasons: dict[str, str],
-    node_by_id: dict[str, CanonicalNode],
-    report: GraphValidationReport,
+def _verify_columns_signature(
+    *, ctx: ExportContext, segment_decisions: list[SegmentDecision]
 ) -> None:
-    """Log information about nodes dropped during the mapping phase.
+    """Verify that table segment decisions have columns_signature when required.
 
     Parameters
     ----------
-    dropped_node_ids
-        Set of dropped node IDs.
-    dropped_node_reasons
-        Mapping of node ID to drop reason.
-    node_by_id
-        Mapping of node ID to CanonicalNode.
-    report
-        The GraphValidationReport to update.
+    ctx
+        The KG export context.
+    segment_decisions
+        The list of segment decisions.
+
+    Raises
+    ------
+    ValueError
+        If a table segment decision is missing columns_signature when required.
     """
 
-    if not dropped_node_ids:
+    if "by_columns_signature" not in set(
+        ctx.kg_config.non_standard_segment_drop_policy or []
+    ):
         return
 
-    examples: list[dict[str, Any]] = []
-
-    # Sort for deterministic logging.
-    for nid in sorted(list(dropped_node_ids))[:25]:
-        examples.append(
-            {
-                "node_id": nid,
-                "reason": dropped_node_reasons.get(nid),
-                "role": (
-                    _role_str(node_by_id[nid].role) if nid in node_by_id else None
-                ),
-            }
-        )
-    report.info(
-        "nodes_dropped_at_mapping",
-        "Some nodes were dropped during mapping (usually empty/invalid text).",
-        {"n": len(dropped_node_ids), "examples": examples},
-    )
-
-
-def _node_drop_reason(
-    *, config: KnowledgeGraphConfig, node: CanonicalNode
-) -> Optional[str]:
-    """Return a deterministic drop reason code, or None if node should be kept.
-
-    Parameters
-    ----------
-    config
-        The KnowledgeGraphConfig to use for filtering rules.
-    node
-        The CanonicalNode to evaluate.
-
-    Returns
-    -------
-    Optional[str]
-        The drop reason code, or None if the node should be kept.
-    """
-
-    role = node.role
-
-    if role == StatementRole.UNRESOLVED:
-        return "drop_unresolved_role"
-
-    if role == StatementRole.DESCRIPTOR and not config.include_descriptors:
-        return "drop_descriptors_disabled"
-
-    if role == StatementRole.GUIDANCE and not config.include_guidance:
-        return "drop_guidance_disabled"
-
-    # Keep everything else (FRAMEWORK, SUBJECT, GRADE_LEVEL, STRAND, SECTION, TOPIC,
-    # EXPECTATION, etc.)
-    return None
-
-
-def _node_text_debug(node: CanonicalNode) -> dict[str, Any]:
-    """Return a debug dict summarizing a CanonicalNode's text provenance.
-
-    Parameters
-    ----------
-    node
-        The CanonicalNode to summarize.
-
-    Returns
-    -------
-    dict[str, Any]
-        The debug summary dictionary.
-    """
-
-    return {
-        "node_id": node.node_id,
-        "role": _role_str(node.role),
-        "list_id": node.list_id,
-        "page_indices": node.page_indices,
-        "source_ids": node.source_ids[:10],
-    }
-
-
-def _normative_safety_override(
-    *, config: KnowledgeGraphConfig, node: CanonicalNode, resolved: ResolvedText
-) -> tuple[Optional[StatementRole], Optional[str]]:
-    """Return (new_role, reason) or (None, None) to keep role unchanged.
-
-    Deterministic, layout/provenance-biased (NOT country-specific):
-
-    1. If EXPECTATION is actually a heading --> reclassify to SECTION.
-    2. If EXPECTATION comes from long paragraph text and not table-derived -->
-        reclassify to GUIDANCE.
-    3. If EXPECTATION has no alphabetic characters or is too short --> signal drop at
-        mapping time (handled elsewhere; this returns None here).
-
-    Parameters
-    ----------
-    config
-        The KnowledgeGraphConfig to use for filtering rules.
-    node
-        The CanonicalNode to evaluate.
-    resolved
-        The ResolvedText for the node.
-
-    Returns
-    -------
-    tuple[Optional[StatementRole], Optional[str]]
-        The (new_role, reason) or (None, None) to keep role unchanged.
-    """
-
-    if node.role != StatementRole.EXPECTATION:
-        return None, None
-
-    # Use the same chosen description text policy as export, so prefer_text_en doesn’t
-    # accidentally bypass safety logic.
-    text = (resolved.text or resolved.source_text or "").strip()
-
-    if not text or len(text) < 3 or not _has_alpha(text):
-        return None, None
-
-    if _has_heading_provenance(node):
-        return StatementRole.SECTION, "reclassify_expectation_heading_to_section"
-
-    if (
-        config.include_guidance
-        and (not _is_table_derived(node))
-        and _has_paragraph_provenance(node)
-        and len(text) >= 160
-    ):
-        return (
-            StatementRole.GUIDANCE,
-            "reclassify_expectation_long_paragraph_to_guidance",
-        )
-
-    return None, None
-
-
-def _populate_index_stats(
-    *,
-    canonical_ir: CanonicalIR,
-    children_by_parent: dict[str, list[str]],
-    parents_by_child: dict[str, list[str]],
-    report: GraphValidationReport,
-) -> None:
-    """Compute and populate validation statistics.
-
-    Parameters
-    ----------
-    canonical_ir
-        The CanonicalIR to analyze.
-    children_by_parent
-        Mapping of parent_id to list of child_ids.
-    parents_by_child
-        Mapping of child_id to list of parent_ids.
-    report
-        The GraphValidationReport to populate.
-    """
-
-    role_counts: dict[str, int] = {}
-
-    for n in canonical_ir.nodes:
-        role = getattr(n, "role", None)
-        role_str = getattr(role, "value", role)
-        role_counts[str(role_str)] = role_counts.get(str(role_str), 0) + 1
-
-    report.stats.update(
-        {
-            "n_nodes": len(canonical_ir.nodes),
-            "n_edges": len(canonical_ir.edges),
-            "n_unresolved": len(getattr(canonical_ir, "unresolved", []) or []),
-            "role_counts": role_counts,
-            "n_parents_indexed": len(parents_by_child),
-            "n_children_indexed": len(children_by_parent),
-        }
-    )
-
-
-def _process_lc_candidate(
-    *,
-    academic_subject: str,
-    base_meta: dict[str, Any],
-    cand: LCSplitCandidate,
-    common: dict[str, str],
-    defaults: DefaultsResolver,
-    ids: DeterministicIdRegistry,
-    policy: str,
-    seen_lc_ids: set[str],
-    seen_rel_ids: set[str],
-    sfi: StandardsFrameworkItem,
-    split_stats: dict[str, int],
-) -> Optional[tuple[LearningComponent, Relationship]]:
-    """Process a single LCSplitCandidate, creating objects if not duplicates.
-
-    Parameters
-    ----------
-    academic_subject
-        The academic subject string.
-    base_meta
-        The base metadata dictionary.
-    cand
-        The split candidate to process.
-    common
-        Common metadata dictionary.
-    defaults
-        DefaultsResolver instance.
-    ids
-        DeterministicIdRegistry instance.
-    policy
-        The policy string.
-    seen_lc_ids
-        Set of seen LC identifiers (mutated in place).
-    seen_rel_ids
-        Set of seen relationship identifiers (mutated in place).
-    sfi
-        The source StandardsFrameworkItem.
-    split_stats
-        Split statistics dictionary.
-
-    Returns
-    -------
-    Optional[tuple[LearningComponent, Relationship]]
-        The created LC and Relationship, or None if duplicate.
-    """
-
-    # Mint deterministic LC identifier using the split_key.
-    lc_identifier = ids.learning_component_id(
-        standard_sfi_id=sfi.identifier, split_key=cand.split_key
-    )
-    lc_identifier_str = str(lc_identifier)
-
-    if lc_identifier_str in seen_lc_ids:
-        return None
-
-    # supports relationship ID is deterministic --> check it BEFORE creating/adding the
-    # LC.
-    rel_identifier = ids.relationship_id(
-        from_id=lc_identifier, rel_type="supports", to_id=sfi.case_identifier_uuid
-    )
-    rel_identifier_str = str(rel_identifier)
-
-    if rel_identifier_str in seen_rel_ids:
-        return None
-
-    # LC-specific metadata (split details).
-    lc_meta: dict[str, Any] = dict(base_meta)
-    lc_meta.update(
-        {
-            "splitKey": cand.split_key,
-            "splitIndex": cand.split_index,
-            "nSplitsForStandard": split_stats.get("n_candidates", 0),
-            "usedFallback": bool(split_stats.get("used_fallback", 0)),
-        }
-    )
-
-    lc = LearningComponent(
-        academic_subject=academic_subject,
-        attribution_statement=common["attribution_statement"],
-        author=common["author"],
-        description=cand.text,
-        identifier=lc_identifier,
-        in_language=sfi.in_language,
-        license=common["license"],
-        metadata=lc_meta,
-        provider=common["provider"],
-    )
-
-    rel_meta: dict[str, Any] = {
-        **{k: v for k, v in base_meta.items() if k != "sourceStandard"},
-        "policy": f"lc_{policy}",
-        "splitKey": cand.split_key,
-        "splitIndex": cand.split_index,
-        "nSplitsForStandard": split_stats.get("n_candidates", 0),
-        "usedFallback": bool(split_stats.get("used_fallback", 0)),
-        "supportsStandardIdentifier": str(sfi.identifier),
-        "supportsStandardCaseIdentifierUUID": str(sfi.case_identifier_uuid),
-    }
-    if base_meta.get("englishText"):
-        rel_meta["englishText"] = base_meta.get("englishText")
-        rel_meta["englishLanguage"] = base_meta.get("englishLanguage") or "en"
-
-    rel = Relationship(
-        attribution_statement=common["attribution_statement"],
-        author=common["author"],
-        description=defaults.relationship_description(rel_type="supports"),
-        identifier=rel_identifier,
-        license=common["license"],
-        metadata=rel_meta,
-        provider=common["provider"],
-        relationship_type="supports",
-        source_entity="LearningComponent",
-        source_entity_key="identifier",
-        source_entity_value=str(lc.identifier),
-        target_entity="StandardsFrameworkItem",
-        target_entity_key="caseIdentifierUUID",
-        target_entity_value=str(sfi.case_identifier_uuid),
-    )
-
-    # Update seen sets.
-    seen_lc_ids.add(lc_identifier_str)
-    seen_rel_ids.add(rel_identifier_str)
-
-    return lc, rel
-
-
-def _process_node_for_mapping(
-    *,
-    config: KnowledgeGraphConfig,
-    defaults: DefaultsResolver,
-    ids: DeterministicIdRegistry,
-    node: CanonicalNode,
-    root_node_id: str,
-    subject_resolver: SubjectResolver,
-) -> tuple[
-    Optional[StandardsFrameworkItem],
-    Optional[UUID],
-    Optional[UUID],
-    Optional[str],
-    Optional[dict[str, Any]],
-]:
-    """Process a single node for mapping to SFI, handling validation and overrides.
-
-    Parameters
-    ----------
-    config
-        The KnowledgeGraphConfig to use for filtering rules.
-    defaults
-        DefaultsResolver instance.
-    ids
-        DeterministicIdRegistry instance.
-    node
-        The CanonicalNode to process.
-    root_node_id
-        The root node_id of the framework.
-    subject_resolver
-        SubjectResolver instance.
-
-    Returns
-    -------
-    tuple
-        (SFI, SFI identifier, SFI CASE UUID, drop_reason, override_data)
-    """
-
-    if node.node_id == root_node_id:
-        return None, None, None, None, None
-
-    resolved = _resolve_text(config=config, node=node)
-
-    if resolved is None:
-        return None, None, None, "drop_empty_text", None
-
-    # Normative safety overrides (only for EXPECTATION).
-    override_role = override_reason = None
-    if getattr(config, "enable_normative_safety_overrides", True):
-        override_role, override_reason = _normative_safety_override(
-            config=config, node=node, resolved=resolved
-        )
-
-    effective_role = override_role if override_role is not None else node.role
-
-    # Validate node for inclusion.
-    drop_reason = _validate_sfi_node(
-        config=config, effective_role=effective_role, resolved=resolved
-    )
-
-    if drop_reason:
-        return None, None, None, drop_reason, None
-
-    # Determine subject context.
-    subject_text = (
-        resolved.text
-        if effective_role == StatementRole.SUBJECT
-        else subject_resolver.get_subject(start_node_id=node.node_id)
-    )
-
-    # Create SFI.
-    sfi, sfi_identifier, sfi_case_uuid = _create_sfi_entity(
-        defaults=defaults,
-        effective_role=effective_role,
-        ids=ids,
-        node=node,
-        resolved=resolved,
-        subject_text=subject_text,
-    )
-
-    override_data = None
-
-    if override_role is not None:
-        override_data = {
-            "to_role": override_role,
-            "reason": override_reason,
-            "resolved": resolved,
-        }
-
-    return sfi, sfi_identifier, sfi_case_uuid, None, override_data
-
-
-def _prune_dead_groupings(
-    *,
-    canonical: CanonicalIR,
-    children_by_parent: dict[str, list[str]],
-    kept_edges: list[CanonicalEdge],
-    kept_node_ids: set[str],
-    kept_nodes: list[CanonicalNode],
-    report: GraphValidationReport,
-) -> tuple[
-    list[CanonicalNode],
-    set[str],
-    list[CanonicalEdge],
-    list[dict[str, Any]],
-    set[str],
-    dict[str, str],
-]:
-    """Prune "dead" grouping branches (group nodes with no EXPECTATION descendants).
-
-    NB: This step is intentionally Step-5 only so that CanonicalIR remains a faithful
-    stitch of extracted structure; export decides what to drop.
-
-    The process is as follows:
-
-    1. Identify Dead Groupings: Find all grouping nodes (e.g., SECTION, STRAND) that do
-        not have any EXPECTATION descendants.
-    2. Update Node Sets: Remove identified dead grouping nodes from the kept node sets.
-    3. Filter Edges (Pass 1): Remove edges connected to the dropped dead grouping nodes.
-    4. Check Reachability: Compute reachability from the root node to identify any
-        nodes that have become unreachable due to step 3.
-    5. Update Node Sets: Remove unreachable nodes from the kept node sets.
-    6. Filter Edges (Pass 2): Remove edges connected to the newly unreachable nodes.
-    7. Reporting: Update the report with statistics about the pruning process.
-
-    Parameters
-    ----------
-    canonical
-        The CanonicalIR being processed.
-    children_by_parent
-        Adjacency list mapping from parent node_id to list of child node_ids.
-    kept_edges
-        The list of currently kept CanonicalEdges.
-    kept_node_ids
-        The set of currently kept node IDs.
-    kept_nodes
-        The list of currently kept CanonicalNodes.
-    report
-        The GraphValidationReport to update.
-
-    Returns
-    -------
-    tuple
-        (kept_nodes, kept_node_ids, kept_edges, dropped_edges_extra,
-         dropped_node_ids_extra, dropped_node_reasons_extra)
-    """
-
-    # 1.
-    dead_group_ids = _identify_dead_group_ids(
-        children_by_parent=children_by_parent,
-        kept_nodes=kept_nodes,
-        root_id=canonical.root_id,
-    )
-
-    if not dead_group_ids:
-        report.stats.setdefault("pruning", {})
-        report.stats["pruning"]["dead_grouping_prune"] = {
-            "enabled": True,
-            "dead_group_nodes_pruned": 0,
-            "unreachable_nodes_pruned": 0,
-        }
-        return kept_nodes, kept_node_ids, kept_edges, [], set(), {}
-
-    # 2.
-    dropped_node_ids_extra = set(dead_group_ids)
-    dropped_node_reasons_extra = {
-        nid: "drop_dead_group_no_expectation_descendant" for nid in dead_group_ids
-    }
-
-    current_kept_ids = kept_node_ids - dead_group_ids
-
-    # 3.
-    kept_edges_pass1, dropped_edges_pass1 = _filter_edges_by_kept_nodes(
-        edges=kept_edges,
-        kept_node_ids=current_kept_ids,
-        drop_reason="drop_edge_after_dead_group_prune",
-    )
-
-    # 4.
-    reachable_ids = _compute_reachability_from_edges(
-        edges=kept_edges_pass1, root_id=canonical.root_id
-    )
-
-    unreachable_ids = current_kept_ids - reachable_ids
-
-    # 5.
-    if unreachable_ids:
-        for nid in unreachable_ids:
-            dropped_node_ids_extra.add(nid)
-            dropped_node_reasons_extra[nid] = "drop_unreachable_after_dead_group_prune"
-        current_kept_ids = current_kept_ids - unreachable_ids
-
-    # 6. NB: We filter based on the result of Pass 1 to avoid double-processing.
-    kept_edges_final, dropped_edges_pass2 = _filter_edges_by_kept_nodes(
-        edges=kept_edges_pass1,
-        kept_node_ids=current_kept_ids,
-        drop_reason="drop_edge_after_reachability_prune",
-    )
-
-    all_dropped_edges = dropped_edges_pass1 + dropped_edges_pass2
-    kept_nodes_final = [n for n in kept_nodes if n.node_id in current_kept_ids]
-
-    # 7.
-    report.stats.setdefault("pruning", {})
-    report.stats["pruning"]["dead_grouping_prune"] = {
-        "enabled": True,
-        "dead_group_nodes_pruned": len(dead_group_ids),
-        "unreachable_nodes_pruned": len(unreachable_ids),
-        "examples": sorted(list(dead_group_ids))[:25],
-    }
-    report.warn(
-        "pruned_dead_groupings",
-        "Pruned grouping nodes with no EXPECTATION descendants (export-only).",
-        {"n": len(dead_group_ids), "examples": sorted(list(dead_group_ids))[:25]},
-    )
-
-    return (
-        kept_nodes_final,
-        current_kept_ids,
-        kept_edges_final,
-        all_dropped_edges,
-        dropped_node_ids_extra,
-        dropped_node_reasons_extra,
-    )
-
-
-def _resolve_edge_endpoints(
-    *,
-    edge: CanonicalEdge,
-    framework: StandardsFramework,
-    root_id: str,
-    sfi_case_uuid_by_canonical_id: Optional[dict[str, UUID]],
-    sfi_uuid_by_canonical_id: dict[str, UUID],
-) -> tuple[Optional[UUID], Optional[UUID], str, Optional[UUID], Optional[UUID]]:
-    """Resolve identifiers for parent and child nodes.
-
-    Parameters
-    ----------
-    edge
-        The CanonicalEdge to resolve.
-    framework
-        The StandardsFramework entity.
-    root_id
-        The root node_id of the framework.
-    sfi_case_uuid_by_canonical_id
-        Mapping of canonical_id to SFI CASE UUID.
-    sfi_uuid_by_canonical_id
-        Mapping of canonical_id to SFI identifier UUID.
-
-    Returns
-    -------
-    tuple[Optional[UUID], Optional[UUID], str, Optional[UUID], Optional[UUID]]
-        The (from_identifier, from_case_uuid, source_entity, to_identifier,
-    """
-
-    if edge.parent_id == root_id:
-        from_identifier = framework.identifier
-        from_case_uuid = framework.case_identifier_uuid
-        source_entity = "StandardsFramework"
-    else:
-        from_identifier = sfi_uuid_by_canonical_id.get(edge.parent_id)
-        from_case_uuid = (
-            sfi_case_uuid_by_canonical_id.get(edge.parent_id)
-            if sfi_case_uuid_by_canonical_id is not None
-            else None
-        )
-        source_entity = "StandardsFrameworkItem"
-
-    to_identifier = sfi_uuid_by_canonical_id.get(edge.child_id)
-    to_case_uuid = (
-        sfi_case_uuid_by_canonical_id.get(edge.child_id)
-        if sfi_case_uuid_by_canonical_id is not None
-        else None
-    )
-
-    return from_identifier, from_case_uuid, source_entity, to_identifier, to_case_uuid
-
-
-def _resolve_text(
-    *, config: KnowledgeGraphConfig, node: CanonicalNode
-) -> Optional[ResolvedText]:
-    """Resolve text and language for a node.
-
-    Parameters
-    ----------
-    config
-        The KnowledgeGraphConfig.
-    node
-        The CanonicalNode to resolve.
-
-    Returns
-    -------
-    Optional[ResolvedText]
-        The resolved text, or None if no text found.
-    """
-
-    # Prefer a unit that actually has usable text (source or English).
-    unit = _select_text_unit(node=node) or node.title or node.body
-
-    if not unit:
-        return None
-
-    source_lang = (getattr(unit, "language", None) or "und").strip() or "und"
-    source_text = (getattr(unit, "text", None) or "").strip()
-
-    # CanonicalIR TextUnit often has text_en; keep it optional + safe.
-    text_en = (getattr(unit, "text_en", None) or "").strip()
-
-    # If there's literally no usable text, drop the node deterministically.
-    if not source_text and not text_en:
-        return None
-
-    # Choose description text deterministically, and keep its language in sync.
-    if config.description_text_policy == "prefer_text_en" and text_en:
-        text, text_lang = text_en, "en"
-    else:
-        text, text_lang = (source_text, source_lang) if source_text else (text_en, "en")
-
-    if not text:
-        return None
-
-    # Choose inLanguage deterministically *and* consistent with chosen description text.
-    if config.export_in_language_policy == "default":
-        in_lang = (config.language_default or text_lang or "und").strip() or "und"
-    else:
-        in_lang = text_lang
-
-    return ResolvedText(
-        english_text=text_en or None,
-        english_language="en" if text_en else None,
-        in_language=in_lang,
-        source_language=source_lang,
-        source_text=source_text,
-        text=text,
-    )
-
-
-def _role_str(role: StatementRole | str) -> str:
-    """Return the string representation of a StatementRole.
-
-    Parameters
-    ----------
-    role
-        The StatementRole or string.
-
-    Returns
-    -------
-    str
-        The string representation of the role.
-    """
-
-    return getattr(role, "value", role)
-
-
-def _seed(*parts: str) -> str:
-    """Create a stable seed string from normalized parts.
-
-    Parameters
-    ----------
-    parts
-        The parts to join into a seed string.
-
-    Returns
-    -------
-    str
-        The normalized seed string.
-    """
-
-    return ":".join(p.strip().lower() for p in parts)
-
-
-def _select_text_unit(*, node: CanonicalNode) -> Optional[TextUnit]:
-    """Select a text unit for a node.
-
-    Parameters
-    ----------
-    node
-        The CanonicalNode to select text from.
-
-    Returns
-    -------
-    Optional[TextUnit]
-        The selected text unit, or None if neither has text.
-    """
-
-    def _has_any_text(u: Optional[TextUnit]) -> bool:
-        """Return True if TextUnit has any text.
-
-        Parameters
-        ----------
-        u
-            The TextUnit to evaluate.
-
-        Returns
-        -------
-        bool
-            True if TextUnit has any text, else False.
-        """
-
-        if u is None:
-            return False
-
-        return bool(
-            (u.text or "").strip() or (getattr(u, "text_en", None) or "").strip()
-        )
-
-    if _has_any_text(node.title):
-        return node.title
-
-    if _has_any_text(node.body):
-        return node.body
-
-    return None
-
-
-def _try_parse_bullets(*, text: str) -> list[str]:
-    """Attempt to parse a multiline string into bullet items.
-
-    Parameters
-    ----------
-    text
-        The input text.
-
-    Returns
-    -------
-    list[str]
-        The list of bullet items, or empty list if not a bullet list.
-    """
-
-    if not text:
-        return []
-
-    current_parts: list[str] = []
-    items: list[str] = []
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    preamble_parts: list[str] = []
-    saw_bullet_start = False
-
-    for raw in lines:
-        line = raw.rstrip()
-        stripped = line.strip()
-
-        # Case 1: Blank line. Flush current buffer and reset.
-        if not stripped:
-            if saw_bullet_start:
-                _flush_bullet_buffer(buffer=current_parts, items=items)
-            else:
-                # Before bullets: don't carry preamble across paragraph breaks.
-                preamble_parts.clear()
+    for d in segment_decisions:
+        if d.segment_kind != "table" or d.decision_type.value in {
+            "ignore",
+            "unresolved",
+        }:
             continue
 
-        # Case 2: New bullet start. Flush previous buffer and start new one.
-        if (content := _get_bullet_content(line=line)) is not None:
-            # Allow preamble like "Students should be able to:" before bullets.
-            # Deterministically attach it to the FIRST bullet for context.
-            if not saw_bullet_start and preamble_parts:
-                prefix = _collapse_whitespace(text=" ".join(preamble_parts)).strip()
-
-                if prefix:
-                    content = f"{prefix} {content}".strip()
-
-                preamble_parts.clear()
-
-            _flush_bullet_buffer(buffer=current_parts, items=items)
-            saw_bullet_start = True
-            current_parts.append(content)
-            continue
-
-        # Case 3: Continuation text. If we haven't seen a bullet start yet, this is
-        # preamble text --> keep scanning until we find bullets.
-        if not saw_bullet_start:
-            preamble_parts.append(stripped)
-            continue
-
-        current_parts.append(stripped)
-
-    # Flush any remaining text in the buffer.
-    _flush_bullet_buffer(buffer=current_parts, items=items)
-
-    # Require at least 2 items to consider it a meaningful split.
-    if len(items) < 2:
-        return []
-
-    return items
-
-
-def _update_drop_counters(*, counters: dict[str, int], reason_code: str) -> None:
-    """Update drop counters based on reason code.
-
-    Parameters
-    ----------
-    counters
-        The drop counters dictionary to update.
-    reason_code
-        The reason code for the drop.
-    """
-
-    if "child_is_framework_root" in reason_code:
-        counters["child_is_root"] += 1
-    elif "missing_endpoint" in reason_code or "child_not_exported" in reason_code:
-        counters["missing_endpoint"] += 1
-    elif "self_loop" in reason_code:
-        counters["self_loop"] += 1
-
-
-def _validate_node_doc_keys(
-    *, canonical_ir: CanonicalIR, report: GraphValidationReport
-) -> None:
-    """Validate that all nodes match the CanonicalIR doc_key.
-
-    Parameters
-    ----------
-    canonical_ir
-        The CanonicalIR to validate.
-    report
-        The GraphValidationReport to log errors to.
-    """
-
-    doc_key = canonical_ir.doc_key
-    mismatched_doc_keys: list[dict[str, Any]] = []
-
-    for n in canonical_ir.nodes:
-        if n.doc_key != doc_key:
-            mismatched_doc_keys.append(
-                {
-                    "node_id": n.node_id,
-                    "node_doc_key": n.doc_key,
-                    "canonical_doc_key": doc_key,
-                }
-            )
-
-    if mismatched_doc_keys:
-        report.error(
-            "doc_key_mismatch",
-            "CanonicalIR.doc_key does not match one or more CanonicalNode.doc_key values.",
-            {
-                "mismatches": mismatched_doc_keys[:25],
-                "n_mismatches": len(mismatched_doc_keys),
-            },
-        )
-
-
-def _validate_relationship_endpoints(
-    *,
-    child_id: str,
-    edge: CanonicalEdge,
-    exported_sfi_identifiers: set[UUID],
-    from_case_uuid: Optional[UUID],
-    from_identifier: Optional[UUID],
-    root_id: str,
-    to_case_uuid: Optional[UUID],
-    to_identifier: Optional[UUID],
-) -> Optional[dict[str, Any]]:
-    """Validate relationship endpoints and return a drop reason if invalid.
-
-    Parameters
-    ----------
-    child_id
-        The child node ID.
-    edge
-        The CanonicalEdge being processed.
-    exported_sfi_identifiers
-        Set of exported SFI identifiers.
-    from_case_uuid
-        The source CASE UUID.
-    from_identifier
-        The source entity identifier.
-    root_id
-        The root node ID.
-    to_case_uuid
-        The target CASE UUID.
-    to_identifier
-        The target entity identifier.
-
-    Returns
-    -------
-    Optional[dict[str, Any]]
-        A dictionary describing the drop reason if invalid, or None if valid.
-    """
-
-    if child_id == root_id:
-        return {
-            "parent_id": edge.parent_id,
-            "child_id": edge.child_id,
-            "reason": "drop_edge_child_is_framework_root",
-        }
-
-    # Missing endpoints after mapping-time drops.
-    if (
-        from_identifier is None
-        or to_identifier is None
-        or from_case_uuid is None
-        or to_case_uuid is None
-    ):
-        return {
-            "parent_id": edge.parent_id,
-            "child_id": edge.child_id,
-            "reason": "drop_edge_missing_endpoint_after_mapping",
-            "missing_parent": (from_identifier is None) or (from_case_uuid is None),
-            "missing_child": (to_identifier is None) or (to_case_uuid is None),
-        }
-
-    # Child must be an exported SFI.
-    if to_identifier not in exported_sfi_identifiers:
-        return {
-            "parent_id": edge.parent_id,
-            "child_id": edge.child_id,
-            "reason": "drop_edge_child_not_exported_sfi",
-        }
-
-    # Avoid self loops (by entity identifiers).
-    if from_identifier == to_identifier:
-        return {
-            "parent_id": edge.parent_id,
-            "child_id": edge.child_id,
-            "reason": "drop_self_loop",
-        }
-
-    return None
-
-
-def _validate_root_node(
-    *, node_by_id: dict[str, CanonicalNode], report: GraphValidationReport, root_id: str
-) -> None:
-    """Validate existence and role of the root node.
-
-    Parameters
-    ----------
-    node_by_id
-        Mapping of node_id to CanonicalNode.
-    report
-        The GraphValidationReport to log warnings/errors to.
-    root_id
-        The root node ID.
-    """
-
-    if root_id not in node_by_id:
-        report.error(
-            "missing_root_id",
-            "CanonicalIR.root_id does not exist in nodes[].",
-            {"root_id": root_id},
-        )
-    else:
-        # Check that root role should usually be framework.
-        root_role = getattr(node_by_id[root_id], "role", None)
-        root_role_str = getattr(root_role, "value", root_role)
-        if root_role_str != StatementRole.FRAMEWORK.value:
-            report.warn(
-                "root_role_not_framework",
-                "CanonicalIR.root_id exists but root node role is not 'framework'.",
-                {"root_id": root_id, "root_role": root_role_str},
+        if not d.columns_signature:
+            raise ValueError(
+                f"Missing columns_signature on table decision {d.decision_id} "
+                f"(segment_id={d.segment_id})"
             )
 
 
-def _validate_sfi_node(
-    *,
-    config: KnowledgeGraphConfig,
-    effective_role: StatementRole,
-    resolved: ResolvedText,
-) -> Optional[str]:
-    """Validate if a node should be exported as an SFI.
+def _verify_tree_integrity(ctx: ExportContext) -> None:
+    """Verify the integrity of the KG tree structure.
 
-    Parameters
-    ----------
-    config
-        The KnowledgeGraphConfig to use for filtering rules.
-    effective_role
-        The effective StatementRole for the node.
-    resolved
-        The ResolvedText for the node.
-
-    Returns
-    -------
-    Optional[str]
-        Drop reason if invalid, None if valid.
+    Raises
+    ------
+    ValueError
+        If the tree structure is invalid.
     """
 
-    # Junk filter for EXPECTATION.
-    if effective_role == StatementRole.EXPECTATION:
-        # Validate against the chosen text (honors description_text_policy).
-        txt = (resolved.text or resolved.source_text or "").strip()
-        if len(txt) < 3 or not _has_alpha(txt):
-            return "drop_expectation_non_linguistic_or_too_short"
-
-    if effective_role not in _ROLE_TO_NORMALIZED:
-        return f"drop_unmapped_role:{_role_str(effective_role)}"
-
-    if effective_role == StatementRole.GUIDANCE and not config.include_guidance:
-        return "drop_guidance_disabled_after_reclassify"
-
-    if effective_role == StatementRole.DESCRIPTOR and not config.include_descriptors:
-        return "drop_descriptors_disabled_after_reclassify"
-
-    return None
-
-
-def _validate_tree_topology(
-    *, parents_by_child: dict[str, list[str]], report: GraphValidationReport
-) -> None:
-    """Check for multiple parents (tree constraint violations).
-
-    Parameters
-    ----------
-    parents_by_child
-        Mapping of child_id to list of parent_ids.
-    report
-        The GraphValidationReport to log warnings to.
-    """
-
-    multi_parent_nodes: list[dict[str, Any]] = []
-
-    for child_id, parents in parents_by_child.items():
-        if len(parents) > 1:
-            multi_parent_nodes.append({"child_id": child_id, "parents": parents})
-
-    if multi_parent_nodes:
-        report.warn(
-            "multiple_parents_detected",
-            "One or more nodes have multiple parents (tree constraint violation).",
-            {"examples": multi_parent_nodes[:25], "n": len(multi_parent_nodes)},
-        )
-
-
-def build_has_child_relationships(
-    *,
-    defaults: DefaultsResolver,
-    filtered: FilteredCanonicalIRIndex,
-    framework: StandardsFramework,
-    ids: DeterministicIdRegistry,
-    sfi_case_uuid_by_canonical_id: Optional[dict[str, UUID]] = None,
-    sfi_uuid_by_canonical_id: dict[str, UUID],
-    sfis: list[StandardsFrameworkItem],
-) -> HasChildBuildResult:
-    """Build hasChild relationships from CanonicalIR edges (post-filter).
-
-    Deterministic policies:
-
-    1. If an edge endpoint is missing (dropped at mapping), drop the edge and log it.
-    2. Tree constraint: each child can have only one parent. If multiple parents exist,
-        keep the FIRST one encountered in filtered.kept_edges order (which is
-        deterministic), drop the rest and log them.
-    3. Deduplicate identical relationships deterministically (keep first by edge order).
-
-    Root connectivity:
-
-    1. BFS from framework.identifier over hasChild edges (entity identifiers).
-    2. Warn if any exported SFI is unreachable.
-
-    Parameters
-    ----------
-    defaults
-        The DefaultsResolver to use for metadata defaults.
-    filtered
-        The FilteredCanonicalIRIndex to build from.
-    framework
-        The StandardsFramework entity.
-    ids
-        The DeterministicIdRegistry to use for UUID generation.
-    sfi_case_uuid_by_canonical_id
-        Optional mapping of CanonicalIR node_id -> exported SFI CASE UUID.
-        If not provided, it will be derived from the sfis list.
-    sfi_uuid_by_canonical_id
-        Mapping of CanonicalIR node_id -> exported SFI identifier (entity UUID).
-    sfis
-        The list of exported StandardsFrameworkItems.
-
-    Returns
-    -------
-    HasChildBuildResult
-        The result of building hasChild relationships.
-    """
-
-    report = filtered.report.model_copy(deep=True)
-    canonical = filtered.canonical
-
-    # If caller didn't pass CASE UUID mapping, derive it from SFI metadata.
-    if sfi_case_uuid_by_canonical_id is None:
-        sfi_case_uuid_by_canonical_id = {}
-        for sfi in sfis:
-            md = sfi.metadata or {}
-            canonical_id = md.get("canonicalNodeId") or md.get("canonical_node_id")
-            if canonical_id:
-                sfi_case_uuid_by_canonical_id[str(canonical_id)] = (
-                    sfi.case_identifier_uuid
-                )
-
-    exported_sfi_identifiers = {s.identifier for s in sfis}
-
-    relationships: list[Relationship] = []
-    dropped_edges: list[dict[str, Any]] = []
-
-    # child_identifier -> kept parent_identifier (tree constraint).
-    parent_of_child: dict[UUID, UUID] = {}
-
-    # Dedupe by relationship identifier.
-    seen_rel_ids: set[str] = set()
-
-    # For BFS connectivity check.
-    adjacency: dict[UUID, list[UUID]] = {}
-
-    # Counters for validation report.
-    drop_counters = {
-        "missing_endpoint": 0,
-        "child_is_root": 0,
-        "self_loop": 0,
-        "multi_parent": 0,
-        "duplicates": 0,
-    }
-
-    common = defaults.common()
-
-    for e in filtered.kept_edges:
-        (
-            from_identifier,
-            from_case_uuid,
-            source_entity,
-            to_identifier,
-            to_case_uuid,
-        ) = _resolve_edge_endpoints(
-            edge=e,
-            framework=framework,
-            root_id=canonical.root_id,
-            sfi_case_uuid_by_canonical_id=sfi_case_uuid_by_canonical_id,
-            sfi_uuid_by_canonical_id=sfi_uuid_by_canonical_id,
-        )
-
-        drop_reason = _validate_relationship_endpoints(
-            child_id=e.child_id,
-            edge=e,
-            exported_sfi_identifiers=exported_sfi_identifiers,
-            from_case_uuid=from_case_uuid,
-            from_identifier=from_identifier,
-            root_id=canonical.root_id,
-            to_case_uuid=to_case_uuid,
-            to_identifier=to_identifier,
-        )
-
-        if drop_reason:
-            reason_code = drop_reason.get("reason", "")
-            _update_drop_counters(counters=drop_counters, reason_code=reason_code)
-            dropped_edges.append(drop_reason)
-            continue
-
-        assert from_identifier is not None
-        assert to_identifier is not None
-        assert from_case_uuid is not None
-        assert to_case_uuid is not None
-
-        if to_identifier in parent_of_child:
-            drop_counters["multi_parent"] += 1
-            dropped_edges.append(
-                {
-                    "parent_id": e.parent_id,
-                    "child_id": e.child_id,
-                    "reason": "drop_multi_parent_keep_first",
-                    "kept_parent_identifier": str(parent_of_child[to_identifier]),
-                    "dropped_parent_identifier": str(from_identifier),
-                }
-            )
-            continue
-
-        rel = _create_relationship(
-            canonical_doc_key=canonical.doc_key,
-            common_metadata=common,
-            defaults=defaults,
-            edge=e,
-            from_case_uuid=from_case_uuid,
-            from_identifier=from_identifier,
-            ids=ids,
-            source_entity=source_entity,
-            to_case_uuid=to_case_uuid,
-            to_identifier=to_identifier,
-        )
-        rel_identifier_str = str(rel.identifier)
-
-        if rel_identifier_str in seen_rel_ids:
-            drop_counters["duplicates"] += 1
-            dropped_edges.append(
-                {
-                    "parent_id": e.parent_id,
-                    "child_id": e.child_id,
-                    "reason": "drop_duplicate_relationship",
-                    "relationship_identifier": rel_identifier_str,
-                }
-            )
-            continue
-
-        seen_rel_ids.add(rel_identifier_str)
-        parent_of_child[to_identifier] = from_identifier
-        adjacency.setdefault(from_identifier, []).append(to_identifier)
-        relationships.append(rel)
-
-    # Deterministic ordering: by relationship identifier string.
-    relationships.sort(key=lambda r: str(r.identifier))
-
-    # Connectivity check: BFS from framework.identifier over hasChild edges.
-    unreachable_sfis = _check_connectivity(
-        adjacency=adjacency,
-        exported_sfi_identifiers=exported_sfi_identifiers,
-        root_identifier=framework.identifier,
-    )
-
-    _finalize_has_child_report(
-        drop_counters=drop_counters,
-        dropped_edges=dropped_edges,
-        exported_sfi_identifiers=exported_sfi_identifiers,
-        relationships=relationships,
-        report=report,
-        sfis=sfis,
-        unreachable_sfis=unreachable_sfis,
-    )
-
-    return HasChildBuildResult(
-        dropped_edges=dropped_edges, relationships=relationships, report=report
-    )
-
-
-def build_index(*, canonical_ir: CanonicalIR) -> CanonicalIRIndex:
-    """Build lookup maps and adjacency, and run basic invariant checks.
-
-    Parameters
-    ----------
-    canonical_ir
-        The CanonicalIR to index.
-
-    Returns
-    -------
-    CanonicalIRIndex
-        The indexed CanonicalIR.
-    """
-
-    report = GraphValidationReport(
-        doc_key=canonical_ir.doc_key, pdf_name=canonical_ir.pdf_name
-    )
-
-    node_by_id = _build_node_map(canonical_ir=canonical_ir, report=report)
-
-    _validate_root_node(
-        node_by_id=node_by_id, report=report, root_id=canonical_ir.root_id
-    )
-    _validate_node_doc_keys(canonical_ir=canonical_ir, report=report)
-
-    children_by_parent, parents_by_child = _build_adjacency_maps(
-        canonical_ir=canonical_ir, node_by_id=node_by_id, report=report
-    )
-
-    _validate_tree_topology(parents_by_child=parents_by_child, report=report)
-
-    _populate_index_stats(
-        canonical_ir=canonical_ir,
-        children_by_parent=children_by_parent,
-        parents_by_child=parents_by_child,
-        report=report,
-    )
-
-    report.raise_if_errors()
-
-    return CanonicalIRIndex(
-        canonical_ir=canonical_ir,
-        children_by_parent=children_by_parent,
-        node_by_id=node_by_id,
-        parents_by_child=parents_by_child,
-        report=report,
-    )
-
-
-def build_learning_components(
-    *,
-    config: KnowledgeGraphConfig,
-    defaults: DefaultsResolver,
-    ids: DeterministicIdRegistry,
-    report: GraphValidationReport,
-    sfis: list[StandardsFrameworkItem],
-) -> LearningComponentBuildResult:
-    """LearningComponent factory.
-
-    Policy:
-
-    1. If generate_learning_components=False: produce none.
-    2. Else: create 1 LearningComponent per SFI where
-        normalized_statement_type == "Standard".
-    3. Emit supports relationships LC -> SFI.
-    4. All entity + relationship identifiers are deterministic. supports targets SFI
-        CASE UUIDs.
-    5. Deterministic ordering: sort both lists by UUID string.
-
-    Parameters
-    ----------
-    config
-        The KnowledgeGraphConfig to use for generation policies.
-    defaults
-        The DefaultsResolver to use for default metadata values.
-    ids
-        The DeterministicIdRegistry to use for UUID generation.
-    report
-        The GraphValidationReport to log generation stats/warnings.
-    sfis
-        The list of StandardsFrameworkItems to generate LearningComponents from.
-
-    Returns
-    -------
-    LearningComponentBuildResult
-        The generated LearningComponents, supports relationships, and updated report.
-    """
-
-    report = report.model_copy(deep=True)
-
-    if not config.generate_learning_components:
-        report.stats.setdefault("learning_components", {})
-        report.stats["learning_components"].update(
-            {
-                "enabled": False,
-                "n_learning_components": 0,
-                "n_supports_relationships": 0,
-            }
-        )
-
-        return LearningComponentBuildResult(
-            learning_components=[], supports_relationships=[], report=report
-        )
-
-    # Only standards (not groupings/other).
-    standard_sfis = [s for s in sfis if s.normalized_statement_type == "Standard"]
-
-    # Split/quality counters.
-    duplicates_removed_total = 0
-    n_candidates_total = 0
-    n_standards_split = 0
-    truncated_total = 0
-    used_fallback_total = 0
-
-    lcs: list[LearningComponent] = []
-    supports_rels: list[Relationship] = []
-
-    duplicates = 0
-    seen_lc_ids: set[str] = set()
-    seen_rel_ids: set[str] = set()
-
-    common = defaults.common()
-
-    for sfi in standard_sfis:
-        policy, candidates, split_stats = _generate_lc_splits_for_standard(
-            config=config, sfi=sfi
-        )
-
-        if split_stats.get("n_candidates", 1) > 1:
-            n_standards_split += 1
-
-        n_candidates_total += int(split_stats.get("n_candidates", 0) or 0)
-        duplicates_removed_total += int(split_stats.get("duplicates_removed", 0) or 0)
-        truncated_total += int(split_stats.get("truncated", 0) or 0)
-        used_fallback_total += int(split_stats.get("used_fallback", 0) or 0)
-
-        # Build base metadata by inheriting the same provenance/text fields from the SFI.
-        base_meta = _create_lc_base_metadata(policy=policy, sfi=sfi)
-
-        academic_subject = defaults.academic_subject(override=sfi.academic_subject)
-
-        for cand in candidates:
-            result = _process_lc_candidate(
-                academic_subject=academic_subject,
-                base_meta=base_meta,
-                cand=cand,
-                common=common,
-                defaults=defaults,
-                ids=ids,
-                policy=policy,
-                seen_lc_ids=seen_lc_ids,
-                seen_rel_ids=seen_rel_ids,
-                sfi=sfi,
-                split_stats=split_stats,
-            )
-
-            if result is None:
-                duplicates += 1
-                continue
-
-            lcs.append(result[0])
-            supports_rels.append(result[1])
-
-    lcs.sort(key=lambda x: str(x.identifier))
-    supports_rels.sort(key=lambda x: str(x.identifier))
-
-    report.stats.setdefault("learning_components", {})
-    report.stats["learning_components"].update(
-        {
-            "enabled": True,
-            "policy": getattr(config, "learning_component_policy", "1_to_1"),
-            "lc_max_splits_per_standard": getattr(
-                config, "lc_max_splits_per_standard", 25
-            ),
-            "n_standard_sfis_split": n_standards_split,
-            "n_split_candidates_total": n_candidates_total,
-            "n_learning_components": len(lcs),
-            "n_supports_relationships": len(supports_rels),
-            "split_duplicates_removed": duplicates_removed_total,
-            "split_truncated_total": truncated_total,
-            "split_used_fallback_total": used_fallback_total,
-            "duplicates_skipped": duplicates,
-        }
-    )
-
-    if truncated_total:
-        report.warn(
-            "lc_split_truncated",
-            "Some standards produced more split candidates than allowed and were truncated.",
-            {
-                "truncated_total": truncated_total,
-                "cap": getattr(config, "lc_max_splits_per_standard", 25),
-            },
-        )
-
-    if duplicates:
-        report.warn(
-            "lc_duplicates_skipped",
-            "Some LearningComponents/supports relationships were skipped due to duplicate deterministic identifiers.",
-            {"duplicates_skipped": duplicates},
-        )
-
-    return LearningComponentBuildResult(
-        learning_components=lcs, report=report, supports_relationships=supports_rels
-    )
-
-
-def build_graph_stats(
-    *,
-    canonical_doc_key: str,
-    export: KnowledgeGraphExport,
-    report: GraphValidationReport,
-) -> dict[str, Any]:
-    """Build export statistics summary.
-
-    Parameters
-    ----------
-    canonical_doc_key
-        The canonical document key.
-    export
-        The KnowledgeGraphExport to summarize.
-    report
-        The GraphValidationReport with validation stats.
-
-    Returns
-    -------
-    dict[str, Any]
-        The export statistics summary.
-    """
-
-    rel_type_counts: dict[str, int] = {}
-    for r in export.relationships:
-        rel_type_counts[r.relationship_type] = (
-            rel_type_counts.get(r.relationship_type, 0) + 1
-        )
-
-    exported_role_counts: dict[str, int] = {}
-    for sfi in export.standards_framework_items:
-        role = None
-        if sfi.metadata:
-            role = sfi.metadata.get("effectiveRole") or sfi.metadata.get(
-                "canonicalRole"
-            )
-        if role:
-            exported_role_counts[str(role)] = exported_role_counts.get(str(role), 0) + 1
-
-    filtering_stats = (report.stats or {}).get("filtering", {})
-    mapping_stats = (report.stats or {}).get("mapping", {})
-
-    stats: dict[str, Any] = {
-        "doc_key": canonical_doc_key,
-        "entities": {
-            "frameworks": len(export.frameworks),
-            "standardsFrameworkItems": len(export.standards_framework_items),
-            "learningComponents": len(export.learning_components),
-        },
-        "relationships": {
-            "total": len(export.relationships),
-            "by_type": rel_type_counts,
-        },
-        "canonical_roles": {
-            "exported": exported_role_counts,
-            "kept_by_filter": filtering_stats.get("kept_role_counts", {}),
-            "dropped_by_filter": filtering_stats.get("dropped_role_counts", {}),
-        },
-        "mapping": {
-            "framework_identifier": mapping_stats.get("framework_identifier"),
-            "sfi_count": mapping_stats.get("sfi_count"),
-            "dropped_nodes_at_mapping": mapping_stats.get("dropped_nodes_at_mapping"),
-            "role_overrides": mapping_stats.get("role_overrides"),
-        },
-        "validation": {
-            "n_issues": len(report.issues),
-            "n_errors": len([i for i in report.issues if i.level == "error"]),
-            "n_warnings": len([i for i in report.issues if i.level == "warning"]),
-        },
-    }
-
-    return stats
+    _validate_root_structure(ctx)
+    _validate_reachability(ctx)
+    _validate_decision_references(ctx)
+    _validate_no_cycles(ctx)
 
 
 def create_kg_dirs(*, output_dir: Path) -> KGDirs:
@@ -3428,319 +541,400 @@ def create_kg_dirs(*, output_dir: Path) -> KGDirs:
     """
 
     root = output_dir
-    cache = root / "cache"
+    academic_standards = root / "academic_standards"
+    learning_components = root / "learning_components"
+    learning_progressions = root / "learning_progressions"
+    combined = root / "combined"
 
-    for p in [root, cache]:
+    for p in [
+        root,
+        academic_standards,
+        learning_components,
+        learning_progressions,
+        combined,
+    ]:
         make_dir(p)
 
-    return KGDirs(root=root, cache=cache)
+    return KGDirs(
+        root=root,
+        academic_standards=academic_standards,
+        learning_components=learning_components,
+        learning_progressions=learning_progressions,
+        combined=combined,
+    )
 
 
-def filter_canonical_ir(
-    *, config: KnowledgeGraphConfig, index: CanonicalIRIndex
-) -> FilteredCanonicalIRIndex:
-    """Deterministic filtering and role policy.
+def build_kg_export_context(
+    *, canonical_ir: CanonicalIR, config: CreateKGConfig
+) -> ExportContext:
+    """Build the KG export context from a CanonicalIR and KG config.
 
-    Rules implemented:
+    The process is as follows:
 
-    1. Drop role=UNRESOLVED always.
-    2. Drop DESCRIPTOR unless include_descriptors=True.
-    3. Drop GUIDANCE unless include_guidance=True.
-    4. CanonicalIR.unresolved[] is never exported.
-    5. Drop any edge whose parent/child is not kept (do NOT reattach).
+    1. Serialize nodes
+    2. Build tree indexes
+    3. Serialize decisions by ID
+    4. Serialize decisions by segment ID (choose a representative decision per
+        segment_id to handle chunking).
+    5. Initialize context
+    6. Post-init calculations
 
     Parameters
     ----------
+    canonical_ir
+        The CanonicalIR instance.
     config
-        The KnowledgeGraphConfig to use for filtering rules.
-    index
-        The CanonicalIRIndex to filter.
+        The KG creation configuration.
 
     Returns
     -------
-    FilteredCanonicalIRIndex
-        The filtered CanonicalIRIndex.
+    ExportContext
+        The KG export context.
     """
 
-    canonical = index.canonical_ir
+    # 1.
+    nodes_by_id: dict[str, dict[str, Any]] = {
+        node.node_id: node.model_dump(mode="json") for node in canonical_ir.nodes
+    }
+    root_id = canonical_ir.root_id
+    assert root_id in nodes_by_id, f"Root ID missing from nodes: {root_id}"
 
-    # Copy report so filtering can be used independently without mutating.
-    report = index.report.model_copy(deep=True)
+    # 2.
+    children_by_parent: dict[str, list[str]] = defaultdict(list)
+    edge_metadata_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    edge_order_index: dict[tuple[str, str], int] = {}
+    parent_by_child: dict[str, str] = {}
 
-    # Node filtering.
-    kept_nodes, kept_node_ids, dropped_node_ids, dropped_node_reasons = _filter_nodes(
-        canonical=canonical, config=config, index=index, report=report
-    )
+    for edge in canonical_ir.edges:
+        assert edge.rel == "hasChild", f"Unexpected edge relationship: {edge.rel}"
 
-    # Edge filtering.
-    kept_edges, dropped_edges = _filter_edges(
-        canonical_edges=canonical.edges,
-        dropped_node_reasons=dropped_node_reasons,
-        kept_node_ids=kept_node_ids,
-        report=report,
-    )
+        cid = edge.child_id
+        oi = edge.order_index
+        pid = edge.parent_id
 
-    # Build adjacency for kept graph.
-    children_by_parent, parents_by_child = _build_filtered_adjacency_step(
-        kept_edges=kept_edges, report=report
-    )
+        assert pid in nodes_by_id, f"Edge parent_id not found in nodes: {pid}"
+        assert cid in nodes_by_id, f"Edge child_id not found in nodes: {cid}"
 
-    # Optional pruning to remove "dead" grouping branches at export-time only.
-    if config.prune_dead_groupings:
-        (
-            kept_nodes,
-            kept_node_ids,
-            kept_edges,
-            dropped_edges_extra,
-            dropped_node_ids_extra,
-            dropped_node_reasons_extra,
-        ) = _prune_dead_groupings(
-            canonical=canonical,
-            children_by_parent=children_by_parent,
-            kept_edges=kept_edges,
-            kept_nodes=kept_nodes,
-            kept_node_ids=kept_node_ids,
-            report=report,
-        )
+        children_by_parent[pid].append(cid)
+        edge_order_index[(pid, cid)] = oi
 
-        dropped_edges.extend(dropped_edges_extra)
-        dropped_node_ids |= dropped_node_ids_extra
-        dropped_node_reasons.update(dropped_node_reasons_extra)
-
-        # Rebuild adjacency after pruning.
-        children_by_parent, parents_by_child = _build_filtered_adjacency_step(
-            kept_edges=kept_edges, report=report
-        )
-
-    return FilteredCanonicalIRIndex(
-        canonical=canonical,
-        children_by_parent=children_by_parent,
-        dropped_edges=dropped_edges,
-        dropped_node_ids=dropped_node_ids,
-        dropped_node_reasons=dropped_node_reasons,
-        kept_edges=kept_edges,
-        kept_node_ids=kept_node_ids,
-        kept_nodes=kept_nodes,
-        parents_by_child=parents_by_child,
-        report=report,
-    )
-
-
-def map_canonical_to_entities(
-    *,
-    config: KnowledgeGraphConfig,
-    defaults: DefaultsResolver,
-    filtered: FilteredCanonicalIRIndex,
-    ids: DeterministicIdRegistry,
-) -> EntityMappingResult:
-    """CanonicalNode to LC entity mapping (shape-only).
-
-    Parameters
-    ----------
-    config
-        KnowledgeGraphConfig with export settings.
-    defaults
-        DefaultsResolver for default values.
-    filtered
-        The FilteredCanonicalIRIndex after filtering.
-    ids
-        DeterministicIdRegistry for ID generation.
-
-    Returns
-    -------
-    EntityMappingResult
-        The mapped StandardsFramework and StandardsFrameworkItems.
-    """
-
-    canonical = filtered.canonical
-    report = filtered.report.model_copy(deep=True)
-
-    node_by_id = {n.node_id: n for n in canonical.nodes}
-    root_node = node_by_id.get(canonical.root_id)
-
-    if root_node is None:
-        report.error(
-            "root_missing_at_mapping",
-            "CanonicalIR.root_id is missing during mapping; cannot build framework.",
-            {"root_id": canonical.root_id},
-        )
-        report.raise_if_errors()
-
-    assert root_node is not None
-
-    # Build framework (exactly one).
-    framework, warning_reason = _create_framework_entity(
-        canonical_doc_key=canonical.doc_key,
-        canonical_pdf_name=canonical.pdf_name,
-        config=config,
-        defaults=defaults,
-        ids=ids,
-        root_node=root_node,
-    )
-
-    if warning_reason:
-        report.warn(
-            warning_reason,
-            "Framework node had no title/body; used fallback title.",
-            {"fallback_title": framework.name, **_node_text_debug(root_node)},
-        )
-
-    # Subject propagation (deterministic, general).
-    subject_resolver = SubjectResolver(
-        config=config,
-        node_by_id=node_by_id,
-        parents_by_child=filtered.parents_by_child,
-        root_id=canonical.root_id,
-    )
-
-    # Validate english text policy.
-    _check_english_text_policy(
-        canonical_doc_key=canonical.doc_key,
-        canonical_pdf_name=canonical.pdf_name,
-        canonical_root_id=canonical.root_id,
-        config=config,
-        kept_nodes=filtered.kept_nodes,
-        report=report,
-    )
-
-    # Build SFIs.
-    sfi_case_uuid_by_canonical_id: dict[str, UUID] = {}
-    sfi_uuid_by_canonical_id: dict[str, UUID] = {}
-    sfis: list[StandardsFrameworkItem] = []
-
-    dropped_node_ids: set[str] = set()
-    dropped_node_reasons: dict[str, str] = {}
-    role_overrides: dict[str, dict[str, str]] = {}
-
-    for node in filtered.kept_nodes:
-        (
-            sfi,
-            sfi_identifier,
-            sfi_case_uuid,
-            drop_reason,
-            override_data,
-        ) = _process_node_for_mapping(
-            config=config,
-            defaults=defaults,
-            ids=ids,
-            node=node,
-            root_node_id=root_node.node_id,
-            subject_resolver=subject_resolver,
-        )
-
-        if drop_reason:
-            dropped_node_ids.add(node.node_id)
-            dropped_node_reasons[node.node_id] = drop_reason
-            continue
-
-        if sfi is None or sfi_identifier is None or sfi_case_uuid is None:
-            continue
-
-        sfis.append(sfi)
-        sfi_uuid_by_canonical_id[node.node_id] = sfi_identifier
-        sfi_case_uuid_by_canonical_id[node.node_id] = sfi_case_uuid
-
-        if override_data:
-            to_role = override_data["to_role"]
-            reason = override_data["reason"]
-            resolved = override_data["resolved"]
-
-            role_overrides[node.node_id] = {
-                "from_role": _role_str(node.role),
-                "to_role": _role_str(to_role),
-                "reason": reason or "reclassified",
+        # Preserve edge-level provenance if present (best-effort).
+        try:
+            edge_metadata_by_pair[(pid, cid)] = edge.model_dump(mode="json")
+        except Exception:  # pylint: disable=broad-except
+            edge_metadata_by_pair[(pid, cid)] = {
+                "child_id": cid,
+                "order_index": oi,
+                "parent_id": pid,
+                "rel": getattr(edge, "rel", None),
+                "source_decision_ids": getattr(edge, "source_decision_ids", None),
+                "source_segment_ids": getattr(edge, "source_segment_ids", None),
             }
-            report.warn(
-                "normative_safety_reclassification",
-                "An EXPECTATION node was reclassified by the deterministic normative safety filter.",
-                {
-                    "node_id": node.node_id,
-                    "from_role": _role_str(node.role),
-                    "to_role": _role_str(to_role),
-                    "reason": reason,
-                    "text_preview": (resolved.text or resolved.source_text)[:200],
-                    "provenance": _node_text_debug(node),
-                },
-            )
 
-    _log_dropped_nodes(
-        dropped_node_ids=dropped_node_ids,
-        dropped_node_reasons=dropped_node_reasons,
-        node_by_id=node_by_id,
-        report=report,
+        assert cid not in parent_by_child, f"Node has multiple parents: {cid}"
+
+        parent_by_child[cid] = pid
+
+    # Sort children by (order_index, child_id) for stability.
+    for pid, kids in list(children_by_parent.items()):
+        children_by_parent[pid] = sorted(
+            kids,
+            key=lambda c: (
+                edge_order_index.get((pid, c), 0),  # pylint:disable=W0640
+                c,
+            ),
+        )
+
+    # 3.
+    decisions_by_id: dict[str, dict[str, Any]] = {}
+    for d in canonical_ir.segment_decisions:
+        assert d.decision_id, f"Missing decision_id for segment decision: {d}"
+        decisions_by_id[d.decision_id] = d.model_dump(mode="json")
+
+    # 4.
+    by_seg: dict[str, list[SegmentDecision]] = defaultdict(list)
+
+    for d in canonical_ir.segment_decisions:
+        sid = d.segment_id
+        assert sid, f"Missing segment_id for decision_id: {d.decision_id}"
+        by_seg[str(sid)].append(d)
+
+    decisions_by_segment_id: dict[str, dict[str, Any]] = {}
+
+    for sid, decisions in by_seg.items():
+        ds_sorted = sorted(
+            decisions, key=lambda d: (d.confidence, d.decision_id), reverse=True
+        )
+
+        # Dump the best decision to a dict.
+        decisions_by_segment_id[sid] = ds_sorted[0].model_dump(mode="json")
+
+    # 5.
+    ctx = ExportContext(
+        children_by_parent=dict(children_by_parent),
+        decisions_by_id=decisions_by_id,
+        decisions_by_segment_id=decisions_by_segment_id,
+        doc_key=canonical_ir.doc_key,
+        edge_metadata_by_pair=edge_metadata_by_pair,
+        edge_order_index=edge_order_index,
+        kg_config=config,
+        nodes_by_id=nodes_by_id,
+        parent_by_child=parent_by_child,
+        pdf_name=canonical_ir.pdf_name,
+        root_id=canonical_ir.root_id,
     )
 
-    report.stats.setdefault("mapping", {})
-    report.stats["mapping"].update(
-        {
-            "framework_identifier": str(framework.identifier),
-            "sfi_count": len(sfis),
-            "dropped_nodes_at_mapping": len(dropped_node_ids),
-            "role_overrides": len(role_overrides),
-        }
-    )
+    # 6.
+    ctx._needs_order_disambiguator = _detect_sibling_collisions(ctx)
+    _verify_tree_integrity(ctx)
+    _verify_columns_signature(ctx=ctx, segment_decisions=canonical_ir.segment_decisions)
 
-    return EntityMappingResult(
-        dropped_node_ids=dropped_node_ids,
-        dropped_node_reasons=dropped_node_reasons,
-        framework=framework,
-        report=report,
-        role_overrides=role_overrides,
-        sfi_case_uuid_by_canonical_id=sfi_case_uuid_by_canonical_id,
-        sfi_uuid_by_canonical_id=sfi_uuid_by_canonical_id,
-        standards_framework_items=sorted(sfis, key=lambda x: str(x.identifier)),
-    )
+    return ctx
 
 
-def merge_validation_reports(
-    *, base: GraphValidationReport, other: GraphValidationReport
-) -> GraphValidationReport:
-    """Combine issues and stats from two reports deterministically.
-
-    NB:
-
-    1. Issues are appended in order (base then other).
-    2. Stats are deep-merged (other wins on conflicts).
+def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
+    """Get page image dimensions from extraction results. Page images from extraction
+    should always be in extraction_dir/page_images as PNGs named 0000.png, 0001.png, ...
 
     Parameters
     ----------
-    base
-        The base GraphValidationReport.
-    other
-        The other GraphValidationReport to merge into base.
+    extraction_dir
+        The extraction results directory.
 
     Returns
     -------
-    GraphValidationReport
-        The merged GraphValidationReport.
+    list[dict[str, Any]]
+        Per-page pixel dimensions keyed by 0-based page_index.
     """
 
-    merged = base.model_copy(deep=True)
+    page_dir = extraction_dir / "page_images"
+    assert page_dir.exists(), f"Page images directory not found: {page_dir}"
 
-    # Append issues (preserve order).
-    merged.issues.extend(other.issues)
+    pngs = list(page_dir.glob("*.png"))
+    assert pngs, f"No PNG page images found in: {page_dir}"
 
-    # Merge stats.
-    merged.stats = _deep_merge_dict(dst=merged.stats or {}, src=other.stats or {})
+    dims: list[dict] = []
 
-    # Prefer non-null doc_key/pdf_name.
-    if not merged.doc_key and other.doc_key:
-        merged.doc_key = other.doc_key
-    if not merged.pdf_name and other.pdf_name:
-        merged.pdf_name = other.pdf_name
+    # Sort by numeric stem to preserve true page order (0000, 0001, ...).
+    def _page_index(p: Path) -> int:
+        """Extract the page index from the filename stem.
 
-    return merged
+        Parameters
+        ----------
+        p
+            The Path object for the PNG file.
+
+        Returns
+        -------
+        int
+            The extracted page index.
+        """
+
+        return int(p.stem)
+
+    for p in sorted(pngs, key=_page_index):
+        page_index = int(p.stem)  # "0000" -> 0
+
+        with Image.open(p) as im:
+            w, h = im.size
+
+        dims.append(
+            {
+                "filename": p.name,
+                "height_px": h,
+                "page_index": page_index,
+                "relative_path": f"page_images/{p.name}",
+                "width_px": w,
+            }
+        )
+
+    return dims
 
 
-def persist_kg_run(*, output_dir: Path, **kwargs: Any) -> tuple[KGDirs, RunCtx]:
+def merge_graph_bundles(
+    *, bundles: list[dict[str, Any]], doc_key: str, export_dialect: str
+) -> dict[str, Any]:
+    """Merge multiple KG graph bundles into a single bundle.
+
+    Parameters
+    ----------
+    bundles
+        The list of KG graph bundles to merge.
+    doc_key
+        The document key for the merged bundle.
+    export_dialect
+        The export dialect for the merged bundle.
+
+    Returns
+    -------
+    dict[str, Any]
+        The merged KG graph bundle.
+
+    Raises
+    ------
+    ValueError
+        If there are ID collisions with differing properties.
+    """
+
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    rels_by_id: dict[str, dict[str, Any]] = {}
+    included_graph_types: list[str] = []
+
+    for b in bundles:
+        gt = str(b.get("graph_type", "")).strip()
+        if gt:
+            included_graph_types.append(gt)
+
+        for n in b.get("nodes", []) or []:
+            nid = str(n["id"])
+
+            if nid in nodes_by_id:
+                existing = nodes_by_id[nid]
+
+                if (existing.get("properties") or {}) != (n.get("properties") or {}):
+                    logger.error(
+                        f"Node ID collision with differing properties: "
+                        f"id={nid} "
+                        f"existing_labels={existing.get('labels')} "
+                        f"new_labels={n.get('labels')}"
+                    )
+                    raise ValueError(
+                        f"Node ID collision with differing properties: {nid}"
+                    )
+
+                merged_labels = sorted(
+                    set(existing.get("labels") or []) | set(n.get("labels") or [])
+                )
+                nodes_by_id[nid] = {
+                    "id": nid,
+                    "labels": merged_labels,
+                    "properties": existing.get("properties")
+                    or n.get("properties")
+                    or {},
+                }
+            else:
+                nodes_by_id[nid] = n
+
+        for r in b.get("relationships", []) or []:
+            rid = str(r["id"])
+
+            if rid in rels_by_id:
+                existing = rels_by_id[rid]
+
+                if (existing.get("properties") or {}) != (r.get("properties") or {}):
+                    logger.error(
+                        f"Relationship ID collision with differing properties: "
+                        f"id={rid} "
+                        f"existing_type={existing.get('type')} "
+                        f"new_type={r.get('type')}"
+                    )
+                    raise ValueError(
+                        f"Relationship ID collision with differing properties: {rid}"
+                    )
+                if (
+                    existing.get("type") != r.get("type")
+                    or existing.get("start") != r.get("start")
+                    or existing.get("end") != r.get("end")
+                ):
+                    logger.error(
+                        f"Relationship ID collision with differing endpoints/type: "
+                        f"id={rid}"
+                    )
+                    raise ValueError(
+                        f"Relationship ID collision with differing endpoints/type: {rid}"
+                    )
+            else:
+                rels_by_id[rid] = r
+
+    # Compute a correct merged graph_type from what was actually merged.
+    included_unique = sorted(set(included_graph_types))
+    preferred_order = [
+        "academic_standards",
+        "learning_components",
+        "learning_progressions",
+    ]
+    ordered = [t for t in preferred_order if t in included_unique] + sorted(
+        set(included_unique) - set(preferred_order)
+    )
+    merged_graph_type = "_plus_".join(ordered) if ordered else ""
+
+    return {
+        "doc_key": doc_key,
+        "export_dialect": export_dialect,
+        "generated_at": generated_at,
+        "graph_type": merged_graph_type,
+        "included_graph_types": included_unique,
+        "nodes": list(nodes_by_id.values()),
+        "relationships": list(rels_by_id.values()),
+    }
+
+
+def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
+    """Determine display text for a node, preferring title over body, and falling back
+    to normalized_text, then local_code or role if no text found.
+
+    Parameters
+    ----------
+    node
+        The node dictionary to extract text from.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when extracting from title/body.
+
+    Returns
+    -------
+    str
+        The display text for the node.
+    """
+
+    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
+
+    if title:
+        return title
+
+    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
+
+    if body:
+        return body
+
+    # Tertiary fallback: normalized_text (common on all canonical IR nodes).
+    nt = (node.get("normalized_text") or "").strip()
+
+    if nt:
+        return nt
+
+    # Last resort: code or role.
+    return (node.get("local_code") or node.get("role") or "").strip()
+
+
+def normalize_ws(s: str) -> str:
+    """Normalize whitespace in a string by collapsing multiple spaces and trim.
+
+    Parameters
+    ----------
+    s
+        The input string to normalize.
+
+    Returns
+    -------
+    str
+        The normalized string.
+    """
+
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+def persist_kg_run(
+    *, config: CreateKGConfig, output_dir: Path
+) -> tuple[KGDirs, RunCtx]:
     """Persist KG run metadata.
 
     Parameters
     ----------
+    config
+        The KG creation run configuration.
     output_dir
         The output directory for the KG run results.
-    kwargs
-        Additional KG run configuration parameters.
 
     Returns
     -------
@@ -3748,53 +942,39 @@ def persist_kg_run(*, output_dir: Path, **kwargs: Any) -> tuple[KGDirs, RunCtx]:
         The created KG directories and persisted KG run metadata.
     """
 
-    extra = kwargs.get("extra", {})
-    extra.pop("status", None)
     kg_dirs = create_kg_dirs(output_dir=output_dir)
+    exclude_keys = {"model", "overwrite"}
     kg_run = RunCtx(
-        extra=extra, run_id=str(uuid.uuid4()), started_at=datetime.now(timezone.utc)
+        extra={
+            k: v
+            for k, v in config.model_dump(mode="json").items()
+            if k not in exclude_keys
+        },
+        run_id=str(uuid.uuid4()),
+        started_at=datetime.now(timezone.utc),
     )
     write_to_json(fp=output_dir / "kg_run.json", json_info=kg_run)
-    logger.info(f"KG directory: {output_dir}")
+    logger.info(f"Saving KG creation results to: {kg_dirs}")
 
     return kg_dirs, kg_run
 
 
-def sort_export_lists_in_place(export_obj: KnowledgeGraphExport) -> None:
-    """Sort KnowledgeGraphExport lists in-place for deterministic JSON output. The sort
-    order is deterministic and review-friendly:
-
-    1. StandardsFrameworkItems: primarily by earliest page index, then by type, then canonical id
-    2. LearningComponents: grouped by their supported standard (same ordering as SFIs), then splitIndex
-    3. Relationships:
-        - hasChild: grouped by parent/child ordering (framework edges first)
-        - supports: grouped by target standard ordering, then splitIndex
-        - Other relationship types: by identifier
+def stable_text_hash(*, n: int = 32, s: str) -> str:
+    """Generate a stable hash from a string.
 
     Parameters
     ----------
-    export_obj
-        The KnowledgeGraphExport object to sort.
+    n
+        The length of the hash to return.
+    s
+        The input string to hash.
+
+    Returns
+    -------
+    str
+        The stable hash of the string.
     """
 
-    # 1. Frameworks: Identifier sort is sufficient.
-    export_obj.frameworks.sort(key=lambda x: str(x.identifier))
+    s = normalize_ws(s).lower()
 
-    # 2. StandardsFrameworkItems: Sort using extracted logic.
-    export_obj.standards_framework_items.sort(key=_get_sfi_sort_key)
-
-    # 3. Build Map: CASE UUID --> sort key (for ordering LCs and Relationships).
-    sfi_sort_by_case_uuid: dict[str, tuple[Any, ...]] = {
-        str(s.case_identifier_uuid): _get_sfi_sort_key(sfi=s)
-        for s in export_obj.standards_framework_items
-    }
-
-    # 4. LearningComponents: Sort using map.
-    export_obj.learning_components.sort(
-        key=lambda lc: _get_lc_sort_key(lc=lc, sfi_sort_map=sfi_sort_by_case_uuid)
-    )
-
-    # 5. Relationships: Sort using map.
-    export_obj.relationships.sort(
-        key=lambda rel: _get_rel_sort_key(rel=rel, sfi_sort_map=sfi_sort_by_case_uuid)
-    )
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n]

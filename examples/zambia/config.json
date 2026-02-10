@@ -1,0 +1,170 @@
+{
+	"page_ir_extraction": {
+		"always_double_check_first_attempt": true,
+		"country": "Zambia",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"model": "gpt-5.2-2025-12-11",
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
+		"overwrite": true,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/zambia/zambia.pdf",
+		"start_page": 0,
+		"use_text_layer_hints": false,
+		"year": 2024
+	},
+	"page_ir_verification": {
+		"always_double_check_first_attempt": true,
+		"end_page": null,
+		"min_confidence_to_patch": 0.75,
+		"model": "gpt-5.2-2025-12-11",
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 12,
+		"min_link_score": 2,
+		"overwrite": true,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 3
+	},
+	"canonical_ir": {
+		"always_double_check_first_attempt": true,
+		"canonical_grouping_min_confidence": 0.8,
+		"max_table_rows_per_decision": null,
+		"model": "gpt-5.2-2025-12-11",
+		"overwrite": false,
+		"segment_decision_conf_threshold": 0.55,
+		"spine_policy": {
+			"allow_partial_context": true,
+			"block_local_roles": [
+				"section",
+				"topic"
+			],
+			"disallowed_outer_roles": [
+				"prose"
+			],
+			"name": "zambia_competence_tables",
+			"normalize": {
+				"casefold_titles_for_matching": true,
+				"drop_grade_bands": true,
+				"drop_stage_if_grade_present": false,
+				"drop_stage_if_matches_wrapper_patterns": true,
+				"grade_band_title_patterns": [
+					"^grades?\\s*\\d+\\s*[-–]\\s*\\d+\\b",
+					"^grade\\s*\\d+\\s*[-–]\\s*grade\\s*\\d+\\b",
+					"^grades?\\s*\\d+\\s*(to|through)\\s*\\d+\\b"
+				],
+				"normalize_whitespace": true,
+				"stage_wrapper_title_patterns": [
+					"lower\\s+primary",
+					"upper\\s+primary",
+					"basic\\s+education",
+					"primary\\s+education",
+					"syllabi?"
+				]
+			},
+			"outer_context_roles": [
+				"grade_level",
+				"learning_area",
+				"subject",
+				"strand"
+			],
+			"relocate_table_local_only_roles_to_rows": true,
+			"row_roles": [
+				"topic",
+				"subtopic"
+			],
+			"split_rules": [
+				{
+					"apply_to": "any",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "GRADE \\1"
+						},
+						{
+							"role": "subject",
+							"title_template": "\\2"
+						}
+					],
+					"match": "^GRADE\\s+(\\d+)\\s*:\\s*(.+)$"
+				}
+			],
+			"table_local_only_roles": [
+				"topic",
+				"subtopic"
+			],
+			"violation_policy": "flag_unresolved"
+		},
+		"structural_leaf_warn_threshold": 0.6
+	},
+	"kgs": {
+		"academic_subject_default": "Multiple Subjects",
+		"adoption_status": "Adopted",
+		"always_double_check_first_attempt": true,
+		"attribution_statement": "© Ministry of Education (Zambia), 2024. Source: LOWER PRIMARY EDUCATION SYLLABI GRADE 1–3 (2024).",
+		"author": "Ministry of Education (Zambia)",
+		"aux_statement_parenting": "under_expectation",
+		"case_uri_base": "urn:lc:case:",
+		"descriptor_handling": "export_as_sfi_other",
+		"export_dialect": "global_relaxed",
+		"generate_progressions": true,
+		"grouping_role_policy": "whitelist",
+		"grouping_roles_whitelist": [
+			"stage",
+			"grade_level",
+			"learning_area",
+			"subject",
+			"strand",
+			"substrand",
+			"theme",
+			"subtheme",
+			"term",
+			"unit",
+			"week",
+			"topic",
+			"subtopic"
+		],
+		"guidance_handling": "drop",
+		"jurisdiction_default": "Zambia",
+		"language_default": "en",
+		"lc_max_splits_per_standard": 10,
+		"learning_component_policy": "split_bullets",
+		"license": "All rights reserved (source PDF)",
+		"model": "gpt-5.2-2025-12-11",
+		"non_grouping_role_handling": "drop",
+		"non_standard_columns_signature": [
+			"cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday",
+			"s/n|competence|descriptors",
+			"s/n|compentence|descriptors"
+		],
+		"non_standard_decision_types": [
+			"ignore",
+			"unresolved"
+		],
+		"non_standard_segment_drop_policy": [
+			"by_decision_type",
+			"by_columns_signature"
+		],
+		"overwrite": false,
+		"progressions_builds_towards_min_confidence": 0.7,
+		"progressions_cross_grade_builds_towards": true,
+		"progressions_cross_grade_relates_to": true,
+		"progressions_cross_grade_relates_to_max_items_per_subject": 10,
+		"progressions_cross_stage_builds_towards": false,
+		"progressions_cross_stage_relates_to": false,
+		"progressions_relates_to_max_edges_per_sfi": 3,
+		"progressions_relates_to_min_confidence": 0.85,
+		"progressions_within_grade_allow_banded_levels": false,
+		"progressions_within_grade_builds_towards": true,
+		"progressions_within_grade_relates_to": true,
+		"progressions_within_grade_relates_to_max_items_per_subject": 5,
+		"provider": "IDinsight | Learning Commons",
+		"prune_empty_groupings": true
+	}
+}

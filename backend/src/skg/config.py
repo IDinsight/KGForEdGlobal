@@ -36,7 +36,9 @@ class BackendSettings(BaseSettings):
     LOGGING_LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     # Namespaces
-    PROJECT_NAMESPACE: uuid.UUID = uuid.uuid5(uuid.NAMESPACE_DNS, "skg:canonical-ir:v1")
+    LC_CANONICAL_NAMESPACE_UUID: uuid.UUID = uuid.UUID(
+        "3f6b9f2a-7d8a-5d85-a9c3-9f3b8d3c3f4b"
+    )
 
     # Postgres
     POSTGRES_ASYNC_API: str = Field("asyncpg", validation_alias="POSTGRES_ASYNC_API")

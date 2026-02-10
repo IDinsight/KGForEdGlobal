@@ -3,29 +3,63 @@
 # Standard Library
 import hashlib
 import re
+import unicodedata
 import uuid
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, TypeVar
 
 # Third Party Library
 from loguru import logger
 
 # Package Library
 from skg.canonical_ir.schemas import (
+    CanonicalEdge,
     CanonicalIR,
-    LeafParsingConfig,
-    LeafStatement,
-    NormalizedRow,
-    ParserConfig,
+    CanonicalNode,
+    GroupingCanonicalizationKey,
+    GroupingCanonicalizationMap,
+    GroupingDecision,
+    LeafDecision,
+    RowDecision,
+    SegmentDecision,
+    SegmentDecisionSet,
+    UnresolvedItem,
+    compute_decision_set_id,
 )
 from skg.config import Settings
-from skg.document_ir.schemas import TableSegment, TextUnit
-from skg.schemas import RunCtx
-from skg.utils.constants import BlockType, StatementRole
-from skg.utils.general import compute_sha256_hex, make_dir, write_to_json
+from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
+from skg.page_ir_extraction.schemas import TextUnit
+from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
+from skg.utils.constants import (
+    CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
+    GroupingCanonicalizationAction,
+    NodeRole,
+    SegmentDecisionType,
+    UnresolvedReason,
+)
+from skg.utils.general import (
+    QUOTES_TRANSLATION,
+    make_dir,
+    open_json_type,
+    write_to_json,
+)
+
+T = TypeVar("T")
+
+# Compiled regexes.
+_DASH_RE = re.compile(r"[‐-‒–—−]+")
+_STRUCTURAL_CONTEXT_CUE_RE = re.compile(
+    r"\b("
+    r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
+    r"learning\s+area|unit|week|term|chapter|module|p\s*[1-9]|std\s*[ivx]+"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+_WS_RE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
@@ -33,1186 +67,2812 @@ class CanonicalIRDirs:
     """Dataclass for canonical IR directories."""
 
     root: Path
+    canonical_ir: Path
+    segment_decisions: Path
 
 
-def _as_textunit(
-    *, default_language: str = "und", value: TextUnit | dict | str | None
-) -> TextUnit | None:
-    """Coerce various input formats into a TextUnit object.
+@dataclass(frozen=True)
+class ContextFrame:
+    """One frame in the active context stack (excluding the framework root)."""
 
-    Parameters
-    ----------
-    default_language
-        The language code to use if the input is a plain string or missing language.
-    value
-        The input value to convert. Can be a raw string, a dict, or existing TextUnit.
-
-    Returns
-    -------
-    TextUnit | None
-        The valid TextUnit or None if the input was empty/null.
-    """
-
-    # Delegate parsing logic to the centralized utility (returns a dict or None).
-    data = _coerce_text_to_textunit_like(value)
-
-    if data is None:
-        return None
-
-    # Handle language override.
-    if default_language != "und" and data.get("language") == "und":
-        data["language"] = default_language
-
-    # Convert the dict to the TextUnit object expected by CanonicalNode.
-    return TextUnit.model_validate(data)
+    grouping_key: str
+    node_id: str
 
 
-def _block_text_for_matching(*, bt_str: str, seg: Any) -> str:
-    """Extract full text content from a block segment for regex matching.
+def _gkey_tuple(
+    *,
+    role: NodeRole,
+    title: str,
+    local_code: Optional[str],
+    source_label: Optional[str],
+) -> tuple[str, str, str, str]:
+    """Create a grouping key tuple.
 
     Parameters
     ----------
-    bt_str
-        The block type string (e.g., "list", "paragraph").
-    seg
-        The document segment object (DocumentIR schema).
+    role
+        The NodeRole of the grouping.
+    title
+        The title of the grouping.
+    local_code
+        The local code of the grouping.
+    source_label
+        The source label of the grouping.
 
     Returns
     -------
-    str
-        The extracted text content.
+    tuple[str, str, str, str]
+        The grouping key tuple.
     """
 
-    if bt_str == BlockType.LIST.value:
-        items = getattr(seg, "list_items", None) or []
-        parts: list[str] = []
-        for li in items:
-            tu = (
-                getattr(li, "text", None)
-                if not isinstance(li, dict)
-                else li.get("text")
+    return role.value, title, local_code or "", source_label or ""
+
+
+def _build_mapping_index(
+    *, canonical_grouping_min_confidence: float, mapping: GroupingCanonicalizationMap
+) -> dict[
+    tuple[str, str, str, str],
+    GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+]:
+    """Build a fast lookup index for grouping canonicalization mapping.
+
+    Parameters
+    ----------
+    canonical_grouping_min_confidence
+        The minimum confidence threshold for applying mapping actions.
+    mapping
+        The GroupingCanonicalizationMap to index.
+
+    Returns
+    -------
+    dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ]
+        An index as follows:
+          - None means DROP
+          - GroupingKey means REPLACE (1)
+          - list[GroupingKey] means SPLIT (2+)
+          - Missing entry means KEEP
+    """
+
+    index: dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ] = {}
+
+    for item in mapping.items:
+        if item.confidence < canonical_grouping_min_confidence:
+            continue  # Treat as KEEP
+
+        inp = item.input
+        k = _gkey_tuple(
+            local_code=inp.local_code,
+            role=inp.role,
+            source_label=inp.source_label,
+            title=inp.title,
+        )
+
+        if item.action == GroupingCanonicalizationAction.DROP:
+            index[k] = None
+        elif item.action == GroupingCanonicalizationAction.KEEP:
+            # not stored -> interpreted as KEEP
+            continue
+        elif item.action == GroupingCanonicalizationAction.REPLACE:
+            index[k] = item.output[0]
+        elif item.action == GroupingCanonicalizationAction.SPLIT:
+            index[k] = item.output
+        else:
+            continue
+
+    return index
+
+
+def _check_cycles(*, child_to_parent: dict[str, str], warnings: list[str]) -> None:
+    """Detect cycles by following parent pointers.
+
+    Parameters
+    ----------
+    child_to_parent
+        The mapping of child_id to parent_id.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for child in child_to_parent:
+        seen: set[str] = set()
+        cur = child
+
+        while cur in child_to_parent:
+            if cur in seen:
+                msg = f"cycle_detected_at:{cur}"
+                logger.warning(msg)
+                warnings.append(msg)
+                break
+
+            seen.add(cur)
+            cur = child_to_parent[cur]
+
+
+def _check_multiple_parents(
+    *, edges: list[CanonicalEdge], warnings: list[str]
+) -> dict[str, str]:
+    """Ensure no child has more than 1 parent and return the child->parent map.
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges to check.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    dict[str, str]
+        The mapping of child_id to parent_id.
+    """
+
+    child_to_parent: dict[str, str] = {}
+
+    for e in edges:
+        existing = child_to_parent.get(e.child_id)
+
+        if existing is None:
+            child_to_parent[e.child_id] = e.parent_id
+        elif existing != e.parent_id:
+            msg = (
+                f"tree_invariant_violation_multiple_parents:"
+                f"child={e.child_id} p1={existing} p2={e.parent_id}"
             )
-            parts.append(_normalize_space(_coerce_text_to_str(tu)))
-        return "\n".join([p for p in parts if p])
+            logger.warning(msg)
+            warnings.append(msg)
 
-    return _normalize_space(
-        _coerce_text_to_str(getattr(seg, "text", None))
-        or getattr(seg, "combined_text", "")
-        or ""
+    return child_to_parent
+
+
+def _check_order_indices(*, edges: list[CanonicalEdge], warnings: list[str]) -> None:
+    """Validate order indices: check for duplicates, zero-start, and gaps.
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges to check.
+    warnings
+        The list of warnings to append to.
+    """
+
+    # Group orders by parent.
+    parent_to_orders: dict[str, list[int]] = {}
+    for e in edges:
+        parent_to_orders.setdefault(e.parent_id, []).append(e.order_index)
+
+    # Validate each parent's group.
+    for parent, orders in parent_to_orders.items():
+        # Check duplicates.
+        if len(orders) != len(set(orders)):
+            msg = f"order_index_duplicate_under_parent:{parent}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        sorted_orders = sorted(set(orders))
+
+        # Check strict contiguous ordering starting at 0.
+        if sorted_orders and sorted_orders[0] != 0:
+            msg = f"order_index_not_starting_at_zero:{parent} min={sorted_orders[0]}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # Check contiguity ignoring dropped edges
+        for i in range(1, len(sorted_orders)):
+            if sorted_orders[i] != sorted_orders[i - 1] + 1:
+                msg = f"order_index_gap_under_parent:{parent} orders={sorted_orders}"
+                logger.warning(msg)
+                warnings.append(msg)
+                break
+
+
+def _check_root_as_child(
+    *, edges: list[CanonicalEdge], root_id: str, warnings: list[str]
+) -> None:
+    """Ensure the root does not appear as a child (tree invariant).
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges to check.
+    root_id
+        The root node ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for e in edges:
+        if e.child_id == root_id:
+            msg = f"root_has_parent_edge:{root_id} parent={e.parent_id}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+
+def _check_structural_warnings(
+    *,
+    decision: SegmentDecision,
+    page_indices: list[int],
+    section_path_text: list[str],
+    segment_id: str,
+    segment_kind: str,
+    structural_leaf_warn_threshold: float,
+    warnings: list[str],
+) -> None:
+    """Check decision confidence against structural threshold and emit warnings.
+
+    Parameters
+    ----------
+    decision
+        The SegmentDecision to check.
+    page_indices
+        The list of page indices for the segment.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    segment_kind
+        The segment kind.
+    structural_leaf_warn_threshold
+        The structural leaf warning confidence threshold.
+    warnings
+        The list of warnings to append to.
+    """
+
+    # Audit-only warning: segment.section_path suggests strong curriculum structure,
+    # but the LLM provided an empty context_groupings snapshot. This does NOT
+    # materialize any hierarchy; it only flags likely missed context.
+    leaf_count = _count_decision_leaves(decision)
+
+    if (
+        decision.decision_type
+        not in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED)
+        and leaf_count > 0
+        and not decision.context_groupings
+        and section_path_text
+    ):
+        path_str = " / ".join([p for p in section_path_text if p])
+        if path_str and _STRUCTURAL_CONTEXT_CUE_RE.search(path_str):
+            pages_str = ",".join(str(p) for p in page_indices) if page_indices else "-"
+            msg = (
+                f"context_evidence_present_but_context_groupings_empty:"
+                f"segment_id={segment_id} decision_id={decision.decision_id} "
+                f"kind={segment_kind} pages={pages_str} section_path={path_str!r}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+    if decision.confidence >= structural_leaf_warn_threshold:
+        return
+
+    leaf_count = _count_decision_leaves(decision)
+
+    if leaf_count <= 0:
+        return
+
+    pages_str = _format_page_indices(page_indices)
+    path_str = _format_section_path(section_path_text=section_path_text)
+
+    if decision.row_range_start is not None or decision.row_range_end is not None:
+        start = (
+            decision.row_range_start if decision.row_range_start is not None else "-"
+        )
+        end = decision.row_range_end if decision.row_range_end is not None else "-"
+        row_range_str = f"[{start},{end})"
+    else:
+        row_range_str = "-"
+
+    msg = (
+        f"structural_leaf_review:"
+        f"segment_id={segment_id} decision_id={decision.decision_id} "
+        f"kind={segment_kind} conf={decision.confidence:.3f} "
+        f"leaf_count={leaf_count} threshold={structural_leaf_warn_threshold:.3f} "
+        f"row_range={row_range_str} "
+        f"pages={pages_str} "
+        f"section_path={path_str}"
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+
+
+def _clean_decision_rows(rows: list[RowDecision]) -> list[RowDecision]:
+    """Clean a list of decision rows.
+
+    Parameters
+    ----------
+    rows
+        The list of SegmentDecisionRow to clean.
+
+    Returns
+    -------
+    list[RowDecision]
+        The cleaned list of decision rows.
+    """
+
+    new_rows = []
+
+    for r in rows:
+        row_updates = {}
+
+        if r.groupings:
+            row_updates["groupings"] = [_clean_grouping(g) for g in r.groupings]
+
+        if r.leaves:
+            row_updates["leaves"] = [_clean_leaf(leaf) for leaf in r.leaves]
+
+        if row_updates:
+            new_rows.append(r.model_copy(update=row_updates))
+        else:
+            new_rows.append(r)
+
+    return new_rows
+
+
+def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
+    """Apply cleaning to GroupingDecision fields.
+
+    Parameters
+    ----------
+    g
+        The GroupingDecision to clean.
+
+    Returns
+    -------
+    GroupingDecision
+        The cleaned GroupingDecision.
+    """
+
+    title = _clean_text(g.title) or g.title.strip()
+
+    # NB: Do NOT apply casing transformations here. SegmentDecision text should be
+    # stored as close to verbatim as possible.
+    return g.model_copy(
+        update={
+            "local_code": _clean_text(g.local_code),
+            "source_label": _clean_text(g.source_label),
+            "title": title,
+        }
     )
 
 
-def _calculate_drop_count(
-    *, sl: Any, slice_index: int, seg_header_sigs: list[Any], seg_hrc: int
-) -> int:
-    """Determine how many rows to drop from a slice based on header repetition.
+def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
+    """Apply deterministic hygiene to LeafDecision.
 
     Parameters
     ----------
-    sl
-        The TableSlice-like object.
-    slice_index
-        The index of the slice within the segment.
-    seg_header_sigs
-        The segment's header row signatures.
-    seg_hrc
-        The segment's header_row_count.
+    leaf
+        The LeafDecision to clean.
+
+    Returns
+    -------
+    LeafDecision
+        The cleaned LeafDecision.
+    """
+
+    updates = {}
+
+    if getattr(leaf, "body", None):
+        updates["body"] = _normalize_leaf_body(leaf.body)
+
+    # Optional: normalize list_marker whitespace if it exists.
+    if getattr(leaf, "list_marker", None):
+        updates["list_marker"] = re.sub(r"\s+", " ", leaf.list_marker).strip()
+
+    return leaf.model_copy(update=updates) if updates else leaf
+
+
+def _clean_text(text: Optional[str]) -> Optional[str]:
+    """Clean text as follows:
+
+    1. NFKC unicode normalization
+    2. Normalize curly quotes to ASCII
+    3. Unify dash variants to '-'
+    4. Collapse whitespace
+    5. Strip
+
+    NB: Do not include curriculum-specific heuristics here.
+
+    Parameters
+    ----------
+    text
+        The text to clean.
+
+    Returns
+    -------
+    Optional[str]
+        The cleaned text, or None if input was None or normalized to empty.
+    """
+
+    if text is None:
+        return None
+
+    t = unicodedata.normalize("NFKC", text)
+    t = t.translate(QUOTES_TRANSLATION)
+    t = _DASH_RE.sub("-", t)
+    t = _WS_RE.sub(" ", t).strip()
+
+    # Preserve None for optional fields when they normalize to empty.
+    return t or None
+
+
+def _count_decision_leaves(d: SegmentDecision) -> int:
+    """Count statement leaves emitted by this decision (block leaves + table row
+    leaves).
+
+    Parameters
+    ----------
+    d
+        The SegmentDecision to count leaves for.
 
     Returns
     -------
     int
-        The number of rows to drop from the slice.
+        The total number of leaves in the decision.
     """
 
-    # First slice (index 0) never drops rows
-    if slice_index == 0:
-        return 0
+    n = 0
+    n += len(d.leaves or [])
 
-    # repeats_header=True --> drop known header count.
-    if sl.repeats_header is True:
-        return int(getattr(sl, "header_row_count", 0) or 0)
+    for r in d.rows or []:
+        n += len(r.leaves or [])
 
-    # repeats_header=False --> drop nothing.
-    if sl.repeats_header is False:
-        return 0
-
-    # repeats_header=None --> infer conservatively via header match.
-    sl_hrc = int(getattr(sl, "header_row_count", 0) or 0)
-    k = min(
-        seg_hrc,
-        sl_hrc,
-        len(getattr(sl, "rows", []) or []),
-        len(seg_header_sigs),
-    )
-
-    if k > 0:
-        sl_first_sigs = [_row_sig(r) for r in (getattr(sl, "rows", []) or [])[:k]]
-        if sl_first_sigs == seg_header_sigs[:k]:
-            return sl_hrc
-
-    return 0
+    return n
 
 
-def _cell_at(nr: Any, col: int | None) -> TextUnit | None:
-    """Safely extract a TextUnit from a normalized row at a specific column.
+def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
+    """Sort key for SegmentDecision ordering.
 
     Parameters
     ----------
-    nr
-        The normalized row object.
+    d
+        The SegmentDecision to compute the sort key for.
 
     Returns
     -------
-    TextUnit | None
-        The TextUnit at the specified column, or None if out of bounds.
+    tuple[int, int, str]
+        The sort key as (row_range_start, row_range_end, decision_id).
     """
 
-    if col is None:
-        return None
+    start = d.row_range_start if d.row_range_start is not None else -1
+    end = d.row_range_end if d.row_range_end is not None else 2**31 - 1
+    decision_id = getattr(d, "decision_id", "") or ""
 
-    cells = getattr(nr, "cells", []) or []
-    if col < 0 or col >= len(cells):
-        return None
-
-    return _as_textunit(default_language="und", value=cells[col])
+    return start, end, decision_id
 
 
-def _coerce_text_to_str(value: Any) -> str:
-    """Coerce TableCell.text (TextUnit | dict | str | None) into a plain string.
+def _dedupe_preserve_order(groupings: list[GroupingDecision]) -> list[GroupingDecision]:
+    """Deduplicate GroupingDecisions while preserving order.
 
     Parameters
     ----------
-    value
-        The value to coerce.
+    groupings
+        The list of GroupingDecisions to deduplicate.
 
     Returns
     -------
-    str
-        The coerced string.
+    list[GroupingDecision]
+        The deduplicated list of GroupingDecisions.
     """
 
-    if value is None:
-        return ""
+    output: list[GroupingDecision] = []
+    seen: set[tuple[str, str, str, str]] = set()
 
-    if isinstance(value, str):
-        return value
-
-    if isinstance(value, dict):
-        return value.get("text") or value.get("text_en") or ""
-
-    # Pydantic model (e.g., TextUnit).
-    if hasattr(value, "text") or hasattr(value, "text_en"):
-        return getattr(value, "text", None) or getattr(value, "text_en", None) or ""
-
-    return str(value)
-
-
-def _coerce_text_to_textunit_like(value: Any) -> Any:
-    """Return a TextUnit-like object (TextUnit instance or dict), or None if empty.
-
-    NB: We avoid importing/constructing TextUnit directly here; Pydantic will validate
-    dicts into TextUnit when NormalizedRow is created.
-
-    Parameters
-    ----------
-    value
-        The value to coerce.
-
-    Returns
-    -------
-    Any
-        The coerced TextUnit-like object or None.
-    """
-
-    if value is None:
-        return None
-
-    if isinstance(value, dict):
-        # Ensure minimal shape; keep any extra fields.
-        language = value.get("language") or "und"
-        text = value.get("text")
-        text_en = value.get("text_en")
-        return {**value, "language": language, "text": text, "text_en": text_en}
-
-    if isinstance(value, str):
-        return {"language": "und", "text": value, "text_en": None}
-
-    # If it's a Pydantic-ish object with text fields, convert to a dict so Canonical
-    # TextUnit validation is consistent (avoid cross-module BaseModel instances).
-    if hasattr(value, "model_dump"):
-        d = value.model_dump(mode="python")
-        language = d.get("language") or "und"
-        text = d.get("text")
-        text_en = d.get("text_en")
-        return {**d, "language": language, "text": text, "text_en": text_en}
-
-    if hasattr(value, "text") or hasattr(value, "text_en"):
-        return {
-            "language": getattr(value, "language", None) or "und",
-            "text": getattr(value, "text", None),
-            "text_en": getattr(value, "text_en", None),
-        }
-
-    # Fallback: stringify into text.
-    return {"language": "und", "text": str(value), "text_en": None}
-
-
-def _construct_normalized_rows(
-    *,
-    grid: list[list[dict[str, Any]]],
-    key: str,
-    n_cols: int,
-    n_rows: int,
-    row_prov: list[dict[str, Any]],
-) -> list[NormalizedRow]:
-    """Transform the grid into NormalizedRow objects with provenance.
-
-    Parameters
-    ----------
-    grid
-        The populated grid.
-    key
-        The TableSegment key for error reporting.
-    n_cols
-        The number of columns in the table.
-    n_rows
-        The number of rows in the table.
-    row_prov
-        The per-row provenance information.
-
-    Returns
-    -------
-    list[NormalizedRow]
-        The list of normalized rows.
-
-    Raises
-    ------
-    ValueError
-        If provenance information is missing.
-    """
-
-    output: list[NormalizedRow] = []
-
-    for r_idx in range(n_rows):
-        prov = row_prov[r_idx]
-        bbox = prov.get("row_bbox") or prov.get("bbox")
-        page_index = prov.get("page_index")
-        slice_index = prov.get("slice_index")
-        slice_row_index = prov.get("slice_row_index")
-
-        if bbox is None:
-            raise ValueError(
-                f"Missing provenance_bbox for normalized row {r_idx} "
-                f"in TableSegment '{key}'."
-            )
-
-        if page_index is None or slice_index is None:
-            raise ValueError(
-                f"Missing provenance page/slice for normalized row {r_idx} "
-                f"in TableSegment '{key}'."
-            )
-
-        cells: list[Any] = []
-        for c in range(n_cols):
-            v = grid[r_idx][c]["text"]
-            if _coerce_text_to_str(v).strip() == "":
-                cells.append(None)
-            else:
-                cells.append(_coerce_text_to_textunit_like(v))
-
-        output.append(
-            NormalizedRow(
-                cells=cells,
-                original_row_index=(
-                    int(slice_row_index) if slice_row_index is not None else r_idx
-                ),
-                provenance_bbox=bbox,
-                provenance_page_index=page_index,
-                provenance_slice_index=slice_index,
-                row_index=r_idx,
-            )
+    for g in groupings:
+        key = _gkey_tuple(
+            local_code=g.local_code,
+            role=g.role,
+            source_label=g.source_label,
+            title=g.title,
         )
+
+        if key in seen:
+            continue
+
+        output.append(g)
+        seen.add(key)
+
     return output
 
 
-def _create_leaf_statement(
-    *,
-    bullet_re: re.Pattern | None,
-    cur_id: str | None,
-    cur_lines: list[str],
-    drop_empty: bool,
-) -> LeafStatement | None:
-    """Create a LeafStatement from buffered lines, cleaning bullets if needed.
-
-    Parameters
-    ----------
-    bullet_re
-        The compiled regex pattern to strip bullet markers, if any.
-    cur_id
-        The list ID associated with the current statement, if any.
-    cur_lines
-        The list of buffered lines for the current statement.
-    drop_empty
-        Whether to drop empty statements.
-
-    Returns
-    -------
-    LeafStatement | None
-        The created LeafStatement or None if dropped.
-    """
-
-    if not cur_lines:
-        return None
-
-    body = _normalize_space("\n".join(cur_lines))
-
-    # Strip a single leading bullet marker if present.
-    if bullet_re:
-        body = bullet_re.sub("", body, count=1).strip()
-
-    if drop_empty and not body:
-        return None
-
-    return LeafStatement(body=body, list_id=cur_id)
-
-
-def _extract_table_header_texts(segment: Any) -> list[str]:
-    """Extract header strings for each column from a table segment. Prioritizes
-    `header_rows` if available; otherwise falls back to slicing the first
-    `header_row_count` rows from the table body.
-
-    Parameters
-    ----------
-    segment
-        The table segment object (DocumentIR schema).
-
-    Returns
-    -------
-    list[str]
-        A list of header strings, one per column.
-    """
-
-    header_rows = getattr(segment, "header_rows", None)
-    if not header_rows:
-        hrc = int(getattr(segment, "header_row_count", 0) or 0)
-        rows = getattr(segment, "rows", []) or []
-        header_rows = rows[:hrc] if hrc > 0 else []
-
-    n_cols = int(getattr(segment, "n_cols", 0) or 0)
-
-    # If upstream IR didn't set n_cols, infer it from header rows using col_spans.
-    if n_cols <= 0:
-        inferred = 0
-        for r in header_rows or []:
-            cells = getattr(r, "cells", None) or []
-            c_idx = 0
-            for cell in cells:
-                cs = int(getattr(cell, "col_span", 1) or 1)
-                c_idx += max(1, cs)
-            inferred = max(inferred, c_idx)
-        n_cols = inferred
-
-    cols: list[list[str]] = [[] for _ in range(max(0, n_cols))]
-
-    for r in header_rows or []:
-        cells = getattr(r, "cells", None) or []
-        c_idx = 0
-        for cell in cells:
-            t = _normalize_space(_coerce_text_to_str(getattr(cell, "text", None)))
-            cs = int(getattr(cell, "col_span", 1) or 1)
-            if t:
-                for j in range(cs):
-                    if (c_idx + j) < len(cols):
-                        cols[c_idx + j].append(t)
-            c_idx += cs
-
-    return [" | ".join(parts).strip() for parts in cols]
-
-
-def _fill_span_area(
-    *,
-    c_span: int,
-    c_start: int,
-    grid: list[list[dict[str, Any]]],
-    key: str,
-    r_span: int,
-    r_start: int,
-    value: Any,
-) -> None:
-    """Fill a specific rectangular area of the grid.
-
-    Parameters
-    ----------
-    c_span
-        The column span.
-    c_start
-        The starting column index.
-    grid
-        The grid to populate.
-    key
-        The TableSegment key for error reporting.
-    r_span
-        The row span.
-    r_start
-        The starting row index.
-    value
-        The TextUnit-like value to fill in the spanned area.
-
-    Raises
-    ------
-    ValueError
-        If overlapping spans are detected.
-    """
-
-    for rr in range(r_start, r_start + r_span):
-        for cc in range(c_start, c_start + c_span):
-            if grid[rr][cc]["source_row"] != -1:
-                raise ValueError(
-                    f"Overlapping spans detected at (row={rr}, col={cc}) "
-                    f"in TableSegment '{key}'."
-                )
-            grid[rr][cc] = {"text": value, "source_row": r_start}
-
-
-def _forward_fill_columns(
-    *,
-    cols_to_fill: list[int],
-    grid: list[list[dict[str, Any]]],
-    key: str,
-    n_cols: int,
-    n_rows: int,
-    start_row: int,
-) -> None:
-    """Apply forward-fill logic to specific columns.
-
-    Parameters
-    ----------
-    cols_to_fill
-        The list of column indices to forward-fill.
-    grid
-        The grid to populate.
-    key
-        The TableSegment key for error reporting.
-    n_cols
-        The number of columns in the table.
-    n_rows
-        The number of rows in the table.
-    start_row
-        The row index to start forward-filling from.
-
-    Raises
-    ------
-    ValueError
-        If cols_to_fill contains invalid column indices.
-    """
-
-    for col in cols_to_fill:
-        if col < 0 or col >= n_cols:
-            raise ValueError(
-                f"forward_fill_cols contains invalid col={col} for n_cols={n_cols} "
-                f"in TableSegment '{key}'."
-            )
-
-        last_value: Any = None
-        last_source_row: int = -1
-
-        for r in range(start_row, n_rows):
-            cell_data = grid[r][col]
-            cur_text = _coerce_text_to_str(cell_data["text"]).strip()
-
-            if cell_data["text"] is None or cur_text == "":
-                if last_value is not None:
-                    grid[r][col] = {"text": last_value, "source_row": last_source_row}
-
-            else:
-                last_value = cell_data["text"]
-                last_source_row = cell_data["source_row"]
-
-
-def _norm(s: str) -> str:
-    """Normalize a string for robust comparison.
-
-    Parameters
-    ----------
-    s
-        The string to normalize.
-
-    Returns
-    -------
-    str
-        The normalized string.
-    """
-
-    return " ".join((s or "").split()).strip().lower()
-
-
-def _normalize_space(s: str) -> str:
-    """Collapse internal whitespace and strip padding.
-
-    Parameters
-    ----------
-    s
-        The input string.
-
-    Returns
-    -------
-    str
-        The normalized string.
-    """
-
-    return re.sub(r"\s+", " ", (s or "")).strip()
-
-
-def _normalize_space_keep_newlines(s: str) -> str:
-    """Normalize whitespace within lines but preserve newline structure. This is
-    critical for leaf splitting, which depends on splitlines() to detect
-    bullets/blank lines as statement boundaries.
-
-    Parameters
-    ----------
-    s
-        The input string.
-
-    Returns
-    -------
-    str
-        The normalized string with preserved newlines.
-    """
-
-    s = (s or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines: list[str] = []
-
-    for ln in s.split("\n"):
-        # Preserve blank lines exactly (so split_on_blank_lines can work).
-        lines.append(_normalize_space(ln) if ln.strip() else "")
-
-    return "\n".join(lines).strip()
-
-
-def _pick_heading_role_and_level(
-    *, cfg: ParserConfig, text: str
-) -> tuple[StatementRole, int, bool, bool]:
-    """Determine the role and hierarchy level for a heading string. Iterates through
-    `cfg.heading_rules`. If no rule matches, falls back to StatementRole.SECTION (a
-    safe, non-semantic grouping role) while returning MatchedRule=False so wizard mode
-    can surface the missing rule.
-
-    Parameters
-    ----------
-    cfg
-        The parser configuration containing rules.
-    text
-        The heading text.
-
-    Returns
-    -------
-    tuple[StatementRole, int, bool, bool]
-        (Role, Level, UniquePerOccurrence, MatchedRule)
-    """
-
-    for rule in cfg.heading_rules:
-        if rule.matches(text):
-            role = rule.role
-            level = (
-                rule.level if rule.level is not None else cfg.role_levels.get(role, 50)
-            )
-            return role, level, rule.unique_per_occurrence, True
-
-    # Fallback: do not invent semantics. Treat as a generic SECTION so the heading
-    # stack still behaves like a boundary, but signal MatchedRule=False so the caller
-    # can record an "unmatched_heading_rule" in wizard output.
-    role = StatementRole.SECTION
-    level = cfg.role_levels.get(StatementRole.SECTION, 50)
-    return role, level, False, False
-
-
-def _populate_grid_spans(
-    *, segment: TableSegment, grid: list[list[dict[str, Any]]], n_rows: int, n_cols: int
-) -> None:
-    """Handle cell parsing, cursor placement, and span explosion.
-
-    Parameters
-    ----------
-    grid
-        The grid to populate.
-    n_cols
-        The number of columns in the table.
-    n_rows
-        The number of rows in the table.
-    segment
-        The TableSegment to process.
-
-    Raises
-    ------
-    ValueError
-        If spans exceed table bounds or overlap.
-    """
-
-    for r_idx, row in enumerate(segment.rows):
-        cursor = 0
-
-        for cell in row.cells:
-            # Calculate spans safely.
-            r_span = max(1, int(getattr(cell, "row_span", 1) or 1))
-            c_span = max(1, int(getattr(cell, "col_span", 1) or 1))
-            raw = getattr(cell, "text", None)
-
-            # Treat truly-empty cells as None, otherwise preserve full TextUnit-like
-            # payload.
-            value = (
-                None
-                if _coerce_text_to_str(raw).strip() == ""
-                else _coerce_text_to_textunit_like(raw)
-            )
-
-            # Padding cell = extractor emitted an explicit blank cell in a column that
-            # may already be occupied by a row-span from a previous row.
-            is_padding = value is None and r_span == 1 and c_span == 1
-
-            # If this is padding and the current slot is already occupied, consume
-            # exactly one column and move on. This prevents right-shifting that can
-            # overflow n_cols.
-            if is_padding:
-                if cursor < n_cols and grid[r_idx][cursor]["source_row"] != -1:
-                    cursor += 1
-                    continue
-
-                # If we're already past the edge due to earlier padding, ignore
-                # trailing padding.
-                if cursor >= n_cols:
-                    continue
-
-            # Advance cursor to next empty slot (normal behavior for real cells).
-            while cursor < n_cols and grid[r_idx][cursor]["source_row"] != -1:
-                cursor += 1
-
-            # Sanity check: ensure span fits.
-            if cursor >= n_cols:
-                # If the only thing left is padding, ignore it; otherwise this is a
-                # real error.
-                if is_padding:
-                    continue
-
-                raise ValueError(
-                    f"Row {r_idx} exceeds declared n_cols={n_cols} "
-                    f"in TableSegment '{segment.segment_key}'."
-                )
-
-            # Validate spans.
-            _validate_span_bounds(
-                c_span=c_span,
-                cursor=cursor,
-                n_cols=n_cols,
-                n_rows=n_rows,
-                r_idx=r_idx,
-                r_span=r_span,
-                segment_key=segment.segment_key,
-            )
-
-            # Fill the spanned area.
-            _fill_span_area(
-                c_span=c_span,
-                c_start=cursor,
-                grid=grid,
-                key=segment.segment_key,
-                r_span=r_span,
-                r_start=r_idx,
-                value=value,
-            )
-
-            cursor += c_span
-
-
-def _row_provenance_by_stitched_index(*, segment: TableSegment) -> list[dict[str, Any]]:
-    """Return a list of length len(segment.rows) where each entry contains the
-    provenance info (at least bbox + page_index + slice_index) for the stitched row.
-    This is computed deterministically from `segment.slices` using the same
-    header-dropping logic as stitching.
+def _detect_semantic_collision(
+    *, existing: CanonicalNode, node: CanonicalNode, warnings: list[str]
+) -> bool:
+    """Check for semantic conflicts between an existing node and a new node.
 
     NB:
 
-    1. repeats_header=True --> drop header_row_count rows on that slice
-    2. repeats_header=False --> drop nothing
-    3. repeats_header=None --> *infer* repeated header by matching the slice's first
-        header rows against the segment's header rows (conservative).
+    1. Node IDs are derived from *normalized* semantics (role + normalized title/body
+        + ancestor fingerprint + optional local_code). Therefore we only treat this as
+        a true collision when the normalized semantics differ.
+    2. Formatting-only differences (casing, punctuation, whitespace) should *not*
+        trigger collision handling because that creates duplicate canonical nodes.
+
+    Examples:
+
+    1. Without normalization, these would be treated as collisions (causing
+        duplicates):
+        - "Recognize letters." vs "Recognize letters"
+        - "Add and subtract" vs "add and subtract"
+        - bullet formatting differences
+        - small punctuation/whitespace changes
+    2. With normalization, only true semantic differences trigger collision handling:
+        - Normalized meaning differs (casefold + whitespace + dash normalize differs)
 
     Parameters
     ----------
-    segment
-        The stitched TableSegment.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        List of provenance info per stitched row.
-
-    Raises
-    ------
-    ValueError
-        If the segment is invalid or mapping length mismatches.
-    """
-
-    if not segment.slices:
-        raise ValueError(
-            f"TableSegment '{segment.segment_key}' has no slices; cannot derive row "
-            f"provenance."
-        )
-
-    seg_hrc = int(getattr(segment, "header_row_count", 0) or 0)
-    seg_header_rows = (getattr(segment, "header_rows", None) or []) or (
-        (getattr(segment, "rows", None) or [])[:seg_hrc] if seg_hrc > 0 else []
-    )
-    seg_header_sigs = [_row_sig(r) for r in (seg_header_rows or [])[:seg_hrc]]
-
-    mapping: list[dict[str, Any]] = []
-
-    for slice_index, sl in enumerate(segment.slices):
-        bbox = sl.bbox
-        if bbox is None or len(bbox) != 4:
-            raise ValueError(
-                f"Missing/invalid bbox for TableSlice (segment_key={segment.segment_key}, "
-                f"slice_index={slice_index}, page_index={sl.page_index}): {bbox}"
-            )
-
-        drop = _calculate_drop_count(
-            sl=sl,
-            slice_index=slice_index,
-            seg_header_sigs=seg_header_sigs,
-            seg_hrc=seg_hrc,
-        )
-
-        # Never drop beyond available rows.
-        drop = min(drop, len(getattr(sl, "rows", []) or []))
-
-        effective_rows = sl.rows[drop:]
-
-        # Approximate per-row bbox from the slice bbox by evenly splitting the slice
-        # bbox vertically across the slice's visual rows. This is deterministic and
-        # makes wizard/debug output much more actionable than a coarse slice bbox.
-        total_rows_in_slice = len(getattr(sl, "rows", []) or [])
-        x0, y0, x1, y1 = bbox
-        row_h = ((y1 - y0) / total_rows_in_slice) if total_rows_in_slice > 0 else 0.0
-
-        for i, _ in enumerate(effective_rows):
-            slice_row_index = drop + i
-            row_bbox = [
-                x0,
-                y0 + row_h * slice_row_index,
-                x1,
-                y0 + row_h * (slice_row_index + 1),
-            ]
-            mapping.append(
-                {
-                    "bbox": bbox,
-                    "row_bbox": row_bbox,
-                    "page_index": sl.page_index,
-                    "slice_index": slice_index,
-                    "slice_row_index": slice_row_index,
-                    "slice_row_index_after_drop": i,
-                    "slice_total_rows": total_rows_in_slice,
-                    "dropped_header_rows": drop,
-                }
-            )
-
-    if len(mapping) != len(segment.rows):
-        raise ValueError(
-            f"Row↔slice mapping length mismatch for TableSegment '{segment.segment_key}'. "
-            f"Derived {len(mapping)} rows from slices, but segment.rows has {len(segment.rows)}."
-        )
-
-    return mapping
-
-
-def _row_sig(row: Any) -> str:
-    """Generate a stable signature for a row for header matching.
-
-    Parameters
-    ----------
-    row
-        The TableRow-like object.
-
-    Returns
-    -------
-    str
-        The row signature.
-    """
-
-    # Signature should be stable across reruns and resilient to spacing.
-    parts: list[str] = []
-    for cell in getattr(row, "cells", None) or []:
-        txt = _norm(_coerce_text_to_str(getattr(cell, "text", None)))
-        cs = int(getattr(cell, "col_span", 1) or 1)
-        rs = int(getattr(cell, "row_span", 1) or 1)
-        parts.append(f"{rs}x{cs}:{txt}")
-
-    return "|".join(parts)
-
-
-def _sanitize_path_part(s: str) -> str:
-    """Make a path token safe for use in generate_global_id(). Prevent delimiter
-    collisions caused by '/' in content.
-
-    Parameters
-    ----------
-    s
-        The input string.
-
-    Returns
-    -------
-    str
-        The sanitized string.
-    """
-
-    s = _normalize_space(s or "")
-
-    # Remove control characters (optional but helps avoid invisible ID instability).
-    s = re.sub(r"[\x00-\x1f\x7f]", "", s)
-
-    # Escape path delimiters so join('/') cannot create collisions.
-    s = s.replace("/", "／").replace("\\", "／")  # Fullwidth slash
-
-    # Avoid empty tokens.
-    return s if s else "_"
-
-
-def _segment_bbox_union(seg: Any) -> list[float] | None:
-    """Compute the union bounding box of all slices in a segment.
-
-    Parameters
-    ----------
-    seg
-        The document segment.
-
-    Returns
-    -------
-    list[float] | None
-        [x0, y0, x1, y1] or None.
-    """
-
-    bbox: list[float] | None = None
-    for sl in getattr(seg, "slices", []) or []:
-        bbox = _union_bbox(bbox, getattr(sl, "bbox", None))
-    return bbox
-
-
-def _segment_page_indices(seg: Any) -> list[int]:
-    """Extract distinct sorted page indices from a segment.
-
-    Parameters
-    ----------
-    seg
-        The document segment.
-
-    Returns
-    -------
-    list[int]
-        Sorted list of page numbers (0-indexed).
-    """
-
-    pages: set[int] = set()
-    for sl in getattr(seg, "slices", []) or []:
-        pi = getattr(sl, "page_index", None)
-        if isinstance(pi, int):
-            pages.add(pi)
-    return sorted(pages)
-
-
-def _split_leaf_statements(
-    *, leaf_cfg: LeafParsingConfig, text: str
-) -> list[LeafStatement]:
-    """Split a text block into atomic statements based on config. Uses blank lines,
-    code patterns, and bullet points as delimiters.
-
-    Parameters
-    ----------
-    leaf_cfg
-        The splitting rules.
-    text
-        The input text block.
-
-    Returns
-    -------
-    list[LeafStatement]
-        A list of extracted statements.
-    """
-
-    raw = (text or "").strip()
-    if not raw:
-        return []
-
-    bullet_re = re.compile(leaf_cfg.bullet_regex) if leaf_cfg.bullet_regex else None
-    code_re = re.compile(leaf_cfg.code_line_regex) if leaf_cfg.code_line_regex else None
-
-    cur_id: str | None = None
-    cur_lines: list[str] = []
-    output: list[LeafStatement] = []
-
-    def _flush() -> None:
-        """Flush the current accumulated lines into an output LeafStatement."""
-
-        nonlocal cur_lines, cur_id
-        stmt = _create_leaf_statement(
-            bullet_re=bullet_re,
-            cur_id=cur_id,
-            cur_lines=cur_lines,
-            drop_empty=leaf_cfg.drop_empty,
-        )
-        if stmt:
-            output.append(stmt)
-        cur_lines = []
-        cur_id = None
-
-    for ln in raw.splitlines():
-        if leaf_cfg.split_on_blank_lines and not ln.strip():
-            _flush()
-            continue
-
-        stripped = ln.rstrip("\n")
-
-        # Code line logic (starts a new item)
-        if code_re:
-            m = code_re.match(stripped.strip())
-            if m:
-                _flush()
-                cur_id = (m.groupdict().get("list_id") or "").strip() or None
-                body = (m.groupdict().get("body") or "").strip()
-                cur_lines = [body] if body else []
-                continue
-
-        # Bullet logic (starts a new item, unless it's the very first line of a chunk)
-        if leaf_cfg.split_on_bullets and bullet_re and bullet_re.match(stripped):
-            if cur_lines:
-                _flush()
-            cur_lines.append(stripped)
-            continue
-
-        cur_lines.append(stripped)
-
-    _flush()
-    return output
-
-
-def _stable_list_item_key(*, body: str, marker: str | None) -> str:
-    """Generate a stable hash key for list items to handle duplicates.
-
-    Parameters
-    ----------
-    body
-        The body text of the list item.
-    marker
-        An optional marker (e.g., bullet) associated with the item.
-
-    Returns
-    -------
-    str
-        A stable 12-character hash string.
-    """
-
-    s = f"{marker or ''}|{body}".encode("utf-8")
-    return hashlib.sha256(s).hexdigest()[:12]
-
-
-def _stable_table_identity(
-    *,
-    caption_text: str,
-    header_texts: list[str],
-    local_code: str | None,
-    segment_key: str | None,
-) -> str:
-    """Build a stable identifier for a table segment.
-
-    Preference order:
-      1. local_code (best, when present)
-      2. header signature hash
-      3. caption signature hash (last resort)
-      4. 'unknown'
-
-    Parameters
-    ----------
-    caption_text
-        The text of the table caption, if any.
-    header_texts
-        The list of header strings for each column.
-    local_code
-        The local code of the table, if any.
-    segment_key
-        The segment key for logging context.
-
-    Returns
-    -------
-    str
-        A stable identifier string.
-    """
-
-    if local_code:
-        lc = _normalize_space(local_code)
-
-        # Avoid separators used elsewhere in deterministic seeds/paths.
-        lc = lc.replace("|", "_").replace(">", "_")
-        return f"lc:{lc}"
-
-    header_norm = "|".join(
-        _normalize_space(h).lower() for h in header_texts if _normalize_space(h)
-    )
-    if header_norm:
-        h = hashlib.sha256(header_norm.encode("utf-8")).hexdigest()[:12]
-        return f"hdr:{h}"
-
-    cap_norm = _normalize_space(caption_text).lower()
-    if cap_norm:
-        h = hashlib.sha256(cap_norm.encode("utf-8")).hexdigest()[:12]
-        return f"cap:{h}"
-
-    # Deterministic fallback: never return 'unknown' because it can cause cross-table
-    # ID collisions when multiple unlabeled tables exist in the same document.
-    seg_norm = _normalize_space(segment_key or "").lower()
-    h = hashlib.sha256(seg_norm.encode("utf-8")).hexdigest()[:12]
-    return f"seg:{h}"
-
-
-def _table_is_contentful(*, cfg: ParserConfig, seg: Any) -> bool:
-    """Determine if an unmatched table is 'real' enough for wizard diagnostics.
-
-    Parameters
-    ----------
-    cfg
-        Configuration defining minimum thresholds.
-    seg
-        The table segment.
+    existing
+        The existing CanonicalNode.
+    node
+        The new CanonicalNode.
+    warnings
+        The list of warnings to append to.
 
     Returns
     -------
     bool
-        True if the table exceeds the content thresholds.
+        True if a collision is detected (and appends details to warnings), otherwise
+        False.
     """
 
-    preview = _table_preview_rows(max_cols=12, max_rows=8, seg=seg)
-    nonempty_cells = 0
-    total_chars = 0
-    for row in preview:
-        for c in row:
-            if c:
-                s = c.strip()
-                if s:
-                    nonempty_cells += 1
-                    total_chars += len(s)
-    return (
-        nonempty_cells >= cfg.unmatched_table_min_nonempty_cells
-        and total_chars >= cfg.unmatched_table_min_total_chars
-    )
+    collision = False
+
+    # Role mismatch should never happen if node IDs are derived correctly, but we keep
+    # it as a hard collision to avoid merging incompatible nodes.
+    if existing.role != node.role:
+        msg = (
+            f"node_semantic_conflict_same_id_different_role:"
+            f"node_id={node.node_id} existing_role={existing.role} new_role={node.role} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        return True
+
+    def _semantic_norm_text(n: CanonicalNode) -> str:
+        """Return the normalized semantic text that should define this node.
+
+        Parameters
+        ----------
+        n
+            The CanonicalNode to extract normalized semantic text from.
+
+        Returns
+        -------
+        str
+            The normalized semantic text.
+        """
+
+        # Prefer stored normalized_text (debug snapshot).
+        if n.normalized_text:
+            return n.normalized_text
+
+        # Otherwise derive it deterministically from the available text.
+        if n.title is not None and n.title.text:
+            return _normalize_text(n.title.text)
+
+        if n.body is not None and n.body.text:
+            return _normalize_text(n.body.text)
+
+        return ""
+
+    existing_norm = _semantic_norm_text(existing)
+    new_norm = _semantic_norm_text(node)
+
+    # True semantic mismatch (same deterministic ID but different normalized meaning).
+    if existing_norm and new_norm and existing_norm != new_norm:
+        msg = (
+            f"node_semantic_conflict_same_id_different_normalized_text:"
+            f"node_id={node.node_id} existing_norm={existing_norm!r} new_norm={new_norm!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        collision = True
+
+    # Formatting-only mismatches: warn, but do NOT mark as collision.
+    existing_title = existing.title.text if existing.title is not None else None
+    new_title = node.title.text if node.title is not None else None
+    if (
+        existing_title
+        and new_title
+        and existing_title.strip() != new_title.strip()
+        and existing_norm
+        and new_norm
+        and existing_norm == new_norm
+    ):
+        msg = (
+            f"node_formatting_diff_same_id_title_semantics_equal:"
+            f"node_id={node.node_id} existing_title={existing_title!r} new_title={new_title!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    existing_body = existing.body.text if existing.body is not None else None
+    new_body = node.body.text if node.body is not None else None
+
+    if (
+        existing_body
+        and new_body
+        and existing_body.strip() != new_body.strip()
+        and existing_norm
+        and new_norm
+        and existing_norm == new_norm
+    ):
+        msg = (
+            f"node_formatting_diff_same_id_body_semantics_equal:"
+            f"node_id={node.node_id} existing_body={existing_body!r} new_body={new_body!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    # Local code mismatch is treated as provenance/metadata drift, not a true collision.
+    if (
+        existing.local_code
+        and node.local_code
+        and existing.local_code.strip() != node.local_code.strip()
+    ):
+        msg = (
+            f"node_local_code_diff_same_id_semantics_equal:"
+            f"node_id={node.node_id} existing_local_code={existing.local_code!r} "
+            f"new_local_code={node.local_code!r} "
+            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return collision
 
 
-def _table_preview_rows(
-    *, max_cols: int = 12, max_rows: int = 6, seg: Any
-) -> list[list[str | None]]:
-    """Generate a JSON-safe preview of the table content for debugging.
+def _drop_duplicate_roles_keep_first(
+    groupings: list[GroupingDecision],
+) -> list[GroupingDecision]:
+    """Drop duplicate roles, keeping the first occurrence.
 
     Parameters
     ----------
-    max_cols
-        Maximum columns to include.
-    max_rows
-        Maximum rows to include.
-    seg
-        The table segment.
+    groupings
+        The list of GroupingDecisions to process.
 
     Returns
     -------
-    list[list[str | None]]
-        A 2D grid of cell strings.
+    list[GroupingDecision]
+        The filtered list of GroupingDecisions.
     """
 
-    try:
-        norm_rows = normalize_table_grid(forward_fill_cols=[], segment=seg)
-    except Exception:  # pylint: disable=broad-except
-        # Worst-case fallback: raw stitched rows, best-effort.
-        output: list[list[str | None]] = []
-        for r in (getattr(seg, "rows", []) or [])[:max_rows]:
-            row_out: list[str | None] = []
-            for cell in (getattr(r, "cells", None) or [])[:max_cols]:
-                t = _normalize_space(_coerce_text_to_str(getattr(cell, "text", None)))
-                row_out.append(t or None)
-            output.append(row_out)
-        return output
+    output: list[GroupingDecision] = []
+    seen_roles: set[str] = set()
 
-    output = []
-    for nr in norm_rows[:max_rows]:
-        row_out = []
-        for c in (getattr(nr, "cells", []) or [])[:max_cols]:
-            t = _normalize_space(_coerce_text_to_str(c))
-            row_out.append(t or None)
-        output.append(row_out)
+    for g in groupings:
+        role_value = g.role.value
+
+        if role_value in seen_roles:
+            continue
+
+        output.append(g)
+        seen_roles.add(role_value)
+
     return output
 
 
-def _union_bbox(a: list[float] | None, b: list[float] | None) -> list[float] | None:
-    """Compute the union of two bounding boxes [x0, y0, x1, y1].
+def _emit_edge(
+    *,
+    child_id: str,
+    child_to_parent: dict[str, str],
+    decision_id: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    parent_id: str,
+    segment_id: str,
+    warnings: list[str],
+) -> None:
+    """Emit edge and assign order_index by encounter order.
+
+    NB:
+    1. Keep-first-parent tree enforcement.
+    2. Drop and warn on parent conflicts.
+    3. Assign order_index by first encounter order per parent.
+    4. Merge provenance if the exact same edge is encountered again.
 
     Parameters
     ----------
-    a
-        The first bounding box.
-    b
-        The second bounding box.
+    child_id
+        The child node ID.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision_id
+        The SegmentDecision ID.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    parent_id
+        The parent node ID.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    # Keep-first-parent tree enforcement.
+    existing_parent = child_to_parent.get(child_id)
+    if existing_parent is not None and existing_parent != parent_id:
+        msg = (
+            f"tree_parent_conflict_dropped:"
+            f"child={child_id} existing_parent={existing_parent} new_parent={parent_id}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        return
+
+    # Record first valid parent assignment.
+    if existing_parent is None:
+        child_to_parent[child_id] = parent_id
+
+    # Edge key.
+    key = (parent_id, child_id)
+
+    # If edge already exists, merge provenance into the first-emitted edge.
+    existing = edges_by_key.get(key)
+    if existing is not None:
+        existing.source_segment_ids = _stable_extend_unique(
+            base=existing.source_segment_ids, extra=[segment_id]
+        )
+        existing.source_decision_ids = _stable_extend_unique(
+            base=existing.source_decision_ids, extra=[decision_id]
+        )
+        return
+
+    # Deterministic sibling ordering (per parent).
+    order = next_order_index[parent_id]
+    next_order_index[parent_id] += 1
+
+    edge = CanonicalEdge(
+        child_id=child_id,
+        order_index=order,
+        parent_id=parent_id,
+        source_decision_ids=[decision_id],
+        source_segment_ids=[segment_id],
+    )
+    edges.append(edge)
+    edges_by_key[key] = edge
+
+
+def _extract_block_segment_text(segment: BlockSegment) -> str | None:
+    """Extract text from a BlockSegment.
+
+    Parameters
+    ----------
+    segment
+        The BlockSegment to extract text from.
 
     Returns
     -------
-    list[float] | None
-        The union bounding box, or None if both inputs are None.
+    str | None
+        The extracted text, or None if not found.
     """
 
-    if a is None:
-        return b
-    if b is None:
-        return a
-    return [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+    if segment.combined_text and segment.combined_text.strip():
+        return segment.combined_text.strip()
+
+    if isinstance(segment.text, TextUnit) and segment.text.text.strip():
+        return segment.text.text.strip()
+
+    if segment.list_items:
+        parts: list[str] = []
+
+        for list_item in segment.list_items:
+            text_unit = list_item.text
+
+            if text_unit.text.strip():
+                parts.append(text_unit.text.strip())
+
+        if parts:
+            return "\n".join(parts)
+
+    return None
 
 
-def _validate_span_bounds(
-    *,
-    c_span: int,
-    cursor: int,
-    n_cols: int,
-    n_rows: int,
-    r_idx: int,
-    r_span: int,
-    segment_key: str,
-) -> None:
-    """Validate that row and column spans fit within table limits.
+def _extract_table_headers(segment: Segment) -> list[str]:
+    """Best-effort extraction of header cell strings for unresolved table items.
 
     Parameters
     ----------
-    c_span
-        The column span.
-    cursor
-        The current column cursor.
-    n_cols
-        The number of columns in the table.
-    n_rows
-        The number of rows in the table.
-    r_idx
-        The current row index.
-    r_span
-        The row span.
-    segment_key
-        The TableSegment key for error reporting.
+    segment
+        The Segment to extract headers from.
 
-    Raises
-    ------
-    ValueError
-        If spans exceed table bounds.
+    Returns
+    -------
+    list[str]
+        The extracted header cell strings.
     """
 
-    if r_idx + r_span > n_rows:
-        raise ValueError(
-            f"row_span out of bounds (row={r_idx}, row_span={r_span}, n_rows={n_rows}) "
-            f"in TableSegment '{segment_key}'."
+    if segment.kind != "table":
+        return []
+
+    header_rows = getattr(segment, "header_rows", [])
+
+    if not header_rows:
+        return []
+
+    # Use the last header row as "most specific".
+    last = header_rows[-1]
+    output: list[str] = []
+
+    for cell in getattr(last, "cells", []) or []:
+        tu = getattr(cell, "text", None)
+        if tu and getattr(tu, "text", "").strip():
+            output.append(tu.text.strip())
+
+    return output
+
+
+def _format_page_indices(page_indices: list[int]) -> str:
+    """Format page indices as a comma-separated string.
+
+    Parameters
+    ----------
+    page_indices
+        The list of page indices to format.
+
+    Returns
+    -------
+    str
+        The formatted page indices string.
+    """
+
+    return "-" if not page_indices else ",".join(str(p) for p in page_indices)
+
+
+def _format_section_path(*, max_items: int = 6, section_path_text: list[str]) -> str:
+    """Compact section path for warnings. Keep the last N headings to avoid huge
+    strings.
+
+    Parameters
+    ----------
+    max_items
+        The maximum number of section path items to keep.
+    section_path_text
+        The full section path text list.
+
+    Returns
+    -------
+    str
+        The compacted section path string.
+    """
+
+    if not section_path_text:
+        return "-"
+
+    tail = section_path_text[-max_items:]
+
+    return " > ".join(tail)
+
+
+def _grouping_key(g: GroupingDecision) -> str:
+    """Create a stable string for path_fingerprint().
+
+    NB: This key must NOT depend on canonical node_id (circular dependency).
+
+    Parameters
+    ----------
+    g
+        The GroupingDecision to compute the key for.
+
+    Returns
+    -------
+    str
+        The grouping key.
+    """
+
+    code = g.local_code or "-"
+    title = canonical_grouping_title(role=g.role, title=g.title)
+
+    return f"{g.role.value}:{_normalize_text(text=title)}:{_normalize_text(text=code)}"
+
+
+def _index_decisions_by_segment(
+    *, segment_decisions: SegmentDecisionSet
+) -> dict[str, list[SegmentDecision]]:
+    """Index all decisions by their segment ID.
+
+    Parameters
+    ----------
+    segment_decisions
+        The SegmentDecisionSet to index.
+
+    Returns
+    -------
+    dict[str, list[SegmentDecision]]
+        The mapping of segment_id to list of SegmentDecisions.
+    """
+
+    decisions_by_segment: dict[str, list[SegmentDecision]] = defaultdict(list)
+
+    for d in segment_decisions.decisions:
+        assert isinstance(d.segment_id, str) and d.segment_id
+        decisions_by_segment[d.segment_id].append(d)
+
+    return decisions_by_segment
+
+
+def _iter_all_grouping_decisions(
+    decision_set: SegmentDecisionSet,
+) -> Iterable[GroupingDecision]:
+    """Yield every GroupingDecision present anywhere in the decision set:
+
+    1. context_groupings
+    2. segment-level groupings
+    3. row-level groupings
+
+    Parameters
+    ----------
+    decision_set
+        The SegmentDecisionSet to iterate over.
+
+    Yields
+    -------
+    GroupingDecision
+        The next GroupingDecision.
+    """
+
+    for d in decision_set.decisions:
+        if d.context_groupings:
+            yield from d.context_groupings
+
+        if d.groupings:
+            yield from d.groupings
+
+        if d.rows:
+            for r in d.rows:
+                if r.groupings:
+                    yield from r.groupings
+
+
+def _make_unresolved_sample(
+    *, decision: SegmentDecision, max_len: int = 280, segment: Segment
+) -> str:
+    """Create a short, human-debuggable preview string for UnresolvedItem.sample.
+
+    Parameters
+    ----------
+    decision
+        The SegmentDecision to create a sample for.
+    max_len
+        The maximum length of the sample string.
+    segment
+        The Segment to create a sample for.
+
+    Returns
+    -------
+    str
+        The generated sample string.
+    """
+
+    parts: list[str] = []
+    parts.append(f"type={decision.decision_type.value} conf={decision.confidence:.2f}")
+
+    rationale = getattr(decision, "rationale", None)
+
+    if rationale:
+        parts.append(f"rationale={rationale}")
+
+    if isinstance(segment, BlockSegment):
+        segment_text = _extract_block_segment_text(segment)
+    else:
+        # Fallback: best-effort (mostly useful for some segment variants)
+        text_or_none = getattr(segment, "text", None)
+        segment_text = text_or_none.text if isinstance(text_or_none, TextUnit) else None
+
+    if segment_text and segment_text.strip():
+        parts.append(segment_text.strip())
+    # For tables, we often don't have a clean "text" field; header preview can help
+    # debugging.
+    elif isinstance(segment, TableSegment):
+        headers = _extract_table_headers(segment)
+        if headers:
+            parts.append("headers=" + " | ".join(headers[:8]))
+
+    s = " | ".join(parts).strip()
+
+    return s[:max_len]
+
+
+def _materialize_block_leaves(
+    *,
+    ancestor_keys: list[str],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    parent_id: str,
+    section_path_text: list[str],
+    segment_bbox: Optional[BBox],
+    segment_id: str,
+    warnings: list[str],
+) -> None:
+    """Materialize leaf nodes for a block segment.
+
+    Parameters
+    ----------
+    ancestor_keys
+        The list of ancestor grouping keys.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    parent_id
+        The parent node ID.
+    section_path_text
+        The section path text for the segment.
+    segment_bbox
+        The segment bounding box.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for leaf in decision.leaves:
+        leaf_id = canonical_leaf_node_id(
+            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, leaf=leaf
         )
-    if cursor + c_span > n_cols:
-        raise ValueError(
-            f"col_span out of bounds (row={r_idx}, col={cursor}, col_span={c_span}, n_cols={n_cols}) "
-            f"in TableSegment '{segment_key}'."
+
+        node = CanonicalNode(
+            bbox=segment_bbox,
+            body=TextUnit(language="und", text=canonical_storage_text(leaf.body)),
+            list_marker=leaf.list_marker,
+            local_code=leaf.local_code,
+            node_id=leaf_id,
+            normalized_text=_normalize_text(text=leaf.body),
+            page_indices=page_indices,
+            role=leaf.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision.decision_id],
+            source_label=leaf.source_label,
+            source_segment_ids=[segment_id],
+            source_type="block",
+            title=None,
         )
+
+        effective_leaf_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=effective_leaf_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=parent_id,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
+
+
+def _materialize_decision_structure(
+    *,
+    active_context_stack: list[ContextFrame],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    root_id: str,
+    section_path_text: list[str],
+    segment: Segment,
+    warnings: list[str],
+) -> list[ContextFrame]:
+    """Reconcile context stack, create grouping nodes, and materialize leaves/rows.
+
+    NB: For tables, a table decision may contain both decision.leaves[] (segment-level
+    statements) OR decision.rows[] (row-wise statements). In these cases, emitting
+    leaves first makes them appear first in deterministic order_index order under that
+    parent. If we wanted to emit rows first, then we can just switch the if-statements.
+
+    Parameters
+    ----------
+    active_context_stack
+        The current active context stack.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    root_id
+        The root node ID.
+    section_path_text
+        The section path text for the segment.
+    segment
+        The Segment to materialize.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    list[ContextFrame]
+        The updated active_context_stack.
+    """
+
+    # Context stack reconciliation.
+    parent_id, ancestor_keys, active_context_stack = reconcile_context_stack(
+        active_stack=active_context_stack,
+        child_to_parent=child_to_parent,
+        decision=decision,
+        desired_context=decision.context_groupings,
+        doc_key=doc_key,
+        edges_by_key=edges_by_key,
+        edges=edges,
+        next_order_index=next_order_index,
+        nodes_by_id=nodes_by_id,
+        root_id=root_id,
+        segment=segment,
+        warnings=warnings,
+    )
+
+    # Apply decision.groupings[] under the context stack tip.
+    for g in decision.groupings:
+        g_title = canonical_grouping_title(role=g.role, title=g.title)
+        node_id = canonical_grouping_node_id(
+            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
+        )
+
+        node = CanonicalNode(
+            bbox=_segment_first_bbox(segment),
+            body=None,
+            list_marker=None,
+            local_code=g.local_code,
+            node_id=node_id,
+            normalized_text=_normalize_text(text=g_title),
+            page_indices=page_indices,
+            role=g.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision.decision_id],
+            source_label=g.source_label,
+            source_segment_ids=[segment.segment_id],
+            source_type=segment.kind,
+            title=TextUnit(language="und", text=canonical_storage_text(g_title)),
+        )
+
+        effective_node_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=effective_node_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=parent_id,
+            segment_id=segment.segment_id,
+            warnings=warnings,
+        )
+
+        parent_id = effective_node_id
+        ancestor_keys.append(_grouping_key(g))
+
+    # Dispatch based on segment kind.
+    if segment.kind == "block":
+        _materialize_block_leaves(
+            ancestor_keys=ancestor_keys,
+            child_to_parent=child_to_parent,
+            decision=decision,
+            doc_key=doc_key,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            nodes_by_id=nodes_by_id,
+            page_indices=page_indices,
+            parent_id=parent_id,
+            section_path_text=section_path_text,
+            segment_bbox=_segment_first_bbox(segment),
+            segment_id=segment.segment_id,
+            warnings=warnings,
+        )
+    elif segment.kind == "table":
+        if not decision.leaves and not decision.rows:
+            msg = f"table_decision_emits_nothing:{segment.segment_id}:{decision.decision_id}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # Table decisions may emit leaves directly.
+        if decision.leaves:
+            _materialize_table_leaves(
+                ancestor_keys=ancestor_keys,
+                child_to_parent=child_to_parent,
+                decision=decision,
+                doc_key=doc_key,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                nodes_by_id=nodes_by_id,
+                page_indices=page_indices,
+                parent_id=parent_id,
+                section_path_text=section_path_text,
+                segment_bbox=_segment_first_bbox(segment),
+                segment_id=segment.segment_id,
+                warnings=warnings,
+            )
+
+        # Preferred: row-level decisions.
+        if decision.rows:
+            _materialize_table_rows(
+                ancestor_keys=ancestor_keys,
+                child_to_parent=child_to_parent,
+                decision=decision,
+                doc_key=doc_key,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                nodes_by_id=nodes_by_id,
+                page_indices=page_indices,
+                parent_id=parent_id,
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+                table_segment=segment,
+                warnings=warnings,
+            )
+    else:
+        msg = f"unknown_segment_kind:{segment.kind}:{segment.segment_id}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return active_context_stack
+
+
+def _materialize_table_leaves(
+    *,
+    ancestor_keys: list[str],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    parent_id: str,
+    section_path_text: list[str],
+    segment_bbox: Optional[BBox],
+    segment_id: str,
+    warnings: list[str],
+) -> None:
+    """Materialize table-level leaves (SegmentDecision.leaves) under the current
+    parent. This is used for TABLE segments where the LLM emits leaves directly
+    (fallback mode) instead of emitting RowDecision entries in SegmentDecision.rows[].
+
+    Parameters
+    ----------
+    ancestor_keys
+        The list of ancestor grouping keys.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    parent_id
+        The parent node ID.
+    section_path_text
+        The section path text for the segment.
+    segment_bbox
+        The segment bounding box.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for leaf in decision.leaves:
+        leaf_id = canonical_leaf_node_id(
+            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, leaf=leaf
+        )
+
+        node = CanonicalNode(
+            bbox=segment_bbox,
+            body=TextUnit(language="und", text=canonical_storage_text(leaf.body)),
+            list_marker=leaf.list_marker,
+            local_code=leaf.local_code,
+            node_id=leaf_id,
+            normalized_text=_normalize_text(text=leaf.body),
+            page_indices=page_indices,
+            role=leaf.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision.decision_id],
+            source_label=leaf.source_label,
+            source_segment_ids=[segment_id],
+            source_type="table",  # IMPORTANT: keep provenance correct
+            title=None,
+        )
+
+        effective_leaf_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=effective_leaf_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=parent_id,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
+
+
+def _materialize_table_rows(
+    *,
+    ancestor_keys: list[str],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    parent_id: str,
+    section_path_text: list[str],
+    segment_id: str,
+    table_segment: TableSegment,
+    warnings: list[str],
+) -> None:
+    """Materialize rows and leaves for a table segment.
+
+    Parameters
+    ----------
+    ancestor_keys
+        The list of ancestor grouping keys.
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision
+        The SegmentDecision to materialize.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    parent_id
+        The parent node ID.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    table_segment
+        The TableSegment to materialize rows for.
+    warnings
+        The list of warnings to append to.
+    """
+
+    for row in sorted(decision.rows, key=lambda r: r.row_index):
+        row_ancestor_keys = list(ancestor_keys)
+        row_bbox = _table_row_bbox(row_index=row.row_index, table_segment=table_segment)
+        row_parent_id = parent_id
+
+        # Row groupings.
+        for g in row.groupings:
+            g_title = canonical_grouping_title(role=g.role, title=g.title)
+            node_id = canonical_grouping_node_id(
+                ancestor_grouping_keys=row_ancestor_keys, doc_key=doc_key, grouping=g
+            )
+
+            node = CanonicalNode(
+                bbox=row_bbox,
+                body=None,
+                list_marker=None,
+                local_code=g.local_code,
+                node_id=node_id,
+                normalized_text=_normalize_text(text=g_title),
+                page_indices=page_indices,
+                role=g.role,
+                section_path_text=section_path_text,
+                source_decision_ids=[decision.decision_id],
+                source_label=g.source_label,
+                source_segment_ids=[segment_id],
+                source_type="table",
+                title=TextUnit(language="und", text=canonical_storage_text(g_title)),
+            )
+
+            effective_node_id = ensure_node(
+                node=node, nodes_by_id=nodes_by_id, warnings=warnings
+            )
+            _emit_edge(
+                child_id=effective_node_id,
+                child_to_parent=child_to_parent,
+                decision_id=decision.decision_id,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                parent_id=row_parent_id,
+                segment_id=segment_id,
+                warnings=warnings,
+            )
+
+            row_parent_id = effective_node_id
+            row_ancestor_keys.append(_grouping_key(g))
+
+        # Row leaves.
+        for leaf in row.leaves:
+            leaf_id = canonical_leaf_node_id(
+                ancestor_grouping_keys=row_ancestor_keys, doc_key=doc_key, leaf=leaf
+            )
+
+            node = CanonicalNode(
+                bbox=row_bbox,
+                body=TextUnit(language="und", text=canonical_storage_text(leaf.body)),
+                list_marker=leaf.list_marker,
+                local_code=leaf.local_code,
+                node_id=leaf_id,
+                normalized_text=_normalize_text(text=leaf.body),
+                page_indices=page_indices,
+                role=leaf.role,
+                section_path_text=section_path_text,
+                source_decision_ids=[decision.decision_id],
+                source_label=leaf.source_label,
+                source_segment_ids=[segment_id],
+                source_type="table",
+                title=None,
+            )
+
+            effective_leaf_id = ensure_node(
+                node=node, nodes_by_id=nodes_by_id, warnings=warnings
+            )
+            _emit_edge(
+                child_id=effective_leaf_id,
+                child_to_parent=child_to_parent,
+                decision_id=decision.decision_id,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                parent_id=row_parent_id,
+                segment_id=segment_id,
+                warnings=warnings,
+            )
+
+
+def _normalize_leaf_body(body: str) -> str:
+    """Normalize statement text. The goal here is to remove purely formatting-based
+    diffs that shouldn't create merge warnings.
+
+    The following are considered safe operations:
+
+    1. Unicode normalize (NFKC)
+    2. Normalize quotes/dashes
+    3. Collapse whitespace
+    4. Normalize spacing after ":" (no capitalization changes)
+
+    Parameters
+    ----------
+    body
+        The leaf body text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized leaf body text.
+    """
+
+    s = unicodedata.normalize("NFKC", body or "")
+    s = s.translate(QUOTES_TRANSLATION)
+    s = _DASH_RE.sub("-", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Normalize colon spacing ONLY when a non-space follows the colon.
+    # Examples:
+    #   "Skills:use blends"   -> "Skills: use blends"
+    #   "Skills:  use blends" -> "Skills: use blends"
+    s = re.sub(r":\s*(?=\S)", ": ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
+
+
+def _normalize_text(text: Optional[str]) -> str:
+    """Deterministic normalization for hashing/comparisons:
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized text.
+    """
+
+    if not text:
+        return ""
+
+    text = unicodedata.normalize("NFKC", text)
+    text = _DASH_RE.sub("-", text)
+
+    return _WS_RE.sub(" ", text).strip().casefold()
+
+
+def _normalized_text_hash(*, encoding: str = "utf-8", text: str) -> str:
+    """Compute a stable SHA-256 hash of normalized text.
+
+    Parameters
+    ----------
+    encoding
+        The text encoding to use.
+    text
+        The text to hash.
+
+    Returns
+    -------
+    str
+        The SHA-256 hash of the normalized text as a hex string.
+    """
+
+    norm = _normalize_text(text)
+
+    return hashlib.sha256(norm.encode(encoding)).hexdigest()
+
+
+def _resolve_collision(
+    *, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode], warnings: list[str]
+) -> str:
+    """Disambiguate a node ID using provenance data and inserts it as a new node. Used
+    when a semantic collision is detected. Updates node.node_id in place.
+
+    Parameters
+    ----------
+    node
+        The CanonicalNode with a colliding node_id.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    str
+        The new unique node_id.
+    """
+
+    parts: list[str] = []
+
+    # Build a stable disambiguator string from provenance.
+    if node.source_segment_ids:
+        parts.append(f"seg={node.source_segment_ids[0]}")
+    if node.source_decision_ids:
+        parts.append(f"dec={node.source_decision_ids[0]}")
+    if node.page_indices:
+        parts.append(f"page={node.page_indices[0]}")
+    if node.list_marker:
+        parts.append(f"list={node.list_marker}")
+    if node.local_code:
+        parts.append(f"code={node.local_code}")
+
+    disambiguator = "|".join(parts) if parts else "no_provenance"
+    base_key = f"{node.node_id}|collision|{disambiguator}"
+
+    # Generate deterministic new ID.
+    new_id = uuidv5_from_key(base_key)
+
+    # Extremely defensive: ensure uniqueness deterministically.
+    i = 1
+    while new_id in nodes_by_id:
+        new_id = uuidv5_from_key(f"{base_key}|{i}")
+        i += 1
+
+    msg = (
+        f"node_id_collision_resolved:"
+        f"old_node_id={node.node_id} new_node_id={new_id} disambiguator={disambiguator}"
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+
+    # Apply changes.
+    node.node_id = new_id
+    nodes_by_id[new_id] = node
+
+    return new_id
+
+
+def _rewrite_grouping_list(
+    *,
+    enforce_unique_roles: bool,
+    groupings: list[GroupingDecision] | None,
+    mapping_index: dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ],
+    sort_by_precedence: bool,
+) -> list[GroupingDecision] | None:
+    """Rewrite a list of GroupingDecisions using a mapping index.
+
+    Parameters
+    ----------
+    enforce_unique_roles
+        Whether to enforce unique roles in the output list.
+    groupings
+        The list of GroupingDecisions to rewrite.
+    mapping_index
+        The mapping index for rewriting groupings.
+    sort_by_precedence
+        Whether to sort the output list by context precedence.
+
+    Returns
+    -------
+    list[GroupingDecision] | None
+        The rewritten list of GroupingDecisions.
+    """
+
+    if not groupings:
+        return groupings
+
+    rewritten: list[GroupingDecision] = []
+
+    for g in groupings:
+        key = _gkey_tuple(
+            local_code=g.local_code,
+            role=g.role,
+            source_label=g.source_label,
+            title=g.title,
+        )
+
+        if key not in mapping_index:
+            rewritten.append(g)
+            continue
+
+        repl = mapping_index[key]
+
+        if repl is None:  # Drop
+            continue
+
+        if isinstance(repl, list):  # Split
+            rewritten.extend(
+                [
+                    GroupingDecision(
+                        local_code=k.local_code,
+                        role=k.role,
+                        source_label=k.source_label,
+                        title=k.title,
+                    )
+                    for k in repl
+                ]
+            )
+        else:  # Replace
+            rewritten.append(
+                GroupingDecision(
+                    local_code=repl.local_code,
+                    role=repl.role,
+                    source_label=repl.source_label,
+                    title=repl.title,
+                )
+            )
+
+    # Deduplicate while preserving order.
+    rewritten = _dedupe_preserve_order(rewritten)
+
+    if enforce_unique_roles:
+        rewritten = _drop_duplicate_roles_keep_first(rewritten)
+
+    if sort_by_precedence:
+        rewritten = _sort_by_context_precedence(rewritten)
+
+    return rewritten
+
+
+def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
+    """Best-effort bbox for a segment.
+
+    NB: Segments can span pages; bboxes are page-local, so we only take the first
+    provenance bbox (deterministic + meaningful for debugging).
+
+    Parameters
+    ----------
+    segment
+        The Segment to extract the bbox from.
+
+    Returns
+    -------
+    Optional[BBox]
+        The first BBox if available, else None.
+    """
+
+    return segment.segment_provenance[0].bbox if segment.segment_provenance else None
+
+
+def _sort_by_context_precedence(
+    groupings: list[GroupingDecision],
+) -> list[GroupingDecision]:
+    """Sort groupings by the global precedence order used for context_groupings.
+    Unknown roles fall to the end deterministically.
+
+    Parameters
+    ----------
+    groupings
+        The list of GroupingDecisions to sort.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The sorted list of GroupingDecisions.
+    """
+
+    def key_fn(g: GroupingDecision) -> tuple[int, str]:
+        """Key function for sorting groupings by precedence and title.
+
+        Parameters
+        ----------
+        g
+            The GroupingDecision to generate a sort key for.
+
+        Returns
+        -------
+        tuple[int, str]
+            The sort key as (precedence, title).
+        """
+
+        return CONTEXT_GROUPINGS_ROLE_PRECEDENCE.get(g.role, 10_000), g.title
+
+    return sorted(groupings, key=key_fn)
+
+
+def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
+    """Deterministic "stable union" for string lists:
+
+    1. Preserve first-seen order
+    2. Avoid duplicates
+
+    Parameters
+    ----------
+    base
+        The base list of strings.
+    extra
+        The extra list of strings to append uniquely.
+
+    Returns
+    -------
+    list[T]
+        The extended list of strings.
+    """
+
+    seen = set(base)
+    out = list(base)
+
+    for x in extra:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+
+    return out
+
+
+def _table_row_bbox(*, row_index: int, table_segment: TableSegment) -> Optional[BBox]:
+    """Best-effort bbox for a stitched table row.
+
+    Parameters
+    ----------
+    row_index
+        The row index to extract the bbox for.
+    table_segment
+        The TableSegment to extract the row bbox from.
+
+    Returns
+    -------
+    Optional[BBox]
+        The BBox for the row if available, else None.
+    """
+
+    if table_segment.row_provenance and 0 <= row_index < len(
+        table_segment.row_provenance
+    ):
+        rp = table_segment.row_provenance[row_index]
+
+        return rp.row_bbox or rp.bbox
+
+    return None
+
+
+def _validate_and_handle_unresolved(
+    *,
+    decision: SegmentDecision,
+    page_indices: list[int],
+    section_path_text: list[str],
+    segment: Segment,
+    segment_decision_conf_threshold: float,
+    unresolved: list[UnresolvedItem],
+    warnings: list[str],
+) -> bool:
+    """Validate decision, update unresolved/warnings, return True if materializable.
+
+    Parameters
+    ----------
+    decision
+        The SegmentDecision to validate.
+    page_indices
+        The list of page indices for the segment.
+    section_path_text
+        The section path text for the segment.
+    segment
+        The Segment to validate.
+    segment_decision_conf_threshold
+        The low confidence threshold for segment decisions.
+    unresolved
+        The list of UnresolvedItems to append to.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    bool
+        True if the decision is materializable, False otherwise.
+    """
+
+    if decision.decision_type == SegmentDecisionType.IGNORE:
+        return False
+
+    # SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED is a "review" decision. It must be
+    # persisted to the audit trail, but MUST NOT be materialized into CanonicalIR
+    # nodes/edges.
+    if decision.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
+        msg = (
+            f"flagged_unresolved_decision_not_materialized:"
+            f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
+            f"kind={segment.kind} conf={decision.confidence:.3f}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        unresolved.append(
+            UnresolvedItem(
+                caption_text=decision.caption_text,
+                headers=(
+                    _extract_table_headers(segment) if segment.kind == "table" else []
+                ),
+                kind=segment.kind,
+                local_code=segment.local_code,
+                page_indices=page_indices,
+                reason=UnresolvedReason.FLAGGED_UNRESOLVED,
+                sample=_make_unresolved_sample(decision=decision, segment=segment),
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+            )
+        )
+        return False
+
+    if decision.decision_type == SegmentDecisionType.UNRESOLVED:
+        reason = (
+            UnresolvedReason.UNMATCHED_TABLE
+            if segment.kind == "table"
+            else UnresolvedReason.UNMATCHED_BLOCK
+        )
+        unresolved.append(
+            UnresolvedItem(
+                caption_text=decision.caption_text,
+                headers=(
+                    _extract_table_headers(segment) if segment.kind == "table" else []
+                ),
+                local_code=segment.local_code,
+                kind=segment.kind,
+                page_indices=page_indices,
+                reason=reason,
+                sample=_make_unresolved_sample(decision=decision, segment=segment),
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+            )
+        )
+        return False
+
+    # Confidence gating.
+    if decision.confidence < segment_decision_conf_threshold:
+        msg = (
+            f"low_confidence_decision_not_materialized:"
+            f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
+            f"kind={segment.kind} conf={decision.confidence:.3f} "
+            f"threshold={segment_decision_conf_threshold:.3f}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        unresolved.append(
+            UnresolvedItem(
+                caption_text=decision.caption_text,
+                headers=(
+                    _extract_table_headers(segment) if segment.kind == "table" else []
+                ),
+                kind=segment.kind,
+                local_code=getattr(segment, "local_code", None),
+                page_indices=page_indices,
+                reason=UnresolvedReason.LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED,
+                sample=_make_unresolved_sample(decision=decision, segment=segment),
+                section_path_text=section_path_text,
+                segment_id=segment.segment_id,
+            )
+        )
+        return False
+
+    return True
+
+
+def apply_grouping_canonicalization_map(
+    *,
+    canonical_grouping_min_confidence: float,
+    creation_dirs: CanonicalIRDirs,
+    mapping: GroupingCanonicalizationMap,
+    overwrite: bool,
+    segment_decisions: SegmentDecisionSet,
+) -> SegmentDecisionSet:
+    """Deterministically apply a GroupingCanonicalizationMap to all grouping lists in a
+    decision set.
+
+    Applies to:
+
+    1. SegmentDecision.context_groupings
+    2. SegmentDecision.groupings
+    3. RowDecision.groupings
+
+    The mapping is as follows:
+
+    1. KEEP: no-op
+    2. DROP: remove the grouping
+    3. REPLACE: replace with 1 canonical grouping (same role)
+    4. SPLIT: replace with 2+ canonical groupings (may change roles)
+
+    The process is as follows:
+
+    1. Dedupe exact duplicates (stable)
+    2. Enforce unique roles for context_groupings + row groupings (keep-first)
+    3. Sort context_groupings by global outer→inner precedence for stability
+
+    Parameters
+    ----------
+    canonical_grouping_min_confidence
+        The minimum confidence threshold for applying canonical grouping.
+    creation_dirs
+        The canonical IR creation directories.
+    mapping
+        The GroupingCanonicalizationMap to apply.
+    overwrite
+        Whether to overwrite existing normalized decisions.
+    segment_decisions
+        The SegmentDecisionSet to update.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The updated SegmentDecisionSet.
+    """
+
+    normalized_segment_decisions_fp = (
+        creation_dirs.segment_decisions / "segment_decisions_normalized.json"
+    )
+
+    if not overwrite and normalized_segment_decisions_fp.exists():
+        logger.warning(
+            f"Normalized segment decisions JSON already exists at {normalized_segment_decisions_fp}. "
+            f"Reusing existing normalized segment decisions. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return SegmentDecisionSet.model_validate(
+            open_json_type(normalized_segment_decisions_fp)
+        )
+
+    mapping_index = _build_mapping_index(
+        canonical_grouping_min_confidence=canonical_grouping_min_confidence,
+        mapping=mapping,
+    )
+
+    # NB: Never canonicalize table-local roles (e.g., topic/subtopic). These roles
+    # carry local codes and are frequently reused across grades/areas, so global
+    # canonicalization causes incorrect merges (e.g., "3.9 NOUNS" -> "1.11 NOUNS").
+    _BLOCKED_CANONICALIZATION_ROLE_VALUES = {
+        NodeRole.TOPIC.value,
+        NodeRole.SUBTOPIC.value,
+    }
+    mapping_index = {
+        k: v
+        for k, v in mapping_index.items()
+        if k[0] not in _BLOCKED_CANONICALIZATION_ROLE_VALUES
+    }
+
+    new_decisions: list[SegmentDecision] = []
+
+    for decision in segment_decisions.decisions:
+        updates = {}
+
+        # Context groupings: enforce precedence + no duplicate roles.
+        if decision.context_groupings:
+            updates["context_groupings"] = _rewrite_grouping_list(
+                enforce_unique_roles=True,
+                groupings=decision.context_groupings,
+                mapping_index=mapping_index,
+                sort_by_precedence=True,
+            )
+
+        # Segment-level groupings: keep order by default.
+        if decision.groupings:
+            updates["groupings"] = _rewrite_grouping_list(
+                enforce_unique_roles=False,
+                groupings=decision.groupings,
+                mapping_index=mapping_index,
+                sort_by_precedence=False,
+            )
+
+        # Row-level groupings: enforce unique roles.
+        if decision.rows:
+            new_rows = []
+
+            for row in decision.rows:
+                if row.groupings:
+                    new_groupings = _rewrite_grouping_list(
+                        enforce_unique_roles=True,
+                        groupings=row.groupings,
+                        mapping_index={},  # Don't canonicalize row-local groupings
+                        sort_by_precedence=False,
+                    )
+                    new_rows.append(row.model_copy(update={"groupings": new_groupings}))
+                else:
+                    new_rows.append(row)
+
+            updates["rows"] = new_rows
+
+        new_decisions.append(decision.model_copy(update=updates))
+
+    # NB: Recompute decision set ID since decisions have changed.
+    new_id = compute_decision_set_id(decisions=new_decisions)
+
+    # Save updated decision set.
+    normalized_segment_decisions = segment_decisions.model_copy(
+        update={"decision_set_id": new_id, "decisions": new_decisions}
+    )
+    write_to_json(
+        fp=normalized_segment_decisions_fp, json_info=normalized_segment_decisions
+    )
+
+    logger.success(
+        f"Saved normalized segment decisions to: {normalized_segment_decisions_fp}"
+    )
+
+    return normalized_segment_decisions
+
+
+def apply_table_signatures(
+    *, decisions: list[SegmentDecision], document_ir: Any
+) -> list[SegmentDecision]:
+    """Iterate through segment decisions and update table segments with column
+    signatures found in the source DocumentIR.
+
+    Parameters
+    ----------
+    decisions
+        The list of SegmentDecisions to update.
+    document_ir
+        The source DocumentIR (dict or object form).
+
+    Returns
+    -------
+    list[SegmentDecision]
+        The updated list of SegmentDecisions.
+    """
+
+    segments = document_ir.segments
+    signature_map = {}
+
+    # Build the map for segment_id -> columns_signature.
+    for segment in segments:
+        seg_id = segment.segment_id
+        col_sig = getattr(segment, "columns_signature", None)
+
+        if seg_id and col_sig:
+            signature_map[seg_id] = col_sig
+
+    # Update decisions.
+    updated_decisions = []
+
+    for d in decisions:
+        # If it is a table and we have a signature for it, update the field.
+        if d.segment_kind == "table" and d.segment_id in signature_map:
+            d = d.model_copy(update={"columns_signature": signature_map[d.segment_id]})
+
+        updated_decisions.append(d)
+
+    return updated_decisions
+
+
+def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]:
+    """Build context hint from a SegmentDecision.
+
+    This is used as `prior_context_groupings` when deciding later chunks of the same
+    table segment (and can also be used as a general context hint between segments).
+
+    Preference in order:
+
+    1. `context_groupings[]` (explicit outer-context snapshot)
+    2. `groupings[]`        (segment-level groupings emitted by the decision)
+    3. `rows[].groupings[]` (row-level groupings; useful when the table repeats context
+        per row)
+
+    Only coarse "carry" roles are included to avoid noisy/unstable context.
+
+    Parameters
+    ----------
+    d
+        The SegmentDecision to extract context hint from.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The context hint as a list of dicts.
+    """
+
+    carry_roles = {
+        NodeRole.GRADE_LEVEL,
+        NodeRole.STAGE,
+        NodeRole.LEARNING_AREA,
+        NodeRole.STRAND,
+        NodeRole.SUBJECT,
+        NodeRole.THEME,
+        NodeRole.UNIT,
+        NodeRole.WEEK,
+    }
+    hint: list[dict[str, Any]] = []
+    seen: set[str] = set()  # One entry per role
+
+    def _maybe_add(g: GroupingDecision) -> None:
+        """Helper to add grouping if eligible.
+
+        Parameters
+        ----------
+        g
+            The GroupingDecision to consider.
+
+        """
+
+        if g.role not in carry_roles:
+            return
+
+        key = str(g.role)
+
+        if key in seen:
+            return
+
+        seen.add(key)
+        hint.append(g.model_dump(mode="json"))
+
+    for g in d.context_groupings or []:
+        _maybe_add(g)
+
+    for g in d.groupings or []:
+        _maybe_add(g)
+
+    # Row-level groupings matter when the table repeats grade/subject/week/etc per-row
+    # (e.g., Uganda thematic curriculum tables).
+    for rd in getattr(d, "rows", None) or []:
+        for g in rd.groupings or []:
+            _maybe_add(g)
+
+    return hint
+
+
+def canonical_grade_level_title(title: str) -> str:
+    """Normalize common grade label variants into a consistent display form.
+
+    Examples:
+      - "GRADE 1-3"     -> "GRADES 1–3"
+      - "GRADES 1 – 3"  -> "GRADES 1–3"
+      - "Grade 2"       -> "GRADE 2"
+
+    NB:
+
+    1. This only fires when patterns match confidently.
+    2. Otherwise we return the original string unchanged.
+    """
+
+    if not title:
+        return title
+
+    # Normalize unicode + whitespace + dash variants for matching.
+    t = unicodedata.normalize("NFKC", title).strip()
+    t = _WS_RE.sub(" ", t)
+    t = _DASH_RE.sub("-", t)  # Unify various dash chars
+    t = re.sub(r"\s*-\s*", "-", t)  # Remove spaces around hyphen
+    t = _WS_RE.sub(" ", t).strip()
+
+    # Numeric grade range: GRADE(S) 1 - 3,
+    m = re.match(r"^(grades?|grade)\s+(\d+)-(\d+)$", t, flags=re.IGNORECASE)
+    if m:
+        start = int(m.group(2))
+        end = int(m.group(3))
+        return f"GRADES {start}–{end}"  # en dash
+
+    # Single numeric grade: GRADE(S) 2.
+    m = re.match(r"^(grades?|grade)\s+(\d+)$", t, flags=re.IGNORECASE)
+    if m:
+        n = int(m.group(2))
+        return f"GRADE {n}"
+
+    # Otherwise: leave unchanged (avoid accidental over-normalization).
+    return title.strip()
+
+
+def canonical_grouping_node_id(
+    *, ancestor_grouping_keys: list[str], doc_key: str, grouping: GroupingDecision
+) -> str:
+    """Compute the canonical node ID for a grouping decision.
+
+    Parameters
+    ----------
+    ancestor_grouping_keys
+        The list of ancestor grouping keys.
+    doc_key
+        The document key.
+    grouping
+        The GroupingDecision to compute the node ID for.
+
+    Returns
+    -------
+    str
+        The computed canonical node ID.
+    """
+
+    path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
+    code = grouping.local_code or "-"
+
+    if code != "-":
+        # Normalize local_code deterministically (whitespace + unicode dash).
+        code = unicodedata.normalize("NFKC", code)
+        code = _DASH_RE.sub("-", code)
+        code = _WS_RE.sub(" ", code).strip()
+
+    title = canonical_grouping_title(role=grouping.role, title=grouping.title)
+    text_hash = _normalized_text_hash(text=title)
+
+    key = canonical_key(
+        doc_key=doc_key,
+        local_code_or_dash=code,
+        normalized_text_hash_hex=text_hash,
+        path_fp=path_fp,
+        role=grouping.role.value,
+    )
+
+    return uuidv5_from_key(key)
+
+
+def canonical_grouping_title(*, role: NodeRole, title: str) -> str:
+    """Canonicalize grouping titles in a role-aware way. This is intentionally
+    conservative: we only normalize when we can do so deterministically and safely.
+
+    Parameters
+    ----------
+    role
+        The node role.
+    title
+        The original title.
+
+    Returns
+    -------
+    str
+        The canonicalized title.
+    """
+
+    if not title:
+        return title
+
+    if role == NodeRole.GRADE_LEVEL:
+        return canonical_grade_level_title(title)
+
+    return title.strip()
+
+
+def canonical_key(
+    *,
+    doc_key: str,
+    local_code_or_dash: str,
+    normalized_text_hash_hex: str,
+    path_fp: str,
+    role: str,
+) -> str:
+    """Create a canonical key:
+
+    lc:canonical:{doc_key}:{role}:{path_fingerprint}:{local_code_or_-}:{normalized_text_hash}
+
+    Parameters
+    ----------
+    doc_key
+        The document key.
+    local_code_or_dash
+        The local code or dash.
+    normalized_text_hash_hex
+        The normalized text hash hex.
+    path_fp
+        The path fingerprint.
+    role
+        The node role.
+
+    Returns
+    -------
+    str
+        The canonical key.
+    """
+
+    return (
+        f"lc:canonical:{doc_key}:"
+        f"{role}:"
+        f"{path_fp}:"
+        f"{local_code_or_dash}:"
+        f"{normalized_text_hash_hex}"
+    )
+
+
+def canonical_leaf_node_id(
+    *, ancestor_grouping_keys: list[str], doc_key: str, leaf: LeafDecision
+) -> str:
+    """Compute the canonical node ID for a leaf decision.
+
+    Parameters
+    ----------
+    ancestor_grouping_keys
+        The list of ancestor grouping keys.
+    doc_key
+        The document key.
+    leaf
+        The LeafDecision to compute the node ID for.
+
+    Returns
+    -------
+    str
+        The computed canonical node ID.
+    """
+
+    path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
+    code = leaf.local_code or "-"
+
+    if code != "-":
+        # Normalize local_code deterministically (whitespace + unicode dash).
+        code = unicodedata.normalize("NFKC", code)
+        code = _DASH_RE.sub("-", code)
+        code = _WS_RE.sub(" ", code).strip()
+
+    text_hash = _normalized_text_hash(text=leaf.body)
+
+    key = canonical_key(
+        doc_key=doc_key,
+        local_code_or_dash=code,
+        normalized_text_hash_hex=text_hash,
+        path_fp=path_fp,
+        role=leaf.role.value,
+    )
+
+    return uuidv5_from_key(key)
+
+
+def canonical_storage_text(text: Optional[str]) -> str:
+    """Canonicalize text for storage in CanonicalNode.{title,body}.text. The goal here
+    is to remove meaningless formatting noise while preserving original casing. This
+    reduces formatting-diff warnings and makes merges stable.
+
+    Parameters
+    ----------
+    text
+        The text to canonicalize.
+
+    Returns
+    -------
+    str
+        The canonicalized text.
+    """
+
+    if not text:
+        return ""
+
+    text = unicodedata.normalize("NFKC", text)
+    text = _DASH_RE.sub("-", text)
+    text = _WS_RE.sub(" ", text).strip()
+
+    return text
+
+
+def clean_up_segment_decisions(
+    *,
+    creation_dirs: CanonicalIRDirs,
+    overwrite: bool,
+    segment_decisions: SegmentDecisionSet,
+) -> SegmentDecisionSet:
+    """Apply universal (non-heuristic) hygiene to all grouping fields in a decision
+    set. This is intended to run BEFORE the LLM-based global grouping canonicalization
+    step so that the mapping operates on stable strings (whitespace/quote/dash noise
+    removed).
+
+    Parameters
+    ----------
+    creation_dirs
+        The canonical IR creation directories.
+    overwrite
+        Whether to overwrite existing cleaned decisions.
+    segment_decisions
+        The SegmentDecisionSet to clean.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The cleaned SegmentDecisionSet.
+    """
+
+    segment_decisions_cleaned_fp = (
+        creation_dirs.segment_decisions / "segment_decisions_cleaned.json"
+    )
+
+    if not overwrite and segment_decisions_cleaned_fp.exists():
+        logger.warning(
+            f"Cleaned segment decisions JSON already exists at {segment_decisions_cleaned_fp}. "
+            f"Reusing existing cleaned segment decisions. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return SegmentDecisionSet.model_validate(
+            open_json_type(segment_decisions_cleaned_fp)
+        )
+
+    new_segment_decisions = []
+
+    for d in segment_decisions.decisions:
+        updates = {}
+
+        if d.context_groupings:
+            updates["context_groupings"] = [
+                _clean_grouping(g) for g in d.context_groupings
+            ]
+
+        if d.groupings:
+            updates["groupings"] = [_clean_grouping(g) for g in d.groupings]
+
+        if d.leaves:
+            updates["leaves"] = [_clean_leaf(leaf) for leaf in d.leaves]
+
+        if d.rows:
+            updates["rows"] = _clean_decision_rows(d.rows)
+
+        new_segment_decisions.append(d.model_copy(update=updates))
+
+    # NB: Recompute decision_set_id since decision content changed.
+    new_id = compute_decision_set_id(decisions=new_segment_decisions)
+
+    # Save cleaned decisions.
+    segment_decisions_cleaned = segment_decisions.model_copy(
+        update={"decision_set_id": new_id, "decisions": new_segment_decisions}
+    )
+    write_to_json(fp=segment_decisions_cleaned_fp, json_info=segment_decisions_cleaned)
+
+    logger.success(
+        f"Saved cleaned segment decisions to: {segment_decisions_cleaned_fp}"
+    )
+
+    return segment_decisions_cleaned
+
+
+def collect_unique_grouping_keys(
+    *,
+    creation_dirs: CanonicalIRDirs,
+    overwrite: bool,
+    segment_decisions: SegmentDecisionSet,
+) -> list[GroupingCanonicalizationKey]:
+    """Collect the set of unique grouping candidates
+    (role/title/local_code/source_label) from a SegmentDecisionSet to feed into the
+    LLM-based global grouping canonicalizer.
+
+    The process ensures:
+
+    1. Input traversal is stable
+    2. Dedupe uses exact tuple matching
+
+    Parameters
+    ----------
+    creation_dirs
+        The canonical IR creation directories.
+    overwrite
+        Whether to overwrite existing unique grouping keys.
+    segment_decisions
+        The SegmentDecisionSet to extract grouping keys from.
+
+    Returns
+    -------
+    list[GroupingCanonicalizationKey]
+        The list of unique grouping keys.
+    """
+
+    grouping_keys_unique_fp = (
+        creation_dirs.segment_decisions / "grouping_keys_unique.json"
+    )
+
+    if not overwrite and grouping_keys_unique_fp.exists():
+        logger.warning(
+            f"Unique grouping keys JSON already exists at {grouping_keys_unique_fp}. "
+            f"Reusing existing unique grouping keys. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return [
+            GroupingCanonicalizationKey.model_validate(item)
+            for item in open_json_type(grouping_keys_unique_fp)
+        ]
+
+    grouping_keys: list[GroupingCanonicalizationKey] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    for g in _iter_all_grouping_decisions(segment_decisions):
+        role = g.role
+        title = (g.title or "").strip()
+        assert title, f"GroupingDecision with empty title found: {g}"
+
+        local_code = (g.local_code or "").strip()
+        source_label = (g.source_label or "").strip()
+
+        dedupe_key = (role.value, title, local_code, source_label)
+
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        grouping_keys.append(
+            GroupingCanonicalizationKey(
+                local_code=(local_code or None),
+                role=role,
+                source_label=(source_label or None),
+                title=title,
+            )
+        )
+
+    grouping_keys.sort(
+        key=lambda x: (x.role.value, x.title, x.local_code or "", x.source_label or "")
+    )
+    write_to_json(fp=grouping_keys_unique_fp, json_info=grouping_keys)
+
+    logger.success(f"Saved unique grouping keys to: {creation_dirs.root}")
+
+    return grouping_keys
+
+
+def compile_canonical_ir(
+    *,
+    doc_key: str,
+    document_ir: DocumentIR,
+    segment_decision_conf_threshold: float,
+    segment_decisions: SegmentDecisionSet,
+    structural_leaf_warn_threshold: float,
+) -> CanonicalIR:
+    """Compile a CanonicalIR from DocumentIR and SegmentDecisionSet.
+
+    The process is as follows:
+
+    1. Initialize state containers.
+    2. Index decisions by segment ID.
+    3. Create Framework Root node.
+    4. Main traversal loop:
+        a. For each segment in DocumentIR:
+            i.   Prepare segment-level data.
+            ii.  If no decisions, log warning + add to unresolved.
+            iii. For each decision for the segment:
+                1. Validate decision; update unresolved/warnings; skip if not
+                    materializable.
+                2. Check for structural warnings; update warnings.
+                3. Materialize nodes; update state containers.
+    5. Final compilation of CanonicalIR.
+
+    Parameters
+    ----------
+    doc_key
+        The document key.
+    document_ir
+        The DocumentIR to process.
+    segment_decision_conf_threshold
+        The low confidence threshold for segment decisions (this ties into the segment
+        decision system prompt).
+    segment_decisions
+        The SegmentDecisionSet to apply.
+    structural_leaf_warn_threshold
+        The confidence threshold below which structural leaves will emit warnings.
+
+    Returns
+    -------
+    CanonicalIR
+        The compiled CanonicalIR.
+    """
+
+    # 1.
+    active_context_stack: list[ContextFrame] = []
+    child_to_parent: dict[str, str] = {}
+    edges: list[CanonicalEdge] = []
+    edges_by_key: dict[tuple[str, str], CanonicalEdge] = {}
+    next_order_index: dict[str, int] = defaultdict(int)
+    nodes_by_id: dict[str, CanonicalNode] = {}
+    unresolved: list[UnresolvedItem] = []
+    warnings: list[str] = []
+
+    # 2.
+    decisions_by_segment = _index_decisions_by_segment(
+        segment_decisions=segment_decisions
+    )
+
+    # 3.
+    framework_title = segment_decisions.pdf_name
+    root_id = uuidv5_from_key(f"lc:canonical:{doc_key}:framework")
+    framework_node = CanonicalNode(
+        bbox=None,
+        body=None,
+        list_marker=None,
+        local_code=None,
+        node_id=root_id,
+        normalized_text=_normalize_text(text=framework_title),
+        page_indices=[],
+        role=NodeRole.FRAMEWORK,
+        section_path_text=[],
+        source_decision_ids=[],
+        source_label=None,
+        source_segment_ids=[],
+        source_type=None,
+        title=TextUnit(language="und", text=canonical_storage_text(framework_title)),
+    )
+    effective_root_id = ensure_node(
+        node=framework_node, nodes_by_id=nodes_by_id, warnings=warnings
+    )
+
+    # 4.
+    for segment in document_ir.segments:
+        seg_id = segment.segment_id
+        seg_decisions = decisions_by_segment.get(seg_id, [])
+
+        # Prepare segment-level data (needed even when unresolved).
+        page_indices = sorted({p.page_index for p in segment.segment_provenance})
+        section_path_text = [h.text for h in (segment.section_path or [])]
+
+        if not seg_decisions:
+            msg = f"no_decision_for_segment:{seg_id}"
+            logger.warning(msg)
+            warnings.append(msg)
+            unresolved.append(
+                UnresolvedItem(
+                    caption_text=None,
+                    headers=(
+                        _extract_table_headers(segment)
+                        if segment.kind == "table"
+                        else []
+                    ),
+                    kind=segment.kind,
+                    local_code=segment.local_code,
+                    page_indices=page_indices,
+                    reason=(
+                        UnresolvedReason.UNMATCHED_TABLE
+                        if segment.kind == "table"
+                        else UnresolvedReason.UNMATCHED_BLOCK
+                    ),
+                    sample=(segment.combined_text if segment.kind == "block" else None),
+                    section_path_text=section_path_text,
+                    segment_id=segment.segment_id,
+                )
+            )
+            continue
+
+        seg_decisions_sorted = sorted(seg_decisions, key=_decision_sort_key)
+
+        # Process each decision for the segment.
+        for decision in seg_decisions_sorted:
+            # Check ignore/unresolved/low confidence.
+            should_continue = _validate_and_handle_unresolved(
+                decision=decision,
+                page_indices=page_indices,
+                section_path_text=section_path_text,
+                segment=segment,
+                segment_decision_conf_threshold=segment_decision_conf_threshold,
+                unresolved=unresolved,
+                warnings=warnings,
+            )
+
+            if not should_continue:
+                continue
+
+            # Check for structural warnings
+            _check_structural_warnings(
+                decision=decision,
+                page_indices=page_indices,
+                section_path_text=section_path_text,
+                segment_id=seg_id,
+                segment_kind=segment.kind,
+                structural_leaf_warn_threshold=structural_leaf_warn_threshold,
+                warnings=warnings,
+            )
+
+            # Materialize nodes.
+            active_context_stack = _materialize_decision_structure(
+                active_context_stack=active_context_stack,
+                child_to_parent=child_to_parent,
+                decision=decision,
+                doc_key=doc_key,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                nodes_by_id=nodes_by_id,
+                page_indices=page_indices,
+                root_id=effective_root_id,
+                section_path_text=section_path_text,
+                segment=segment,
+                warnings=warnings,
+            )
+
+    # 5.
+    canonical_ir = CanonicalIR(
+        decision_set_id=segment_decisions.decision_set_id,
+        doc_key=doc_key,
+        edges=edges,
+        nodes=list(nodes_by_id.values()),
+        pdf_name=segment_decisions.pdf_name,
+        root_id=effective_root_id,
+        segment_decisions=segment_decisions.decisions,
+        unresolved=unresolved,
+        warnings=warnings,
+    )
+    canonical_ir = perform_postpass_hygiene(
+        canonical_ir=canonical_ir, document_ir=document_ir
+    )
+
+    logger.info(
+        f"Compiled CanonicalIR:\n"
+        f"nodes={len(canonical_ir.nodes)}\n"
+        f"edges={len(canonical_ir.edges)}\n"
+        f"unresolved={len(canonical_ir.unresolved)}\n"
+        f"warnings={len(canonical_ir.warnings)}"
+    )
+
+    return canonical_ir
 
 
 def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
@@ -1230,159 +2890,887 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
     """
 
     root = output_dir
+    canonical_ir = root / "canonical_ir"
+    segment_decisions = root / "segment_decisions"
 
-    for p in [root]:
+    for p in [root, canonical_ir, segment_decisions]:
         make_dir(p)
 
-    return CanonicalIRDirs(root=root)
+    return CanonicalIRDirs(
+        root=root, canonical_ir=canonical_ir, segment_decisions=segment_decisions
+    )
 
 
-def export_canonical_ir(*, canonical_ir: CanonicalIR, output_path: Path) -> None:
+def dedupe_edges_postpass(
+    *, edges: list[CanonicalEdge], node_ids: set[str], warnings: list[str]
+) -> list[CanonicalEdge]:
+    """Dedupe edges in a post-pass after all edges have been emitted:
+
+    1. Drop dangling edges (missing nodes)
+    2. Dedupe edges by (parent_id, child_id, rel)
+    3. Merge provenance lists deterministically
+    4. keep first order_index encountered
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges to dedupe.
+    node_ids
+        The set of valid node IDs.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    list[CanonicalEdge]
+        The deduped list of CanonicalEdges.
+    """
+
+    merged: dict[tuple[str, str, str], CanonicalEdge] = {}
+
+    for e in edges:
+        # Drop edges referencing missing nodes.
+        if e.parent_id not in node_ids or e.child_id not in node_ids:
+            msg = f"dangling_edge_dropped:parent={e.parent_id} child={e.child_id}"
+            logger.warning(msg)
+            warnings.append(msg)
+            continue
+
+        key = (e.parent_id, e.child_id, e.rel)
+
+        if key not in merged:
+            merged[key] = e
+            continue
+
+        m = merged[key]
+
+        # order_index should be stable; keep first and warn if mismatch
+        if m.order_index != e.order_index:
+            msg = (
+                f"edge_order_index_conflict_kept_first:"
+                f"parent={e.parent_id} child={e.child_id} kept={m.order_index} dropped={e.order_index}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        m.source_segment_ids = _stable_extend_unique(
+            base=m.source_segment_ids, extra=e.source_segment_ids
+        )
+        m.source_decision_ids = _stable_extend_unique(
+            base=m.source_decision_ids, extra=e.source_decision_ids
+        )
+
+    # Preserve deterministic order: first-seen edge key order.
+    return list(merged.values())
+
+
+def ensure_node(
+    *, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode], warnings: list[str]
+) -> str:
+    """Ensure a CanonicalNode is present in nodes_by_id.
+
+    Returns the effective node_id. If the incoming node's node_id already exists but
+    the semantics do not match, we deterministically disambiguate the ID using stable
+    provenance-derived salt and insert as a distinct node.
+
+    Merge policy (when semantics match):
+
+    1. Preserve first-seen ordering for all provenance lists.
+    2. Merge: page_indices, source_segment_ids, source_decision_ids, section_path_text.
+    3. Keep-first for core semantic fields; fill if missing.
+
+    Parameters
+    ----------
+    node
+        The CanonicalNode to ensure.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    str
+        The effective node_id.
+    """
+
+    node = node.model_copy(deep=True)
+
+    if node.title is not None:
+        node.title.text = canonical_storage_text(node.title.text)
+
+    if node.body is not None:
+        node.body.text = canonical_storage_text(node.body.text)
+
+    if node.node_id not in nodes_by_id:
+        nodes_by_id[node.node_id] = node
+        return node.node_id
+
+    existing = nodes_by_id[node.node_id]
+
+    # If we detected a collision, deterministically disambiguate the node_id and insert.
+    # NB: Return the effective node_id so callers emit edges to the correct node.
+    if _detect_semantic_collision(existing=existing, node=node, warnings=warnings):
+        return _resolve_collision(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
+
+    # No collision: Semantics match -> merge provenance (preserve first-seen order).
+    list_fields = (
+        "page_indices",
+        "source_segment_ids",
+        "source_decision_ids",
+        "section_path_text",
+    )
+    for field in list_fields:
+        base = getattr(existing, field)
+        extra = getattr(node, field)
+
+        # Update existing in-place.
+        setattr(existing, field, _stable_extend_unique(base=base, extra=extra))
+
+    # Keep-first semantics, fill missing values if present.
+    scalar_fields = (
+        "normalized_text",
+        "source_label",
+        "source_type",
+        "title",
+        "body",
+        "local_code",
+        "list_marker",
+        "bbox",
+    )
+    for field in scalar_fields:
+        # Only overwrite if existing is None. If node.field is also None, this is a
+        # harmless no-op.
+        if getattr(existing, field) is None:
+            setattr(existing, field, getattr(node, field))
+
+    return existing.node_id
+
+
+def load_segment_decision_set(
+    *, expected_doc_key: str, pdf_name: str, segment_decisions_fp: Path
+) -> SegmentDecisionSet:
+    """Load SegmentDecisionSet JSON and normalize formats.
+
+    Parameters
+    ----------
+    expected_doc_key
+        The expected document key for the SegmentDecisionSet.
+    pdf_name
+        The expected PDF name for the SegmentDecisionSet.
+    segment_decisions_fp
+        The file path to the SegmentDecisionSet JSON.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The loaded SegmentDecisionSet.
+
+    Raises
+    ------
+    ValueError
+        If the SegmentDecisionSet.doc_key does not match expected_doc_key, or if the
+        SegmentDecisionSet.pdf_name does not match pdf_name.
+    """
+
+    decision_set = SegmentDecisionSet.model_validate(
+        open_json_type(segment_decisions_fp)
+    )
+
+    if decision_set.doc_key != expected_doc_key:
+        raise ValueError(
+            f"SegmentDecisionSet.doc_key mismatch.\n"
+            f"  Expected: {expected_doc_key}\n"
+            f"  Got:      {decision_set.doc_key}\n"
+            f"  File:     {segment_decisions_fp}"
+        )
+
+    if decision_set.pdf_name != pdf_name:
+        raise ValueError(
+            f"SegmentDecisionSet.pdf_name mismatch.\n"
+            f"  DocumentIR: {pdf_name}\n"
+            f"  Decisions:  {decision_set.pdf_name}"
+        )
+
+    assert decision_set.doc_key == expected_doc_key, (
+        f"SegmentDecisionSet.doc_key != expected doc_key\n"
+        f"decision_set.doc_key={decision_set.doc_key}\n"
+        f"expected={expected_doc_key}"
+    )
+
+    return decision_set
+
+
+def merge_nodes_postpass(
+    *, nodes: list[CanonicalNode], warnings: list[str]
+) -> list[CanonicalNode]:
+    """Merge CanonicalNodes with the same node_id, combining provenance.
+
+    Parameters
+    ----------
+    nodes
+        The list of CanonicalNodes to merge.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    list[CanonicalNode]
+        The merged list of CanonicalNodes.
+    """
+
+    merged: dict[str, CanonicalNode] = {}
+
+    for n in nodes:
+        if n.node_id not in merged:
+            merged[n.node_id] = n
+
+            continue
+
+        m = merged[n.node_id]
+
+        # Sanity check: role + title/body should be consistent.
+        if m.role != n.role:
+            msg = f"node_merge_role_conflict:{n.node_id} kept={m.role} dropped={n.role}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        if (m.title is None) != (n.title is None) or (m.body is None) != (
+            n.body is None
+        ):
+            msg = f"node_merge_title_body_shape_conflict:{n.node_id}"
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # Merge provenance deterministically.
+        m.page_indices = _stable_extend_unique(
+            base=m.page_indices, extra=n.page_indices
+        )
+        m.source_segment_ids = _stable_extend_unique(
+            base=m.source_segment_ids, extra=n.source_segment_ids
+        )
+        m.source_decision_ids = _stable_extend_unique(
+            base=m.source_decision_ids, extra=n.source_decision_ids
+        )
+        m.section_path_text = _stable_extend_unique(
+            base=m.section_path_text, extra=n.section_path_text
+        )
+
+        # Merge optional fields conservatively: keep first non-null.
+        for field in (
+            "normalized_text",
+            "source_label",
+            "source_type",
+            "list_marker",
+            "local_code",
+            "bbox",
+        ):
+            if getattr(m, field) is None and getattr(n, field) is not None:
+                setattr(m, field, getattr(n, field))
+
+        if m.bbox is None and n.bbox is not None:
+            m.bbox = n.bbox
+
+    # Preserve deterministic order: first-seen node_id order.
+    return list(merged.values())
+
+
+def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -> str:
+    """Create a short stable fingerprint of the ancestor grouping key sequence.
+
+    Parameters
+    ----------
+    encoding
+        The string encoding to use.
+    grouping_keys
+        The sequence of ancestor grouping keys.
+
+    Returns
+    -------
+    str
+        The computed path fingerprint.
+    """
+
+    joined = ">".join(grouping_keys)
+
+    if not joined:
+        return "-"
+
+    return hashlib.sha256(joined.encode(encoding)).hexdigest()[:32]
+
+
+def perform_postpass_hygiene(
+    *, canonical_ir: CanonicalIR, document_ir: DocumentIR
+) -> CanonicalIR:
+    """Perform post-pass hygiene on a CanonicalIR:
+
+    The process is as follows:
+
+    1. Merge nodes
+    2. Dedupe edges
+    3. Prune empty grouping containers
+    4. Prune nodes/edges not reachable from root
+    5. Reindex order_index under each parent (remove gaps after pruning)
+    6. Perform sanity checks
+    7. Add `column_signature` from the document IR to the canonical IR.
+
+    Parameters
+    ----------
+    canonical_ir
+        The CanonicalIR to process.
+    document_ir
+        The DocumentIR (for column_signature lookup).
+
+    Returns
+    -------
+    CanonicalIR
+        An updated CanonicalIR.
+    """
+
+    warnings = list(canonical_ir.warnings)
+
+    # 1.
+    nodes_merged = merge_nodes_postpass(nodes=canonical_ir.nodes, warnings=warnings)
+    node_ids = {n.node_id for n in nodes_merged}
+
+    # 2.
+    edges_merged = dedupe_edges_postpass(
+        edges=canonical_ir.edges, node_ids=node_ids, warnings=warnings
+    )
+
+    # 3.
+    nodes_pruned_empty, edges_pruned_empty = prune_empty_groupings(
+        edges=edges_merged,
+        nodes=nodes_merged,
+        prune_roles={NodeRole.PROSE, NodeRole.SECTION},
+        root_id=canonical_ir.root_id,
+        warnings=warnings,
+    )
+
+    # 4.
+    nodes_pruned_reachable, edges_pruned_reachable = prune_unreachable_nodes(
+        edges=edges_pruned_empty,
+        nodes=nodes_pruned_empty,
+        root_id=canonical_ir.root_id,
+        warnings=warnings,
+    )
+
+    # 5.
+    edges_reindexed = reindex_order_indices_postpass(
+        edges=edges_pruned_reachable, warnings=warnings
+    )
+
+    # 6.
+    sanity_checks_postpass(
+        edges=edges_reindexed,
+        nodes=nodes_pruned_reachable,
+        root_id=canonical_ir.root_id,
+        warnings=warnings,
+    )
+
+    # 7.
+    updated_decisions = apply_table_signatures(
+        decisions=canonical_ir.segment_decisions, document_ir=document_ir
+    )
+
+    return canonical_ir.model_copy(
+        update={
+            "nodes": nodes_pruned_reachable,
+            "edges": edges_reindexed,
+            "segment_decisions": updated_decisions,
+            "warnings": warnings,
+        }
+    )
+
+
+def persist_canonical_run(
+    *, config: CreateCanonicalConfig, output_dir: Path
+) -> tuple[CanonicalIRDirs, RunCtx]:
+    """Persist canonical IR creation run metadata.
+
+    Parameters
+    ----------
+    config
+        The canonical IR creation run configuration.
+    output_dir
+        The output directory for the canonical IR creation run results.
+
+    Returns
+    -------
+    tuple[CanonicalIRDirs, RunCtx]
+        The created canonical IR directories and persisted canonical IR creation run
+        metadata.
+    """
+
+    creation_dirs = create_canonical_ir_dirs(output_dir=output_dir)
+    exclude_keys = {"model", "overwrite"}
+    creation_run = RunCtx(
+        extra={
+            k: v
+            for k, v in config.model_dump(mode="json").items()
+            if k not in exclude_keys
+        },
+        models=[config.model],
+        run_id=str(uuid.uuid4()),
+        started_at=datetime.now(timezone.utc),
+    )
+    write_to_json(fp=output_dir / "creation_run.json", json_info=creation_run)
+    logger.info(f"Saving canonical IR creation results to: {creation_dirs}")
+
+    return creation_dirs, creation_run
+
+
+def prune_empty_groupings(
+    *,
+    edges: list[CanonicalEdge],
+    nodes: list[CanonicalNode],
+    prune_roles: set[NodeRole] | None = None,
+    root_id: str,
+    warnings: list[str],
+) -> tuple[list[CanonicalNode], list[CanonicalEdge]]:
+    """Remove grouping nodes (NodeRole) that have *zero* outgoing children.
+
+    This is an iterative bottom-up prune:
+
+    1. If a grouping has no children, drop it.
+    2. After dropping, its parent may become empty -> repeat until stable.
+    3. Root is never pruned.
+
+    This **should** be safe because:
+
+    1. It only removes empty containers (no standards/leaves underneath).
+    2. It makes the CanonicalIR cleaner for export (Step 5).
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges.
+    nodes
+        The list of CanonicalNodes.
+    prune_roles
+        The set of NodeRoles to prune. If None, all grouping roles are pruned.
+    root_id
+        The root node ID.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    tuple[list[CanonicalNode], list[CanonicalEdge]]
+        The (pruned_nodes, pruned_edges).
+    """
+
+    # Build lookup: node_id -> CanonicalNode.
+    nodes_by_id = {n.node_id: n for n in nodes}
+
+    removed_total = 0
+
+    while True:
+        # Compute out-degree (children count) for each parent.
+        out_degree: dict[str, int] = {nid: 0 for nid in nodes_by_id.keys()}
+
+        for e in edges:
+            # CanonicalEdge.rel is always "hasChild", but keep this chec, just in case.
+            if e.rel == "hasChild" and e.parent_id in out_degree:
+                out_degree[e.parent_id] += 1
+
+        # Identify empty grouping nodes (0 children), excluding root.
+        prunable_ids: set[str] = set()
+
+        for nid, node in nodes_by_id.items():
+            if nid == root_id:
+                continue
+
+            if (
+                isinstance(node.role, NodeRole)
+                and (prune_roles is None or node.role in prune_roles)
+                and out_degree.get(nid, 0) == 0
+            ):
+                prunable_ids.add(nid)
+
+        if not prunable_ids:
+            break
+
+        removed_total += len(prunable_ids)
+
+        # Remove nodes.
+        for nid in prunable_ids:
+            nodes_by_id.pop(nid, None)
+
+        # Remove any edges touching removed nodes (either as parent or child).
+        edges = [
+            e
+            for e in edges
+            if e.parent_id not in prunable_ids and e.child_id not in prunable_ids
+        ]
+
+    if removed_total > 0:
+        msg = f"empty_groupings_pruned:count={removed_total}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return list(nodes_by_id.values()), edges
+
+
+def prune_unreachable_nodes(
+    *,
+    edges: list[CanonicalEdge],
+    nodes: list[CanonicalNode],
+    root_id: str,
+    warnings: list[str],
+) -> tuple[list[CanonicalNode], list[CanonicalEdge]]:
+    """Drop any nodes/edges that are not reachable from the CanonicalIR root.
+
+    This removes orphan "islands" created by:
+
+    1. Inconsistent context snapshots
+    2. Dropped parent edges from keep-first-parent enforcement
+    3. Partial materialization/unresolved segments
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges.
+    nodes
+        The list of CanonicalNodes.
+    root_id
+        The root node ID.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    tuple[list[CanonicalNode], list[CanonicalEdge]]
+        The (pruned_nodes, pruned_edges).
+    """
+
+    nodes_by_id = {n.node_id: n for n in nodes}
+
+    # Build adjacency list: parent -> children.
+    children_by_parent: dict[str, list[str]] = {}
+
+    for e in edges:
+        if e.rel != "hasChild":
+            continue
+
+        children_by_parent.setdefault(e.parent_id, []).append(e.child_id)
+
+    # Traverse from root and mark reachable nodes.
+    reachable: set[str] = set()
+    stack: list[str] = [root_id]
+
+    while stack:
+        nid = stack.pop()
+
+        if nid in reachable:
+            continue
+
+        reachable.add(nid)
+
+        for child_id in children_by_parent.get(nid, []):
+            # Only traverse into nodes that actually exist.
+            if child_id in nodes_by_id and child_id not in reachable:
+                stack.append(child_id)
+
+    # Filter nodes + edges to reachable set.
+    nodes_pruned = [n for n in nodes if n.node_id in reachable]
+    edges_pruned = [
+        e for e in edges if e.parent_id in reachable and e.child_id in reachable
+    ]
+
+    removed_nodes = len(nodes) - len(nodes_pruned)
+    removed_edges = len(edges) - len(edges_pruned)
+
+    if removed_nodes > 0 or removed_edges > 0:
+        msg = f"unreachable_pruned:nodes={removed_nodes},edges={removed_edges}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return nodes_pruned, edges_pruned
+
+
+def reconcile_context_stack(
+    *,
+    active_stack: list[ContextFrame],
+    child_to_parent: dict[str, str],
+    decision: SegmentDecision,
+    desired_context: list[GroupingDecision],
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    root_id: str,
+    segment: Segment,
+    warnings: list[str],
+) -> tuple[str, list[str], list[ContextFrame]]:
+    """Reconcile the current active context stack to match the desired context by
+    enforcing context snapshot exactly per decision and reusing nodes via deterministic
+    IDs.
+
+    Parameters
+    ----------
+    active_stack
+        The current active context stack.
+    child_to_parent
+        The mapping of child_id to parent_id for emitted edges.
+    decision
+        The SegmentDecision being processed.
+    desired_context
+        The desired context snapshot from the SegmentDecision.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append new edges to.
+    edges_by_key
+        The mapping of (parent_id, child_id) to CanonicalEdge for deduplication.
+    next_order_index
+        The mapping of parent_id to next order index for child edges.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    root_id
+        The root node ID.
+    segment
+        The Segment being processed.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    tuple[str, list[str], list[ContextFrame]]
+        The (parent_id, ancestor_keys, new_stack) after reconciliation.
+    """
+
+    desired_keys = [_grouping_key(g) for g in desired_context]
+    page_indices = sorted({p.page_index for p in segment.segment_provenance})
+    section_path_text = [h.text for h in (segment.section_path or [])]
+    seg_id = segment.segment_id
+    seg_kind = segment.kind
+
+    # 1. Longest common prefix between active_stack keys and desired_keys.
+    lcp = 0
+    while lcp < len(active_stack) and lcp < len(desired_keys):
+        if active_stack[lcp].grouping_key != desired_keys[lcp]:
+            break
+
+        lcp += 1
+
+    # 2. Pop extra frames (enforce snapshot exactly).
+    new_stack = active_stack[:lcp]
+
+    # Determine current parent and ancestor keys after pop.
+    if not new_stack:
+        ancestor_keys: list[str] = []
+        parent_id = root_id
+    else:
+        ancestor_keys = [f.grouping_key for f in new_stack]
+        parent_id = new_stack[-1].node_id
+
+    # 3. Push missing frames.
+    for g in desired_context[lcp:]:
+        node_id = canonical_grouping_node_id(
+            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
+        )
+        g_title = canonical_grouping_title(role=g.role, title=g.title)
+
+        node = CanonicalNode(
+            bbox=_segment_first_bbox(segment),
+            body=None,
+            list_marker=None,
+            local_code=g.local_code,
+            node_id=node_id,
+            normalized_text=_normalize_text(text=g_title),
+            page_indices=page_indices,
+            role=g.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision.decision_id],
+            source_label=g.source_label,
+            source_segment_ids=[seg_id],
+            source_type=seg_kind,
+            title=TextUnit(language="und", text=canonical_storage_text(g_title)),
+        )
+
+        effective_node_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=effective_node_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=parent_id,
+            segment_id=seg_id,
+            warnings=warnings,
+        )
+
+        # Advance stack.
+        gk = _grouping_key(g)
+        new_stack.append(ContextFrame(grouping_key=gk, node_id=effective_node_id))
+        parent_id = effective_node_id
+        ancestor_keys.append(gk)
+
+    # After reconciliation, new_stack should EXACTLY matches desired_context snapshot.
+    return parent_id, ancestor_keys, new_stack
+
+
+def reindex_order_indices_postpass(
+    *, edges: list[CanonicalEdge], warnings: list[str]
+) -> list[CanonicalEdge]:
+    """Reindex sibling `order_index` values so they are contiguous 0...N-1 under each
+    parent.
+
+    The process is as follows:
+
+    1. For each parent, sort children by (existing order_index, child_id).
+    2. Rewrite order_index based on that deterministic order.
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    list[CanonicalEdge]
+        The updated list of CanonicalEdges with reindexed order_index values.
+    """
+
+    # Group edges by parent.
+    edges_by_parent: dict[str, list["CanonicalEdge"]] = {}
+
+    for e in edges:
+        if e.rel != "hasChild":
+            continue
+
+        edges_by_parent.setdefault(e.parent_id, []).append(e)
+
+    num_reindexed = 0
+
+    for parent_edges in edges_by_parent.values():
+        # Sort deterministically:
+        #   - Primary: existing order_index (None treated as large number)
+        #   - Secondary: child_id to break ties deterministically
+        parent_edges_sorted = sorted(
+            parent_edges,
+            key=lambda e: (
+                e.order_index if e.order_index is not None else 10**9,
+                e.child_id,
+            ),
+        )
+
+        # Rewrite order_index to be contiguous.
+        for new_idx, e in enumerate(parent_edges_sorted):
+            if e.order_index != new_idx:
+                num_reindexed += 1
+                e.order_index = new_idx
+
+    if num_reindexed > 0:
+        msg = f"order_index_reindexed:edges_updated={num_reindexed}"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return edges
+
+
+def sanity_checks_postpass(
+    *,
+    edges: list[CanonicalEdge],
+    nodes: list[CanonicalNode],
+    root_id: str,
+    warnings: list[str],
+) -> None:
+    """Perform sanity checks on the canonical IR structure.
+
+    Parameters
+    ----------
+    edges
+        The list of CanonicalEdges.
+    nodes
+        The list of CanonicalNodes.
+    root_id
+        The root node ID.
+    warnings
+        The list of warning messages to append to.
+
+    Raises
+    ------
+    ValueError
+        If the root node is missing.
+    """
+
+    node_ids = {n.node_id for n in nodes}
+
+    # Root existence is catastrophic if missing.
+    if root_id not in node_ids:
+        raise ValueError(f"canonical_root_missing:{root_id}")
+
+    _check_root_as_child(edges=edges, root_id=root_id, warnings=warnings)
+    child_to_parent = _check_multiple_parents(edges=edges, warnings=warnings)
+    _check_cycles(child_to_parent=child_to_parent, warnings=warnings)
+    _check_order_indices(edges=edges, warnings=warnings)
+
+
+def save_canonical_ir(
+    *,
+    canonical_ir: CanonicalIR,
+    canonical_ir_fp: Path,
+    segment_decision_conf_threshold: float,
+    structural_leaf_warn_threshold: float,
+) -> None:
     """Export the canonical IR to a JSON file.
 
     Parameters
     ----------
     canonical_ir
         The CanonicalIR to serialize.
-    output_path
-        The file path to write the JSON output to.
+    canonical_ir_fp
+        The output file path for the CanonicalIR JSON.
+    segment_decision_conf_threshold
+        The low confidence threshold used for segment decisions.
+    structural_leaf_warn_threshold
+        The structural leaf warning threshold used during canonicalization.
     """
 
-    data = canonical_ir.model_dump(mode="json")
-    write_to_json(fp=output_path, json_info=data)
-    logger.success(f"Canonical IR exported to: {output_path}")
+    write_to_json(fp=canonical_ir_fp, json_info=canonical_ir)
+    logger.success(f"Saved canonical IR to: {canonical_ir_fp}")
+
+    # Write structural leaf warnings sidecar file.
+    structural_leaf_warnings = [
+        w for w in canonical_ir.warnings if w.startswith("structural_leaf_review:")
+    ]
+    structural_leaf_warnings_fp = canonical_ir_fp.with_name(
+        canonical_ir_fp.stem + "_structural_leaf_warnings.json"
+    )
+    write_to_json(
+        fp=structural_leaf_warnings_fp,
+        json_info={
+            "count": len(structural_leaf_warnings),
+            "decision_set_id": canonical_ir.decision_set_id,
+            "doc_key": canonical_ir.doc_key,
+            "segment_decision_conf_threshold": segment_decision_conf_threshold,
+            "structural_leaf_warn_threshold": structural_leaf_warn_threshold,
+            "warnings": structural_leaf_warnings,
+        },
+    )
+    logger.success(f"Saved structural leaf warnings to: {structural_leaf_warnings_fp}")
 
 
-def generate_global_id(
-    *,
-    code: Optional[str],
-    doc_key: str,
-    path: list[str],
-    role: StatementRole,
-    text: Optional[str],
-) -> str:
-    """Generate a deterministic UUIDv5 based on document identity and semantic content.
+def uuidv5_from_key(key: str) -> str:
+    """Create a deterministic UUIDv5 from a string key.
 
     Parameters
     ----------
-    code
-        The alphanumeric code (e.g., '3.1.1') associated with the node, if any.
-    doc_key
-        The unique document identifier.
-    path
-        The hierarchical path to the node within the document.
-    role
-        The semantic role of the node.
-    text
-        The full normative text of the node, if any.
+    key
+        The input string key.
 
     Returns
     -------
     str
-        A deterministic UUIDv5 string.
+        The resulting UUIDv5 as a string.
     """
 
-    code_str = code or "nocode"
-    safe_path = [_sanitize_path_part(p) for p in path]
-    path_str = "/".join(safe_path)
-    text_hash = compute_sha256_hex(s=text or "")[:32]
-    seed = f"{doc_key}|{role.value}|{path_str}|{code_str}|{text_hash}"
-
-    return str(uuid.uuid5(Settings.PROJECT_NAMESPACE, seed))
-
-
-def normalize_table_grid(
-    *, forward_fill_cols: list[int], segment: TableSegment
-) -> list[NormalizedRow]:
-    """Explode row/col spans and forward-fill specified structural columns.
-
-    The process is as follows:
-
-    1. Expand row_span/col_span into an explicit n_rows × n_cols grid.
-    2. Forward-fill structural columns (down the table).
-    3. Attach REQUIRED provenance_bbox per normalized row (derived from the source
-        slice bbox).
-
-    Parameters
-    ----------
-    forward_fill_cols
-        List of column indices to fill down (e.g., [0, 1] for Subject).
-    segment
-        The stitched TableSegment.
-
-    Returns
-    -------
-    list[NormalizedRow]
-        The normalized table rows.
-
-    Raises
-    ------
-    ValueError
-        If the table segment is invalid.
-    """
-
-    n_cols = segment.n_cols
-    n_rows = len(segment.rows)
-
-    if n_cols <= 0:
-        raise ValueError(
-            f"Invalid n_cols={segment.n_cols} for TableSegment '{segment.segment_key}'."
-        )
-
-    # Initialize empty grid: grid[row][col] = {"text": Optional[str], "source_row": int}
-    grid: list[list[dict[str, Any]]] = [
-        [{"text": None, "source_row": -1} for _ in range(n_cols)] for _ in range(n_rows)
-    ]
-
-    # 1.
-    _populate_grid_spans(grid=grid, n_cols=n_cols, n_rows=n_rows, segment=segment)
-
-    # 2.
-    _forward_fill_columns(
-        cols_to_fill=forward_fill_cols,
-        grid=grid,
-        key=segment.segment_key,
-        n_cols=n_cols,
-        n_rows=n_rows,
-        start_row=max(0, int(segment.header_row_count or 0)),
-    )
-
-    # 3.
-    row_prov = _row_provenance_by_stitched_index(segment=segment)
-    return _construct_normalized_rows(
-        grid=grid,
-        key=segment.segment_key,
-        n_rows=n_rows,
-        n_cols=n_cols,
-        row_prov=row_prov,
-    )
-
-
-def persist_creation_run(
-    *, output_dir: Path, **kwargs: Any
-) -> tuple[CanonicalIRDirs, RunCtx]:
-    """Persist creation run metadata.
-
-    Parameters
-    ----------
-    output_dir
-        The output directory for the canonical IR JSON.
-    kwargs
-        Additional creation run configuration parameters.
-
-    Returns
-    -------
-    tuple[CanonicalIRDirs, RunCtx]
-        The created canonical IR directories and persisted creation run metadata.
-    """
-
-    extra = kwargs.get("extra", {})
-    extra.pop("status", None)
-    creation_dirs = create_canonical_ir_dirs(output_dir=output_dir)
-    creation_run = RunCtx(
-        extra=extra, run_id=str(uuid.uuid4()), started_at=datetime.now(timezone.utc)
-    )
-    write_to_json(fp=output_dir / "creation_run.json", json_info=creation_run)
-    logger.info(f"Creation directory: {output_dir}")
-
-    return creation_dirs, creation_run
+    return str(uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, key))

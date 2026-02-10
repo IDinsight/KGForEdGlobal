@@ -3,10 +3,7 @@ Representations (IRs) from raw PDF pages. This is step 1.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/extract_page_ir.py ../data/tanzania/tanzania.pdf -c Tanzania -y 2023 -l en -l sw -l fr -l zh-Hans -l ar -o ../results
-python src/skg/entries/extract_page_ir.py ../data/zambia/zambia.pdf -c Zambia -y 2024 -l en -o ../results
-python src/skg/entries/extract_page_ir.py ../data/uganda/uganda.pdf -c Uganda -y 2016 -l en -o ../results
-python src/skg/entries/extract_page_ir.py ../data/ghana/ghana.pdf -c Ghana -y 2019 -l en -o ../results
+python src/skg/entries/extract_page_ir.py ../examples/tanzania/config.json
 """
 
 # Standard Library
@@ -15,7 +12,6 @@ import traceback
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 # Third Party Library
 import pymupdf
@@ -32,16 +28,17 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.page_ir.llm import extract_page_ir
-from skg.page_ir.schemas import PageIR
-from skg.page_ir.utils import PageIRExtractionDirs, persist_extraction_run
+from skg.page_ir_extraction.llm import extract_page_ir
+from skg.page_ir_extraction.schemas import PageIR
+from skg.page_ir_extraction.utils import PageIRExtractionDirs, persist_extraction_run
+from skg.schemas import ExtractionConfig, RunConfig
 from skg.utils.constants import PageBoundaryState
-from skg.utils.general import write_to_json
+from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import (
     extract_text_layer_hints,
     is_mostly_blank,
     read_png_dimensions,
-    render_page_to_png,
+    render_and_save_page_to_png,
     validate_page_count,
 )
 
@@ -51,65 +48,49 @@ cli = typer.Typer(no_args_is_help=True)
 
 def extract_page_by_page(
     *,
-    country: str,
+    config: ExtractionConfig,
     doc: pymupdf.Document,
     doc_key: str,
-    dpi: int,
     end_page: int,
     extraction_dirs: PageIRExtractionDirs,
-    languages: list[str],
-    model: str,
-    overwrite: bool,
-    pdf_name: str,
-    start_page: int,
-    use_text_layer_hints: bool,
-    year: Optional[int],
 ) -> None:
     """Perform page-by-page extraction of PageIR components from the PDF document.
 
     Parameters
     ----------
-    country
-        The country associated with the PDF document.
+    config
+        The extraction run configuration.
     doc
         The PyMuPDF document.
     doc_key
         The document key.
-    dpi
-        Render DPI for page images.
     end_page
         0-based end page (exclusive).
     extraction_dirs
         The extraction directories.
-    languages
-        One or more languages associated with the PDF document.
-    model
-        OpenAI model for page IR extraction.
-    overwrite
-        Overwrite existing page IR JSONs.
-    pdf_name
-        The PDF filename.
-    start_page
-        0-based start page (inclusive).
-    use_text_layer_hints
-        Whether to extract and use text layer hints from the PDF during extraction.
-    year
-        Document year (optional; overrides any inferred year).
     """
 
-    for page_index in range(start_page, end_page):
+    for page_index in range(config.start_page, end_page):
         page_ir_fp = extraction_dirs.page_irs / f"{page_index:04d}.json"
         png_fp = extraction_dirs.page_images / f"{page_index:04d}.png"
 
+        if not config.overwrite and page_ir_fp.exists() and png_fp.exists():
+            logger.info(
+                f"Page IR JSON and PNG already exist for page {page_index}. "
+                f"Skipping extraction. "
+                f"If you wish to overwrite, pass the --overwrite flag."
+            )
+            continue
+
         # Always ensure the PNG exists first. We render if the file is missing OR if we
         # are overwriting (e.g. changed DPI).
-        if overwrite or not png_fp.exists():
-            render_page_to_png(
-                doc=doc, dpi=dpi, output_png_fp=png_fp, page_index=page_index
+        if config.overwrite or not png_fp.exists():
+            render_and_save_page_to_png(
+                doc=doc, dpi=config.dpi, output_png_fp=png_fp, page_index=page_index
             )
 
         # Check cache. If not overwriting and JSON exists, skip entirely.
-        if page_ir_fp.exists() and not overwrite:
+        if page_ir_fp.exists() and not config.overwrite:
             logger.warning(
                 f"Extracted page IR JSON already exists for page {page_index}. "
                 f"Skipping extraction. "
@@ -120,6 +101,7 @@ def extract_page_by_page(
         # Extract information from the page image.
         logger.info(f"Extracting and saving page: {page_index}...")
         image_width, image_height = read_png_dimensions(png_fp=png_fp)
+
         text_layer_hints = (
             extract_text_layer_hints(
                 doc=doc,
@@ -127,42 +109,44 @@ def extract_page_by_page(
                 image_width=image_width,
                 page_index=page_index,
             )
-            if use_text_layer_hints
+            if config.use_text_layer_hints
             else None
         )
 
         if is_mostly_blank(png_fp=png_fp) and text_layer_hints is None:
-            logger.warning(f"Page {page_index} looks blank; skipping model call.")
+            logger.warning(f"Page {page_index} looks blank; skipping extraction.")
             page_ir = PageIR(
                 boundary_state=PageBoundaryState.STANDALONE,
                 coord_space="px",
                 doc_key=doc_key,
-                dpi=dpi,
+                dpi=config.dpi,
                 image_height=image_height,
                 image_width=image_width,
                 items=[],
                 page_index=page_index,
-                pdf_name=pdf_name,
+                pdf_name=config.pdf_fp.name,
             )
         else:
             page_ir = extract_page_ir(
-                country=country,
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
+                country=config.country,
                 image_height=image_height,
                 image_width=image_width,
-                languages=languages,
-                model=model,
+                languages=config.languages,
+                model=config.model,
                 page_index=page_index,
                 png_fp=png_fp,
+                raw_page_irs_dir=extraction_dirs.page_irs_raw,
                 text_layer_hints=text_layer_hints,
-                year=year,
+                year=config.year,
             )
             page_ir.coord_space = "px"
             page_ir.doc_key = doc_key
-            page_ir.dpi = dpi
+            page_ir.dpi = config.dpi
             page_ir.image_height = image_height
             page_ir.image_width = image_width
             page_ir.page_index = page_index
-            page_ir.pdf_name = pdf_name
+            page_ir.pdf_name = config.pdf_fp.name
 
         # Re-validate after schema validators.
         page_ir = PageIR.model_validate(page_ir.model_dump(mode="python"))
@@ -173,149 +157,74 @@ def extract_page_by_page(
 
 
 @cli.command()
-def extract(  # pylint: disable=too-many-positional-arguments
-    pdf_fp: Path = typer.Argument(
+def extract(
+    config_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
         exists=True,
         file_okay=True,
-        help="The file path to the PDF document to extract curriculum data from.",
+        help="The file path to the global config file for the pipeline.",
         readable=True,
         resolve_path=True,
-    ),
-    country: str = typer.Option(
-        ..., "--country", "-c", help="The country associated with the PDF document."
-    ),
-    dpi: int = typer.Option(250, "--dpi", help="Render DPI for page images."),
-    languages: list[str] = typer.Option(
-        ...,
-        "--language",
-        "-l",
-        help="One or more languages associated with the PDF document (e.g. -l en-US -l fr-FR).",
-    ),
-    model: str = typer.Option(
-        "gpt-5.2-2025-12-11",
-        "--model",
-        "-m",
-        help="OpenAI model for page IR extraction.",
-    ),
-    output_dir: Path = typer.Option(
-        Path("./results"), "--output-dir", "-o", help="Output directory root."
-    ),
-    start_page: int = typer.Option(
-        0, "--start-page", "-s", help="0-based start page (inclusive)."
-    ),
-    end_page: Optional[int] = typer.Option(
-        None, "--end-page", "-e", help="0-based end page (exclusive). Default: to end."
-    ),
-    overwrite: bool = typer.Option(
-        False, "--overwrite", help="Overwrite existing page IR JSONs."
-    ),
-    use_text_layer_hints: bool = typer.Option(
-        True,
-        "--use-text-layer-hints",
-        help="Whether to extract and use text layer hints from the PDF during extraction.",
-    ),
-    year: Optional[int] = typer.Option(
-        None,
-        "--year",
-        "-y",
-        help="Document year (optional; overrides any inferred year).",
-    ),
+    )
 ) -> None:
     """Extract structured page-by-page IRs from raw PDF pages.
 
     The process is as follows:
 
-    1. Persist extraction run metadata so we always have an extraction run record.
-    2. Validate page range.
-    3. Extract page-by-page IR components.
-    4. Finalize extraction run record.
+    1. Validate page range against PDF document.
+    2. Persist extraction run metadata so we always have an extraction run record.
+    3. Extract page-by-page IR components and save to file.
 
     Parameters
     ----------
-    pdf_fp
-        The file path to the PDF document to extract curriculum data from.
-    country
-        The country associated with the PDF document.
-    dpi
-        Render DPI for page images.
-    languages
-        One or more languages associated with the PDF document.
-    model
-        OpenAI model for page IR extraction.
-    output_dir
-        Output directory root.
-    start_page
-        0-based start page (inclusive).
-    end_page
-        0-based end page (exclusive). Default: to end.
-    overwrite
-        Overwrite existing page IR JSONs.
-    use_text_layer_hints
-        Whether to extract and use text layer hints from the PDF during extraction.
-    year
-        Document year (optional; overrides any inferred year).
+    config_fp
+        The file path to the global config file for the pipeline.
+
+    Raises
+    ------
+    Exception
+        If any error occurs during extraction.
     """
 
-    pdf_fp = pdf_fp.resolve()
+    config = RunConfig.model_validate(open_json_type(config_fp)).page_ir_extraction
 
-    # 1.
-    doc_key, extraction_dirs, extraction_run = persist_extraction_run(
-        country=country,
-        dpi=dpi,
-        end_page=end_page,
-        languages=languages,
-        model=model,
-        output_dir=output_dir,
-        overwrite=overwrite,
-        pdf_fp=pdf_fp,
-        start_page=start_page,
-        use_text_layer_hints=use_text_layer_hints,
-    )
+    with pymupdf.open(str(config.pdf_fp)) as doc:
+        # 1.
+        _, end_page = validate_page_count(
+            doc=doc, end_page=config.end_page, start_page=config.start_page
+        )
 
-    logger.info(f"Starting page IR extraction process for: {pdf_fp}")
-    logger.info(f"Saving extraction results to: {extraction_dirs.root}")
+        # 2.
+        doc_key, extraction_dirs, extraction_run = persist_extraction_run(config=config)
 
-    try:
-        with pymupdf.open(str(pdf_fp)) as doc:
-            # 2.
-            _, end_page = validate_page_count(
-                doc=doc, end_page=end_page, start_page=start_page
-            )
-
+        try:
             # 3.
+            logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
+
             extract_page_by_page(
-                country=country,
+                config=config,
                 doc=doc,
                 doc_key=doc_key,
-                dpi=dpi,
                 end_page=end_page,
                 extraction_dirs=extraction_dirs,
-                languages=languages,
-                model=model,
-                overwrite=overwrite,
-                pdf_name=pdf_fp.name,
-                start_page=start_page,
-                use_text_layer_hints=use_text_layer_hints,
-                year=year,
             )
-        extraction_run.extra["status"] = "success"
-        logger.success("Page IR extraction completed successfully!")
-    except Exception as e:  # pylint: disable=broad-except
-        extraction_run.extra["status"] = "error"
-        extraction_run.extra["error"] = {
-            "message": str(e),
-            "traceback": traceback.format_exc(limit=20),
-            "type": e.__class__.__name__,
-        }
-        raise
-    finally:
-        # 4.
-        extraction_run.completed_at = datetime.now(timezone.utc)
-        write_to_json(
-            fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
-        )
+            extraction_run.extra["status"] = "success"
+            logger.success("Page IR extraction completed successfully!")
+        except Exception as e:  # pylint: disable=broad-except
+            extraction_run.extra["status"] = "error"
+            extraction_run.extra["error"] = {
+                "message": str(e),
+                "traceback": traceback.format_exc(limit=20),
+                "type": e.__class__.__name__,
+            }
+            raise
+        finally:
+            extraction_run.completed_at = datetime.now(timezone.utc)
+            write_to_json(
+                fp=extraction_dirs.root / "extraction_run.json",
+                json_info=extraction_run,
+            )
 
 
 if __name__ == "__main__":

@@ -11,41 +11,124 @@ import base64
 import hashlib
 import json
 import re
+import unicodedata
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 # Third Party Library
 import langcodes
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-# Package Library
-from skg.schemas import Valid
+QUOTES_TRANSLATION = str.maketrans(
+    {
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "’": "'",
+        "‘": "'",
+        "‚": "'",
+        "‛": "'",
+        "\u00a0": " ",  # NBSP -> space
+    }
+)
 
 
-def clamp(x: float, *, low: float, high: float) -> int:
-    """Clamp a floating-point number to be within a specified range and convert to an
-    integer.
+class Valid(BaseModel):
+    """Pydantic model for global valid values."""
+
+    completion_finish_reasons: tuple[
+        Literal[None, "function_call", "length", "stop"], ...
+    ] = (None, "function_call", "length", "stop")
+    json_file_exts: tuple[Literal[".json", ".jsonl"], ...] = (".json", ".jsonl")
+    logging_levels: tuple[
+        Literal["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"], ...
+    ] = ("CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING")
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    @classmethod
+    def is_valid_completion_finish_reason(
+        cls, *, completion_finish_reason: str
+    ) -> bool:
+        """Check if a given completion finish reason is valid.
+
+        Parameters
+        ----------
+        completion_finish_reason
+            The completion finish reason to check.
+
+        Returns
+        -------
+        bool
+            True if the completion finish reason is valid, False otherwise.
+        """
+
+        return completion_finish_reason in cls().completion_finish_reasons
+
+    @classmethod
+    def is_valid_json_file_ext(cls, *, file_ext: str) -> bool:
+        """Check if a given JSON file extension is valid.
+
+        Parameters
+        ----------
+        file_ext
+            The file extension to check.
+
+        Returns
+        -------
+        bool
+            True if the file extension is valid, False otherwise.
+        """
+
+        return file_ext in cls().json_file_exts
+
+    @classmethod
+    def is_valid_logging_level(cls, *, logging_level: str) -> bool:
+        """Check if a given logging level is valid.
+
+        Parameters
+        ----------
+        logging_level
+            The logging level to check.
+
+        Returns
+        -------
+        bool
+            True if the logging level is valid, False otherwise.
+        """
+
+        return logging_level in cls().logging_levels
+
+
+def bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
+    """Return True if `inner` bbox is fully contained in `outer` bbox (with tolerance).
 
     Parameters
     ----------
-    x
-        The floating-point number to clamp.
-    low
-        The lower bound of the range.
-    high
-        The upper bound of the range.
+    inner
+        The inner bounding box [x0, y0, x1, y1].
+    outer
+        The outer bounding box [x0, y0, x1, y1].
+    tol
+        Tolerance in pixels.
 
     Returns
     -------
-    int
-        The clamped integer value.
+    bool
+        True if `inner` is contained in `outer`, False otherwise.
     """
 
-    return int(max(low, min(high, x)))
+    ox0, oy0, ox1, oy1 = outer
+    ix0, iy0, ix1, iy1 = inner
+
+    return (
+        ix0 >= ox0 - tol and iy0 >= oy0 - tol and ix1 <= ox1 + tol and iy1 <= oy1 + tol
+    )
 
 
 def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
@@ -178,25 +261,29 @@ def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
             logger.success(f"Created directory: {dir_}")
 
 
-def near(a: float, b: float, *, tol: float) -> bool:
-    """Check if two floating-point numbers are near each other within a tolerance.
+def normalize_text(text: Optional[str]) -> str:
+    """Normalize text for comparisons.
 
     Parameters
     ----------
-    a
-        The first floating-point number.
-    b
-        The second floating-point number.
-    tol
-        The tolerance within which the two numbers are considered "near".
+    text
+        The text to normalize.
 
     Returns
     -------
-    bool
-        True if the two numbers are within the specified tolerance, False otherwise.
+    str
+        The normalized text.
     """
 
-    return abs(a - b) <= tol
+    if text is None:
+        return ""
+
+    # Normalize unicode characters (e.g., standardize accents). NFKC form is usually
+    # best for compatibility comparisons.
+    text = unicodedata.normalize("NFKC", text)
+
+    # Collapse whitespace, strip, and lowercase.
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def open_json_type(filepath: str | Path) -> Any:
@@ -300,27 +387,68 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
-def stable_text_hash(text: Optional[str]) -> str:
-    """Return a deterministic SHA-256 hex digest of normalized text.
-
-    Normalization removes repeated whitespace and trims, so inconsequential formatting
-    changes don't change the hash.
+def truncate_text(*, max_chars: int, text: str) -> str:
+    """Return a single-line truncated preview string.
 
     Parameters
     ----------
+    max_chars
+        The maximum number of characters to return (including ellipsis).
     text
-        The input text to hash.
+        The text to truncate.
 
     Returns
     -------
     str
-        The SHA-256 hex digest of the normalized text.
+        The truncated text.
     """
 
-    if text is None:
-        text = ""
-    norm = re.sub(r"\s+", " ", str(text)).strip()
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+    text = (text or "").replace("\n", " ").strip()
+
+    return (
+        text if len(text) <= max_chars else text[: max(0, max_chars - 1)].rstrip() + "…"
+    )
+
+
+def validate_bbox_order(bbox: list[float]) -> list[float]:
+    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
+
+    Parameters
+    ----------
+    bbox
+        The bounding box to validate.
+
+    Returns
+    -------
+    list[float]
+        The validated bounding box.
+
+    Raises
+    ------
+    ValueError
+        If the bounding box does not have exactly 4 numbers.
+    """
+
+    if len(bbox) != 4:
+        raise ValueError(
+            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
+        )
+
+    x0, y0, x1, y1 = bbox
+
+    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
+    if x0 >= x1:
+        if x0 > x1:
+            x0, x1 = x1, x0
+        else:
+            x1 = x0 + 1.0
+    if y0 >= y1:
+        if y0 > y1:
+            y0, y1 = y1, y0
+        else:
+            y1 = y0 + 1.0
+
+    return [x0, y0, x1, y1]
 
 
 def validate_bcp47(code: str) -> str:
