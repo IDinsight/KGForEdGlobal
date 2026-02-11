@@ -204,6 +204,7 @@ class StatementRole(str, Enum):
 class UnresolvedReason(str, Enum):
     """Reasons why a segment decision could not be resolved."""
 
+    DECISION_UNRESOLVED = "decision_unresolved"
     ID_COLLISION = "id_collision"
     FLAGGED_UNRESOLVED = "flagged_unresolved"
     LOW_CONFIDENCE_TABLE_MAPPING = "low_confidence_table_mapping"
@@ -258,11 +259,20 @@ CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.TOPIC,
     NodeRole.SUBTOPIC,
     NodeRole.SECTION,
-    NodeRole.PROSE,
 )
+
 CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
     role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)
 }
+
+# Roles that are valid for GroupingDecision.role/context_groupings/groupings.
+# Excludes FRAMEWORK (root), UNRESOLVED (error bucket), and PROSE (document furniture).
+GROUPING_ROLES: tuple[NodeRole, ...] = tuple(
+    r
+    for r in NodeRole
+    if r not in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED, NodeRole.PROSE)
+)
+
 NonArtifacts = {
     "abbreviations and acronyms",
     "acknowledgements",

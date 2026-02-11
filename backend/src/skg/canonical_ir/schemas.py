@@ -210,7 +210,7 @@ class GroupingDecision(BaseSchema):
                 "GroupingDecision.source_label must be non-empty when provided."
             )
 
-        if self.role in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED):
+        if self.role in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED, NodeRole.PROSE):
             raise ValueError(
                 f"GroupingDecision.role must be a real grouping role (not {self.role})."
             )
@@ -595,13 +595,14 @@ class SegmentDecision(BaseSchema):
             )
 
         # "emit_flagged_unresolved" is allowed to carry candidate outputs, but it must
-        # carry *something* (otherwise it should be UNRESOLVED).
+        # carry *reviewable* candidates (otherwise it should be UNRESOLVED).
+        # context_groupings[] alone is NOT sufficient.
         if self.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED and not (
-            self.context_groupings or self.groupings or self.leaves or self.rows
+            self.groupings or self.leaves or self.rows
         ):
             raise ValueError(
                 "Decision type is 'emit_flagged_unresolved', so at least one of "
-                "context_groupings/groupings/leaves/rows must be non-empty."
+                "groupings/leaves/rows must be non-empty (context_groupings alone is not sufficient)."
             )
 
         if (

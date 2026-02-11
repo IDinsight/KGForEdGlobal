@@ -1046,6 +1046,50 @@ def _iter_all_grouping_decisions(
                     yield from r.groupings
 
 
+def _make_unmatched_segment_sample(
+    *, max_len: int = 280, segment: Segment
+) -> str | None:
+    """Sample string for segments that have *no* SegmentDecision.
+
+    For blocks: uses best-effort extracted text.
+    For tables: includes header preview + first body-row preview when available.
+
+    Parameters
+    ----------
+    max_len
+        The maximum length of the sample string.
+    segment
+        The Segment to create a sample for.
+
+    Returns
+    -------
+    str | None
+        A short sample string for debugging, or None if no useful info could be
+        extracted.
+    """
+
+    if isinstance(segment, BlockSegment):
+        text = _extract_block_segment_text(segment)
+        return text[:max_len] if text else None
+
+    if isinstance(segment, TableSegment):
+        parts: list[str] = []
+        headers = _extract_table_headers(segment)
+
+        if headers:
+            parts.append("headers=" + " | ".join(headers[:8]))
+
+        row_preview = _table_first_body_row_preview(segment=segment)
+
+        if row_preview:
+            parts.append("row0=" + row_preview)
+
+        s = " | ".join(parts).strip()
+        return s[:max_len] if s else None
+
+    return None
+
+
 def _make_unresolved_sample(
     *, decision: SegmentDecision, max_len: int = 280, segment: Segment
 ) -> str:
@@ -1910,6 +1954,64 @@ def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
     return out
 
 
+def _table_first_body_row_preview(
+    *, max_cell_len: int = 40, max_cells: int = 8, segment: TableSegment
+) -> str | None:
+    """Create a compact preview of the first non-header row in a table.
+
+    Preference order for source rows:
+
+    1. rows_filldown (if present)
+    2. rows_grid (if present)
+    3. rows (raw stitched visual rows)
+
+    Parameters
+    ----------
+    max_cell_len
+        The maximum length of text to include for each cell before truncating.
+    max_cells
+        The maximum number of cells to include in the preview before truncating.
+    segment
+        The TableSegment to extract the row preview from.
+
+    Returns
+    -------
+    Optional[str]
+        A string preview of the first non-header row, or None if no rows are available.
+    """
+
+    rows = segment.rows_filldown or segment.rows_grid or segment.rows
+
+    if not rows:
+        return None
+
+    start_idx = segment.header_row_count if segment.header_row_count < len(rows) else 0
+    row = rows[start_idx]
+
+    cells_out: list[str] = []
+    any_non_empty = False
+
+    for cell in (row.cells or [])[:max_cells]:
+        tu = getattr(cell, "text", None)
+        raw = tu.text if isinstance(tu, TextUnit) else ""
+        txt = " ".join(raw.split()).strip()
+
+        if txt:
+            any_non_empty = True
+
+            if len(txt) > max_cell_len:
+                txt = txt[: max_cell_len - 1] + "…"
+
+            cells_out.append(txt)
+        else:
+            cells_out.append("∅")
+
+    if not any_non_empty:
+        return None
+
+    return " | ".join(cells_out)
+
+
 def _table_row_bbox(*, row_index: int, table_segment: TableSegment) -> Optional[BBox]:
     """Best-effort bbox for a stitched table row.
 
@@ -2003,11 +2105,7 @@ def _validate_and_handle_unresolved(
         return False
 
     if decision.decision_type == SegmentDecisionType.UNRESOLVED:
-        reason = (
-            UnresolvedReason.UNMATCHED_TABLE
-            if segment.kind == "table"
-            else UnresolvedReason.UNMATCHED_BLOCK
-        )
+        reason = UnresolvedReason.DECISION_UNRESOLVED
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
@@ -2810,7 +2908,7 @@ def compile_canonical_ir(
                         if segment.kind == "table"
                         else UnresolvedReason.UNMATCHED_BLOCK
                     ),
-                    sample=(segment.combined_text if segment.kind == "block" else None),
+                    sample=_make_unmatched_segment_sample(segment=segment),
                     section_path_text=section_path_text,
                     segment_id=segment.segment_id,
                 )
