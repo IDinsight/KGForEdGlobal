@@ -33,6 +33,158 @@
 		"table_filldown_enabled": true,
 		"table_filldown_group_cols_max": 1
 	},
-	"canonical_ir": null,
+	"canonical_ir": {
+		"always_double_check_first_attempt": true,
+		"canonical_grouping_min_confidence": 0.80,
+		"max_table_rows_per_decision": null,
+		"model": "gpt-5.2-2025-12-11",
+		"overwrite": false,
+		"segment_decision_conf_threshold": 0.55,
+		"spine_policy": {
+			"allow_partial_context": true,
+			"block_local_roles": [
+				"section"
+			],
+			"disallowed_outer_roles": [
+				"prose"
+			],
+			"name": "senegal_math_wolof_fr_week_scope_sequence",
+			"normalize": {
+				"casefold_titles_for_matching": true,
+				"drop_grade_bands": false,
+				"drop_stage_if_grade_present": false,
+				"drop_stage_if_matches_wrapper_patterns": true,
+				"grade_band_title_patterns": [
+					"^ce\\s*\\d+\\s*[-–]\\s*ce\\s*\\d+\\b",
+					"^ce\\d+\\s*[-–]\\s*ce\\d+\\b"
+				],
+				"normalize_whitespace": true,
+				"stage_wrapper_title_patterns": [
+					"r[ée]publique\\s+du\\s+s[ée]n[ée]gal",
+					"minist[èe]re\\b",
+					"curriculum\\b",
+					"c\\s*b\\s*e\\s*b\\b",
+					"un\\s+peuple\\s*[-–]\\s*un\\s+but\\s*[-–]\\s*une\\s+foi"
+				]
+			},
+			"outer_context_roles": [
+				"stage",
+				"grade_level",
+				"subject",
+				"strand"
+			],
+			"relocate_table_local_only_roles_to_rows": true,
+			"row_roles": [
+				"week",
+				"unit",
+				"topic",
+				"subtopic"
+			],
+			"split_rules": [
+				{
+					"apply_to": "any",
+					"match": "^(?i).*\\bmath[ée]matiques\\b.*\\b(\\d+)\\s*(?:e|è|eme|ème)?\\s*\\b[ée]tape\\b\\s*\\(([^)]+)\\)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 (\\2)"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i)\\s*(?:tolluwaay\\s*)?(\\d+)\\s*/\\s*[ée]tape\\s*\\1\\s*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i).*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "\\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i).*\\b(CE\\s*\\d+)\\b\\s*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "\\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i).*\\bsemaine\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "week",
+							"title_template": "SEMAINE \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i).*\\bpalier\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "unit",
+							"title_template": "PALIER \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i).*\\bj[ée]ego\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "unit",
+							"title_template": "JÉEGO \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i).*\\/\\s*activit(?:[ée]s|es)\\s+(.+?)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^(?i)\\s*activit(?:[ée]s|es)\\s+(num[ée]riques|g[ée]om[ée]triques|de\\s+mesure|de\\s+r[ée]solution\\s+de\\s+probl[èe]mes)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités \\1"
+						}
+					]
+				}
+			],
+			"table_local_only_roles": [
+				"week",
+				"unit",
+				"topic",
+				"subtopic"
+			],
+			"violation_policy": "flag_unresolved"
+		},
+		"structural_leaf_warn_threshold": 0.6
+	},
 	"kgs": null
 }

@@ -21,6 +21,8 @@ from skg.utils.constants import (
     StatementRole,
 )
 
+CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.name for r in CONTEXT_GROUPINGS_ROLE_ORDER)
+
 
 def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
     """Generate the prompts for deciding on a segment.
@@ -178,7 +180,7 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
   - etc.
 
 ## CONTEXT GROUPINGS ORDER + STABILITY (IMPORTANT)
-1. context_groupings[] MUST be ordered from OUTER → INNER using this fixed role order: STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → TOPIC → SUBTOPIC → SECTION → PROSE
+1. context_groupings[] MUST be ordered from OUTER → INNER using this fixed role order: {CONTEXT_GROUPINGS_ORDER_STR}
 2. Do NOT repeat the same NodeRole more than once in context_groupings[].
 3. Only include PROSE when the segment is truly front matter/narrative structure; otherwise prefer SECTION or leave context empty.
 
@@ -343,7 +345,7 @@ In particular, ensure that:
       - Use "{SegmentDecisionType.UNRESOLVED.value}" only if you cannot safely emit candidate outputs.
   - **Context ordering + stability (IMPORTANT)**
     - context_groupings[] must be ordered OUTER→INNER using this fixed role order:
-      STAGE → GRADE_LEVEL → LEARNING_AREA → SUBJECT → STRAND → SUBSTRAND → THEME → UNIT → WEEK → TOPIC → SUBTOPIC → SECTION → PROSE
+      {CONTEXT_GROUPINGS_ORDER_STR}
     - Do not repeat the same NodeRole more than once in context_groupings[].
     - If segment.chunking exists and prior_context_groupings[] is provided and non-empty:
       - If chunking.is_first_chunk=true:
@@ -513,6 +515,7 @@ Rules:
 Input keys (JSON array):
 ```json
 {json.dumps([k.model_dump(mode="json") for k in grouping_keys], ensure_ascii=False)}
+```
         """
     )
 
