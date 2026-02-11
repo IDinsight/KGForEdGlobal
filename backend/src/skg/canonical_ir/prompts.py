@@ -15,6 +15,7 @@ from dotmap import DotMap
 from skg.canonical_ir.schemas import GroupingCanonicalizationKey
 from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_ORDER,
+    GROUPING_ROLES,
     BlockType,
     NodeRole,
     SegmentDecisionType,
@@ -42,11 +43,7 @@ def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
         [f'  - "{t.value}"' for t in sorted(SegmentDecisionType, key=lambda x: x.value)]
     )
     node_roles_str = "\n".join(
-        [
-            f'  - "{r.value}"'
-            for r in sorted(NodeRole, key=lambda x: x.value)
-            if r not in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED)
-        ]
+        [f'  - "{r.value}"' for r in sorted(GROUPING_ROLES, key=lambda x: x.value)]
     )
 
     system_message = dedent(
@@ -162,6 +159,7 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 ## ALLOWED ENUM VALUES
 1. decision_type: {decision_types_str}
 2. NodeRole (for grouping decisions): {node_roles_str}
+  - Do NOT use: "framework", "prose", "unresolved" as grouping roles.
 3. StatementRole (for leaf decisions):
   - "{StatementRole.EXPECTATION.value}"   (normative learning outcome/competence/objective/standard)
   - "{StatementRole.DESCRIPTOR.value}"    (benchmark/indicator/expected standard/performance criteria)
@@ -182,7 +180,7 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
 ## CONTEXT GROUPINGS ORDER + STABILITY (IMPORTANT)
 1. context_groupings[] MUST be ordered from OUTER → INNER using this fixed role order: {CONTEXT_GROUPINGS_ORDER_STR}
 2. Do NOT repeat the same NodeRole more than once in context_groupings[].
-3. Only include PROSE when the segment is truly front matter/narrative structure; otherwise prefer SECTION or leave context empty.
+3. Do NOT use role="prose" in any grouping. Front matter/furniture should usually be decision_type="ignore" (or leave context empty).
 
 ## IMPORTANT OVERRIDE
   - On the FIRST chunk of a chunked table, this outer-evidence rule OVERRIDES prior_context_groupings.
