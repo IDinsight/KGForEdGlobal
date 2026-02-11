@@ -118,9 +118,13 @@ def _determine_stable_context(
             seen.add(key_fp)
             stable_hint.append(g.model_dump(mode="json"))
 
-    usable = decision.decision_type not in (
-        SegmentDecisionType.IGNORE,
-        SegmentDecisionType.UNRESOLVED,
+    # Only trust context_groupings from decisions we intend to materialize.
+    # EMIT_FLAGGED_UNRESOLVED explicitly means "store for review; not reliable enough
+    # to compile", so it must NOT become the stable prior context for later chunks.
+    usable = decision.decision_type in (
+        SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
+        SegmentDecisionType.EMIT_GROUPINGS_ONLY,
+        SegmentDecisionType.EMIT_LEAVES_ONLY,
     ) and bool(stable_hint)
 
     if usable:
@@ -128,6 +132,7 @@ def _determine_stable_context(
 
     msg = (
         f"Chunked table first-chunk produced no usable context_groupings; "
+        f"decision_type={decision.decision_type}; "
         f"falling back to context_hint for segment_id={segment_id}, "
         f"row_range_start={chunk_range[0]}, row_range_end={chunk_range[1]}."
     )
@@ -181,7 +186,7 @@ def _filter_section_path_for_llm(
     for section_path in section_paths:
         text_cf = section_path.text.casefold().strip()
 
-        if text_cf in (FrontMatterHeadings, NonArtifacts):
+        if text_cf in {h.value for h in FrontMatterHeadings} or text_cf in NonArtifacts:
             continue
 
         # Drop headings that are after the segment or that are too far away.

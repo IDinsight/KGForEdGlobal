@@ -998,7 +998,16 @@ def _index_decisions_by_segment(
     decisions_by_segment: dict[str, list[SegmentDecision]] = defaultdict(list)
 
     for d in segment_decisions.decisions:
-        assert isinstance(d.segment_id, str) and d.segment_id
+        assert isinstance(d.segment_id, str) and d.segment_id, (
+            f"SegmentDecision.segment_id must be populated before canonical compilation. "
+            f"Found missing segment_id for decision_id={d.decision_id!r} "
+            f"row_range=({d.row_range_start},{d.row_range_end}) decision_type={d.decision_type}"
+        )
+        assert isinstance(d.decision_id, str) and d.decision_id, (
+            f"SegmentDecision.decision_id must be populated before canonical compilation. "
+            f"Found missing decision_id for segment_id={d.segment_id!r} "
+            f"row_range=({d.row_range_start},{d.row_range_end}) decision_type={d.decision_type}"
+        )
         decisions_by_segment[d.segment_id].append(d)
 
     return decisions_by_segment
@@ -2061,7 +2070,8 @@ def apply_grouping_canonicalization_map(
 
     1. SegmentDecision.context_groupings
     2. SegmentDecision.groupings
-    3. RowDecision.groupings
+    3. RowDecision.groupings are only deduped/role-uniqued; mapping is not applied by
+        default.
 
     The mapping is as follows:
 
@@ -2283,7 +2293,7 @@ def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]
         if g.role not in carry_roles:
             return
 
-        key = str(g.role)
+        key = g.role.value
 
         if key in seen:
             return
@@ -2677,7 +2687,7 @@ def collect_unique_grouping_keys(
     )
     write_to_json(fp=grouping_keys_unique_fp, json_info=grouping_keys)
 
-    logger.success(f"Saved unique grouping keys to: {creation_dirs.root}")
+    logger.success(f"Saved unique grouping keys to: {grouping_keys_unique_fp}")
 
     return grouping_keys
 
@@ -2885,8 +2895,8 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
 
     Returns
     -------
-    CanonicalDocumentIRDirs
-        The created canonical document IR directories.
+    CanonicalIRDirs
+        The created canonical IR directories.
     """
 
     root = output_dir
@@ -3168,9 +3178,6 @@ def merge_nodes_postpass(
             if getattr(m, field) is None and getattr(n, field) is not None:
                 setattr(m, field, getattr(n, field))
 
-        if m.bbox is None and n.bbox is not None:
-            m.bbox = n.bbox
-
     # Preserve deterministic order: first-seen node_id order.
     return list(merged.values())
 
@@ -3212,14 +3219,14 @@ def perform_postpass_hygiene(
     4. Prune nodes/edges not reachable from root
     5. Reindex order_index under each parent (remove gaps after pruning)
     6. Perform sanity checks
-    7. Add `column_signature` from the document IR to the canonical IR.
+    7. Add `columns_signature` from the document IR to the canonical IR.
 
     Parameters
     ----------
     canonical_ir
         The CanonicalIR to process.
     document_ir
-        The DocumentIR (for column_signature lookup).
+        The DocumentIR (for columns_signature lookup).
 
     Returns
     -------
