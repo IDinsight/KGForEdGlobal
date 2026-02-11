@@ -39,7 +39,7 @@
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
-		"segment_decision_conf_threshold": 0.55,
+		"segment_decision_conf_threshold": 0.70,
 		"spine_policy": {
 			"allow_partial_context": true,
 			"block_local_roles": [
@@ -75,6 +75,7 @@
 			],
 			"relocate_table_local_only_roles_to_rows": true,
 			"row_roles": [
+				"strand",
 				"week",
 				"unit",
 				"topic",
@@ -83,7 +84,7 @@
 			"split_rules": [
 				{
 					"apply_to": "any",
-					"match": "^(?i).*\\bmath[ée]matiques\\b.*\\b(\\d+)\\s*(?:e|è|eme|ème)?\\s*\\b[ée]tape\\b\\s*\\(([^)]+)\\)\\s*$",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
 							"role": "subject",
@@ -91,13 +92,81 @@
 						},
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE \\1 (\\2)"
+							"title_template": "ÉTAPE \\1 \\2"
 						}
 					]
 				},
 				{
 					"apply_to": "any",
-					"match": "^(?i)\\s*(?:tolluwaay\\s*)?(\\d+)\\s*/\\s*[ée]tape\\s*\\1\\s*$",
+					"match": "^.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]solution\\s+de\\s+probl[èe]mes)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de résolution de problèmes"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]solution\\s+de\\s+probl[èe]mes)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]solution\\s+de\\s+probl[èe]mes)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE 2 \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*/\\s*[eéèë]tape\\s*\\1\\s*$",
 					"emit": [
 						{
 							"role": "stage",
@@ -107,7 +176,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^(?i).*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
+					"match": "^.*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
 					"emit": [
 						{
 							"role": "grade_level",
@@ -117,7 +186,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^(?i).*\\b(CE\\s*\\d+)\\b\\s*$",
+					"match": "^.*\\b(CE\\s*\\d+)\\b\\s*$",
 					"emit": [
 						{
 							"role": "grade_level",
@@ -127,7 +196,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^(?i).*\\bsemaine\\s*(\\d+)\\b.*$",
+					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
 							"role": "week",
@@ -137,7 +206,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^(?i).*\\bpalier\\s*(\\d+)\\b.*$",
+					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
 							"role": "unit",
@@ -147,31 +216,11 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^(?i).*\\bj[ée]ego\\s*(\\d+)\\b.*$",
+					"match": "^.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
 							"role": "unit",
 							"title_template": "JÉEGO \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "any",
-					"match": "^(?i).*\\/\\s*activit(?:[ée]s|es)\\s+(.+?)\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "any",
-					"match": "^(?i)\\s*activit(?:[ée]s|es)\\s+(num[ée]riques|g[ée]om[ée]triques|de\\s+mesure|de\\s+r[ée]solution\\s+de\\s+probl[èe]mes)\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités \\1"
 						}
 					]
 				}

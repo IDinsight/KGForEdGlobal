@@ -659,6 +659,63 @@ def validate_chunked_table_context_matches_prior_context(
         )
 
 
+def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
+) -> None:
+    """For chunked table segments, enforce that the first chunk must not be IGNORE or
+    UNRESOLVED, since later chunks must reuse the first chunk's context.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if segment_payload is None or segment.kind != "table":
+        return
+
+    chunking = segment_payload.get("chunking") or {}
+
+    if not bool(chunking.get("is_chunked", False)):
+        return
+
+    row_range_start = chunking.get("row_range_start", None)
+    is_first_chunk = chunking.get("is_first_chunk", None)
+
+    if is_first_chunk is None and row_range_start == 0:
+        is_first_chunk = True
+
+    if not bool(is_first_chunk):
+        return
+
+    if segment_decision.decision_type in (
+        SegmentDecisionType.IGNORE,
+        SegmentDecisionType.UNRESOLVED,
+    ):
+        raise QualityError(
+            f"chunked_table_first_chunk_must_not_be_ignore_or_unresolved\n"
+            f"segment_id={segment.segment_id}\n"
+            f"decision_id={segment_decision.decision_id}\n"
+            f"chunk_row_range_start={chunking.get('row_range_start')}, "
+            f"chunk_row_range_end={chunking.get('row_range_end')}\n"
+            f"decision_type={segment_decision.decision_type}\n"
+            f"Fix: Use decision_type=emit_flagged_unresolved (preferred) and include "
+            f"best-guess context_groupings[] so later chunks can remain anchored."
+        )
+
+
 def validate_chunked_table_outer_anchors_in_context_groupings(
     *,
     segment: Segment,
@@ -704,6 +761,7 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
         NodeRole.LEARNING_AREA,
         NodeRole.SUBJECT,
         NodeRole.THEME,
+        NodeRole.SUBTHEME,
         NodeRole.UNIT,
         NodeRole.TERM,
         NodeRole.WEEK,
