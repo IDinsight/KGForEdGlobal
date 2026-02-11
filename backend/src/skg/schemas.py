@@ -534,6 +534,14 @@ class CreateCanonicalConfig(BaseSchema):
         ge=0.0,
         le=1.0,
     )
+    canonicalization_skip_roles: list[NodeRole] = Field(
+        default_factory=lambda: [NodeRole.TOPIC, NodeRole.SUBTOPIC],
+        description=(
+            "Roles excluded from global grouping canonicalization map *application* "
+            "(SegmentDecision.context_groupings and SegmentDecision.groupings). "
+            "Default skips TOPIC/SUBTOPIC to avoid incorrect global merges."
+        ),
+    )
     max_table_rows_per_decision: int | None = Field(
         default=None,
         description="If set, only TABLE segments with *body rows* > this value are chunked into multiple SegmentDecisions. Blocks are never chunked.",
