@@ -135,7 +135,7 @@ The SegmentDecision is used later by a deterministic compiler to build a canonic
   B) SAFE CARRY-FORWARD SUPPORT (allowed for stable outer roles)
   - If `prior_context_groupings[]` contains the SAME role/title, you MAY keep that role/title in `context_groupings[]`
     even if it does not reappear verbatim in OUTER evidence, as long as ALL are true:
-      1) The role is one of these stable carry roles: STAGE, GRADE_LEVEL, LEARNING_AREA, SUBJECT, THEME, UNIT, WEEK, TERM
+      1) The role is one of these stable carry roles: STAGE, GRADE_LEVEL, LEARNING_AREA, SUBJECT, THEME, SUBTHEME, UNIT, WEEK, TERM, STRAND, SUBSTRAND
       2) There is NO clear contradiction in this segment’s OUTER evidence (section_path/caption/header_rows explicitly naming a different value for that role).
       3) You are NOT introducing governmental/institutional metadata (country/ministry/publisher).
       4) You are not adding TOPIC/SUBTOPIC via carry-forward.
@@ -382,12 +382,12 @@ In particular, ensure that:
       - caption_text
       - header_rows_canonical
     (and for chunked tables after the first chunk, prior_context_groupings may be carried forward unless contradicted).
-10 .**Outer anchor requirement (IMPORTANT):**
+10. **Outer anchor requirement (IMPORTANT):**
   - If you emit any EXPECTATION/DESCRIPTOR/GUIDANCE leaves (block leaves or table row leaves), your decision MUST include at least ONE “outer anchor” grouping somewhere in:
     - `context_groupings[]` OR
     - emitted `groupings[]` OR
     - `rows[].groupings[]`
-  - Outer anchors include: `GRADE_LEVEL`, `STAGE`, `LEARNING_AREA`, `SUBJECT`, `THEME`, `UNIT`, `WEEK`.
+  - Outer anchors include: `GRADE_LEVEL`, `STAGE`, `LEARNING_AREA`, `SUBJECT`, `THEME`, `SUBTHEME`, `UNIT`, `WEEK`, `TERM`, `STRAND`, `SUBSTRAND`.
   - If no outer anchor is supported by evidence:
     - Prefer decision_type="{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" if you can still emit candidate leaves/groupings, and explain that anchoring is ambiguous.
     - Use "{SegmentDecisionType.UNRESOLVED.value}" only if you cannot safely emit any candidate outputs.

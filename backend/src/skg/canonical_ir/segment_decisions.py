@@ -110,8 +110,8 @@ def _determine_stable_context(
     stable_hint: list[dict[str, Any]] = []
 
     for g in stable_models:
-        role = str(getattr(g, "role", "")).strip().lower()
-        title = str(getattr(g, "title", "")).strip().lower()
+        role = g.role.value.strip().casefold()
+        title = g.title.strip().lower()
         key_fp = (role, title)
 
         if role and title and key_fp not in seen:
@@ -147,7 +147,7 @@ def _filter_section_path_for_llm(
     max_items: int = 5,
     max_page_distance: int = 3,
     section_paths: list[SectionHeadingRef],
-    segment_item_index: int,
+    segment_item_index: int | None,
     segment_page_index: int,
 ) -> list[dict[str, Any]]:
     """Reduce section_path to only the *relevant, nearby* headings for the LLM.

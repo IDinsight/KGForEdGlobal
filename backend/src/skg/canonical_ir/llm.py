@@ -34,6 +34,7 @@ from skg.canonical_ir.schemas import (
 from skg.canonical_ir.utils import CanonicalIRDirs
 from skg.canonical_ir.validators import (
     validate_chunked_table_context_matches_prior_context,
+    validate_chunked_table_first_chunk_must_not_ignore_or_unresolved,
     validate_chunked_table_outer_anchors_in_context_groupings,
     validate_context_groupings_no_duplicate_roles,
     validate_context_groupings_required_for_emit,
@@ -804,6 +805,11 @@ def verify_segment_decision_quality(
     validate_segment_kind_coherence(segment=segment, segment_decision=segment_decision)
     validate_ignore_unresolved_emit_nothing(
         segment=segment, segment_decision=segment_decision
+    )
+    validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_payload=segment_payload,
     )
     validate_table_row_index(segment=segment, segment_decision=segment_decision)
     validate_unique_table_rows(segment=segment, segment_decision=segment_decision)
