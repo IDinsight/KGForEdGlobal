@@ -25,7 +25,7 @@
 ## Setup Instructions
 
 1. Install [direnv](https://direnv.net/docs/installation.html).
-2. If you are using `zsh`, then add `eval "$(direnv hook zsh)` to the end of your `~/.zshrc` file. If you are using `bash`, then add `eval "$(direnv hook bash)"` to the end of your `~/.bashrc` (or `~/.bash_profile`) file. Ensure you reload the file by running `source ~/.zshrc` or `source ~/.bashrc` (or `source ~/.bash_profile`).
+2. If you are using `zsh`, then add `eval "$(direnv hook zsh)"` to the end of your `~/.zshrc` file. If you are using `bash`, then add `eval "$(direnv hook bash)"` to the end of your `~/.bashrc` (or `~/.bash_profile`) file. Ensure you reload the file by running `source ~/.zshrc` or `source ~/.bashrc` (or `source ~/.bash_profile`).
 3. Install the latest version of [uv](https://docs.astral.sh/uv/) using: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 4. Install [pre-commit](https://pre-commit.com/) globally using: `uv tool install pre-commit`
 5. Run `git clone git@github.com:IDinsight/SenegalKG.git` and cd into the root directory of the repo.

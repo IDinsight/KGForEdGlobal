@@ -31,7 +31,7 @@
 		"repair_hyphenation": true,
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
-		"table_filldown_group_cols_max": 3
+		"table_filldown_group_cols_max": 1
 	},
 	"canonical_ir": null,
 	"kgs": null

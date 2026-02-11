@@ -19,6 +19,7 @@ from skg.document_ir.schemas import (
     BlockSegment,
     BlockSlice,
     DocumentIR,
+    DocumentPageMeta,
     SectionHeadingRef,
     Segment,
     SegmentProvenance,
@@ -3072,6 +3073,21 @@ def save_document_ir(
 
     # Write DocumentIR to file.
     first_page = page_irs[0]
+    pages_meta: list[DocumentPageMeta] = []
+
+    for p in page_irs:
+        assert isinstance(p.page_index, int) and p.page_index >= 0, f"{p = }"
+        pages_meta.append(
+            DocumentPageMeta(
+                coord_space=p.coord_space,
+                dpi=p.dpi,
+                image_height=p.image_height,
+                image_width=p.image_width,
+                is_blank=(len(p.items) == 0),
+                page_index=p.page_index,
+            )
+        )
+
     document_ir = DocumentIR(
         coord_space=first_page.coord_space,
         doc_key=doc_key,
@@ -3079,10 +3095,23 @@ def save_document_ir(
         image_height=first_page.image_height,
         image_width=first_page.image_width,
         page_count=len(page_irs),
+        pages=pages_meta,
         pdf_name=pdf_name,
         segments=segments,
         warnings=warnings,
     )
+
+    page_indices = sorted({p.page_index for p in page_irs if p.page_index is not None})
+
+    if page_indices:
+        expected = set(range(page_indices[0], page_indices[-1] + 1))
+        missing = sorted(expected - set(page_indices))
+        if missing:
+            warnings.append(
+                f"PageIR coverage has gaps: missing page_index values {missing}. "
+                f"This may indicate omitted blank pages or extraction failures."
+            )
+
     write_to_json(fp=document_ir_fp, json_info=document_ir)
 
     # Write a stitch report JSON artifact.

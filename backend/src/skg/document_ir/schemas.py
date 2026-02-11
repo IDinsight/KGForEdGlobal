@@ -319,6 +319,21 @@ Segment = Annotated[Union[BlockSegment, TableSegment], Field(discriminator="kind
 
 
 # Schemas for stitching.
+class DocumentPageMeta(BaseSchema):
+    """Metadata about each page in the source PDF, used for stitching and provenance."""
+
+    coord_space: str = Field(
+        "px", description="Coordinate space for bboxes on this page."
+    )
+    dpi: int = Field(..., description="DPI used to render this page.")
+    image_height: int = Field(..., description="Rendered page height in pixels.")
+    image_width: int = Field(..., description="Rendered page width in pixels.")
+    is_blank: bool = Field(
+        False, description="True if the page contains no extracted items."
+    )
+    page_index: int = Field(..., description="0-based page index in the PDF.")
+
+
 class DocumentIR(BaseSchema):
     """Document-level IR after stitching."""
 
@@ -333,9 +348,17 @@ class DocumentIR(BaseSchema):
         ...,
         description="DPI used to render the page image that these pixel bboxes refer to.",
     )
-    image_height: int = Field(..., description="Height of the source image in pixels.")
-    image_width: int = Field(..., description="Width of the source image in pixels.")
+    image_height: int = Field(
+        ..., description="Height of the first page of the source image in pixels."
+    )
+    image_width: int = Field(
+        ..., description="Width of the first page of the source image in pixels."
+    )
     page_count: int = Field(..., description="Total number of pages stitched.")
+    pages: list[DocumentPageMeta] = Field(
+        default_factory=list,
+        description="Per-page rendering and extraction metadata. Use this for bbox interpretation.",
+    )
     pdf_name: Optional[str] = Field(None, description="Source PDF filename (no path).")
     segments: list[Segment] = Field(
         ..., description="Ordered stitched segments across the whole document."
