@@ -2058,6 +2058,7 @@ def _validate_and_handle_unresolved(
 def apply_grouping_canonicalization_map(
     *,
     canonical_grouping_min_confidence: float,
+    canonicalization_skip_roles: list[NodeRole] | None = None,
     creation_dirs: CanonicalIRDirs,
     mapping: GroupingCanonicalizationMap,
     overwrite: bool,
@@ -2090,6 +2091,9 @@ def apply_grouping_canonicalization_map(
     ----------
     canonical_grouping_min_confidence
         The minimum confidence threshold for applying canonical grouping.
+    canonicalization_skip_roles
+        The list of NodeRoles to skip during canonicalization (e.g., if you want to
+        preserve all "topic" groupings as emitted without merging them).
     creation_dirs
         The canonical IR creation directories.
     mapping
@@ -2124,12 +2128,13 @@ def apply_grouping_canonicalization_map(
         mapping=mapping,
     )
 
-    # NB: Never canonicalize table-local roles (e.g., topic/subtopic). These roles
-    # carry local codes and are frequently reused across grades/areas, so global
-    # canonicalization causes incorrect merges (e.g., "3.9 NOUNS" -> "1.11 NOUNS").
+    # Default: preserve existing behavior (skip TOPIC/SUBTOPIC), but allow config
+    # override.
+    if canonicalization_skip_roles is None:
+        canonicalization_skip_roles = [NodeRole.TOPIC, NodeRole.SUBTOPIC]
+
     _BLOCKED_CANONICALIZATION_ROLE_VALUES = {
-        NodeRole.TOPIC.value,
-        NodeRole.SUBTOPIC.value,
+        r.value for r in canonicalization_skip_roles
     }
     mapping_index = {
         k: v

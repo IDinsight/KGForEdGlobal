@@ -249,6 +249,7 @@ def create_canonical_ir(
     # 12.
     segment_decisions = apply_grouping_canonicalization_map(
         canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
+        canonicalization_skip_roles=config.canonicalization_skip_roles,
         creation_dirs=creation_dirs,
         mapping=mapping,
         overwrite=config.overwrite,

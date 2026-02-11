@@ -36,15 +36,14 @@
 	"canonical_ir": {
 		"always_double_check_first_attempt": true,
 		"canonical_grouping_min_confidence": 0.80,
+		"canonicalization_skip_roles": [],
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
 		"segment_decision_conf_threshold": 0.70,
 		"spine_policy": {
 			"allow_partial_context": true,
-			"block_local_roles": [
-				"section"
-			],
+			"block_local_roles": [],
 			"disallowed_outer_roles": [
 				"prose"
 			],
@@ -71,7 +70,10 @@
 				"stage",
 				"grade_level",
 				"subject",
-				"strand"
+				"strand",
+				"unit",
+				"week",
+				"section"
 			],
 			"relocate_table_local_only_roles_to_rows": true,
 			"row_roles": [
@@ -82,6 +84,34 @@
 				"subtopic"
 			],
 			"split_rules": [
+				{
+					"apply_to": "any",
+					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bpalier\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "unit",
+							"title_template": "PALIER \\2"
+						},
+						{
+							"role": "week",
+							"title_template": "SEMAINE \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "unit",
+							"title_template": "JÉEGO \\2"
+						},
+						{
+							"role": "week",
+							"title_template": "SEMAINE \\1"
+						}
+					]
+				},
 				{
 					"apply_to": "any",
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
@@ -108,7 +138,37 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]solution\\s+de\\s+probl[èe]mes)\\s*$",
+					"match": "^.*\\/\\s*act\\.?\\s*num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\/\\s*act\\.?\\s*g[eéè]om[eéè]triques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités géométriques"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:de\\s+)?mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]so(?:l|ul)ution\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
 							"role": "strand",
@@ -118,7 +178,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]solution\\s+de\\s+probl[èe]mes)\\s*$",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:l|ul)ution\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
 							"role": "strand",
@@ -128,7 +188,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]solution\\s+de\\s+probl[èe]mes)\\s*$",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:l|ul)ution\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
 							"role": "strand",
@@ -166,7 +226,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*/\\s*[eéèë]tape\\s*\\1\\s*$",
+					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*\\/\\s*[eéèë]tape\\s*\\1\\s*$",
 					"emit": [
 						{
 							"role": "stage",
