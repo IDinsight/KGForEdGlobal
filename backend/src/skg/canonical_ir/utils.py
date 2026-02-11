@@ -2,6 +2,7 @@
 
 # Standard Library
 import hashlib
+import json
 import re
 import unicodedata
 import uuid
@@ -1696,9 +1697,15 @@ def _normalize_text(text: Optional[str]) -> str:
         return ""
 
     text = unicodedata.normalize("NFKC", text)
+    text = text.translate(QUOTES_TRANSLATION)
     text = _DASH_RE.sub("-", text)
+    text = _WS_RE.sub(" ", text).strip()
 
-    return _WS_RE.sub(" ", text).strip().casefold()
+    # Normalize colon spacing ONLY when a non-space follows the colon.
+    text = re.sub(r":\s*(?=\S)", ": ", text)
+    text = _WS_RE.sub(" ", text).strip()
+
+    return text.casefold()
 
 
 def _normalized_text_hash(*, encoding: str = "utf-8", text: str) -> str:
@@ -3301,12 +3308,14 @@ def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -
         The computed path fingerprint.
     """
 
-    joined = ">".join(grouping_keys)
+    keys = list(grouping_keys)
 
-    if not joined:
+    if not keys:
         return "-"
 
-    return hashlib.sha256(joined.encode(encoding)).hexdigest()[:32]
+    # JSON encoding avoids delimiter ambiguity (e.g., ['a>b','c'] vs ['a','b>c']).
+    payload = json.dumps(keys, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode(encoding)).hexdigest()[:32]
 
 
 def perform_postpass_hygiene(
