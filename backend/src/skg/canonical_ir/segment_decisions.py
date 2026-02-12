@@ -1042,8 +1042,11 @@ def make_table_chunk_payload(
     full_rows_raw = seg.get("rows") or []
     full_rows_filldown: list[dict[str, Any]] | None = seg.get("rows_filldown")
 
-    # Context windows (before/after).
-    ctx_before_start = max(0, start - max(0, int(context_rows_before or 0)))
+    # Context windows (before/after). Clamp ctx_before_start to at least
+    # header_row_count so the first chunk does not redundantly include header rows
+    # (already visible in header_rows_canonical) as context-only rows.
+    header_n = segment.header_row_count or 0
+    ctx_before_start = max(header_n, start - max(0, int(context_rows_before or 0)))
     ctx_after_end = min(len(full_rows_raw), end + max(0, int(context_rows_after or 0)))
 
     context_rows_before_payload: list[dict[str, Any]] = []
