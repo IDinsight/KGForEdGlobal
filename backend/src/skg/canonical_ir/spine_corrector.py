@@ -163,30 +163,35 @@ def _apply_spine_to_single_decision(
     # Deep copy to preserve auditability/provenance.
     d = decision.model_copy(deep=True)
     corrections: list[SpineCorrection] = []
+    flagged = False
 
     # 1.
-    d, c, flagged = _inject_caption_context(
+    d, c, f = _inject_caption_context(
         caption_bindings=caption_bindings, d=d, spine=spine
     )
     corrections.extend(c)
+    flagged = flagged or f
 
     # 2.
-    d, c, flagged = _correct_outer_context(d=d, spine=spine)
+    d, c, f = _correct_outer_context(d=d, spine=spine)
     corrections.extend(c)
+    flagged = flagged or f
 
     # 3.
-    d, c, flagged = _relocate_local_roles(d=d, spine=spine)
+    d, c, f = _relocate_local_roles(d=d, spine=spine)
     corrections.extend(c)
+    flagged = flagged or f
 
     # 4.
     d, c = _correct_local_structure(d=d, spine=spine)
     corrections.extend(c)
 
     # 5.
-    c, flagged = _check_canonical_consistency(
+    c, f = _check_canonical_consistency(
         d=d, canonical_ctx=canonical_outer_context, spine=spine
     )
     corrections.extend(c)
+    flagged = flagged or f
 
     # 6.
     if d.decision_type in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED):

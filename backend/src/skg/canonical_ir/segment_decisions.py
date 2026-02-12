@@ -1,6 +1,7 @@
 """This module contains utility functions for segment decisions."""
 
 # Standard Library
+import copy
 import re
 
 from pathlib import Path
@@ -128,7 +129,7 @@ def _determine_stable_context(
     ) and bool(stable_hint)
 
     if usable:
-        return [dict(x) for x in stable_hint]
+        return copy.deepcopy(stable_hint)
 
     msg = (
         f"Chunked table first-chunk produced no usable context_groupings; "
@@ -139,7 +140,7 @@ def _determine_stable_context(
     logger.warning(msg)
     warnings.append(msg)
 
-    return [dict(x) for x in (fallback_hint or [])]
+    return copy.deepcopy(fallback_hint or [])
 
 
 def _filter_section_path_for_llm(
@@ -278,6 +279,9 @@ def _process_block_segment(
     )
 
     # Add additional payload evidence that is helpful to the LLM.
+    assert (
+        segment.slices
+    ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
     segment_payload["section_path"] = _filter_section_path_for_llm(
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
@@ -805,6 +809,9 @@ def load_or_build_caption_bindings(
     pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
 
     for index, segment in enumerate(document_ir.segments):
+        assert (
+            segment.slices
+        ), f"Segment {segment.segment_id} has no slices; cannot determine page index."
         page_index = segment.slices[0].page_index
         assert isinstance(page_index, int) and page_index >= 0
 
@@ -939,6 +946,9 @@ def make_table_chunk_payload(
     seg = segment.model_dump(
         exclude={"segment_id", "segment_provenance", "slices"}, mode="json"
     )
+    assert (
+        segment.slices
+    ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
     seg["section_path"] = _filter_section_path_for_llm(
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
@@ -1058,6 +1068,9 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
     table_payload = segment.model_dump(
         exclude={"segment_id", "segment_provenance", "slices"}, mode="json"
     )
+    assert (
+        segment.slices
+    ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
     table_payload["section_path"] = _filter_section_path_for_llm(
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
@@ -1228,6 +1241,9 @@ def segment_hint(segment: Segment) -> dict[str, Any]:
 
     kind = segment.kind
     assert kind in ("block", "table")
+    assert (
+        segment.slices
+    ), f"Segment {segment.segment_id} has no slices; cannot build hint."
 
     pages: list[int] = [p.page_index for p in segment.segment_provenance]
     page_span = [min(pages), max(pages)] if pages else None
