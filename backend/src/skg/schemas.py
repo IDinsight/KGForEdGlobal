@@ -542,7 +542,7 @@ class CreateCanonicalConfig(BaseSchema):
             "Default skips TOPIC/SUBTOPIC to avoid incorrect global merges."
         ),
     )
-    header_role_hints: list[dict[str, str]] = Field(
+    heading_role_hints: list[dict[str, str]] = Field(
         default_factory=list,
         description=(
             "Document-specific heading text → role constraints. Each entry has:"
