@@ -35,7 +35,7 @@
 	},
 	"canonical_ir": {
 		"always_double_check_first_attempt": true,
-		"canonical_grouping_min_confidence": 0.80,
+		"canonical_grouping_min_confidence": 0.8,
 		"canonicalization_skip_roles": [
 			"week",
 			"topic",
@@ -45,13 +45,13 @@
 		"heading_role_hints": [
 			{
 				"pattern": "PALIER \\d+",
-				"role": "stage",
-				"note": "PALIER N is a competency stage (palier d'apprentissage), never unit/section/grade_level"
+				"role": "unit",
+				"note": "PALIER N is a competency tier nested INSIDE Jéego; maps to unit (inner to stage)"
 			},
 			{
 				"pattern": "Jéego \\d+",
-				"role": "unit",
-				"note": "Jéego N is a Wolof unit grouping (groupe de paliers), never grade_level"
+				"role": "stage",
+				"note": "Jéego N is a Wolof learning-stage grouping (groupe de paliers), OUTER to Palier"
 			},
 			{
 				"pattern": "CE[12]",
@@ -72,7 +72,7 @@
 		"max_table_rows_per_decision": 20,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
-		"segment_decision_conf_threshold": 0.60,
+		"segment_decision_conf_threshold": 0.6,
 		"spine_policy": {
 			"allow_partial_context": true,
 			"block_local_roles": [],
@@ -115,34 +115,6 @@
 			"split_rules": [
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
-					"emit": [
-						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
-							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
-					"emit": [
-						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
-							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "outer_context",
 					"match": "^.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
@@ -191,34 +163,6 @@
 				},
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
-					"emit": [
-						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
-							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
-					"emit": [
-						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
-							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "outer_context",
 					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*\\/\\s*[eéèë]tape\\s*\\1\\s*$",
 					"emit": [
 						{
@@ -239,26 +183,6 @@
 				},
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\/\\s*act\\.?\\s*num[eéè]riques\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités numériques"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\/\\s*act\\.?\\s*num[eéè]riques\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités numériques"
-						}
-					]
-				},
-				{
-					"apply_to": "outer_context",
 					"match": "^.*\\/\\s*act\\.?\\s*g[eéè]om[eéè]triques\\s*$",
 					"emit": [
 						{
@@ -274,26 +198,6 @@
 						{
 							"role": "strand",
 							"title_template": "Activités géométriques"
-						}
-					]
-				},
-				{
-					"apply_to": "outer_context",
-					"match": "^.*\\/\\s*act\\.?\\s*(?:de\\s+)?mesure\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités de mesure"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\/\\s*act\\.?\\s*(?:de\\s+)?mesure\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités de mesure"
 						}
 					]
 				},
@@ -412,7 +316,7 @@
 					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "stage",
+							"role": "unit",
 							"title_template": "PALIER \\1"
 						}
 					]
@@ -422,7 +326,17 @@
 					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "stage",
+							"role": "unit",
+							"title_template": "PALIER \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "table_row_local",
+					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "unit",
 							"title_template": "PALIER \\1"
 						}
 					]
@@ -432,7 +346,7 @@
 					"match": "^.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "unit",
+							"role": "stage",
 							"title_template": "JÉEGO \\1"
 						}
 					]
@@ -442,7 +356,7 @@
 					"match": "^.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "unit",
+							"role": "stage",
 							"title_template": "JÉEGO \\1"
 						}
 					]
