@@ -57,6 +57,7 @@ _STRUCTURAL_CONTEXT_CUE_RE = re.compile(
     r"\b("
     r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
     r"learning\s+area|unit|week|term|chapter|module|p\s*[1-9]|std\s*[ivx]+"
+    r"|palier|jéego|j[ée]ego|semaine|étape|activit[ée]s|niveau|comp[ée]tence"
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -349,8 +350,6 @@ def _check_structural_warnings(
 
     if decision.confidence >= structural_leaf_warn_threshold:
         return
-
-    leaf_count = _count_decision_leaves(decision)
 
     if leaf_count <= 0:
         return
@@ -2101,7 +2100,7 @@ def _validate_and_handle_unresolved(
                     _extract_table_headers(segment) if segment.kind == "table" else []
                 ),
                 kind=segment.kind,
-                local_code=segment.local_code,
+                local_code=getattr(segment, "local_code", None),
                 page_indices=page_indices,
                 reason=UnresolvedReason.FLAGGED_UNRESOLVED,
                 sample=_make_unresolved_sample(decision=decision, segment=segment),
@@ -2119,7 +2118,7 @@ def _validate_and_handle_unresolved(
                 headers=(
                     _extract_table_headers(segment) if segment.kind == "table" else []
                 ),
-                local_code=segment.local_code,
+                local_code=getattr(segment, "local_code", None),
                 kind=segment.kind,
                 page_indices=page_indices,
                 reason=reason,
