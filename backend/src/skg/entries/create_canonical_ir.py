@@ -72,6 +72,7 @@ cli = typer.Typer(no_args_is_help=True)
 def create_canonical_ir(
     *,
     config: CreateCanonicalConfig,
+    country: str,
     creation_dirs: CanonicalIRDirs,
     doc_key: str,
     document_ir_fp: Path,
@@ -102,6 +103,9 @@ def create_canonical_ir(
     ----------
     config
         The canonical IR creation run configuration.
+    country
+        The country for this document, used for LLM context when generating the heading
+        levels.
     doc_key
         The expected document key for all page IRs.
     creation_dirs
@@ -126,6 +130,7 @@ def create_canonical_ir(
     # 2.
     unique_headings = collect_unique_headings(document_ir)
     heading_levels = generate_heading_levels(
+        country=country,
         creation_dirs=creation_dirs,
         headings=unique_headings,
         model=config.model,
@@ -390,6 +395,7 @@ def create(
 
         create_canonical_ir(
             config=config,
+            country=extraction_run_config.country,
             creation_dirs=creation_dirs,
             doc_key=expected_doc_key,
             document_ir_fp=document_ir_fp,

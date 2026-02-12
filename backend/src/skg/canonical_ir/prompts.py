@@ -6,7 +6,7 @@ creation.
 import json
 
 from textwrap import dedent
-from typing import Any, Optional
+from typing import Any
 
 # Third Party Library
 from dotmap import DotMap
@@ -25,10 +25,27 @@ from skg.utils.constants import (
 
 CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.name for r in CONTEXT_GROUPINGS_ROLE_ORDER)
 
+DOC_CONTEXT_MAPPING: dict[str, str] = {
+    "senegal": dedent(
+        """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
+
+Document-specific patterns (use when consistent with the observed heading sequence):
+- Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
+- Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
+- "JÉEGO N" and "PALIER N" denote subsections within a strand. Keep levels consistent across N. Variants like "(suite)" or "(yeggale)" are continuations and must keep the same level as the base "JÉEGO N :" or "PALIER N :".
+- Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are dividers WITHIN the current strand/section. If they appear after an "ACTIVITES ..." heading, they must be DEEPER than the strand (i.e., nested under it), not equal to it and not a reset.
+- Some topic headings in Wolof are long, sentence-like competency statements (e.g., starting with "Boole mooñ ..."). These are real structural headings inside the Jéego/Palier sections and should NOT be assigned level 0. They usually sit above "Apprentissages ponctuels" micro-plan tables.
+
+Prefer levels that preserve local monotonic structure such as:
+... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> ("Boole mooñ ...") -> "Apprentissages ponctuels" -> tables
+        """
+    )
+}
+
 # Build a de-duplicated, sorted list of document-structure words that should NOT become
 # SECTION grouping nodes. Sourced from FrontMatterHeadings and NonArtifacts so the
 # prompt stays in sync when either collection grows.
-_SECTION_EXCLUSION_WORDS: list[str] = sorted(
+SECTION_EXCLUSION_WORDS: list[str] = sorted(
     {h.value for h in FrontMatterHeadings}
     | NonArtifacts
     | {
@@ -99,7 +116,7 @@ decision_type: {decision_types_str}
 NodeRole (for groupings): {node_roles_str}
   - Do NOT use: "framework", "prose", "unresolved" as grouping roles.
   - role=SECTION is NOT a default fallback. Use only for meaningful curriculum labels not captured by other roles.
-  - Do NOT emit SECTION for generic document words: {", ".join(f'"{w}"' for w in _SECTION_EXCLUSION_WORDS)}.
+  - Do NOT emit SECTION for generic document words: {", ".join(f'"{w}"' for w in SECTION_EXCLUSION_WORDS)}.
 
 StatementRole (for leaves):
   - "{StatementRole.EXPECTATION.value}" — normative learning outcome/competence/objective/standard
@@ -323,7 +340,7 @@ Input keys (JSON array):
 
 def heading_level_instructions(
     *,
-    doc_context: Optional[str] = None,
+    country: str,
     headings: list[dict[str, Any]],
     include_neighbor_context: bool = True,
 ) -> DotMap:
@@ -331,8 +348,9 @@ def heading_level_instructions(
 
     Parameters
     ----------
-    doc_context
-        Optional string providing document-specific context or hints about the headings.
+    country
+        The country of the curriculum document, used to provide relevant
+        context-specific hints.
     headings
         The unique headings to assign levels to.
     include_neighbor_context
@@ -362,23 +380,7 @@ Hard rules:
     """
     )
 
-    doc_context = (
-        doc_context
-        or dedent(
-            """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
-
-Document-specific patterns (use when consistent with the observed heading sequence):
-- Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
-- Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
-- "JÉEGO N" and "PALIER N" denote subsections within a strand. Keep levels consistent across N. Variants like "(suite)" or "(yeggale)" are continuations and must keep the same level as the base "JÉEGO N :" or "PALIER N :".
-- Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are dividers WITHIN the current strand/section. If they appear after an "ACTIVITES ..." heading, they must be DEEPER than the strand (i.e., nested under it), not equal to it and not a reset.
-- Some topic headings in Wolof are long, sentence-like competency statements (e.g., starting with "Boole mooñ ..."). These are real structural headings inside the Jéego/Palier sections and should NOT be assigned level 0. They usually sit above "Apprentissages ponctuels" micro-plan tables.
-
-Prefer levels that preserve local monotonic structure such as:
-... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> ("Boole mooñ ...") -> "Apprentissages ponctuels" -> tables
-        """
-        ).strip()
-    )
+    doc_context = DOC_CONTEXT_MAPPING.get(country.lower(), None)
 
     if doc_context and doc_context.strip():
         system_message += (
@@ -395,6 +397,7 @@ If a hint conflicts with the document’s observed structure, ignore the hint.
         )
 
     lines: list[str] = []
+
     for i, h in enumerate(headings):
         text = " ".join(h["text"].split())
 
