@@ -38,7 +38,6 @@
 		"canonical_grouping_min_confidence": 0.80,
 		"canonicalization_skip_roles": [
 			"week",
-			"unit",
 			"topic",
 			"subtopic",
 			"section"
@@ -116,66 +115,6 @@
 			"split_rules": [
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bpalier\\s*(\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "stage",
-							"title_template": "PALIER \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bpalier\\s*(\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "stage",
-							"title_template": "PALIER \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "table_row_local",
-					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bpalier\\s*(\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "week",
-							"title_template": "SEMAINE \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "outer_context",
-					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "unit",
-							"title_template": "JÉEGO \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "unit",
-							"title_template": "JÉEGO \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "table_row_local",
-					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "week",
-							"title_template": "SEMAINE \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "any",
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
@@ -189,7 +128,21 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
@@ -199,7 +152,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
@@ -213,7 +176,21 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE 2 \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
@@ -227,7 +204,21 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*\\/\\s*[eéèë]tape\\s*\\1\\s*$",
 					"emit": [
 						{
@@ -237,7 +228,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*\\/\\s*[eéèë]tape\\s*\\1\\s*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\/\\s*act\\.?\\s*num[eéè]riques\\s*$",
 					"emit": [
 						{
@@ -247,7 +248,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*act\\.?\\s*num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\/\\s*act\\.?\\s*g[eéè]om[eéè]triques\\s*$",
 					"emit": [
 						{
@@ -257,7 +268,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*act\\.?\\s*g[eéè]om[eéè]triques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités géométriques"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\/\\s*act\\.?\\s*(?:de\\s+)?mesure\\s*$",
 					"emit": [
 						{
@@ -267,7 +288,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:de\\s+)?mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
@@ -277,7 +308,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de résolution de problèmes"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
@@ -287,7 +328,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
@@ -297,7 +348,17 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
 					"emit": [
 						{
@@ -307,7 +368,27 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "\\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\b(CE\\s*\\d+)\\b\\s*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "\\1"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
 					"match": "^.*\\b(CE\\s*\\d+)\\b\\s*$",
 					"emit": [
 						{
