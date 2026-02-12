@@ -25,10 +25,12 @@ from skg.canonical_ir.prompts import (
     decide_on_segment,
     double_check_decision_on_segment,
     grouping_canonicalization_instructions,
+    heading_level_instructions,
 )
 from skg.canonical_ir.schemas import (
     GroupingCanonicalizationKey,
     GroupingCanonicalizationMap,
+    HeadingLevelAnalysis,
     SegmentDecision,
 )
 from skg.canonical_ir.utils import CanonicalIRDirs
@@ -281,6 +283,69 @@ def _call_openai_api_to_decide_on_segment(
     return parsed
 
 
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(
+        (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+    ),
+    stop=stop_after_attempt(limits.max_retry_attempts),
+    wait=wait_random_exponential(min=1, max=60),
+)
+def _call_openai_api_to_generate_heading_levels(
+    *, input_items: list[Any], instructions: str, model: str
+) -> HeadingLevelAnalysis:
+    """Wrapper for heading level assignment API calls with retries.
+
+    Parameters
+    ----------
+    input_items
+        The list of messages to send to the OpenAI API.
+    instructions
+        The system instructions.
+    model
+        The OpenAI model to use.
+
+    Returns
+    -------
+    HeadingLevelAnalysis
+        The generated HeadingLevelAnalysis.
+
+    Raises
+    ------
+    QualityError
+        If the response could not be parsed.
+    """
+
+    response = openai_client.responses.parse(
+        input=input_items,
+        instructions=instructions,
+        model=model,
+        temperature=0,
+        text_format=HeadingLevelAnalysis,
+        top_p=1,
+    )
+
+    parsed = getattr(response, "output_parsed", None)
+    output_text = getattr(response, "output_text", None)
+
+    # Capture the raw text if parsing/validation fails.
+    if parsed is None:
+        raise QualityError(
+            "Heading level generation returned no parsed output.",
+            failed_content=output_text,
+        )
+
+    return parsed
+
+
 def _process_canonicalization_batch(
     *,
     batch_index: int,
@@ -415,6 +480,91 @@ def _process_canonicalization_batch(
             continue
 
     raise QualityError(f"Batch {batch_index} failed unexpectedly.")
+
+
+def generate_heading_levels(
+    *,
+    creation_dirs: CanonicalIRDirs,
+    headings: list[dict[str, Any]],
+    model: str,
+    overwrite: bool,
+) -> dict[str, int]:
+    """Generate heading levels via LLM and save to disk.
+
+    Parameters
+    ----------
+    creation_dirs
+        The canonical IR creation directories.
+    headings
+        The unique headings from `collect_unique_headings`.
+    model
+        The OpenAI model to use.
+    overwrite
+        Whether to overwrite an existing cached result.
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping from normalized heading text to structural depth level.
+    """
+
+    heading_levels_fp = creation_dirs.segment_decisions / "heading_levels.json"
+
+    if not overwrite and heading_levels_fp.exists():
+        logger.warning(
+            f"Heading levels JSON already exists at {heading_levels_fp}. "
+            f"Reusing existing heading levels. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return open_json_type(heading_levels_fp)
+
+    assert headings, "Cannot generate heading levels: no headings provided."
+
+    logger.info(f"Assigning heading levels for {len(headings)} unique headings...")
+
+    prompts = heading_level_instructions(headings=headings)
+    input_items = [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompts.user_message}],
+        },
+    ]
+    parsed = _call_openai_api_to_generate_heading_levels(
+        input_items=input_items, instructions=prompts.system_message, model=model
+    )
+    entries = parsed.entries
+
+    # Validate: we should get exactly one entry per heading.
+    if len(entries) != len(headings):
+        raise ValueError(
+            f"Expected {len(headings)} heading level entries, got {len(entries)}."
+        )
+
+    level_map: dict[str, int] = {}
+
+    # Map results back to heading text.
+    for entry in entries:
+        idx = entry.index
+        level = entry.level
+
+        if not 0 <= idx < len(headings):
+            raise ValueError(f"Heading index {idx} out of range [0, {len(headings)}).")
+
+        text = headings[idx]["text"]
+        norm = " ".join(text.split()).casefold()
+        level_map[norm] = level
+
+    logger.info(f"Saving heading levels to: {heading_levels_fp}")
+
+    write_to_json(fp=heading_levels_fp, json_info=level_map)
+
+    logger.success(
+        f"Saved heading levels to: {heading_levels_fp}. "
+        f"Non-structural (level 0): "
+        f"{sum(1 for v in level_map.values() if v == 0)}/{len(level_map)}"
+    )
+
+    return level_map
 
 
 def generate_grouping_canonicalization_map(

@@ -35,9 +35,13 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.llm import generate_grouping_canonicalization_map
+from skg.canonical_ir.llm import (
+    generate_grouping_canonicalization_map,
+    generate_heading_levels,
+)
 from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.segment_decisions import (
+    collect_unique_headings,
     load_or_build_caption_bindings,
     process_segment_decisions,
     segment_hint,
@@ -77,20 +81,22 @@ def create_canonical_ir(
     The process is as follows:
 
     1. Validate and load the Document IR.
-    2. Build or load one-shot caption to next table bindings.
-    3. Initialize decision set.
-    4. Generate decisions for any undecided segments in DocumentIR order.
-    5. Update context hint using the most recently-added decision.
-    6. Persist warnings for this segment.
-    7. Load the raw segment decisions.
-    8. Clean up segment decisions before LLM canonicalization.
-    9. Apply spine correction deterministically.
-    10. Collect unique grouping keys for validation later.
-    11. Generate and apply grouping canonicalization map.
-    12. Apply grouping canonicalization map to segment decisions.
-    13. Decision-set level validation for chunked tables.
-    14. Parse the segment decisions into a canonical IR.
-    15. Write results to file.
+    2. Compute heading levels for all unique headings in the DocumentIR with one LLM
+        call.
+    3. Build or load one-shot caption to next table bindings.
+    4. Initialize decision set.
+    5. Generate decisions for any undecided segments in DocumentIR order.
+    6. Update context hint using the most recently-added decision.
+    7. Persist warnings for this segment.
+    8. Load the raw segment decisions.
+    9. Clean up segment decisions before LLM canonicalization.
+    10. Apply spine correction deterministically.
+    11. Collect unique grouping keys for validation later.
+    12. Generate and apply grouping canonicalization map.
+    13. Apply grouping canonicalization map to segment decisions.
+    14. Decision-set level validation for chunked tables.
+    15. Parse the segment decisions into a canonical IR.
+    16. Write results to file.
 
     Parameters
     ----------
@@ -118,6 +124,15 @@ def create_canonical_ir(
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
     # 2.
+    unique_headings = collect_unique_headings(document_ir)
+    heading_levels = generate_heading_levels(
+        creation_dirs=creation_dirs,
+        headings=unique_headings,
+        model=config.model,
+        overwrite=config.overwrite,
+    )
+
+    # 3.
     caption_bindings = load_or_build_caption_bindings(
         creation_dirs=creation_dirs, document_ir=document_ir, overwrite=config.overwrite
     )
@@ -129,7 +144,7 @@ def create_canonical_ir(
             f"If you wish to overwrite, pass the --overwrite flag."
         )
     else:
-        # 3.
+        # 4.
         decision_set = SegmentDecisionSet.model_validate(
             {
                 "decision_set_id": compute_decision_set_id(decisions=[]),
@@ -140,7 +155,7 @@ def create_canonical_ir(
             }
         )
 
-        # 4.
+        # 5.
         context_hint: list[dict[str, Any]] = []
         existing_keys: set[tuple[str, Optional[int], Optional[int]]] = set()
         num_segments = len(document_ir.segments)
@@ -157,8 +172,20 @@ def create_canonical_ir(
 
             prev_seg = document_ir.segments[i - 2] if i > 1 else None
             next_seg = document_ir.segments[i] if i < num_segments else None
-            prev_seg_hint = segment_hint(prev_seg) if prev_seg else None
-            next_seg_hint = segment_hint(next_seg) if next_seg else None
+            prev_seg_hint = (
+                segment_hint(heading_levels=heading_levels, segment=prev_seg)
+                if prev_seg
+                else None
+            )
+            next_seg_hint = (
+                segment_hint(heading_levels=heading_levels, segment=next_seg)
+                if next_seg
+                else None
+            )
+
+            logger.info(f"{i = } | {segment = }")
+            logger.info(f"{prev_seg_hint = }")
+            logger.info(f"{next_seg_hint = }\n")
 
             decision_set = process_segment_decisions(
                 caption_bindings=caption_bindings,
@@ -167,6 +194,7 @@ def create_canonical_ir(
                 decision_set=decision_set,
                 doc_key=doc_key,
                 existing_keys=existing_keys,
+                heading_levels=heading_levels,
                 next_segment_hint=next_seg_hint,
                 prev_segment_hint=prev_seg_hint,
                 segment=segment,
@@ -175,17 +203,18 @@ def create_canonical_ir(
             )
             new_decisions = decision_set.decisions[prev_number_decisions:]
 
-            # 5.
+            # 6.
             if new_decisions:
                 last = new_decisions[-1]
                 if last.decision_type in {
+                    SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED,
                     SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
                     SegmentDecisionType.EMIT_GROUPINGS_ONLY,
                     SegmentDecisionType.EMIT_LEAVES_ONLY,
                 }:
                     context_hint = build_context_hint_from_decision(last)
 
-            # 6.
+            # 7.
             segment_key = f"{i:05d}_{segment.segment_id}"
             segment_warnings_by_segment[segment_key] = warnings
 
@@ -206,21 +235,21 @@ def create_canonical_ir(
             f"({len(decision_set.decisions)} decisions total)."
         )
 
-    # 7.
+    # 8.
     segment_decisions = load_segment_decision_set(
         expected_doc_key=doc_key,
         pdf_name=document_ir.pdf_name,
         segment_decisions_fp=segment_decisions_fp,
     )
 
-    # 8.
+    # 9.
     segment_decisions = clean_up_segment_decisions(
         creation_dirs=creation_dirs,
         overwrite=config.overwrite,
         segment_decisions=segment_decisions,
     )
 
-    # 9.
+    # 10.
     segment_decisions = apply_spine_policy_to_decision_set(
         caption_bindings=caption_bindings,
         creation_dirs=creation_dirs,
@@ -230,14 +259,14 @@ def create_canonical_ir(
         spine=config.spine_policy,
     )
 
-    # 10.
+    # 11.
     grouping_keys = collect_unique_grouping_keys(
         creation_dirs=creation_dirs,
         overwrite=config.overwrite,
         segment_decisions=segment_decisions,
     )
 
-    # 11.
+    # 12.
     mapping = generate_grouping_canonicalization_map(
         creation_dirs=creation_dirs,
         doc_key=doc_key,
@@ -246,7 +275,7 @@ def create_canonical_ir(
         overwrite=config.overwrite,
     )
 
-    # 12.
+    # 13.
     segment_decisions = apply_grouping_canonicalization_map(
         canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
         canonicalization_skip_roles=config.canonicalization_skip_roles,
@@ -256,12 +285,12 @@ def create_canonical_ir(
         segment_decisions=segment_decisions,
     )
 
-    # 13.
+    # 14.
     validate_table_chunk_coverage_and_overlap(
         document_ir=document_ir, segment_decisions=segment_decisions
     )
 
-    # 14.
+    # 15.
     canonical_ir = compile_canonical_ir(
         doc_key=doc_key,
         document_ir=document_ir,
@@ -270,7 +299,7 @@ def create_canonical_ir(
         structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
     )
 
-    # 15.
+    # 16.
     save_canonical_ir(
         canonical_ir=canonical_ir,
         canonical_ir_fp=canonical_ir_fp,

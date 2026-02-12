@@ -219,11 +219,13 @@ class UnresolvedReason(str, Enum):
 
 # Literals/sets/etc. for various constant types.
 CaptionFigurePrefixes: tuple[str, ...] = (
+    "diagramme",
     "fig",
     "fig.",
     "figure",
     "kielelezo",
     "mchoro",
+    "schéma",
 )
 CaptionKind = Literal["figure", "table", "unknown"]
 CaptionTablePrefixes: tuple[str, ...] = (

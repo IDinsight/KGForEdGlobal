@@ -747,7 +747,7 @@ def _derive_groupings_from_caption(
 
     # Build a synthetic grouping so split_rules can operate deterministically. Use
     # PROSE so the raw caption never "sticks" as a hierarchy node.
-    cap_g = GroupingDecision(
+    cap_g = GroupingDecision.model_construct(
         local_code=None,
         role=NodeRole.PROSE,
         source_label="caption_binding",

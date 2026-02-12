@@ -520,3 +520,46 @@ Input keys (JSON array):
     return DotMap(
         {"system_message": system_message.strip(), "user_message": user_message.strip()}
     )
+
+
+def heading_level_instructions(headings: list[dict[str, Any]]) -> DotMap:
+    """Return the heading level instructions.
+
+    Parameters
+    ----------
+    headings
+        The unique headings to assign levels to.
+
+    Returns
+    -------
+    DotMap
+        A DotMap containing 'system_message' and 'user_message'.
+    """
+
+    system_message = dedent(
+        """You are a document structure analyst. You will be given a numbered list of section headings extracted (in order) from a curriculum document.
+
+Your task: Assign each heading an integer **structural depth level** where:
+- 1 = The broadest/highest-level container (e.g., "Chapter 1").
+- Higher numbers = More deeply nested content (e.g., "1.1", "1.1.1").
+- 0 = Front-matter, non-structural text, or long content erroneously detected as a heading.
+
+Logic Rules:
+1. SIBLINGS (same structural role, e.g., "Unit 1" and "Unit 2") MUST receive the SAME level.
+2. CONTAINERS receive a LOWER (broader) level number than the headings they contain.
+3. If a heading is actually just a sentence or paragraph content, mark it as level 0.
+        """
+    )
+
+    lines: list[str] = []
+
+    for i, h in enumerate(headings):
+        # Collapse internal whitespace for readability.
+        text = " ".join(h["text"].split())
+        lines.append(f'{i}. "{text}"  (page {h["page_index"]})')
+
+    user_message = "\n".join(lines)
+
+    return DotMap(
+        {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    )
