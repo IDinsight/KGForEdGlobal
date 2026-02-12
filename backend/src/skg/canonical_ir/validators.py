@@ -229,12 +229,13 @@ def _fingerprint_groupings_models_for_compare(
     fps: list[tuple[str, str]] = []
 
     for g in groupings or []:
-        role = str(getattr(g, "role", "")).strip().lower()
-
-        # Role may be Enum; normalize to value if possible
-        if hasattr(getattr(g, "role", None), "value"):
-            role = str(g.role.value).strip().lower()
-
+        # Normalize role to its string value.
+        raw_role = getattr(g, "role", "")
+        role = (
+            str(raw_role.value if hasattr(raw_role, "value") else raw_role)
+            .strip()
+            .lower()
+        )
         title = _normalize_text(str(getattr(g, "title", "")))
 
         if role and title:
@@ -641,11 +642,19 @@ def validate_chunked_table_context_matches_prior_context(
 
     prior = segment_payload.get("prior_context_groupings")
 
-    # Always enforce exact match (including empty) to prevent drift.
     if prior is None:
         prior = []
 
     prior_fp = _fingerprint_groupings_for_compare(prior)
+
+    # If the prior context is empty (chunk 0 failed to establish stable context and the
+    # external fallback was also empty), skip enforcement. This avoids a deadlock where
+    # validate_context_groupings_required_for_emit demands non-empty context (evidence
+    # exists) but this validator demands empty context (matching the empty prior). Let
+    # the other validators govern context quality independently.
+    if not prior_fp:
+        return
+
     decision_fp = _fingerprint_groupings_models_for_compare(
         segment_decision.context_groupings
     )
@@ -1208,11 +1217,11 @@ def validate_emitted_statements_have_outer_anchor(
         NodeRole.STAGE,
         NodeRole.LEARNING_AREA,
         NodeRole.SUBJECT,
+        NodeRole.STRAND,
+        NodeRole.SUBSTRAND,
         NodeRole.THEME,
         NodeRole.UNIT,
         NodeRole.WEEK,
-        NodeRole.STRAND,
-        NodeRole.SUBSTRAND,
     }
 
     def has_anchor(groupings: list[GroupingDecision]) -> bool:
@@ -1240,7 +1249,7 @@ def validate_emitted_statements_have_outer_anchor(
             f"emitted_leaves_missing_outer_anchor\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
-            f"Fix: include at least one of: {NodeRole.GRADE_LEVEL.value}, {NodeRole.STAGE.value}, {NodeRole.LEARNING_AREA.value}, {NodeRole.SUBJECT.value}, {NodeRole.THEME.value}, {NodeRole.UNIT.value}, {NodeRole.WEEK.value} "
+            f"Fix: include at least one of: {NodeRole.GRADE_LEVEL.value}, {NodeRole.STAGE.value}, {NodeRole.LEARNING_AREA.value}, {NodeRole.SUBJECT.value}, {NodeRole.STRAND.value}, {NodeRole.SUBSTRAND.value}, {NodeRole.THEME.value}, {NodeRole.UNIT.value}, {NodeRole.WEEK.value} "
             f"in context_groupings or emitted groupings (or mark unresolved)."
         )
 
