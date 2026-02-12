@@ -1079,8 +1079,33 @@ def validate_context_groupings_supported_by_outer_evidence(
     if not evidence_blob.strip():
         return
 
+    # Allow carry-forward from prior_context_groupings[] for ALL segment types EXCEPT
+    # the first chunk of a chunked table (which must anchor strictly from outer
+    # evidence to establish the stable context for later chunks).
+    #
+    # This aligns with the prompt's carry-forward rule: prior context may be re-used
+    # when the role is a stable outer role and the current segment's outer evidence
+    # does not contradict it.
+    prior = payload.get("prior_context_groupings") or []
+    chunking = payload.get("chunking") or {}
+    is_first_chunk = bool(chunking.get("is_first_chunk", False))
+    is_chunked = bool(chunking.get("is_chunked", False))
+    is_first_chunk_of_chunked = is_chunked and is_first_chunk
+    allow_prior_titles = bool(prior) and not is_first_chunk_of_chunked
+    prior_titles_norm: set[str] = set()
+
+    for pg in prior:
+        if not isinstance(pg, dict):
+            continue
+
+        pt = _normalize_text(pg.get("title", ""))
+
+        if pt:
+            prior_titles_norm.add(pt)
+
     for g in segment_decision.context_groupings:
         title = _normalize_text(g.title)
+
         if not title:
             raise QualityError(
                 f"context_groupings contains an empty title.\n"
@@ -1100,22 +1125,6 @@ def validate_context_groupings_supported_by_outer_evidence(
                 f"  front_matter_title: {g.title}\n"
                 f"  section_path_headings: {headings}"
             )
-
-        prior = payload.get("prior_context_groupings") or []
-        chunking = payload.get("chunking") or {}
-        is_first_chunk = bool(chunking.get("is_first_chunk", False))
-        is_chunked = bool(chunking.get("is_chunked", False))
-        allow_prior_titles = is_chunked and (not is_first_chunk)
-        prior_titles_norm: set[str] = set()
-
-        for pg in prior:
-            if not isinstance(pg, dict):
-                continue
-
-            pt = _normalize_text(pg.get("title", ""))
-
-            if pt:
-                prior_titles_norm.add(pt)
 
         if not _outer_evidence_supports_title(
             allow_prior_titles=allow_prior_titles,
