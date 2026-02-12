@@ -535,7 +535,7 @@ class SegmentDecision(BaseSchema):
         emits groupings. The combined effect is correct: a decision with only
         `context_groupings` passes *this* check but will still be rejected by the
         stricter per-decision-type check above. If the declaration order of these
-        validators changes, verify that the ccombined behavior is preserved.
+        validators changes, verify that the combined behavior is preserved.
 
         Returns
         -------

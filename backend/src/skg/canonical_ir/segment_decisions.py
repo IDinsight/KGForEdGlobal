@@ -188,7 +188,7 @@ def _filter_section_path_for_llm(
     filtered: list[SectionHeadingRef] = []
 
     for section_path in section_paths:
-        text_cf = section_path.text.casefold().strip()
+        text_cf = " ".join(section_path.text.split()).casefold()
 
         if text_cf in {h.value for h in FrontMatterHeadings} or text_cf in NonArtifacts:
             continue
@@ -1170,7 +1170,7 @@ def make_table_full_payload(
     use_filldown = isinstance(rows_filldown, list) and len(rows_filldown) == len(rows)
 
     if use_filldown:
-        table_payload["rows_original"] = [r.model_dump(mode="json") for r in rows]
+        table_payload["rows_original"] = table_payload["rows"]
         table_payload["rows_original_preserved"] = True
 
         # Store rows_filldown here before removing.

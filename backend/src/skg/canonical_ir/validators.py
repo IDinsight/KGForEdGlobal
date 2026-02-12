@@ -1211,6 +1211,8 @@ def validate_emitted_statements_have_outer_anchor(
         NodeRole.THEME,
         NodeRole.UNIT,
         NodeRole.WEEK,
+        NodeRole.STRAND,
+        NodeRole.SUBSTRAND,
     }
 
     def has_anchor(groupings: list[GroupingDecision]) -> bool:
