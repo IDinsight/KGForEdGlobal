@@ -667,7 +667,7 @@ def generate_grouping_canonicalization_map(
             if item.action == GroupingCanonicalizationAction.KEEP:
                 canonical_outputs = [item.input]
             else:
-                # REPLACE/MERGE: outputs are the new canonical groupings.
+                # REPLACE/SPLIT: outputs are the new canonical groupings.
                 canonical_outputs = item.output or []
 
             for out in canonical_outputs:
