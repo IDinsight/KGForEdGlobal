@@ -6,7 +6,7 @@ creation.
 import json
 
 from textwrap import dedent
-from typing import Any
+from typing import Any, Optional
 
 # Third Party Library
 from dotmap import DotMap
@@ -304,13 +304,22 @@ Input keys (JSON array):
     )
 
 
-def heading_level_instructions(headings: list[dict[str, Any]]) -> DotMap:
+def heading_level_instructions(
+    *,
+    doc_context: Optional[str] = None,
+    headings: list[dict[str, Any]],
+    include_neighbor_context: bool = True,
+) -> DotMap:
     """Return the heading level instructions.
 
     Parameters
     ----------
+    doc_context
+        Optional string providing document-specific context or hints about the headings.
     headings
         The unique headings to assign levels to.
+    include_neighbor_context
+        Whether to include prev/next heading text in each line to reduce reset mistakes.
 
     Returns
     -------
@@ -319,26 +328,72 @@ def heading_level_instructions(headings: list[dict[str, Any]]) -> DotMap:
     """
 
     system_message = dedent(
-        """You are a document structure analyst. You will be given a numbered list of section headings extracted (in order) from a curriculum document.
+        """You are a document structure analyst. You will be given a numbered list of headings extracted IN ORDER from a document (with page numbers).
 
-Your task: Assign each heading an integer **structural depth level** where:
-- 1 = The broadest/highest-level container (e.g., "Chapter 1").
-- Higher numbers = More deeply nested content (e.g., "1.1", "1.1.1").
-- 0 = Front-matter, non-structural text, or long content erroneously detected as a heading.
+Task: assign each heading an integer structural depth level:
+- 1 = broadest/highest-level structural container in the body
+- 2+ = deeper nesting
+- 0 = front matter/document furniture/slogans/or content mistakenly detected as a heading
 
-Logic Rules:
-1. SIBLINGS (same structural role, e.g., "Unit 1" and "Unit 2") MUST receive the SAME level.
-2. CONTAINERS receive a LOWER (broader) level number than the headings they contain.
-3. If a heading is actually just a sentence or paragraph content, mark it as level 0.
-        """
+Hard rules:
+1. Siblings (same structural role/pattern) MUST have the same level.
+2. Containers MUST have a lower level number than the headings they contain.
+3. Avoid artificial resets: do NOT jump to a broader level (smaller number) unless the heading clearly starts a new major section.
+4. Continuations: headings containing continuation markers like "(suite)", "(continued)", "(part ...)" must match the base heading’s level.
+5. Level 0 is ONLY for non-structural text. Do NOT assign 0 just because a heading is long or sentence-like if it appears inside a clear section hierarchy.
+6. If a heading appears between two clearly structural headings (e.g., it is preceded and followed by section labels like "Unit/Week/Theme/Domain/Palier/Jéego/Topic"), it MUST receive a non-zero level consistent with that neighborhood.
+    """
     )
 
-    lines: list[str] = []
+    doc_context = (
+        doc_context
+        or dedent(
+            """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
 
+Document-specific patterns (use when consistent with the observed heading sequence):
+- Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
+- Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
+- "JÉEGO N" and "PALIER N" denote subsections within a strand. Keep levels consistent across N. Variants like "(suite)" or "(yeggale)" are continuations and must keep the same level as the base "JÉEGO N :" or "PALIER N :".
+- Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are dividers WITHIN the current strand/section. If they appear after an "ACTIVITES ..." heading, they must be DEEPER than the strand (i.e., nested under it), not equal to it and not a reset.
+- Some topic headings in Wolof are long, sentence-like competency statements (e.g., starting with "Boole mooñ ..."). These are real structural headings inside the Jéego/Palier sections and should NOT be assigned level 0. They usually sit above "Apprentissages ponctuels" micro-plan tables.
+
+Prefer levels that preserve local monotonic structure such as:
+... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> ("Boole mooñ ...") -> "Apprentissages ponctuels" -> tables
+        """
+        ).strip()
+    )
+
+    if doc_context and doc_context.strip():
+        system_message += (
+            "\n\n"
+            + dedent(
+                f"""Document-specific hints (optional):
+
+{doc_context.strip()}
+
+Use these hints only when consistent with the hard rules above.
+If a hint conflicts with the document’s observed structure, ignore the hint.
+            """
+            ).strip()
+        )
+
+    lines: list[str] = []
     for i, h in enumerate(headings):
-        # Collapse internal whitespace for readability.
         text = " ".join(h["text"].split())
-        lines.append(f'{i}. "{text}"  (page {h["page_index"]})')
+
+        if include_neighbor_context:
+            prev_text = " ".join(headings[i - 1]["text"].split()) if i > 0 else ""
+            next_text = (
+                " ".join(headings[i + 1]["text"].split())
+                if i + 1 < len(headings)
+                else ""
+            )
+            lines.append(
+                f'{i}. "{text}" (page {h["page_index"]}) '
+                f'[prev: "{prev_text}"] [next: "{next_text}"]'
+            )
+        else:
+            lines.append(f'{i}. "{text}"  (page {h["page_index"]})')
 
     user_message = "\n".join(lines)
 

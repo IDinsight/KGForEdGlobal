@@ -328,9 +328,8 @@ def _call_openai_api_to_generate_heading_levels(
         input=input_items,
         instructions=instructions,
         model=model,
-        temperature=0,
+        reasoning={"effort": "high"},
         text_format=HeadingLevelAnalysis,
-        top_p=1,
     )
 
     parsed = getattr(response, "output_parsed", None)

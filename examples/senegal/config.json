@@ -165,7 +165,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]so(?:l|ul)ution\\s+de\\s+probl[èe]mes)\\s*$",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
 							"role": "strand",
@@ -175,7 +175,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:l|ul)ution\\s+de\\s+probl[èe]mes)\\s*$",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
 							"role": "strand",
@@ -185,7 +185,7 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:l|ul)ution\\s+de\\s+probl[èe]mes)\\s*$",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
 							"role": "strand",
