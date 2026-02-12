@@ -43,7 +43,7 @@
 			"subtopic",
 			"section"
 		],
-		"heading_role_hints": [
+		"header_role_hints": [
 			{
 				"pattern": "PALIER \\d+",
 				"role": "stage",
