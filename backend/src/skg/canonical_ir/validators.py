@@ -421,9 +421,11 @@ def _outer_evidence_supports_title(
     if title_norm and title_norm in evidence_blob_norm:
         return True
 
-    # 2. Optionally allow support from prior_context_groupings (chunk stability).
+    # 2. Optionally allow support from prior_context_groupings (carry-forward).
     #
-    # NB: Only enable this for chunked TABLE segments AFTER the first chunk.
+    # Enabled for blocks, unchunked tables, and non-first chunks of chunked tables.
+    # Disabled ONLY for the first chunk of a chunked table, which must anchor strictly
+    # from outer evidence to establish the stable context stack.
     if allow_prior_titles and title_norm and title_norm in prior_titles_norm:
         return True
 
@@ -624,12 +626,14 @@ def validate_chunked_table_context_matches_prior_context(
     if not bool(chunking.get("is_chunked", False)):
         return
 
-    # Treat row_range_start==0 as first chunk if is_first_chunk is missing.
-    row_range_start = chunking.get("row_range_start", None)
+    # Require explicit is_first_chunk flag. The fallback heuristic
+    # (row_range_start == 0) is unreliable because chunk boundaries start at
+    # header_row_count, not 0. If is_first_chunk is missing, skip enforcement rather
+    # than silently misidentifying the first chunk.
     is_first_chunk = chunking.get("is_first_chunk", None)
 
-    if is_first_chunk is None and row_range_start == 0:
-        is_first_chunk = True
+    if is_first_chunk is None:
+        return
 
     # Only enforce for non-first chunks.
     if bool(is_first_chunk):
@@ -691,11 +695,11 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
     if not bool(chunking.get("is_chunked", False)):
         return
 
-    row_range_start = chunking.get("row_range_start", None)
+    # Require explicit is_first_chunk flag.
     is_first_chunk = chunking.get("is_first_chunk", None)
 
-    if is_first_chunk is None and row_range_start == 0:
-        is_first_chunk = True
+    if is_first_chunk is None:
+        return
 
     if not bool(is_first_chunk):
         return
@@ -712,7 +716,9 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
             f"chunk_row_range_end={chunking.get('row_range_end')}\n"
             f"decision_type={segment_decision.decision_type}\n"
             f"Fix: Use decision_type=emit_flagged_unresolved (preferred) and include "
-            f"best-guess context_groupings[] so later chunks can remain anchored."
+            f"best-guess context_groupings[] for audit review. NB: flagged_unresolved "
+            f"context is NOT propagated to later chunks; they will inherit the "
+            f"segment-level context_hint as a stable fallback."
         )
 
 
@@ -895,10 +901,16 @@ def validate_context_groupings_required_for_emit(
         r"grade|standard|class|form|stage|level|"
         r"subject|learning area|"
         r"theme|sub[- ]?theme|strand|topic|sub[- ]?topic|"
-        r"unit|module|chapter|week|term|section"
+        r"unit|module|chapter|week|term|section|"
+        # French curriculum keywords
+        r"palier|[eéèë]tape|niveau|semaine|comp[eé]tence|"
+        r"apprentissages?|activit[eé]s?|planification|domaine|"
+        # Wolof curriculum keywords (Senegal bilingual)
+        r"j[eéë]ego|tolluwaay"
         r")\b"
         r"|\bp\d+\b"  # P1/P2 style
-        r"|\b[ivx]{1,7}\b",  # I–VII roman numerals
+        r"|\b[ivx]{1,7}\b"  # I–VII roman numerals
+        r"|\bce\s*\d+\b",  # CE1/CE2 Senegalese grade levels
         flags=re.IGNORECASE,
     )
 
@@ -1092,6 +1104,7 @@ def validate_context_groupings_supported_by_outer_evidence(
     is_chunked = bool(chunking.get("is_chunked", False))
     is_first_chunk_of_chunked = is_chunked and is_first_chunk
     allow_prior_titles = bool(prior) and not is_first_chunk_of_chunked
+
     prior_titles_norm: set[str] = set()
 
     for pg in prior:
