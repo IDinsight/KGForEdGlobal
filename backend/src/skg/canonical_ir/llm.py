@@ -692,6 +692,7 @@ def generate_segment_decision(
     *,
     always_double_check_first_attempt: bool,
     doc_key: str,
+    heading_role_hints: list[dict[str, str]],
     max_retries: int = 3,
     model: str,
     row_range_end: int | None = None,
@@ -707,6 +708,8 @@ def generate_segment_decision(
         Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     doc_key
         The document key.
+    header_role_hints
+        List of heading role hints to pass as context for segment decision.
     max_retries
         Maximum number of retries for quality errors.
     model
@@ -733,7 +736,9 @@ def generate_segment_decision(
         If segment decision fails after retries.
     """
 
-    prompts = decide_on_segment(segment=segment_payload)
+    prompts = decide_on_segment(
+        heading_role_hints=heading_role_hints, segment=segment_payload
+    )
     instructions = prompts.system_message
     input_items = [
         {
