@@ -112,7 +112,7 @@ def _determine_stable_context(
 
     for g in stable_models:
         role = g.role.value.strip().casefold()
-        title = g.title.strip().lower()
+        title = re.sub(r"\s+", " ", g.title).strip().casefold()
         key_fp = (role, title)
 
         if role and title and key_fp not in seen:
@@ -1052,14 +1052,26 @@ def make_table_chunk_payload(
     context_rows_before_payload: list[dict[str, Any]] = []
     context_rows_after_payload: list[dict[str, Any]] = []
 
+    # Prefer fill-down view (if available) for primary `rows`, because validators
+    # ground row-local groupings against visible row text. Computed early so context
+    # rows also use the fill-down view for consistency with decision rows.
+    use_filldown = (full_rows_filldown is not None) and len(full_rows_filldown) == len(
+        full_rows_raw
+    )
+
+    # Context rows use fill-down when available so the LLM sees the same filled values
+    # as in the decision rows, avoiding misleading blank cells at chunk boundaries.
+    ctx_source = full_rows_filldown if use_filldown else full_rows_raw
+    assert ctx_source is not None
+
     for abs_i in range(ctx_before_start, start):
-        row = dict(full_rows_raw[abs_i])
+        row = dict(ctx_source[abs_i])
         row["abs_row_index"] = abs_i
         row["is_context_only"] = True
         context_rows_before_payload.append(row)
 
     for abs_i in range(end, ctx_after_end):
-        row = dict(full_rows_raw[abs_i])
+        row = dict(ctx_source[abs_i])
         row["abs_row_index"] = abs_i
         row["is_context_only"] = True
         context_rows_after_payload.append(row)
@@ -1067,12 +1079,6 @@ def make_table_chunk_payload(
     # Decision rows: raw visual + optional fill-down view.
     decision_rows_raw: list[dict[str, Any]] = []
     decision_rows_payload: list[dict[str, Any]] = []
-
-    # Prefer fill-down view (if available) for primary `rows`, because validators
-    # ground row-local groupings against visible row text.
-    use_filldown = (full_rows_filldown is not None) and len(full_rows_filldown) == len(
-        full_rows_raw
-    )
 
     for abs_i in range(start, end):
         raw_row = dict(full_rows_raw[abs_i])
