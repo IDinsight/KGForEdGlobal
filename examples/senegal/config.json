@@ -115,13 +115,29 @@
 			],
 			"split_rules": [
 				{
-					"apply_to": "any",
+					"apply_to": "outer_context",
 					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bpalier\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "unit",
+							"role": "stage",
 							"title_template": "PALIER \\2"
-						},
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bpalier\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "PALIER \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "table_row_local",
+					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bpalier\\s*(\\d+)\\b.*$",
+					"emit": [
 						{
 							"role": "week",
 							"title_template": "SEMAINE \\1"
@@ -129,13 +145,29 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "outer_context",
 					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
 							"role": "unit",
 							"title_template": "JÉEGO \\2"
-						},
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "unit",
+							"title_template": "JÉEGO \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "table_row_local",
+					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
+					"emit": [
 						{
 							"role": "week",
 							"title_template": "SEMAINE \\1"
@@ -163,6 +195,44 @@
 						{
 							"role": "stage",
 							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE 2 \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "any",
+					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*\\/\\s*[eéèë]tape\\s*\\1\\s*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1"
 						}
 					]
 				},
@@ -228,44 +298,6 @@
 				},
 				{
 					"apply_to": "any",
-					"match": "^.*\\bmath[eéè]matiques\\b.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
-					"emit": [
-						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
-							"role": "stage",
-							"title_template": "ÉTAPE 2 \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "any",
-					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
-					"emit": [
-						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
-							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
-						}
-					]
-				},
-				{
-					"apply_to": "any",
-					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*\\/\\s*[eéèë]tape\\s*\\1\\s*$",
-					"emit": [
-						{
-							"role": "stage",
-							"title_template": "ÉTAPE \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "any",
 					"match": "^.*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
 					"emit": [
 						{
@@ -285,7 +317,7 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "table_row_local",
 					"match": "^.*\\bsemaine\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
@@ -295,17 +327,37 @@
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "outer_context",
 					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "unit",
+							"role": "stage",
 							"title_template": "PALIER \\1"
 						}
 					]
 				},
 				{
-					"apply_to": "any",
+					"apply_to": "block_local",
+					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "PALIER \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "unit",
+							"title_template": "JÉEGO \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
 					"match": "^.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
