@@ -41,11 +41,16 @@ _SECTION_EXCLUSION_WORDS: list[str] = sorted(
 )
 
 
-def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
+def decide_on_segment(
+    *, heading_role_hints: list[dict[str, str]], segment: dict[str, Any]
+) -> DotMap:
     """Generate the prompts for deciding on a segment.
 
     Parameters
     ----------
+    heading_role_hints
+        A list of dictionaries containing 'text' and 'role_hint' for each heading in
+        the document, to be used as potential evidence for grouping roles.
     segment
         The segment dictionary containing segment details.
 
@@ -57,6 +62,11 @@ def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
 
     decision_types_str = "\n".join(
         [f'  - "{t.value}"' for t in sorted(SegmentDecisionType, key=lambda x: x.value)]
+    )
+    hint_lines = "\n".join(
+        f'  - "{h["pattern"]}" → {h["role"]}'
+        + (f' (note: {h["note"]})' if h.get("note") else "")
+        for h in heading_role_hints
     )
     node_roles_str = "\n".join(
         [f'  - "{r.value}"' for r in sorted(GROUPING_ROLES, key=lambda x: x.value)]
@@ -169,6 +179,13 @@ If segment includes a `chunking` object:
 - ≥0.75: obvious mapping (clean competence rows, clear standards)
 - 0.50–0.74: mild ambiguity but likely resolvable
 - <0.50: ambiguous, unresolvable without guessing
+
+## 12. DOCUMENT-SPECIFIC HEADING ROLE CONSTRAINTS
+The following heading patterns have FIXED role assignments for this document.
+When any section_path heading or caption matches a pattern below, you MUST use
+the specified role in context_groupings[]. Do NOT assign a different role.
+
+{hint_lines}
         """
     )
 

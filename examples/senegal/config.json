@@ -36,7 +36,40 @@
 	"canonical_ir": {
 		"always_double_check_first_attempt": true,
 		"canonical_grouping_min_confidence": 0.80,
-		"canonicalization_skip_roles": ["week", "unit", "topic", "subtopic", "section"],
+		"canonicalization_skip_roles": [
+			"week",
+			"unit",
+			"topic",
+			"subtopic",
+			"section"
+		],
+		"heading_role_hints": [
+			{
+				"pattern": "PALIER \\d+",
+				"role": "stage",
+				"note": "PALIER N is a competency stage (palier d'apprentissage), never unit/section/grade_level"
+			},
+			{
+				"pattern": "Jéego \\d+",
+				"role": "unit",
+				"note": "Jéego N is a Wolof unit grouping (groupe de paliers), never grade_level"
+			},
+			{
+				"pattern": "CE[12]",
+				"role": "grade_level",
+				"note": "CE1 and CE2 are the only grade levels in this document"
+			},
+			{
+				"pattern": "DEUXIEME ETAPE",
+				"role": "stage",
+				"note": "Overall curriculum stage, OUTER to grade_level"
+			},
+			{
+				"pattern": "TOLLUWAAY",
+				"role": "stage",
+				"note": "Wolof equivalent of DEUXIEME ETAPE"
+			}
+		],
 		"max_table_rows_per_decision": 20,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,

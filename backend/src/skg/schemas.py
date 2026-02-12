@@ -542,6 +542,15 @@ class CreateCanonicalConfig(BaseSchema):
             "Default skips TOPIC/SUBTOPIC to avoid incorrect global merges."
         ),
     )
+    header_role_hints: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Document-specific heading text → role constraints. Each entry has:"
+            "- 'pattern': case-insensitive substring or regex to match against section_path headings"
+            "- 'role': the NodeRole value to enforce (e.g., 'stage', 'unit', 'grade_level')"
+            "- 'note': optional explanation for the LLM"
+        ),
+    )
     max_table_rows_per_decision: int | None = Field(
         default=None,
         description="If set, only TABLE segments with *body rows* > this value are chunked into multiple SegmentDecisions. Blocks are never chunked.",

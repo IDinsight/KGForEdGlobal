@@ -307,6 +307,7 @@ def _process_block_segment(
     segment_decision = generate_segment_decision(
         always_double_check_first_attempt=config.always_double_check_first_attempt,
         doc_key=doc_key,
+        heading_role_hints=config.heading_role_hints,
         model=config.model,
         segment=segment,
         segment_payload=segment_payload,
@@ -422,6 +423,7 @@ def _process_chunked_table(
         segment_decision = generate_segment_decision(
             always_double_check_first_attempt=config.always_double_check_first_attempt,
             doc_key=doc_key,
+            heading_role_hints=config.heading_role_hints,
             model=config.model,
             row_range_end=end,
             row_range_start=start,
@@ -610,6 +612,7 @@ def _process_unchunked_table(
     segment_decision = generate_segment_decision(
         always_double_check_first_attempt=config.always_double_check_first_attempt,
         doc_key=doc_key,
+        heading_role_hints=config.heading_role_hints,
         model=config.model,
         segment=segment,
         segment_payload=table_payload,
