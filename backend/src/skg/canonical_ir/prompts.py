@@ -17,11 +17,28 @@ from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_ORDER,
     GROUPING_ROLES,
     BlockType,
+    FrontMatterHeadings,
+    NonArtifacts,
     SegmentDecisionType,
     StatementRole,
 )
 
 CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.name for r in CONTEXT_GROUPINGS_ROLE_ORDER)
+
+# Build a de-duplicated, sorted list of document-structure words that should NOT become
+# SECTION grouping nodes. Sourced from FrontMatterHeadings and NonArtifacts so the
+# prompt stays in sync when either collection grows.
+_SECTION_EXCLUSION_WORDS: list[str] = sorted(
+    {h.value for h in FrontMatterHeadings}
+    | NonArtifacts
+    | {
+        # Additional generic document words not covered by the enums above.
+        "syllabus",
+        "curriculum",
+        "framework",
+        "guide",
+    }
+)
 
 
 def decide_on_segment(*, segment: dict[str, Any]) -> DotMap:
@@ -72,7 +89,7 @@ decision_type: {decision_types_str}
 NodeRole (for groupings): {node_roles_str}
   - Do NOT use: "framework", "prose", "unresolved" as grouping roles.
   - role=SECTION is NOT a default fallback. Use only for meaningful curriculum labels not captured by other roles.
-  - Do NOT emit SECTION for generic document words: "syllabus", "curriculum", "framework", "guide", "table of contents", "foreword", "preface", "acknowledgements".
+  - Do NOT emit SECTION for generic document words: {", ".join(f'"{w}"' for w in _SECTION_EXCLUSION_WORDS)}.
 
 StatementRole (for leaves):
   - "{StatementRole.EXPECTATION.value}" — normative learning outcome/competence/objective/standard

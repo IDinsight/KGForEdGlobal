@@ -527,6 +527,16 @@ class SegmentDecision(BaseSchema):
         """If decision_type indicates emission, ensure something will actually be
         emitted. This prevents 'emit_*' decisions that are effectively empty.
 
+        NB: **Validator order dependency:** This validator intentionally counts
+        `context_groupings` as output (a decision with *only* `context_groupings` is
+        not truly empty and should not be demoted to IGNORE/UNRESOLVED). However,
+        `_validate_decision_type_semantics` (declared earlier, so it runs first) does
+        NOT count `context_groupings` when checking that `emit_groupings_only` actually
+        emits groupings. The combined effect is correct: a decision with only
+        `context_groupings` passes *this* check but will still be rejected by the
+        stricter per-decision-type check above. If the declaration order of these
+        validators changes, verify that the ccombined behavior is preserved.
+
         Returns
         -------
         SegmentDecision
