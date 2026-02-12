@@ -483,6 +483,7 @@ def _process_canonicalization_batch(
 
 def generate_heading_levels(
     *,
+    country: str,
     creation_dirs: CanonicalIRDirs,
     headings: list[dict[str, Any]],
     model: str,
@@ -492,6 +493,9 @@ def generate_heading_levels(
 
     Parameters
     ----------
+    country
+        The country for this document, used for LLM context when generating the heading
+        levels.
     creation_dirs
         The canonical IR creation directories.
     headings
@@ -521,7 +525,7 @@ def generate_heading_levels(
 
     logger.info(f"Assigning heading levels for {len(headings)} unique headings...")
 
-    prompts = heading_level_instructions(headings=headings)
+    prompts = heading_level_instructions(country=country, headings=headings)
     input_items = [
         {
             "role": "user",
