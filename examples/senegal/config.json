@@ -37,7 +37,7 @@
 		"always_double_check_first_attempt": true,
 		"canonical_grouping_min_confidence": 0.80,
 		"canonicalization_skip_roles": ["week", "unit", "topic", "subtopic", "section"],
-		"max_table_rows_per_decision": null,
+		"max_table_rows_per_decision": 20,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
 		"segment_decision_conf_threshold": 0.60,

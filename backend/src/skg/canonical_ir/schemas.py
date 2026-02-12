@@ -158,6 +158,25 @@ class UnresolvedItem(BaseSchema):
 
 
 # Schemas for decisions produced by the LLM and used for deterministic parsing.
+class HeadingLevelEntry(BaseSchema):
+    """A single heading level assignment for a heading in the input list."""
+
+    index: int = Field(..., description="The index number matching the input list.")
+    level: int = Field(
+        ...,
+        description="The structural depth level (0 for non-structural/front-matter, 1 for top-level, etc.).",
+    )
+
+
+class HeadingLevelAnalysis(BaseSchema):
+    """Result of LLM heading level analysis for a list of headings."""
+
+    entries: list[HeadingLevelEntry] = Field(
+        ...,
+        description="The list of assigned levels corresponding strictly to the input order.",
+    )
+
+
 class GroupingDecision(BaseSchema):
     """A grouping node the LLM believes should exist in the canonical hierarchy.
 

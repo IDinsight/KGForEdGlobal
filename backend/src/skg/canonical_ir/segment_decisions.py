@@ -145,6 +145,7 @@ def _determine_stable_context(
 
 def _filter_section_path_for_llm(
     *,
+    heading_levels: dict[str, int],
     max_items: int = 5,
     max_page_distance: int = 3,
     section_paths: list[SectionHeadingRef],
@@ -162,6 +163,8 @@ def _filter_section_path_for_llm(
 
     Parameters
     ----------
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     max_items
         The maximum number of section headings to keep.
     max_page_distance
@@ -206,15 +209,21 @@ def _filter_section_path_for_llm(
 
     # If we filtered too aggressively, keep the closest prior heading as a fallback.
     if not filtered:
-        for section_path in reversed(section_paths):
-            if section_path.page_index <= segment_page_index:
-                filtered = [section_path]
-                break
+        # Get the first matching item in reverse, or keep list empty if none found.
+        filtered = [
+            sp for sp in reversed(section_paths) if sp.page_index <= segment_page_index
+        ][:1]
 
     output = [sp.model_dump(mode="json") for sp in filtered]
 
+    # Reconstruct proper heading stack using LLM-assigned levels.
+    output = reconstruct_section_path(
+        heading_levels=heading_levels, section_paths=output
+    )
+
     # De-dupe consecutive identical heading texts.
     deduped: list[dict[str, Any]] = []
+
     prev_norm: str | None = None
 
     for item in output:
@@ -236,6 +245,7 @@ def _process_block_segment(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
+    heading_levels: dict[str, int],
     next_segment_hint: dict[str, Any] | None = None,
     prev_segment_hint: dict[str, Any] | None = None,
     segment: Segment,
@@ -255,6 +265,8 @@ def _process_block_segment(
         The document key.
     existing_keys
         The set of existing decision keys.
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     next_segment_hint
         The next segment hint to apply.
     prev_segment_hint
@@ -283,6 +295,7 @@ def _process_block_segment(
         segment.slices
     ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
     segment_payload["section_path"] = _filter_section_path_for_llm(
+        heading_levels=heading_levels,
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
         segment_page_index=segment.slices[0].page_index,
@@ -316,6 +329,7 @@ def _process_chunked_table(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, int | None, int | None]],
+    heading_levels: dict[str, int],
     next_segment_hint: dict[str, Any] | None,
     prev_segment_hint: dict[str, Any] | None,
     segment: Segment,
@@ -340,6 +354,8 @@ def _process_chunked_table(
         The document key.
     existing_keys
         The set of existing decision keys.
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     next_segment_hint
         The next segment hint to apply.
     prev_segment_hint
@@ -373,7 +389,9 @@ def _process_chunked_table(
     for i, (start, end) in enumerate(chunks_sorted):
         key = (segment.segment_id, start, end)
         assert key not in existing_keys, f"Duplicate chunk key found: {key}"
-        table_payload = make_table_chunk_payload(end=end, segment=segment, start=start)
+        table_payload = make_table_chunk_payload(
+            end=end, heading_levels=heading_levels, segment=segment, start=start
+        )
 
         # Mark first chunk for validation.
         table_payload.setdefault("chunking", {})
@@ -442,6 +460,7 @@ def _process_table_segment(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
+    heading_levels: dict[str, int],
     next_segment_hint: dict[str, Any] | None = None,
     prev_segment_hint: dict[str, Any] | None = None,
     segment: Segment,
@@ -464,6 +483,8 @@ def _process_table_segment(
         The document key.
     existing_keys
         The set of existing decision keys.
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     next_segment_hint
         The next segment hint to apply.
     prev_segment_hint
@@ -498,6 +519,7 @@ def _process_table_segment(
             decision_set=decision_set,
             doc_key=doc_key,
             existing_keys=existing_keys,
+            heading_levels=heading_levels,
             next_segment_hint=next_segment_hint,
             prev_segment_hint=prev_segment_hint,
             segment=segment,
@@ -512,6 +534,7 @@ def _process_table_segment(
         decision_set=decision_set,
         doc_key=doc_key,
         existing_keys=existing_keys,
+        heading_levels=heading_levels,
         next_segment_hint=next_segment_hint,
         prev_segment_hint=prev_segment_hint,
         segment=segment,
@@ -528,6 +551,7 @@ def _process_unchunked_table(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, int | None, int | None]],
+    heading_levels: dict[str, int],
     next_segment_hint: dict[str, Any] | None,
     prev_segment_hint: dict[str, Any] | None,
     segment: Segment,
@@ -549,6 +573,8 @@ def _process_unchunked_table(
         The document key.
     existing_keys
         The set of existing decision keys.
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     next_segment_hint
         The next segment hint to apply.
     prev_segment_hint
@@ -570,7 +596,9 @@ def _process_unchunked_table(
     ), f"Duplicate unchunked key: {unchunked_key}"
 
     # Build table payload.
-    table_payload = make_table_full_payload(segment=segment)
+    table_payload = make_table_full_payload(
+        heading_levels=heading_levels, segment=segment
+    )
     table_payload = apply_caption_binding_to_table_payload(
         caption_binding=caption_binding, table_payload=table_payload
     )
@@ -634,12 +662,19 @@ def _row_to_text(*, max_cols: int = 6, row: TableRow) -> list[str]:
 
 
 def _section_path_texts(
-    *, k: int = 6, segment: Segment, segment_item_index: int, segment_page_index: int
+    *,
+    heading_levels: dict[str, int],
+    k: int = 6,
+    segment: Segment,
+    segment_item_index: int,
+    segment_page_index: int,
 ) -> list[str]:
     """Extract recent section headings from the segment path.
 
     Parameters
     ----------
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     k
         The number of recent sections to include, by default 6.
     segment
@@ -657,6 +692,7 @@ def _section_path_texts(
 
     # SectionHeadingRef has .text; keep only recent ones.
     section_paths = _filter_section_path_for_llm(
+        heading_levels=heading_levels,
         section_paths=segment.section_path,
         segment_item_index=segment_item_index,
         segment_page_index=segment_page_index,
@@ -729,6 +765,43 @@ def attach_caption_binding_to_segment_decision(
     segment_decision.caption_text = caption_binding.caption_text
 
     return segment_decision
+
+
+def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
+    """Collect all unique heading texts from every segment's section_path. Returns a
+    list of {"text": ..., "page_index": ..., "item_index": ...} preserving
+    first-encounter order.
+
+    Parameters
+    ----------
+    document_ir
+        The stitched DocumentIR.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Unique headings in document order.
+    """
+
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for segment in document_ir.segments:
+        for sp in segment.section_path:
+            text = sp.text.strip()
+            norm = " ".join(text.split()).casefold()
+
+            if norm and norm not in seen:
+                seen.add(norm)
+                ordered.append(
+                    {
+                        "text": text,
+                        "page_index": sp.page_index,
+                        "item_index": sp.item_index,
+                    }
+                )
+
+    return ordered
 
 
 def load_or_build_caption_bindings(
@@ -907,6 +980,7 @@ def make_table_chunk_payload(
     context_rows_after: int = 2,
     context_rows_before: int = 2,
     end: int,
+    heading_levels: dict[str, int],
     segment: TableSegment,
     start: int,
 ) -> dict[str, Any]:
@@ -932,6 +1006,8 @@ def make_table_chunk_payload(
         The number of context rows to include before the chunk start.
     end
         The exclusive end row index for the chunk.
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     segment
         The TableSegment to chunk.
     start
@@ -950,6 +1026,7 @@ def make_table_chunk_payload(
         segment.slices
     ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
     seg["section_path"] = _filter_section_path_for_llm(
+        heading_levels=heading_levels,
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
         segment_page_index=segment.slices[0].page_index,
@@ -1044,7 +1121,9 @@ def make_table_chunk_payload(
     return seg
 
 
-def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
+def make_table_full_payload(
+    *, heading_levels: dict[str, int], segment: TableSegment
+) -> dict[str, Any]:
     """Build a FULL (unchunked) table payload for the LLM.
 
     This mirrors `make_table_chunk_payload` but includes ALL rows. Critically, it:
@@ -1056,6 +1135,8 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
 
     Parameters
     ----------
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     segment
         The TableSegment to process.
 
@@ -1072,6 +1153,7 @@ def make_table_full_payload(*, segment: TableSegment) -> dict[str, Any]:
         segment.slices
     ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
     table_payload["section_path"] = _filter_section_path_for_llm(
+        heading_levels=heading_levels,
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
         segment_page_index=segment.slices[0].page_index,
@@ -1124,6 +1206,7 @@ def process_segment_decisions(
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
+    heading_levels: dict[str, int],
     prev_segment_hint: dict[str, Any] | None = None,
     next_segment_hint: dict[str, Any] | None = None,
     segment: Segment,
@@ -1146,6 +1229,8 @@ def process_segment_decisions(
         The expected document key for all page IRs.
     existing_keys
         The set of existing decision keys to avoid duplicates.
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     prev_segment_hint
         The previous segment hint to include in the segment decision payload.
     next_segment_hint
@@ -1175,6 +1260,7 @@ def process_segment_decisions(
             decision_set=decision_set,
             doc_key=doc_key,
             existing_keys=existing_keys,
+            heading_levels=heading_levels,
             next_segment_hint=next_segment_hint,
             prev_segment_hint=prev_segment_hint,
             segment=segment,
@@ -1188,12 +1274,61 @@ def process_segment_decisions(
         decision_set=decision_set,
         doc_key=doc_key,
         existing_keys=existing_keys,
+        heading_levels=heading_levels,
         next_segment_hint=next_segment_hint,
         prev_segment_hint=prev_segment_hint,
         segment=segment,
         segment_decisions_fp=segment_decisions_fp,
         warnings=warnings,
     )
+
+
+def reconstruct_section_path(
+    *, heading_levels: dict[str, int], section_paths: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Replay section_path entries as a proper heading stack using assigned levels.
+
+    Algorithm follows a standard HTML heading model:
+      - Level 0 -> skip (non-structural).
+      - Level N -> pop everything on the stack at level >= N, then push.
+
+    Parameters
+    ----------
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
+    section_paths
+        A list of section_path dicts (with at least a "text" key).
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The reconstructed ancestor chain.
+    """
+
+    stack: list[tuple[int, dict[str, Any]]] = []  # (level, item)
+
+    for item in section_paths:
+        text = item.get("text", "").strip()
+        norm = " ".join(text.split()).casefold()
+        level = heading_levels.get(norm)
+
+        # Unknown heading (not in map) — keep it to avoid losing data.
+        # Level 0 — non-structural; skip.
+        if level is None:
+            # Treat as deepest level so it doesn't pop anything.
+            stack.append((999, item))
+            continue
+
+        if level == 0:
+            continue
+
+        # Pop everything at same or deeper level.
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+
+        stack.append((level, item))
+
+    return [item for _, item in stack]
 
 
 def save_segment_decision_set(
@@ -1223,13 +1358,15 @@ def save_segment_decision_set(
     return decision_set
 
 
-def segment_hint(segment: Segment) -> dict[str, Any]:
+def segment_hint(*, heading_levels: dict[str, int], segment: Segment) -> dict[str, Any]:
     """Generate a compact hint dictionary for a segment.
 
     NB: Keep this SMALL (only things that help context).
 
     Parameters
     ----------
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
     segment
         The Segment to generate a hint for.
 
@@ -1253,6 +1390,7 @@ def segment_hint(segment: Segment) -> dict[str, Any]:
         "local_code": segment.local_code,
         "page_span": page_span,
         "section_path_texts": _section_path_texts(
+            heading_levels=heading_levels,
             k=6,
             segment=segment,
             segment_item_index=segment.slices[0].item_index,
