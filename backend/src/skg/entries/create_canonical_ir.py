@@ -104,7 +104,7 @@ def create_canonical_ir(
         The file path to the DocumentIR JSON.
     """
 
-    canonical_ir_fp = creation_dirs.root / "canonical_ir.json"
+    canonical_ir_fp = creation_dirs.canonical_ir / "canonical_ir.json"
     segment_decisions_fp = creation_dirs.segment_decisions / "segment_decisions.json"
 
     if not config.overwrite and canonical_ir_fp.exists():

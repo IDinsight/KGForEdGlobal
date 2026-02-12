@@ -36,11 +36,11 @@
 	"canonical_ir": {
 		"always_double_check_first_attempt": true,
 		"canonical_grouping_min_confidence": 0.80,
-		"canonicalization_skip_roles": [],
+		"canonicalization_skip_roles": ["week", "unit", "topic", "subtopic", "section"],
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
-		"segment_decision_conf_threshold": 0.70,
+		"segment_decision_conf_threshold": 0.60,
 		"spine_policy": {
 			"allow_partial_context": true,
 			"block_local_roles": [],
@@ -50,7 +50,7 @@
 			"name": "senegal_math_wolof_fr_week_scope_sequence",
 			"normalize": {
 				"casefold_titles_for_matching": true,
-				"drop_grade_bands": false,
+				"drop_grade_bands": true,
 				"drop_stage_if_grade_present": false,
 				"drop_stage_if_matches_wrapper_patterns": true,
 				"grade_band_title_patterns": [
@@ -71,13 +71,10 @@
 				"grade_level",
 				"subject",
 				"strand",
-				"unit",
-				"week",
-				"section"
+				"unit"
 			],
 			"relocate_table_local_only_roles_to_rows": true,
 			"row_roles": [
-				"strand",
 				"week",
 				"unit",
 				"topic",
@@ -287,7 +284,6 @@
 			],
 			"table_local_only_roles": [
 				"week",
-				"unit",
 				"topic",
 				"subtopic"
 			],
