@@ -16,6 +16,7 @@ from skg.canonical_ir.schemas import GroupingCanonicalizationKey
 from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_ORDER,
     GROUPING_ROLES,
+    OUTER_ANCHOR_ROLES,
     BlockType,
     FrontMatterHeadings,
     NonArtifacts,
@@ -24,6 +25,7 @@ from skg.utils.constants import (
 )
 
 CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.name for r in CONTEXT_GROUPINGS_ROLE_ORDER)
+OUTER_ANCHOR_ROLES_STR = ", ".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
 DOC_CONTEXT_MAPPING: dict[str, str] = {
     "senegal": dedent(
         """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
@@ -136,7 +138,7 @@ Do NOT repeat the same NodeRole. Do NOT include TOPIC/SUBTOPIC (those belong in 
 **Evidence support:** Every context_groupings[].title MUST be supported by one of:
   A) OUTER EVIDENCE — appears in section_path[], caption_text, or header_rows_canonical.
   B) CARRY-FORWARD — prior_context_groupings[] contains the same role/title AND:
-    1. Role is a stable outer role (STAGE, GRADE_LEVEL, LEARNING_AREA, SUBJECT, THEME, SUBTHEME, UNIT, WEEK, TERM, STRAND, SUBSTRAND)
+    1. Role is a stable outer role ({OUTER_ANCHOR_ROLES_STR})
     2. No contradiction in this segment's outer evidence
     3. Not governmental/institutional metadata
     If using carry-forward, mention it in rationale.
@@ -144,7 +146,7 @@ Do NOT repeat the same NodeRole. Do NOT include TOPIC/SUBTOPIC (those belong in 
 
 **Institutional metadata:** Do NOT include country name, ministry, publisher, or approving authority in context_groupings[]. Use empty context if no curriculum hierarchy is present.
 
-**Outer anchor requirement:** If emitting any leaves (EXPECTATION/DESCRIPTOR/GUIDANCE), the decision MUST include ≥1 outer anchor (GRADE_LEVEL, STAGE, LEARNING_AREA, SUBJECT, THEME, SUBTHEME, UNIT, WEEK, TERM, STRAND, SUBSTRAND) in context_groupings[], groupings[], or rows[].groupings[]. If no anchor is supported by evidence, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}".
+**Outer anchor requirement:** If emitting any leaves (EXPECTATION/DESCRIPTOR/GUIDANCE), the decision MUST include ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[], groupings[], or rows[].groupings[]. If no anchor is supported by evidence, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}".
 
 **Role depth ordering:** groupings[] are children under the context stack tip. Never emit a grouping whose role is OUTER than the deepest role in context_groupings[]. Fix by placing the outer role in context_groupings[] or emitting both in groupings[] in correct order.
 
@@ -236,7 +238,7 @@ def double_check_decision_on_segment() -> DotMap:
 1. **Hallucination check:** Is every title/body/code directly supported by the segment text? No invented content?
 2. **Decision-type invariants:** Does your output satisfy the invariant table in §2? (e.g., ignore/unresolved → all arrays empty; emit_groupings_only → no leaves anywhere)
 3. **Role sanity:** Did you assign SUBJECT/STRAND to something that is actually document metadata (mentions curriculum/syllabus/framework/ministry/publisher/TOC)? If so, change to ignore or omit.
-4. **Outer anchor:** If emitting leaves, is there ≥1 outer anchor (GRADE_LEVEL/STAGE/SUBJECT/STRAND/etc.) in context_groupings[] or groupings[]? If not, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}".
+4. **Outer anchor:** If emitting leaves, is there ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[] or groupings[]? If not, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}".
 5. **Context depth:** Are groupings[] all INNER relative to context_groupings[]? (No GRADE_LEVEL in groupings[] when SUBJECT is the deepest context role.)
 6. **Table row_index:** If table, does every RowDecision.row_index match the row's abs_row_index? No RowDecisions for header/blank/context-only rows?
 7. **Context evidence:** Is every context_groupings[].title supported by outer evidence (section_path/caption/header_rows) or valid carry-forward?
