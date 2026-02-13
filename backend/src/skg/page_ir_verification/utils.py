@@ -802,6 +802,9 @@ def bottom_continuity_candidates(
         )
     ]
 
+    # Fallback to all items if all were filtered out.
+    candidates = candidates or list(enumerate(items))
+
     if visible_y_min is not None:
         y_min = float(visible_y_min)
         cropped = [
@@ -876,6 +879,7 @@ def bottommost_continuity_candidate(
             or is_probable_header_footer_noise(image_height=image_height, item=item)
         )
     ]
+    candidates = candidates or list(enumerate(items))
 
     # If we are verifying using a bottom-crop image, restrict candidates to items that
     # actually appear in that crop (in full-page coordinate space). This prevents
@@ -2131,6 +2135,9 @@ def top_continuity_candidates_paired(
         )
     ]
 
+    # Fallback to all items if all were filtered out.
+    candidates = candidates or list(enumerate(items))
+
     if visible_y_max is not None:
         cropped = [
             (i, item)
@@ -2234,6 +2241,9 @@ def topmost_continuity_candidate_paired(
             or is_probable_header_footer_noise(image_height=image_height, item=item)
         )
     ]
+
+    # Fallback to all items if all were filtered out.
+    candidates = candidates or list(enumerate(items))
 
     # If we are verifying using a top-crop image, restrict candidates to items that
     # actually appear in that crop (in full-page coordinate space). This prevents

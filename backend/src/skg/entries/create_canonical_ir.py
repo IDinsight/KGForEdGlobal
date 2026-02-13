@@ -188,9 +188,9 @@ def create_canonical_ir(
                 else None
             )
 
-            logger.info(f"{i = } | {segment = }")
-            logger.info(f"{prev_seg_hint = }")
-            logger.info(f"{next_seg_hint = }\n")
+            logger.debug(f"\n{i = } | {segment = }")
+            logger.debug(f"{prev_seg_hint = }")
+            logger.debug(f"{next_seg_hint = }\n")
 
             decision_set = process_segment_decisions(
                 caption_bindings=caption_bindings,
@@ -395,7 +395,7 @@ def create(
 
         create_canonical_ir(
             config=config,
-            country=extraction_run_config.country,
+            country=extraction_run_config.extra["country"],
             creation_dirs=creation_dirs,
             doc_key=expected_doc_key,
             document_ir_fp=document_ir_fp,
