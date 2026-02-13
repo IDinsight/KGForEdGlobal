@@ -156,13 +156,13 @@ def stitch_document_ir(
 
     # Iterate in document reading order: page order, then item order.
     for page_ir in page_irs:
-        page_index = page_ir.page_index
-        page_items = items_mapping.get(page_index, [])
+        current_page_index = page_ir.page_index
+        current_page_items = items_mapping.get(current_page_index, [])
 
-        logger.info(f"Stitching page {page_index}...\n")
+        logger.info(f"Stitching page {current_page_index}...\n")
 
-        for orig_item_index, item in page_items:
-            key = (page_index, orig_item_index)
+        for orig_item_index, item in current_page_items:
+            key = (current_page_index, orig_item_index)
 
             if key in visited:  # Skip if already processed
                 continue
@@ -190,8 +190,8 @@ def stitch_document_ir(
             )
 
             # Mark all items in chain as visited.
-            for page_index, item_index, _ in chain:
-                visited.add((page_index, item_index))
+            for chain_page_index, chain_item_index, _ in chain:
+                visited.add((chain_page_index, chain_item_index))
 
             # Snapshot section_path *before* materializing this segment. The current
             # item should not appear in its own section path.
@@ -203,7 +203,7 @@ def stitch_document_ir(
                     chain=chain,
                     doc_key=doc_key,
                     item_index=orig_item_index,
-                    page_index=page_index,
+                    page_index=current_page_index,
                     repair_hyphenation=config.repair_hyphenation,
                     section_path=section_path_snapshot,
                     table_filldown_enabled=config.table_filldown_enabled,
