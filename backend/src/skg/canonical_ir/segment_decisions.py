@@ -3,6 +3,7 @@
 # Standard Library
 import copy
 import re
+import unicodedata
 
 from pathlib import Path
 from typing import Any, Optional
@@ -15,11 +16,19 @@ from pydantic import TypeAdapter
 from skg.canonical_ir.llm import generate_segment_decision
 from skg.canonical_ir.schemas import (
     CaptionBinding,
+    GroupingDecision,
+    LeafDecision,
+    RowDecision,
     SegmentDecision,
     SegmentDecisionSet,
     compute_decision_set_id,
 )
-from skg.canonical_ir.utils import CanonicalIRDirs, _extract_block_segment_text
+from skg.canonical_ir.utils import (
+    _DASH_RE,
+    _WS_RE,
+    CanonicalIRDirs,
+    _extract_block_segment_text,
+)
 from skg.document_ir.schemas import (
     BlockSegment,
     DocumentIR,
@@ -38,7 +47,7 @@ from skg.utils.constants import (
     NonArtifacts,
     SegmentDecisionType,
 )
-from skg.utils.general import open_json_type, write_to_json
+from skg.utils.general import QUOTES_TRANSLATION, open_json_type, write_to_json
 
 
 def _classify_caption_kind(text: str) -> CaptionKind:
@@ -74,6 +83,126 @@ def _classify_caption_kind(text: str) -> CaptionKind:
         return "figure"
 
     return "unknown"
+
+
+def _clean_decision_rows(rows: list[RowDecision]) -> list[RowDecision]:
+    """Clean a list of decision rows.
+
+    Parameters
+    ----------
+    rows
+        The list of SegmentDecisionRow to clean.
+
+    Returns
+    -------
+    list[RowDecision]
+        The cleaned list of decision rows.
+    """
+
+    new_rows = []
+
+    for r in rows:
+        row_updates = {}
+
+        if r.groupings:
+            row_updates["groupings"] = [_clean_grouping(g) for g in r.groupings]
+
+        if r.leaves:
+            row_updates["leaves"] = [_clean_leaf(leaf) for leaf in r.leaves]
+
+        if row_updates:
+            new_rows.append(r.model_copy(update=row_updates))
+        else:
+            new_rows.append(r)
+
+    return new_rows
+
+
+def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
+    """Apply cleaning to GroupingDecision fields.
+
+    Parameters
+    ----------
+    g
+        The GroupingDecision to clean.
+
+    Returns
+    -------
+    GroupingDecision
+        The cleaned GroupingDecision.
+    """
+
+    title = _clean_text(g.title) or g.title.strip()
+
+    # NB: Do NOT apply casing transformations here. SegmentDecision text should be
+    # stored as close to verbatim as possible.
+    return g.model_copy(
+        update={
+            "local_code": _clean_text(g.local_code),
+            "source_label": _clean_text(g.source_label),
+            "title": title,
+        }
+    )
+
+
+def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
+    """Apply deterministic hygiene to LeafDecision.
+
+    Parameters
+    ----------
+    leaf
+        The LeafDecision to clean.
+
+    Returns
+    -------
+    LeafDecision
+        The cleaned LeafDecision.
+    """
+
+    updates = {}
+
+    if getattr(leaf, "body", None):
+        updates["body"] = _normalize_leaf_body(leaf.body)
+
+    # Optional: normalize list_marker whitespace if it exists.
+    if getattr(leaf, "list_marker", None):
+        updates["list_marker"] = re.sub(r"\s+", " ", leaf.list_marker).strip()
+
+    return leaf.model_copy(update=updates) if updates else leaf
+
+
+def _clean_text(text: Optional[str]) -> Optional[str]:
+    """Clean text as follows:
+
+    1. NFKC unicode normalization
+    2. Normalize curly quotes to ASCII
+    3. Unify dash variants to '-'
+    4. Collapse whitespace
+    5. Strip
+
+    NB: Do not include curriculum-specific heuristics here.
+
+    Parameters
+    ----------
+    text
+        The text to clean.
+
+    Returns
+    -------
+    Optional[str]
+        The cleaned text, or None if input was None or normalized to empty.
+    """
+
+    if text is None:
+        return None
+
+    t = unicodedata.normalize("NFKC", text)
+    t = t.translate(QUOTES_TRANSLATION)
+    t = _DASH_RE.sub("-", t)
+    t = _WS_RE.sub(" ", t).strip()
+
+    # Preserve None for optional fields when they normalize to empty.
+    return t or None
 
 
 def _determine_stable_context(
@@ -311,6 +440,43 @@ def _make_auto_ignore_decision(
         segment_id=segment.segment_id,
         segment_kind=segment.kind,
     )
+
+
+def _normalize_leaf_body(body: str) -> str:
+    """Normalize statement text. The goal here is to remove purely formatting-based
+    diffs that shouldn't create merge warnings.
+
+    The following are considered safe operations:
+
+    1. Unicode normalize (NFKC)
+    2. Normalize quotes/dashes
+    3. Collapse whitespace
+    4. Normalize spacing after ":" (no capitalization changes)
+
+    Parameters
+    ----------
+    body
+        The leaf body text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized leaf body text.
+    """
+
+    s = unicodedata.normalize("NFKC", body or "")
+    s = s.translate(QUOTES_TRANSLATION)
+    s = _DASH_RE.sub("-", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Normalize colon spacing ONLY when a non-space follows the colon.
+    # Examples:
+    #   "Skills:use blends"   -> "Skills: use blends"
+    #   "Skills:  use blends" -> "Skills: use blends"
+    s = re.sub(r":\s*(?=\S)", ": ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
 
 
 def _process_block_segment(
@@ -872,6 +1038,83 @@ def attach_caption_binding_to_segment_decision(
     segment_decision.caption_text = caption_binding.caption_text
 
     return segment_decision
+
+
+def clean_up_segment_decisions(
+    *,
+    creation_dirs: CanonicalIRDirs,
+    overwrite: bool,
+    segment_decisions: SegmentDecisionSet,
+) -> SegmentDecisionSet:
+    """Apply universal (non-heuristic) hygiene to all grouping fields in a decision
+    set. This is intended to run BEFORE the LLM-based global grouping canonicalization
+    step so that the mapping operates on stable strings (whitespace/quote/dash noise
+    removed).
+
+    Parameters
+    ----------
+    creation_dirs
+        The canonical IR creation directories.
+    overwrite
+        Whether to overwrite existing cleaned decisions.
+    segment_decisions
+        The SegmentDecisionSet to clean.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The cleaned SegmentDecisionSet.
+    """
+
+    segment_decisions_cleaned_fp = (
+        creation_dirs.segment_decisions / "segment_decisions_cleaned.json"
+    )
+
+    if not overwrite and segment_decisions_cleaned_fp.exists():
+        logger.warning(
+            f"Cleaned segment decisions JSON already exists at {segment_decisions_cleaned_fp}. "
+            f"Reusing existing cleaned segment decisions. "
+            f"If you wish to overwrite, pass the --overwrite flag."
+        )
+        return SegmentDecisionSet.model_validate(
+            open_json_type(segment_decisions_cleaned_fp)
+        )
+
+    new_segment_decisions = []
+
+    for d in segment_decisions.decisions:
+        updates = {}
+
+        if d.context_groupings:
+            updates["context_groupings"] = [
+                _clean_grouping(g) for g in d.context_groupings
+            ]
+
+        if d.groupings:
+            updates["groupings"] = [_clean_grouping(g) for g in d.groupings]
+
+        if d.leaves:
+            updates["leaves"] = [_clean_leaf(leaf) for leaf in d.leaves]
+
+        if d.rows:
+            updates["rows"] = _clean_decision_rows(d.rows)
+
+        new_segment_decisions.append(d.model_copy(update=updates))
+
+    # NB: Recompute decision_set_id since decision content changed.
+    new_id = compute_decision_set_id(decisions=new_segment_decisions)
+
+    # Save cleaned decisions.
+    segment_decisions_cleaned = segment_decisions.model_copy(
+        update={"decision_set_id": new_id, "decisions": new_segment_decisions}
+    )
+    write_to_json(fp=segment_decisions_cleaned_fp, json_info=segment_decisions_cleaned)
+
+    logger.success(
+        f"Saved cleaned segment decisions to: {segment_decisions_cleaned_fp}"
+    )
+
+    return segment_decisions_cleaned
 
 
 def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:

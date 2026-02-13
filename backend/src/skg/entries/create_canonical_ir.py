@@ -41,6 +41,7 @@ from skg.canonical_ir.llm import (
 )
 from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.segment_decisions import (
+    clean_up_segment_decisions,
     collect_unique_headings,
     load_or_build_caption_bindings,
     process_segment_decisions,
@@ -51,7 +52,6 @@ from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     apply_grouping_canonicalization_map,
     build_context_hint_from_decision,
-    clean_up_segment_decisions,
     collect_unique_grouping_keys,
     compile_canonical_ir,
     load_segment_decision_set,

@@ -144,6 +144,7 @@ class NodeRole(str, Enum):
     PROSE = "prose"  # Document structure/prose headings (Vision, Intro, etc.)
     SECTION = "section"  # # Curriculum grouping when meaningful
     STAGE = "stage"
+    SUBSTAGE = "substage"  # e.g., "PALIER N" — milestone within a unit/Jéego
     STRAND = "strand"  # e.g., "Main Competence"
     SUBJECT = "subject"  # e.g., "Mathematics"
     SUBSTRAND = "substrand"
@@ -257,6 +258,7 @@ CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.SUBTHEME,
     NodeRole.TERM,
     NodeRole.UNIT,
+    NodeRole.SUBSTAGE,
     NodeRole.WEEK,
     NodeRole.TOPIC,
     NodeRole.SUBTOPIC,
