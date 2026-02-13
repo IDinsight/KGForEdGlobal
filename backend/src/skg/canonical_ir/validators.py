@@ -2011,6 +2011,17 @@ def validate_table_chunk_coverage_and_overlap(
                 f"  duplicates(sample): {sample}"
             )
 
+        has_half_chunked = any(
+            (d.row_range_start is None) != (d.row_range_end is None)
+            for d in decisions_for_segment
+        )
+        if has_half_chunked:
+            raise QualityError(
+                f"Half-chunked SegmentDecision detected "
+                f"(one of row_range_start/end is None, the other is not).\n"
+                f"  segment_id: {segment.segment_id}"
+            )
+
         # Sort intervals by start/end.
         intervals = sorted(interval_to_ids.keys(), key=lambda t: (t[0], t[1]))
 

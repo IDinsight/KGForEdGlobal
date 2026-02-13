@@ -36,6 +36,7 @@ from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
+    OUTER_ANCHOR_ROLES,
     GroupingCanonicalizationAction,
     NodeRole,
     SegmentDecisionType,
@@ -2218,16 +2219,6 @@ def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]
         The context hint as a list of dicts.
     """
 
-    carry_roles = {
-        NodeRole.GRADE_LEVEL,
-        NodeRole.STAGE,
-        NodeRole.LEARNING_AREA,
-        NodeRole.STRAND,
-        NodeRole.SUBJECT,
-        NodeRole.THEME,
-        NodeRole.UNIT,
-        NodeRole.WEEK,
-    }
     hint: list[dict[str, Any]] = []
     seen: set[str] = set()  # One entry per role
 
@@ -2241,7 +2232,7 @@ def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]
 
         """
 
-        if g.role not in carry_roles:
+        if g.role not in OUTER_ANCHOR_ROLES:
             return
 
         key = g.role.value

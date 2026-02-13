@@ -109,7 +109,6 @@
 			"relocate_table_local_only_roles_to_rows": true,
 			"row_roles": [
 				"week",
-				"unit",
 				"topic",
 				"subtopic"
 			],
