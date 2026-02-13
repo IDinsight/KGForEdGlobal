@@ -159,14 +159,20 @@ def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
         The cleaned LeafDecision.
     """
 
-    updates = {}
+    updates: dict[str, Any] = {}
 
-    if getattr(leaf, "body", None):
+    if leaf.body:
         updates["body"] = _normalize_leaf_body(leaf.body)
 
-    # Optional: normalize list_marker whitespace if it exists.
-    if getattr(leaf, "list_marker", None):
+    # Normalize list_marker whitespace if it exists.
+    if leaf.list_marker:
         updates["list_marker"] = re.sub(r"\s+", " ", leaf.list_marker).strip()
+
+    if leaf.local_code:
+        updates["local_code"] = _clean_text(leaf.local_code)
+
+    if leaf.source_label:
+        updates["source_label"] = _clean_text(leaf.source_label)
 
     return leaf.model_copy(update=updates) if updates else leaf
 
