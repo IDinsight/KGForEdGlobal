@@ -1919,7 +1919,9 @@ def _validate_and_handle_unresolved(
     Returns
     -------
     bool
-        True if the decision is materializable, False otherwise.
+        True if the decision is materializable, False otherwise. When False, the caller
+        skips _materialize_decision_structure, which means active_context_stack is not
+        updated for this decision.
     """
 
     if decision.decision_type == SegmentDecisionType.IGNORE:
