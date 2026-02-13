@@ -285,8 +285,7 @@ def _apply_split_rules_to_grouping(
         if rule.apply_to not in (SpineSplitApplyTo.ANY, apply_to):
             continue
 
-        rx = re.compile(rule.match, rule.flags)
-        m = rx.match(g.title)
+        m = rule._compiled_re.match(g.title)
 
         if not m:
             continue
@@ -538,7 +537,8 @@ def _correct_local_structure(
         for row in d.rows:
             row2 = row.model_copy(deep=True)
 
-            # Correct the row's internal groupings.
+            # Correct the row's internal groupings. NB: needs_flag is always False for
+            # TABLE_ROW_LOCAL (only set for OUTER_CONTEXT).
             row2.groupings, c, _ = _correct_grouping_list(
                 allow=spine.row_roles,
                 apply_to=SpineSplitApplyTo.TABLE_ROW_LOCAL,
@@ -1634,6 +1634,7 @@ def apply_spine_policy_to_decision_set(
 
     # Group decisions by segment_id.
     decisions_by_segment: dict[str, list[SegmentDecision]] = {}
+
     for d in decision_set.decisions:
         decisions_by_segment.setdefault(d.segment_id, []).append(d)
 
@@ -1681,7 +1682,15 @@ def apply_spine_policy_to_decision_set(
                 spine_report.flagged_decisions.append(result.corrected.decision_id)
 
             # Establish canonical context from first non-flagged corrected decision.
-            if canonical_outer_context is None and not result.flagged_unresolved:
+            if (
+                canonical_outer_context is None
+                and not result.flagged_unresolved
+                and result.corrected.decision_type
+                not in (
+                    SegmentDecisionType.IGNORE,
+                    SegmentDecisionType.UNRESOLVED,
+                )
+            ):
                 canonical_outer_context = list(result.corrected.context_groupings or [])
 
     # NB: Corrected decisions means corrected decision_set_id must be recomputed.

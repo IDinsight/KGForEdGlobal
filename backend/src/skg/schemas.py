@@ -311,7 +311,7 @@ class SpineSplitRule(BaseSchema):
             If the regex pattern is invalid.
         """
 
-        re.compile(self.match, self.flags)  # Raises if invalid
+        self._compiled_re = re.compile(self.match, self.flags)  # Raises if invalid
 
         return self
 
