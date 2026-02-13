@@ -54,7 +54,7 @@
 				"note": "Jéego N is a Wolof unit grouping (groupe de paliers), contains Paliers"
 			},
 			{
-				"pattern": "CE[12]",
+				"pattern": "^CE\\s*[12]$",
 				"role": "grade_level",
 				"note": "CE1 and CE2 are the only grade levels in this document"
 			},
@@ -119,12 +119,12 @@
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
 							"role": "stage",
 							"title_template": "ÉTAPE \\1 \\2"
+						},
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
 						}
 					]
 				},
@@ -133,12 +133,12 @@
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
 							"role": "stage",
 							"title_template": "ÉTAPE \\1 \\2"
+						},
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
 						}
 					]
 				},
@@ -167,12 +167,12 @@
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
 							"role": "stage",
 							"title_template": "ÉTAPE 2 \\1"
+						},
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
 						}
 					]
 				},
@@ -181,12 +181,12 @@
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
 							"role": "stage",
 							"title_template": "ÉTAPE 2 \\1"
+						},
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
 						}
 					]
 				},
@@ -195,12 +195,12 @@
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
 							"role": "stage",
 							"title_template": "ÉTAPE \\1 \\2"
+						},
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
 						}
 					]
 				},
@@ -209,12 +209,12 @@
 					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
-							"role": "subject",
-							"title_template": "Mathématiques"
-						},
-						{
 							"role": "stage",
 							"title_template": "ÉTAPE \\1 \\2"
+						},
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
 						}
 					]
 				},
@@ -320,41 +320,81 @@
 				},
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
+					"match": "^.*\\b(?:niveau)\\s*1\\s*[:\\-–]\\s*CE\\s*1\\b.*$",
 					"emit": [
 						{
 							"role": "grade_level",
-							"title_template": "\\1"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\b(?:niveau)\\s*\\d+\\s*[:\\-–]\\s*(CE\\s*\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "grade_level",
-							"title_template": "\\1"
+							"title_template": "CE1"
 						}
 					]
 				},
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\b(CE\\s*\\d+)\\b\\s*$",
+					"match": "^.*\\b(?:niveau)\\s*2\\s*[:\\-–]\\s*CE\\s*2\\b.*$",
 					"emit": [
 						{
 							"role": "grade_level",
-							"title_template": "\\1"
+							"title_template": "CE2"
 						}
 					]
 				},
 				{
 					"apply_to": "block_local",
-					"match": "^.*\\b(CE\\s*\\d+)\\b\\s*$",
+					"match": "^.*\\b(?:niveau)\\s*1\\s*[:\\-–]\\s*CE\\s*1\\b.*$",
 					"emit": [
 						{
 							"role": "grade_level",
-							"title_template": "\\1"
+							"title_template": "CE1"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\b(?:niveau)\\s*2\\s*[:\\-–]\\s*CE\\s*2\\b.*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "CE2"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\bCE\\s*1\\b\\s*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "CE1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\bCE\\s*2\\b\\s*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "CE2"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\bCE\\s*1\\b\\s*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "CE1"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\bCE\\s*2\\b\\s*$",
+					"emit": [
+						{
+							"role": "grade_level",
+							"title_template": "CE2"
 						}
 					]
 				},

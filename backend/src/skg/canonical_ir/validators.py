@@ -2062,10 +2062,9 @@ def validate_table_context_groupings_exclude_row_local_roles(
 def validate_table_row_index(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
-    """Validate that RowDecision.row_index values are within range and unique. If this
-    SegmentDecision represents a chunked slice of a table, also enforce that all
-    RowDecision.row_index values lie within [row_range_start, row_range_end), where
-    row_range_end is EXCLUSIVE.
+    """Validate that if a SegmentDecision includes row decisions for a table segment,
+    then any declared chunking (row_range_start/end) is well-formed and within the
+    table row bounds.
 
     Parameters
     ----------
