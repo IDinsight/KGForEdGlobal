@@ -291,3 +291,38 @@ NonArtifacts = {
     "table of contents",
 }
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
+
+# Roles that satisfy the "outer anchor" requirement when emitting leaves. If a decision
+# emits ANY leaves (expectations/descriptors/guidance), at least one of these roles
+# MUST appear in context_groupings[], groupings[], or rows[].groupings[]. This prevents
+# "floating" statements attached directly to the framework root.
+#
+# This is the single source of truth used by:
+#   - prompts.py
+#   - validators.py
+OUTER_ANCHOR_ROLES: frozenset[NodeRole] = frozenset(
+    {
+        NodeRole.GRADE_LEVEL,
+        NodeRole.LEARNING_AREA,
+        NodeRole.STAGE,
+        NodeRole.STRAND,
+        NodeRole.SUBJECT,
+        NodeRole.SUBSTRAND,
+        NodeRole.SUBTHEME,
+        NodeRole.TERM,
+        NodeRole.THEME,
+        NodeRole.UNIT,
+        NodeRole.WEEK,
+    }
+)
+
+# Roles that are considered "outer context" for chunked tables. Superset of
+# OUTER_ANCHOR_ROLES that additionally includes SECTION. For chunked tables, groupings
+# with these roles MUST go in context_groupings[] (not segment-level groupings[]) so
+# that all chunks share a stable context stack.
+#
+# This is the single source of truth used by:
+#   - validators.py
+OUTER_CONTEXT_ROLES: frozenset[NodeRole] = OUTER_ANCHOR_ROLES | frozenset(
+    {NodeRole.SECTION}
+)

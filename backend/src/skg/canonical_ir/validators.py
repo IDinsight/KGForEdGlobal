@@ -18,6 +18,8 @@ from skg.document_ir.schemas import DocumentIR, Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import (
     CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
+    OUTER_ANCHOR_ROLES,
+    OUTER_CONTEXT_ROLES,
     BlockType,
     FrontMatterHeadings,
     NodeRole,
@@ -770,21 +772,6 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
     if not bool(chunking.get("is_chunked", False)):
         return
 
-    OUTER_CONTEXT_ROLES = {
-        NodeRole.GRADE_LEVEL,
-        NodeRole.STAGE,
-        NodeRole.LEARNING_AREA,
-        NodeRole.SUBJECT,
-        NodeRole.THEME,
-        NodeRole.SUBTHEME,
-        NodeRole.UNIT,
-        NodeRole.TERM,
-        NodeRole.WEEK,
-        NodeRole.STRAND,
-        NodeRole.SUBSTRAND,
-        NodeRole.SECTION,
-    }
-
     bad = [
         g
         for g in (segment_decision.groupings or [])
@@ -945,19 +932,9 @@ def validate_context_groupings_required_for_emit(
     has_meaningful_section_path = bool(meaningful_heading_texts)
     has_caption = bool((payload.get("caption_text") or "").strip())
 
-    outer_anchor_roles = {
-        NodeRole.GRADE_LEVEL,
-        NodeRole.STAGE,
-        NodeRole.LEARNING_AREA,
-        NodeRole.SUBJECT,
-        NodeRole.THEME,
-        NodeRole.UNIT,
-        NodeRole.WEEK,
-    }
-
     # Check if any outer anchor grouping is emitted.
     emits_outer_anchor_grouping = any(
-        (g.role in outer_anchor_roles) for g in (segment_decision.groupings or [])
+        (g.role in OUTER_ANCHOR_ROLES) for g in (segment_decision.groupings or [])
     )
 
     if (
@@ -965,10 +942,11 @@ def validate_context_groupings_required_for_emit(
         and not segment_decision.context_groupings
         and not emits_outer_anchor_grouping
     ):
+        anchor_names = "/".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
         raise QualityError(
             f"Emitting decision must include non-empty context_groupings[] when "
             f"meaningful section_path or caption_text evidence exists, UNLESS the "
-            f"decision emits an outer anchor grouping (GRADE/STAGE/SUBJECT/THEME/UNIT/WEEK).\n"
+            f"decision emits an outer anchor grouping ({anchor_names}).\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  has_meaningful_section_path: {has_meaningful_section_path}\n"
@@ -1212,18 +1190,6 @@ def validate_emitted_statements_have_outer_anchor(
     if not (emits_block_leaves or emits_row_leaves):
         return  # groupings-only is fine
 
-    OUTER_ANCHORS = {
-        NodeRole.GRADE_LEVEL,
-        NodeRole.STAGE,
-        NodeRole.LEARNING_AREA,
-        NodeRole.SUBJECT,
-        NodeRole.STRAND,
-        NodeRole.SUBSTRAND,
-        NodeRole.THEME,
-        NodeRole.UNIT,
-        NodeRole.WEEK,
-    }
-
     def has_anchor(groupings: list[GroupingDecision]) -> bool:
         """Check if any grouping has an outer anchor role.
 
@@ -1238,18 +1204,19 @@ def validate_emitted_statements_have_outer_anchor(
             True if any grouping has an outer anchor role.
         """
 
-        return any((g.role in OUTER_ANCHORS) for g in (groupings or []))
+        return any((g.role in OUTER_ANCHOR_ROLES) for g in (groupings or []))
 
     if (
         not has_anchor(segment_decision.context_groupings)
         and not has_anchor(segment_decision.groupings)
         and not any(has_anchor(r.groupings) for r in (segment_decision.rows or []))
     ):
+        anchor_names = ", ".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
         raise QualityError(
             f"emitted_leaves_missing_outer_anchor\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
-            f"Fix: include at least one of: {NodeRole.GRADE_LEVEL.value}, {NodeRole.STAGE.value}, {NodeRole.LEARNING_AREA.value}, {NodeRole.SUBJECT.value}, {NodeRole.STRAND.value}, {NodeRole.SUBSTRAND.value}, {NodeRole.THEME.value}, {NodeRole.UNIT.value}, {NodeRole.WEEK.value} "
+            f"Fix: include at least one of: {anchor_names} "
             f"in context_groupings or emitted groupings (or mark unresolved)."
         )
 
