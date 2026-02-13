@@ -24,7 +24,6 @@ from skg.utils.constants import (
 )
 
 CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.name for r in CONTEXT_GROUPINGS_ROLE_ORDER)
-
 DOC_CONTEXT_MAPPING: dict[str, str] = {
     "senegal": dedent(
         """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
@@ -32,12 +31,12 @@ DOC_CONTEXT_MAPPING: dict[str, str] = {
 Document-specific patterns (use when consistent with the observed heading sequence):
 - Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
 - Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
-- "JÉEGO N" and "PALIER N" denote subsections within a strand. Keep levels consistent across N. Variants like "(suite)" or "(yeggale)" are continuations and must keep the same level as the base "JÉEGO N :" or "PALIER N :".
+- "JÉEGO N" denotes a unit grouping within a strand. "PALIER N" denotes a milestone within a Jéego. JÉEGO is always one level above PALIER. Keep levels consistent across N. Variants like "(suite)" or "(yeggale)" are continuations and must keep the same level as the base "JÉEGO N :" or "PALIER N :".
 - Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are dividers WITHIN the current strand/section. If they appear after an "ACTIVITES ..." heading, they must be DEEPER than the strand (i.e., nested under it), not equal to it and not a reset.
-- Some topic headings in Wolof are long, sentence-like competency statements (e.g., starting with "Boole mooñ ..."). These are real structural headings inside the Jéego/Palier sections and should NOT be assigned level 0. They usually sit above "Apprentissages ponctuels" micro-plan tables.
+- Some topic headings in Wolof are long, sentence-like competency statements (e.g., starting with "Boole mooñ ..."). These are curriculum content (competency expectations for a Jéego), NOT structural headings. Assign them level 0 so they are processed as content rather than hierarchy.
 
 Prefer levels that preserve local monotonic structure such as:
-... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> ("Boole mooñ ...") -> "Apprentissages ponctuels" -> tables
+... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> "Apprentissages ponctuels" -> tables
         """
     )
 }

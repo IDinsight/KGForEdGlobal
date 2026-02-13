@@ -238,6 +238,81 @@ def _filter_section_path_for_llm(
     return deduped[-max_items:]
 
 
+def _is_structural_heading(*, heading_levels: dict[str, int], segment: Segment) -> bool:
+    """Check if a block segment is a structural heading that should be auto-ignored.
+
+    Structural headings (heading_level > 0) exist solely to establish section hierarchy
+    for downstream segments. Their structural role is already captured in the
+    section_path of subsequent segments, so sending them to the LLM for a segment
+    decision is wasted compute and produces validator failures (the heading's own text
+    is not "outer evidence" for itself).
+
+    Parameters
+    ----------
+    heading_levels
+        Mapping from normalized heading text to structural depth level.
+    segment
+        The Segment to check.
+
+    Returns
+    -------
+    bool
+        True if the segment is a structural heading that should be auto-ignored.
+    """
+
+    if segment.kind != "block" or segment.block_type != BlockType.HEADING:
+        return False
+
+    text = _extract_block_segment_text(segment)
+    norm = " ".join(text.split()).casefold()
+
+    if not norm:
+        return False
+
+    level = heading_levels.get(norm)
+
+    # Level > 0 means structural. Level 0 = non-structural (front matter etc.). Level
+    # None = heading not in map (shouldn't happen, but don't auto-ignore).
+    return level is not None and level > 0
+
+
+def _make_auto_ignore_decision(
+    *, doc_key: str, reason: str, segment: Segment
+) -> SegmentDecision:
+    """Create a deterministic IGNORE SegmentDecision without calling the LLM.
+
+    Parameters
+    ----------
+    doc_key
+        The document key.
+    reason
+        A human-readable rationale for the auto-ignore.
+    segment
+        The Segment being ignored.
+
+    Returns
+    -------
+    SegmentDecision
+        A minimal IGNORE decision matching the schema.
+    """
+
+    return SegmentDecision(
+        block_type=segment.block_type if segment.kind == "block" else None,
+        confidence=1.0,
+        context_groupings=[],
+        decision_id=f"segment_decision:{doc_key}:{segment.segment_id}",
+        decision_type=SegmentDecisionType.IGNORE,
+        groupings=[],
+        leaves=[],
+        rationale=reason,
+        row_range_end=None,
+        row_range_start=None,
+        rows=[],
+        segment_id=segment.segment_id,
+        segment_kind=segment.kind,
+    )
+
+
 def _process_block_segment(
     *,
     config: CreateCanonicalConfig,
@@ -284,6 +359,35 @@ def _process_block_segment(
 
     key: tuple[str, int | None, int | None] = (segment.segment_id, None, None)
     assert key not in existing_keys, f"Duplicate segment block key found: {key}"
+
+    # Structural headings (heading_level > 0) exist to create section hierarchy for
+    # downstream segments via section_path. Their role is already captured there, so
+    # calling the LLM is wasted compute and triggers validator failures (the heading's
+    # own text is not "outer evidence" for itself).
+    if _is_structural_heading(heading_levels=heading_levels, segment=segment):
+        text_preview = _extract_block_segment_text(segment)[:120]
+        norm = " ".join(text_preview.split()).casefold()
+        level = heading_levels.get(norm, "?")
+
+        logger.warning(
+            f"Auto-ignoring structural heading (level={level}): "
+            f'"{text_preview}" [segment_id={segment.segment_id}]'
+        )
+
+        segment_decision = _make_auto_ignore_decision(
+            doc_key=doc_key,
+            reason=(
+                f"Auto-ignored: structural heading at level {level}. "
+                f"Section hierarchy is captured in section_path for downstream segments."
+            ),
+            segment=segment,
+        )
+        decision_set.decisions.append(segment_decision)
+        existing_keys.add(key)
+
+        return save_segment_decision_set(
+            decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
+        )
 
     # Filter payload evidence that is not helpful to the LLM.
     segment_payload = segment.model_dump(
