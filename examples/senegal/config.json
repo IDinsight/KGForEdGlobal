@@ -45,13 +45,13 @@
 		"heading_role_hints": [
 			{
 				"pattern": "PALIER \\d+",
-				"role": "unit",
-				"note": "PALIER N is a competency tier nested INSIDE Jéego; maps to unit (inner to stage)"
+				"role": "substage",
+				"note": "PALIER N is a competency milestone within a Jéego (substage)"
 			},
 			{
 				"pattern": "Jéego \\d+",
-				"role": "stage",
-				"note": "Jéego N is a Wolof learning-stage grouping (groupe de paliers), OUTER to Palier"
+				"role": "unit",
+				"note": "Jéego N is a Wolof unit grouping (groupe de paliers), contains Paliers"
 			},
 			{
 				"pattern": "CE[12]",
@@ -103,7 +103,8 @@
 				"grade_level",
 				"subject",
 				"strand",
-				"unit"
+				"unit",
+				"substage"
 			],
 			"relocate_table_local_only_roles_to_rows": true,
 			"row_roles": [
@@ -115,6 +116,34 @@
 			"split_rules": [
 				{
 					"apply_to": "outer_context",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\btolluwaay\\s*(\\d+)\\s*((?:\\([^)]+\\))?)\\s*$",
 					"emit": [
 						{
@@ -163,6 +192,34 @@
 				},
 				{
 					"apply_to": "outer_context",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\bmath[eéè]matiques\\b.*\\b(\\d+)\\s*(?:e|er|ère|ere|eme|ème)?\\s*\\b[eéèë]tape\\b\\s*((?:\\([^)]+\\))?)\\s*$",
+					"emit": [
+						{
+							"role": "subject",
+							"title_template": "Mathématiques"
+						},
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE \\1 \\2"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^\\s*(?:tolluwaay\\s*)?(\\d+)\\s*\\/\\s*[eéèë]tape\\s*\\1\\s*$",
 					"emit": [
 						{
@@ -178,6 +235,26 @@
 						{
 							"role": "stage",
 							"title_template": "ÉTAPE \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\/\\s*act\\.?\\s*num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*act\\.?\\s*num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
 						}
 					]
 				},
@@ -203,6 +280,26 @@
 				},
 				{
 					"apply_to": "outer_context",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:de\\s+)?mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*act\\.?\\s*(?:de\\s+)?mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\/\\s*act\\.?\\s*(?:r[eéè]s\\.?\\s*de\\s+probl[èe]mes|r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
 					"emit": [
 						{
@@ -218,46 +315,6 @@
 						{
 							"role": "strand",
 							"title_template": "Activités de résolution de problèmes"
-						}
-					]
-				},
-				{
-					"apply_to": "outer_context",
-					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "outer_context",
-					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "block_local",
-					"match": "^\\s*activit(?:[ée]s|es)\\s+(num[eéè]riques|g[eéè]om[eéè]triques|de\\s+mesure|de\\s+r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes)\\s*$",
-					"emit": [
-						{
-							"role": "strand",
-							"title_template": "Activités \\1"
 						}
 					]
 				},
@@ -316,7 +373,7 @@
 					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "unit",
+							"role": "substage",
 							"title_template": "PALIER \\1"
 						}
 					]
@@ -326,17 +383,7 @@
 					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "unit",
-							"title_template": "PALIER \\1"
-						}
-					]
-				},
-				{
-					"apply_to": "table_row_local",
-					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
-					"emit": [
-						{
-							"role": "unit",
+							"role": "substage",
 							"title_template": "PALIER \\1"
 						}
 					]
@@ -346,7 +393,7 @@
 					"match": "^.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "stage",
+							"role": "unit",
 							"title_template": "JÉEGO \\1"
 						}
 					]
@@ -356,8 +403,168 @@
 					"match": "^.*\\bj[éeë]ego\\s*(\\d+)\\b.*$",
 					"emit": [
 						{
-							"role": "stage",
+							"role": "unit",
 							"title_template": "JÉEGO \\1"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+g[eéè]om[eéè]triques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités géométriques"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+g[eéè]om[eéè]triques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités géométriques"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+de\\s+mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+de\\s+mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(?:de\\s+)?r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de résolution de problèmes"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\/\\s*activit(?:[ée]s|es)\\s+(?:de\\s+)?r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de résolution de problèmes"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+num[eéè]riques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités numériques"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+g[eéè]om[eéè]triques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités géométriques"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+g[eéè]om[eéè]triques\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités géométriques"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+de\\s+mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+de\\s+mesure\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de mesure"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+(?:de\\s+)?r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de résolution de problèmes"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^\\s*activit(?:[ée]s|es)\\s+(?:de\\s+)?r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes\\s*$",
+					"emit": [
+						{
+							"role": "strand",
+							"title_template": "Activités de résolution de problèmes"
 						}
 					]
 				}

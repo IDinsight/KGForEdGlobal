@@ -712,7 +712,7 @@ def generate_segment_decision(
         Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     doc_key
         The document key.
-    header_role_hints
+    heading_role_hints
         List of heading role hints to pass as context for segment decision.
     max_retries
         Maximum number of retries for quality errors.
