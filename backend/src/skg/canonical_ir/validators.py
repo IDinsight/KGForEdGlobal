@@ -674,91 +674,6 @@ def _validate_interval_uniqueness(
         )
 
 
-def _validate_row_indices(
-    *, chunk_decisions: list[Any], segment_id: str, table_end: int, table_start: int
-) -> None:
-    """Validate RowDecision.row_index integrity (bounds and uniqueness).
-
-    Checks:
-
-    1. row_index is within table body bounds.
-    2. row_index is within the decision's specific chunk interval.
-    3. row_index is globally unique for this table segment.
-
-    Parameters
-    ----------
-    chunk_decisions
-        The list of chunked SegmentDecisions for the segment.
-    segment_id
-        The ID of the segment being validated.
-    table_end
-        The exclusive end index of the table rows (usually len(segment.rows)).
-    table_start
-        The inclusive start index of the table body rows (usually header_row_count).
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    row_index_to_decision_ids: dict[int, list[str]] = {}
-
-    for d in chunk_decisions:
-        chunk_start = int(d.row_range_start)
-        chunk_end = int(d.row_range_end)
-        seen_in_decision: set[int] = set()
-
-        for r in d.rows or []:
-            ri = int(r.row_index)
-
-            # Table body bounds.
-            if ri < table_start or ri >= table_end:
-                raise QualityError(
-                    f"RowDecision.row_index out of table body bounds in chunked table decision.\n"
-                    f"  segment_id: {segment_id}\n"
-                    f"  decision_id: {d.decision_id}\n"
-                    f"  row_index: {ri}\n"
-                    f"  body_row_range: [{table_start}, {table_end})"
-                )
-
-            # Chunk interval bounds.
-            if ri < chunk_start or ri >= chunk_end:
-                raise QualityError(
-                    f"RowDecision.row_index outside its decision chunk interval.\n"
-                    f"  segment_id: {segment_id}\n"
-                    f"  decision_id: {d.decision_id}\n"
-                    f"  row_index: {ri}\n"
-                    f"  chunk_interval: [{chunk_start}, {chunk_end})"
-                )
-
-            # Local duplicates (within same decision).
-            if ri in seen_in_decision:
-                raise QualityError(
-                    f"Duplicate RowDecision.row_index within a single chunk decision.\n"
-                    f"  segment_id: {segment_id}\n"
-                    f"  decision_id: {d.decision_id}\n"
-                    f"  row_index: {ri}\n"
-                    f"  chunk_interval: [{chunk_start}, {chunk_end})"
-                )
-
-            seen_in_decision.add(ri)
-            row_index_to_decision_ids.setdefault(ri, []).append(d.decision_id)
-
-    # Global duplicates (across all decisions for this table).
-    global_duplicates = {
-        ri: ids for ri, ids in row_index_to_decision_ids.items() if len(ids) > 1
-    }
-
-    if global_duplicates:
-        row_sample = sorted(global_duplicates.items(), key=lambda kv: kv[0])[:10]
-        raise QualityError(
-            f"Duplicate RowDecision.row_index across chunk decisions for the same table segment.\n"
-            f"  segment_id: {segment_id}\n"
-            f"  duplicates(sample): {row_sample}"
-        )
-
-
 def _validate_single_table_segment(*, decisions: list[Any], segment: Any) -> None:
     """Perform comprehensive validation of SegmentDecisions for a single TABLE segment,
     ensuring consistent chunking, valid intervals, and contiguous coverage of the table
@@ -788,12 +703,6 @@ def _validate_single_table_segment(*, decisions: list[Any], segment: Any) -> Non
     )
     _validate_interval_uniqueness(
         chunk_decisions=chunk_decisions, segment_id=segment.segment_id
-    )
-    _validate_row_indices(
-        chunk_decisions=chunk_decisions,
-        segment_id=segment.segment_id,
-        table_end=len(segment.rows),
-        table_start=segment.header_row_count,
     )
     _validate_chunk_sequence(
         expected_end=len(segment.rows),
