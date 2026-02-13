@@ -129,6 +129,7 @@ def _call_openai_api_to_canonicalize_groupings(
         input=input_items,
         instructions=instructions,
         model=model,
+        reasoning={"effort": "high"},
         temperature=0,
         text_format=GroupingCanonicalizationMap,
         top_p=1,
@@ -230,6 +231,7 @@ def _call_openai_api_to_decide_on_segment(
             input=input_items,
             instructions=instructions,
             model=model,
+            reasoning={"effort": "high"},
             temperature=0,
             text_format=SegmentDecision,
             top_p=1,
@@ -329,7 +331,9 @@ def _call_openai_api_to_generate_heading_levels(
         instructions=instructions,
         model=model,
         reasoning={"effort": "high"},
+        temperature=0,
         text_format=HeadingLevelAnalysis,
+        top_p=1,
     )
 
     parsed = getattr(response, "output_parsed", None)

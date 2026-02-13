@@ -34,7 +34,7 @@
 		"table_filldown_group_cols_max": 1
 	},
 	"canonical_ir": {
-		"always_double_check_first_attempt": true,
+		"always_double_check_first_attempt": false,
 		"canonical_grouping_min_confidence": 0.8,
 		"canonicalization_skip_roles": [
 			"week",
@@ -69,7 +69,7 @@
 				"note": "Wolof equivalent of DEUXIEME ETAPE"
 			}
 		],
-		"max_table_rows_per_decision": 20,
+		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
 		"segment_decision_conf_threshold": 0.6,
