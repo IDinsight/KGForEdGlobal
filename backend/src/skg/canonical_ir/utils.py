@@ -2665,7 +2665,7 @@ def compile_canonical_ir(
                         else []
                     ),
                     kind=segment.kind,
-                    local_code=segment.local_code,
+                    local_code=getattr(segment, "local_code", None),
                     page_indices=page_indices,
                     reason=(
                         UnresolvedReason.UNMATCHED_TABLE

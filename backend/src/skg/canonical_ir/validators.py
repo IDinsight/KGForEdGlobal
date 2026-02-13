@@ -587,6 +587,225 @@ def _validate_chunk_sequence(
         )
 
 
+def _validate_decision_types(
+    *, all_decisions: list[Any], has_chunks: bool, segment_id: str
+) -> None:
+    """Ensure no mixing of chunked/unchunked decisions and no malformed ranges.
+
+    Parameters
+    ----------
+    all_decisions
+        The list of all SegmentDecisions for the segment.
+    has_chunks
+        Whether any of the decisions are chunked (have non-None row_range_start/end).
+    segment_id
+        The ID of the segment being validated (used for error messages).
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    # If we have chunks, we cannot have any "unchunked" (both None) decisions.
+    has_unchunked = any(
+        (d.row_range_start is None and d.row_range_end is None) for d in all_decisions
+    )
+
+    if has_chunks and has_unchunked:
+        chunk_count = sum(
+            1
+            for d in all_decisions
+            if d.row_range_start is not None and d.row_range_end is not None
+        )
+        raise QualityError(
+            f"Chunked + unchunked SegmentDecisions detected for the same table segment. "
+            f"This can happen if you generated chunked decisions with one config and later "
+            f"generated an unchunked decision (or vice-versa).\n"
+            f"  segment_id: {segment_id}\n"
+            f"  chunk_decision_count: {chunk_count}"
+        )
+
+    # Half-Chunked (one none, one not none).
+    has_half_chunked = any(
+        (d.row_range_start is None) != (d.row_range_end is None) for d in all_decisions
+    )
+
+    if has_half_chunked:
+        raise QualityError(
+            f"Half-chunked SegmentDecision detected "
+            f"(one of row_range_start/end is None, the other is not).\n"
+            f"  segment_id: {segment_id}"
+        )
+
+
+def _validate_interval_uniqueness(
+    *, chunk_decisions: list[Any], segment_id: str
+) -> None:
+    """Ensure no two decisions claim the exact same row interval.
+
+    Parameters
+    ----------
+    chunk_decisions
+        The list of chunked SegmentDecisions for the segment.
+    segment_id
+        The ID of the segment being validated.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    interval_to_ids: dict[tuple[int, int], list[str]] = {}
+
+    for d in chunk_decisions:
+        interval = (int(d.row_range_start), int(d.row_range_end))
+        interval_to_ids.setdefault(interval, []).append(d.decision_id)
+
+    duplicate_intervals = {k: v for k, v in interval_to_ids.items() if len(v) > 1}
+
+    if duplicate_intervals:
+        interval_sample = list(duplicate_intervals.items())[:5]
+        raise QualityError(
+            f"Duplicate chunk intervals detected for the same table segment.\n"
+            f"  segment_id: {segment_id}\n"
+            f"  duplicates(sample): {interval_sample}"
+        )
+
+
+def _validate_row_indices(
+    *, chunk_decisions: list[Any], segment_id: str, table_end: int, table_start: int
+) -> None:
+    """Validate RowDecision.row_index integrity (bounds and uniqueness).
+
+    Checks:
+
+    1. row_index is within table body bounds.
+    2. row_index is within the decision's specific chunk interval.
+    3. row_index is globally unique for this table segment.
+
+    Parameters
+    ----------
+    chunk_decisions
+        The list of chunked SegmentDecisions for the segment.
+    segment_id
+        The ID of the segment being validated.
+    table_end
+        The exclusive end index of the table rows (usually len(segment.rows)).
+    table_start
+        The inclusive start index of the table body rows (usually header_row_count).
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    row_index_to_decision_ids: dict[int, list[str]] = {}
+
+    for d in chunk_decisions:
+        chunk_start = int(d.row_range_start)
+        chunk_end = int(d.row_range_end)
+        seen_in_decision: set[int] = set()
+
+        for r in d.rows or []:
+            ri = int(r.row_index)
+
+            # Table body bounds.
+            if ri < table_start or ri >= table_end:
+                raise QualityError(
+                    f"RowDecision.row_index out of table body bounds in chunked table decision.\n"
+                    f"  segment_id: {segment_id}\n"
+                    f"  decision_id: {d.decision_id}\n"
+                    f"  row_index: {ri}\n"
+                    f"  body_row_range: [{table_start}, {table_end})"
+                )
+
+            # Chunk interval bounds.
+            if ri < chunk_start or ri >= chunk_end:
+                raise QualityError(
+                    f"RowDecision.row_index outside its decision chunk interval.\n"
+                    f"  segment_id: {segment_id}\n"
+                    f"  decision_id: {d.decision_id}\n"
+                    f"  row_index: {ri}\n"
+                    f"  chunk_interval: [{chunk_start}, {chunk_end})"
+                )
+
+            # Local duplicates (within same decision).
+            if ri in seen_in_decision:
+                raise QualityError(
+                    f"Duplicate RowDecision.row_index within a single chunk decision.\n"
+                    f"  segment_id: {segment_id}\n"
+                    f"  decision_id: {d.decision_id}\n"
+                    f"  row_index: {ri}\n"
+                    f"  chunk_interval: [{chunk_start}, {chunk_end})"
+                )
+
+            seen_in_decision.add(ri)
+            row_index_to_decision_ids.setdefault(ri, []).append(d.decision_id)
+
+    # Global duplicates (across all decisions for this table).
+    global_duplicates = {
+        ri: ids for ri, ids in row_index_to_decision_ids.items() if len(ids) > 1
+    }
+
+    if global_duplicates:
+        row_sample = sorted(global_duplicates.items(), key=lambda kv: kv[0])[:10]
+        raise QualityError(
+            f"Duplicate RowDecision.row_index across chunk decisions for the same table segment.\n"
+            f"  segment_id: {segment_id}\n"
+            f"  duplicates(sample): {row_sample}"
+        )
+
+
+def _validate_single_table_segment(*, decisions: list[Any], segment: Any) -> None:
+    """Perform comprehensive validation of SegmentDecisions for a single TABLE segment,
+    ensuring consistent chunking, valid intervals, and contiguous coverage of the table
+    body rows.
+
+    Parameters
+    ----------
+    decisions
+        The list of SegmentDecisions for the segment.
+    segment
+        The Segment being validated.
+    """
+
+    # Filter for explicit chunk decisions.
+    chunk_decisions = [
+        d
+        for d in decisions
+        if d.row_range_start is not None and d.row_range_end is not None
+    ]
+
+    # If the table is not chunked (no chunk decisions found), we skip validation.
+    if not chunk_decisions:
+        return
+
+    _validate_decision_types(
+        all_decisions=decisions, has_chunks=True, segment_id=segment.segment_id
+    )
+    _validate_interval_uniqueness(
+        chunk_decisions=chunk_decisions, segment_id=segment.segment_id
+    )
+    _validate_row_indices(
+        chunk_decisions=chunk_decisions,
+        segment_id=segment.segment_id,
+        table_end=len(segment.rows),
+        table_start=segment.header_row_count,
+    )
+    _validate_chunk_sequence(
+        expected_end=len(segment.rows),
+        expected_start=segment.header_row_count,
+        intervals=sorted(
+            ((int(d.row_range_start), int(d.row_range_end)) for d in chunk_decisions),
+            key=lambda t: t,
+        ),
+        segment=segment,
+    )
+
+
 def validate_chunked_table_context_matches_prior_context(
     *,
     segment: Segment,
@@ -1958,6 +2177,7 @@ def validate_table_chunk_coverage_and_overlap(
     """
 
     decisions_by_segment_id: dict[str, list[Any]] = {}
+
     for d in segment_decisions.decisions:
         assert isinstance(d.segment_id, str), f"Decision missing segment_id: {d}"
         decisions_by_segment_id.setdefault(d.segment_id, []).append(d)
@@ -1966,72 +2186,8 @@ def validate_table_chunk_coverage_and_overlap(
         if segment.kind != "table":
             continue
 
-        decisions_for_segment = decisions_by_segment_id.get(segment.segment_id, [])
-
-        # Decisions with explicit chunk ranges.
-        chunk_decisions = [
-            d
-            for d in (decisions_for_segment or [])
-            if d.row_range_start is not None and d.row_range_end is not None
-        ]
-
-        # Not a chunked table (either unchunked decision or no decisions yet).
-        if not chunk_decisions:
-            continue
-
-        # Disallow mixing chunked + unchunked decisions for the same table segment.
-        has_unchunked = any(
-            (d.row_range_start is None and d.row_range_end is None)
-            for d in (decisions_for_segment or [])
-        )
-        if has_unchunked:
-            raise QualityError(
-                f"Chunked + unchunked SegmentDecisions detected for the same table segment. "
-                f"This can happen if you generated chunked decisions with one config and later "
-                f"generated an unchunked decision (or vice-versa).\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  chunk_decision_count: {len(chunk_decisions)}"
-            )
-
-        # Build interval to decision_id list map to detect duplicates.
-        interval_to_ids: dict[tuple[int, int], list[str]] = {}
-
-        for d in chunk_decisions:
-            assert d.row_range_start is not None and d.row_range_end is not None
-            interval = (int(d.row_range_start), int(d.row_range_end))
-            interval_to_ids.setdefault(interval, []).append(d.decision_id)
-
-        duplicate_intervals = {k: v for k, v in interval_to_ids.items() if len(v) > 1}
-
-        if duplicate_intervals:
-            sample = list(duplicate_intervals.items())[:5]
-            raise QualityError(
-                f"Duplicate chunk intervals detected for the same table segment.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  duplicates(sample): {sample}"
-            )
-
-        has_half_chunked = any(
-            (d.row_range_start is None) != (d.row_range_end is None)
-            for d in decisions_for_segment
-        )
-        if has_half_chunked:
-            raise QualityError(
-                f"Half-chunked SegmentDecision detected "
-                f"(one of row_range_start/end is None, the other is not).\n"
-                f"  segment_id: {segment.segment_id}"
-            )
-
-        # Sort intervals by start/end.
-        intervals = sorted(interval_to_ids.keys(), key=lambda t: (t[0], t[1]))
-
-        # Validate contiguous, non-overlapping coverage of the table body rows.
-        _validate_chunk_sequence(
-            intervals=intervals,
-            segment=segment,
-            expected_start=segment.header_row_count,
-            expected_end=len(segment.rows),
-        )
+        decisions = decisions_by_segment_id.get(segment.segment_id, [])
+        _validate_single_table_segment(decisions=decisions, segment=segment)
 
 
 def validate_table_context_groupings_exclude_row_local_roles(

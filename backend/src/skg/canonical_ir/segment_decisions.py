@@ -132,17 +132,47 @@ def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
         The cleaned GroupingDecision.
     """
 
-    title = _clean_text(g.title) or g.title.strip()
+    title = _clean_label_text(g.title) or g.title.strip()
 
     # NB: Do NOT apply casing transformations here. SegmentDecision text should be
     # stored as close to verbatim as possible.
     return g.model_copy(
         update={
             "local_code": _clean_text(g.local_code),
-            "source_label": _clean_text(g.source_label),
+            "source_label": _clean_label_text(g.source_label),
             "title": title,
         }
     )
+
+
+def _clean_label_text(text: Optional[str]) -> Optional[str]:
+    """Clean label-like fields (grouping titles, source_label) with extra punctuation
+    hygiene. Specifically: normalize whitespace *before* ':' (e.g., so 'Jéego 1 :' and
+    'Jéego 1:' become identical.
+
+    We intentionally do NOT normalize spacing *after* ':' here to avoid altering
+    code-like strings (e.g., 'CE1:NUM1').
+
+    Parameters
+    ----------
+    text
+        The text to clean.
+
+    Returns
+    -------
+    Optional[str]
+        The cleaned text, or None if input was None or normalized to empty.
+    """
+
+    t = _clean_text(text)
+
+    if t is None:
+        return None
+
+    # Normalize whitespace before colon.
+    t = re.sub(r"\s+:", ":", t)
+
+    return t or None
 
 
 def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
@@ -172,7 +202,7 @@ def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
         updates["local_code"] = _clean_text(leaf.local_code)
 
     if leaf.source_label:
-        updates["source_label"] = _clean_text(leaf.source_label)
+        updates["source_label"] = _clean_label_text(leaf.source_label)
 
     return leaf.model_copy(update=updates) if updates else leaf
 
