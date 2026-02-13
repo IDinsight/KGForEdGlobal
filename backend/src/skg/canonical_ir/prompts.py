@@ -25,24 +25,27 @@ from skg.utils.constants import (
 )
 
 CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.name for r in CONTEXT_GROUPINGS_ROLE_ORDER)
-OUTER_ANCHOR_ROLES_STR = ", ".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
 DOC_CONTEXT_MAPPING: dict[str, str] = {
     "senegal": dedent(
         """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
 
 Document-specific patterns (use when consistent with the observed heading sequence):
+- "COMPÉTENCE DE CYCLE" and "COMPÉTENCE DE L’ÉTAPE" are section labels (structural), not the expectation itself. The expectation is typically in the immediately following paragraph(s)/block(s); emit those following statement(s) as EXPECTATION leaves under the current stage/subject context (and under strand if one is active).
 - Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
 - Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
 - "JÉEGO N" denotes a unit grouping within a strand. "PALIER N" denotes a milestone within a Jéego. JÉEGO is always one level above PALIER. Keep levels consistent across N. Variants like "(suite)" or "(yeggale)" are continuations and must keep the same level as the base "JÉEGO N :" or "PALIER N :".
+- Only treat headings of the form "PALIER <number>" (or clearly equivalent heading formatting) as a substage grouping. Mentions of "palier/paliers" inside table cells are content (often descriptors/checkpoints), not hierarchy, unless they are clearly formatted as headings.
 - Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are dividers WITHIN the current strand/section. If they appear after an "ACTIVITES ..." heading, they must be DEEPER than the strand (i.e., nested under it), not equal to it and not a reset.
 - Some topic headings in Wolof are long, sentence-like competency statements (e.g., starting with "Boole mooñ ..."). These are curriculum content (competency expectations for a Jéego), NOT structural headings. Assign them level 0 so they are processed as content rather than hierarchy.
-- Mooñaale ci wolof’ (and its variants) is a language directive; never treat it as subject; ignore it for hierarchy.
+- In weekly planning tables ("Tableau de planification..."), labels like "Semaine <number>" / "Sem. <number>" denote a WEEK grouping for that table section. When present, attach row leaves under that WEEK grouping (under the current strand/unit/substage context).
+- Mooñaale ci wolof’ (and its variants), and any language-of-instruction directives like "en wolof", "en français", "(Wolof)", "(Français)", are language directives; never treat them as subject/strand/unit; ignore them for hierarchy.
 
 Prefer levels that preserve local monotonic structure such as:
 ... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> "Apprentissages ponctuels" -> tables
         """
     )
 }
+OUTER_ANCHOR_ROLES_STR = ", ".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
 
 # Build a de-duplicated, sorted list of document-structure words that should NOT become
 # SECTION grouping nodes. Sourced from FrontMatterHeadings and NonArtifacts so the
