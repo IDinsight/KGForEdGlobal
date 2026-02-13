@@ -1111,6 +1111,7 @@ def _inject_outer_context_from_caption(
         derived=derived,
         existing_all=existing_all,
         existing_map=existing_effective_map,
+        grade_present_after=grade_present_after,
         spine=spine,
     )
 
@@ -1197,6 +1198,7 @@ def _merge_and_inject(
     derived: list[GroupingDecision],
     existing_all: list[GroupingDecision],
     existing_map: dict[NodeRole, str],
+    grade_present_after: bool,
     spine: SpineConfig,
 ) -> tuple[list[GroupingDecision], list[SpineCorrection]]:
     """Merge provenance for existing matches or inject new items.
@@ -1209,6 +1211,9 @@ def _merge_and_inject(
         The list of existing GroupingDecision.
     existing_map
         The map of existing effective anchors by role to normalized title.
+    grade_present_after
+        True if a GRADE_LEVEL grouping is present in either the existing or derived
+        groupings (used for droppable detection during injection).
     spine
         The SpineConfig defining the normalization policy.
 
@@ -1226,6 +1231,64 @@ def _merge_and_inject(
 
     # Start with the existing context; we will rebuild this list if updates occur.
     current_context = list(existing_all)
+
+    # If we are injecting a role that currently exists only as a droppable wrapper
+    # (e.g., wrapper-ish STAGE or a grade-band GRADE_LEVEL), drop the droppable
+    # instance so the injected anchor becomes the first/kept singleton for that role.
+    roles_to_inject = {cg.role for cg in derived if cg.role not in existing_map}
+
+    if roles_to_inject:
+        stage_pats = (
+            [
+                re.compile(p, re.IGNORECASE)
+                for p in spine.normalize.stage_wrapper_title_patterns
+            ]
+            if (
+                spine.normalize.drop_stage_if_matches_wrapper_patterns
+                and spine.normalize.stage_wrapper_title_patterns
+            )
+            else []
+        )
+
+        grade_band_pats = (
+            [
+                re.compile(p, re.IGNORECASE)
+                for p in spine.normalize.grade_band_title_patterns
+            ]
+            if (
+                spine.normalize.drop_grade_bands
+                and spine.normalize.grade_band_title_patterns
+            )
+            else []
+        )
+        injected_title_by_role = {
+            cg.role: cg.title for cg in reversed(derived) if cg.role in roles_to_inject
+        }
+        pruned_context: list[GroupingDecision] = []
+
+        for eg in current_context:
+            if eg.role in roles_to_inject and _is_droppable_existing(
+                g=eg,
+                grade_band_pats=grade_band_pats,
+                grade_present_after=grade_present_after,
+                spine=spine,
+                stage_pats=stage_pats,
+            ):
+                target_title = injected_title_by_role.get(eg.role, "?")
+                corrections.append(
+                    SpineCorrection(
+                        detail=(
+                            f"Dropped droppable existing {eg.role.value}='{eg.title}' "
+                            f"so caption-injected {eg.role.value}='{target_title}' can take precedence."
+                        ),
+                        kind="caption_drop_droppable_existing",
+                    )
+                )
+                continue
+
+            pruned_context.append(eg)
+
+        current_context = pruned_context
 
     for cg in derived:
         # If the role is not known in our 'effective' map, it's a new addition.
@@ -1539,14 +1602,12 @@ def _relocate_table_local_only_roles(
                     corrections.append(
                         SpineCorrection(kind="relocate_conflict", detail=msg)
                     )
-                    if spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED:
-                        # NB: Do NOT flip the entire decision to
-                        # EMIT_FLAGGED_UNRESOLVED for a single row-level contradiction.
-                        # We can still materialize the table by simply not injecting
-                        # the conflicting moved role into this row.
-                        flagged = True
 
-                    # Do not add conflicting mg.
+                    # NB: Do NOT mark the whole decision as unresolved for a single
+                    # row-level ontradiction. We record the conflict and simply avoid
+                    # injecting the conflicting moved role into this row.
+                    #
+                    # NB: Do not add conflicting mg.
                     continue
 
                 # Same title -> skip (avoid duplicate role).
