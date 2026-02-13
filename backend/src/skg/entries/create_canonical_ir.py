@@ -56,7 +56,6 @@ from skg.canonical_ir.utils import (
     compile_canonical_ir,
     load_segment_decision_set,
     persist_canonical_run,
-    save_canonical_ir,
 )
 from skg.canonical_ir.validators import validate_table_chunk_coverage_and_overlap
 from skg.document_ir.schemas import DocumentIR
@@ -96,8 +95,7 @@ def create_canonical_ir(
     12. Generate and apply grouping canonicalization map.
     13. Apply grouping canonicalization map to segment decisions.
     14. Decision-set level validation for chunked tables.
-    15. Parse the segment decisions into a canonical IR.
-    16. Write results to file.
+    15. Parse the segment decisions into a canonical IR and write results to file.
 
     Parameters
     ----------
@@ -296,19 +294,12 @@ def create_canonical_ir(
     )
 
     # 15.
-    canonical_ir = compile_canonical_ir(
+    compile_canonical_ir(
+        canonical_ir_fp=canonical_ir_fp,
         doc_key=doc_key,
         document_ir=document_ir,
         segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         segment_decisions=segment_decisions,
-        structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
-    )
-
-    # 16.
-    save_canonical_ir(
-        canonical_ir=canonical_ir,
-        canonical_ir_fp=canonical_ir_fp,
-        segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         structural_leaf_warn_threshold=config.structural_leaf_warn_threshold,
     )
 

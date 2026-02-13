@@ -2561,13 +2561,15 @@ def collect_unique_grouping_keys(
 
 def compile_canonical_ir(
     *,
+    canonical_ir_fp: Path,
     doc_key: str,
     document_ir: DocumentIR,
     segment_decision_conf_threshold: float,
     segment_decisions: SegmentDecisionSet,
     structural_leaf_warn_threshold: float,
-) -> CanonicalIR:
-    """Compile a CanonicalIR from DocumentIR and SegmentDecisionSet.
+) -> None:
+    """Compile a CanonicalIR from DocumentIR and SegmentDecisionSet and write results
+    to file.
 
     The process is as follows:
 
@@ -2587,6 +2589,8 @@ def compile_canonical_ir(
 
     Parameters
     ----------
+    canonical_ir_fp
+        The file path to write the compiled CanonicalIR JSON to.
     doc_key
         The document key.
     document_ir
@@ -2598,11 +2602,6 @@ def compile_canonical_ir(
         The SegmentDecisionSet to apply.
     structural_leaf_warn_threshold
         The confidence threshold below which structural leaves will emit warnings.
-
-    Returns
-    -------
-    CanonicalIR
-        The compiled CanonicalIR.
     """
 
     # 1.
@@ -2749,7 +2748,12 @@ def compile_canonical_ir(
         f"warnings={len(canonical_ir.warnings)}"
     )
 
-    return canonical_ir
+    save_canonical_ir(
+        canonical_ir=canonical_ir,
+        canonical_ir_fp=canonical_ir_fp,
+        segment_decision_conf_threshold=segment_decision_conf_threshold,
+        structural_leaf_warn_threshold=structural_leaf_warn_threshold,
+    )
 
 
 def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
