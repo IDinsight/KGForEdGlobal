@@ -218,12 +218,18 @@ the specified role in context_groupings[]. Do NOT assign a different role.
         """
     )
 
+    segment_json = json.dumps(
+        segment,
+        ensure_ascii=False,
+        separators=(",", ":"),  # Remove spaces after commas/colons
+    )
+
     user_message = dedent(
         f"""Decide on this ONE segment and output a single SegmentDecision JSON object (JSON only, no markdown).
 
 Segment JSON:
 
-{json.dumps(segment, ensure_ascii=False, indent=2)}
+{segment_json}
         """
     )
 
