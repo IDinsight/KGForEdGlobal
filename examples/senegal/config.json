@@ -606,6 +606,16 @@
 							"title_template": "Activités de résolution de problèmes"
 						}
 					]
+				},
+				{
+					"apply_to": "table_row_local",
+					"match": "^.*\\bpalier\\s*(\\d+)\\b.*$",
+					"emit": [
+						{
+							"role": "substage",
+							"title_template": "PALIER \\1"
+						}
+					]
 				}
 			],
 			"table_local_only_roles": [
