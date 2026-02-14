@@ -1249,8 +1249,8 @@ def load_or_build_caption_bindings(
         The computed caption bindings, keyed by table segment ID.
     """
 
-    caption_bindings_fp = creation_dirs.segment_decisions / "caption_bindings.json"
-    warnings_fp = creation_dirs.segment_decisions / "caption_binding_warnings.json"
+    caption_bindings_fp = creation_dirs.caption_binding / "caption_bindings.json"
+    warnings_fp = creation_dirs.caption_binding / "caption_binding_warnings.json"
 
     if not overwrite and caption_bindings_fp.exists() and warnings_fp.exists():
         logger.warning(
