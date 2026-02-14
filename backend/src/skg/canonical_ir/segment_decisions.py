@@ -639,7 +639,7 @@ def _process_chunked_table(
     heading_levels: dict[str, int],
     next_segment_hint: dict[str, Any] | None,
     prev_segment_hint: dict[str, Any] | None,
-    segment: Segment,
+    segment: TableSegment,
     segment_decisions_fp: Path,
     warnings: list[str],
 ) -> SegmentDecisionSet:
@@ -668,7 +668,7 @@ def _process_chunked_table(
     prev_segment_hint
         The previous segment hint to apply.
     segment
-        The Segment to process.
+        The TableSegment to process.
     segment_decisions_fp
         The file path to save segment decisions to.
     warnings
@@ -771,7 +771,7 @@ def _process_table_segment(
     heading_levels: dict[str, int],
     next_segment_hint: dict[str, Any] | None = None,
     prev_segment_hint: dict[str, Any] | None = None,
-    segment: Segment,
+    segment: TableSegment,
     segment_decisions_fp: Path,
     warnings: list[str],
 ) -> SegmentDecisionSet:
@@ -798,7 +798,7 @@ def _process_table_segment(
     prev_segment_hint
         The previous segment hint to apply.
     segment
-        The Segment to process.
+        The TableSegment to process.
     segment_decisions_fp
         The file path to save segment decisions to.
     warnings
@@ -862,7 +862,7 @@ def _process_unchunked_table(
     heading_levels: dict[str, int],
     next_segment_hint: dict[str, Any] | None,
     prev_segment_hint: dict[str, Any] | None,
-    segment: Segment,
+    segment: TableSegment,
     segment_decisions_fp: Path,
 ) -> SegmentDecisionSet:
     """Process unchunked table segments.
@@ -888,7 +888,7 @@ def _process_unchunked_table(
     prev_segment_hint
         The previous segment hint to apply.
     segment
-        The Segment to process.
+        The TableSegment to process.
     segment_decisions_fp
         The file path to save segment decisions to.
 

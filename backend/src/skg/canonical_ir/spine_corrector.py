@@ -140,7 +140,7 @@ def _apply_spine_to_single_decision(
     4. Correct local groupings (block-local or row-local).
     5. Chunk consistency check (for tables with canonical_outer_context).
     6. Hard-shape enforcement (no outputs for ignore/unresolved; flagged_unresolved
-       must emit something).
+        must emit something).
 
     Parameters
     ----------
@@ -1684,7 +1684,9 @@ def apply_spine_policy_to_decision_set(
     spine_out_fp = (
         creation_dirs.segment_decisions / "segment_decisions_spine_corrected.json"
     )
-    spine_report_fp = creation_dirs.segment_decisions / "spine_report.json"
+    spine_report_fp = (
+        creation_dirs.segment_decisions / "segment_decisions_spine_report.json"
+    )
 
     if not overwrite and spine_out_fp.exists() and spine_report_fp.exists():
         logger.warning(

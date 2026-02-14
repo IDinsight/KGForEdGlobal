@@ -509,7 +509,7 @@ def generate_heading_levels(
         Mapping from normalized heading text to structural depth level.
     """
 
-    heading_levels_fp = creation_dirs.segment_decisions / "heading_levels.json"
+    heading_levels_fp = creation_dirs.root / "heading_levels.json"
 
     if not overwrite and heading_levels_fp.exists():
         logger.warning(
