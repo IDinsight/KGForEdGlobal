@@ -19,7 +19,7 @@ from pydantic import Field, model_validator
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import (
-    CONTEXT_GROUPINGS_ROLE_ORDER,
+    CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
     BlockType,
     CaptionKind,
     GroupingCanonicalizationAction,
@@ -28,8 +28,6 @@ from skg.utils.constants import (
     StatementRole,
     UnresolvedReason,
 )
-
-ROLE_PRECEDENCE = {role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)}
 
 
 def compute_decision_set_id(
@@ -899,7 +897,7 @@ class GroupingCanonicalizationItem(BaseSchema):
             raise ValueError("SPLIT requires 2+ output groupings")
 
         # Validate precedence.
-        idxs = [ROLE_PRECEDENCE[o.role] for o in self.output]
+        idxs = [CONTEXT_GROUPINGS_ROLE_PRECEDENCE[o.role] for o in self.output]
 
         if idxs != sorted(idxs):
             roles = [o.role.value for o in self.output]

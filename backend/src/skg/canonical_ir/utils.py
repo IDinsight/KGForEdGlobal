@@ -2081,18 +2081,15 @@ def apply_grouping_canonicalization_map(
 
     # Default: preserve existing behavior (skip TOPIC/SUBTOPIC), but allow config
     # override.
-    if canonicalization_skip_roles is None:
-        canonicalization_skip_roles = [NodeRole.TOPIC, NodeRole.SUBTOPIC]
-
-    _BLOCKED_CANONICALIZATION_ROLE_VALUES = {
-        r.value for r in canonicalization_skip_roles
-    }
+    canonicalization_skip_roles = canonicalization_skip_roles or [
+        NodeRole.TOPIC,
+        NodeRole.SUBTOPIC,
+    ]
     mapping_index = {
         k: v
         for k, v in mapping_index.items()
-        if k[0] not in _BLOCKED_CANONICALIZATION_ROLE_VALUES
+        if k[0] not in {r.value for r in canonicalization_skip_roles}
     }
-
     new_decisions: list[SegmentDecision] = []
 
     for decision in segment_decisions.decisions:
