@@ -126,7 +126,7 @@ def create_canonical_ir(
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
     # 2.
-    unique_headings = collect_unique_headings(document_ir)
+    unique_headings = collect_unique_headings(document_ir=document_ir)
     heading_levels = generate_heading_levels(
         country=country,
         creation_dirs=creation_dirs,

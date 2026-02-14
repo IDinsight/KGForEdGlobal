@@ -163,39 +163,31 @@ def _apply_spine_to_single_decision(
     # Deep copy to preserve auditability/provenance.
     d = decision.model_copy(deep=True)
     corrections: list[SpineCorrection] = []
-    flagged = False
 
     # 1.
-    d, c, f = _inject_caption_context(
-        caption_bindings=caption_bindings, d=d, spine=spine
-    )
+    d, c = _inject_caption_context(caption_bindings=caption_bindings, d=d, spine=spine)
     corrections.extend(c)
-    flagged = flagged or f
 
     # 2.
-    d, c, f = _correct_outer_context(d=d, spine=spine)
+    d, c = _correct_outer_context(d=d, spine=spine)
     corrections.extend(c)
-    flagged = flagged or f
 
     # 3.
-    d, c, f = _relocate_local_roles(d=d, spine=spine)
+    d, c = _relocate_local_roles(d=d, spine=spine)
     corrections.extend(c)
-    flagged = flagged or f
 
     # 4.
     d, c = _correct_local_structure(d=d, spine=spine)
     corrections.extend(c)
 
     # 5.
-    c, f = _check_canonical_consistency(
+    c = _check_canonical_consistency(
         d=d, canonical_ctx=canonical_outer_context, spine=spine
     )
     corrections.extend(c)
-    flagged = flagged or f
 
     # 6.
     if d.decision_type in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED):
-        # These must be pure no-ops: empty context + empty outputs.
         if d.context_groupings or d.groupings or d.leaves or d.rows:
             corrections.append(
                 SpineCorrection(
@@ -208,11 +200,8 @@ def _apply_spine_to_single_decision(
         d.groupings = []
         d.leaves = []
         d.rows = []
-        flagged = False
 
     if d.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
-        # flagged_unresolved is allowed to be "context-only" (no
-        # groupings/leaves/rows), as long as *something* is emitted overall.
         has_any_output = bool(d.context_groupings or d.groupings or d.leaves or d.rows)
         if not has_any_output:
             corrections.append(
@@ -225,16 +214,14 @@ def _apply_spine_to_single_decision(
                 )
             )
             d.context_groupings = []
-            d.decision_type = SegmentDecisionType.UNRESOLVED  # pylint: disable=R0204
+            d.decision_type = SegmentDecisionType.UNRESOLVED
             d.groupings = []
             d.leaves = []
             d.rows = []
-            flagged = False
 
-    # Re-run pydantic validators after mutation; if it fails, demote deterministically.
     try:
         d = SegmentDecision.model_validate(d.model_dump())
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:  # pylint: disable=broad-exception-caught
         corrections.append(
             SpineCorrection(
                 kind="revalidate_failed",
@@ -251,10 +238,16 @@ def _apply_spine_to_single_decision(
                 "rows": [],
             }
         )
-        flagged = False
 
+        # Derive flagged_unresolved from the final decision_type. This covers both
+        # LLM-originated EMIT_FLAGGED_UNRESOLVED and spine-originated flags, and
+        # correctly reflects any demotions (to UNRESOLVED) that occurred above.
     return SpineDecisionResult(
-        corrected=d, corrections=corrections, flagged_unresolved=flagged
+        corrected=d,
+        corrections=corrections,
+        flagged_unresolved=(
+            d.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
+        ),
     )
 
 
@@ -331,7 +324,7 @@ def _check_canonical_consistency(
     d: SegmentDecision,
     canonical_ctx: list[GroupingDecision] | None,
     spine: SpineConfig,
-) -> tuple[list[SpineCorrection], bool]:
+) -> list[SpineCorrection]:
     """Check consistency with canonical outer context.
 
     Parameters
@@ -345,13 +338,11 @@ def _check_canonical_consistency(
 
     Returns
     -------
-    tuple[list[SpineCorrection], bool]
-        - Any corrections made.
-        - True if the decision was flagged as unresolved due to conflicts.
+    list[SpineCorrection]
+        List containing any corrections made.
     """
 
     corrections = []
-    should_flag = False
 
     if canonical_ctx is not None and d.segment_kind == "table":
         has_conflict, details = _outer_context_conflicts(
@@ -371,9 +362,8 @@ def _check_canonical_consistency(
 
             if spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED:
                 d.decision_type = SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
-                should_flag = True
 
-    return corrections, should_flag
+    return corrections
 
 
 def _correct_grouping_list(
@@ -568,7 +558,7 @@ def _correct_local_structure(
 
 def _correct_outer_context(
     *, d: SegmentDecision, spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection], bool]:
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Filter, normalize, and split outer context.
 
     Parameters
@@ -580,14 +570,12 @@ def _correct_outer_context(
 
     Returns
     -------
-    tuple[SegmentDecision, list[SpineCorrection], bool]
+    tuple[SegmentDecision, list[SpineCorrection]]
         - The corrected SegmentDecision.
         - Any corrections made.
-        - True if the decision was flagged as unresolved due to empty outer context.
     """
 
     corrections = []
-    should_flag = False
 
     # Keep table-local-only roles long enough to relocate them deterministically.
     outer_allow = list(spine.outer_context_roles or [])
@@ -618,7 +606,6 @@ def _correct_outer_context(
         and spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED
     ):
         d.decision_type = SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
-        should_flag = True
 
     # Apply outer normalizations.
     d.context_groupings, c = _apply_outer_normalizations(
@@ -626,7 +613,7 @@ def _correct_outer_context(
     )
     corrections.extend(c)
 
-    return d, corrections, should_flag
+    return d, corrections
 
 
 def _dedupe_groupings(
@@ -949,7 +936,7 @@ def _get_singleton_roles(
 
 def _handle_caption_conflicts(
     *, decision: SegmentDecision, msgs: list[str], spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection], bool]:
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Generate corrections and flags the decision if necessary.
 
     Parameters
@@ -963,16 +950,14 @@ def _handle_caption_conflicts(
 
     Returns
     -------
-    tuple[SegmentDecision, list[SpineCorrection], bool]
+    tuple[SegmentDecision, list[SpineCorrection]]
         - The corrected SegmentDecision.
         - Any corrections made.
-        - True if the decision was flagged as unresolved due to conflicts.
     """
 
     corrections = [
         SpineCorrection(detail=msg, kind="caption_context_conflict") for msg in msgs
     ]
-    flagged = False
 
     if (
         spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED
@@ -980,9 +965,8 @@ def _handle_caption_conflicts(
         not in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED)
     ):
         decision.decision_type = SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
-        flagged = True
 
-    return decision, corrections, flagged
+    return decision, corrections
 
 
 def _inject_caption_context(
@@ -990,7 +974,7 @@ def _inject_caption_context(
     caption_bindings: dict[str, CaptionBinding],
     d: SegmentDecision,
     spine: SpineConfig,
-) -> tuple[SegmentDecision, list[SpineCorrection], bool]:
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Inject outer context from caption if applicable.
 
     Parameters
@@ -1004,14 +988,13 @@ def _inject_caption_context(
 
     Returns
     -------
-    tuple[SegmentDecision, list[SpineCorrection], bool]
+    tuple[SegmentDecision, list[SpineCorrection]]
         - The corrected SegmentDecision.
         - Any corrections made.
-        - True if the decision was flagged as unresolved due to injection conflicts.
     """
 
     if d.segment_kind != "table":
-        return d, [], False
+        return d, []
 
     caption_binding = caption_bindings.get(d.segment_id)
 
@@ -1020,12 +1003,12 @@ def _inject_caption_context(
             caption_text=caption_binding.caption_text, decision=d, spine=spine
         )
 
-    return d, [], False
+    return d, []
 
 
 def _inject_outer_context_from_caption(
     *, caption_text: str, decision: SegmentDecision, spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection], bool]:
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Use caption text as deterministic evidence to *inject missing* outer-context
     anchors into decision.context_groupings.
 
@@ -1049,17 +1032,16 @@ def _inject_outer_context_from_caption(
 
     Returns
     -------
-    tuple[SegmentDecision, list[SpineCorrection], bool]
+    tuple[SegmentDecision, list[SpineCorrection]]
         - The corrected SegmentDecision.
         - Any corrections made.
-        - True if the decision was flagged as unresolved due to injection conflicts.
     """
 
     corrections: list[SpineCorrection] = []
     caption_text = (caption_text or "").strip()
 
     if not caption_text:
-        return decision, corrections, False
+        return decision, corrections
 
     # Normalize caption whitespace in the same way as grouping normalization.
     if spine.normalize.normalize_whitespace:
@@ -1072,13 +1054,13 @@ def _inject_outer_context_from_caption(
     corrections.extend(split_corr)
 
     if not derived:
-        return decision, corrections, False
+        return decision, corrections
 
     # Filter roles.
     derived = _filter_derived_roles(decision=decision, derived=derived, spine=spine)
 
     if not derived:
-        return decision, corrections, False
+        return decision, corrections
 
     # Analyze existing context (identify conflicts vs. merges).
     existing_all = list(decision.context_groupings or [])
@@ -1118,7 +1100,7 @@ def _inject_outer_context_from_caption(
     decision.context_groupings = new_context
     corrections.extend(merge_corrections)
 
-    return decision, corrections, False
+    return decision, corrections
 
 
 def _is_droppable_existing(
@@ -1508,15 +1490,16 @@ def _outer_context_conflicts(
 
 def _relocate_table_local_only_roles(
     *, decision: SegmentDecision, spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection], bool]:
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Move any spine.table_local_only_roles out of decision.context_groupings and into
     each row.groupings.
 
     Rules:
 
     1. Never introduces duplicate roles into a row.
-    2. If a row already has the same role but a *different* title, we cannot safely
-        resolve -> flag unresolved.
+    2. If a conflict exists between a table-local-only role in context and the same
+        role in a row (same role, different title), do NOT relocate that role into that
+        row, and record a correction. Do this for each row independently.
 
     Parameters
     ----------
@@ -1527,24 +1510,23 @@ def _relocate_table_local_only_roles(
 
     Returns
     -------
-    tuple[SegmentDecision, list[SpineCorrection], bool]
+    tuple[SegmentDecision, list[SpineCorrection]]
         - The corrected SegmentDecision.
         - Any corrections made.
-        - Whether the decision was flagged as unresolved.
     """
 
     corrections: list[SpineCorrection] = []
     local_only = set(spine.table_local_only_roles)
 
     if not local_only:
-        return decision, corrections, False
+        return decision, corrections
 
     moved: list[GroupingDecision] = [
         g for g in (decision.context_groupings or []) if g.role in local_only
     ]
 
     if not moved:
-        return decision, corrections, False
+        return decision, corrections
 
     # If there are no rows, we cannot relocate deterministically.
     if not decision.rows:
@@ -1556,10 +1538,10 @@ def _relocate_table_local_only_roles(
                     detail="No rows present to relocate table-local-only roles into; flagged unresolved.",
                 )
             )
-            return decision, corrections, True
+            return decision, corrections
 
         # Keep as is and do nothing.
-        return decision, corrections, False
+        return decision, corrections
 
     # Remove moved roles from outer context.
     decision.context_groupings = [
@@ -1573,7 +1555,6 @@ def _relocate_table_local_only_roles(
     )
 
     # Inject moved roles into each row, and avoid duplicates/contradictions.
-    flagged = False
     new_rows: list[RowDecision] = []
 
     for r in decision.rows:
@@ -1604,7 +1585,7 @@ def _relocate_table_local_only_roles(
                     )
 
                     # NB: Do NOT mark the whole decision as unresolved for a single
-                    # row-level ontradiction. We record the conflict and simply avoid
+                    # row-level contradiction. We record the conflict and simply avoid
                     # injecting the conflicting moved role into this row.
                     #
                     # NB: Do not add conflicting mg.
@@ -1620,12 +1601,12 @@ def _relocate_table_local_only_roles(
 
     decision.rows = new_rows
 
-    return decision, corrections, flagged
+    return decision, corrections
 
 
 def _relocate_local_roles(
     *, d: SegmentDecision, spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection], bool]:
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Relocate table-local roles if configured.
 
     Parameters
@@ -1637,16 +1618,15 @@ def _relocate_local_roles(
 
     Returns
     -------
-    tuple[SegmentDecision, list[SpineCorrection], bool]
+    tuple[SegmentDecision, list[SpineCorrection]]
         - The corrected SegmentDecision.
         - Any corrections made.
-        - Whether the decision was flagged as unresolved.
     """
 
     if d.segment_kind == "table" and spine.relocate_table_local_only_roles_to_rows:
         return _relocate_table_local_only_roles(decision=d, spine=spine)
 
-    return d, [], False
+    return d, []
 
 
 def apply_spine_policy_to_decision_set(
