@@ -163,7 +163,9 @@ def create_canonical_ir(
         existing_keys: set[tuple[str, Optional[int], Optional[int]]] = set()
         num_segments = len(document_ir.segments)
         segment_warnings_by_segment: dict[str, list[str]] = {}
-        segment_warnings_fp = creation_dirs.segment_decisions / "segment_warnings.json"
+        segment_warnings_fp = (
+            creation_dirs.segment_decisions / "segment_decision_warnings.json"
+        )
 
         for i, segment in enumerate(document_ir.segments, 1):
             logger.info(
