@@ -35,7 +35,7 @@
 	},
 	"canonical_ir": {
 		"always_double_check_first_attempt": false,
-		"canonical_grouping_min_confidence": 0.8,
+		"canonical_grouping_min_confidence": 0.5,
 		"canonicalization_skip_roles": [
 			"week",
 			"topic",
@@ -72,7 +72,7 @@
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
-		"segment_decision_conf_threshold": 0.6,
+		"segment_decision_conf_threshold": 0.5,
 		"spine_policy": {
 			"allow_partial_context": true,
 			"block_local_roles": [],
@@ -615,7 +615,7 @@
 			],
 			"violation_policy": "flag_unresolved"
 		},
-		"structural_leaf_warn_threshold": 0.6
+		"structural_leaf_warn_threshold": 0.5
 	},
 	"kgs": null
 }
