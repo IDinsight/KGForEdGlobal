@@ -340,6 +340,7 @@ def _check_structural_warnings(
         and section_path_text
     ):
         path_str = " / ".join([p for p in section_path_text if p])
+
         if path_str and _STRUCTURAL_CONTEXT_CUE_RE.search(path_str):
             pages_str = ",".join(str(p) for p in page_indices) if page_indices else "-"
             msg = (

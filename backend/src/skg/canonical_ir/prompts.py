@@ -64,7 +64,10 @@ SECTION_EXCLUSION_WORDS: list[str] = sorted(
 
 
 def decide_on_segment(
-    *, heading_role_hints: list[dict[str, str]], segment: dict[str, Any]
+    *,
+    heading_role_hints: list[dict[str, str]],
+    segment: dict[str, Any],
+    segment_decision_conf_threshold: float,
 ) -> DotMap:
     """Generate the prompts for deciding on a segment.
 
@@ -75,6 +78,9 @@ def decide_on_segment(
         the document, to be used as potential evidence for grouping roles.
     segment
         The segment dictionary containing segment details.
+    segment_decision_conf_threshold
+        The confidence threshold for segment decisions, used to guide the model's
+        choice between "obvious" and "ambiguous" outputs.
 
     Returns
     -------
@@ -198,9 +204,10 @@ If segment includes a `chunking` object:
 - NEVER put official codes into list_marker.
 
 ## 11. CONFIDENCE
-- ≥0.75: obvious mapping (clean competence rows, clear standards)
-- 0.50–0.74: mild ambiguity but likely resolvable
-- <0.50: ambiguous, unresolvable without guessing
+This run’s low-confidence cutoff is: {segment_decision_conf_threshold:.2f}
+- If your best confidence would be < {segment_decision_conf_threshold:.2f}, prefer
+  "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (emit best-effort outputs, but route to human review).
+- If the segment is clearly noise/furniture, use "{SegmentDecisionType.IGNORE.value}" even with high confidence.
 
 ## 12. DOCUMENT-SPECIFIC HEADING ROLE CONSTRAINTS
 The following heading patterns have FIXED role assignments for this document.

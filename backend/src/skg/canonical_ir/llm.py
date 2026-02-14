@@ -187,6 +187,7 @@ def _call_openai_api_to_decide_on_segment(
     row_range_start: int | None,
     segment: Segment,
     segment_payload: dict[str, Any] | None,
+    table_chunking: dict[str, Any] | None,
 ) -> SegmentDecision:
     """Wrapper for segment decision API calls with retries.
 
@@ -212,6 +213,9 @@ def _call_openai_api_to_decide_on_segment(
         The segment to decide on.
     segment_payload
         Optional additional payload for the segment.
+    table_chunking
+        Optional table chunking information to include in the payload for relevant
+        quality checks.
 
     Returns
     -------
@@ -273,6 +277,7 @@ def _call_openai_api_to_decide_on_segment(
             segment=segment,
             segment_decision=parsed,
             segment_payload=segment_payload,
+            table_chunking=table_chunking,
         )
     except (ValidationError, QualityError) as e:
         # Attach the raw output so the correction attempt can see what it wrote.
@@ -700,7 +705,9 @@ def generate_segment_decision(
     row_range_end: int | None = None,
     row_range_start: int | None = None,
     segment: Segment,
+    segment_decision_conf_threshold: float,
     segment_payload: dict[str, Any] | None = None,
+    table_chunking: dict[str, Any] | None = None,
 ) -> SegmentDecision:
     """Generate a SegmentDecision using the LLM with retries.
 
@@ -722,8 +729,13 @@ def generate_segment_decision(
         The optional row range start for table segments.
     segment
         The segment to decide on.
+    segment_decision_conf_threshold
+        The confidence threshold for the segment decision.
     segment_payload
         Optional additional payload for the segment.
+    table_chunking
+        Optional table chunking information to include in the payload for relevant
+        quality checks.
 
     Returns
     -------
@@ -739,7 +751,9 @@ def generate_segment_decision(
     """
 
     prompts = decide_on_segment(
-        heading_role_hints=heading_role_hints, segment=segment_payload
+        heading_role_hints=heading_role_hints,
+        segment=segment_payload,
+        segment_decision_conf_threshold=segment_decision_conf_threshold,
     )
     instructions = prompts.system_message
     input_items = [
@@ -762,6 +776,7 @@ def generate_segment_decision(
                 row_range_start=row_range_start,
                 segment=segment,
                 segment_payload=segment_payload,
+                table_chunking=table_chunking,
             )
         except QualityError as e:
             if attempt == max_retries:
@@ -932,6 +947,7 @@ def verify_segment_decision_quality(
     segment: Segment,
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None = None,
+    table_chunking: dict[str, Any] | None = None,
 ) -> None:
     """Validate the quality of a segment decision.
 
@@ -947,6 +963,9 @@ def verify_segment_decision_quality(
         The SegmentDecision to validate.
     segment_payload
         Optional additional payload for the segment.
+    table_chunking
+        Optional table chunking information to include in the payload for relevant
+        quality checks.
 
     Raises
     ------
@@ -966,6 +985,7 @@ def verify_segment_decision_quality(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
+        table_chunking=table_chunking,
     )
     validate_table_row_index(segment=segment, segment_decision=segment_decision)
     validate_unique_table_rows(segment=segment, segment_decision=segment_decision)
@@ -1002,16 +1022,18 @@ def verify_segment_decision_quality(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
+        table_chunking=table_chunking,
     )
     validate_chunked_table_context_matches_prior_context(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
+        table_chunking=table_chunking,
     )
     validate_chunked_table_outer_anchors_in_context_groupings(
-        segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
+        table_chunking=table_chunking,
     )
     validate_table_context_groupings_exclude_row_local_roles(
         segment=segment, segment_decision=segment_decision
@@ -1020,6 +1042,7 @@ def verify_segment_decision_quality(
         segment=segment,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
+        table_chunking=table_chunking,
     )
     validate_row_groupings_no_duplicate_roles(
         segment=segment, segment_decision=segment_decision

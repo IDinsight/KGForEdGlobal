@@ -487,7 +487,9 @@ def _normalize_leaf_body(body: str) -> str:
     1. Unicode normalize (NFKC)
     2. Normalize quotes/dashes
     3. Collapse whitespace
-    4. Normalize spacing after ":" (no capitalization changes)
+    4. Normalize spacing around colons (but only when followed by non-space, non-digit
+        to avoid corrupting code-like strings such as "CE1:NUM1" or times/ratios like
+        "10:30" or "1:2").
 
     Parameters
     ----------
@@ -506,10 +508,15 @@ def _normalize_leaf_body(body: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
 
     # Normalize colon spacing ONLY when a non-space follows the colon.
+    #
     # Examples:
     #   "Skills:use blends"   -> "Skills: use blends"
     #   "Skills:  use blends" -> "Skills: use blends"
-    s = re.sub(r":\s*(?=\S)", ": ", s)
+    #
+    # In addition, only insert a space after ":" when the next char is NOT a digit to
+    # avoid corrupting times/ratios like "10:30" or "1:2".
+    s = re.sub(r":\s*(?=[^\d\s])", ": ", s)
+
     s = re.sub(r"\s+", " ", s).strip()
 
     return s
@@ -616,6 +623,7 @@ def _process_block_segment(
         heading_role_hints=config.heading_role_hints,
         model=config.model,
         segment=segment,
+        segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         segment_payload=segment_payload,
     )
 
@@ -696,13 +704,12 @@ def _process_chunked_table(
     for i, (start, end) in enumerate(chunks_sorted):
         key = (segment.segment_id, start, end)
         assert key not in existing_keys, f"Duplicate chunk key found: {key}"
-        table_payload = make_table_chunk_payload(
+        table_payload, chunking = make_table_chunk_payload(
             end=end, heading_levels=heading_levels, segment=segment, start=start
         )
 
         # Mark first chunk for validation.
-        table_payload.setdefault("chunking", {})
-        table_payload["chunking"]["is_first_chunk"] = i == 0
+        chunking["is_first_chunk"] = i == 0
 
         table_payload = apply_caption_binding_to_table_payload(
             caption_binding=caption_binding, table_payload=table_payload
@@ -734,7 +741,9 @@ def _process_chunked_table(
             row_range_end=end,
             row_range_start=start,
             segment=segment,
+            segment_decision_conf_threshold=config.segment_decision_conf_threshold,
             segment_payload=table_payload,
+            table_chunking=chunking,
         )
         segment_decision = attach_caption_binding_to_segment_decision(
             caption_binding=caption_binding, segment_decision=segment_decision
@@ -904,7 +913,7 @@ def _process_unchunked_table(
     ), f"Duplicate unchunked key: {unchunked_key}"
 
     # Build table payload.
-    table_payload = make_table_full_payload(
+    table_payload, chunking = make_table_full_payload(
         heading_levels=heading_levels, segment=segment
     )
     table_payload = apply_caption_binding_to_table_payload(
@@ -921,7 +930,9 @@ def _process_unchunked_table(
         heading_role_hints=config.heading_role_hints,
         model=config.model,
         segment=segment,
+        segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         segment_payload=table_payload,
+        table_chunking=chunking,
     )
     segment_decision = attach_caption_binding_to_segment_decision(
         caption_binding=caption_binding, segment_decision=segment_decision
@@ -1369,7 +1380,7 @@ def make_table_chunk_payload(
     heading_levels: dict[str, int],
     segment: TableSegment,
     start: int,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a table chunk payload for the LLM as follows:
 
     1. Keep table metadata + headers
@@ -1380,9 +1391,6 @@ def make_table_chunk_payload(
        (context-only; the LLM MUST NOT emit RowDecision for these rows).
     6. Adds `context_rows_after` containing up to M rows immediately following `end`
        (context-only; the LLM MUST NOT emit RowDecision for these rows).
-    7. If `rows_filldown` exists in the segment, uses it to produce a fill-down view of
-       ONLY the decision rows. The filled rows become the main `rows` payload, and the
-       raw visual decision rows are preserved under `rows_original`.
 
     Parameters
     ----------
@@ -1401,8 +1409,8 @@ def make_table_chunk_payload(
 
     Returns
     -------
-    dict[str, Any]
-        The table chunk payload.
+    tuple[dict[str, Any], dict[str, Any]]
+        The table payload for the LLM and the chunking metadata.
     """
 
     seg = segment.model_dump(
@@ -1422,7 +1430,7 @@ def make_table_chunk_payload(
     # information outside the chunk. NB: We intentionally KEEP rows_filldown here (if
     # present) but slice it down to the decision-row window so it does not expose the
     # entire table.
-    for k in ("rows_grid", "grid_sources", "row_provenance"):
+    for k in ("grid_sources", "header_rows", "rows_grid", "row_provenance"):
         seg.pop(k, None)
 
     full_rows_raw = seg.get("rows") or []
@@ -1484,9 +1492,6 @@ def make_table_chunk_payload(
     # Primary decision rows (potentially fill-down adjusted)/
     seg["rows"] = decision_rows_payload
 
-    # Preserve raw visual decision rows for audit/debug.
-    seg["rows_original"] = decision_rows_raw
-
     # Preserve context rows separately (raw visual).
     seg["context_rows_before"] = context_rows_before_payload
     seg["context_rows_after"] = context_rows_after_payload
@@ -1497,7 +1502,11 @@ def make_table_chunk_payload(
     else:
         seg.pop("rows_filldown", None)
 
-    seg["chunking"] = {
+    # Remove header_rows (redundant with header_rows_canonical).
+    seg.pop("header_rows", None)
+
+    # Build chunking metadata separately (not sent to LLM).
+    chunking = {
         "is_chunked": True,
         "row_range_start": start,
         "row_range_end": end,
@@ -1510,15 +1519,14 @@ def make_table_chunk_payload(
         "context_rows_after_end": ctx_after_end,
         "context_rows_after_count": len(context_rows_after_payload),
         "rows_are_filldown_view": use_filldown,
-        "rows_original_preserved": True,
     }
 
-    return seg
+    return seg, chunking
 
 
 def make_table_full_payload(
     *, heading_levels: dict[str, int], segment: TableSegment
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a FULL (unchunked) table payload for the LLM.
 
     This mirrors `make_table_chunk_payload` but includes ALL rows. Critically, it:
@@ -1537,8 +1545,8 @@ def make_table_full_payload(
 
     Returns
     -------
-    dict[str, Any]
-        The full table payload.
+    tuple[dict[str, Any], dict[str, Any]]
+        The table payload and chunking metadata.
     """
 
     table_payload = segment.model_dump(
@@ -1562,17 +1570,18 @@ def make_table_full_payload(
     use_filldown = isinstance(rows_filldown, list) and len(rows_filldown) == len(rows)
 
     if use_filldown:
-        table_payload["rows_original"] = table_payload["rows"]
-        table_payload["rows_original_preserved"] = True
-
-        # Store rows_filldown here before removing.
+        # Swap rows with filldown view (don't preserve rows_original).
         table_payload["rows"] = table_payload["rows_filldown"]
-    else:
-        table_payload["rows_original_preserved"] = False
 
     # NB: Remove derived structures that bloat the prompt. We intentionally keep the
     # filldown effect by swapping seg["rows"] above.
-    for k in ("rows_grid", "rows_filldown", "grid_sources", "row_provenance"):
+    for k in (
+        "grid_sources",
+        "header_rows",
+        "rows_filldown",
+        "rows_grid",
+        "row_provenance",
+    ):
         table_payload.pop(k, None)
 
     rows = table_payload.get("rows") or []
@@ -1582,7 +1591,9 @@ def make_table_full_payload(
         row["abs_row_index"] = abs_i
 
     table_payload["rows"] = rows
-    table_payload["chunking"] = {
+
+    # Build chunking metadata separately (not sent to LLM).
+    chunking = {
         "is_chunked": False,
         "row_range_start": 0,
         "row_range_end": len(rows),
@@ -1590,7 +1601,7 @@ def make_table_full_payload(
         "row_index_is_absolute": True,
     }
 
-    return table_payload
+    return table_payload, chunking
 
 
 def process_segment_decisions(

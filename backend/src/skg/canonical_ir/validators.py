@@ -720,6 +720,7 @@ def validate_chunked_table_context_matches_prior_context(
     segment: Segment,
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None,
+    table_chunking: dict[str, Any] | None = None,
 ) -> None:
     """For chunked table segments, enforce that non-first chunks reuse the exact same
     outer context stack.
@@ -739,6 +740,8 @@ def validate_chunked_table_context_matches_prior_context(
         The SegmentDecision to validate.
     segment_payload
         The payload dictionary for the Segment being decided on.
+    table_chunking
+        Optional pre-parsed chunking dictionary from the segment payload.
 
     Raises
     ------
@@ -746,10 +749,10 @@ def validate_chunked_table_context_matches_prior_context(
         If any quality checks fail.
     """
 
-    if segment_payload is None or segment.kind != "table":
+    if segment_payload is None and table_chunking is None:
         return
 
-    chunking = segment_payload.get("chunking") or {}
+    chunking = table_chunking or {}
 
     # NB: Only enforce this rule for chunked-table payloads (i.e. payloads that were
     # produced by make_table_chunk_payload). Full-table payloads also include a
@@ -770,7 +773,7 @@ def validate_chunked_table_context_matches_prior_context(
     if bool(is_first_chunk):
         return
 
-    prior = segment_payload.get("prior_context_groupings")
+    prior = segment_payload.get("prior_context_groupings") if segment_payload else None
 
     if prior is None:
         prior = []
@@ -807,6 +810,7 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
     segment: Segment,
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None,
+    table_chunking: dict[str, Any] | None = None,
 ) -> None:
     """For chunked table segments, enforce that the first chunk must not be IGNORE or
     UNRESOLVED, since later chunks must reuse the first chunk's context.
@@ -819,6 +823,8 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
         The SegmentDecision to validate.
     segment_payload
         The payload dictionary for the Segment being decided on.
+    table_chunking
+        Optional pre-parsed chunking dictionary from the segment payload.
 
     Raises
     ------
@@ -826,10 +832,10 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
         If any quality checks fail.
     """
 
-    if segment_payload is None or segment.kind != "table":
+    if segment_payload is None and table_chunking is None:
         return
 
-    chunking = segment_payload.get("chunking") or {}
+    chunking = table_chunking or {}
 
     if not bool(chunking.get("is_chunked", False)):
         return
@@ -863,9 +869,9 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
 
 def validate_chunked_table_outer_anchors_in_context_groupings(
     *,
-    segment: Segment,
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None,
+    table_chunking: dict[str, Any] | None = None,
 ) -> None:
     """For CHUNKED table segments, require table-wide OUTER anchor groupings to be
     expressed in `context_groupings[]`, not segment-level `groupings[]`.
@@ -879,12 +885,12 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
 
     Parameters
     ----------
-    segment
-        The Segment being decided on.
     segment_decision
         The SegmentDecision to validate.
     segment_payload
         The payload dictionary for the Segment being decided on.
+    table_chunking
+        Optional pre-parsed chunking dictionary from the segment payload.
 
     Raises
     ------
@@ -892,10 +898,10 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
         If any quality checks fail.
     """
 
-    if segment_payload is None or segment.kind != "table":
+    if segment_payload is None and table_chunking is None:
         return
 
-    chunking = segment_payload.get("chunking") or {}
+    chunking = table_chunking or {}
 
     if not bool(chunking.get("is_chunked", False)):
         return
@@ -1159,6 +1165,7 @@ def validate_context_groupings_supported_by_outer_evidence(
     segment: Segment,
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None,
+    table_chunking: dict[str, Any] | None = None,
 ) -> None:
     """`context_groupings[]` must be supported by OUTER evidence:
 
@@ -1176,6 +1183,8 @@ def validate_context_groupings_supported_by_outer_evidence(
         The SegmentDecision to validate.
     segment_payload
         The payload dictionary for the Segment being decided on.
+    table_chunking
+        Optional pre-parsed chunking dictionary from the segment payload.
 
     Raises
     ------
@@ -1214,7 +1223,7 @@ def validate_context_groupings_supported_by_outer_evidence(
     # when the role is a stable outer role and the current segment's outer evidence
     # does not contradict it.
     prior = payload.get("prior_context_groupings") or []
-    chunking = payload.get("chunking") or {}
+    chunking = table_chunking or {}
     is_first_chunk = bool(chunking.get("is_first_chunk", False))
     is_chunked = bool(chunking.get("is_chunked", False))
     is_first_chunk_of_chunked = is_chunked and is_first_chunk
@@ -1790,6 +1799,7 @@ def validate_row_groupings_supported_by_row_cells(
     segment: Segment,
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None,
+    table_chunking: dict[str, Any] | None = None,
 ) -> None:
     """Row-local groupings must be grounded in the row's visible cell text. This
     prevents hallucinated Topic/Subtopic/Code values. Only enforced for TABLE segments
@@ -1803,6 +1813,8 @@ def validate_row_groupings_supported_by_row_cells(
         The SegmentDecision to validate.
     segment_payload
         The payload dictionary for the Segment being decided on.
+    table_chunking
+        Optional pre-parsed chunking dictionary from the segment payload.
 
     Raises
     ------
@@ -1857,7 +1869,8 @@ def validate_row_groupings_supported_by_row_cells(
                     f"  unsupported_title: {g.title}"
                 )
 
-    chunking = payload.get("chunking") or {}
+    chunking = table_chunking or {}
+
     if chunking.get("row_index_is_absolute") and segment_decision.rows:
         missing = sorted(
             {
