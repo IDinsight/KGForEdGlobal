@@ -186,7 +186,7 @@ def create_canonical_ir(
                 else None
             )
 
-            logger.debug(f"\n{i = } | {segment = }")
+            logger.debug(f"\n{segment = }")
             logger.debug(f"{prev_seg_hint = }")
             logger.debug(f"{next_seg_hint = }\n")
 
