@@ -30,6 +30,23 @@ from skg.utils.constants import (
 
 # Compiled regexes.
 _CODE_LIKE_RE = re.compile(r"^[A-Za-z]?\d+(?:[.\-]\d+){1,}$")
+_CURRICULUM_HINT_RE = re.compile(
+    r"\b("
+    r"grade|standard|class|form|stage|level|"
+    r"subject|learning area|"
+    r"theme|sub[- ]?theme|strand|topic|sub[- ]?topic|"
+    r"unit|module|chapter|week|term|section|"
+    # French curriculum keywords
+    r"palier|[eéèë]tape|niveau|semaine|comp[eé]tence|"
+    r"apprentissages?|activit[eé]s?|planification|domaine|"
+    # Wolof curriculum keywords (Senegal bilingual)
+    r"j[eéë]ego|tolluwaay"
+    r")\b"
+    r"|\bp\d+\b"  # P1/P2 style
+    r"|\b[ivx]{1,7}\b"  # I–VII roman numerals
+    r"|\bce\s*\d+\b",  # CE1/CE2 Senegalese grade levels
+    flags=re.IGNORECASE,
+)
 _DASH_RE = re.compile(r"[‐-‒–—−]")  # Common unicode dash characters
 _GRADE_MARKER_RE = re.compile(
     r"\b(?:p\.?|primary|grade|class|std\.?|standard)\s*([0-9]{1,2}|[ivx]{1,5})\b",
@@ -1025,25 +1042,7 @@ def validate_context_groupings_required_for_emit(
     meaningful_heading_texts: list[str] = []
 
     # Positive curriculum structure cues (general, country-agnostic). Avoid treating
-    # institutional front-matter headings as meaningful hierarchy context.
-    curriculum_hint_re = re.compile(
-        r"\b("
-        r"grade|standard|class|form|stage|level|"
-        r"subject|learning area|"
-        r"theme|sub[- ]?theme|strand|topic|sub[- ]?topic|"
-        r"unit|module|chapter|week|term|section|"
-        # French curriculum keywords
-        r"palier|[eéèë]tape|niveau|semaine|comp[eé]tence|"
-        r"apprentissages?|activit[eé]s?|planification|domaine|"
-        # Wolof curriculum keywords (Senegal bilingual)
-        r"j[eéë]ego|tolluwaay"
-        r")\b"
-        r"|\bp\d+\b"  # P1/P2 style
-        r"|\b[ivx]{1,7}\b"  # I–VII roman numerals
-        r"|\bce\s*\d+\b",  # CE1/CE2 Senegalese grade levels
-        flags=re.IGNORECASE,
-    )
-
+    # institutional front-matter headings as meaningful hierarchy context
     for h in section_path:
         t = ""
 
@@ -1058,7 +1057,7 @@ def validate_context_groupings_required_for_emit(
             continue
 
         # Only count headings that look like curriculum structure.
-        if not curriculum_hint_re.search(tn):
+        if not _CURRICULUM_HINT_RE.search(tn):
             continue
 
         meaningful_heading_texts.append(t)
@@ -1209,7 +1208,16 @@ def validate_context_groupings_supported_by_outer_evidence(
     header_strings = [
         c for r in header_rows for c in r if isinstance(c, str) and c.strip()
     ]
-    evidence_blob = _normalize_text(" \n ".join([*headings, caption, *header_strings]))
+
+    # Include heading-role-hint patterns as supplementary outer evidence. These
+    # patterns are document-specific config entries that the LLM prompt uses as FIXED
+    # role assignments. Accepting them as evidence prevents the validator from
+    # rejecting context titles that the LLM correctly derived from a hint-matched
+    # heading.
+    hint_patterns: list[str] = payload.get("_heading_role_hint_patterns") or []
+    evidence_blob = _normalize_text(
+        " \n ".join([*headings, caption, *header_strings, *hint_patterns])
+    )
 
     # If there is NO outer evidence at all, we can't enforce this strictly.
     if not evidence_blob.strip():
@@ -1219,15 +1227,29 @@ def validate_context_groupings_supported_by_outer_evidence(
     # the first chunk of a chunked table (which must anchor strictly from outer
     # evidence to establish the stable context for later chunks).
     #
-    # This aligns with the prompt's carry-forward rule: prior context may be re-used
-    # when the role is a stable outer role and the current segment's outer evidence
-    # does not contradict it.
+    # EXCEPTION: If the table's header rows contain NO curriculum keywords (e.g.,
+    # ["Langues", "L1", "L2", "L1", "L2"]), the header evidence is too thin to anchor
+    # from. In that case, allow carry-forward from prior context even on the first
+    # chunk--the heading-based section_path context is the only meaningful anchor
+    # available.
     prior = payload.get("prior_context_groupings") or []
     chunking = table_chunking or {}
     is_first_chunk = bool(chunking.get("is_first_chunk", False))
     is_chunked = bool(chunking.get("is_chunked", False))
     is_first_chunk_of_chunked = is_chunked and is_first_chunk
-    allow_prior_titles = bool(prior) and not is_first_chunk_of_chunked
+
+    # Detect whether header_rows_canonical contains any curriculum-relevant keywords.
+    _headers_blob = _normalize_text(" ".join(header_strings))
+    _headers_have_curriculum_cues = bool(
+        _headers_blob and _CURRICULUM_HINT_RE.search(_headers_blob)
+    )
+
+    # Only block carry-forward on first chunk when headers provide real curriculum
+    # evidence. If headers are non-curricular (language labels, generic column names,
+    # etc.), the prior context is the only usable anchor.
+    allow_prior_titles = bool(prior) and not (
+        is_first_chunk_of_chunked and _headers_have_curriculum_cues
+    )
 
     prior_titles_norm: set[str] = set()
 

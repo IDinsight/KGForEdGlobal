@@ -756,6 +756,16 @@ def generate_segment_decision(
         segment_decision_conf_threshold=segment_decision_conf_threshold,
     )
     instructions = prompts.system_message
+
+    # Expose heading-role-hint patterns as supplementary outer evidence so that
+    # validate_context_groupings_supported_by_outer_evidence() can accept context
+    # titles that match a known hint pattern (even if the heading was filtered from
+    # section_path by page-distance limits).
+    if heading_role_hints and segment_payload is not None:
+        segment_payload["_heading_role_hint_patterns"] = [
+            h["pattern"] for h in heading_role_hints if h.get("pattern")
+        ]
+
     input_items = [
         {
             "role": "user",
@@ -794,34 +804,21 @@ def generate_segment_decision(
                     }
                 )
 
-            if always_double_check_first_attempt and attempt == 0:
-                input_items.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": double_check_decision_on_segment().user_message,
-                            }
-                        ],
-                    }
-                )
-            else:
-                input_items.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    f"Your previous output had issues and must be corrected.\n"
-                                    f"ERROR: {str(e)}\n\n"
-                                    f"Return a complete SegmentDecision that matches the schema and fixes the issue."
-                                ),
-                            }
-                        ],
-                    }
-                )
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                double_check_decision_on_segment().user_message
+                                if always_double_check_first_attempt and attempt == 0
+                                else f"Your previous output had issues and must be corrected.\nERROR: {str(e)}\n\nReturn a complete SegmentDecision that matches the schema and fixes the issue."
+                            ),
+                        }
+                    ],
+                }
+            )
             continue
         except Exception as e:  # pylint: disable=broad-except
             # Let transient errors propagate (tenacity should cover most of these).

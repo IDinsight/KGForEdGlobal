@@ -1419,8 +1419,20 @@ def make_table_chunk_payload(
     assert (
         segment.slices
     ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
+
+    # For multi-page tables, widen the page-distance window so that headings appearing
+    # before the table start are retained. The default of 3 is too narrow for tables
+    # spanning many pages--the relevant strand/unit heading may be several pages before
+    # the first row.
+    _first_page = segment.slices[0].page_index
+    _last_page = (
+        segment.slices[-1].page_index if len(segment.slices) > 1 else _first_page
+    )
+    _table_page_span = max(0, _last_page - _first_page)
+
     seg["section_path"] = _filter_section_path_for_llm(
         heading_levels=heading_levels,
+        max_page_distance=max(3, _table_page_span + 3),
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
         segment_page_index=segment.slices[0].page_index,
@@ -1555,8 +1567,16 @@ def make_table_full_payload(
     assert (
         segment.slices
     ), f"Segment {segment.segment_id} has no slices; cannot determine page context."
+
+    _first_page = segment.slices[0].page_index
+    _last_page = (
+        segment.slices[-1].page_index if len(segment.slices) > 1 else _first_page
+    )
+    _table_page_span = max(0, _last_page - _first_page)
+
     table_payload["section_path"] = _filter_section_path_for_llm(
         heading_levels=heading_levels,
+        max_page_distance=max(3, _table_page_span + 3),
         section_paths=segment.section_path,
         segment_item_index=segment.slices[0].item_index,
         segment_page_index=segment.slices[0].page_index,
