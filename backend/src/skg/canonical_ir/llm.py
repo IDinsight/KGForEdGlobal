@@ -220,8 +220,9 @@ def _call_openai_api_to_decide_on_segment(
     segment_payload
         Optional additional payload for the segment.
     table_chunking
-        Optional table chunking information to include in the payload for relevant
-        quality checks.
+        Optional chunking metadata used by downstream quality checks. This is typically
+        produced alongside the segment payload builders; for chunked tables it may also
+        be present in `segment_payload["chunking"]`.
 
     Returns
     -------
@@ -771,7 +772,7 @@ def generate_segment_decision(
     """Generate a SegmentDecision using the LLM with retries.
 
     Parameters
-    ----------'
+    ----------
     always_double_check_first_attempt
         Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     doc_key
@@ -793,8 +794,9 @@ def generate_segment_decision(
     segment_payload
         Optional additional payload for the segment.
     table_chunking
-        Optional table chunking information to include in the payload for relevant
-        quality checks.
+        Optional chunking metadata used by quality validators. For chunked tables, the
+        caller may also inject this into the LLM payload as
+        `segment_payload["chunking"]`, so the prompt’s chunking rules apply.
 
     Returns
     -------
@@ -1025,8 +1027,8 @@ def verify_segment_decision_quality(
     segment_payload
         Optional additional payload for the segment.
     table_chunking
-        Optional table chunking information to include in the payload for relevant
-        quality checks.
+        Optional chunking metadata used by table-related quality validators. For
+        chunked tables this may also exist in `segment_payload["chunking"]`.
 
     Raises
     ------

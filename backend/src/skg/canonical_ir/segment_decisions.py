@@ -782,6 +782,10 @@ def _process_chunked_table(
         # Mark first chunk for validation.
         chunking["is_first_chunk"] = i == 0
 
+        # Include chunking metadata in the payload sent to the LLM so the prompt's
+        # "CHUNKED TABLES" rules activate.
+        table_payload["chunking"] = dict(chunking)
+
         table_payload = apply_caption_binding_to_table_payload(
             caption_binding=caption_binding, table_payload=table_payload
         )
@@ -1479,7 +1483,9 @@ def make_table_chunk_payload(
     1. Keep table metadata + headers
     2. Replace `rows` with ONLY the rows in [start,end)
     3. Adds abs_row_index to each provided row
-    4. Adds a `chunking` object so prompts can instruct absolute indexing
+    4. Returns a lightweight `chunking` dict (row_range_start/end, absolute indexing,
+       context window bounds). The caller injects it into the LLM payload as
+       `payload["chunking"]` so the prompt’s chunking rules activate.
     5. Adds `context_rows_before` containing up to N rows immediately preceding `start`
        (context-only; the LLM MUST NOT emit RowDecision for these rows).
     6. Adds `context_rows_after` containing up to M rows immediately following `end`
@@ -1503,7 +1509,8 @@ def make_table_chunk_payload(
     Returns
     -------
     tuple[dict[str, Any], dict[str, Any]]
-        The table payload for the LLM and the chunking metadata.
+        The table payload for the LLM and the chunking metadata (returned separately;
+        caller may also include it in the payload under `chunking`).
     """
 
     seg = segment.model_dump(
@@ -1608,7 +1615,7 @@ def make_table_chunk_payload(
     # Remove header_rows (redundant with header_rows_canonical).
     seg.pop("header_rows", None)
 
-    # Build chunking metadata separately (not sent to LLM).
+    # Build chunking metadata.
     chunking = {
         "is_chunked": True,
         "row_range_start": start,
@@ -1635,9 +1642,12 @@ def make_table_full_payload(
     This mirrors `make_table_chunk_payload` but includes ALL rows. Critically, it:
 
     1. Prefers `rows_filldown` (if available) so row-level groupings are grounded
-        in-row (raw visual rows are preserved under `rows_original`).
-    2. Adds `abs_row_index` to every row so validators can enforce grounding
-    3. Adds a lightweight `chunking` object indicating absolute indices
+        in-row by swapping `rows` to the fill-down view. It does NOT preserve a
+        separate `rows_original` payload (we keep prompts small).
+    2. Adds `abs_row_index` to every row so validators can enforce grounding.
+    3. Returns a lightweight `chunking` dict indicating absolute indices
+        (is_chunked=False). By default this chunking dict is returned separately (not
+        embedded in the payload) unless a caller injects it.
 
     Parameters
     ----------
