@@ -758,7 +758,8 @@ def validate_chunked_table_context_matches_prior_context(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary from the segment payload.
+        Optional pre-parsed chunking dictionary derived from segment payload builders;
+        for chunked tables it may also be present as `segment_payload["chunking"]`.
 
     Raises
     ------
@@ -841,7 +842,8 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary from the segment payload.
+        Optional pre-parsed chunking dictionary derived from segment payload builders;
+        for chunked tables it may also be present as `segment_payload["chunking"]`.
 
     Raises
     ------
@@ -907,7 +909,8 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary from the segment payload.
+        Optional pre-parsed chunking dictionary derived from segment payload builders;
+        for chunked tables it may also be present as `segment_payload["chunking"]`.
 
     Raises
     ------
@@ -1183,7 +1186,8 @@ def validate_context_groupings_supported_by_outer_evidence(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary from the segment payload.
+        Optional pre-parsed chunking dictionary derived from segment payload builders;
+        for chunked tables it may also be present as `segment_payload["chunking"]`.
 
     Raises
     ------
@@ -1881,7 +1885,8 @@ def validate_row_groupings_supported_by_row_cells(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary from the segment payload.
+        Optional pre-parsed chunking dictionary derived from segment payload builders;
+        for chunked tables it may also be present as `segment_payload["chunking"]`.
 
     Raises
     ------
