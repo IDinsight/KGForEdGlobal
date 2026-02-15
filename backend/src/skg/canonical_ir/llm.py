@@ -1,6 +1,7 @@
 """This module contains functionalities related to LLM calls for canonical IR creation."""
 
 # Standard Library
+from collections import defaultdict
 from typing import Any
 
 # Third Party Library
@@ -560,6 +561,11 @@ def generate_heading_levels(
 
     level_map: dict[str, int] = {}
 
+    # Build a normalized-key index so we can detect collisions created by normalization
+    # (e.g., punctuation/dash/whitespace variants). We resolve collisions
+    # deterministically and record them for audit.
+    by_norm: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
     # Map results back to heading text.
     for entry in entries:
         idx = entry.index
@@ -570,18 +576,57 @@ def generate_heading_levels(
 
         text = headings[idx]["text"]
         norm = normalize_heading_key(text)
-        level_map[norm] = level
+        by_norm[norm].append({"index": idx, "text": text, "level": level})
+
+    collisions_report: list[dict[str, Any]] = []
+
+    # Resolve collisions deterministically: choose the maximum level; if there is a
+    # tie, choose the smallest heading index. Emit a warning + write an audit file.
+    for norm, items in sorted(by_norm.items(), key=lambda kv: kv[0]):
+        if len(items) == 1:
+            level_map[norm] = items[0]["level"]
+            continue
+
+        max_level = max(it["level"] for it in items)
+        tied = [it for it in items if it["level"] == max_level]
+        chosen = min(tied, key=lambda it: it["index"])
+        level_map[norm] = max_level
+        collisions_report.append(
+            {
+                "normalized_key": norm,
+                "resolution": "max_level_then_smallest_index",
+                "chosen": {
+                    "index": chosen["index"],
+                    "text": chosen["text"],
+                    "level": max_level,
+                },
+                "candidates": sorted(items, key=lambda it: it["index"]),
+            }
+        )
 
     level_map = dict(sorted(level_map.items()))
+
+    if collisions_report:
+        logger.warning(
+            f"Heading normalization collisions detected while generating heading levels: "
+            f"{len(collisions_report)} normalized keys had >1 source heading."
+        )
+        collisions_fp = creation_dirs.root / "heading_level_collisions.json"
+
+        logger.info(f"Saving heading collision audit to: {collisions_fp}")
+
+        write_to_json(fp=collisions_fp, json_info=collisions_report)
 
     logger.info(f"Saving heading levels to: {heading_levels_fp}")
 
     write_to_json(fp=heading_levels_fp, json_info=level_map)
 
+    non_structural = sum(1 for v in level_map.values() if v == 0)
+
     logger.success(
         f"Saved heading levels to: {heading_levels_fp}. "
-        f"Non-structural (level 0): "
-        f"{sum(1 for v in level_map.values() if v == 0)}/{len(level_map)}"
+        f"Non-structural (level 0): {non_structural}/{len(level_map)} "
+        f"(normalized keys; source headings={len(headings)})"
     )
 
     return level_map
