@@ -119,7 +119,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
+							"title_template": "ÉTAPE \\1"
 						},
 						{
 							"role": "subject",
@@ -133,7 +133,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
+							"title_template": "ÉTAPE \\1"
 						},
 						{
 							"role": "subject",
@@ -147,7 +147,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
+							"title_template": "ÉTAPE \\1"
 						}
 					]
 				},
@@ -157,7 +157,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
+							"title_template": "ÉTAPE \\1"
 						}
 					]
 				},
@@ -167,7 +167,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE 2 \\1"
+							"title_template": "ÉTAPE 2"
 						},
 						{
 							"role": "subject",
@@ -181,7 +181,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE 2 \\1"
+							"title_template": "ÉTAPE 2"
 						},
 						{
 							"role": "subject",
@@ -195,7 +195,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
+							"title_template": "ÉTAPE \\1"
 						},
 						{
 							"role": "subject",
@@ -209,7 +209,7 @@
 					"emit": [
 						{
 							"role": "stage",
-							"title_template": "ÉTAPE \\1 \\2"
+							"title_template": "ÉTAPE \\1"
 						},
 						{
 							"role": "subject",
@@ -319,6 +319,26 @@
 				},
 				{
 					"apply_to": "outer_context",
+					"match": "^.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE 2"
+						}
+					]
+				},
+				{
+					"apply_to": "block_local",
+					"match": "^.*\\bdeuxi[eè]me\\s+[eéèë]tape\\b\\s*$",
+					"emit": [
+						{
+							"role": "stage",
+							"title_template": "ÉTAPE 2"
+						}
+					]
+				},
+				{
+					"apply_to": "outer_context",
 					"match": "^.*\\b(?:niveau)\\s*1\\s*[:\\-–]\\s*CE\\s*1\\b.*$",
 					"emit": [
 						{
@@ -359,7 +379,7 @@
 				},
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\bCE\\s*1\\b\\s*$",
+					"match": "^.*(?<![-\\u2013])\\bCE\\s*1\\b\\s*$",
 					"emit": [
 						{
 							"role": "grade_level",
@@ -369,7 +389,7 @@
 				},
 				{
 					"apply_to": "outer_context",
-					"match": "^.*\\bCE\\s*2\\b\\s*$",
+					"match": "^.*(?<![-\\u2013])\\bCE\\s*2\\b\\s*$",
 					"emit": [
 						{
 							"role": "grade_level",
@@ -379,7 +399,7 @@
 				},
 				{
 					"apply_to": "block_local",
-					"match": "^.*\\bCE\\s*1\\b\\s*$",
+					"match": "^.*(?<![-\\u2013])\\bCE\\s*1\\b\\s*$",
 					"emit": [
 						{
 							"role": "grade_level",
@@ -389,7 +409,7 @@
 				},
 				{
 					"apply_to": "block_local",
-					"match": "^.*\\bCE\\s*2\\b\\s*$",
+					"match": "^.*(?<![-\\u2013])\\bCE\\s*2\\b\\s*$",
 					"emit": [
 						{
 							"role": "grade_level",

@@ -1308,6 +1308,51 @@ def validate_context_groupings_supported_by_outer_evidence(
             )
 
 
+def validate_emit_flagged_unresolved_confidence(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_decision_conf_threshold: float,
+) -> None:
+    """Validate that emit_flagged_unresolved is only used when confidence is low. If
+    the LLM chose flagged_unresolved despite high confidence, this raises a
+    QualityError to force a retry loop that commits to a proper emit type.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_decision_conf_threshold
+        The confidence threshold. emit_flagged_unresolved is only valid when
+        confidence is below this threshold.
+
+    Raises
+    ------
+    QualityError
+        If the decision type is EMIT_FLAGGED_UNRESOLVED but the confidence
+        score meets or exceeds the threshold.
+    """
+
+    if segment_decision.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
+        conf = getattr(segment_decision, "confidence", None)
+
+        if conf is not None and conf >= segment_decision_conf_threshold:
+            raise QualityError(
+                f"emit_flagged_unresolved_above_threshold\n"
+                f"segment_id={segment.segment_id}\n"
+                f"decision_id={segment_decision.decision_id}\n"
+                f"confidence={conf}, threshold={segment_decision_conf_threshold}\n"
+                f"Fix: your confidence ({conf}) is >= the threshold "
+                f"({segment_decision_conf_threshold}). You MUST commit to a proper "
+                f"emit type (emit_leaves_only, emit_groupings_only, or "
+                f"emit_groupings_and_leaves). Do NOT use emit_flagged_unresolved "
+                f"when confidence is above threshold. Note any concerns in rationale "
+                f"instead."
+            )
+
+
 def validate_emitted_statements_have_outer_anchor(
     *, segment: Segment, segment_decision: SegmentDecision
 ) -> None:
