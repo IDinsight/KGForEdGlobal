@@ -92,6 +92,12 @@ def _gkey_tuple(
 ) -> tuple[str, str, str, str]:
     """Create a grouping key tuple.
 
+    NB: All string fields are stripped to ensure lookup parity with
+    `collect_unique_grouping_keys`, which strips titles before building dedupe keys and
+    persisting `GroupingCanonicalizationKey` objects. Without stripping here, a
+    `GroupingDecision` whose title carries leading/trailing whitespace would silently
+    miss the mapping index and default to KEEP.
+
     Parameters
     ----------
     role
@@ -109,7 +115,12 @@ def _gkey_tuple(
         The grouping key tuple.
     """
 
-    return role.value, title, local_code or "", source_label or ""
+    return (
+        role.value,
+        (title or "").strip(),
+        (local_code or "").strip(),
+        (source_label or "").strip(),
+    )
 
 
 def _build_mapping_index(
