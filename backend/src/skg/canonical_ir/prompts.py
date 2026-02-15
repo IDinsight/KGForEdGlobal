@@ -33,12 +33,20 @@ Document-specific patterns (use when consistent with the observed heading sequen
 - "COMPÉTENCE DE CYCLE" and "COMPÉTENCE DE L’ÉTAPE" are section labels (structural), not the expectation itself. The expectation is typically in the immediately following paragraph(s)/block(s); emit those following statement(s) as EXPECTATION leaves under the current stage/subject context (and under strand if one is active).
 - Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
 - Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
-- "JÉEGO N" denotes a unit grouping within a strand. "PALIER N" denotes a milestone within a Jéego. JÉEGO is always one level above PALIER. Keep levels consistent across N. Variants like "(suite)" or "(yeggale)" are continuations and must keep the same level as the base "JÉEGO N :" or "PALIER N :".
+- Enforce this nesting when these headings co-occur in the same section:
+  ACTIVITES (strand/domain)  <  PALIERS DU ...  <  JÉEGO N  <  PALIER N  <  APPRENTISSAGES PONCTUELS.
+  ("<" means strictly deeper: larger integer level.)
+  - "JÉEGO N" denotes a unit grouping within a strand. "PALIER N" denotes a milestone within a Jéego. JÉEGO is always exactly one level above PALIER.
+  - Keep levels consistent across N.
+  - Variants like "(suite)" or "(yeggale)" are continuations and MUST keep the same level as the base "JÉEGO N" or "PALIER N".
 - Only treat headings of the form "PALIER <number>" (or clearly equivalent heading formatting) as a substage grouping. Mentions of "palier/paliers" inside table cells are content (often descriptors/checkpoints), not hierarchy, unless they are clearly formatted as headings.
-- Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are dividers WITHIN the current strand/section. If they appear after an "ACTIVITES ..." heading, they must be DEEPER than the strand (i.e., nested under it), not equal to it and not a reset.
-- Some topic headings in Wolof are long, sentence-like competency statements (e.g., starting with "Boole mooñ ..."). These are curriculum content (competency expectations for a Jéego), NOT structural headings. Assign them level 0 so they are processed as content rather than hierarchy.
+- Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are structural containers WITHIN the current strand and group multiple JÉEGO units.
+  They MUST be nested under the current "ACTIVITES ..." strand (deeper than ACTIVITES) and MUST be strictly ABOVE any "JÉEGO ..." that occurs under them.
+- Some Wolof headings are actually competency CONTENT misdetected as headings (e.g., starting with "Boole mooñ ..."). These are not structural containers.
+  Assign them level 0 even if they appear between structural headings, so the downstream pipeline can process them as content blocks.
 - In weekly planning tables ("Tableau de planification..."), labels like "Semaine <number>" / "Sem. <number>" denote a WEEK grouping for that table section. When present, attach row leaves under that WEEK grouping (under the current strand/unit/substage context).
-- Mooñaale ci wolof’ (and its variants), and any language-of-instruction directives like "en wolof", "en français", "(Wolof)", "(Français)", are language directives; never treat them as subject/strand/unit; ignore them for hierarchy.
+- "Mooñaale ci wolof" (and variants) and any language-of-instruction directives like "en wolof", "en français", "(Wolof)", "(Français)" are not hierarchy.
+  Prefer level 0 for these so they do not enter the hierarchy.
 
 Prefer levels that preserve local monotonic structure such as:
 ... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> "Apprentissages ponctuels" -> tables
@@ -109,14 +117,16 @@ Your job: Given ONE segment from a stitched curriculum DocumentIR (either a BLOC
 - NEVER INVENT CONTENT. Only use text/rows in the segment. Do not merge across pages or assume missing rows.
 - DO NOT TRANSLATE. Preserve original language and casing.
 - Preserve statement order as it appears in the segment.
-- If uncertain, prefer "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (with best-effort candidate outputs) over "{SegmentDecisionType.UNRESOLVED.value}" (empty, last resort).
+- If uncertain but your confidence is ≥ the threshold value of {segment_decision_conf_threshold}, commit to the best proper emit type (emit_leaves_only/emit_groupings_only/emit_groupings_and_leaves). Note remaining uncertainties in rationale.
+- Hard constraint: a proper emit_* decision that emits leaves MUST satisfy the outer-anchor rule in §4. If you cannot provide an outer anchor without inventing it, you MUST downgrade to "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (set confidence < threshold) or "{SegmentDecisionType.UNRESOLVED.value}".
+- Reserve "{SegmentDecisionType.UNRESOLVED.value}" for segments where you truly cannot extract anything useful.
 
 ## 2. DECISION-TYPE INVARIANTS
 | decision_type | context_groupings | groupings/leaves/rows | notes |
 |---|---|---|---|
 | ignore | MUST be [] | MUST be [] | Page furniture, artifacts, captions, TOC content |
 | unresolved | MUST be [] | MUST be [] | Cannot safely emit anything; explain in rationale |
-| emit_flagged_unresolved | MAY be [] or non-empty | MUST emit ≥1 of groupings/leaves/rows | For human review; will NOT compile into final tree. Explain ambiguity in rationale. |
+| emit_flagged_unresolved | MAY be [] or non-empty | MUST emit ≥1 of groupings/leaves/rows | ONLY when confidence < {segment_decision_conf_threshold}. Will NOT compile into final tree. |
 | emit_groupings_only | required (may be []) | groupings[] and/or rows[].groupings[] allowed; NO leaves anywhere | |
 | emit_leaves_only | required (may be []) | segment-level groupings[] MUST be []; row-local RowDecision.groupings[] allowed | |
 | emit_groupings_and_leaves | required (may be []) | MUST emit ≥1 grouping AND ≥1 leaf somewhere | |
@@ -155,7 +165,11 @@ Do NOT repeat the same NodeRole. Do NOT include TOPIC/SUBTOPIC (those belong in 
 
 **Institutional metadata:** Do NOT include country name, ministry, publisher, or approving authority in context_groupings[]. Use empty context if no curriculum hierarchy is present.
 
-**Outer anchor requirement:** If emitting any leaves (EXPECTATION/DESCRIPTOR/GUIDANCE), the decision MUST include ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[], groupings[], or rows[].groupings[]. If no anchor is supported by evidence, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}".
+**Outer anchor requirement:** If emitting any leaves (EXPECTATION/DESCRIPTOR/GUIDANCE), the decision MUST include ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[], groupings[], or rows[].groupings[]. If no anchor is directly in this segment's evidence, carry forward from prior_context_groupings[] (see carry-forward rules above).
+If BOTH direct evidence and carry-forward are unavailable:
+- NEVER emit leaves in a proper emit_* decision (it will be rejected for TABLE segments).
+- Prefer "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" and set confidence < {segment_decision_conf_threshold:.2f} so the content is preserved for audit but will NOT compile into the final tree.
+- If you truly cannot emit anything without inventing an anchor (or the segment is pure noise), use "{SegmentDecisionType.UNRESOLVED.value}" or "{SegmentDecisionType.IGNORE.value}".
 
 **Role depth ordering:** groupings[] are children under the context stack tip. Never emit a grouping whose role is OUTER than the deepest role in context_groupings[]. Fix by placing the outer role in context_groupings[] or emitting both in groupings[] in correct order.
 
@@ -166,8 +180,9 @@ If segment includes a `chunking` object:
   - ONLY decide on the rows in this chunk. Never assume rows outside this chunk.
   - Table-wide anchors MUST go in context_groupings[], NOT segment-level groupings[].
   - FIRST CHUNK: apply outer-evidence support strictly; DROP any unsupported prior grouping.
+  - FIRST CHUNK: if you cannot establish ANY outer anchor for emitted leaves without inventing it, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (set confidence < threshold) rather than a proper emit_* decision.
   - LATER CHUNKS: repeat context_groupings[] EXACTLY as prior_context_groupings[] unless this chunk's outer evidence explicitly contradicts it.
-  - On contradiction in a later chunk: use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (emit candidate rows + explain contradiction). Do NOT change context mid-table.
+  - On contradiction in a later chunk: use the context supported by THIS chunk's evidence (section_path, caption, header_rows), note the contradiction in rationale, and emit using the appropriate proper emit type. Do NOT change context mid-table without evidence.
 
 ## 6. TABLE-SPECIFIC GUIDANCE
 - Prefer rows[] over top-level leaves[]. Put leaf statements in RowDecision.leaves[].
@@ -205,9 +220,10 @@ If segment includes a `chunking` object:
 
 ## 11. CONFIDENCE
 This run’s low-confidence cutoff is: {segment_decision_conf_threshold:.2f}
-- If your best confidence would be < {segment_decision_conf_threshold:.2f}, prefer
-  "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (emit best-effort outputs, but route to human review).
+- "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" is ONLY for decisions where your confidence is < {segment_decision_conf_threshold:.2f}. This is the SOLE trigger for emit_flagged_unresolved.
+- If your confidence is >= {segment_decision_conf_threshold:.2f}, you MUST use a proper emit type (emit_leaves_only, emit_groupings_only, emit_groupings_and_leaves) or ignore/unresolved. NEVER use emit_flagged_unresolved when confidence >= {segment_decision_conf_threshold:.2f}.
 - If the segment is clearly noise/furniture, use "{SegmentDecisionType.IGNORE.value}" even with high confidence.
+- If you have semantic concerns (ambiguous structure, possible row wrapping, context contradiction) but your confidence is above threshold, commit to your best interpretation and explain concerns in rationale.
 
 ## 12. DOCUMENT-SPECIFIC HEADING ROLE CONSTRAINTS
 The following heading patterns have FIXED role assignments for this document.
@@ -254,7 +270,7 @@ def double_check_decision_on_segment() -> DotMap:
 1. **Hallucination check:** Is every title/body/code directly supported by the segment text? No invented content?
 2. **Decision-type invariants:** Does your output satisfy the invariant table in §2? (e.g., ignore/unresolved → all arrays empty; emit_groupings_only → no leaves anywhere)
 3. **Role sanity:** Did you assign SUBJECT/STRAND to something that is actually document metadata (mentions curriculum/syllabus/framework/ministry/publisher/TOC)? If so, change to ignore or omit.
-4. **Outer anchor:** If emitting leaves, is there ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[] or groupings[]? If not, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}".
+4. **Outer anchor:** If emitting leaves, is there ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[] or groupings[]? If not, carry forward from prior_context_groupings[]. If you still cannot establish an outer anchor without inventing it, switch to "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (set confidence < threshold) or "{SegmentDecisionType.UNRESOLVED.value}" — do NOT emit leaves in a proper emit_* decision.
 5. **Context depth:** Are groupings[] all INNER relative to context_groupings[]? (No GRADE_LEVEL in groupings[] when SUBJECT is the deepest context role.)
 6. **Table row_index:** If table, does every RowDecision.row_index match the row's abs_row_index? No RowDecisions for header/blank/context-only rows?
 7. **Context evidence:** Is every context_groupings[].title supported by outer evidence (section_path/caption/header_rows) or valid carry-forward?
@@ -393,8 +409,12 @@ Hard rules:
 2. Containers MUST have a lower level number than the headings they contain.
 3. Avoid artificial resets: do NOT jump to a broader level (smaller number) unless the heading clearly starts a new major section.
 4. Continuations: headings containing continuation markers like "(suite)", "(continued)", "(part ...)" must match the base heading’s level.
-5. Level 0 is ONLY for non-structural text. Do NOT assign 0 just because a heading is long or sentence-like if it appears inside a clear section hierarchy.
-6. If a heading appears between two clearly structural headings (e.g., it is preceded and followed by section labels like "Unit/Week/Theme/Domain/Palier/Jéego/Topic"), it MUST receive a non-zero level consistent with that neighborhood.
+5. Level 0 is ONLY for non-structural text OR curriculum-content misdetected as a heading that we want processed downstream as CONTENT (not hierarchy).
+   Examples (document-specific): long competency sentences like "Boole mooñ ...", or language directives like "Mooñaale ci wolof", "en wolof", "(Wolof)", "(Français)".
+   Do NOT assign 0 merely because a heading is long; assign 0 only when it is clearly not a structural container/label.
+6. If a heading appears between two clearly structural headings, it MUST receive a non-zero level consistent with that neighborhood
+   EXCEPT when it matches a known content-heading or language-directive pattern (see rule 5 and document hints). In those cases, assign level 0.
+7. Important: the heading list may be DEDUPED; [prev]/[next] neighbors are only weak hints. Do not overfit to them if they conflict with global consistency rules.
     """
     )
 
@@ -420,8 +440,10 @@ If a hint conflicts with the document’s observed structure, ignore the hint.
         text = " ".join(h["text"].split())
 
         if include_neighbor_context:
-            prev_text = " ".join(headings[i - 1]["text"].split()) if i > 0 else ""
-            next_text = (
+            prev_text = " ".join(h.get("prev_text", "").split()) or (
+                " ".join(headings[i - 1]["text"].split()) if i > 0 else ""
+            )
+            next_text = " ".join(h.get("next_text", "").split()) or (
                 " ".join(headings[i + 1]["text"].split())
                 if i + 1 < len(headings)
                 else ""

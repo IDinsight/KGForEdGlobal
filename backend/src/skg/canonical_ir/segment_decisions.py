@@ -25,9 +25,10 @@ from skg.canonical_ir.schemas import (
 )
 from skg.canonical_ir.utils import (
     _DASH_RE,
-    _WS_RE,
     CanonicalIRDirs,
+    _clean_text,
     _extract_block_segment_text,
+    normalize_heading_key,
 )
 from skg.document_ir.schemas import (
     BlockSegment,
@@ -207,40 +208,6 @@ def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
     return leaf.model_copy(update=updates) if updates else leaf
 
 
-def _clean_text(text: Optional[str]) -> Optional[str]:
-    """Clean text as follows:
-
-    1. NFKC unicode normalization
-    2. Normalize curly quotes to ASCII
-    3. Unify dash variants to '-'
-    4. Collapse whitespace
-    5. Strip
-
-    NB: Do not include curriculum-specific heuristics here.
-
-    Parameters
-    ----------
-    text
-        The text to clean.
-
-    Returns
-    -------
-    Optional[str]
-        The cleaned text, or None if input was None or normalized to empty.
-    """
-
-    if text is None:
-        return None
-
-    t = unicodedata.normalize("NFKC", text)
-    t = t.translate(QUOTES_TRANSLATION)
-    t = _DASH_RE.sub("-", t)
-    t = _WS_RE.sub(" ", t).strip()
-
-    # Preserve None for optional fields when they normalize to empty.
-    return t or None
-
-
 def _determine_stable_context(
     *,
     chunk_range: tuple[int, int],
@@ -308,6 +275,109 @@ def _determine_stable_context(
     return copy.deepcopy(fallback_hint or [])
 
 
+def _extract_stream_from_blocks(segments: list[Any]) -> list[dict[str, Any]]:
+    """Build a heading occurrence stream from HEADING blocks.
+
+    Parameters
+    ----------
+    segments
+        The list of segments to extract from.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of dictionaries containing heading text, normalized key, and provenance.
+    """
+
+    stream: list[dict[str, Any]] = []
+    last_norm: str | None = None
+
+    for segment in segments:
+        if not (
+            isinstance(segment, BlockSegment)
+            and segment.block_type == BlockType.HEADING
+        ):
+            continue
+
+        text = (_extract_block_segment_text(segment) or "").strip()
+        norm = normalize_heading_key(text)
+
+        if not norm or norm == last_norm:
+            continue
+
+        last_norm = norm
+        prov0 = segment.segment_provenance[0] if segment.segment_provenance else None
+
+        stream.append(
+            {
+                "text": text,
+                "norm": norm,
+                "page_index": prov0.page_index if prov0 else None,
+                "item_index": prov0.item_index if prov0 else None,
+            }
+        )
+
+    return stream
+
+
+def _extract_stream_from_paths(segments: list[Any]) -> list[dict[str, Any]]:
+    """Derive a heading stream from section_path deltas (suffix events).
+
+    Parameters
+    ----------
+    segments
+        The list of segments to extract from.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of dictionaries containing heading text, normalized key, and provenance.
+    """
+
+    stream: list[dict[str, Any]] = []
+    last_norm: str | None = None
+    prev_path_norms: list[str] = []
+
+    for segment in segments:
+        # Build current items list.
+        curr_items: list[tuple[str, str, int | None, int | None]] = []
+
+        for sp in segment.section_path or []:
+            t = (sp.text or "").strip()
+            n = normalize_heading_key(t)
+
+            if n:
+                curr_items.append((n, t, sp.page_index, sp.item_index))
+
+        curr_norms = [n for n, _, _, _ in curr_items]
+
+        # Calculate Longest Common Prefix with previous snapshot.
+        k = 0
+        limit = min(len(prev_path_norms), len(curr_norms))
+
+        while k < limit and prev_path_norms[k] == curr_norms[k]:
+            k += 1
+
+        # Emit only newly-introduced headings (suffix).
+        for norm, text, page_idx, item_idx in curr_items[k:]:
+            if norm == last_norm:
+                continue
+
+            last_norm = norm
+            stream.append(
+                {
+                    "text": text,
+                    "norm": norm,
+                    "page_index": page_idx,
+                    "item_index": item_idx,
+                }
+            )
+
+        prev_path_norms = curr_norms
+
+    return stream
+
+
 def _filter_section_path_for_llm(
     *,
     heading_levels: dict[str, int],
@@ -353,7 +423,7 @@ def _filter_section_path_for_llm(
     filtered: list[SectionHeadingRef] = []
 
     for section_path in section_paths:
-        text_cf = " ".join(section_path.text.split()).casefold()
+        text_cf = normalize_heading_key(section_path.text)
 
         if text_cf in {h.value for h in FrontMatterHeadings} or text_cf in NonArtifacts:
             continue
@@ -392,7 +462,7 @@ def _filter_section_path_for_llm(
     prev_norm: str | None = None
 
     for item in output:
-        norm = " ".join(item["text"].split()).casefold()
+        norm = normalize_heading_key(item["text"])
 
         if norm == prev_norm:
             continue
@@ -429,7 +499,7 @@ def _is_structural_heading(*, heading_levels: dict[str, int], segment: Segment) 
         return False
 
     text = _extract_block_segment_text(segment)
-    norm = " ".join(text.split()).casefold()
+    norm = normalize_heading_key(text)
 
     if not norm:
         return False
@@ -574,8 +644,9 @@ def _process_block_segment(
     # calling the LLM is wasted compute and triggers validator failures (the heading's
     # own text is not "outer evidence" for itself).
     if _is_structural_heading(heading_levels=heading_levels, segment=segment):
-        text_preview = _extract_block_segment_text(segment)[:120]
-        norm = " ".join(text_preview.split()).casefold()
+        text_full = _extract_block_segment_text(segment)
+        text_preview = text_full[:120]
+        norm = normalize_heading_key(text_full)
         level = heading_levels.get(norm, "?")
 
         logger.warning(
@@ -1165,38 +1236,60 @@ def clean_up_segment_decisions(
 
 
 def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
-    """Collect all unique heading texts from every segment's section_path. Returns a
-    list of {"text": ..., "page_index": ..., "item_index": ...} preserving
-    first-encounter order.
+    """Collect unique heading texts in true document heading order, and attach
+    prev/next from that same heading stream.
+
+    NB:
+
+    1. We do NOT build neighbor context from segment.section_path snapshots (they
+        include all ancestors and can inject running headers/cover titles as fake
+        neighbors).
+    2. Instead we build a stream from actual HEADING blocks in reading order.
+    3. Fallback: if no heading blocks exist, we derive a heading-change stream from
+        section_path deltas (suffix events).
 
     Parameters
     ----------
     document_ir
-        The stitched DocumentIR.
+        The DocumentIR to extract headings from.
 
     Returns
     -------
     list[dict[str, Any]]
-        Unique headings in document order.
+        A list of unique headings with their text, page/item indices, and true
+        prev/next context from the heading stream.
     """
 
+    # Try to build stream from explicit heading blocks. Fallback: derive stream from
+    # section paths if blocks are absent.
+    stream = _extract_stream_from_blocks(
+        document_ir.segments
+    ) or _extract_stream_from_paths(document_ir.segments)
+
+    # Create UNIQUE headings preserving first occurrence, with true prev/next.
     ordered: list[dict[str, Any]] = []
     seen: set[str] = set()
+    stream_len = len(stream)
 
-    for segment in document_ir.segments:
-        for sp in segment.section_path:
-            text = sp.text.strip()
-            norm = " ".join(text.split()).casefold()
+    for i, h in enumerate(stream):
+        if h["norm"] in seen:
+            continue
 
-            if norm and norm not in seen:
-                seen.add(norm)
-                ordered.append(
-                    {
-                        "text": text,
-                        "page_index": sp.page_index,
-                        "item_index": sp.item_index,
-                    }
-                )
+        seen.add(h["norm"])
+
+        # Context is based on the stream neighbors of this specific occurrence.
+        prev_text = stream[i - 1]["text"] if i > 0 else ""
+        next_text = stream[i + 1]["text"] if i + 1 < stream_len else ""
+
+        ordered.append(
+            {
+                "text": h["text"],
+                "page_index": h["page_index"],
+                "item_index": h["item_index"],
+                "prev_text": prev_text,
+                "next_text": next_text,
+            }
+        )
 
     return ordered
 
@@ -1735,7 +1828,7 @@ def reconstruct_section_path(
 
     for item in section_paths:
         text = item.get("text", "").strip()
-        norm = " ".join(text.split()).casefold()
+        norm = normalize_heading_key(text)
         level = heading_levels.get(norm)
 
         # Unknown heading (not in map) — keep it to avoid losing data.

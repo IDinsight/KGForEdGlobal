@@ -4,6 +4,7 @@ SegmentDecisionSets.
 
 # Standard Library
 import re
+import unicodedata
 
 from dataclasses import dataclass
 
@@ -1065,14 +1066,28 @@ def _inject_outer_context_from_caption(
     # Analyze existing context (identify conflicts vs. merges).
     existing_all = list(decision.context_groupings or [])
 
+    # Pre-normalize existing context through the same split rules used on the caption
+    # so that conflict comparison uses canonical forms. Without this, an LLM-emitted
+    # "DEUXIEME ETAPE" would false-conflict with a caption-derived "ÉTAPE 2" even
+    # though they are the same stage in different surface forms.
+    existing_for_comparison: list[GroupingDecision] = []
+
+    for g in existing_all:
+        split_outs, _ = _apply_split_rules_to_grouping(
+            apply_to=SpineSplitApplyTo.OUTER_CONTEXT, g=g, spine=spine
+        )
+        existing_for_comparison.extend(split_outs)
+
     # Determine if Grade Level exists in current OR derived to determine whether or not
     # to drop.
     grade_present_after = any(
-        g.role == NodeRole.GRADE_LEVEL for g in existing_all
+        g.role == NodeRole.GRADE_LEVEL for g in existing_for_comparison
     ) or any(g.role == NodeRole.GRADE_LEVEL for g in derived)
 
     existing_effective_map = _get_effective_existing_anchors(
-        existing_all=existing_all, grade_present_after=grade_present_after, spine=spine
+        existing_all=existing_for_comparison,
+        grade_present_after=grade_present_after,
+        spine=spine,
     )
 
     # Check conflicts.
@@ -1389,7 +1404,8 @@ def _norm_title(*, casefold: bool, title: str) -> str:
     Parameters
     ----------
     casefold
-        If True, casefold the title.
+        If True, casefold the title and strip combining marks (accents) so that (e.g.)
+        "Mathématiques" and "MATHEMATIQUES" compare as equal.
     title
         The title to normalize.
 
@@ -1401,7 +1417,18 @@ def _norm_title(*, casefold: bool, title: str) -> str:
 
     t = " ".join((title or "").split()).strip()
 
-    return t.casefold() if casefold else t
+    if casefold:
+        t = t.casefold()
+
+        # Strip combining marks (accents) for robust cross-transcription matching (e.g.
+        # 'é' (U+00E9) → NFKD → 'e' + '\u0301' → strip Mn → 'e').
+        t = "".join(
+            c
+            for c in unicodedata.normalize("NFKD", t)
+            if unicodedata.category(c) != "Mn"
+        )
+
+    return t
 
 
 def _outer_context_conflicts(

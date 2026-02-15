@@ -33,7 +33,7 @@ from skg.canonical_ir.schemas import (
     HeadingLevelAnalysis,
     SegmentDecision,
 )
-from skg.canonical_ir.utils import CanonicalIRDirs
+from skg.canonical_ir.utils import CanonicalIRDirs, normalize_heading_key
 from skg.canonical_ir.validators import (
     validate_chunked_table_context_matches_prior_context,
     validate_chunked_table_first_chunk_must_not_ignore_or_unresolved,
@@ -42,6 +42,7 @@ from skg.canonical_ir.validators import (
     validate_context_groupings_required_for_emit,
     validate_context_groupings_role_order,
     validate_context_groupings_supported_by_outer_evidence,
+    validate_emit_flagged_unresolved_confidence,
     validate_emitted_statements_have_outer_anchor,
     validate_established_canonicals,
     validate_grouping_canonicalization_coverage,
@@ -186,6 +187,7 @@ def _call_openai_api_to_decide_on_segment(
     row_range_end: int | None,
     row_range_start: int | None,
     segment: Segment,
+    segment_decision_conf_threshold: float,
     segment_payload: dict[str, Any] | None,
     table_chunking: dict[str, Any] | None,
 ) -> SegmentDecision:
@@ -211,6 +213,9 @@ def _call_openai_api_to_decide_on_segment(
         The optional row range start for table segments.
     segment
         The segment to decide on.
+    segment_decision_conf_threshold
+        The confidence threshold for the segment decision. emit_flagged_unresolved is
+        only valid when confidence is below this threshold.
     segment_payload
         Optional additional payload for the segment.
     table_chunking
@@ -276,6 +281,7 @@ def _call_openai_api_to_decide_on_segment(
             attempt=attempt,
             segment=segment,
             segment_decision=parsed,
+            segment_decision_conf_threshold=segment_decision_conf_threshold,
             segment_payload=segment_payload,
             table_chunking=table_chunking,
         )
@@ -512,6 +518,12 @@ def generate_heading_levels(
     -------
     dict[str, int]
         Mapping from normalized heading text to structural depth level.
+
+    Raises
+    ------
+    ValueError
+        If the number of generated heading levels does not match the number of input
+        headings, or if any heading index is out of range.
     """
 
     heading_levels_fp = creation_dirs.root / "heading_levels.json"
@@ -557,8 +569,10 @@ def generate_heading_levels(
             raise ValueError(f"Heading index {idx} out of range [0, {len(headings)}).")
 
         text = headings[idx]["text"]
-        norm = " ".join(text.split()).casefold()
+        norm = normalize_heading_key(text)
         level_map[norm] = level
+
+    level_map = dict(sorted(level_map.items()))
 
     logger.info(f"Saving heading levels to: {heading_levels_fp}")
 
@@ -785,6 +799,7 @@ def generate_segment_decision(
                 row_range_end=row_range_end,
                 row_range_start=row_range_start,
                 segment=segment,
+                segment_decision_conf_threshold=segment_decision_conf_threshold,
                 segment_payload=segment_payload,
                 table_chunking=table_chunking,
             )
@@ -943,6 +958,7 @@ def verify_segment_decision_quality(
     attempt: int,
     segment: Segment,
     segment_decision: SegmentDecision,
+    segment_decision_conf_threshold: float,
     segment_payload: dict[str, Any] | None = None,
     table_chunking: dict[str, Any] | None = None,
 ) -> None:
@@ -958,6 +974,9 @@ def verify_segment_decision_quality(
         The Segment being decided on.
     segment_decision
         The SegmentDecision to validate.
+    segment_decision_conf_threshold
+        The confidence threshold. emit_flagged_unresolved is only valid when confidence
+        is below this threshold.
     segment_payload
         Optional additional payload for the segment.
     table_chunking
@@ -1005,8 +1024,13 @@ def verify_segment_decision_quality(
         segment=segment, segment_decision=segment_decision
     )
 
-    # For flagged_unresolved: accept candidate outputs without enforcing strict
-    # "must be supported by outer evidence"/"must include context anchors".
+    validate_emit_flagged_unresolved_confidence(
+        segment=segment,
+        segment_decision=segment_decision,
+        segment_decision_conf_threshold=segment_decision_conf_threshold,
+    )
+
+    # Low-confidence flagged_unresolved: accept without strict validators.
     if segment_decision.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
         return
 

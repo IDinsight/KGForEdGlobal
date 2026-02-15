@@ -382,6 +382,40 @@ def _check_structural_warnings(
     warnings.append(msg)
 
 
+def _clean_text(text: Optional[str]) -> Optional[str]:
+    """Clean text as follows:
+
+    1. NFKC unicode normalization
+    2. Normalize curly quotes to ASCII
+    3. Unify dash variants to '-'
+    4. Collapse whitespace
+    5. Strip
+
+    NB: Do not include curriculum-specific heuristics here.
+
+    Parameters
+    ----------
+    text
+        The text to clean.
+
+    Returns
+    -------
+    Optional[str]
+        The cleaned text, or None if input was None or normalized to empty.
+    """
+
+    if text is None:
+        return None
+
+    t = unicodedata.normalize("NFKC", text)
+    t = t.translate(QUOTES_TRANSLATION)
+    t = _DASH_RE.sub("-", t)
+    t = _WS_RE.sub(" ", t).strip()
+
+    # Preserve None for optional fields when they normalize to empty.
+    return t or None
+
+
 def _count_decision_leaves(d: SegmentDecision) -> int:
     """Count statement leaves emitted by this decision (block leaves + table row
     leaves).
@@ -3055,6 +3089,27 @@ def merge_nodes_postpass(
 
     # Preserve deterministic order: first-seen node_id order.
     return list(merged.values())
+
+
+def normalize_heading_key(text: Optional[str]) -> str:
+    """Normalize heading text for stable heading_levels keys.
+
+    NB: Must match the normalization used when creating heading_levels in. We normalize
+    more aggressively than whitespace+casefold to prevent Unicode drift.
+
+    Parameters
+    ----------
+    text
+        The heading text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized heading key.
+    """
+
+    t = _clean_text(text) or ""
+    return t.casefold()
 
 
 def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -> str:
