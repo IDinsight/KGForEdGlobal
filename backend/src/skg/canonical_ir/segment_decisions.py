@@ -1576,14 +1576,12 @@ def make_table_chunk_payload(
         context_rows_after_payload.append(row)
 
     # Decision rows: raw visual + optional fill-down view.
-    decision_rows_raw: list[dict[str, Any]] = []
     decision_rows_payload: list[dict[str, Any]] = []
 
     for abs_i in range(start, end):
         raw_row = dict(full_rows_raw[abs_i])
         raw_row["abs_row_index"] = abs_i
         raw_row["is_context_only"] = False
-        decision_rows_raw.append(raw_row)
 
         if use_filldown:
             assert full_rows_filldown is not None
