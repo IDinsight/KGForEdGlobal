@@ -11,8 +11,6 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 # Third Party Library
-import pymupdf
-
 from loguru import logger
 
 # Package Library
@@ -28,7 +26,7 @@ from skg.utils.constants import (
     PageContinuationKind,
 )
 from skg.utils.general import make_dir, open_json_type, truncate_text, write_to_json
-from skg.utils.pdf import crop_image_to_ymax
+from skg.utils.pdf import crop_image_to_ymax, read_png_dimensions
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -289,7 +287,7 @@ def _extract_list_preview(list_items: list[Any]) -> list[str]:
 
     preview: list[str] = []
 
-    for li in list_items[: min(6, len(list_items))]:
+    for li in list_items[:6]:
         if isinstance(li, dict):
             marker = li.get("marker") or ""
             text = _get_text_content(li.get("text"))
@@ -1569,7 +1567,8 @@ def generate_candidate_pairs(
     prev_index, prev_item = prev_candidates[0]
 
     # Get top candidates on next page.
-    visible_y_max = float(pymupdf.Pixmap(str(next_crop_fp)).height)
+    _, h = read_png_dimensions(png_fp=next_crop_fp)
+    visible_y_max = float(h)
     next_candidates_primary = top_continuity_candidates_paired(
         image_height=next_page_ir.image_height,
         items=next_items,

@@ -176,7 +176,7 @@ class VerificationConfig(BaseSchema):
         Returns
         -------
         Self
-            The passed in ExtractionConfig.
+            The passed in VerificationConfig.
 
         Raises
         ------
