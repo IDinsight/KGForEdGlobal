@@ -73,7 +73,7 @@ CONFIDENCE:
             "upper_grade_items": upper_items,
         },
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),  # Remove spaces after commas/colons
     )
 
     return DotMap(
@@ -152,7 +152,7 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
             "upper_grade_items": upper_items,
         },
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),  # Remove spaces after commas/colons
     )
 
     return DotMap(
@@ -360,7 +360,7 @@ You may return an empty edges list if there are no clear prerequisites.
             "items_in_sequence_order": items,
         },
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),  # Remove spaces after commas/colons
     )
 
     return DotMap(
@@ -449,7 +449,7 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
             "thread_b_items": items_b,
         },
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),  # Remove spaces after commas/colons
     )
     return DotMap(
         {"system_message": system_message.strip(), "user_message": user_message.strip()}
