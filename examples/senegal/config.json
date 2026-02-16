@@ -44,29 +44,54 @@
 		],
 		"heading_role_hints": [
 			{
-				"pattern": "PALIER \\d+",
+				"pattern": "(?i)\\bpalier\\s*\\d+\\b(?:\\s*\\(.*?\\))?\\s*:?",
 				"role": "substage",
-				"note": "PALIER N is a competency milestone within a Jéego (substage)"
+				"note": "PALIER N (optionally with '(Niveau I/II)' and/or ':')"
 			},
 			{
-				"pattern": "Jéego \\d+",
+				"pattern": "(?i)\\bj[éeë]ego\\s*\\d+\\b(?:\\s*\\(.*?\\))?\\s*:?",
 				"role": "unit",
-				"note": "Jéego N is a Wolof unit grouping (groupe de paliers), contains Paliers"
+				"note": "Jéego N (optionally with '(yeggale)' and/or ':')"
 			},
 			{
-				"pattern": "^CE\\s*[12]$",
+				"pattern": "(?i)^\\s*ce\\s*[12]\\s*$",
 				"role": "grade_level",
-				"note": "CE1 and CE2 are the only grade levels in this document"
+				"note": "CE1 / CE2 headings"
 			},
 			{
-				"pattern": "DEUXIEME ETAPE",
+				"pattern": "(?i)(\\bdeuxi[eè]me\\s+[eéèë]tape\\b|\\b2\\s*(?:e|è|eme|ème)\\s*[eéèë]tape\\b)",
 				"role": "stage",
-				"note": "Overall curriculum stage, OUTER to grade_level"
+				"note": "Stage heading (Deuxième étape / 2ème étape variants)"
 			},
 			{
-				"pattern": "TOLLUWAAY",
+				"pattern": "(?i)\\btolluwaay\\b",
 				"role": "stage",
-				"note": "Wolof equivalent of DEUXIEME ETAPE"
+				"note": "Wolof stage marker"
+			},
+			{
+				"pattern": "(?i)comp[ée]tence\\s+de\\s+cycle",
+				"role": "section",
+				"note": "Competence section header: cycle"
+			},
+			{
+				"pattern": "(?i)comp[ée]tence\\s+de\\s+l['’]?[eéèë]tape",
+				"role": "section",
+				"note": "Competence section header: étape"
+			},
+			{
+				"pattern": "(?i)\\bactivit[ée]s?\\s+(num[ée]riques|de\\s+mesure|g[ée]om[ée]triques)\\b",
+				"role": "strand",
+				"note": "French strand headings"
+			},
+			{
+				"pattern": "(?i)\\br[ée]solution\\s+de\\s+probl[ée]mes\\b",
+				"role": "strand",
+				"note": "French strand heading: Résolution de problèmes"
+			},
+			{
+				"pattern": "(?i)\\by[ëe]ngute\\b.*\\bactivit[ée]s?\\b",
+				"role": "strand",
+				"note": "Wolof/French combined strand headings like 'Yëngute … /Activités …'"
 			}
 		],
 		"max_table_rows_per_decision": null,
