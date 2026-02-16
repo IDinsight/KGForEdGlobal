@@ -153,7 +153,7 @@ def crop_image_to_top(
         # Calculate the 50% mark.
         y1 = int(h * 0.5)
 
-        # Crop from (0, 0) to (width, 50% height).s
+        # Crop from (0, 0) to (width, 50% height).
         crop = img.crop((0, 0, w, y1))
 
         make_dir(output_png_fp.parent)
@@ -178,11 +178,12 @@ def crop_image_to_ymax(
         height will be clamped to the image bounds.
     """
 
-    with Image.open(input_png_fp) as im:
-        w, h = im.size
+    with Image.open(input_png_fp) as img:
+        w, h = img.size
         y = max(1, min(int(round(y_max)), h))
+
         make_dir(output_png_fp.parent)
-        im.crop((0, 0, w, y)).save(output_png_fp)
+        img.crop((0, 0, w, y)).save(output_png_fp)
 
 
 def extract_text_layer_hints(
@@ -478,9 +479,10 @@ def render_and_save_page_to_png(
     dpi
         Render DPI for page images.
     fix_rotation
-        If True, applies a heuristic: If a page is rotated AND appears landscape
-        (i.e., width > height), reset rotation to 0 to try and force portrait
-        orientation.
+        If True, counter-rotate the render matrix to neutralize page rotation. This is
+        needed for accurate cropping and text hint extraction. If False, the rendered
+        image will reflect the page's inherent rotation, which may be desirable for
+        some use cases.
     output_png_fp
         The output PNG file path.
     page_index

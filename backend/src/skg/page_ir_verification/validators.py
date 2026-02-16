@@ -166,18 +166,3 @@ def validate_semantic_flow(
             f"Invalid Text Continuation: The next item is a HEADING ('{text_preview}'). "
             f"Standard text does not continue directly into a heading."
         )
-
-    # Table headers cannot repeat if the next item is a caption. If the next item is a
-    # caption, it cannot 'contain' the repeated header rows. If headers repeat, the
-    # container MUST be a Table. A caption block cannot physically contain the repeated
-    # grid rows.
-    if (
-        verdict.continuation_kind == PageContinuationKind.TABLE
-        and verdict.set_next_table_repeats_header is True
-        and next_item.kind != "table"
-    ):
-        raise QualityError(
-            "Logic Error: You set set_next_table_repeats_header=true, but the next "
-            "item is a Block (Caption), not a Table. Captions cannot contain repeated "
-            "table headers."
-        )

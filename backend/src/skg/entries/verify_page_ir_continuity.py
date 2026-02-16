@@ -215,10 +215,8 @@ def verify(
         try:
             # 5.
             start = max(config.start_page, page_indices[0])
-            max_available = min(doc.page_count, page_indices[-1] + 1)
-            stop = max_available if end_page is None else min(end_page, max_available)
             page_irs = load_page_irs_from_extraction(
-                end_page=stop, page_irs_dir=page_irs_dir, start_page=start
+                end_page=end_page, page_irs_dir=page_irs_dir, start_page=start
             )
 
             # 6.
@@ -232,7 +230,7 @@ def verify(
                 page_images_dir=page_images_dir,
                 page_irs=page_irs,
                 start=start,
-                stop=stop,
+                stop=end_page,
                 verification_dirs=verification_dirs,
             )
             verification_run.extra["status"] = "success"
