@@ -52,7 +52,7 @@ from skg.utils.general import (
 T = TypeVar("T")
 
 # Compiled regexes.
-_DASH_RE = re.compile(r"[‐-‒–—−]+")
+_DASH_RE = re.compile(r"[‐-‒–—−]+")  # Common unicode dash characters
 _STRUCTURAL_CONTEXT_CUE_RE = re.compile(
     r"\b("
     r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"

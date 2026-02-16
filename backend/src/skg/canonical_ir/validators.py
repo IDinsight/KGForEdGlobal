@@ -14,6 +14,7 @@ from skg.canonical_ir.schemas import (
     SegmentDecision,
     SegmentDecisionSet,
 )
+from skg.canonical_ir.utils import _DASH_RE
 from skg.document_ir.schemas import DocumentIR, Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import (
@@ -47,7 +48,6 @@ _CURRICULUM_HINT_RE = re.compile(
     r"|\bce\s*\d+\b",  # CE1/CE2 Senegalese grade levels
     flags=re.IGNORECASE,
 )
-_DASH_RE = re.compile(r"[‐-‒–—−]")  # Common unicode dash characters
 _GRADE_MARKER_RE = re.compile(
     r"\b(?:p\.?|primary|grade|class|std\.?|standard)\s*([0-9]{1,2}|[ivx]{1,5})\b",
     re.IGNORECASE,
