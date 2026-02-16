@@ -567,7 +567,36 @@ def _process_table_normalization(
         cells = row.cells or []
         effective_cols = sum((cell.col_span or 1) for cell in cells)
 
-        if effective_cols >= n_cols:
+        # Record over-wide rows (common in messy PDFs/extraction noise).
+        if effective_cols > n_cols:
+            before_cells = len(cells)
+            before_effective = effective_cols
+
+            # If the overflow is just trailing empty placeholders, trim them.
+            trimmed = _trim_excess_cells(n_cols=n_cols, new_cells=cells)
+
+            after_cells = len(cells)
+            after_effective = sum((cell.col_span or 1) for cell in cells)
+
+            table_changes.append(
+                {
+                    "type": "table_row_effective_cols_exceeds_n_cols",
+                    "page": page_index,
+                    "item_index": item_index,
+                    "row_index": row_index,
+                    "n_cols": n_cols,
+                    "before_cells": before_cells,
+                    "after_cells": after_cells,
+                    "before_effective_cols": before_effective,
+                    "after_effective_cols": after_effective,
+                    "trimmed_trailing_placeholders": trimmed,
+                }
+            )
+
+            # We do not attempt destructive fixes beyond trimming empty placeholders.
+            continue
+
+        if effective_cols == n_cols:
             continue
 
         missing = n_cols - effective_cols
@@ -822,6 +851,9 @@ def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]
 def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
     """Remove trailing placeholders if the row exceeds the expected column count.
 
+    NB: We trim based on *effective* columns (sum of col_span), not raw cell count.
+    This avoids incorrect trimming when some real cells have col_span > 1.
+
     Parameters
     ----------
     n_cols
@@ -835,32 +867,36 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
         The number of cells trimmed.
     """
 
-    def _is_removable_placeholder(*, cell: TableCell) -> bool:
-        """Check if a cell is an empty placeholder valid for trimming.
+    def _is_removable_placeholder(cell: TableCell) -> bool:
+        """True if the cell is a 1x1 empty placeholder.
 
         Parameters
         ----------
         cell
-            The cell to inspect.
+            The cell to check.
 
         Returns
         -------
         bool
-            True if the cell is a 1x1 empty placeholder.
+            True if the cell is a removable placeholder, False otherwise.
         """
 
         col_span = int(getattr(cell, "col_span", 1) or 1)
         row_span = int(getattr(cell, "row_span", 1) or 1)
         text = getattr(cell, "text", None)
-
         return col_span == 1 and row_span == 1 and text is None
 
     trimmed = 0
+    effective_cols = sum(int(getattr(c, "col_span", 1) or 1) for c in new_cells)
 
-    while len(new_cells) > n_cols and new_cells:
-        if _is_removable_placeholder(cell=new_cells[-1]):
+    # Only trim *empty placeholders* and only until effective_cols fits n_cols.
+    while effective_cols > n_cols and new_cells:
+        tail = new_cells[-1]
+
+        if _is_removable_placeholder(tail):
             new_cells.pop()
             trimmed += 1
+            effective_cols -= 1  # Placeholder is guaranteed col_span==1 above
         else:
             break
 
