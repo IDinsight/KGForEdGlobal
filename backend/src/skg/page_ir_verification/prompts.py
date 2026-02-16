@@ -143,6 +143,10 @@ A. TABLE continuation cues (SAME table):
 Notes:
 - A page break between complete rows can still be a continuation.
 - Minor content shifts do not imply a new table if structure is the same.
+- A fully boxed table on BOTH pages can still be the SAME logical table (common in scope-and-sequence curricula).
+  Treat as continuation when column structure is identical AND rows clearly continue an ordered sequence,
+  e.g., "Semaine 3" -> "Semaine 4", "Palier" checkpoints continuing, repeated week numbering, or the same section label with uninterrupted sequencing,
+  UNLESS a new section heading/caption explicitly indicates a new table.
 
 B. TABLE non-continuation cues (NEW table):
   - A new table title/number (e.g., "Tableau 3", "Table 4") or a clearly different caption, OR
@@ -159,7 +163,12 @@ Hard negatives:
 - Bottom ends as a complete thought and next begins a new heading/section/table/figure.
 
 D. FIGURE continuation (rare):
-- Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes on IMAGE B.
+  - Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes on IMAGE B.
+
+E. BILINGUAL / MULTILINGUAL DOCUMENTS:
+  - Documents may contain parallel text in two languages (e.g., rows alternating between languages, or bilingual headers).
+  - A language switch between rows does NOT indicate a new table—it is normal bilingual formatting.
+  - Unfamiliar scripts or languages are NOT evidence of truncation or corruption.
 
 ## UNCERTAINTY POLICY
 1. Default when uncertain: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
