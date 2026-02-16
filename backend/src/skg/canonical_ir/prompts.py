@@ -357,12 +357,18 @@ Output: GroupingCanonicalizationMap with items[] — EXACTLY one item per input,
         """
     )
 
+    input_keys = json.dumps(
+        [k.model_dump(mode="json") for k in grouping_keys],
+        ensure_ascii=False,
+        separators=(",", ":"),  # Remove spaces after commas/colons
+    )
+
     user_message = dedent(
         f"""Canonicalize the following NEW grouping keys.
 
 Input keys (JSON array):
 ```json
-{json.dumps([k.model_dump(mode="json") for k in grouping_keys], ensure_ascii=False)}
+{input_keys}
 ```
         """
     )

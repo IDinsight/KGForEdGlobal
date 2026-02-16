@@ -164,7 +164,7 @@ Return ONLY a JSON object matching the required schema and always include a rati
             "next_candidate_item": next_item,
         },
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),  # Remove spaces after commas/colons
     )
 
     return DotMap(
