@@ -26,7 +26,7 @@ from skg.utils.constants import (
     PageContinuationKind,
 )
 from skg.utils.general import make_dir, open_json_type, truncate_text, write_to_json
-from skg.utils.pdf import crop_image_to_ymax, read_png_dimensions
+from skg.utils.pdf import crop_image_to_ymax
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -1571,18 +1571,24 @@ def fix_false_truncated_prose_before_table(
 
 
 def generate_candidate_pairs(
-    *, next_crop_fp: Path, next_page_ir: PageIR, prev_page_ir: PageIR
+    *,
+    crop_y_max: float,
+    next_page_ir: PageIR,
+    prev_candidates: list[tuple[int, Block | Table]],
 ) -> tuple[list[tuple[int, Block | Table, int, Block | Table]], dict[str, int]]:
     """Generate and deduplicate the list of candidate pairs to verify.
 
     Parameters
     ----------
-    next_crop_fp
-        Filepath to the cropped image of the next page.
+    crop_y_max
+        The y-coordinate (in original page coordinates) used to crop the next page
+        image. Used as `visible_y_max` when selecting top-of-page candidates on the
+        next page.
     next_page_ir
         The PageIR of the next page.
-    prev_page_ir
-        The PageIR of the previous page.
+    prev_candidates
+        Pre-computed bottom-of-page candidates from the previous page, as returned by
+        `bottom_continuity_candidates()`. The first element is the primary candidate.
 
     Returns
     -------
@@ -1590,26 +1596,19 @@ def generate_candidate_pairs(
         A tuple of (candidate pairs list, primary indices dict).
     """
 
-    prev_items = prev_page_ir.items or []
     next_items = next_page_ir.items or []
 
-    # Build candidate pools. Instead of only one bottom item, get a small list of
-    # plausible bottom items. `bottom_continuity_candidates()` guarantees the
-    # bottommost primary candidate is first (deterministic), followed by near-bottom
-    # alternatives in case the true continuation anchor isn't the bottommost one.
-    prev_candidates = bottom_continuity_candidates(
-        image_height=prev_page_ir.image_height, items=prev_items
-    )
+    # prev_candidates already computed by caller — reuse directly.
     prev_index, prev_item = prev_candidates[0]
 
-    # Get top candidates on next page.
-    _, h = read_png_dimensions(png_fp=next_crop_fp)
-    visible_y_max = float(h)
+    # Get top candidates on next page, restricted to the crop region. crop_y_max is the
+    # y-coordinate the caller used to create the crop image, so it exactly defines the
+    # visible region.
     next_candidates_primary = top_continuity_candidates_paired(
         image_height=next_page_ir.image_height,
         items=next_items,
         prev_item=prev_item,
-        visible_y_max=visible_y_max,
+        visible_y_max=crop_y_max,
     )
     next_index, next_item = next_candidates_primary[0]
 
@@ -1631,7 +1630,7 @@ def generate_candidate_pairs(
                 image_height=next_page_ir.image_height,
                 items=next_items,
                 prev_item=pitem,
-                visible_y_max=visible_y_max,
+                visible_y_max=crop_y_max,
             )
         )
 
@@ -2530,7 +2529,9 @@ def verify_single_page_pair(
     )
 
     pairs, primary_indices = generate_candidate_pairs(
-        next_crop_fp=next_crop_fp, next_page_ir=next_page_ir, prev_page_ir=prev_page_ir
+        crop_y_max=crop_y_max,
+        next_page_ir=next_page_ir,
+        prev_candidates=prev_candidates,
     )
 
     # Run verification attempts on the generated pairs.
