@@ -834,6 +834,8 @@ def generate_segment_decision(
         },
     ]
 
+    logger.debug(f"{input_items = }\n")
+
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api_to_decide_on_segment(
