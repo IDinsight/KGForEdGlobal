@@ -24,7 +24,7 @@ from skg.utils.constants import (
     StatementRole,
 )
 
-CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.name for r in CONTEXT_GROUPINGS_ROLE_ORDER)
+CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.value for r in CONTEXT_GROUPINGS_ROLE_ORDER)
 DOC_CONTEXT_MAPPING: dict[str, str] = {
     "senegal": dedent(
         """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
