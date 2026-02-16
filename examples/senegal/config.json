@@ -21,6 +21,7 @@
 		"end_page": null,
 		"min_confidence_to_patch": 0.75,
 		"model": "gpt-5.2-2025-12-11",
+		"next_page_crop_padding_px": 120,
 		"start_page": 0
 	},
 	"document_ir": {

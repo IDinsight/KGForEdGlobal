@@ -162,6 +162,11 @@ class VerificationConfig(BaseSchema):
     model: str = Field(
         "gpt-5.2-2025-12-11", description="OpenAI model for page IR verification."
     )
+    next_page_crop_padding_px: int = Field(
+        120,
+        description="When cropping the top of page N+1 for verification, include this many extra pixels below the selected next candidate bbox.",
+        ge=0,
+    )
     start_page: int = Field(0, description="0-based start page (inclusive).")
 
     @model_validator(mode="after")

@@ -28,7 +28,7 @@ from skg.utils.constants import (
     PageContinuationKind,
 )
 from skg.utils.general import make_dir, open_json_type, truncate_text, write_to_json
-from skg.utils.pdf import crop_image_to_top
+from skg.utils.pdf import crop_image_to_ymax
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -301,6 +301,32 @@ def _extract_list_preview(list_items: list[Any]) -> list[str]:
     return preview
 
 
+def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int:
+    """Calculate the max width found in the header rows.
+
+    Parameters
+    ----------
+    header_row_count
+        The number of header rows in the table.
+    rows
+        The list of all rows in the table.
+
+    Returns
+    -------
+    int
+        The maximum effective column count found in the header rows, accounting for
+        col_span.
+    """
+
+    return max(
+        (
+            sum((c.col_span or 1) for c in (r.cells or []))
+            for r in rows[:header_row_count]
+        ),
+        default=0,
+    )
+
+
 def _get_text_content(obj: Any) -> str:
     """Safely extract 'text' field from a dictionary wrapper.
 
@@ -494,6 +520,81 @@ def _process_table_item(
     return item_changes
 
 
+def _process_table_normalization(
+    *, item: Block | Table, item_index: int, page_index: int
+) -> list[dict[str, Any]]:
+    """Analyze a single table and normalizes its rows.
+
+    Parameters
+    ----------
+    item
+        The table item to process.
+    item_index
+        The index of the item on the page.
+    page_index
+        The index of the page containing the item.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of changes made to the table rows.
+    """
+
+    n_cols = item.n_cols
+
+    if not isinstance(n_cols, int) or n_cols <= 0:
+        return []
+
+    rows = item.rows or []
+    header_row_count = int(item.header_row_count or 0)
+
+    # Determine padding strategy based on table signals.
+    pad_left = _should_pad_left(
+        header_row_count=header_row_count, n_cols=n_cols, rows=rows
+    )
+
+    if pad_left:
+        is_header_full = (
+            _get_header_effective_cols(header_row_count=header_row_count, rows=rows)
+            == n_cols
+        )
+        side_reason = "header_full_width" if is_header_full else "modal_leading_blank"
+    else:
+        side_reason = "default_right"
+
+    table_changes = []
+
+    # Apply normalization to rows.
+    for row_index, row in enumerate(rows):
+        cells = row.cells or []
+        effective_cols = sum((cell.col_span or 1) for cell in cells)
+
+        if effective_cols >= n_cols:
+            continue
+
+        missing = n_cols - effective_cols
+        padding = [TableCell(col_span=1, row_span=1, text=None) for _ in range(missing)]
+
+        # Apply the fix.
+        row.cells = (padding + cells) if pad_left else (cells + padding)
+
+        table_changes.append(
+            {
+                "after": n_cols,
+                "before_cells": len(cells),
+                "before_effective_cols": effective_cols,
+                "item_index": item_index,
+                "page": page_index,
+                "row_index": row_index,
+                "side": "left" if pad_left else "right",
+                "side_reason": side_reason,
+                "type": "pad_table_row_cells",
+            }
+        )
+
+    return table_changes
+
+
 def _process_table_row(
     *, active_span: list[int], n_cols: int, row: Any
 ) -> dict[str, Any]:
@@ -637,6 +738,56 @@ def _reconcile_item_state(
                     table.repeats_header = desired
 
     return boundary_change, header_change
+
+
+def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
+    """Decide if the table requires left-padding based on header and body signals.
+
+    Parameters
+    ----------
+    header_row_count
+        The number of header rows in the table.
+    n_cols
+        The expected number of columns in the table.
+    rows
+        The list of table rows.
+
+    Returns
+    -------
+    bool
+        True if left-padding is needed, False if right-padding or no padding is
+        preferred.
+    """
+
+    # Header covers full width.
+    header_effective_cols = _get_header_effective_cols(
+        header_row_count=header_row_count, rows=rows
+    )
+    if header_row_count > 0 and header_effective_cols == n_cols:
+        return True
+
+    # Modal leading blank.
+    rows_for_modal = rows[header_row_count:] if header_row_count > 0 else rows
+
+    full_width_rows_cells = [
+        cs
+        for r in rows_for_modal
+        if (cs := r.cells or []) and sum((c.col_span or 1) for c in cs) >= n_cols
+    ]
+
+    if not full_width_rows_cells:
+        return False
+
+    leading_blank_count = sum(
+        1
+        for cs in full_width_rows_cells
+        if cs[0].text is None or (cs[0].text.text or "").strip() == ""
+    )
+
+    return (
+        len(full_width_rows_cells) >= 3
+        and (leading_blank_count / len(full_width_rows_cells)) >= 0.6
+    )
 
 
 def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]:
@@ -1772,59 +1923,16 @@ def normalize_table_row_cell_counts(
 
     changes: list[dict[str, Any]] = []
 
-    for page_index in sorted(page_irs.keys()):
-        page_ir = page_irs[page_index]
+    for page_index, page_ir in sorted(page_irs.items()):
         for item_index, item in enumerate(page_ir.items or []):
             if item.kind != "table":
                 continue
 
-            # We only fix tables where the LLM explicitly stated the column count.
-            n_cols = item.n_cols
-            if not isinstance(n_cols, int) or n_cols <= 0:
-                continue
-
-            rows = item.rows or []
-            for row_index, row in enumerate(rows):
-                cells = row.cells or []
-
-                # Count effective columns, respecting merged cells.
-                effective_cols = sum((cell.col_span or 1) for cell in cells)
-
-                # Keep as is if the row already covers the table width (including
-                # merged cells).
-                if effective_cols >= n_cols:
-                    continue
-
-                missing = n_cols - effective_cols
-
-                # Heuristic: left vs. right padding. If the first cell contains a code
-                # (e.g., "3.2"), the missing cells are likely leading empty columns
-                # (Subject/Competency columns). Otherwise, we assume they are trailing
-                # empty columns.
-                first_text = ""
-                if cells and cells[0].text:
-                    first_text = cells[0].text.text or ""
-
-                # Regex for "1.2", "A.1", "3.2.1" at start of string.
-                codeish = bool(
-                    re.search(r"(^|\n)\s*[A-Z0-9]+(\.[A-Z0-9]+)+", first_text)
+            changes.extend(
+                _process_table_normalization(
+                    item=item, item_index=item_index, page_index=page_index
                 )
-                pad = [
-                    TableCell(col_span=1, row_span=1, text=None) for _ in range(missing)
-                ]
-                row.cells = (pad + cells) if codeish else (cells + pad)
-                changes.append(
-                    {
-                        "after": n_cols,
-                        "before_cells": len(cells),
-                        "before_effective_cols": effective_cols,
-                        "item_index": item_index,
-                        "page": page_index,
-                        "row_index": row_index,
-                        "side": "left" if codeish else "right",
-                        "type": "pad_table_row_cells",
-                    }
-                )
+            )
 
     return changes
 
@@ -2348,13 +2456,42 @@ def verify_single_page_pair(
         )
         return None
 
-    # Crop top of next image (page N+1) and compute visible range.
+    # Select the primary next candidate on the FULL next page (no crop restriction),
+    # then crop page N+1 down to just below that candidate (+ padding).
+    prev_items = prev_page_ir.items or []
+    next_items = next_page_ir.items or []
+
+    prev_candidates = bottom_continuity_candidates(
+        image_height=prev_page_ir.image_height, items=prev_items
+    )
+    _, prev_item = prev_candidates[0]
+
+    next_candidates_primary_full = top_continuity_candidates_paired(
+        image_height=next_page_ir.image_height,
+        items=next_items,
+        prev_item=prev_item,
+        visible_y_max=None,  # full page
+    )
+
+    # Crop using the lowest bbox bottom (y1) among the top-3 next candidates. This
+    # avoids cropping out the 2nd/3rd candidate that we may still test.
+    top_k = next_candidates_primary_full[:3]
+
+    if not top_k:
+        # Extremely defensive fallback; should not happen if next_page_ir has items.
+        crop_y_max = float(config.next_page_crop_padding_px) + 1.0
+    else:
+        max_y1 = max(float(nit.bbox[3]) for _, nit in top_k)
+        crop_y_max = max_y1 + float(config.next_page_crop_padding_px)
+
     next_crop_fp = (
         verification_dirs.page_irs_pair_crops / f"{page_index + 1:04}_top.png"
     )
-    crop_image_to_top(
+
+    crop_image_to_ymax(
         input_png_fp=page_images_dir / f"{page_index + 1:04}.png",
         output_png_fp=next_crop_fp,
+        y_max=crop_y_max,
     )
 
     pairs, primary_indices = generate_candidate_pairs(

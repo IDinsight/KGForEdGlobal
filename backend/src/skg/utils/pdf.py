@@ -162,6 +162,29 @@ def crop_image_to_top(
         return crop if return_cropped_image else None
 
 
+def crop_image_to_ymax(
+    *, input_png_fp: Path, output_png_fp: Path, y_max: float
+) -> None:
+    """Crop a rendered page PNG to [0, y_max] in pixel coordinates.
+
+    Parameters
+    ----------
+    input_png_fp
+        Full-page PNG path (the extraction-time rendered page image).
+    output_png_fp
+        Where to write the cropped PNG.
+    y_max
+        The maximum Y coordinate (in pixels) to crop to. Values outside the image
+        height will be clamped to the image bounds.
+    """
+
+    with Image.open(input_png_fp) as im:
+        w, h = im.size
+        y = max(1, min(int(round(y_max)), h))
+        make_dir(output_png_fp.parent)
+        im.crop((0, 0, w, y)).save(output_png_fp)
+
+
 def extract_text_layer_hints(
     *,
     doc: pymupdf.Document,

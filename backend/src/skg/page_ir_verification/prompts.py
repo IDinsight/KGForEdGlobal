@@ -26,20 +26,27 @@ def double_check_page_ir_verification() -> DotMap:
 
     system_message = None
     user_message = dedent(
-        """**Hmmmm, are you absolutely sure of your verification results?**
+        f"""Re-check your most recent `PageIRContinuityVerdict` against the evidence.
 
-It's a good idea to carefully review your last output against the stated instructions and double check your response.
+Checklist (must satisfy ALL):
+1. Use the IMAGES as source of truth; the candidate JSON excerpts are only for locating regions.
+2. Decide ONLY whether the *two candidate items* continue across the page break (N -> N+1).
 
-In particular, ensure that:
+Schema invariants (must hold):
+1. If `is_continuation` is false:
+  - `continuation_kind` MUST be "{PageContinuationKind.NONE.value}"
+  - `set_next_table_repeats_header` MUST be null
+2. If `is_continuation` is true:
+  - `continuation_kind` MUST NOT be "{PageContinuationKind.NONE.value}"
+  - `confidence` MUST be >= 0.50
+3. If `continuation_kind` is not "{PageContinuationKind.TABLE.value}":
+  - `set_next_table_repeats_header` MUST be null
 
-1. Ensure that you have carefully analyzed the provided images and candidate item excerpts.
-2. Verify that your decision aligns with the specified hard rules and decision guidance.
-3. Verify that you have identified the correct continuation kinds based on the evidence.
-  - Spend some time thinking about whether there is strong evidence for continuation or non-continuation.
-  - Is continuation_kind correctly identified?
-  - Is set_next_table_repeats_header correctly set (if applicable)?
+Table-only patch rule:
+1. Only set `set_next_table_repeats_header` when you are confident it is the SAME table continuing.
+2. Set true only if header rows are visibly repeated at the top of IMAGE B; false only if visibly not repeated; otherwise null.
 
-When you are confident in your answer, return a complete `PageIRContinuityVerdict` that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made.
+If anything above is violated or your reasoning is weak, correct it now and return a complete `PageIRContinuityVerdict` (rationale >= 50 chars). Return ONLY the object.
         """
     )
 
@@ -78,82 +85,93 @@ def verify_page_ir_pairs_from_extraction(
         f"""You are a strict PageIR continuity verifier (EDGE-ONLY MODE).
 
 You will be given:
-1. Entire page N (IMAGE A)
-2. Top crop of page N+1 (IMAGE B)
-3. A candidate item near the BOTTOM of page N (excerpt JSON)
-4. A candidate item near the TOP of page N+1 (excerpt JSON)
+1. IMAGE A: Entire page N
+2. IMAGE B: A top-crop of page N+1 (may extend far enough to include the chosen candidate region)
+3. Candidate excerpt JSON for the bottom-anchor item on page N
+4. Candidate excerpt JSON for the top-anchor item on page N+1
 
 IMPORTANT:
-- The excerpt JSON is only a local snippet to help you locate the candidates.
-- Continuity metadata fields (like boundary/repeats_header) may be missing or wrong and should NOT be trusted.
-- Use the IMAGES as the primary source of truth.
+1. The excerpt JSON is ONLY to help you locate the candidates. It may be incomplete or inaccurate.
+2. Do NOT trust continuity metadata fields (e.g., boundary/repeats_header) inside the excerpts.
+3. Use the IMAGES as the primary source of truth.
 
 ## TASK
 Decide whether THESE TWO CANDIDATE ITEMS are a continuation across the page boundary (N -> N+1).
-Return ONLY a JSON object matching the required schema and always include a rationale string (>= 50 characters). No prose.
+Return ONLY a `PageIRContinuityVerdict` object that matches the schema (no extra keys, no prose).
+
+## OUTPUT FIELDS (must be present)
+1. is_continuation: true/false
+2. continuation_kind: "{PageContinuationKind.NONE.value}" | "{PageContinuationKind.TEXT.value}" | "{PageContinuationKind.TABLE.value}" | "{PageContinuationKind.FIGURE.value}"
+3. set_next_table_repeats_header: true | false | null
+4. confidence: 0.0–1.0
+5. rationale: string (>= 50 chars)
+
+## SCHEMA INVARIANTS (must hold)
+1. If is_continuation=false:
+  - continuation_kind MUST be "{PageContinuationKind.NONE.value}"
+  - set_next_table_repeats_header MUST be null
+2. If is_continuation=true:
+  - continuation_kind MUST NOT be "{PageContinuationKind.NONE.value}"
+  - confidence MUST be >= 0.50
+3. If continuation_kind != "{PageContinuationKind.TABLE.value}":
+  - set_next_table_repeats_header MUST be null
 
 ## HARD RULES
-1. Your decision must be about whether THESE TWO CANDIDATE ITEMS continue across the boundary.
-2. You are NOT verifying the whole pages globally—ONLY the chosen boundary-anchor items.
-3. DO NOT rewrite, move, merge, or complete text/table cells across pages.
-4. DO NOT invent missing content.
-5. If is_continuation=false, you MUST set continuation_kind="{PageContinuationKind.NONE.value}".
-6. The ONLY optional “edit” you may propose is set_next_table_repeats_header (table continuations only). Do NOT propose any other edits.
-7. Captions shouldn’t be resumed unless the previous page has a truncated caption with the same local_code.
+1. Decide ONLY about continuity between the two provided candidate items (not whole-page continuity).
+2. Do NOT rewrite, merge, move, or complete content across pages.
+3. Do NOT invent missing text/cells.
+4. The ONLY allowed “edit” suggestion is set_next_table_repeats_header (table continuations only). No other edits.
 
-## ALLOWED OUTPUT FIELDS
-- is_continuation: true/false
-- continuation_kind: "{PageContinuationKind.NONE.value}" | "{PageContinuationKind.TEXT.value}" | "{PageContinuationKind.TABLE.value}" | "{PageContinuationKind.FIGURE.value}"
-- set_next_table_repeats_header: true | false | null
-- confidence: 0.0–1.0
-- rationale: string (>= 50 chars)
-
-## set_next_table_repeats_header RULES (TABLE ONLY)
-- If continuation_kind != "{PageContinuationKind.TABLE.value}", set_next_table_repeats_header MUST be null.
-- Only set set_next_table_repeats_header when:
+## TABLE-ONLY PATCH: set_next_table_repeats_header
+1. Only consider this when:
   - is_continuation=true AND continuation_kind="{PageContinuationKind.TABLE.value}"
-  - and the NEXT candidate (on page N+1) is a table
-  - and it is the SAME table continuing across the boundary.
-- Set to true if header rows are visibly repeated at the top of IMAGE B.
-- Set to false if the same table continues but headers are visibly NOT repeated.
-- If you cannot confidently tell, set it to null (do not guess).
+  - The page N+1 candidate is a table
+  - You are confident it is the SAME table continuing
 
-## DECISION GUIDANCE
-1. Use the IMAGES as source of truth. Excerpts may be incomplete or inaccurate.
-2. TABLE continuation signals (strong evidence of SAME table continuing):
-  - Header row repeats at the top of IMAGE B, OR
-  - Column labels match and grid/layout is clearly the same, OR
-  - An explicit "(continued)" / "continued from previous page" marker is visible, OR
-  - The visual grid structure (column alignment/widths/lines) aligns seamlessly across the break.
-  Notes:
-  - A page break between complete rows is still a continuation.
-  - Content/numbering changes within rows are normal and do NOT imply a new table.
-3. TABLE non-continuation signals (strong evidence of NO continuation):
-  - A caption/title indicates a DIFFERENT table identifier (e.g., Table 4 -> Table 5) or clearly describes a different table, OR
-  - Clear change in column count/labels/layout, OR
-  - An "End of table"/"Conclusion of table" marker is visible.
-4. TEXT continuation signals (use continuation_kind="{PageContinuationKind.TEXT.value}" only with strong evidence):
-  - Clear truncation at the bottom of IMAGE A AND clear resumption at the top of IMAGE B, e.g.:
-    - hyphenated cut word at line end
-    - dangling punctuation (comma/colon/semicolon/ellipsis)
-    - unmatched open bracket/paren/quote
-    - list numbering/bullets that clearly continue
-    - top of IMAGE B begins mid-sentence and matches bottom of IMAGE A
-  Hard negatives for text continuation:
-  - A new heading/caption/title clearly starts a new section on page N+1 (e.g., "Table of Contents", "Chapter 1", "Introduction").
-  - Bottom text ends as a complete sentence and the next begins a new section/caption/table/figure.
-5. FIGURE continuation: usually false. Only true if the SAME figure is visibly cut off and resumes on the next page.
+Then:
+- true  = header rows are visibly repeated at the top of IMAGE B
+- false = same table continues but headers are visibly NOT repeated
+- null  = you cannot confidently tell (do not guess)
 
-## UNCERTAINTY POLICY (must follow exactly)
-- Default when uncertain: set is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
-- Exception for TABLE<->TABLE candidates:
-  If BOTH candidates are tables AND you have at least one strong SAME-table continuation cue AND there is NO visible new-table marker, you SHOULD set is_continuation=true and continuation_kind="{PageContinuationKind.TABLE.value}".
+## DECISION GUIDANCE (use the IMAGES)
+A. TABLE continuation cues (SAME table):
+  - Identical column structure (count, widths, gridlines) continues across the break, AND
+  - No visible “new table” title/numbering marker, AND/OR
+  - Header repeats (common), OR
+  - Row content clearly continues (e.g., same section/week sequence continues)
 
-## CONFIDENCE CALIBRATION RULES
-1. Use confidence >= 0.75 only when you are confident in your decision and rationale.
-2. Use 0.50–0.74 for plausible but not definitive conclusions.
-3. Use <= 0.49 when uncertain and human review is strongly recommended.
-    """
+Notes:
+- A page break between complete rows can still be a continuation.
+- Minor content shifts do not imply a new table if structure is the same.
+
+B. TABLE non-continuation cues (NEW table):
+  - A new table title/number (e.g., "Tableau 3", "Table 4") or a clearly different caption, OR
+  - Clear change in column layout/labels/structure, OR
+  - Explicit "end of table"/conclusion marker.
+
+C. TEXT continuation cues (use "{PageContinuationKind.TEXT.value}" only with strong evidence):
+  - Bottom of IMAGE A is visibly truncated and top of IMAGE B visibly resumes the same sentence/list:
+    - hyphenated cut word, dangling punctuation, unmatched quote/paren/bracket,
+    - list numbering/bullets clearly continue,
+    - top begins mid-sentence matching the bottom.
+
+Hard negatives:
+- Bottom ends as a complete thought and next begins a new heading/section/table/figure.
+
+D. FIGURE continuation (rare):
+- Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes on IMAGE B.
+
+## UNCERTAINTY POLICY
+1. Default when uncertain: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
+2. Exception for TABLE<->TABLE candidates:
+  If BOTH candidates are tables, and you see at least one strong SAME-table cue, and there is NO visible new-table marker,
+  you SHOULD set is_continuation=true and continuation_kind="{PageContinuationKind.TABLE.value}".
+
+## CONFIDENCE CALIBRATION
+- >= 0.75: clear visual evidence supports your decision.
+- 0.50–0.74: plausible but not definitive (still allowed for true/false).
+- <= 0.49: uncertain → MUST choose is_continuation=false (per policy above).
+        """
     )
 
     user_message = json.dumps(
