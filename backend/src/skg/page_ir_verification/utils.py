@@ -2286,10 +2286,25 @@ def top_continuity_candidates_paired(
             for i, item in candidates
             if _bbox_intersects_y_range(bbox=item.bbox, y_max=visible_y_max, y_min=0.0)
         ]
-        candidates = cropped or candidates
-        assert (
-            candidates
-        ), f"No top-crop-visible candidates found.\n{candidates = }\n{cropped = }\n{visible_y_max = }"
+
+        if not cropped:
+            debug = {
+                "visible_y_max": float(visible_y_max),
+                "image_height": float(image_height),
+                "num_candidates_before_crop": len(candidates),
+                "candidate_y0y1_sample": [
+                    (i, float(it.bbox[1]), float(it.bbox[3]))
+                    for i, it in candidates[:10]
+                ],
+            }
+            raise ValueError(
+                f"No top-crop-visible candidates found (visible_y_max provided). "
+                f"This usually means bbox coordinates and crop_y_max are in different "
+                f"coordinate spaces (e.g., points vs pixels) OR crop_y_max is too small. "
+                f"Debug: {debug}"
+            )
+
+        candidates = cropped
 
     assert candidates, "No non-artifact items found."
 
@@ -2304,13 +2319,13 @@ def top_continuity_candidates_paired(
     other_kind: list[tuple[int, Block | Table]] = []
 
     for i, item in candidates:
-        if i in seen:
-            continue
-
         # For blocks, avoid heading/caption as text anchors.
-        if item.kind != "table" and (
-            isinstance(item, Block)
-            and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
+        if i in seen or (
+            item.kind != "table"
+            and (
+                isinstance(item, Block)
+                and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
+            )
         ):
             continue
 
@@ -2323,8 +2338,10 @@ def top_continuity_candidates_paired(
         for i, item in bucket:
             if len(output) >= k:
                 break
+
             if i in seen:
                 continue
+
             output.append((i, item))
             seen.add(i)
 
@@ -2396,10 +2413,26 @@ def topmost_continuity_candidate_paired(
             for i, item in candidates
             if _bbox_intersects_y_range(bbox=item.bbox, y_max=visible_y_max, y_min=0.0)
         ]
-        candidates = cropped or candidates
-        assert (
-            candidates
-        ), f"No top-crop-visible candidates found.\n{candidates = }\n{cropped = }\n{visible_y_max = }"
+
+        if not cropped:
+            debug = {
+                "visible_y_max": float(visible_y_max),
+                "image_height": float(image_height),
+                "prev_item_kind": getattr(prev_item, "kind", None),
+                "num_candidates_before_crop": len(candidates),
+                "candidate_y0y1_sample": [
+                    (i, float(it.bbox[1]), float(it.bbox[3]))
+                    for i, it in candidates[:10]
+                ],
+            }
+            raise ValueError(
+                f"No top-crop-visible candidates found (visible_y_max provided). "
+                f"This usually means bbox coordinates and crop_y_max are in different "
+                f"coordinate spaces (e.g., points vs pixels) OR crop_y_max is too small. "
+                f"Debug: {debug}"
+            )
+
+        candidates = cropped
 
     assert candidates, "No non-artifact items found."
 
