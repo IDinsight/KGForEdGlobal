@@ -1249,7 +1249,7 @@ def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
             }
         )
 
-    return ordered
+    return ordered or [{}]
 
 
 def load_or_build_caption_bindings(
