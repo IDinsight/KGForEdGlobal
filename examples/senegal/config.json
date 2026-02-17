@@ -27,13 +27,13 @@
 	"document_ir": {
 		"keep_artifacts": false,
 		"max_section_path_length": 12,
-		"min_link_score": 2.0,
+		"min_link_score": 1.0,
 		"overwrite": true,
 		"repair_hyphenation": true,
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
 		"table_filldown_group_cols_max": 1,
-		"verification_auto_stitch_confidence": 0.75
+		"verification_auto_stitch_confidence": 0.70
 	},
 	"canonical_ir": {
 		"always_double_check_first_attempt": false,

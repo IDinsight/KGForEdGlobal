@@ -214,7 +214,7 @@ class StitchingConfig(BaseSchema):
         legitimate blanks (or extraction misses). A large value can silently “invent”
         repeated activities/standards by copying prior rows, corrupting the extracted
         table semantics.
-    3. Recommended default: 3. This matches the common pattern: **Topic + Sub-topic**
+    3. Recommended default: 2. This matches the common pattern: **Topic + Sub-topic**
         (or equivalent) are the main rowspan/grouping columns in most primary tables.
     """
 
@@ -227,7 +227,7 @@ class StitchingConfig(BaseSchema):
         description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
     )
     min_link_score: float = Field(
-        3, description="Minimum link score to consider for stitching.", ge=0
+        1.0, description="Minimum link score to consider for stitching.", ge=0
     )
     overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
     repair_hyphenation: bool = Field(
@@ -241,7 +241,7 @@ class StitchingConfig(BaseSchema):
         True, description="Whether to enable table filldown during stitching."
     )
     table_filldown_group_cols_max: int = Field(
-        3, description="Maximum number of group columns for table filldown.", ge=0
+        2, description="Maximum number of group columns for table filldown.", ge=0
     )
     verification_auto_stitch_confidence: float = Field(
         0.75,
