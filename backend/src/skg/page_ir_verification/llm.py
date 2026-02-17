@@ -32,6 +32,7 @@ from skg.page_ir_verification.prompts import (
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.page_ir_verification.validators import (
     validate_item_continuation_kind,
+    validate_overconfident_table_negative,
     validate_page_continuation_kind,
     validate_repeats_header_logic,
     validate_semantic_flow,
@@ -187,6 +188,9 @@ def verify_page_ir_continuity_verdict(
     )
     validate_repeats_header_logic(next_item=next_item, verdict=verdict)
     validate_semantic_flow(next_item=next_item, verdict=verdict)
+    validate_overconfident_table_negative(
+        next_item=next_item, prev_item=prev_item, verdict=verdict
+    )
 
 
 def verify_page_ir_pairs(
