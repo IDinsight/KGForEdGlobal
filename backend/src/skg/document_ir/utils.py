@@ -385,7 +385,7 @@ def _drop_repeated_header(
 
 
 def _edge_window_indices(
-    *, from_end: bool, items: list[tuple[int, Block | Table]], k: int
+    *, from_end: bool, items: list[tuple[int, Block | Table]], max_window_size: int
 ) -> set[int]:
     """Get the indices of up to k stitch-relevant items from the start or end of the
     items list.
@@ -396,7 +396,7 @@ def _edge_window_indices(
         If True, get from the end; else from the start.
     items
         The list of (orig_index, item) tuples.
-    k
+    max_window_size
         The maximum number of non-artifact items to pick.
 
     Returns
@@ -405,7 +405,7 @@ def _edge_window_indices(
         The set of picked indices.
     """
 
-    if k <= 0:
+    if max_window_size <= 0:
         return set(range(len(items)))
 
     picked: list[int] = []
@@ -426,7 +426,7 @@ def _edge_window_indices(
 
         picked.append(index)
 
-        if len(picked) >= k:
+        if len(picked) >= max_window_size:
             break
 
     return set(picked)
@@ -615,8 +615,10 @@ def _find_paired_candidates(
 
     # Only consider boundary-marked candidates near the page edges. This reduces risk
     # of stitching an item in the middle of a page when real content follows/precedes.
-    prev_edge = _edge_window_indices(from_end=True, items=prev_items, k=5)
-    next_edge = _edge_window_indices(from_end=False, items=next_items, k=5)
+    prev_edge = _edge_window_indices(from_end=True, items=prev_items, max_window_size=5)
+    next_edge = _edge_window_indices(
+        from_end=False, items=next_items, max_window_size=5
+    )
 
     prev_signal_all = [
         i
@@ -982,7 +984,12 @@ def _process_next_table_slice(
     Returns
     -------
     dict[str, Any]
-        A dictionary with keys:
+        A dict containing:
+            - "slice": the new TableSlice to add to the segment.
+            - "provenance": the SegmentProvenance for the new slice.
+            - "rows_to_add": the list of TableRow objects to add from this slice after
+                dropping repeated headers.
+            - "local_code": the resolved local code for this slice (may be None).
     """
 
     # 1.
@@ -1429,6 +1436,50 @@ def _score_table_match(
     return score
 
 
+def _summarize_chain_items(chain: list[ChainItem]) -> str:
+    """Create a compact, human-readable summaries for a stitched chain (for
+    warnings/debug).
+
+    Parameters
+    ----------
+    chain
+        The list of (page_index, item_index, item) tuples representing the chain.
+
+    Returns
+    -------
+    str
+        A compact summary string.
+    """
+
+    parts: list[str] = []
+
+    for p_i, item_i, item in chain:
+        kind = "Table" if isinstance(item, Table) else "Block"
+        boundary = getattr(item, "boundary", None)
+
+        if boundary is not None and hasattr(boundary, "value"):
+            boundary_val = boundary.value
+        else:
+            boundary_val = str(boundary)
+
+        local_code = (getattr(item, "local_code", None) or "").strip()
+        snippet = ""
+
+        if isinstance(item, Block) and isinstance(item.text, TextUnit):
+            snippet = re.sub(r"\s+", " ", (item.text.text or "").strip())[:80]
+        elif isinstance(item, Table):
+            cap = getattr(item, "caption", None)
+
+            if isinstance(cap, TextUnit):
+                snippet = re.sub(r"\s+", " ", (cap.text or "").strip())[:80]
+
+        parts.append(
+            f"(page={p_i}, item={item_i}, kind={kind}, boundary={boundary_val}, code={local_code!r}, snip={snippet!r})"
+        )
+
+    return "[" + ", ".join(parts) + "]"
+
+
 def _validate_span_bounds(
     *,
     col_span: int,
@@ -1777,7 +1828,11 @@ def compute_page_break_links(
 
     # Process one pair of pages at a time.
     for i in range(len(page_irs) - 1):
-        logger.info(f"Computing page break links for pages {i} -> {i + 1}...")
+        cur_page_index = page_irs[i].page_index
+        next_page_index = page_irs[i + 1].page_index
+        logger.info(
+            f"Computing page break links for pages {cur_page_index} -> {next_page_index}..."
+        )
 
         page_pair_links = process_page_pair(
             current_page_ir=page_irs[i],
@@ -2489,7 +2544,10 @@ def materialize_segment(
         ]
 
         if len(table_chain) != len(chain):
-            msg = f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone."
+            msg = (
+                f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone. "
+                f"chain={_summarize_chain_items(chain)}"
+            )
             logger.warning(msg)
             warnings.append(msg)
 
@@ -2512,7 +2570,10 @@ def materialize_segment(
     ]
 
     if len(block_chain) != len(chain):
-        msg = f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone."
+        msg = (
+            f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone. "
+            f"chain={_summarize_chain_items(chain)}"
+        )
         logger.warning(msg)
         warnings.append(msg)
 
@@ -3296,8 +3357,8 @@ def stitch_block_chain(
             # NB: Do NOT mutate any slice TextUnit -> create a new one instead.
             stitched_text = TextUnit(language="mul", text=combined_text, text_en=None)
         else:
-            # Single language: avoid None if first slice lacked text.
-            stitched_text = first_chain_item.text or text_units[0]
+            lang = languages.pop()  # Single language
+            stitched_text = TextUnit(language=lang, text=combined_text, text_en=None)
 
     return BlockSegment(
         block_type=first_chain_item.block_type,
@@ -3577,11 +3638,23 @@ def update_section_stack(
         warnings.append(msg)
         return section_path_stack
 
+    new_heading_text = (heading_text or local_code).strip()
+
+    if section_path_stack:
+        prev_heading_norm = re.sub(
+            r"\s+", " ", section_path_stack[-1].text.strip()
+        ).casefold()
+        new_heading_norm = re.sub(r"\s+", " ", new_heading_text).casefold()
+
+        if prev_heading_norm == new_heading_norm:
+            # De-dupe consecutive identical headings (common with running headers).
+            return section_path_stack
+
     section_path_stack.append(
         SectionHeadingRef(
             item_index=chain[0][1],
             page_index=chain[0][0],
-            text=heading_text or local_code,
+            text=new_heading_text,
         )
     )
 
