@@ -393,40 +393,6 @@ def _check_structural_warnings(
     warnings.append(msg)
 
 
-def _clean_text(text: Optional[str]) -> Optional[str]:
-    """Clean text as follows:
-
-    1. NFKC unicode normalization
-    2. Normalize curly quotes to ASCII
-    3. Unify dash variants to '-'
-    4. Collapse whitespace
-    5. Strip
-
-    NB: Do not include curriculum-specific heuristics here.
-
-    Parameters
-    ----------
-    text
-        The text to clean.
-
-    Returns
-    -------
-    Optional[str]
-        The cleaned text, or None if input was None or normalized to empty.
-    """
-
-    if text is None:
-        return None
-
-    t = unicodedata.normalize("NFKC", text)
-    t = t.translate(QUOTES_TRANSLATION)
-    t = _DASH_RE.sub("-", t)
-    t = _WS_RE.sub(" ", t).strip()
-
-    # Preserve None for optional fields when they normalize to empty.
-    return t or None
-
-
 def _count_decision_leaves(d: SegmentDecision) -> int:
     """Count statement leaves emitted by this decision (block leaves + table row
     leaves).
@@ -2528,6 +2494,40 @@ def canonical_storage_text(text: Optional[str]) -> str:
     return text
 
 
+def clean_text(text: Optional[str]) -> Optional[str]:
+    """Clean text as follows:
+
+    1. NFKC unicode normalization
+    2. Normalize curly quotes to ASCII
+    3. Unify dash variants to '-'
+    4. Collapse whitespace
+    5. Strip
+
+    NB: Do not include curriculum-specific heuristics here.
+
+    Parameters
+    ----------
+    text
+        The text to clean.
+
+    Returns
+    -------
+    Optional[str]
+        The cleaned text, or None if input was None or normalized to empty.
+    """
+
+    if text is None:
+        return None
+
+    t = unicodedata.normalize("NFKC", text)
+    t = t.translate(QUOTES_TRANSLATION)
+    t = _DASH_RE.sub("-", t)
+    t = _WS_RE.sub(" ", t).strip()
+
+    # Preserve None for optional fields when they normalize to empty.
+    return t or None
+
+
 def collect_unique_grouping_keys(
     *,
     creation_dirs: CanonicalIRDirs,
@@ -3124,7 +3124,7 @@ def normalize_heading_key(text: Optional[str]) -> str:
         The normalized heading key.
     """
 
-    t = _clean_text(text) or ""
+    t = clean_text(text) or ""
     return t.casefold()
 
 

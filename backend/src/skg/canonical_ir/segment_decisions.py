@@ -26,8 +26,8 @@ from skg.canonical_ir.schemas import (
 from skg.canonical_ir.utils import (
     _DASH_RE,
     CanonicalIRDirs,
-    _clean_text,
     _extract_block_segment_text,
+    clean_text,
     normalize_heading_key,
 )
 from skg.document_ir.schemas import (
@@ -139,7 +139,7 @@ def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
     # stored as close to verbatim as possible.
     return g.model_copy(
         update={
-            "local_code": _clean_text(g.local_code),
+            "local_code": clean_text(g.local_code),
             "source_label": _clean_label_text(g.source_label),
             "title": title,
         }
@@ -165,7 +165,7 @@ def _clean_label_text(text: Optional[str]) -> Optional[str]:
         The cleaned text, or None if input was None or normalized to empty.
     """
 
-    t = _clean_text(text)
+    t = clean_text(text)
 
     if t is None:
         return None
@@ -200,7 +200,7 @@ def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
         updates["list_marker"] = re.sub(r"\s+", " ", leaf.list_marker).strip()
 
     if leaf.local_code:
-        updates["local_code"] = _clean_text(leaf.local_code)
+        updates["local_code"] = clean_text(leaf.local_code)
 
     if leaf.source_label:
         updates["source_label"] = _clean_label_text(leaf.source_label)
