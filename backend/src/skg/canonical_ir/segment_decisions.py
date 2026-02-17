@@ -1056,52 +1056,6 @@ def _row_to_text(*, max_cols: int = 6, row: TableRow) -> list[str]:
     return texts
 
 
-def _section_path_texts(
-    *,
-    heading_levels: dict[str, int],
-    k: int = 6,
-    segment: Segment,
-    segment_item_index: int,
-    segment_page_index: int,
-) -> list[str]:
-    """Extract recent section headings from the segment path.
-
-    Parameters
-    ----------
-    heading_levels
-        Mapping from normalized heading text to structural depth level.
-    k
-        The number of recent sections to include, by default 6.
-    segment
-        The Segment to extract from.
-    segment_item_index
-        The segment item index.
-    segment_page_index
-        The segment page index.
-
-    Returns
-    -------
-    list[str]
-        A list of section heading strings.
-    """
-
-    # SectionHeadingRef has .text; keep only recent ones.
-    section_paths = _filter_section_path_for_llm(
-        heading_levels=heading_levels,
-        section_paths=segment.section_path,
-        segment_item_index=segment_item_index,
-        segment_page_index=segment_page_index,
-    )
-    texts: list[str] = []
-
-    for sp in section_paths[-k:]:
-        text = sp["text"].strip()
-        assert text, f"{section_paths = }"
-        texts.append(text)
-
-    return texts
-
-
 def apply_caption_binding_to_table_payload(
     *, caption_binding: CaptionBinding | None, table_payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1886,15 +1840,22 @@ def save_segment_decision_set(
     return decision_set
 
 
-def segment_hint(*, heading_levels: dict[str, int], segment: Segment) -> dict[str, Any]:
-    """Generate a compact hint dictionary for a segment.
+def segment_hint(segment: Segment) -> dict[str, Any]:
+    """Generate a compact hint dictionary for a neighboring segment.
 
-    NB: Keep this SMALL (only things that help context).
+    Segment hints answer "does the current segment continue or begin new context?"
+    relative to its neighbors. This is NOT outer evidence--only a continuity signal.
+    Keep it minimal to avoid redundancy with the segment's own section_path and
+    prior_context_groupings.
+
+    Deliberately omitted (redundant with the segment's own payload):
+
+    1. section_path_texts (~90% overlap with the segment's own section_path)
+    2. body_row_samples (columns_signature + headers suffice for continuity)
+    3. list_item_samples, figure_content (not relevant for continuity)
 
     Parameters
     ----------
-    heading_levels
-        Mapping from normalized heading text to structural depth level.
     segment
         The Segment to generate a hint for.
 
@@ -1915,21 +1876,17 @@ def segment_hint(*, heading_levels: dict[str, int], segment: Segment) -> dict[st
 
     hint: dict[str, Any] = {
         "kind": kind,
-        "local_code": segment.local_code,
         "page_span": page_span,
-        "section_path_texts": _section_path_texts(
-            heading_levels=heading_levels,
-            k=6,
-            segment=segment,
-            segment_item_index=segment.slices[0].item_index,
-            segment_page_index=segment.slices[0].page_index,
-        ),
     }
+
+    if segment.local_code:
+        hint["local_code"] = segment.local_code
 
     if kind == "block":
         hint["block_type"] = segment.block_type.value
 
-        # Prefer combined_text if present (stitched blocks), otherwise TextUnit.text.
+        # Short text preview--enough to tell if this is a new section heading or a
+        # continuation paragraph. Truncate aggressively.
         combined_text = (segment.combined_text or "").strip()
         text_unit_or_none = segment.text
         text = (
@@ -1937,42 +1894,13 @@ def segment_hint(*, heading_levels: dict[str, int], segment: Segment) -> dict[st
             if isinstance(text_unit_or_none, TextUnit)
             else ""
         )
-        hint["text_preview"] = (combined_text or text)[:500]
-
-        list_items = segment.list_items
-        hint["list_item_samples"] = (
-            [list_item.text.text[:500] for list_item in list_items[:5]]
-            if list_items
-            else None
-        )
-
-        hint["figure_content"] = segment.figure
+        hint["text_preview"] = (combined_text or text)[:120]
     else:
-        header_rows_canonical = segment.header_rows_canonical
-        header_row_count = segment.header_row_count
-        n_cols = segment.n_cols
-
-        # Prefer filldown sample for “topic/subtopic/strand” signals if present.
-        rows = segment.rows_filldown or segment.rows
-        row_count = len(segment.rows)
-        assert rows and row_count, f"{segment = }"
-
-        # Sample 2 body rows immediately after headers.
-        body_samples: list[list[str]] = []
-        start = min(header_row_count, len(rows))
-        for row in rows[start : start + 2]:
-            assert isinstance(row, TableRow), f"{rows = }\n{row = }"
-            body_samples.append(_row_to_text(max_cols=6, row=row))
-
         hint["table"] = {
             "columns_signature": segment.columns_signature,
-            "header_rows_canonical": header_rows_canonical[:2],
-            "header_row_count": header_row_count,
-            "n_cols": n_cols,
-            "row_count": row_count,
-            "body_row_samples": body_samples,
-            "has_rows_grid": bool(segment.rows_grid),
-            "has_rows_filldown": bool(segment.rows_filldown),
+            "header_rows_canonical": segment.header_rows_canonical[:1],
+            "n_cols": segment.n_cols,
+            "row_count": len(segment.rows),
         }
 
     return hint

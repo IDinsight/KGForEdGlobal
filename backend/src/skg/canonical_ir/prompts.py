@@ -193,7 +193,7 @@ If segment includes a `chunking` object:
 - If a row contains a higher-level container + specific sub-statements: treat the container as RowDecision.groupings[] and emit ONLY sub-statements as RowDecision.leaves[]. Do NOT emit both as leaves.
 - Sibling fanout: if a single row contains multiple sibling values (e.g., two Topics), emit multiple RowDecisions with the SAME row_index (one per sibling). No exact duplicate RowDecisions.
 - If header_rows_canonical[0] is a single merged label (e.g., "WRITING"), treat it as strong outer evidence for a table-scoped grouping (often STRAND but may be SUBJECT/THEME). For chunked tables, place in context_groupings[]; for non-chunked, segment-level groupings[] is also allowed.
-- For chunked tables, filled-down values in grouping columns are supported evidence (not hallucination).
+- Filled-down values in grouping columns are supported evidence (not hallucination), whether the table is chunked or not. The pipeline pre-fills repeated grouping cells so you can rely on them.
 - OUTER context (section_path/caption/header_rows-derived) → context_groupings[]. Row-local context (topic/subtopic/week) → RowDecision.groupings[].
 
 ## 7. BLOCK-SPECIFIC GUIDANCE
@@ -206,6 +206,7 @@ If segment includes a `chunking` object:
 ## 8. PRIOR CONTEXT & CONTINUITY HINTS
 - prior_context_groupings[]: use as starting hint for stable outer context (see carry-forward rules in §4).
 - prev_segment_hint / next_segment_hint: use ONLY as continuity hints (does this segment continue or begin new context?). They are NOT outer evidence.
+  Contents: kind, page_span, and either block_type + short text_preview (for blocks) or columns_signature + header_rows_canonical + n_cols + row_count (for tables). No section_path or row data.
 - Table of Contents suppression: if any heading in section_path indicates "Table of Contents"/"Contents", decision_type MUST be "{SegmentDecisionType.IGNORE.value}".
 
 ## 9. SOURCE LABELS
