@@ -828,7 +828,7 @@ def test__join_text_unit_texts_mixed_bag_stress_test(
         "It starts...",  # Ellipsis -> newline
         "Now.",  # End
     ]
-    expected = "The longterm plan, created by NASA, is bold.\n" "It starts...\n" "Now."
+    expected = "The longterm plan, created by NASA, is bold.\nIt starts...\nNow."
 
     units = create_units(inputs)
     result = utils._join_text_unit_texts(text_units=units)
@@ -1295,7 +1295,7 @@ def test__process_next_table_slice_explicit_header_drop_fallback_to_segment_coun
 
     assert len(result["rows_to_add"]) == 1
     assert result["rows_to_add"][0].cells[0].text.text == "Data"
-    assert not warnings
+    assert warnings
 
 
 def test__process_next_table_slice_implicit_drop_calls_helper() -> None:
