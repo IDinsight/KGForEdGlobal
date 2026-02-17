@@ -177,16 +177,8 @@ def create_canonical_ir(
 
             prev_seg = document_ir.segments[i - 2] if i > 1 else None
             next_seg = document_ir.segments[i] if i < num_segments else None
-            prev_seg_hint = (
-                segment_hint(heading_levels=heading_levels, segment=prev_seg)
-                if prev_seg
-                else None
-            )
-            next_seg_hint = (
-                segment_hint(heading_levels=heading_levels, segment=next_seg)
-                if next_seg
-                else None
-            )
+            prev_seg_hint = segment_hint(segment=prev_seg) if prev_seg else None
+            next_seg_hint = segment_hint(segment=next_seg) if next_seg else None
 
             logger.debug(f"\n{segment.segment_id = }")
             logger.debug(f"{prev_seg_hint = }")

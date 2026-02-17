@@ -2288,7 +2288,12 @@ def build_context_hint_from_decision(d: SegmentDecision) -> list[dict[str, Any]]
             return
 
         seen.add(key)
-        hint.append(g.model_dump(mode="json"))
+
+        # Strip null fields (local_code, source_label) to reduce noise tokens. The LLM
+        # only needs role + title for carry-forward; null metadata is clutter.
+        hint.append(
+            {k: v for k, v in g.model_dump(mode="json").items() if v is not None}
+        )
 
     for g in d.context_groupings or []:
         _maybe_add(g)
