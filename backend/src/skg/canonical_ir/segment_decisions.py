@@ -1465,6 +1465,8 @@ def load_or_build_caption_bindings(
         json_info={k: v.model_dump() for k, v in caption_bindings.items()},
     )
     write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
+    logger.success(f"Saved caption bindings to: {caption_bindings_fp}")
+    logger.success(f"Saved caption binding warnings to: {warnings_fp}")
 
     return caption_bindings
 

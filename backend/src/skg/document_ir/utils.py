@@ -797,7 +797,10 @@ def _finalize_table_structure(
             )
             for hr in header_rows
         ]
-        columns_signature = "||".join("|".join(hrc) for hrc in header_rows_canonical)
+        columns_signature = "||".join(
+            "|".join((c if c else "__BLANK__") for c in hrc)
+            for hrc in header_rows_canonical
+        )
 
     if 0 < declared_n_cols < computed_n_cols:
         msg = (
@@ -1281,7 +1284,6 @@ def _process_next_table_slice(
     # the table grid (common in many curricula), even if the verifier marked
     # repeats_header=True.
     match_k = segment_header_row_count
-
     if 0 < next_hrc < segment_header_row_count:
         # If next slice has *fewer* headers declared than the segment, use the smaller
         # number.
@@ -1311,6 +1313,31 @@ def _process_next_table_slice(
         logger.warning(msg)
         warnings.append(msg)
 
+    # Normalize repeats_header + header_row_count for downstream consumers. If we did
+    # NOT actually drop any header rows, and the slice declares zero header rows, then
+    # repeats_header=True is misleading.
+    repeats_header_norm = next_item.repeats_header
+    next_hrc_effective = next_hrc
+    if next_hrc == 0 and dropped_header_rows > 0:
+        # We inferred headers by matching; record the effective header row count.
+        next_hrc_effective = match_k
+        msg = (
+            f"Inferred header_row_count={match_k} for continuation slice (was 0) "
+            f"because we dropped repeated headers. segment_id={segment_id}, page={next_page_index}."
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    if repeats_header_norm is True and next_hrc_effective == 0:
+        repeats_header_norm = None
+        msg = (
+            f"Normalized repeats_header from True to None because header_row_count==0 "
+            f"and no repeated header rows were dropped. "
+            f"segment_id={segment_id}, page={next_page_index}, item_index={next_item_index}."
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
     # 3.
     new_provenance = SegmentProvenance(
         bbox=next_item.bbox,
@@ -1322,17 +1349,17 @@ def _process_next_table_slice(
         kind=next_item.kind,
         local_code=slice_local_code,
         page_index=next_page_index,
-        repeats_header=next_item.repeats_header,
+        repeats_header=repeats_header_norm,
     )
     new_slice = TableSlice(
         bbox=next_item.bbox,
         boundary=next_item.boundary,
         dropped_header_rows=dropped_header_rows,
-        header_row_count=next_hrc,
+        header_row_count=next_hrc_effective,
         item_index=next_item_index,
         local_code=slice_local_code,
         page_index=next_page_index,
-        repeats_header=next_item.repeats_header,
+        repeats_header=repeats_header_norm,
         rows=next_item.rows,
     )
 
