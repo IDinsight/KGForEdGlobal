@@ -100,9 +100,7 @@ def decide_on_segment(
         [f'  - "{t.value}"' for t in sorted(SegmentDecisionType, key=lambda x: x.value)]
     )
     hint_lines = "\n".join(
-        f'  - "{h["pattern"]}" → {h["role"]}'
-        + (f' (note: {h["note"]})' if h.get("note") else "")
-        for h in heading_role_hints
+        f'  - {h.get("note") or h["pattern"]} → {h["role"]}' for h in heading_role_hints
     )
     node_roles_str = "\n".join(
         [f'  - "{r.value}"' for r in sorted(GROUPING_ROLES, key=lambda x: x.value)]
