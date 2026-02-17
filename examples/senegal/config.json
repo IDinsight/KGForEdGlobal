@@ -32,6 +32,7 @@
 		"repair_hyphenation": true,
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
-		"table_filldown_group_cols_max": 1
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.75
 	}
 }

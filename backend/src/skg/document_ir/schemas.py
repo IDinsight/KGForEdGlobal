@@ -348,12 +348,6 @@ class DocumentIR(BaseSchema):
         ...,
         description="DPI used to render the page image that these pixel bboxes refer to.",
     )
-    image_height: int = Field(
-        ..., description="Height of the first page of the source image in pixels."
-    )
-    image_width: int = Field(
-        ..., description="Width of the first page of the source image in pixels."
-    )
     page_count: int = Field(..., description="Total number of pages stitched.")
     pages: list[DocumentPageMeta] = Field(
         default_factory=list,

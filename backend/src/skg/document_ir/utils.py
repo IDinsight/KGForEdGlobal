@@ -36,7 +36,7 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification.utils import is_artifact
+from skg.page_ir_verification.utils import VerificationVerdict, is_artifact
 from skg.schemas import RunCtx, StitchingConfig
 from skg.utils.constants import (
     BlockType,
@@ -266,6 +266,132 @@ def _apply_page_boundary_state_guardrails(
     ]
 
     return filtered_prev, filtered_next, True
+
+
+def _apply_verification_verdict(
+    *,
+    current_page_ir: PageIR,
+    link_debug: list[dict[str, Any]],
+    next_page_ir: PageIR,
+    next_page_items: list[tuple[int, Block | Table]],
+    page_pair_debug: list[dict[str, Any]],
+    prev_page_items: list[tuple[int, Block | Table]],
+    verdict: VerificationVerdict,
+) -> dict[ItemKey, ItemKey]:
+    """Attempt to create a stitching link from a high-confidence verification verdict.
+
+    This is called only when `verdict.confidence >= threshold` and
+    `verdict.is_continuation is True`. It validates that the verdict's item indices
+    resolve to compatible items in the normalized item lists, applies
+    `set_next_table_repeats_header` when present, and returns a direct link dict.
+
+    Parameters
+    ----------
+    current_page_ir
+        The previous PageIR.
+    link_debug
+        List to append per-link debug info to.
+    next_page_ir
+        The next PageIR.
+    next_page_items
+        The next page's normalized items list.
+    page_pair_debug
+        List to append per-page-pair debug info to.
+    prev_page_items
+        The previous page's normalized items list.
+    verdict
+        The high-confidence verification verdict to apply.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    dict[ItemKey, ItemKey]
+        A single-entry link dict `{(prev_page, prev_item) : (next_page, next_item)}`.
+    """
+
+    prev_page = current_page_ir.page_index
+    next_page = next_page_ir.page_index
+
+    # Shared debug record for verdict-based decisions.
+    pair_debug: dict[str, Any] = {
+        "from_page": prev_page,
+        "to_page": next_page,
+        "verdict_override": True,
+        "verdict_confidence": verdict.confidence,
+        "verdict_is_continuation": verdict.is_continuation,
+        "verdict_continuation_kind": verdict.continuation_kind,
+        "verdict_prev_item_index": verdict.prev_item_index,
+        "verdict_next_item_index": verdict.next_item_index,
+        "chosen_links": [],
+    }
+
+    prev_idx = verdict.prev_item_index
+    next_idx = verdict.next_item_index
+    assert (
+        isinstance(prev_idx, int)
+        and isinstance(next_idx, int)
+        and prev_idx >= 0
+        and next_idx >= 0
+    )
+
+    # Build lookup: orig_item_index -> item (from the normalized items list).
+    prev_lookup: dict[int, Block | Table] = dict(prev_page_items)
+    next_lookup: dict[int, Block | Table] = dict(next_page_items)
+
+    prev_item = prev_lookup.get(prev_idx)
+    next_item = next_lookup.get(next_idx)
+    assert prev_item and next_item
+
+    # Validate that the items match the verdict's continuation_kind.
+    kind = verdict.continuation_kind
+    kind_ok = False
+
+    if kind == "table":
+        kind_ok = isinstance(prev_item, Table) and isinstance(next_item, Table)
+    elif kind in ("text", "figure"):
+        kind_ok = isinstance(prev_item, Block) and isinstance(next_item, Block)
+
+    assert kind_ok
+
+    # Apply set_next_table_repeats_header to the raw item so downstream stitching uses
+    # the verified value.
+    if verdict.set_next_table_repeats_header is not None and isinstance(
+        next_item, Table
+    ):
+        next_item.repeats_header = verdict.set_next_table_repeats_header
+
+    # Create the direct link.
+    link_key: ItemKey = (prev_page, prev_idx)
+    link_val: ItemKey = (next_page, next_idx)
+
+    link_debug.append(
+        {
+            "from_page": prev_page,
+            "to_page": next_page,
+            "prev_item_orig_index": prev_idx,
+            "next_item_orig_index": next_idx,
+            "score": verdict.confidence,
+            "note": "verdict_override",
+            "verdict_continuation_kind": verdict.continuation_kind,
+        }
+    )
+    pair_debug["chosen_links"].append(
+        {
+            "prev_item_orig_index": prev_idx,
+            "next_item_orig_index": next_idx,
+            "score": verdict.confidence,
+        }
+    )
+    pair_debug["note"] = "verdict_accepted"
+    page_pair_debug.append(pair_debug)
+
+    logger.info(
+        f"Verdict override: linked ({prev_page}, {prev_idx})->({next_page}, {next_idx}) "
+        f"kind={kind} confidence={verdict.confidence}"
+    )
+
+    return {link_key: link_val}
 
 
 def _caption_anchor(item: Block) -> str:
@@ -1060,13 +1186,13 @@ def _process_next_table_slice(
             # smaller number.
             match_k = next_hrc
         elif next_hrc > 0 and next_hrc != segment_header_row_count:
+            match_k = min(segment_header_row_count, next_hrc)
             msg = (
                 f"header_row_count mismatch: seg={segment_header_row_count} vs next={next_hrc}. "
                 f"Using match_k={match_k}."
             )
             logger.warning(msg)
             warnings.append(msg)
-            match_k = min(segment_header_row_count, next_hrc)
 
         rows_to_add, dropped_header_rows = _drop_repeated_header(
             base_header_rows=segment_header_rows[:match_k],
@@ -2008,15 +2134,17 @@ def compute_page_break_links(
     min_link_score: float,
     page_irs: list[PageIR],
     page_pair_debug: list[dict[str, Any]],
+    verdict_confidence_threshold: float,
+    verdicts: dict[tuple[int, int], VerificationVerdict],
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
     """Compute a mapping of (page_i, item_index) -> (page_i+1, item_index) links for
-    continuations. This uses only the already-verified item boundaries:
+    continuations.
 
-    1. prev item boundary must continue to next (TRUNCATED or BOTH).
-    2. next item boundary must continue from prev (RESUMED or BOTH).
-
-    We choose candidates nearest the bottom/top of each page to resolve ambiguity.
+    With `verdicts`, high-confidence verdicts take priority over heuristic scoring. If
+    a verdict's confidence is at or above `verdict_confidence_threshold`, the verdict's
+    decision (stitch or skip) is applied directly. Otherwise the existing boundary-flag
+    and scoring heuristics are used.
 
     Parameters
     ----------
@@ -2030,6 +2158,10 @@ def compute_page_break_links(
         The list of PageIRs for the document.
     page_pair_debug
         List to append per-page-pair debug information to.
+    verdict_confidence_threshold
+        Minimum verdict confidence to bypass heuristic scoring.
+    verdicts
+        Mapping of `(prev_page_index, next_page_index)` to verification verdicts.
     warnings
         A list to append warning messages to.
 
@@ -2057,6 +2189,8 @@ def compute_page_break_links(
             next_page_items=items_mapping[page_irs[i + 1].page_index],
             page_pair_debug=page_pair_debug,
             prev_page_items=items_mapping[page_irs[i].page_index],
+            verdict=verdicts[(cur_page_index, next_page_index)],
+            verdict_confidence_threshold=verdict_confidence_threshold,
             warnings=warnings,
         )
         all_page_pair_links.update(page_pair_links)
@@ -3028,6 +3162,8 @@ def process_page_pair(
     next_page_items: list[tuple[int, Block | Table]],
     page_pair_debug: list[dict[str, Any]],
     prev_page_items: list[tuple[int, Block | Table]],
+    verdict: VerificationVerdict,
+    verdict_confidence_threshold: float = 0.75,
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
     """Orchestrate candidate finding, warning logging, and linking for a single pair of
@@ -3035,13 +3171,14 @@ def process_page_pair(
 
     The process is as follows:
 
-    1. Identify candidates (rejected vs. valid).
-    2. Apply page-level boundary state guardrails.
-    3. Prepare a page-pair debug record.
-    4. Append warnings for unsafe candidates (rejected).
-    5. Append warnings for scenarios where no candidates exist.
-    6. Compute links between valid candidates.
-    7. Append page-pair debug info.
+    1. If a high-confidence verification verdict exists, apply it directly.
+    2. Identify candidates (rejected vs. valid).
+    3. Apply page-level boundary state guardrails.
+    4. Prepare a page-pair debug record.
+    5. Append warnings for unsafe candidates (rejected).
+    6. Append warnings for scenarios where no candidates exist.
+    7. Compute links between valid candidates.
+    8. Append page-pair debug info.
 
     Parameters
     ----------
@@ -3059,6 +3196,11 @@ def process_page_pair(
         Optional list to append per-page-pair debug info to.
     prev_page_items
         The previous page's normalized items list.
+    verdict
+        Verification verdict for this page pair. If above the confidence threshold, it
+        bypasses heuristic scoring.
+    verdict_confidence_threshold
+        Minimum verdict confidence to bypass heuristic scoring.
     warnings
         A list to append warning messages to.
 
@@ -3069,6 +3211,40 @@ def process_page_pair(
     """
 
     # 1.
+    if verdict.confidence >= verdict_confidence_threshold:
+        if not verdict.is_continuation:
+            # High-confidence "no continuation" —> skip this page pair entirely.
+            page_pair_debug.append(
+                {
+                    "from_page": current_page_ir.page_index,
+                    "to_page": next_page_ir.page_index,
+                    "verdict_override": True,
+                    "verdict_confidence": verdict.confidence,
+                    "verdict_is_continuation": False,
+                    "verdict_continuation_kind": verdict.continuation_kind,
+                    "chosen_links": [],
+                    "note": "verdict_no_continuation",
+                }
+            )
+            logger.info(
+                f"Verdict override: no continuation for pages "
+                f"{current_page_ir.page_index}->{next_page_ir.page_index} "
+                f"(confidence={verdict.confidence})"
+            )
+            return {}
+
+        # High-confidence "yes continuation" —> try to apply the verdict directly.
+        return _apply_verification_verdict(
+            current_page_ir=current_page_ir,
+            link_debug=link_debug,
+            next_page_ir=next_page_ir,
+            next_page_items=next_page_items,
+            page_pair_debug=page_pair_debug,
+            prev_page_items=prev_page_items,
+            verdict=verdict,
+        )
+
+    # 2.
     (
         prev_rejected_indices,
         prev_candidate_indices,
@@ -3079,7 +3255,7 @@ def process_page_pair(
         next_items=next_page_items,
     )
 
-    # 2.
+    # 3.
     prev_candidate_indices, next_candidate_indices, success = (
         _apply_page_boundary_state_guardrails(
             current_page_ir=current_page_ir,
@@ -3095,7 +3271,7 @@ def process_page_pair(
     if not success:
         return {}
 
-    # 3.
+    # 4.
     pair_debug: dict[str, Any] = {
         "from_page": current_page_ir.page_index,
         "to_page": next_page_ir.page_index,
@@ -3146,7 +3322,7 @@ def process_page_pair(
         "chosen_links": [],
     }
 
-    # 4.
+    # 5.
     _append_rejected_warnings(
         is_prev=True,
         items=prev_page_items,
@@ -3162,7 +3338,7 @@ def process_page_pair(
         warnings=warnings,
     )
 
-    # 5.
+    # 6.
     if not prev_candidate_indices or not next_candidate_indices:
         # Only emit "unmatched" warnings if the missing side has *no* continuation
         # signals at all (neither valid candidates nor rejected boundary-marked items).
@@ -3207,7 +3383,7 @@ def process_page_pair(
         page_pair_debug.append(pair_debug)
         return {}
 
-    # 6.
+    # 7.
     links = match_candidates(
         current_page_ir=current_page_ir,
         link_debug=link_debug,
@@ -3221,7 +3397,7 @@ def process_page_pair(
         warnings=warnings,
     )
 
-    # 7.
+    # 8.
     page_pair_debug.append(pair_debug)
 
     return links
@@ -3374,19 +3550,20 @@ def save_document_ir(
             )
         )
 
-    document_ir = DocumentIR(
-        coord_space=first_page.coord_space,
-        doc_key=doc_key,
-        dpi=first_page.dpi,
-        image_height=first_page.image_height,
-        image_width=first_page.image_width,
-        page_count=len(page_irs),
-        pages=pages_meta,
-        pdf_name=pdf_name,
-        segments=segments,
-        warnings=warnings,
-    )
+    # Warn if pages have heterogeneous dimensions (consumers should use pages[i]
+    # rather than top-level image_height/image_width).
+    unique_dims = {(pm.image_width, pm.image_height) for pm in pages_meta}
 
+    if len(unique_dims) > 1:
+        warnings.append(
+            f"Heterogeneous page dimensions detected ({len(unique_dims)} distinct sizes): "
+            f"{sorted(unique_dims)}. Use pages[i].image_width / pages[i].image_height "
+            f"for per-page bbox interpretation; top-level image_width/image_height are "
+            f"from the first page only."
+        )
+
+    # Check for page index gaps before constructing DocumentIR (so warnings are
+    # included in the serialized output).
     page_indices = sorted({p.page_index for p in page_irs if p.page_index is not None})
 
     if page_indices:
@@ -3397,6 +3574,17 @@ def save_document_ir(
                 f"PageIR coverage has gaps: missing page_index values {missing}. "
                 f"This may indicate omitted blank pages or extraction failures."
             )
+
+    document_ir = DocumentIR(
+        coord_space=first_page.coord_space,
+        doc_key=doc_key,
+        dpi=first_page.dpi,
+        page_count=len(page_irs),
+        pages=pages_meta,
+        pdf_name=pdf_name,
+        segments=segments,
+        warnings=warnings,
+    )
 
     write_to_json(fp=document_ir_fp, json_info=document_ir)
 

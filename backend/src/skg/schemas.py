@@ -243,6 +243,10 @@ class StitchingConfig(BaseSchema):
     table_filldown_group_cols_max: int = Field(
         3, description="Maximum number of group columns for table filldown.", ge=0
     )
+    verification_auto_stitch_confidence: float = Field(
+        0.75,
+        description="If a verified link has confidence >= this value, it will be automatically stitched.",
+    )
 
 
 class SpineCorrection(BaseSchema):

@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional
 
 # Third Party Library
 from loguru import logger
@@ -54,6 +54,42 @@ class PageIRVerificationDirs:
     page_irs_pair_crops: Path
     page_irs_pair_reports: Path
     page_irs_verified: Path
+
+
+@dataclass(frozen=True)
+class VerificationVerdict:
+    """Parsed verdict from the page-pair verification step.
+
+    Fields
+    ------
+    confidence
+        Model confidence in the verdict (0.0–1.0).
+    continuation_kind
+        The kind of continuation ('table', 'text', 'figure', or None).
+    is_continuation
+        Whether the page pair contains a cross-page continuation.
+    next_item_index
+        Original item index in PageIR.items on the next page (from
+        selected_candidate_selection.next_candidate_index). None if absent.
+    next_page_index
+        0-based page index of the next page.
+    prev_item_index
+        Original item index in PageIR.items on the previous page (from
+        selected_candidate_selection.prev_candidate_index). None if absent.
+    prev_page_index
+        0-based page index of the previous page.
+    set_next_table_repeats_header
+        If not None, override the next table's repeats_header flag with this value.
+    """
+
+    confidence: float
+    continuation_kind: Optional[str]
+    is_continuation: bool
+    next_item_index: Optional[int]
+    next_page_index: int
+    prev_item_index: Optional[int]
+    prev_page_index: int
+    set_next_table_repeats_header: Optional[bool]
 
 
 def _apply_single_edge_verdict(
@@ -1835,6 +1871,54 @@ def load_page_irs_from_verification(
         )
 
     return page_irs
+
+
+def load_verification_verdicts(
+    verdict_dir: Path,
+) -> dict[tuple[int, int], VerificationVerdict]:
+    """Load all verification verdict JSONs.
+
+    Parameters
+    ----------
+    verdict_dir
+        Directory containing `*.json` verdict files (e.g., `0003_0004.json`).
+
+    Returns
+    -------
+    dict[tuple[int, int], VerificationVerdict]
+        Mapping of `(prev_page_index, next_page_index)` to parsed verdict.
+
+    Raises
+    ------
+    NotADirectoryError
+        If the specified verdict_dir is not a directory.
+    """
+
+    verdicts: dict[tuple[int, int], VerificationVerdict] = {}
+
+    if not verdict_dir.is_dir():
+        raise NotADirectoryError(f"Verdict directory not found: {verdict_dir}")
+
+    for fp in sorted(verdict_dir.glob("*.json")):
+        data = open_json_type(fp)
+        verdict_data = data["verdict"]
+        selection = data["selected_candidate_selection"]
+
+        verdict = VerificationVerdict(
+            confidence=float(verdict_data["confidence"]),
+            continuation_kind=verdict_data["continuation_kind"],
+            is_continuation=bool(verdict_data["is_continuation"]),
+            next_item_index=selection["next_candidate_index"],
+            next_page_index=int(verdict_data["next_page_index"]),
+            prev_item_index=selection["prev_candidate_index"],
+            prev_page_index=int(verdict_data["prev_page_index"]),
+            set_next_table_repeats_header=verdict_data["set_next_table_repeats_header"],
+        )
+        verdicts[(verdict.prev_page_index, verdict.next_page_index)] = verdict
+
+    logger.info(f"Loaded {len(verdicts)} verification verdict(s) from: {verdict_dir}")
+
+    return verdicts
 
 
 def make_verification_excerpt(
