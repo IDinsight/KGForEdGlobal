@@ -61,6 +61,16 @@
 				"note": "CE1 / CE2 headings"
 			},
 			{
+				"pattern": "(?i)\\bpaliers?\\s+du\\s+(?:niveau\\s+)?ce\\s*[12]\\b",
+				"role": "grade_level",
+				"note": "Grade container headings like 'Paliers du niveau CE1/CE2' (LLM should trim title to CE1/CE2)"
+			},
+			{
+				"pattern": "(?i)\\bniveau\\s*[12]\\s*:\\s*ce\\s*[12]\\b",
+				"role": "grade_level",
+				"note": "Inline grade labels like 'niveau 1: CE1' / 'niveau 2: CE2'"
+			},
+			{
 				"pattern": "(?i)(\\bdeuxi[eè]me\\s+[eéèë]tape\\b|\\b2\\s*(?:e|è|eme|ème)\\s*[eéèë]tape\\b)",
 				"role": "stage",
 				"note": "Stage heading (Deuxième étape / 2ème étape variants)"
@@ -81,6 +91,21 @@
 				"note": "Competence section header: étape"
 			},
 			{
+				"pattern": "(?i)\\bplanification\\s+des\\s+apprentissages\\b",
+				"role": "section",
+				"note": "Planning wrapper heading"
+			},
+			{
+				"pattern": "(?i)\\bapprentissages\\s+ponctuels\\b",
+				"role": "section",
+				"note": "Wrapper heading immediately before punctuels tables"
+			},
+			{
+				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+des\\s+apprentissages\\b",
+				"role": "section",
+				"note": "Planning-table wrapper heading"
+			},
+			{
 				"pattern": "(?i)\\bactivit[ée]s?\\s+(num[ée]riques|de\\s+mesure|g[ée]om[ée]triques)\\b",
 				"role": "strand",
 				"note": "French strand headings"
@@ -88,7 +113,12 @@
 			{
 				"pattern": "(?i)\\br[ée]solution\\s+de\\s+probl[ée]mes\\b",
 				"role": "strand",
-				"note": "French strand heading: Résolution de problèmes"
+				"note": "French strand heading: Résolution de problèmes (leave as-is)"
+			},
+			{
+				"pattern": "(?i)\\bresoultion\\s+de\\s+probl[ée]mes\\b",
+				"role": "strand",
+				"note": "Misspelling observed in PDF: 'resoultion de problemes'"
 			},
 			{
 				"pattern": "(?i)\\by[ëe]ngute\\b.*\\bactivit[ée]s?\\b",

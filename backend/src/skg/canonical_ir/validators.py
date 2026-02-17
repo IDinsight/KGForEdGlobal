@@ -758,8 +758,7 @@ def validate_chunked_table_context_matches_prior_context(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary derived from segment payload builders;
-        for chunked tables it may also be present as `segment_payload["chunking"]`.
+        Optional pre-parsed chunking dictionary derived from segment payload builders.
 
     Raises
     ------
@@ -842,8 +841,7 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary derived from segment payload builders;
-        for chunked tables it may also be present as `segment_payload["chunking"]`.
+        Optional pre-parsed chunking dictionary derived from segment payload builders.
 
     Raises
     ------
@@ -909,8 +907,7 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary derived from segment payload builders;
-        for chunked tables it may also be present as `segment_payload["chunking"]`.
+        Optional pre-parsed chunking dictionary derived from segment payload builders.
 
     Raises
     ------
@@ -1186,8 +1183,7 @@ def validate_context_groupings_supported_by_outer_evidence(
     segment_payload
         The payload dictionary for the Segment being decided on.
     table_chunking
-        Optional pre-parsed chunking dictionary derived from segment payload builders;
-        for chunked tables it may also be present as `segment_payload["chunking"]`.
+        Optional pre-parsed chunking dictionary derived from segment payload builders.
 
     Raises
     ------
@@ -1849,17 +1845,18 @@ def validate_row_groupings_no_duplicate_roles(
     if segment.kind != "table" or not segment_decision.rows:
         return
 
-    allow_duplicates = {"section"}  # Safe default
+    allow_duplicates = {NodeRole.SECTION}  # Safe default
 
     for row in segment_decision.rows:
-        roles = [g.role for g in row.groupings or []]
+        roles = [g.role for g in (row.groupings or [])]
         dup_roles = {
             r for r in roles if roles.count(r) > 1 and r not in allow_duplicates
         }
 
         if dup_roles:
+            dup_roles_str = sorted(r.value for r in dup_roles)
             raise QualityError(
-                f"Row {row.row_index} contains duplicate grouping roles {sorted(dup_roles)}. "
+                f"Row {row.row_index} contains duplicate grouping roles {dup_roles_str}. "
                 f"This usually means the row contains multiple siblings (e.g. multiple subjects). "
                 f"Split into multiple RowDecision entries with the SAME row_index, one per sibling."
             )
@@ -2342,7 +2339,7 @@ def validate_table_split_explosion(
     if segment.kind != "table":
         return
 
-    for rd in segment_decision.rows:
+    for rd in segment_decision.rows or []:
         if len(rd.leaves) > max_leaves_per_row:
             raise QualityError(
                 f"RowDecision produced too many leaves (>{max_leaves_per_row}).\n"
