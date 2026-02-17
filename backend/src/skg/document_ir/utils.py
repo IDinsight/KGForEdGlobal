@@ -467,12 +467,18 @@ def _drop_repeated_header(
 ) -> tuple[list[TableRow], int]:
     """Return next_table.rows with repeated header removed if warranted.
 
+    NB: Never drop "header" rows solely because the verifier says `repeats_header=True`
+    if the continuation slice does not itself contain header rows (or if the would-be
+    header rows do not match the base header). This avoids losing real content when a
+    page begins with a checkpoint/section row inside the table grid (common in many
+    curricula).
+
     Parameters
     ----------
     base_header_rows
         Header rows from the first slice.
     header_row_count
-        Number of header rows.
+        Number of header rows (from the base slice).
     next_table
         The next table slice.
 
@@ -483,35 +489,59 @@ def _drop_repeated_header(
         many rows were removed from the start due to repeated header detection.
     """
 
-    rows_to_add = next_table.rows
+    rows = next_table.rows
+    dropped_count = 0
 
-    if header_row_count <= 0:
-        return rows_to_add, 0
+    def _base_matches_first_k(k: int) -> bool:
+        """Check if the first k rows of the next table match the base header rows.
 
-    if next_table.repeats_header is True:
-        dropped = min(header_row_count, len(rows_to_add))
+        Parameters
+        ----------
+        k
+            The number of rows to check for a match.
 
-        return rows_to_add[dropped:], dropped
+        Returns
+        -------
+        bool
+            True if the first k rows of the next table match the base header rows,
+            False otherwise.
+        """
 
-    if next_table.repeats_header is False:
-        return rows_to_add, 0
+        if k <= 0:
+            return False
 
-    # Unknown: detect by exact header-row match to base.
-    maybe_header = rows_to_add[:header_row_count]
+        maybe_header = rows[:k]
 
-    if (
-        base_header_rows
-        and len(base_header_rows) == len(maybe_header)
-        and all(
+        if not base_header_rows or (len(base_header_rows) < k or len(maybe_header) < k):
+            return False
+
+        return all(
             _row_signature(ra) == _row_signature(rb)
-            for ra, rb in zip(base_header_rows, maybe_header)
+            for ra, rb in zip(base_header_rows[:k], maybe_header)
         )
-    ):
-        dropped = min(header_row_count, len(rows_to_add))
 
-        return rows_to_add[dropped:], dropped
+    # Determine how many rows to drop.
+    if header_row_count > 0:
+        # Does the full base header match exactly? Applies if repeats_header is True OR
+        # Unknown (None). We skip this only if repeats_header is explicitly False.
+        if next_table.repeats_header is not False and _base_matches_first_k(
+            header_row_count
+        ):
+            dropped_count = header_row_count
 
-    return rows_to_add, 0
+        # Fallback check: partial match for explicit repeats. Only runs if
+        # repeats_header is True AND the full match above failed.
+        elif next_table.repeats_header is True:
+            k = int(getattr(next_table, "header_row_count", 0) or 0)
+            k = min(k, header_row_count)
+
+            if k > 0 and _base_matches_first_k(k):
+                dropped_count = k
+
+    # Ensure we don't drop more rows than exist.
+    dropped_count = min(dropped_count, len(rows))
+
+    return rows[dropped_count:], dropped_count
 
 
 def _edge_window_indices(
@@ -1164,41 +1194,39 @@ def _process_next_table_slice(
     # 2.
     next_hrc = int(next_item.header_row_count or 0)
 
-    if next_item.repeats_header is True:
-        # Explicit drop.
-        drop_count = next_hrc if next_hrc > 0 else segment_header_row_count
+    # Determine how many header rows we should attempt to match/drop. We ALWAYS require
+    # a match against the base header before dropping anything. This prevents losing
+    # real content when a continuation page begins with a checkpoint/section row inside
+    # the table grid (common in many curricula), even if the verifier marked
+    # repeats_header=True.
+    match_k = segment_header_row_count
 
-        if drop_count <= 0:
-            msg = (
-                f"Table continuation marked repeats_header=True but header_row_count is 0. "
-                f"segment_id={segment_id}, page={next_page_index}."
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-
-        dropped_header_rows = min(drop_count, len(next_item.rows))
-        rows_to_add = next_item.rows[dropped_header_rows:]
-    else:
-        # Implicit match.
-        match_k = segment_header_row_count
-        if 0 < next_hrc < segment_header_row_count:
-            # If next slice has *fewer* headers declared than the segment, use the
-            # smaller number.
-            match_k = next_hrc
-        elif next_hrc > 0 and next_hrc != segment_header_row_count:
-            match_k = min(segment_header_row_count, next_hrc)
-            msg = (
-                f"header_row_count mismatch: seg={segment_header_row_count} vs next={next_hrc}. "
-                f"Using match_k={match_k}."
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-
-        rows_to_add, dropped_header_rows = _drop_repeated_header(
-            base_header_rows=segment_header_rows[:match_k],
-            header_row_count=match_k,
-            next_table=next_item,
+    if 0 < next_hrc < segment_header_row_count:
+        match_k = next_hrc
+    elif next_hrc > 0 and next_hrc != segment_header_row_count:
+        match_k = min(segment_header_row_count, next_hrc)
+        msg = (
+            f"header_row_count mismatch: seg={segment_header_row_count} vs next={next_hrc}. "
+            f"Using match_k={match_k}."
         )
+        logger.warning(msg)
+        warnings.append(msg)
+
+    rows_to_add, dropped_header_rows = _drop_repeated_header(
+        base_header_rows=segment_header_rows[:match_k],
+        header_row_count=match_k,
+        next_table=next_item,
+    )
+
+    # If repeats_header=True but we couldn't confirm by matching, keep everything and
+    # warn.
+    if next_item.repeats_header is True and match_k > 0 and dropped_header_rows == 0:
+        msg = (
+            f"Table continuation marked repeats_header=True but top rows did not match the base header; "
+            f"kept all rows to avoid content loss. segment_id={segment_id}, page={next_page_index}."
+        )
+        logger.warning(msg)
+        warnings.append(msg)
 
     # 3.
     new_provenance = SegmentProvenance(
