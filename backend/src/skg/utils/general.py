@@ -23,6 +23,9 @@ import langcodes
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
+_TOKEN_RE = re.compile(
+    r"(?i)\b(?:bearer\s+)?([A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+)"
+)
 QUOTES_TRANSLATION = str.maketrans(
     {
         "“": '"',
@@ -369,10 +372,6 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
     dict[str, Any]
         The log record with tokens redacted.
     """
-
-    _TOKEN_RE = re.compile(
-        r"(?i)\b(?:bearer\s+)?([A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+)"
-    )
 
     record = deepcopy(record)
     record["message"] = _TOKEN_RE.sub("<redacted>", record["message"])
