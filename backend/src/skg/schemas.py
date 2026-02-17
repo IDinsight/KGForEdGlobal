@@ -214,7 +214,7 @@ class StitchingConfig(BaseSchema):
         legitimate blanks (or extraction misses). A large value can silently “invent”
         repeated activities/standards by copying prior rows, corrupting the extracted
         table semantics.
-    3. Recommended default: 2. This matches the common pattern: **Topic + Sub-topic**
+    3. Recommended default: 3. This matches the common pattern: **Topic + Sub-topic**
         (or equivalent) are the main rowspan/grouping columns in most primary tables.
     """
 
