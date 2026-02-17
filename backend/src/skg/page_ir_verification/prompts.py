@@ -46,6 +46,9 @@ Table-only patch rule:
 1. Only set `set_next_table_repeats_header` when you are confident it is the SAME table continuing.
 2. Set true only if header rows are visibly repeated at the top of IMAGE B; false only if visibly not repeated; otherwise null.
 
+Border reminder:
+1. Visual borders (closed boxes, ruled edges) do NOT indicate a table has ended. Judge table continuity by content: same column structure, continuing row sequence, and absence of a new table title or restructured header row.
+
 If anything above is violated or your reasoning is weak, correct it now and return a complete `PageIRContinuityVerdict` (rationale >= 50 chars). Return ONLY the object.
         """
     )
@@ -148,10 +151,18 @@ Notes:
   e.g., "Semaine 3" -> "Semaine 4", "Palier" checkpoints continuing, repeated week numbering, or the same section label with uninterrupted sequencing,
   UNLESS a new section heading/caption explicitly indicates a new table.
 
+CRITICAL — Visual borders are NOT evidence of table discontinuity:
+- Do NOT treat distinct cell borders, box outlines, or ruled edges as signals that a table has ended or that a new table has begun.
+- Tables in many document traditions draw full closed borders around EVERY page's portion of the same logical table.
+  Two fully bordered table fragments on consecutive pages are often the SAME table.
+- Instead, determine continuity by content: does the row/column structure remain identical, and does the row sequence logically continue (e.g., "Semaine 5" → "Semaine 6")?
+- A table has truly ENDED only when there is concrete content evidence: a new table title/number, a structurally different header row starting a new table, an explicit concluding row (e.g., "EVALUATIONS FINALES"), or a shift to non-tabular content.
+
 B. TABLE non-continuation cues (NEW table):
   - A new table title/number (e.g., "Tableau 3", "Table 4") or a clearly different caption, OR
   - Clear change in column layout/labels/structure, OR
   - Explicit "end of table"/conclusion marker.
+  Note: Closed visual borders alone are NOT a non-continuation cue. You must see content-level evidence (new title, different column structure, or a header row that redefines the schema) to conclude a new table has begun.
 
 C. TEXT continuation cues (use "{PageContinuationKind.TEXT.value}" only with strong evidence):
   - Bottom of IMAGE A is visibly truncated and top of IMAGE B visibly resumes the same sentence/list:
@@ -177,8 +188,7 @@ E. BILINGUAL / MULTILINGUAL DOCUMENTS:
   you SHOULD set is_continuation=true and continuation_kind="{PageContinuationKind.TABLE.value}".
 
 ## CONFIDENCE CALIBRATION
-- >= 0.75: clear visual evidence supports your decision.
-- 0.50–0.74: plausible but not definitive (still allowed for true/false).
+- >= 0.5: clear or plausible visual evidence supports your decision.
 - <= 0.49: uncertain → MUST choose is_continuation=false (per policy above).
         """
     )

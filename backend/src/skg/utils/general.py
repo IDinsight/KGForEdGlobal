@@ -287,8 +287,7 @@ def normalize_text(text: Optional[str]) -> str:
 
 
 def open_json_type(filepath: str | Path) -> Any:
-    """Helper function to open JSON-type files. This includes JSON, JSONL, JSONNET, and
-    YAML file types.
+    """Helper function to open JSON-type files. This includes JSON and JSONL file types.
 
     Parameters
     ----------
