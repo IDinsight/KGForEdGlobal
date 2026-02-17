@@ -822,6 +822,10 @@ def generate_segment_decision(
     # validate_context_groupings_supported_by_outer_evidence() can accept context
     # titles that match a known hint pattern (even if the heading was filtered from
     # section_path by page-distance limits).
+    #
+    # NB: This injection MUST happen AFTER decide_on_segment() above, which serializes
+    # segment_payload to JSON for the LLM prompt. The patterns are validator-only
+    # data--the LLM never sees them.
     if heading_role_hints and segment_payload is not None:
         segment_payload["_heading_role_hint_patterns"] = [
             h["pattern"] for h in heading_role_hints if h.get("pattern")
