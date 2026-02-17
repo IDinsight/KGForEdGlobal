@@ -592,6 +592,72 @@ def _edge_window_indices(
     return set(picked)
 
 
+def _expand_header_row_to_n_cols(
+    *,
+    local_code: str | None,
+    n_cols: int,
+    row: TableRow,
+    segment_id: str,
+    warnings: list[str],
+) -> list[str]:
+    """Expand a header row's cells based on col_span to match n_cols.
+
+    Parameters
+    ----------
+    local_code
+        The table's local code (for logging).
+    n_cols
+        The target number of columns to expand to.
+    row
+        The TableRow to expand.
+    segment_id
+        The TableSegment ID (for logging).
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    list[str]
+        The expanded header row as a list of cell texts, with length exactly n_cols.
+    """
+
+    expanded: list[str] = []
+    cells = getattr(row, "cells", None) or []
+
+    for cell in cells:
+        text_or_none = cell.text
+        text = (
+            normalize_text(text_or_none.text)
+            if isinstance(text_or_none, TextUnit)
+            else ""
+        )
+
+        span = int(getattr(cell, "col_span", 1) or 1)
+        span = max(span, 1)
+        expanded.append(text)
+
+        # Fill spanned columns with empty strings.
+        if span > 1:
+            expanded.extend([""] * (span - 1))
+
+    # Pad or truncate to match n_cols.
+    current_len = len(expanded)
+
+    if current_len < n_cols:
+        expanded.extend([""] * (n_cols - current_len))
+    elif current_len > n_cols:
+        msg = (
+            f"header row expanded wider than n_cols: expanded={current_len} "
+            f"> n_cols={n_cols}. Truncating. segment_id={segment_id} "
+            f"local_code={local_code!r}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        expanded = expanded[:n_cols]
+
+    return expanded
+
+
 def _extract_table_or_figure_local_code(text: str) -> Optional[str]:
     """Extract a canonical table/figure local_code (e.g., 'Table 4', 'Figure 2') from a
     label string.
@@ -704,19 +770,34 @@ def _finalize_table_structure(
         The final n_cols, columns signature, and canonical header rows.
     """
 
-    columns_signature: Optional[str] = None
+    columns_signature: str | None = None
     header_rows_canonical: list[list[str]] = []
-
-    if header_rows:
-        header_rows_canonical = [list(_row_signature(hr)) for hr in header_rows]
-        columns_signature = "||".join("|".join(hrc) for hrc in header_rows_canonical)
-
     declared_n_cols = max((table.n_cols or 0 for _, _, table in chain), default=0)
-    computed_n_cols = max(
-        (sum(cell.col_span for cell in row.cells) for row in stitched_rows),
-        default=0,
-    )
+
+    # Calculate computed columns based on the stitched rows.
+    computed_n_cols = 0
+
+    if stitched_rows:
+        computed_n_cols = max(
+            (sum(cell.col_span for cell in row.cells) for row in stitched_rows),
+            default=0,
+        )
+
     n_cols = max(declared_n_cols, computed_n_cols)
+
+    # Canonicalize header rows to a fixed width of n_cols by expanding col_spans.
+    if header_rows and n_cols > 0:
+        header_rows_canonical = [
+            _expand_header_row_to_n_cols(
+                local_code=local_code,
+                n_cols=n_cols,
+                row=hr,
+                segment_id=segment_id,
+                warnings=warnings,
+            )
+            for hr in header_rows
+        ]
+        columns_signature = "||".join("|".join(hrc) for hrc in header_rows_canonical)
 
     if 0 < declared_n_cols < computed_n_cols:
         msg = (
@@ -1202,6 +1283,8 @@ def _process_next_table_slice(
     match_k = segment_header_row_count
 
     if 0 < next_hrc < segment_header_row_count:
+        # If next slice has *fewer* headers declared than the segment, use the smaller
+        # number.
         match_k = next_hrc
     elif next_hrc > 0 and next_hrc != segment_header_row_count:
         match_k = min(segment_header_row_count, next_hrc)
@@ -1218,8 +1301,8 @@ def _process_next_table_slice(
         next_table=next_item,
     )
 
-    # If repeats_header=True but we couldn't confirm by matching, keep everything and
-    # warn.
+    # If the verifier/extractor explicitly claimed a repeated header but we could not
+    # confirm it by matching the base header rows, keep all rows and warn.
     if next_item.repeats_header is True and match_k > 0 and dropped_header_rows == 0:
         msg = (
             f"Table continuation marked repeats_header=True but top rows did not match the base header; "
