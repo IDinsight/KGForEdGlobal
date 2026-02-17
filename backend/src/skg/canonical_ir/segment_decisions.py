@@ -267,8 +267,13 @@ def _determine_stable_context(
     stable_hint: list[dict[str, Any]] = []
 
     for g in stable_models:
+        # Use normalize_heading_key for the title so that Unicode normalization (NFKC),
+        # dash-variant folding, and casefold are consistent with the rest of the
+        # pipeline (heading levels, section_path filtering, validators). Without this,
+        # accented characters in French/Wolof titles (e.g., é vs e+combining-acute)
+        # could produce duplicate context entries.
         role = g.role.value.strip().casefold()
-        title = re.sub(r"\s+", " ", g.title).strip().casefold()
+        title = normalize_heading_key(g.title)
         key_fp = (role, title)
 
         if role and title and key_fp not in seen:
