@@ -1386,11 +1386,9 @@ def load_or_build_caption_bindings(
         if segment.kind == "block":
             caption_text = _extract_block_segment_text(segment)
 
-            # NB: Sometimes, headings contain the actual caption text for the table.
-            if (
-                segment.block_type in (BlockType.CAPTION, BlockType.HEADING)
-                and caption_text
-            ):
+            # Only explicit captions bind to tables; headings provide context via
+            # section_path/heading_levels instead.
+            if segment.block_type == BlockType.CAPTION and caption_text:
                 kind = _classify_caption_kind(caption_text)
 
                 # Don't bind figure captions to tables.
@@ -1465,6 +1463,7 @@ def load_or_build_caption_bindings(
         json_info={k: v.model_dump() for k, v in caption_bindings.items()},
     )
     write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
+
     logger.success(f"Saved caption bindings to: {caption_bindings_fp}")
     logger.success(f"Saved caption binding warnings to: {warnings_fp}")
 

@@ -211,6 +211,7 @@ def create_canonical_ir(
             # 6.
             if new_decisions:
                 last = new_decisions[-1]
+
                 if last.decision_type in {
                     SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED,
                     SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
