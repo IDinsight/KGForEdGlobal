@@ -77,6 +77,99 @@ class DocumentIRDirs:
     root: Path
 
 
+def _apply_page_boundary_state_guardrails(
+    *,
+    current_page_ir: PageIR,
+    next_candidate_indices: list[int],
+    next_page_ir: PageIR,
+    next_page_items: list[tuple[int, Block | Table]],
+    prev_candidate_indices: list[int],
+    prev_page_items: list[tuple[int, Block | Table]],
+    warnings: list[str],
+) -> tuple[list[int], list[int], bool]:
+    """Check page-level boundary states: only stitch across this page break when both
+    pages claim continuity in the appropriate direction.
+
+    Parameters
+    ----------
+    current_page_ir
+        The current PageIR.
+    next_candidate_indices
+        A list of indices of valid next-page candidates.
+    next_page_ir
+        The next PageIR.
+    next_page_items
+        The next page's normalized items list.
+    prev_candidate_indices
+        A list of indices of valid previous-page candidates.
+    prev_page_items
+        The previous page's normalized items list.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    tuple[list[int], list[int], bool]
+        The (potentially filtered) previous and next candidate indices, and a flag
+        indicating if stitching is allowed to proceed.
+    """
+
+    allowed_forward = current_page_ir.boundary_state in (
+        PageBoundaryState.CONTINUES_TO_NEXT,
+        PageBoundaryState.BOTH,
+    )
+    allowed_backward = next_page_ir.boundary_state in (
+        PageBoundaryState.CONTINUES_FROM_PREV,
+        PageBoundaryState.BOTH,
+    )
+
+    if allowed_forward and allowed_backward:
+        return prev_candidate_indices, next_candidate_indices, True
+
+    # Exception: allow *table* stitching when there is a strong local_code match.
+    prev_codes = {
+        normalize_local_code(prev_page_items[prev_index][1].local_code)
+        for prev_index in prev_candidate_indices
+        if isinstance(prev_page_items[prev_index][1], Table)
+        and normalize_local_code(prev_page_items[prev_index][1].local_code)
+    }
+    next_codes = {
+        normalize_local_code(next_page_items[next_index][1].local_code)
+        for next_index in next_candidate_indices
+        if isinstance(next_page_items[next_index][1], Table)
+        and normalize_local_code(next_page_items[next_index][1].local_code)
+    }
+    common_codes = prev_codes & next_codes
+
+    if not common_codes:
+        msg = (
+            f"Page boundary_state guardrail blocked stitching across page break "
+            f"{current_page_ir.page_index}->{next_page_ir.page_index}: "
+            f"current={current_page_ir.boundary_state.value} "
+            f"next={next_page_ir.boundary_state.value}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+
+        return [], [], False
+
+    # Restrict stitching candidates to those strongly-anchored tables.
+    filtered_prev = [
+        pidx
+        for pidx in prev_candidate_indices
+        if isinstance(prev_page_items[pidx][1], Table)
+        and normalize_local_code(prev_page_items[pidx][1].local_code) in common_codes
+    ]
+    filtered_next = [
+        nidx
+        for nidx in next_candidate_indices
+        if isinstance(next_page_items[nidx][1], Table)
+        and normalize_local_code(next_page_items[nidx][1].local_code) in common_codes
+    ]
+
+    return filtered_prev, filtered_next, True
+
+
 def _append_rejected_warnings(
     *,
     is_prev: bool,
@@ -173,99 +266,6 @@ def _append_unmatched_warnings(
             )
             logger.warning(msg)
             warnings.append(msg)
-
-
-def _apply_page_boundary_state_guardrails(
-    *,
-    current_page_ir: PageIR,
-    next_candidate_indices: list[int],
-    next_page_ir: PageIR,
-    next_page_items: list[tuple[int, Block | Table]],
-    prev_candidate_indices: list[int],
-    prev_page_items: list[tuple[int, Block | Table]],
-    warnings: list[str],
-) -> tuple[list[int], list[int], bool]:
-    """Check page-level boundary states: only stitch across this page break when both
-    pages claim continuity in the appropriate direction.
-
-    Parameters
-    ----------
-    current_page_ir
-        The current PageIR.
-    next_candidate_indices
-        A list of indices of valid next-page candidates.
-    next_page_ir
-        The next PageIR.
-    next_page_items
-        The next page's normalized items list.
-    prev_candidate_indices
-        A list of indices of valid previous-page candidates.
-    prev_page_items
-        The previous page's normalized items list.
-    warnings
-        A list to append warning messages to.
-
-    Returns
-    -------
-    tuple[list[int], list[int], bool]
-        The (potentially filtered) previous and next candidate indices, and a flag
-        indicating if stitching is allowed to proceed.
-    """
-
-    allowed_forward = current_page_ir.boundary_state in (
-        PageBoundaryState.CONTINUES_TO_NEXT,
-        PageBoundaryState.BOTH,
-    )
-    allowed_backward = next_page_ir.boundary_state in (
-        PageBoundaryState.CONTINUES_FROM_PREV,
-        PageBoundaryState.BOTH,
-    )
-
-    if allowed_forward and allowed_backward:
-        return prev_candidate_indices, next_candidate_indices, True
-
-    # Exception: allow *table* stitching when there is a strong local_code match.
-    prev_codes = {
-        normalize_local_code(prev_page_items[prev_index][1].local_code)
-        for prev_index in prev_candidate_indices
-        if isinstance(prev_page_items[prev_index][1], Table)
-        and normalize_local_code(prev_page_items[prev_index][1].local_code)
-    }
-    next_codes = {
-        normalize_local_code(next_page_items[next_index][1].local_code)
-        for next_index in next_candidate_indices
-        if isinstance(next_page_items[next_index][1], Table)
-        and normalize_local_code(next_page_items[next_index][1].local_code)
-    }
-    common_codes = prev_codes & next_codes
-
-    if not common_codes:
-        msg = (
-            f"Page boundary_state guardrail blocked stitching across page break "
-            f"{current_page_ir.page_index}->{next_page_ir.page_index}: "
-            f"current={current_page_ir.boundary_state.value} "
-            f"next={next_page_ir.boundary_state.value}"
-        )
-        logger.warning(msg)
-        warnings.append(msg)
-
-        return [], [], False
-
-    # Restrict stitching candidates to those strongly-anchored tables.
-    filtered_prev = [
-        pidx
-        for pidx in prev_candidate_indices
-        if isinstance(prev_page_items[pidx][1], Table)
-        and normalize_local_code(prev_page_items[pidx][1].local_code) in common_codes
-    ]
-    filtered_next = [
-        nidx
-        for nidx in next_candidate_indices
-        if isinstance(next_page_items[nidx][1], Table)
-        and normalize_local_code(next_page_items[nidx][1].local_code) in common_codes
-    ]
-
-    return filtered_prev, filtered_next, True
 
 
 def _apply_verification_verdict(

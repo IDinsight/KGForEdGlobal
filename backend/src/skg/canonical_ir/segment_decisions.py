@@ -3,7 +3,6 @@
 # Standard Library
 import copy
 import re
-import unicodedata
 
 from pathlib import Path
 from typing import Any, Optional
@@ -24,7 +23,6 @@ from skg.canonical_ir.schemas import (
     compute_decision_set_id,
 )
 from skg.canonical_ir.utils import (
-    _DASH_RE,
     CanonicalIRDirs,
     _extract_block_segment_text,
     clean_text,
@@ -37,7 +35,7 @@ from skg.document_ir.schemas import (
     Segment,
     TableSegment,
 )
-from skg.page_ir_extraction.schemas import TableCell, TableRow, TextUnit
+from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import CreateCanonicalConfig
 from skg.utils.constants import (
     BlockType,
@@ -48,7 +46,10 @@ from skg.utils.constants import (
     NonArtifacts,
     SegmentDecisionType,
 )
-from skg.utils.general import QUOTES_TRANSLATION, open_json_type, write_to_json
+from skg.utils.general import open_json_type, write_to_json
+
+# Compiled regexes.
+_CODELIKE_TOKEN_RE = re.compile(r"^[A-Z]{1,10}\d{0,5}$")
 
 
 def _classify_caption_kind(text: str) -> CaptionKind:
@@ -120,7 +121,8 @@ def _clean_decision_rows(rows: list[RowDecision]) -> list[RowDecision]:
 
 
 def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
-    """Apply cleaning to GroupingDecision fields.
+    """Apply cleaning to GroupingDecision fields. Ensures we never introduce empty
+    strings for required fields (e.g., title).
 
     Parameters
     ----------
@@ -133,10 +135,17 @@ def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
         The cleaned GroupingDecision.
     """
 
-    title = _clean_label_text(g.title) or g.title.strip()
+    cleaned_title = _clean_label_text(g.title)
+    title = cleaned_title or (g.title or "").strip() or g.title
 
-    # NB: Do NOT apply casing transformations here. SegmentDecision text should be
-    # stored as close to verbatim as possible.
+    # Guard: never create an empty required title.
+    if not (title or "").strip():
+        logger.warning(
+            f"GroupingDecision.title normalized to empty; leaving original title unchanged. "
+            f"role={getattr(g.role, 'value', g.role)!r}, original_title={g.title!r}"
+        )
+        title = g.title
+
     return g.model_copy(
         update={
             "local_code": clean_text(g.local_code),
@@ -148,11 +157,15 @@ def _clean_grouping(g: GroupingDecision) -> GroupingDecision:
 
 def _clean_label_text(text: Optional[str]) -> Optional[str]:
     """Clean label-like fields (grouping titles, source_label) with extra punctuation
-    hygiene. Specifically: normalize whitespace *before* ':' (e.g., so 'Jéego 1 :' and
-    'Jéego 1:' become identical.
+    hygiene.
 
-    We intentionally do NOT normalize spacing *after* ':' here to avoid altering
-    code-like strings (e.g., 'CE1:NUM1').
+    We normalize colon spacing symmetrically and conservatively so that equivalent
+    labels compare identically, without corrupting curriculum code-like strings.
+
+    Examples:
+      - 'Jéego 1 :'  -> 'Jéego 1:'
+      - 'Skills:use' -> 'Skills: use'
+      - 'CE1:NUM1'   -> 'CE1:NUM1'  (preserved)
 
     Parameters
     ----------
@@ -170,14 +183,20 @@ def _clean_label_text(text: Optional[str]) -> Optional[str]:
     if t is None:
         return None
 
-    # Normalize whitespace before colon.
-    t = re.sub(r"\s+:", ":", t)
+    t = _normalize_colon_spacing(t)
 
+    # Preserve None for optional fields when they normalize to empty.
     return t or None
 
 
 def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
     """Apply deterministic hygiene to LeafDecision.
+
+    Guards against introducing empty strings:
+
+    1. body is required; if normalization would empty it, keep original.
+    2. list_marker/source_label/local_code are optional; if they normalize to empty,
+        set to None.
 
     Parameters
     ----------
@@ -192,17 +211,22 @@ def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
 
     updates: dict[str, Any] = {}
 
-    if leaf.body:
-        updates["body"] = _normalize_leaf_body(leaf.body)
+    # Body is required by schema; normalize but never allow empty.
+    if leaf.body is not None:
+        cleaned_body = _normalize_leaf_body(leaf.body)
 
-    # Normalize list_marker whitespace if it exists.
-    if leaf.list_marker:
-        updates["list_marker"] = re.sub(r"\s+", " ", leaf.list_marker).strip()
+        if cleaned_body and cleaned_body != leaf.body:
+            updates["body"] = cleaned_body
 
-    if leaf.local_code:
+    # Normalize list_marker whitespace if it exists; preserve None for empties.
+    if leaf.list_marker is not None:
+        marker = re.sub(r"\s+", " ", leaf.list_marker).strip()
+        updates["list_marker"] = marker or None
+
+    if leaf.local_code is not None:
         updates["local_code"] = clean_text(leaf.local_code)
 
-    if leaf.source_label:
+    if leaf.source_label is not None:
         updates["source_label"] = _clean_label_text(leaf.source_label)
 
     return leaf.model_copy(update=updates) if updates else leaf
@@ -473,6 +497,27 @@ def _filter_section_path_for_llm(
     return deduped[-max_items:]
 
 
+def _is_code_like_token(token: str) -> bool:
+    """Return True for compact curriculum-style codes like 'CE1' or 'NUM1'.
+
+    Used only to protect code-like strings from punctuation normalization such as
+    inserting a space after ':' (e.g., keep 'CE1:NUM1' unchanged).
+
+    Parameters
+    ----------
+    token
+        The token to check.
+
+    Returns
+    -------
+    bool
+        True if the token looks like a compact curriculum code, False otherwise.
+    """
+
+    token = (token or "").strip(".,;:()[]{}")
+    return bool(token) and bool(_CODELIKE_TOKEN_RE.match(token))
+
+
 def _is_structural_heading(*, heading_levels: dict[str, int], segment: Segment) -> bool:
     """Check if a block segment is a structural heading that should be auto-ignored.
 
@@ -548,18 +593,96 @@ def _make_auto_ignore_decision(
     )
 
 
+def _normalize_colon_spacing(text: str) -> str:
+    """Normalize colon spacing in a conservative, symmetric way.
+
+    Rules:
+
+    1. Remove whitespace BEFORE ':' (e.g., 'Jéego 1 :' -> 'Jéego 1:').
+    2. Ensure a SINGLE space AFTER ':' when ':' functions as punctuation, BUT:
+       - Do NOT add a space if the next char is a digit (times/ratios like '10:30',
+        '1:2').
+       - Do NOT add a space for code-like tokens 'TOKEN:TOKEN' where both sides look
+         like compact curriculum codes (e.g., 'CE1:NUM1').
+
+    The input is expected to already have collapsed internal whitespace (via
+    clean_text), but this function is robust either way.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        The text with normalized colon spacing.
+    """
+
+    if not text or ":" not in text:
+        return text
+
+    # Normalize whitespace before ':' globally.
+    s = re.sub(r"\s+:", ":", text)
+
+    out: list[str] = []
+    i = 0
+    n = len(s)
+
+    while i < n:
+        ch = s[i]
+
+        if ch != ":":
+            out.append(ch)
+            i += 1
+            continue
+
+        # Emit ':'.
+        out.append(":")
+        j = i + 1
+
+        # Skip any whitespace after ':'.
+        while j < n and s[j].isspace():
+            j += 1
+
+        # If ':' is terminal, we're done.
+        if j >= n:
+            break
+
+        next_ch = s[j]
+
+        # Extract left and right tokens for code-like protection.
+        k = i - 1
+
+        while k >= 0 and not s[k].isspace():
+            k -= 1
+
+        left_tok = s[k + 1 : i]
+
+        m = j
+
+        while m < n and not s[m].isspace():
+            m += 1
+
+        right_tok = s[j:m]
+
+        add_space = (not next_ch.isdigit()) and not (
+            _is_code_like_token(left_tok) and _is_code_like_token(right_tok)
+        )
+
+        if add_space:
+            out.append(" ")
+
+        # Continue from the first non-space char after ':'.
+        i = j
+
+    return re.sub(r"\s+", " ", "".join(out)).strip()
+
+
 def _normalize_leaf_body(body: str) -> str:
-    """Normalize statement text. The goal here is to remove purely formatting-based
-    diffs that shouldn't create merge warnings.
-
-    The following are considered safe operations:
-
-    1. Unicode normalize (NFKC)
-    2. Normalize quotes/dashes
-    3. Collapse whitespace
-    4. Normalize spacing around colons (but only when followed by non-space, non-digit
-        to avoid corrupting code-like strings such as "CE1:NUM1" or times/ratios like
-        "10:30" or "1:2").
+    """Normalize leaf statement body text. The goal is to remove purely
+    formatting-based diffs without changing meaning or corrupting compact code-like
+    strings.
 
     Parameters
     ----------
@@ -572,24 +695,14 @@ def _normalize_leaf_body(body: str) -> str:
         The normalized leaf body text.
     """
 
-    s = unicodedata.normalize("NFKC", body or "")
-    s = s.translate(QUOTES_TRANSLATION)
-    s = _DASH_RE.sub("-", s)
-    s = re.sub(r"\s+", " ", s).strip()
+    cleaned = clean_text(body)
 
-    # Normalize colon spacing ONLY when a non-space follows the colon.
-    #
-    # Examples:
-    #   "Skills:use blends"   -> "Skills: use blends"
-    #   "Skills:  use blends" -> "Skills: use blends"
-    #
-    # In addition, only insert a space after ":" when the next char is NOT a digit to
-    # avoid corrupting times/ratios like "10:30" or "1:2".
-    s = re.sub(r":\s*(?=[^\d\s])", ": ", s)
+    # body is required by schema, but guard anyway.
+    s = cleaned or (body or "").strip()
 
-    s = re.sub(r"\s+", " ", s).strip()
+    s2 = _normalize_colon_spacing(s)
 
-    return s
+    return s2 or s
 
 
 def _process_block_segment(
@@ -1019,41 +1132,6 @@ def _process_unchunked_table(
     return save_segment_decision_set(
         decision_set=decision_set, segment_decisions_fp=segment_decisions_fp
     )
-
-
-def _row_to_text(*, max_cols: int = 6, row: TableRow) -> list[str]:
-    """Convert a table row dictionary into a list of cell texts.
-
-    Parameters
-    ----------
-    max_cols
-        Maximum number of columns to process, by default 6.
-    row
-        The TableRow dictionary to process.
-
-    Returns
-    -------
-    list[str]
-        A list of strings representing cell content, with trailing empty cells removed.
-    """
-
-    texts: list[str] = []
-
-    for cell in row.cells[:max_cols]:
-        assert isinstance(cell, TableCell), f"{row = } {cell = }"
-        text_unit_or_none = cell.text
-        text = (
-            (text_unit_or_none.text or "").strip()
-            if isinstance(text_unit_or_none, TextUnit)
-            else ""
-        )
-        texts.append(text[:500])
-
-    # Trim trailing empties for compactness.
-    while texts and not texts[-1]:
-        texts.pop()
-
-    return texts
 
 
 def apply_caption_binding_to_table_payload(
@@ -1836,6 +1914,10 @@ def save_segment_decision_set(
     decision_set.decision_set_id = new_id
 
     write_to_json(fp=segment_decisions_fp, json_info=decision_set)
+
+    logger.success(
+        f"Saved segment decisions to: {segment_decisions_fp} with decision_set_id: {new_id}"
+    )
 
     return decision_set
 

@@ -2133,6 +2133,16 @@ def postprocess_verified_page_irs(
         },
     )
 
+    logger.success(
+        f"Saved postprocess report with "
+        f"{len(prose_table_fix_changes)} prose-table fixes, "
+        f"{len(table_code_changes)} table code propagations, "
+        f"{len(empty_cell_changes)} empty cell normalizations, "
+        f"{len(rowspan_alignment_changes)} rowspan alignment changes, and "
+        f"{len(pad_changes)} table row padding changes to: "
+        f"{verification_dirs.root / 'postprocess_report.json'}"
+    )
+
 
 def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
     """Carry forward "Table X" codes across VERIFIED continuation boundaries.
