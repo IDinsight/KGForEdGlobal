@@ -27,7 +27,7 @@
 	"document_ir": {
 		"keep_artifacts": false,
 		"max_section_path_length": 12,
-		"min_link_score": 2,
+		"min_link_score": 2.0,
 		"overwrite": true,
 		"repair_hyphenation": true,
 		"sort_items_by_bbox": true,

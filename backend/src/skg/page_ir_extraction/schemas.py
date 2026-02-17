@@ -6,8 +6,6 @@ Representations (IRs).
 from __future__ import annotations
 
 # Standard Library
-import re
-
 from typing import Literal, Optional
 
 # Third Party Library
@@ -15,24 +13,7 @@ from pydantic import Field, model_validator
 
 # Package Library
 from skg.schemas import BaseSchema, BBox, LanguageField
-from skg.utils.constants import (
-    BlockType,
-    CaptionFigurePrefixes,
-    CaptionTablePrefixes,
-    FigureKind,
-    ItemBoundary,
-    PageBoundaryState,
-)
-
-# Compiled regexes.
-_TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
-_FIGURE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionFigurePrefixes)
-TABLE_TEXT_RE = re.compile(
-    rf"(?i)^\s*(?:{_TABLE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b"
-)
-FIGURE_TEXT_RE = re.compile(
-    rf"(?i)^\s*(?:{_FIGURE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b"
-)
+from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
 
 
 # Schemas for component models.
@@ -428,145 +409,3 @@ class PageIR(BaseSchema):
         None,
         description="Source PDF filename (no path). This should be populated by the Python pipeline; it may be null during extraction.",
     )
-
-    def _extract_code_string(self, text: str) -> str | None:
-        """Regex matching logic.
-
-        Parameters
-        ----------
-        text
-            The text to extract from.
-
-        Returns
-        -------
-        str | None
-            The extracted code string, or None if not found.
-        """
-
-        s = (text or "").strip()
-
-        if not s:
-            return None
-
-        if (m := TABLE_TEXT_RE.match(s)) is not None:
-            return f"Table {m.group('num')}"
-
-        if (m := FIGURE_TEXT_RE.match(s)) is not None:
-            return f"Figure {m.group('num')}"
-
-        return None
-
-    def _find_next_content_item(self, start_index: int) -> Table | Block | None:
-        """Find the next item that is not an artifact.
-
-        Parameters
-        ----------
-        start_index
-            The index to start searching from.
-
-        Returns
-        -------
-        Table | Block | None
-            The next non-artifact item, or None if not found.
-        """
-
-        for j in range(start_index, len(self.items)):
-            nxt = self.items[j]
-            if isinstance(nxt, Block) and nxt.block_type == BlockType.ARTIFACT:
-                continue
-            return nxt
-
-        return None
-
-    def _resolve_item_code(self, item: Block) -> str | None:
-        """Determine the code based on local_code or text content.
-
-        Parameters
-        ----------
-        item
-            The Block item to extract the code from.
-
-        Returns
-        -------
-        str | None
-            The resolved code string, or None if not found.
-        """
-
-        # Check existing local_code first.
-        if item.local_code:
-            normalized = self._extract_code_string(item.local_code)
-            if normalized:
-                return normalized
-
-        # Fallback to text content.
-        if item.text:
-            return self._extract_code_string(item.text.text)
-
-        return None
-
-    @model_validator(mode="after")
-    def propagate_table_codes(self) -> PageIR:
-        """Propagate Table/Figure codes from adjacent label blocks to the subsequent
-        Table/Figure item if missing.
-
-        This is intentionally light-weight and schema-preserving:
-
-        1. It can derive a code from Block.text.text (e.g., "Table 3.9.4.1: ...").
-        2. It works even if the label block is misclassified (caption vs. heading vs.
-            paragraph).
-        3. It only propagates to the immediately-next non-artifact item.
-
-        Returns
-        -------
-        PageIR
-            The passed in PageIR with propagated table/figure codes.
-        """
-
-        eligible_label_types = {
-            BlockType.CAPTION,
-            BlockType.HEADING,
-            BlockType.PARAGRAPH,
-        }
-
-        for i, item in enumerate(self.items):
-            # Check eligibility.
-            if (
-                not isinstance(item, Block)
-                or item.block_type not in eligible_label_types
-            ):
-                continue
-
-            # Derive/normalize code.
-            code = self._resolve_item_code(item)
-            if not code:
-                continue
-
-            # Update current item if needed.
-            if not (item.local_code or "").strip():
-                item.local_code = code
-
-            # Find valid next item (skip artifacts).
-            next_item = self._find_next_content_item(start_index=i + 1)
-
-            # Propagate code to next item.
-            if next_item:
-                code_lower = code.lower()
-
-                # Case A: Table.
-                if code_lower.startswith("table"):
-                    if (
-                        isinstance(next_item, Table)
-                        and not (next_item.local_code or "").strip()
-                    ):
-                        next_item.local_code = code
-
-                # Case B: Figure.
-                elif code_lower.startswith("figure"):
-                    if (
-                        isinstance(next_item, Block)
-                        and next_item.block_type == BlockType.FIGURE
-                        and not (next_item.local_code or "").strip()
-                    ):
-                        next_item.local_code = code
-
-        return self
