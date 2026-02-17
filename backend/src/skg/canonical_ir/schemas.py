@@ -436,28 +436,119 @@ class SegmentDecision(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def _validate_decision_type_semantics(self) -> SegmentDecision:
-        """Enforce that decision_type matches the shape of emitted outputs.
+    def _validate_decision_semantics(self) -> SegmentDecision:
+        """Single entry point for all SegmentDecision semantic validation.
 
-        Updated rules (supports real table parsing):
+        This single validator calls private helpers in an **explicitly documented**
+        order:
 
-        1. emit_groupings_only:
-            - MUST NOT emit any leaves anywhere (top-level or row-level)
-            - MAY emit groupings[] and/or rows[] with row-level groupings
-        2. emit_leaves_only:
-            - MUST have empty *segment-level* groupings[]
-            - MAY emit leaves[] and/or rows[] (including row-level groupings for
-                attachment)
-        3. emit_groupings_and_leaves:
-            - MUST emit at least one grouping somewhere (segment or row)
-            - MUST emit at least one leaf somewhere (segment or row)
+        1. `_check_ignore_unresolved_empty`: IGNORE/UNRESOLVED must have all arrays
+            empty. Runs first so later checks can safely assume the decision intends to
+            emit something.
+        2. `_check_emit_flagged_unresolved`: emit_flagged_unresolved must carry
+            reviewable candidates (context_groupings alone is not sufficient).
+        3. `_check_decision_type_shape`: Per-decision-type checks
+            (emit_groupings_only/emit_leaves_only/emit_groupings_and_leaves).
+            context_groupings do **NOT** count as emitted output here—only
+            `groupings[]`, `rows[].groupings[]`, `leaves[]`, and `rows[].leaves[]`
+            count. **Must run before** `_check_non_noop_emit` so that a decision with
+            only context_groupings is rejected here rather than passing the weaker
+            non-noop check.
+        4. `_check_non_noop_emit`: Any emit_* decision must have *some* output.
+            context_groupings DO count here (a decision with only context_groupings is
+            not truly empty). Weaker than step 3 intentionally.
+        5. `_check_table_rows_vs_leaves`: rows[] and top-level leaves[] are mutually
+            exclusive.
+        6. `_check_segment_kind_specifics`: Block- and table-specific leaf requirements.
+
+        Returns
+        -------
+        SegmentDecision
+            The validated SegmentDecision object.
+
+        Raises
+        ------
+        ValueError
+            If any semantic invariant is violated.
         """
 
+        # 1.
+        self._check_ignore_unresolved_empty()
+
+        # 2.
+        self._check_emit_flagged_unresolved()
+
+        # Early return: remaining checks only apply to proper emit_* types.
         if self.decision_type in (
             SegmentDecisionType.IGNORE,
             SegmentDecisionType.UNRESOLVED,
         ):
             return self
+
+        # 3.
+        self._check_decision_type_shape()
+
+        # 4.
+        self._check_non_noop_emit()
+
+        # 5.
+        self._check_table_rows_vs_leaves()
+
+        # 6.
+        self._check_segment_kind_specifics()
+
+        return self
+
+    def _check_ignore_unresolved_empty(self) -> None:
+        """IGNORE/UNRESOLVED must have all output arrays empty.
+
+        Raises
+        ------
+        ValueError
+            If the decision type is IGNORE or UNRESOLVED but
+            context_groupings/groupings/leaves/rows are not all empty.
+        """
+
+        if self.decision_type in (
+            SegmentDecisionType.IGNORE,
+            SegmentDecisionType.UNRESOLVED,
+        ) and (self.context_groupings or self.groupings or self.leaves or self.rows):
+            raise ValueError(
+                f"Decision type is '{self.decision_type.value}', so "
+                f"context_groupings/groupings/leaves/rows must be empty."
+            )
+
+    def _check_emit_flagged_unresolved(self) -> None:
+        """emit_flagged_unresolved must carry reviewable candidates.
+
+        Raises
+        ------
+        ValueError
+            If the decision type is emit_flagged_unresolved but there are no candidates
+            in context_groupings/groupings/leaves/rows (context_groupings alone is not
+            sufficient).
+        """
+
+        if self.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED and not (
+            self.groupings or self.leaves or self.rows
+        ):
+            raise ValueError(
+                "Decision type is 'emit_flagged_unresolved', so at least one of "
+                "groupings/leaves/rows must be non-empty (context_groupings alone is not sufficient)."
+            )
+
+    def _check_decision_type_shape(self) -> None:
+        """Per-decision-type checks. context_groupings do NOT count as output.
+
+        This MUST run before `_check_non_noop_emit` (which counts context_groupings) so
+        that `emit_groupings_only` with only context_groupings is rejected here.
+
+        Raises
+        ------
+        ValueError
+            If the decision's content does not match the requirements of its declared
+            decision_type.
+        """
 
         # Aggregate signals across segment-level and row-level outputs.
         has_segment_groupings = bool(self.groupings)
@@ -469,8 +560,7 @@ class SegmentDecision(BaseSchema):
         has_any_leaves = has_segment_leaves or has_row_leaves
 
         # emit_groupings_only must actually emit at least one grouping.
-        # NB: context_groupings do NOT count here, because they are "context snapshots"
-        # and almost always present. We want actual emitted groupings.
+        # context_groupings do NOT count (they are context snapshots).
         if (
             self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY
             and not has_any_groupings
@@ -490,7 +580,7 @@ class SegmentDecision(BaseSchema):
                 "in leaves[] or RowDecision.leaves[]."
             )
 
-        # Allow rows[] only if they contain groupings-only rows (no leaves).
+        # emit_groupings_only must not emit any leaves.
         if (
             self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_ONLY
             and has_any_leaves
@@ -500,7 +590,7 @@ class SegmentDecision(BaseSchema):
                 "(top-level leaves[] and RowDecision.leaves[] must be empty)."
             )
 
-        # Only ban segment-level groupings; allow row-level groupings for tables.
+        # emit_leaves_only: ban segment-level groupings; row-level allowed.
         if (
             self.decision_type == SegmentDecisionType.EMIT_LEAVES_ONLY
             and self.groupings
@@ -518,40 +608,19 @@ class SegmentDecision(BaseSchema):
                 "groupings and leaves (either segment-level or row-level for tables)."
             )
 
-        return self
+    def _check_non_noop_emit(self) -> None:
+        """Any emit_* decision must produce *some* output.
 
-    @model_validator(mode="after")
-    def _validate_non_noop_emit_decision(self) -> SegmentDecision:
-        """If decision_type indicates emission, ensure something will actually be
-        emitted. This prevents 'emit_*' decisions that are effectively empty.
-
-        NB: **Validator order dependency:** This validator intentionally counts
-        `context_groupings` as output (a decision with *only* `context_groupings` is
-        not truly empty and should not be demoted to IGNORE/UNRESOLVED). However,
-        `_validate_decision_type_semantics` (declared earlier, so it runs first) does
-        NOT count `context_groupings` when checking that `emit_groupings_only` actually
-        emits groupings. The combined effect is correct: a decision with only
-        `context_groupings` passes *this* check but will still be rejected by the
-        stricter per-decision-type check above. If the declaration order of these
-        validators changes, verify that the combined behavior is preserved.
-
-        Returns
-        -------
-        SegmentDecision
-            The validated SegmentDecision object.
+        context_groupings DO count here—a decision with only context_groupings is not
+        truly empty. This is intentionally weaker than `_check_decision_type_shape` and
+        relies on running after it.
 
         Raises
         ------
         ValueError
-            If an emit decision_type has no output
-            (context_groupings/groupings/leaves/rows all empty).
+            If the decision_type is an emit_* type but there is no output in any of
+            context_groupings/groupings/leaves/rows.
         """
-
-        if self.decision_type in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        ):
-            return self
 
         has_any_output = bool(
             self.context_groupings or self.groupings or self.leaves or self.rows
@@ -563,29 +632,14 @@ class SegmentDecision(BaseSchema):
                 f"This should usually be IGNORE or UNRESOLVED."
             )
 
-        return self
-
-    @model_validator(mode="after")
-    def _validate_table_rows_vs_leaves(self) -> SegmentDecision:
-        """Prevent double counting: if using rows[] for a table, top-level leaves[]
-        must be empty.
-
-        Returns
-        -------
-        SegmentDecision
-            The validated SegmentDecision object.
+    def _check_table_rows_vs_leaves(self) -> None:
+        """rows[] and top-level leaves[] are mutually exclusive.
 
         Raises
         ------
         ValueError
-            If both rows[] and top-level leaves[] are populated for a table segment.
+            If both rows[] and top-level leaves[] are populated in the same decision.
         """
-
-        if self.decision_type in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        ):
-            return self
 
         if self.rows and self.leaves:
             raise ValueError(
@@ -593,44 +647,15 @@ class SegmentDecision(BaseSchema):
                 "Use rows[] only for table parsing to avoid duplication."
             )
 
-        return self
-
-    @model_validator(mode="after")
-    def _validate(self) -> SegmentDecision:
-        """Validate SegmentDecision consistency based on decision_type and segment_kind.
-
-        Returns
-        -------
-        SegmentDecision
-            The validated SegmentDecision object.
+    def _check_segment_kind_specifics(self) -> None:
+        """Block/table specific requirements for leaf emission.
 
         Raises
         ------
         ValueError
-            If the SegmentDecision is inconsistent based on its decision_type and
-            segment_kind.
+            If the decision violates block/table-specific invariants regarding leaf
+            emission.
         """
-
-        # If IGNORE, we should not be emitting anything.
-        if self.decision_type in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        ) and (self.context_groupings or self.groupings or self.leaves or self.rows):
-            raise ValueError(
-                f"Decision type is '{self.decision_type.value}', so "
-                "context_groupings/groupings/leaves/rows must be empty."
-            )
-
-        # "emit_flagged_unresolved" is allowed to carry candidate outputs, but it must
-        # carry *reviewable* candidates (otherwise it should be UNRESOLVED).
-        # context_groupings[] alone is NOT sufficient.
-        if self.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED and not (
-            self.groupings or self.leaves or self.rows
-        ):
-            raise ValueError(
-                "Decision type is 'emit_flagged_unresolved', so at least one of "
-                "groupings/leaves/rows must be non-empty (context_groupings alone is not sufficient)."
-            )
 
         if (
             self.segment_kind == "block"
@@ -655,8 +680,6 @@ class SegmentDecision(BaseSchema):
             raise ValueError(
                 "Table decision emitting leaves must include either rows[] or leaves[]."
             )
-
-        return self
 
 
 class SegmentDecisionSet(BaseSchema):

@@ -1327,7 +1327,11 @@ def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
             }
         )
 
-    return ordered or [{}]
+    assert (
+        ordered
+    ), "No headings found in document IR; expected at least one heading for context."
+
+    return ordered
 
 
 def load_or_build_caption_bindings(
@@ -1632,7 +1636,7 @@ def make_table_chunk_payload(
         else:
             decision_rows_payload.append(raw_row)
 
-    # Primary decision rows (potentially fill-down adjusted)/
+    # Primary decision rows (potentially fill-down adjusted).
     seg["rows"] = decision_rows_payload
 
     # Preserve context rows separately (raw visual).
