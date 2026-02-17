@@ -46,8 +46,13 @@ Table-only patch rule:
 1. Only set `set_next_table_repeats_header` when you are confident it is the SAME table continuing.
 2. Set true only if header rows are visibly repeated at the top of IMAGE B; false only if visibly not repeated; otherwise null.
 
-Border reminder:
-1. Visual borders (closed boxes, ruled edges) do NOT indicate a table has ended. Judge table continuity by content: same column structure, continuing row sequence, and absence of a new table title or restructured header row.
+Border reminders:
+1. Do NOT treat a reset in row numbering/labels (e.g., "1" restarting after "27") as proof of a NEW table.
+  Many curricula restart sequences inside the SAME logical table (new unit/term/level/checkpoint) while keeping the schema identical.
+2. Large content/topic shifts are also NOT proof of a new table if the column structure is unchanged.
+3. A "checkpoint" row (e.g., a merged row naming a unit/term/assessment/checkpoint) can appear INSIDE the table grid.
+  If the grid continues below/after it, the table may still be continuing across the page break.
+  (closed boxes, ruled edges) do NOT indicate a table has ended. Judge table continuity by content: same column structure, continuing row sequence, and absence of a new table title or restructured header row.
 
 If anything above is violated or your reasoning is weak, correct it now and return a complete `PageIRContinuityVerdict` (rationale >= 50 chars). Return ONLY the object.
         """
@@ -138,6 +143,10 @@ Then:
 
 ## DECISION GUIDANCE (use the IMAGES)
 A. TABLE continuation cues (SAME table):
+- STRONG cue (template match): the vertical gridlines/column boundaries align and the number of columns is the same.
+  Treat this as strong evidence of SAME-table continuity even if the row labels restart or the topic changes.
+- A checkpoint/section row inside the table (often a merged row spanning many columns) does NOT end the table by itself.
+  If the table grid continues and the next page shows the same schema, prefer continuation.
   - Identical column structure (count, widths, gridlines) continues across the break, AND
   - No visible “new table” title/numbering marker, AND/OR
   - Header repeats (common), OR
@@ -159,6 +168,11 @@ CRITICAL — Visual borders are NOT evidence of table discontinuity:
 - A table has truly ENDED only when there is concrete content evidence: a new table title/number, a structurally different header row starting a new table, an explicit concluding row (e.g., "EVALUATIONS FINALES"), or a shift to non-tabular content.
 
 B. TABLE non-continuation cues (NEW table):
+- IMPORTANT: The following are NOT sufficient by themselves to declare a new table:
+  - Row numbering/labels restart (e.g., "Week 27" then "Week 1")
+  - Topic/skill area changes sharply
+  - The table is fully boxed on both pages
+  These are common in scope-and-sequence documents that reuse a single table schema across sections/terms.
   - A new table title/number (e.g., "Tableau 3", "Table 4") or a clearly different caption, OR
   - Clear change in column layout/labels/structure, OR
   - Explicit "end of table"/conclusion marker.
@@ -182,6 +196,11 @@ E. BILINGUAL / MULTILINGUAL DOCUMENTS:
   - Unfamiliar scripts or languages are NOT evidence of truncation or corruption.
 
 ## UNCERTAINTY POLICY
+When BOTH candidates are tables:
+- If the column/grid schema matches visually (same number of columns; aligned vertical gridlines) and there is NO explicit new-table marker,
+  you SHOULD choose is_continuation=true (table) with moderate confidence (~0.60–0.80), even if row labels restart or content shifts.
+- You SHOULD choose is_continuation=false ONLY when you see explicit new-table evidence (new caption/title/number) OR a clear schema change.
+
 1. Default when uncertain: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
 2. Exception for TABLE<->TABLE candidates:
   If BOTH candidates are tables, and you see at least one strong SAME-table cue, and there is NO visible new-table marker,
