@@ -38,7 +38,13 @@ from skg.page_ir_extraction.schemas import (
 )
 from skg.page_ir_verification.utils import is_artifact
 from skg.schemas import RunCtx, StitchingConfig
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from skg.utils.constants import (
+    BlockType,
+    CaptionFigurePrefixes,
+    CaptionTablePrefixes,
+    ItemBoundary,
+    PageBoundaryState,
+)
 from skg.utils.general import (
     bbox_contains,
     compute_sha256_hex,
@@ -52,14 +58,15 @@ ChainItem = tuple[int, int, Block | Table]
 
 # Compiled regexes.
 _ALPHA_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]")
-_CAPTION_TABLE_RE = re.compile(
-    r"^\s*(?:table|jedwali|tableau)\s*(?:no\.?|n\.?|na\.)?\s*(\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?",
-    re.IGNORECASE,
-)
 _DIGIT_RE = re.compile(r"\d")
+_FIGURE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionFigurePrefixes)
+_TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
+_FIGURE_CODE_RE = re.compile(
+    rf"(?i)^\s*(?:{_FIGURE_PREFIX_RE})\s*(?:no\.?|n\.?|na\.)?\s*(?P<num>\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?"
+)
 _LOCAL_CODE_RE = re.compile(r"\s+")
-_TABLE_FIGURE_RE = re.compile(
-    r"^\s*(table|figure)\s+(\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?", re.IGNORECASE
+_TABLE_CODE_RE = re.compile(
+    rf"(?i)^\s*(?:{_TABLE_PREFIX_RE})\s*(?:no\.?|n\.?|na\.)?\s*(?P<num>\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?"
 )
 
 
@@ -285,15 +292,12 @@ def _caption_anchor(item: Block) -> str:
     text = (
         (text_or_none.text or "").strip() if isinstance(text_or_none, TextUnit) else ""
     )
-    m = _TABLE_FIGURE_RE.match(text)
+    code = _extract_table_or_figure_local_code(text)
 
-    if not m:
+    if not code:
         return ""
 
-    kind = m.group(1).lower()
-    num = m.group(2)
-
-    return f"{kind} {num}"
+    return normalize_local_code(code) or ""
 
 
 def _column_signature(*, mode: str, table: Table) -> str:
@@ -432,45 +436,35 @@ def _edge_window_indices(
     return set(picked)
 
 
-def _extract_table_local_code_from_caption(caption: Block) -> Optional[str]:
-    """Extract a canonical table local_code (e.g., 'Table 4') from a caption block.
-    This is used to propagate caption codes to the nearest following table on the same
-    page when the table itself has local_code=None. We treat common non-English table
-    prefixes (e.g., 'Jedwali', 'Tableau') as 'Table' for canonicalization.
+def _extract_table_or_figure_local_code(text: str) -> Optional[str]:
+    """Extract a canonical table/figure local_code (e.g., 'Table 4', 'Figure 2') from a
+    label string.
+
+    Supports multilingual caption prefixes via
+    CaptionTablePrefixes/CaptionFigurePrefixes, and tolerates variants like
+    'Table No. 4:'.
 
     Parameters
     ----------
-    caption
-        The caption block.
+    text
+        The text to extract from.
 
     Returns
     -------
     Optional[str]
-        The extracted table local_code, or None if not found.
+        The extracted local_code, or None if not found.
     """
 
-    if caption.block_type != BlockType.CAPTION:
+    s = (text or "").strip()
+
+    if not s:
         return None
 
-    candidates: list[str] = []
+    if (m := _TABLE_CODE_RE.match(s)) is not None:
+        return f"Table {m.group('num')}"
 
-    # Sometimes extraction/verification may already populate caption.local_code.
-    if isinstance(caption.local_code, str) and caption.local_code.strip():
-        candidates.append(caption.local_code.strip())
-
-    # Otherwise parse from caption text.
-    if caption.text is not None and isinstance(caption.text.text, str):
-        text = caption.text.text.strip()
-
-        if text:
-            candidates.append(text)
-
-    for cand in candidates:
-        m = _CAPTION_TABLE_RE.match(cand)
-
-        if m:
-            num = m.group(1)  # Supports "4" or "1.2"
-            return f"Table {num}"
+    if (m := _FIGURE_CODE_RE.match(s)) is not None:
+        return f"Figure {m.group('num')}"
 
     return None
 
@@ -578,6 +572,36 @@ def _finalize_table_structure(
         warnings.append(msg)
 
     return n_cols, columns_signature, header_rows_canonical
+
+
+def _find_next_non_artifact(
+    *, items: list[tuple[int, Block | Table]], start_index: int
+) -> tuple[int, int, Block | Table] | None:
+    """Find the next item in the list that is not an ARTIFACT block.
+
+    Parameters
+    ----------
+    items
+        The list of items to search.
+    start_index
+        The index to start searching from.
+
+    Returns
+    -------
+    tuple[int, int, Block | Table] | None
+        A tuple containing (current_list_index, original_index, item) if found,
+        otherwise None.
+    """
+
+    for j in range(start_index, len(items)):
+        orig_idx, cand = items[j]
+
+        if isinstance(cand, Block) and cand.block_type == BlockType.ARTIFACT:
+            continue
+
+        return j, orig_idx, cand
+
+    return None
 
 
 def _find_paired_candidates(
@@ -1151,6 +1175,33 @@ def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional
     )
 
 
+def _resolve_label_code(item: Block) -> Optional[str]:
+    """Resolve a table/figure code from a label-like Block using local_code first, then
+    falling back to the block text.
+
+    Parameters
+    ----------
+    item
+        The Block to resolve the code from.
+
+    Returns
+    -------
+    Optional[str]
+        The resolved code, or None if not found.
+    """
+
+    if isinstance(item.local_code, str) and item.local_code.strip():
+        code = _extract_table_or_figure_local_code(item.local_code)
+
+        if code:
+            return code
+
+    if item.text is not None and isinstance(item.text, TextUnit):
+        return _extract_table_or_figure_local_code(item.text.text)
+
+    return None
+
+
 def _row_signature(row: TableRow) -> tuple[str, ...]:
     """Create a stable signature for a table row based on normalized cell texts.
 
@@ -1480,6 +1531,168 @@ def _summarize_chain_items(chain: list[ChainItem]) -> str:
     return "[" + ", ".join(parts) + "]"
 
 
+def _try_assign_immediate(
+    *,
+    code: str,
+    code_norm: str,
+    label_info: tuple[int, Block],
+    target_info: tuple[int, Block | Table],
+    page_index: int,
+    warnings: list[str],
+) -> bool:
+    """Attempt to assign the label code to the immediately following item. Check if the
+    immediate next item matches the label type (Table code -> Table item,
+    Figure code -> Figure item).
+
+    Parameters
+    ----------
+    code
+        The resolved code to assign.
+    code_norm
+        The normalized form of the code for comparison.
+    label_info
+        A tuple of (original item index, Block) for the label.
+    target_info
+        A tuple of (original item index, Block or Table) for the immediate next item.
+    page_index
+        The page index for logging context.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    bool
+        True if the code was successfully assigned to the next item, False otherwise.
+    """
+
+    label_orig_index, label_item = label_info
+    next_orig_index, next_item = target_info
+    assigned = False
+    did_write_code = False
+    conflict_msg: Optional[str] = None
+
+    if code_norm.startswith("table") and isinstance(next_item, Table):
+        existing_norm = normalize_local_code(next_item.local_code)
+
+        if not existing_norm:
+            next_item.local_code = code
+            assigned = True
+            did_write_code = True
+        elif existing_norm == code_norm:
+            # Already consistent--treat as success so we DO NOT fallback-scan.
+            assigned = True
+        else:
+            # Conflict--do NOT overwrite; warn; treat as success to avoid
+            # mis-propagating elsewhere.
+            conflict_msg = (
+                f"Caption/table code conflict on page {page_index}: "
+                f"caption='{code}' label_raw_index={label_orig_index}({label_item.block_type.value})->"
+                f"target_raw_index={next_orig_index}({next_item.kind}) existing='{next_item.local_code}'."
+            )
+            assigned = True
+    elif (
+        code_norm.startswith("figure")
+        and isinstance(next_item, Block)
+        and next_item.block_type == BlockType.FIGURE
+    ):
+        existing_norm = normalize_local_code(next_item.local_code)
+
+        if not existing_norm:
+            next_item.local_code = code
+            assigned = True
+            did_write_code = True
+        elif existing_norm == code_norm:
+            assigned = True
+        else:
+            conflict_msg = (
+                f"Caption/figure code conflict on page {page_index}: "
+                f"caption='{code}' label_raw_index={label_orig_index}({label_item.block_type.value})->"
+                f"target_raw_index={next_orig_index}({next_item.kind}) existing='{next_item.local_code}'."
+            )
+            assigned = True
+
+    # Only log “propagated” when we actually wrote a code.
+    if did_write_code:
+        msg = (
+            f"Propagated label code '{code}' on page {page_index}: "
+            f"label_raw_index={label_orig_index}({label_item.block_type.value})->"
+            f"target_raw_index={next_orig_index}({next_item.kind})."
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        return True
+
+    # Log conflicts, but still return True to prevent fallback scan.
+    if conflict_msg:
+        logger.warning(conflict_msg)
+        warnings.append(conflict_msg)
+        return True
+
+    # If already consistent, assigned=True and we return True silently.
+    return assigned
+
+
+def _try_fallback_scan(
+    *,
+    code: str,
+    items: list[tuple[int, Block | Table]],
+    label_orig_index: int,
+    page_index: int,
+    start_index: int,
+    warnings: list[str],
+) -> None:
+    """Scan forward from a specific index to find the nearest unassigned Table. Used as
+    a fallback when a Caption is not immediately followed by its Table. Stops scanning
+    if another Caption or Label is encountered.
+
+    Parameters
+    ----------
+    code
+        The code to assign to the next Table.
+    items
+        The list of (original item index, item) tuples for the page.
+    label_orig_index
+        The original item index of the label for logging context.
+    page_index
+        The page index for logging context.
+    start_index
+        The index to start scanning from (immediately after the label).
+    warnings
+        A list to append warning messages to.
+    """
+
+    eligible_stop_types = {BlockType.CAPTION, BlockType.HEADING, BlockType.PARAGRAPH}
+
+    for k in range(start_index, len(items)):
+        k_orig_index, k_item = items[k]
+
+        if isinstance(k_item, Block):
+            if k_item.block_type == BlockType.ARTIFACT:
+                continue
+
+            # Stop scanning if we hit another caption or potential label.
+            if k_item.block_type == BlockType.CAPTION:
+                break
+
+            if (
+                k_item.block_type in eligible_stop_types
+                and _resolve_label_code(k_item) is not None
+            ):
+                break
+
+        if isinstance(k_item, Table):
+            if not normalize_local_code(k_item.local_code):
+                k_item.local_code = code
+                msg = (
+                    f"Propagated caption code '{code}' to nearest following table on page {page_index}: "
+                    f"caption_raw_index={label_orig_index}->table_raw_index={k_orig_index}."
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+
+            break
+
+
 def _validate_span_bounds(
     *,
     col_span: int,
@@ -1751,14 +1964,16 @@ def compatible_kinds_for_stitch(
                 if isinstance(next_item.text, TextUnit)
                 else ""
             )
-            prev_m = _TABLE_FIGURE_RE.match(prev_text)
-            next_m = _TABLE_FIGURE_RE.match(next_text)
 
-            if prev_m and next_m:
-                prev_anchor = f"{prev_m.group(1).lower()} {prev_m.group(2)}"
-                next_anchor = f"{next_m.group(1).lower()} {next_m.group(2)}"
-                if prev_anchor == next_anchor:
-                    return True
+            prev_code = _extract_table_or_figure_local_code(prev_text)
+            next_code = _extract_table_or_figure_local_code(next_text)
+
+            if (
+                prev_code
+                and next_code
+                and normalize_local_code(prev_code) == normalize_local_code(next_code)
+            ):
+                return True
 
             # Otherwise, too risky.
             return False
@@ -1912,17 +2127,10 @@ def canonicalize_local_code(local_code: Optional[str]) -> Optional[str]:
     #   - "Jedwali 4" -> "Table 4"
     #   - "Tableau 4" -> "Table 4"
     #   - "Figure 2" -> "Figure 2"
-    m = _CAPTION_TABLE_RE.match(s)
+    code = _extract_table_or_figure_local_code(s)
 
-    if m:
-        return f"Table {m.group(1)}"
-
-    m2 = _TABLE_FIGURE_RE.match(s)
-
-    if m2:
-        kind = m2.group(1).capitalize()  # Table/Figure
-        num = m2.group(2)
-        return f"{kind} {num}"
+    if code:
+        return code
 
     # Otherwise keep as-is (trimmed).
     return s
@@ -2747,9 +2955,8 @@ def persist_stitching_run(
 def propagate_caption_table_local_codes(
     *, items: list[tuple[int, Block | Table]], page_index: int, warnings: list[str]
 ) -> None:
-    """Propagate caption table codes to the nearest following table on the same page.
-    Many curriculum PDFs label tables only in a caption block (e.g., 'Table 4: ...'),
-    while the extracted Table item has local_code=None.
+    """Propagate Table/Figure codes from label blocks to the appropriate content item
+    on the same page.
 
     Parameters
     ----------
@@ -2761,37 +2968,55 @@ def propagate_caption_table_local_codes(
         A list to append warning messages to.
     """
 
-    for i, (caption_orig_index, item) in enumerate(items):
-        if not isinstance(item, Block) or item.block_type != BlockType.CAPTION:
+    eligible_label_types = {BlockType.CAPTION, BlockType.HEADING, BlockType.PARAGRAPH}
+
+    for i, (label_orig_index, label_item) in enumerate(items):
+        if (
+            not isinstance(label_item, Block)
+            or label_item.block_type not in eligible_label_types
+        ):
             continue
 
-        code = _extract_table_local_code_from_caption(item)
+        code = _resolve_label_code(label_item)
 
         if not code:
             continue
 
-        # Find the nearest following Table item and attach local_code if missing.
-        for j in range(i + 1, len(items)):
-            table_orig_index, next_item = items[j]
+        # Normalize label itself.
+        if not (label_item.local_code or "").strip():
+            label_item.local_code = code
 
-            if isinstance(next_item, Table):
-                if not normalize_local_code(next_item.local_code):
-                    next_item.local_code = code
-                    msg = (
-                        f"Propagated caption code '{code}' to table on page {page_index}: "
-                        f"caption_raw_index={caption_orig_index}->table_raw_index={table_orig_index}."
-                    )
-                    logger.warning(msg)
-                    warnings.append(msg)
+        # Find immediate next content.
+        next_data = _find_next_non_artifact(items=items, start_index=i + 1)
+        if not next_data:
+            continue
 
-                break
+        next_idx, next_orig_index, next_item = next_data
+        code_norm = normalize_local_code(code) or ""
 
-            # If we hit another caption before a table, don't skip past it.
-            if (
-                isinstance(next_item, Block)
-                and next_item.block_type == BlockType.CAPTION
-            ):
-                break
+        # Try immediate assignment (Table or Figure).
+        was_assigned = _try_assign_immediate(
+            code=code,
+            code_norm=code_norm,
+            label_info=(label_orig_index, label_item),
+            target_info=(next_orig_index, next_item),
+            page_index=page_index,
+            warnings=warnings,
+        )
+
+        if was_assigned:
+            continue
+
+        # Fallback: scan forward for tables (only for Captions).
+        if label_item.block_type == BlockType.CAPTION and code_norm.startswith("table"):
+            _try_fallback_scan(
+                code=code,
+                items=items,
+                label_orig_index=label_orig_index,
+                page_index=page_index,
+                start_index=next_idx + 1,
+                warnings=warnings,
+            )
 
 
 def process_page_pair(
@@ -3298,10 +3523,8 @@ def stitch_block_chain(
         # Promote local_code across the stitched chain: take the first non-empty code
         # encountered in any slice.
         if resolved_local_code is None:
-            if isinstance(block.local_code, str):
-                lc = block.local_code.strip()
-                if lc:
-                    resolved_local_code = lc
+            if lc := canonicalize_local_code(block.local_code):
+                resolved_local_code = lc
 
         block_figure = (
             block.figure.model_dump(mode="json") if block.figure is not None else None
