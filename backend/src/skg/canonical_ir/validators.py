@@ -467,6 +467,10 @@ def _normalize_list_marker(list_marker: Optional[str]) -> str:
 def _normalize_text(text: Optional[str]) -> str:
     """Normalize text for comparisons (grounding + substring checks).
 
+    Applies NFKC compatibility normalization, strips diacritical marks (so that e.g.
+    "Mathématiques" and "MATHEMATIQUES" compare equal), folds dashes, collapses
+    whitespace, and casefolds.
+
     Parameters
     ----------
     text
@@ -483,6 +487,13 @@ def _normalize_text(text: Optional[str]) -> str:
 
     # Normalize unicode forms (compatibility normalization).
     text = unicodedata.normalize("NFKC", text)
+
+    # Strip diacritical/combining marks so that accented and unaccented variants of the
+    # same word match (common in French uppercase typography where accents are
+    # routinely dropped, e.g. "DEUXIEME" vs "deuxième").
+    text = "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
 
     # Normalize dash variants to ASCII hyphen.
     text = _DASH_RE.sub("-", text)
@@ -1745,8 +1756,39 @@ def validate_context_groupings_supported_by_outer_evidence(
     # rejecting context titles that the LLM correctly derived from a hint-matched
     # heading.
     hint_patterns: list[str] = payload.get("_heading_role_hint_patterns") or []
+
+    # Include the segment's RAW section_path heading texts as supplementary evidence.
+    # _filter_section_path_for_llm correctly drops level-0 headings from the LLM
+    # payload (they are non-structural and would confuse the model), but their text
+    # still constitutes valid document evidence. Without this, segments whose
+    # section_path consists entirely of level-0 headings have no heading evidence at
+    # all, causing the validator to reject titles that the LLM legitimately derived
+    # from prior context or from table content matching those headings.
+    raw_section_path_texts: list[str] = []
+    raw_sp = getattr(segment, "section_path", None) or []
+
+    for sp_entry in raw_sp:
+        sp_text = (
+            getattr(sp_entry, "text", None)
+            if hasattr(sp_entry, "text")
+            else sp_entry.get("text", "") if isinstance(sp_entry, dict) else ""
+        )
+
+        sp_norm = _normalize_text(sp_text)
+
+        if sp_norm and sp_norm not in NonArtifacts:
+            raw_section_path_texts.append(str(sp_text or ""))
+
     evidence_blob_base = _normalize_text(
-        " \n ".join([*headings, caption, *header_strings, *hint_patterns])
+        " \n ".join(
+            [
+                *headings,
+                *raw_section_path_texts,
+                caption,
+                *header_strings,
+                *hint_patterns,
+            ]
+        )
     )
 
     # If there is NO outer evidence at all, we can't enforce this strictly.
