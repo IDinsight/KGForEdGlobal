@@ -24,7 +24,7 @@ from pydantic import (
 
 # Package Library
 from skg.utils.constants import (
-    CONTEXT_GROUPINGS_ROLE_ORDER,
+    DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
     NodeRole,
     SegmentDecisionType,
     SpineSplitApplyTo,
@@ -362,9 +362,8 @@ class SpineNormalizeConfig(BaseSchema):
         ),
     )
 
-    # Ordering / casing
     role_order: list[NodeRole] = Field(
-        default_factory=lambda: list(CONTEXT_GROUPINGS_ROLE_ORDER),
+        default_factory=lambda: list(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER),
         description="Canonical role order used when reordering grouping lists.",
     )
     normalize_whitespace: bool = Field(
@@ -551,6 +550,15 @@ class CreateCanonicalConfig(BaseSchema):
             "Default skips TOPIC/SUBTOPIC to avoid incorrect global merges."
         ),
     )
+    context_groupings_role_order: list[NodeRole] = Field(
+        default_factory=lambda: list(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER),
+        description=(
+            "Outer -> inner precedence for SegmentDecision.context_groupings. "
+            "Used by LLM instructions and deterministic validators. "
+            "Only roles listed here are ranked; roles omitted are treated as unranked and "
+            "ignored by precedence-based checks (ordering/outer-than-context)."
+        ),
+    )
     heading_role_hints: list[dict[str, str]] = Field(
         default_factory=list,
         description=(
@@ -584,6 +592,155 @@ class CreateCanonicalConfig(BaseSchema):
         ge=0.0,
         le=1.0,
     )
+
+    @field_validator("context_groupings_role_order")
+    @classmethod
+    def _validate_context_groupings_role_order(
+        cls, v: list[NodeRole]
+    ) -> list[NodeRole]:
+        """Validate configured context-groupings role order.
+
+        Notes: An empty list is allowed (disables precedence-based checks), but is
+        usually not recommended.
+
+        Parameters
+        ----------
+        v
+            The list of NodeRoles representing the context groupings role order.
+
+        Returns
+        -------
+        list[NodeRole]
+            The validated list of NodeRoles for context groupings role order.
+
+        Raises
+        ------
+        ValueError
+            If there are duplicate NodeRoles in the list or if any NodeRole is invalid
+            for context groupings (e.g., FRAMEWORK, PROSE, UNRESOLVED).
+        """
+
+        seen: set[NodeRole] = set()
+
+        for r in v or []:
+            if r in seen:
+                raise ValueError(
+                    f"Duplicate NodeRole in context_groupings_role_order: {r.value}"
+                )
+
+            if r in (NodeRole.FRAMEWORK, NodeRole.PROSE, NodeRole.UNRESOLVED):
+                raise ValueError(
+                    f"Invalid NodeRole in context_groupings_role_order (not a grouping container): {r.value}"
+                )
+
+            seen.add(r)
+
+        return v
+
+    @model_validator(mode="after")
+    def _validate_outer_context_roles_vs_precedence(self) -> Self:
+        """Sanity-check coherence between:
+
+        1. canonical_ir.context_groupings_role_order (ranked precedence)
+        2. spine_policy.outer_context_roles (roles expected to live in
+            context_groupings for chunked-table stability)
+
+        Goals:
+
+        1. Prevent obviously unstable roles (TOPIC/SUBTOPIC/PROSE/etc.) from being
+            treated as chunk-stable outer context.
+        2. Ensure that if both an outer-context role and a row-local role are ranked,
+            the outer-context role is not ordered *inside* the row-local role (which
+            would trigger grouping_outer_than_context errors and confuse LLM
+            instructions).
+        3. If WEEK is configured as an outer-context role, require it to be treated as
+           table-wide context (not row-local) and explicitly ranked.
+
+        Returns
+        -------
+        Self
+            The validated CreateCanonicalConfig.
+
+        Raises
+        ------
+        ValueError
+            If configuration is internally inconsistent.
+        """
+
+        outer_ctx = set(self.spine_policy.outer_context_roles or [])
+        row_roles = set(self.spine_policy.row_roles or [])
+        table_local_only = set(self.spine_policy.table_local_only_roles or [])
+
+        # These roles should never be enforced as "outer context" for chunked tables.
+        disallowed_outer_ctx = {
+            NodeRole.FRAMEWORK,
+            NodeRole.UNRESOLVED,
+            NodeRole.PROSE,
+            NodeRole.TOPIC,
+            NodeRole.SUBTOPIC,
+        }
+
+        overlap = outer_ctx & disallowed_outer_ctx
+
+        if overlap:
+            bad = ", ".join(sorted(r.value for r in overlap))
+            raise ValueError(
+                f"spine_policy.outer_context_roles contains role(s) that are unstable "
+                f"or not valid as outer context for chunked tables: {bad}. "
+                f"Remove them from outer_context_roles."
+            )
+
+        # Special handling for WEEK: allowed, but only if treated as table-wide (not
+        # row-local) and explicitly ranked (so ordering validators can behave
+        # deterministically).
+        if NodeRole.WEEK in outer_ctx and (
+            NodeRole.WEEK in row_roles or NodeRole.WEEK in table_local_only
+        ):
+            raise ValueError(
+                "NodeRole.WEEK is listed in spine_policy.outer_context_roles, but is "
+                "also listed as a row-local or table-local-only role "
+                "(row_roles/table_local_only_roles). If WEEK is outer context for a "
+                "chunked table, it must NOT be row-local; remove WEEK from "
+                "row_roles/table_local_only_roles."
+            )
+
+        # Precedence coherence checks only apply to ranked roles.
+        role_order = list(self.context_groupings_role_order or [])
+        idx = {r: i for i, r in enumerate(role_order)}
+
+        if role_order:
+            # If WEEK is outer context, it should be explicitly ranked.
+            if NodeRole.WEEK in outer_ctx and NodeRole.WEEK not in idx:
+                raise ValueError(
+                    "NodeRole.WEEK is listed in spine_policy.outer_context_roles but is "
+                    "not present in canonical_ir.context_groupings_role_order. Add WEEK "
+                    "to context_groupings_role_order (ranked) or remove it from "
+                    "outer_context_roles."
+                )
+
+            # Ensure outer-context roles are not ranked *inside* row-local roles when
+            # both are ranked.
+            for oc in outer_ctx:
+                if oc not in idx:
+                    continue
+
+                for rr in row_roles:
+                    if rr not in idx:
+                        continue
+
+                    if idx[oc] > idx[rr]:
+                        raise ValueError(
+                            f"In canonical_ir.context_groupings_role_order, an "
+                            f"outer-context role is ranked INNER than a row-local role, "
+                            f"which can cause grouping_outer_than_context errors for tables. "
+                            f"Problem: outer_context_role='{oc.value}' (rank {idx[oc]}) "
+                            f"is after row_role='{rr.value}' (rank {idx[rr]}). "
+                            f"Reorder context_groupings_role_order so outer-context "
+                            f"roles are outer than row-local roles (or remove one of "
+                            f"these roles from the ranked list)."
+                        )
+
+        return self
 
 
 class CreateKGConfig(BaseSchema):
@@ -656,7 +813,8 @@ class CreateKGConfig(BaseSchema):
         ),
     )
     grouping_roles_whitelist: set[NodeRole] = Field(
-        default_factory=lambda: set(CONTEXT_GROUPINGS_ROLE_ORDER) - {NodeRole.PROSE},
+        default_factory=lambda: set(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER)
+        - {NodeRole.PROSE},
         description=(
             "When grouping_role_policy='whitelist', only these roles count as groupings "
             "(emitted as normalizedStatementType='Standard Grouping', eligible for pruning, "

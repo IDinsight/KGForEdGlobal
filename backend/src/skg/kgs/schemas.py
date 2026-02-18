@@ -24,11 +24,12 @@ from pydantic import Field, field_validator, model_validator
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BaseSchema, ExportDialect
-from skg.utils.constants import NodeRole, NormalizedStatementType, StatementRole
+from skg.utils.constants import NodeRole, StatementRole
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 MetadataT = dict[str, Any]
+NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 ValidationLevel = Literal["error", "warning", "info"]
 
 

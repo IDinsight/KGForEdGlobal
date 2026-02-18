@@ -808,9 +808,11 @@ def _process_block_segment(
 
     segment_decision = generate_segment_decision(
         always_double_check_first_attempt=config.always_double_check_first_attempt,
+        context_groupings_role_order=config.context_groupings_role_order,
         doc_key=doc_key,
         heading_role_hints=config.heading_role_hints,
         model=config.model,
+        outer_context_roles=config.spine_policy.outer_context_roles,
         segment=segment,
         segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         segment_payload=segment_payload,
@@ -928,9 +930,11 @@ def _process_chunked_table(
 
         segment_decision = generate_segment_decision(
             always_double_check_first_attempt=config.always_double_check_first_attempt,
+            context_groupings_role_order=config.context_groupings_role_order,
             doc_key=doc_key,
             heading_role_hints=config.heading_role_hints,
             model=config.model,
+            outer_context_roles=config.spine_policy.outer_context_roles,
             row_range_end=end,
             row_range_start=start,
             segment=segment,
@@ -1119,9 +1123,11 @@ def _process_unchunked_table(
     # Generate segment decision.
     segment_decision = generate_segment_decision(
         always_double_check_first_attempt=config.always_double_check_first_attempt,
+        context_groupings_role_order=config.context_groupings_role_order,
         doc_key=doc_key,
         heading_role_hints=config.heading_role_hints,
         model=config.model,
+        outer_context_roles=config.spine_policy.outer_context_roles,
         segment=segment,
         segment_decision_conf_threshold=config.segment_decision_conf_threshold,
         segment_payload=table_payload,

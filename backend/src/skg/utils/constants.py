@@ -109,6 +109,29 @@ class ItemBoundary(str, Enum):
     TRUNCATED = "truncated"
 
 
+class NodeRole(str, Enum):
+    """The role of a node in the canonical IR structure."""
+
+    FRAMEWORK = "framework"  # The root document
+    GRADE_LEVEL = "grade_level"
+    LEARNING_AREA = "learning_area"  # e.g., "Literacy and Language"
+    PROSE = "prose"  # Document structure/prose headings (Vision, Intro, etc.)
+    SECTION = "section"  # # Curriculum grouping when meaningful
+    STAGE = "stage"
+    SUBSTAGE = "substage"  # e.g., "PALIER N" — milestone within a unit/Jéego
+    STRAND = "strand"  # e.g., "Main Competence"
+    SUBJECT = "subject"  # e.g., "Mathematics"
+    SUBSTRAND = "substrand"
+    SUBTHEME = "subtheme"
+    SUBTOPIC = "subtopic"
+    TERM = "term"
+    THEME = "theme"
+    TOPIC = "topic"  # e.g., "Topic" or sub-strand
+    UNIT = "unit"
+    UNRESOLVED = "unresolved"  # Content that could not be classified
+    WEEK = "week"
+
+
 class PageBoundaryState(str, Enum):
     """Enumeration for page boundary states of items.
 
@@ -133,29 +156,6 @@ class PageContinuationKind(str, Enum):
     NONE = "none"
     TABLE = "table"
     TEXT = "text"
-
-
-class NodeRole(str, Enum):
-    """The role of a node in the canonical IR structure."""
-
-    FRAMEWORK = "framework"  # The root document
-    GRADE_LEVEL = "grade_level"
-    LEARNING_AREA = "learning_area"  # e.g., "Literacy and Language"
-    PROSE = "prose"  # Document structure/prose headings (Vision, Intro, etc.)
-    SECTION = "section"  # # Curriculum grouping when meaningful
-    STAGE = "stage"
-    SUBSTAGE = "substage"  # e.g., "PALIER N" — milestone within a unit/Jéego
-    STRAND = "strand"  # e.g., "Main Competence"
-    SUBJECT = "subject"  # e.g., "Mathematics"
-    SUBSTRAND = "substrand"
-    SUBTHEME = "subtheme"
-    SUBTOPIC = "subtopic"
-    TERM = "term"
-    THEME = "theme"
-    TOPIC = "topic"  # e.g., "Topic" or sub-strand
-    UNIT = "unit"
-    UNRESOLVED = "unresolved"  # Content that could not be classified
-    WEEK = "week"
 
 
 class SegmentDecisionType(str, Enum):
@@ -244,10 +244,16 @@ CaptionTablePrefixes: tuple[str, ...] = (
 # across chunked table decisions.
 #
 # NB:
-# 1. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
-# 2. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
-# 3. Order matters here!
-CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
+# 1. This order is *configurable per curriculum document* (via config.json) because
+#   some curricula place certain containers (e.g., SECTION vs. WEEK) in different
+#   relative positions.
+# 2. Only roles present in CONTEXT_GROUPINGS_ROLE_ORDER participate in precedence-based
+#   checks. Roles omitted from the configured order are treated as "unranked" and do
+#   not factor into context-grouping ordering/outer-ness validators.
+# 3. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
+# 4. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
+# 5. Order matters here!
+DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.STAGE,
     NodeRole.GRADE_LEVEL,
     NodeRole.LEARNING_AREA,
@@ -259,23 +265,14 @@ CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.TERM,
     NodeRole.UNIT,
     NodeRole.SUBSTAGE,
+    NodeRole.SECTION,
     NodeRole.WEEK,
     NodeRole.TOPIC,
     NodeRole.SUBTOPIC,
-    NodeRole.SECTION,
 )
-
-CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
-    role: i for i, role in enumerate(CONTEXT_GROUPINGS_ROLE_ORDER)
+DEFAULT_CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
+    role: i for i, role in enumerate(list(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER))
 }
-
-# Roles that are valid for GroupingDecision.role/context_groupings/groupings.
-# Excludes FRAMEWORK (root), UNRESOLVED (error bucket), and PROSE (document furniture).
-GROUPING_ROLES: tuple[NodeRole, ...] = tuple(
-    r
-    for r in NodeRole
-    if r not in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED, NodeRole.PROSE)
-)
 
 NonArtifacts = {
     "abbreviations and acronyms",
@@ -290,16 +287,12 @@ NonArtifacts = {
     "references",
     "table of contents",
 }
-NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 
-# Roles that satisfy the "outer anchor" requirement when emitting leaves. If a decision
-# emits ANY leaves (expectations/descriptors/guidance), at least one of these roles
-# MUST appear in context_groupings[], groupings[], or rows[].groupings[]. This prevents
-# "floating" statements attached directly to the framework root.
-#
-# This is the single source of truth used by:
-#   - prompts.py
-#   - validators.py
+# Roles that are stable enough to satisfy the "outer anchor" requirement when emitting
+# leaves. If a decision emits ANY leaves (expectations/descriptors/guidance), at least
+# one of these roles MUST appear in context_groupings[], groupings[], or
+# rows[].groupings[]. This prevents "floating" statements attached directly to the
+# framework root.
 OUTER_ANCHOR_ROLES: frozenset[NodeRole] = frozenset(
     {
         NodeRole.GRADE_LEVEL,
@@ -312,17 +305,5 @@ OUTER_ANCHOR_ROLES: frozenset[NodeRole] = frozenset(
         NodeRole.TERM,
         NodeRole.THEME,
         NodeRole.UNIT,
-        NodeRole.WEEK,
     }
-)
-
-# Roles that are considered "outer context" for chunked tables. Superset of
-# OUTER_ANCHOR_ROLES that additionally includes SECTION. For chunked tables, groupings
-# with these roles MUST go in context_groupings[] (not segment-level groupings[]) so
-# that all chunks share a stable context stack.
-#
-# This is the single source of truth used by:
-#   - validators.py
-OUTER_CONTEXT_ROLES: frozenset[NodeRole] = OUTER_ANCHOR_ROLES | frozenset(
-    {NodeRole.SECTION}
 )

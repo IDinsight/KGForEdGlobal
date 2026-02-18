@@ -19,7 +19,7 @@
 	"page_ir_verification": {
 		"always_double_check_first_attempt": false,
 		"end_page": null,
-		"min_confidence_to_patch": 0.50,
+		"min_confidence_to_patch": 0.5,
 		"model": "gpt-5.2-2025-12-11",
 		"next_page_crop_padding_px": 120,
 		"start_page": 0
@@ -33,18 +33,34 @@
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
 		"table_filldown_group_cols_max": 1,
-		"verification_auto_stitch_confidence": 0.70
+		"verification_auto_stitch_confidence": 0.7
 	},
 	"canonical_ir": {
 		"always_double_check_first_attempt": false,
 		"canonical_grouping_min_confidence": 0.8,
 		"canonicalization_skip_roles": [
-			"week",
 			"topic",
 			"subtopic",
-			"section"
+			"section",
+			"prose"
+		],
+		"context_groupings_role_order": [
+			"subject",
+			"stage",
+			"strand",
+			"grade_level",
+			"unit",
+			"substage",
+			"week",
+			"topic",
+			"subtopic"
 		],
 		"heading_role_hints": [
+			{
+				"pattern": "(?i)^\\s*moo[ñn]aale\\s+ci\\s+wolof\\s*:?\\s*$",
+				"role": "prose",
+				"note": "Language marker line (appears between Jéego and PALIER); do not treat as structural heading"
+			},
 			{
 				"pattern": "(?i)\\bpalier\\s*\\d+\\b(?:\\s*\\(.*?\\))?\\s*:?",
 				"role": "substage",
@@ -52,23 +68,38 @@
 			},
 			{
 				"pattern": "(?i)\\bj[éeë]ego\\s*\\d+\\b(?:\\s*\\(.*?\\))?\\s*:?",
-				"role": "unit",
-				"note": "Jéego N (optionally with '(yeggale)' and/or ':')"
+				"role": "prose",
+				"note": "Jéego N is a Wolof label paired with PALIER; force prose to avoid an extra hierarchy layer"
 			},
 			{
 				"pattern": "(?i)^\\s*ce\\s*[12]\\s*$",
 				"role": "grade_level",
-				"note": "CE1 / CE2 headings"
+				"note": "Standalone CE1 / CE2 headings"
 			},
 			{
 				"pattern": "(?i)\\bpaliers?\\s+du\\s+(?:niveau\\s+)?ce\\s*[12]\\b",
 				"role": "grade_level",
-				"note": "Grade container headings like 'Paliers du niveau CE1/CE2' (LLM should trim title to CE1/CE2)"
+				"note": "Grade container headings like 'Paliers du niveau CE1/CE2' (this is where grade should come from)"
 			},
 			{
-				"pattern": "(?i)\\bniveau\\s*[12]\\s*:\\s*ce\\s*[12]\\b",
-				"role": "grade_level",
-				"note": "Inline grade labels like 'niveau 1: CE1' / 'niveau 2: CE2'"
+				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+des\\s+apprentissages\\b\\s*\\(\\s*niveau\\s*\\d+\\s*:?\\s*ce\\s*[12]\\s*\\)",
+				"role": "unit",
+				"note": "Treat the whole heading as the unit wrapper; do NOT extract grade from the inline '(niveau … : CE…)'"
+			},
+			{
+				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+ce\\s*[12]\\b(?:\\s*[—\\-]\\s*partie\\s*\\d+\\b.*)?",
+				"role": "unit",
+				"note": "Planification headings like 'Tableau de planification CE2 — Partie 1 ...' are unit wrappers"
+			},
+			{
+				"pattern": "(?i)\\bplanification\\s+des\\s+apprentissages\\b",
+				"role": "unit",
+				"note": "Planning wrapper heading"
+			},
+			{
+				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+des\\s+apprentissages\\b",
+				"role": "unit",
+				"note": "Planning-table wrapper heading (generic)"
 			},
 			{
 				"pattern": "(?i)(\\bdeuxi[eè]me\\s+[eéèë]tape\\b|\\b2\\s*(?:e|è|eme|ème)\\s*[eéèë]tape\\b)",
@@ -91,19 +122,9 @@
 				"note": "Competence section header: étape"
 			},
 			{
-				"pattern": "(?i)\\bplanification\\s+des\\s+apprentissages\\b",
-				"role": "section",
-				"note": "Planning wrapper heading"
-			},
-			{
 				"pattern": "(?i)\\bapprentissages\\s+ponctuels\\b",
-				"role": "section",
-				"note": "Wrapper heading immediately before punctuels tables"
-			},
-			{
-				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+des\\s+apprentissages\\b",
-				"role": "section",
-				"note": "Planning-table wrapper heading"
+				"role": "prose",
+				"note": "Wrapper heading immediately before ponctuels tables"
 			},
 			{
 				"pattern": "(?i)\\bactivit[ée]s?\\s+(num[ée]riques|de\\s+mesure|g[ée]om[ée]triques)\\b",
@@ -113,12 +134,7 @@
 			{
 				"pattern": "(?i)\\br[ée]solution\\s+de\\s+probl[ée]mes\\b",
 				"role": "strand",
-				"note": "French strand heading: Résolution de problèmes (leave as-is)"
-			},
-			{
-				"pattern": "(?i)\\bresoultion\\s+de\\s+probl[ée]mes\\b",
-				"role": "strand",
-				"note": "Misspelling observed in PDF: 'resoultion de problemes'"
+				"note": "French strand heading: Résolution de problèmes"
 			},
 			{
 				"pattern": "(?i)\\by[ëe]ngute\\b.*\\bactivit[ée]s?\\b",
@@ -156,10 +172,10 @@
 				]
 			},
 			"outer_context_roles": [
-				"stage",
-				"grade_level",
 				"subject",
+				"stage",
 				"strand",
+				"grade_level",
 				"unit",
 				"substage"
 			],
