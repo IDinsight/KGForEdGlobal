@@ -85,9 +85,45 @@ SECTION_EXCLUSION_WORDS: list[str] = sorted(
     }
 )
 
+# Build a mapping of document-specific SEGMENT DECISION hints to be included in the
+# segment-decision instructions for relevant documents. These hints guide how to
+# classify table cells into expectation/descriptor/guidance and how to refine context
+# when headings embed grade or sequencing cues.
+SEGMENT_DECISION_MAPPING: dict[str, str] = {
+    "senegal": dedent(
+        """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many scope-and-sequence planning tables.
+
+Segment-decision guidance (apply ONLY when supported by the current segment evidence):
+
+A. Planning tables are often normative (Issue D):
+- Tables labeled "Tableau de planification" and sections labeled "Apprentissages ponctuels" are usually describing WHAT learners should learn/do that week/palier.
+- In these tables, prefer StatementRole=EXPECTATION for cells that describe learner outcomes/skills/knowledge (often terse competency phrases), even if the overall document feels like a planning guide.
+- Use StatementRole=GUIDANCE only for true instructional actions or logistics:
+  teacher actions/tasks (e.g., "faire...", "proposer...", "organiser...", "demander aux élèves...")
+  materials/resources ("matériel", "supports"), duration/time ("durée"), pedagogy/method ("démarche"), evaluation instructions.
+- Use StatementRole=DESCRIPTOR only for explicit performance criteria/benchmarks/checkpoints (rare in the week tables; more common near "paliers" summaries).
+
+B. Column-header heuristics for Senegal planning tables:
+- Headers implying EXPECTATION (normative content): "apprentissages", "objectifs", "contenus", "compétence(s)", "savoirs", "habiletés", "capacités".
+- Headers implying GUIDANCE: "activités", "situations", "démarche", "méthode", "matériel", "durée", "évaluation", "ressources".
+- Headers like "Semaine" / "Sem." and "Palier" are STRUCTURE, not leaves. Treat their values as row-local groupings (week/substage cues) rather than leaf statements.
+
+C. Grade refinement from unit headings (Issue E):
+- Prefer grade_level from a parent/outer heading like "Paliers du niveau CE1" / "... CE2".
+- HOWEVER, if the current segment’s strongest visible evidence for grade is embedded in a UNIT heading/caption like "(niveau 1: CE1)" or "(niveau 2: CE2)", you SHOULD refine context_groupings.grade_level to that specific grade ("CE1" or "CE2") *while keeping the full UNIT title intact*.
+  - Do NOT create a separate grade grouping from the inline "(niveau ...: CE...)" fragment.
+  - If prior_context_groupings has a broader grade band (e.g., "CE1–CE2") and the unit heading clearly specifies CE1 or CE2, override/refine to the specific grade and note it in rationale.
+
+D) Language markers are not hierarchy:
+- "Mooñaale ci wolof" and similar language-of-instruction directives are prose labels, not structural groupings and not expectations.
+"""
+    )
+}
+
 
 def decide_on_segment(
     *,
+    country: str,
     context_groupings_role_dict: dict[NodeRole, int],
     heading_role_hints: list[dict[str, str]],
     outer_context_roles: list[Any] | None = None,
@@ -98,6 +134,9 @@ def decide_on_segment(
 
     Parameters
     ----------
+    country
+        The country of the curriculum document, used to provide relevant
+        context-specific hints.
     context_groupings_role_dict
         The current context groupings as a dict of NodeRole to index, used to provide
         hints about which roles are currently active in the context stack.
@@ -159,6 +198,17 @@ def decide_on_segment(
         if outer_context_roles
         else "(none configured)"
     )
+
+    # Document-specific segment-decision hints (country-level).
+    segment_guidance_block = ""
+    segment_context = SEGMENT_DECISION_MAPPING.get(country.lower(), None)
+
+    if segment_context and segment_context.strip():
+        segment_guidance_block = dedent(
+            f"""## 12. DOCUMENT-SPECIFIC SEGMENT DECISION HINTS
+{segment_context.strip()}
+"""
+        ).strip()
 
     system_message = dedent(
         f"""You are an expert curriculum document parser producing **auditable, conservative** semantic decisions.
@@ -280,7 +330,9 @@ This run’s low-confidence cutoff is: {segment_decision_conf_threshold:.2f}
 - If the segment is clearly noise/furniture, use "{SegmentDecisionType.IGNORE.value}" even with high confidence.
 - If you have semantic concerns (ambiguous structure, possible row wrapping, context contradiction) but your confidence is above threshold, commit to your best interpretation and explain concerns in rationale.
 
-## 12. DOCUMENT-SPECIFIC HEADING ROLE CONSTRAINTS
+{segment_guidance_block}
+
+## 13. DOCUMENT-SPECIFIC HEADING ROLE CONSTRAINTS
 The following heading patterns have FIXED role assignments for this document.
 When any section_path heading or caption matches a pattern below, you MUST use
 the specified role in context_groupings[]. Do NOT assign a different role.
@@ -329,6 +381,8 @@ def double_check_decision_on_segment() -> DotMap:
 5. **Context depth:** Are groupings[] all INNER relative to context_groupings[]? (No GRADE_LEVEL in groupings[] when SUBJECT is the deepest context role.)
 6. **Table row_index:** If table, does every RowDecision.row_index match the row's abs_row_index? No RowDecisions for header/blank/context-only rows?
 7. **Context evidence:** Is every context_groupings[].title supported by outer evidence (section_path/caption/header_rows) or valid carry-forward?
+8. **Planning-table role sanity:** If the segment looks like a scope-and-sequence/planning table (e.g., caption/section_path/header_rows mention "Tableau de planification" or "Apprentissages ponctuels"), did you incorrectly label *all* (or nearly all) row leaves as GUIDANCE? Re-evaluate: outcome/skill/knowledge cells are usually EXPECTATION; reserve GUIDANCE for teacher actions, materials, duration, pedagogy.
+9. **Grade refinement sanity:** If a UNIT heading/caption contains an embedded grade cue like "(niveau 1: CE1)" / "(niveau 2: CE2)" and the current grade_level context is missing or broader than that, refine context_groupings.grade_level to the specific CE grade while keeping the UNIT title intact (do not create a separate grade node from the inline fragment).
 
 If any check fails, fix it and return the corrected SegmentDecision. Otherwise, return your original output unchanged.
         """

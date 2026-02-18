@@ -714,6 +714,7 @@ def _process_block_segment(
     *,
     config: CreateCanonicalConfig,
     context_hint: list[dict[str, Any]] | None,
+    country: str,
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
@@ -731,6 +732,9 @@ def _process_block_segment(
         The CreateCanonicalConfig to use.
     context_hint
         The context hint to apply.
+    country
+        The country for this document, used for LLM context when making the segment
+        decision.
     decision_set
         The SegmentDecisionSet to update.
     doc_key
@@ -809,6 +813,7 @@ def _process_block_segment(
     segment_decision = generate_segment_decision(
         always_double_check_first_attempt=config.always_double_check_first_attempt,
         context_groupings_role_order=config.context_groupings_role_order,
+        country=country,
         doc_key=doc_key,
         heading_role_hints=config.heading_role_hints,
         model=config.model,
@@ -832,6 +837,7 @@ def _process_chunked_table(
     chunks: list[tuple[int | None, int | None]],
     config: CreateCanonicalConfig,
     context_hint: list[dict[str, Any]] | None,
+    country: str,
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, int | None, int | None]],
@@ -854,6 +860,9 @@ def _process_chunked_table(
         The CreateCanonicalConfig to use.
     context_hint
         The context hint to apply.
+    country
+        The country for this document, used for LLM context when making the segment
+        decision.
     decision_set
         The SegmentDecisionSet to update.
     doc_key
@@ -931,6 +940,7 @@ def _process_chunked_table(
         segment_decision = generate_segment_decision(
             always_double_check_first_attempt=config.always_double_check_first_attempt,
             context_groupings_role_order=config.context_groupings_role_order,
+            country=country,
             doc_key=doc_key,
             heading_role_hints=config.heading_role_hints,
             model=config.model,
@@ -971,6 +981,7 @@ def _process_table_segment(
     caption_bindings: dict[str, CaptionBinding | None],
     config: CreateCanonicalConfig,
     context_hint: list[dict[str, Any]] | None,
+    country: str,
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
@@ -991,6 +1002,9 @@ def _process_table_segment(
         The CreateCanonicalConfig to use.
     context_hint
         The context hint to apply.
+    country
+        The country for this document, used for LLM context when making the segment
+        decision.
     decision_set
         The SegmentDecisionSet to update.
     doc_key
@@ -1030,6 +1044,7 @@ def _process_table_segment(
             caption_binding=caption_binding,
             config=config,
             context_hint=context_hint,
+            country=country,
             decision_set=decision_set,
             doc_key=doc_key,
             existing_keys=existing_keys,
@@ -1045,6 +1060,7 @@ def _process_table_segment(
         chunks=chunks,
         config=config,
         context_hint=context_hint,
+        country=country,
         decision_set=decision_set,
         doc_key=doc_key,
         existing_keys=existing_keys,
@@ -1062,6 +1078,7 @@ def _process_unchunked_table(
     caption_binding: CaptionBinding | None,
     config: CreateCanonicalConfig,
     context_hint: list[dict[str, Any]] | None,
+    country: str,
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, int | None, int | None]],
@@ -1081,6 +1098,9 @@ def _process_unchunked_table(
         The CreateCanonicalConfig to use.
     context_hint
         The context hint to apply.
+    country
+        The country for this document, used for LLM context when making the segment
+        decision.
     decision_set
         The SegmentDecisionSet to update.
     doc_key
@@ -1124,6 +1144,7 @@ def _process_unchunked_table(
     segment_decision = generate_segment_decision(
         always_double_check_first_attempt=config.always_double_check_first_attempt,
         context_groupings_role_order=config.context_groupings_role_order,
+        country=country,
         doc_key=doc_key,
         heading_role_hints=config.heading_role_hints,
         model=config.model,
@@ -1778,6 +1799,7 @@ def process_segment_decisions(
     caption_bindings: dict[str, CaptionBinding | None],
     config: CreateCanonicalConfig,
     context_hint: list[dict[str, Any]] | None = None,
+    country: str,
     decision_set: SegmentDecisionSet,
     doc_key: str,
     existing_keys: set[tuple[str, Optional[int], Optional[int]]],
@@ -1798,6 +1820,9 @@ def process_segment_decisions(
         The canonical IR creation run configuration.
     context_hint
         The context hint to include in the segment decision payload.
+    country
+        The country for this document, used for LLM context when making the segment
+        decision.
     decision_set
         The current SegmentDecisionSet to update.
     doc_key
@@ -1832,6 +1857,7 @@ def process_segment_decisions(
         return _process_block_segment(
             config=config,
             context_hint=context_hint,
+            country=country,
             decision_set=decision_set,
             doc_key=doc_key,
             existing_keys=existing_keys,
@@ -1846,6 +1872,7 @@ def process_segment_decisions(
         caption_bindings=caption_bindings,
         config=config,
         context_hint=context_hint,
+        country=country,
         decision_set=decision_set,
         doc_key=doc_key,
         existing_keys=existing_keys,

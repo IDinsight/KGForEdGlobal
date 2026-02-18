@@ -188,6 +188,7 @@ def create_canonical_ir(
                 caption_bindings=caption_bindings,
                 config=config,
                 context_hint=context_hint,
+                country=country,
                 decision_set=decision_set,
                 doc_key=doc_key,
                 existing_keys=existing_keys,
