@@ -291,6 +291,13 @@ If segment includes a `chunking` object:
 ## 6. TABLE-SPECIFIC GUIDANCE
 - Prefer rows[] over top-level leaves[]. Put leaf statements in RowDecision.leaves[].
 - row_index MUST be a 0-based ABSOLUTE index into the original stitched table. If abs_row_index is present, RowDecision.row_index MUST match it exactly.
+- **Column-anchored fanout (multi-column rows):** If a single data row contains multiple independent statements in different columns (e.g., one strand per column), you have two safe options:
+  A) **Preferred (structural):** emit multiple RowDecisions with the SAME row_index, **one per column**, and set `RowDecision.col_index` to the 0-based column index. In this case:
+    - RowDecision.groupings[] MAY include a grouping derived from the **column header** (often role=STRAND/TOPIC/SECTION).
+    - That grouping is grounded in `header_rows_canonical[*][col_index]`.
+    - All RowDecision.leaves[] MUST come from that column’s cell text.
+  B) **Minimal (no extra grouping):** emit a single RowDecision for the row with multiple leaves, and set each LeafDecision.source_label to the corresponding column header text.
+- If you derive any row-local grouping from a column header, you MUST set RowDecision.col_index; otherwise the decision will be rejected as ungrounded.
 - Do NOT emit RowDecisions for header rows, blank/empty rows, or rows where is_context_only=true.
 - Split multiple statements within a cell into multiple LeafDecisions when clearly separable (bullets, numbering, line breaks).
 - If headers suggest roles (e.g., "Specific Competences", "Expected Standard"), map accordingly.
@@ -379,7 +386,7 @@ def double_check_decision_on_segment() -> DotMap:
 3. **Role sanity:** Did you assign SUBJECT/STRAND to something that is actually document metadata (mentions curriculum/syllabus/framework/ministry/publisher/TOC)? If so, change to ignore or omit.
 4. **Outer anchor:** If emitting leaves, is there ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[] or groupings[]? or rows[].groupings[]? If not, carry forward from prior_context_groupings[]. If you still cannot establish an outer anchor without inventing it, switch to "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (set confidence < threshold) or "{SegmentDecisionType.UNRESOLVED.value}" — do NOT emit leaves in a proper emit_* decision.
 5. **Context depth:** Are groupings[] all INNER relative to context_groupings[]? (No GRADE_LEVEL in groupings[] when SUBJECT is the deepest context role.)
-6. **Table row_index:** If table, does every RowDecision.row_index match the row's abs_row_index? No RowDecisions for header/blank/context-only rows?
+6. **Table row_index:** If table, does every RowDecision.row_index match the row's abs_row_index? If any RowDecision uses col_index, is it a valid 0-based table column and are its leaves grounded in that column’s cell text? No RowDecisions for header/blank/context-only rows?
 7. **Context evidence:** Is every context_groupings[].title supported by outer evidence (section_path/caption/header_rows) or valid carry-forward?
 8. **Planning-table role sanity:** If the segment looks like a scope-and-sequence/planning table (e.g., caption/section_path/header_rows mention "Tableau de planification" or "Apprentissages ponctuels"), did you incorrectly label *all* (or nearly all) row leaves as GUIDANCE? Re-evaluate: outcome/skill/knowledge cells are usually EXPECTATION; reserve GUIDANCE for teacher actions, materials, duration, pedagogy.
 9. **Grade refinement sanity:** If a UNIT heading/caption contains an embedded grade cue like "(niveau 1: CE1)" / "(niveau 2: CE2)" and the current grade_level context is missing or broader than that, refine context_groupings.grade_level to the specific CE grade while keeping the UNIT title intact (do not create a separate grade node from the inline fragment).

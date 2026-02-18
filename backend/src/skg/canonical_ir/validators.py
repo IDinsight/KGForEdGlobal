@@ -11,6 +11,7 @@ from skg.canonical_ir.schemas import (
     GroupingCanonicalizationKey,
     GroupingCanonicalizationMap,
     GroupingDecision,
+    RowDecision,
     SegmentDecision,
     SegmentDecisionSet,
 )
@@ -58,6 +59,97 @@ _TERM_MARKER_RE = re.compile(
     r"\b(?:term|semester|trimester)\s*([0-9]{1,2})\b", re.IGNORECASE
 )
 _WEEK_MARKER_RE = re.compile(r"\b(?:week|wk)\s*([0-9]{1,2})\b", re.IGNORECASE)
+
+
+def _build_header_text_by_col(payload: dict[str, Any]) -> dict[int, str]:
+    """Build {col_index: normalized_header_blob} from header_rows_canonical.
+
+    Each header blob is the concatenation (in order) of all header row strings for that
+    column.
+
+    Parameters
+    ----------
+    payload
+        The segment payload dictionary, expected to contain "header_rows_canonical" as
+        a list of header row lists of cell dictionaries.
+
+    Returns
+    -------
+    dict[int, str]
+        A mapping from column index to the concatenated, normalized header text blob.
+    """
+
+    hdr = payload.get("header_rows_canonical") or []
+
+    if not isinstance(hdr, list) or not hdr:
+        return {}
+
+    ncols = 0
+
+    for row in hdr:
+        if isinstance(row, list):
+            ncols = max(ncols, len(row))
+
+    if ncols <= 0:
+        return {}
+
+    out: dict[int, str] = {}
+
+    for ci in range(ncols):
+        parts: list[str] = []
+
+        for hr in hdr:
+            if isinstance(hr, list) and ci < len(hr):
+                parts.append(str(hr[ci] or ""))
+
+        out[ci] = _normalize_text(" \n ".join(parts))
+
+    return out
+
+
+def _build_row_cell_text_map(rows: list[dict[str, Any]]) -> dict[int, list[str]]:
+    """Parse payload rows to build a map of
+    {abs_row_index: [normalized_cell_text_by_col]}.
+
+    This is used when a RowDecision is column-anchored via RowDecision.col_index.
+
+    Parameters
+    ----------
+    rows
+        The list of row dictionaries from the segment payload.
+
+    Returns
+    -------
+    dict[int, list[str]]
+        A mapping from absolute row index to the list of normalized cell texts by
+        column.
+    """
+
+    row_cells_by_abs_index: dict[int, list[str]] = {}
+
+    for r in rows:
+        abs_i = r.get("abs_row_index")
+
+        if abs_i is None:
+            continue
+
+        cells = r.get("cells") or []
+        col_texts: list[str] = []
+
+        for c in cells:
+            if not isinstance(c, dict):
+                continue
+
+            t = c.get("text")
+
+            if isinstance(t, dict):
+                col_texts.append(_normalize_text(str(t.get("text", "") or "")))
+            else:
+                col_texts.append(_normalize_text(str(t or "")))
+
+        row_cells_by_abs_index[int(abs_i)] = col_texts
+
+    return row_cells_by_abs_index
 
 
 def _build_row_text_map(rows: list[dict[str, Any]]) -> dict[int, str]:
@@ -519,6 +611,127 @@ def _roman_to_int(s: str) -> int | None:
     return mapping.get(s_norm)
 
 
+def _validate_and_fingerprint_row(
+    *,
+    dup_fingerprints: list[tuple[int, str]],
+    max_row_index: int,
+    n_cols: int | None,
+    rd: RowDecision,
+    row_range_end: int | None,
+    row_range_start: int | None,
+    seen_fingerprints: set[str],
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    table_rows_count: int,
+) -> None:
+    """Validate a single RowDecision and check for exact duplicates via fingerprinting.
+
+    This helper function performs bounds checking on row and column indices and
+    calculates a fingerprint for the row decision to detect exact duplicates within the
+    parent decision block.
+
+    Parameters
+    ----------
+    dup_fingerprints
+        A mutable list to collect data on duplicate fingerprints found. Appends
+        (row_index, fingerprint_string).
+    max_row_index
+        The maximum allowable row index for the table (0-based).
+    n_cols
+        The number of columns in the table, or None if unknown.
+    rd
+        The specific RowDecision object to validate.
+    row_range_end
+        The exclusive end index of the current decision chunk, or None.
+    row_range_start
+        The inclusive start index of the current decision chunk, or None.
+    seen_fingerprints
+        A mutable set of fingerprints already processed in this batch.
+    segment
+        The parent Segment object (used for error context).
+    segment_decision
+        The parent SegmentDecision object (used for error context).
+    table_rows_count
+        The total number of rows in the table (used for error messages).
+
+    Raises
+    ------
+    QualityError
+        If row_index or col_index constraints are violated.
+    """
+
+    # Global range check.
+    if rd.row_index < 0 or rd.row_index > max_row_index:
+        raise QualityError(
+            f"RowDecision.row_index out of range.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  row_index: {rd.row_index}\n"
+            f"  allowed: 0..{max_row_index}\n"
+            f"  table_rows: {table_rows_count}"
+        )
+
+    if (
+        row_range_start is not None
+        and not row_range_start <= rd.row_index < row_range_end
+    ):
+        raise QualityError(
+            f"RowDecision.row_index outside decision chunk boundaries.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  row_index: {rd.row_index}\n"
+            f"  allowed_chunk: [{row_range_start}, {row_range_end})"
+        )
+
+    # Optional col_index validation.
+    col_i = getattr(rd, "col_index", None)
+
+    if col_i is not None:
+        try:
+            col_int = int(col_i)
+        except Exception as exc:  # pylint: disable=broad-except
+            raise QualityError(
+                f"RowDecision.col_index must be an integer when provided.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  row_index: {rd.row_index}\n"
+                f"  col_index: {col_i}"
+            ) from exc
+
+        if n_cols is not None and (col_int < 0 or col_int >= int(n_cols)):
+            raise QualityError(
+                f"RowDecision.col_index out of range for table.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  row_index: {rd.row_index}\n"
+                f"  col_index: {col_int}\n"
+                f"  allowed: 0..{int(n_cols) - 1}"
+            )
+
+    # Fingerprint the *entire* row decision so we can allow sibling fanout while still
+    # catching accidental repeats. Sort components so exact-duplicate detection is
+    # robust to ordering.
+    leaf_fp = "|".join(
+        sorted(
+            f"{leaf.role.value}:{_normalize_list_marker(getattr(leaf, 'list_marker', None))}:{_normalize_list_marker(getattr(leaf, 'local_code', None))}:{_normalize_text(leaf.body)}"
+            for leaf in (rd.leaves or [])
+        )
+    )
+    group_fp = "|".join(
+        sorted(
+            f"{g.role.value}:{_normalize_text(g.title)}:{_normalize_list_marker(getattr(g, 'local_code', None))}"
+            for g in (rd.groupings or [])
+        )
+    )
+
+    fp = f"row={rd.row_index}::col={getattr(rd, 'col_index', None)}::g=[{group_fp}]::l=[{leaf_fp}]"
+
+    if fp in seen_fingerprints:
+        dup_fingerprints.append((rd.row_index, fp))
+    else:
+        seen_fingerprints.add(fp)
+
+
 def _validate_chunk_sequence(
     *,
     expected_end: int,
@@ -654,6 +867,208 @@ def _validate_decision_types(
         )
 
 
+def _validate_grouping_grounding(
+    *,
+    decision_id: str,
+    header_text_by_col: dict[int, str],
+    n_cols: int | None,
+    row_decisions: list[Any],
+    row_text_map: dict[Any, str],
+    segment_id: str,
+) -> None:
+    """Validate that grouping titles in row decisions are supported by visible text.
+
+    It checks if the title exists in the row's cell text (preferred) or, if a column
+    index is provided, in the specific column header.
+
+    Parameters
+    ----------
+    decision_id
+        The ID of the decision (for error reporting).
+    header_text_by_col
+        A mapping of column indices to their normalized header text.
+    n_cols
+        The total number of columns in the table, if known.
+    row_decisions
+        The list of RowDecision objects to validate.
+    row_text_map
+        A mapping of row indices to their normalized text content.
+    segment_id
+        The ID of the segment (for error reporting).
+
+    Raises
+    ------
+    QualityError
+        If a grouping title is empty, a column index is invalid, or the title cannot be
+        found in the row text or the specified header.
+    """
+
+    for rd in (r for r in row_decisions if r.groupings):
+        row_blob = row_text_map.get(rd.row_index)
+        col_i = getattr(rd, "col_index", None)
+
+        # If we can't find the row blob (e.g., payload without abs_row_index), skip
+        # strict enforcement. We still allow header grounding when col_index is
+        # provided.
+        for g in rd.groupings:
+            title = _normalize_text(g.title)
+
+            if not title:
+                raise QualityError(
+                    f"RowDecision.groupings contains an empty title.\n"
+                    f"  segment_id: {segment_id}\n"
+                    f"  decision_id: {decision_id}\n"
+                    f"  row_index: {rd.row_index}"
+                )
+
+            # Row-cell grounding first (preferred).
+            if row_blob and title in row_blob:
+                continue
+
+            # Column-header grounding (requires col_index).
+            if col_i is not None:
+                try:
+                    col_int = int(col_i)
+                except Exception as exc:  # pylint: disable=broad-except
+                    raise QualityError(
+                        f"RowDecision.col_index must be an integer when provided.\n"
+                        f"  segment_id: {segment_id}\n"
+                        f"  decision_id: {decision_id}\n"
+                        f"  row_index: {rd.row_index}\n"
+                        f"  col_index: {col_i}"
+                    ) from exc
+
+                if n_cols is not None and (col_int < 0 or col_int >= int(n_cols)):
+                    raise QualityError(
+                        f"RowDecision.col_index out of range for table.\n"
+                        f"  segment_id: {segment_id}\n"
+                        f"  decision_id: {decision_id}\n"
+                        f"  row_index: {rd.row_index}\n"
+                        f"  col_index: {col_int}\n"
+                        f"  allowed: 0..{int(n_cols) - 1}"
+                    )
+
+                header_blob = header_text_by_col.get(col_int)
+
+                if header_blob and title in header_blob:
+                    continue
+
+            # No valid grounding.
+            raise QualityError(
+                f"RowDecision grouping title not supported by visible row cell text or column header.\n"
+                f"  segment_id: {segment_id}\n"
+                f"  decision_id: {decision_id}\n"
+                f"  row_index: {rd.row_index}\n"
+                f"  col_index: {col_i}\n"
+                f"  unsupported_title: {g.title}"
+            )
+
+
+def _validate_groupings_against_evidence(
+    *,
+    allow_prior_titles: bool,
+    block_text_norm: str,
+    caption: str,
+    evidence_blob_base: str,
+    header_rows_canonical: list[Any] | None,
+    headings: list[str],
+    prior_titles_norm: set[str],
+    seg_kind: str | None,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+) -> None:
+    """Validate that each context grouping is supported by the collected evidence.
+
+    Parameters
+    ----------
+    allow_prior_titles
+        Whether to allow support from prior context grouping titles.
+    block_text_norm
+        The normalized text blob of the block.
+    caption
+        The caption text.
+    evidence_blob_base
+        The base normalized evidence blob (e.g., section_path + caption + header_rows).
+    header_rows_canonical
+        The canonical header rows from the payload, if any.
+    headings
+        The valid section_path headings extracted from the payload.
+    prior_titles_norm
+        The set of normalized prior context grouping titles.
+    seg_kind
+        The kind of the segment (e.g., "block", "table", etc.) being validated.
+    segment
+        The Segment being validated.
+    segment_decision
+        The SegmentDecision whose context groupings are being validated.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    for g in segment_decision.context_groupings:
+        title = _normalize_text(g.title)
+
+        if not title:
+            raise QualityError(
+                f"context_groupings contains an empty title.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}"
+            )
+
+        # Front-matter headings (Preface, Contents, etc.) are intentionally filtered
+        # out of OUTER evidence to prevent them from becoming curricular context.
+        if title in NonArtifacts:
+            raise QualityError(
+                f"context_groupings contains a FRONT-MATTER title (non-curricular): '{g.title}'. "
+                f"Fix: REMOVE this grouping from context_groupings[] and attach directly under the framework root "
+                f"(or under a real curricular grouping like Grade/Subject if present).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  front_matter_title: {g.title}\n"
+                f"  section_path_headings: {headings}"
+            )
+
+        # Role-specific evidence blob expansion for wrapper-style blocks.
+        evidence_blob = evidence_blob_base
+
+        if (
+            block_text_norm
+            and seg_kind == "block"
+            and g.role == NodeRole.GRADE_LEVEL
+            and segment_decision.decision_type
+            in (
+                SegmentDecisionType.EMIT_GROUPINGS_ONLY,
+                SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
+            )
+        ):
+            evidence_blob = _normalize_text(evidence_blob + " \n " + block_text_norm)
+
+        if not _outer_evidence_supports_title(
+            allow_prior_titles=allow_prior_titles,
+            evidence_blob_norm=evidence_blob,
+            prior_titles_norm=prior_titles_norm,
+            role=g.role,
+            title_norm=title,
+        ):
+            raise QualityError(
+                f"context_groupings title not supported by OUTER evidence (section_path/caption/header_rows) "
+                f"or prior_context_groupings. "
+                f"Fix: REMOVE this grouping from context_groupings[] or change it to a title supported by "
+                f"section_path/caption/header_rows (or ensure it is a stable prior_context_grouping).\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  unsupported_title: {g.title}\n"
+                f"  role: {g.role.value}\n"
+                f"  section_path_headings: {headings}\n"
+                f"  header_rows_canonical: {header_rows_canonical}\n"
+                f"  has_caption_text: {bool((caption or '').strip())}\n"
+                f"  prior_context_titles: {sorted(list(prior_titles_norm))[:10]}"
+            )
+
+
 def _validate_interval_uniqueness(
     *, chunk_decisions: list[Any], segment_id: str
 ) -> None:
@@ -687,6 +1102,85 @@ def _validate_interval_uniqueness(
             f"  segment_id: {segment_id}\n"
             f"  duplicates(sample): {interval_sample}"
         )
+
+
+def _validate_row_anchors(
+    *,
+    n_cols: int | None,
+    row_cells_map: dict[int, list[str]],
+    segment: Segment,
+    segment_decision: SegmentDecision,
+) -> None:
+    """Validate that row decisions with column anchors are well-formed and grounded.
+
+    Check that col_index is a valid integer within range and that leaf text exists
+    within the visible text of the referenced cell.
+
+    Parameters
+    ----------
+    n_cols
+        The number of columns in the table (if known).
+    row_cells_map
+        A mapping of row indices to a list of cell text strings.
+    segment
+        The Segment being decided on (used for error context).
+    segment_decision
+        The SegmentDecision containing the rows to validate.
+
+    Raises
+    ------
+    QualityError
+        If col_index is invalid or leaf text is not found in the cell.
+    """
+
+    for rd in segment_decision.rows:
+        col_i = getattr(rd, "col_index", None)
+
+        if col_i is None or not rd.leaves:
+            continue
+
+        try:
+            col_int = int(col_i)
+        except Exception as exc:  # pylint: disable=broad-except
+            raise QualityError(
+                f"RowDecision.col_index must be an integer when provided.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  row_index: {rd.row_index}\n"
+                f"  col_index: {col_i}"
+            ) from exc
+
+        if n_cols is not None and (col_int < 0 or col_int >= int(n_cols)):
+            raise QualityError(
+                f"RowDecision.col_index out of range for table.\n"
+                f"  segment_id: {segment.segment_id}\n"
+                f"  decision_id: {segment_decision.decision_id}\n"
+                f"  row_index: {rd.row_index}\n"
+                f"  col_index: {col_int}\n"
+                f"  allowed: 0..{int(n_cols) - 1}"
+            )
+
+        col_texts = row_cells_map.get(rd.row_index)
+
+        # If we can't find the cell texts (e.g., payload lacks abs_row_index), skip
+        # strict enforcement.
+        if not col_texts or col_int >= len(col_texts):
+            continue
+
+        cell_blob = col_texts[col_int]
+
+        for leaf in rd.leaves:
+            leaf_norm = _normalize_text(getattr(leaf, "body", "") or "")
+
+            if leaf_norm and leaf_norm not in cell_blob:
+                raise QualityError(
+                    f"RowDecision leaf body not supported by visible cell text for col_index.\n"
+                    f"  segment_id: {segment.segment_id}\n"
+                    f"  decision_id: {segment_decision.decision_id}\n"
+                    f"  row_index: {rd.row_index}\n"
+                    f"  col_index: {col_int}\n"
+                    f"  leaf_preview: {(getattr(leaf, 'body', '') or '')[:160]}"
+                )
 
 
 def _validate_single_table_segment(*, decisions: list[Any], segment: Any) -> None:
@@ -1223,7 +1717,12 @@ def validate_context_groupings_supported_by_outer_evidence(
     payload = segment_payload or {}
     headings = _extract_valid_headings(payload)
     caption = payload.get("caption_text") or ""
-    header_rows = payload.get("header_rows_canonical") or []
+
+    # Note: We capture the raw value for the error message, but use a default for
+    # processing.
+    raw_header_rows = payload.get("header_rows_canonical")
+
+    header_rows = raw_header_rows or []
     header_strings = [
         c for r in header_rows for c in r if isinstance(c, str) and c.strip()
     ]
@@ -1234,13 +1733,36 @@ def validate_context_groupings_supported_by_outer_evidence(
     # rejecting context titles that the LLM correctly derived from a hint-matched
     # heading.
     hint_patterns: list[str] = payload.get("_heading_role_hint_patterns") or []
-    evidence_blob = _normalize_text(
+    evidence_blob_base = _normalize_text(
         " \n ".join([*headings, caption, *header_strings, *hint_patterns])
     )
 
     # If there is NO outer evidence at all, we can't enforce this strictly.
-    if not evidence_blob.strip():
+    if not evidence_blob_base.strip():
         return
+
+    # For certain wrapper-style BLOCK segments, allow grade-level refinements to be
+    # grounded in the block's own text (e.g., "(niveau 1: CE1)").
+    seg_kind = (
+        payload.get("segment_kind")
+        or getattr(segment, "segment_kind", None)
+        or getattr(segment, "kind", None)
+    )
+
+    block_text_norm = ""
+
+    if seg_kind == "block":
+        bt = (
+            payload.get("block_text")
+            or payload.get("combined_text")
+            or payload.get("text")
+            or ""
+        )
+
+        if isinstance(bt, dict):
+            bt = bt.get("text") or ""
+
+        block_text_norm = _normalize_text(str(bt or ""))
 
     # Allow carry-forward from prior_context_groupings[] for ALL segment types EXCEPT
     # the first chunk of a chunked table (which must anchor strictly from outer
@@ -1273,58 +1795,24 @@ def validate_context_groupings_supported_by_outer_evidence(
     prior_titles_norm: set[str] = set()
 
     for pg in prior:
-        if not isinstance(pg, dict):
-            continue
+        if isinstance(pg, dict):
+            pt = _normalize_text(pg.get("title", ""))
 
-        pt = _normalize_text(pg.get("title", ""))
+            if pt:
+                prior_titles_norm.add(pt)
 
-        if pt:
-            prior_titles_norm.add(pt)
-
-    for g in segment_decision.context_groupings:
-        title = _normalize_text(g.title)
-
-        if not title:
-            raise QualityError(
-                f"context_groupings contains an empty title.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}"
-            )
-
-        # Front-matter headings (Preface, Contents, etc.) are intentionally filtered
-        # out of OUTER evidence to prevent them from becoming curricular context.
-        if title in NonArtifacts:
-            raise QualityError(
-                f"context_groupings contains a FRONT-MATTER title (non-curricular): '{g.title}'. "
-                f"Fix: REMOVE this grouping from context_groupings[] and attach directly under the framework root "
-                f"(or under a real curricular grouping like Grade/Subject if present).\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}\n"
-                f"  front_matter_title: {g.title}\n"
-                f"  section_path_headings: {headings}"
-            )
-
-        if not _outer_evidence_supports_title(
-            allow_prior_titles=allow_prior_titles,
-            evidence_blob_norm=evidence_blob,
-            prior_titles_norm=prior_titles_norm,
-            role=g.role,
-            title_norm=title,
-        ):
-            raise QualityError(
-                f"context_groupings title not supported by OUTER evidence (section_path/caption/header_rows) "
-                f"or prior_context_groupings. "
-                f"Fix: REMOVE this grouping from context_groupings[] or change it to a title supported by "
-                f"section_path/caption/header_rows (or ensure it is a stable prior_context_grouping).\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}\n"
-                f"  unsupported_title: {g.title}\n"
-                f"  role: {g.role.value}\n"
-                f"  section_path_headings: {headings}\n"
-                f"  header_rows_canonical: {payload.get('header_rows_canonical')}\n"
-                f"  has_caption_text: {bool((caption or '').strip())}\n"
-                f"  prior_context_titles: {sorted(list(prior_titles_norm))[:10]}"
-            )
+    _validate_groupings_against_evidence(
+        allow_prior_titles=allow_prior_titles,
+        block_text_norm=block_text_norm,
+        caption=caption,
+        evidence_blob_base=evidence_blob_base,
+        header_rows_canonical=raw_header_rows,
+        headings=headings,
+        prior_titles_norm=prior_titles_norm,
+        seg_kind=seg_kind,
+        segment=segment,
+        segment_decision=segment_decision,
+    )
 
 
 def validate_emit_flagged_unresolved_confidence(
@@ -1937,37 +2425,20 @@ def validate_row_groupings_supported_by_row_cells(
 
     payload = segment_payload or {}
     row_text_map = _build_row_text_map(payload.get("rows") or [])
+    header_text_by_col = _build_header_text_by_col(payload)
+    n_cols = getattr(segment, "n_cols", None)
 
-    # Validate each row decision grouping title appears in that row text.
-    for rd in segment_decision.rows:
-        if not rd.groupings:
-            continue
-
-        row_blob = row_text_map.get(rd.row_index)
-
-        # If we can't find the row blob (e.g., unchunked payload without
-        # abs_row_index), skip strict enforcement.
-        if not row_blob:
-            continue
-
-        for g in rd.groupings:
-            title = _normalize_text(g.title)
-
-            if not title:
-                raise QualityError(
-                    f"RowDecision.groupings contains an empty title.\n"
-                    f"  segment_id: {segment.segment_id}\n"
-                    f"  decision_id: {segment_decision.decision_id}\n"
-                    f"  row_index: {rd.row_index}"
-                )
-            if title not in row_blob:
-                raise QualityError(
-                    f"RowDecision grouping title not supported by visible row cell text.\n"
-                    f"  segment_id: {segment.segment_id}\n"
-                    f"  decision_id: {segment_decision.decision_id}\n"
-                    f"  row_index: {rd.row_index}\n"
-                    f"  unsupported_title: {g.title}"
-                )
+    # Validate each row decision grouping title appears in that row's visible cell
+    # text. If RowDecision.col_index is provided, allow grounding against the header
+    # text for that specific column (header_rows_canonical[*][col_index]) as well.
+    _validate_grouping_grounding(
+        decision_id=segment_decision.decision_id,
+        header_text_by_col=header_text_by_col,
+        n_cols=n_cols,
+        row_decisions=segment_decision.rows,
+        row_text_map=row_text_map,
+        segment_id=segment.segment_id,
+    )
 
     chunking = table_chunking or {}
 
@@ -1979,6 +2450,7 @@ def validate_row_groupings_supported_by_row_cells(
                 if rd.row_index not in row_text_map
             }
         )
+
         if missing:
             raise QualityError(
                 f"row_index_not_absolute_or_not_in_payload\n"
@@ -2072,6 +2544,82 @@ def validate_row_leaf_hierarchy_not_flattened(
                     f"  parent_local_code: {parent_code}\n"
                     f"  child_local_code: {child_code}"
                 )
+
+
+def validate_row_leaves_supported_by_cell(
+    *,
+    segment: Segment,
+    segment_decision: SegmentDecision,
+    segment_payload: dict[str, Any] | None,
+    table_chunking: dict[str, Any] | None = None,
+) -> None:
+    """When a RowDecision is column-anchored (RowDecision.col_index is set), all
+    emitted leaves must be grounded in the visible text of that specific cell.
+
+    This protects against using col_index only to justify groupings from column headers
+    while accidentally emitting leaves from a different column.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+    segment_payload
+        The payload dictionary for the Segment being decided on.
+    table_chunking
+        Optional chunking metadata used to enforce absolute row_index grounding.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if (
+        segment.kind != "table"
+        or (
+            segment_decision.decision_type
+            in (
+                SegmentDecisionType.IGNORE,
+                SegmentDecisionType.UNRESOLVED,
+            )
+        )
+        or not segment_decision.rows
+    ):
+        return
+
+    payload = segment_payload or {}
+    row_cells_map = _build_row_cell_text_map(payload.get("rows") or [])
+    n_cols = getattr(segment, "n_cols", None)
+
+    _validate_row_anchors(
+        n_cols=n_cols,
+        row_cells_map=row_cells_map,
+        segment=segment,
+        segment_decision=segment_decision,
+    )
+
+    chunking = table_chunking or {}
+
+    if chunking.get("row_index_is_absolute") and segment_decision.rows:
+        missing = sorted(
+            {
+                rd.row_index
+                for rd in segment_decision.rows
+                if getattr(rd, "col_index", None) is not None
+                and rd.row_index not in row_cells_map
+            }
+        )
+
+        if missing:
+            raise QualityError(
+                f"row_index_not_absolute_or_not_in_payload\n"
+                f"segment_id={segment.segment_id}\n"
+                f"decision_id={segment_decision.decision_id}\n"
+                f"missing_row_indices={missing[:20]}\n"
+                f"hint=RowDecision.row_index MUST equal row.abs_row_index values shown in the payload."
+            )
 
 
 def validate_section_titles_not_front_matter(
@@ -2415,6 +2963,7 @@ def validate_unique_table_rows(
     max_row_index = len(table_rows) - 1
     start = segment_decision.row_range_start
     end = segment_decision.row_range_end
+    n_cols = getattr(segment, "n_cols", None)
 
     # Allow repeated row_index values, but disallow exact duplicate RowDecision entries
     # (same row_index + same groupings + same leaves).
@@ -2422,51 +2971,18 @@ def validate_unique_table_rows(
     dup_fingerprints: list[tuple[int, str]] = []
 
     for rd in segment_decision.rows:
-        # Global range check.
-        if rd.row_index < 0 or rd.row_index > max_row_index:
-            raise QualityError(
-                f"RowDecision.row_index out of range.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}\n"
-                f"  row_index: {rd.row_index}\n"
-                f"  allowed: 0..{max_row_index}\n"
-                f"  table_rows: {len(table_rows)}"
-            )
-
-        if start is not None and not start <= rd.row_index < end:
-            raise QualityError(
-                f"RowDecision.row_index outside decision chunk boundaries.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}\n"
-                f"  row_index: {rd.row_index}\n"
-                f"  allowed_chunk: [{start}, {end})"
-            )
-
-        # Fingerprint the *entire* row decision so we can allow sibling fanout while
-        # still catching accidental repeats. Sort components so exact-duplicate
-        # detection is robust to ordering.
-        group_parts = sorted(
-            [
-                f"{g.role.value}:{_normalize_text(g.title)}:{_normalize_list_marker(getattr(g, 'local_code', None))}"
-                for g in (rd.groupings or [])
-            ]
+        _validate_and_fingerprint_row(
+            dup_fingerprints=dup_fingerprints,
+            max_row_index=max_row_index,
+            n_cols=n_cols,
+            rd=rd,
+            row_range_end=end,
+            row_range_start=start,
+            seen_fingerprints=seen_fingerprints,
+            segment=segment,
+            segment_decision=segment_decision,
+            table_rows_count=len(table_rows),
         )
-        leaf_parts = sorted(
-            [
-                f"{leaf.role.value}:{_normalize_list_marker(getattr(leaf,'list_marker',None))}:{_normalize_list_marker(getattr(leaf,'local_code',None))}:{_normalize_text(leaf.body)}"
-                for leaf in (rd.leaves or [])
-            ]
-        )
-
-        group_fp = "|".join(group_parts)
-        leaf_fp = "|".join(leaf_parts)
-
-        fp = f"row={rd.row_index}::g=[{group_fp}]::l=[{leaf_fp}]"
-
-        if fp in seen_fingerprints:
-            dup_fingerprints.append((rd.row_index, fp))
-        else:
-            seen_fingerprints.add(fp)
 
     if dup_fingerprints:
         dup_row_indices = sorted({ri for (ri, _) in dup_fingerprints})

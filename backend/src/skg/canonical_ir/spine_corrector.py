@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 # Third Party Library
 from loguru import logger
+from pydantic import ValidationError
 
 # Package Library
 from skg.canonical_ir.schemas import (
@@ -152,7 +153,7 @@ def _apply_spine_to_single_decision(
 
     try:
         d = SegmentDecision.model_validate(d.model_dump())
-    except Exception as e:  # pylint: disable=broad-exception-caught
+    except ValidationError as e:
         corrections.append(
             SpineCorrection(
                 detail=f"Post-spine revalidation failed; demoted to UNRESOLVED. err={e!s}",

@@ -299,6 +299,15 @@ class RowDecision(BaseSchema):
     2. One or more leaf decisions (expectations/descriptors/guidance).
     """
 
+    col_index: int | None = Field(
+        default=None,
+        description=(
+            "Optional 0-based column index into the ORIGINAL stitched table columns that this RowDecision applies to. "
+            "Use this when a single table row contains multiple independent statements by column (e.g., one strand per column). "
+            "When provided, row-local groupings may be grounded against header_rows_canonical[*][col_index] and leaves must come from that column's cell."
+        ),
+        ge=0,
+    )
     groupings: list[GroupingDecision] = Field(
         default_factory=list,
         description="Grouping nodes derived specifically from this row (e.g., row subject/strand/topic columns).",
