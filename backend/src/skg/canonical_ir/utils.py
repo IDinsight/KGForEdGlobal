@@ -2610,6 +2610,7 @@ def clean_text(text: Optional[str]) -> Optional[str]:
 
 def collect_unique_grouping_keys(
     *,
+    canonicalization_skip_roles: list[NodeRole] | None = None,
     creation_dirs: CanonicalIRDirs,
     overwrite: bool,
     segment_decisions: SegmentDecisionSet,
@@ -2622,9 +2623,15 @@ def collect_unique_grouping_keys(
 
     1. Input traversal is stable
     2. Dedupe uses exact tuple matching
+    3. Roles in ``canonicalization_skip_roles`` are excluded (their mappings would be
+       discarded at apply time anyway, so filtering them here avoids wasted LLM tokens).
 
     Parameters
     ----------
+    canonicalization_skip_roles
+        Optional list of NodeRoles to exclude from the collected keys. These roles'
+        mappings are discarded at apply time (step 13), so excluding them here avoids
+        sending them to the LLM unnecessarily.
     creation_dirs
         The canonical IR creation directories.
     overwrite
@@ -2653,9 +2660,16 @@ def collect_unique_grouping_keys(
 
     grouping_keys: list[GroupingCanonicalizationKey] = []
     seen: set[tuple[str, str, str, str]] = set()
+    skip_roles: frozenset[NodeRole] = frozenset(canonicalization_skip_roles or [])
 
     for g in _iter_all_grouping_decisions(segment_decisions):
         role = g.role
+
+        # Roles whose mappings are discarded at apply time are excluded here to avoid
+        # wasting LLM tokens on canonicalization that won't be used.
+        if role in skip_roles:
+            continue
+
         title = (g.title or "").strip()
         assert title, f"GroupingDecision with empty title found: {g}"
 

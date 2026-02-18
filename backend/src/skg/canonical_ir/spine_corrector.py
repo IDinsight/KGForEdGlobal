@@ -154,6 +154,10 @@ def _apply_spine_to_single_decision(
     try:
         d = SegmentDecision.model_validate(d.model_dump())
     except ValidationError as e:
+        logger.error(
+            f"Post-spine revalidation failed for decision_id={d.decision_id}, "
+            f"segment_id={d.segment_id}; demoting to UNRESOLVED. err={e!s}"
+        )
         corrections.append(
             SpineCorrection(
                 detail=f"Post-spine revalidation failed; demoted to UNRESOLVED. err={e!s}",

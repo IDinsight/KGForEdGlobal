@@ -2026,16 +2026,25 @@ def validate_grouping_canonicalization_coverage(
         If any quality checks fail.
     """
 
+    # NB: GroupingCanonicalizationKey's model_validator strips
+    # title/local_code/source_label, so .strip() here is defensive. This keeps tuple
+    # construction consistent with utils._gkey_tuple, which also strips, in case a
+    # future code path bypasses Pydantic validation (e.g., model_construct()).
     expected = [
-        (k.role.value, k.title, k.local_code or "", k.source_label or "")
+        (
+            k.role.value,
+            (k.title or "").strip(),
+            (k.local_code or "").strip(),
+            (k.source_label or "").strip(),
+        )
         for k in grouping_keys
     ]
     got = [
         (
             i.input.role.value,
-            i.input.title,
-            i.input.local_code or "",
-            i.input.source_label or "",
+            (i.input.title or "").strip(),
+            (i.input.local_code or "").strip(),
+            (i.input.source_label or "").strip(),
         )
         for i in mapping.items
     ]

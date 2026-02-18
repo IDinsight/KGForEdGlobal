@@ -29,6 +29,7 @@ from skg.canonical_ir.prompts import (
     heading_level_instructions,
 )
 from skg.canonical_ir.schemas import (
+    GroupingCanonicalizationItem,
     GroupingCanonicalizationKey,
     GroupingCanonicalizationMap,
     HeadingLevelAnalysis,
@@ -516,6 +517,44 @@ def _process_canonicalization_batch(
     raise QualityError(f"Batch {batch_index} failed unexpectedly.")
 
 
+def _resolve_effective_grouping_outputs(
+    *, item: GroupingCanonicalizationItem, min_confidence: float
+) -> list[GroupingCanonicalizationKey]:
+    """Determine the effective canonical output nodes for a processed item.
+
+    Logic:
+
+    1. If confidence is below threshold, the INPUT is the canonical anchor (treated as
+        KEEP).
+    2. If action is DROP, there are no outputs.
+    3. If action is KEEP, the INPUT is the canonical anchor.
+    4. Otherwise (REPLACE/SPLIT), the output field contains the anchors.
+
+    Parameters
+    ----------
+    item
+        The processed canonicalization item containing input/output/action/confidence.
+    min_confidence
+        The minimum confidence threshold to accept the model's output.
+
+    Returns
+    -------
+    list[GroupingCanonicalizationKey]
+        A list of nodes effectively established as canonical.
+    """
+
+    if item.confidence < min_confidence:
+        return [item.input]
+
+    if item.action == GroupingCanonicalizationAction.DROP:
+        return []
+
+    if item.action == GroupingCanonicalizationAction.KEEP:
+        return [item.input]
+
+    return item.output or []
+
+
 def generate_heading_levels(
     *,
     country: str,
@@ -660,6 +699,7 @@ def generate_heading_levels(
 def generate_grouping_canonicalization_map(
     *,
     batch_size: int = 600,
+    canonical_grouping_min_confidence: float,
     context_groupings_role_order: list[str],
     creation_dirs: CanonicalIRDirs,
     doc_key: str,
@@ -675,6 +715,11 @@ def generate_grouping_canonicalization_map(
     ----------
     batch_size
         Number of items to process per LLM call.
+    canonical_grouping_min_confidence
+        Minimum confidence threshold for treating a mapping item as applied. Items
+        below this threshold are treated as KEEP at apply time (step 13), so we must
+        register the *input* (not the output) as the established canonical when
+        building cross-batch context.
     context_groupings_role_order
         The context grouping role precedence order, used for quality checks and LLM
         instructions.
@@ -758,26 +803,21 @@ def generate_grouping_canonicalization_map(
 
         # Update the context set for the next batch.
         for item in batch_result.items:
-            # DROP produces no canonical outputs.
-            if item.action == GroupingCanonicalizationAction.DROP:
-                continue
-
-            # KEEP often has output=[], but the input IS the canonical anchor.
-            if item.action == GroupingCanonicalizationAction.KEEP:
-                canonical_outputs = [item.input]
-            else:
-                # REPLACE/SPLIT: outputs are the new canonical groupings.
-                canonical_outputs = item.output or []
-
-            for out in canonical_outputs:
-                if out.title:
-                    known_canonical_set.add((out.role.value, out.title.strip()))
+            effective_outputs = _resolve_effective_grouping_outputs(
+                item=item, min_confidence=canonical_grouping_min_confidence
+            )
+            known_canonical_set.update(
+                (out.role.value, out.title.strip())
+                for out in effective_outputs
+                if out.title
+            )
 
     logger.success("Finished generating grouping canonicalization map!")
 
     mapping = GroupingCanonicalizationMap(
         doc_key=doc_key, generator=model, items=all_canonical_items
     )
+
     write_to_json(fp=group_canonicalization_mapping_fp, json_info=mapping)
 
     logger.success(
@@ -996,8 +1036,9 @@ def verify_grouping_canonicalization_map_quality(
 ) -> None:
     """Deterministic quality checks:
 
-    1. Mapping covers ALL input keys exactly once.
+    1. Mapping covers ALL input keys exactly once, in the same order.
     2. Mapping contains no unknown extra inputs.
+    3. Established canonical titles are matched exactly.
 
     Parameters
     ----------
@@ -1015,39 +1056,8 @@ def verify_grouping_canonicalization_map_quality(
         If any quality checks fail.
     """
 
-    def _grouping_key_tuple(
-        k: GroupingCanonicalizationKey,
-    ) -> tuple[str, str, str, str]:
-        """Convert a GroupingCanonicalizationKey to a comparable tuple.
-
-        Parameters
-        ----------
-        k
-            The GroupingCanonicalizationKey to convert.
-
-        Returns
-        -------
-        tuple[str, str, str, str]
-            The comparable tuple representation.
-        """
-
-        return k.role.value, k.title, k.local_code or "", k.source_label or ""
-
-    expected = {_grouping_key_tuple(k) for k in grouping_keys}
-    got = {_grouping_key_tuple(item.input) for item in mapping.items}
-    missing = expected - got
-    extra = got - expected
-
-    if missing or extra:
-        msg = []
-
-        if missing:
-            msg.append(f"Missing {len(missing)} input keys in mapping.")
-        if extra:
-            msg.append(f"Found {len(extra)} unexpected input keys in mapping.")
-
-        raise QualityError(" ".join(msg))
-
+    # Coverage check (set match + size match + order match): this subsumes a simple
+    # set-based missing/extra check.
     validate_grouping_canonicalization_coverage(
         grouping_keys=grouping_keys, mapping=mapping
     )
