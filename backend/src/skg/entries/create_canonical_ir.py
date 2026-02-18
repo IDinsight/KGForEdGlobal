@@ -255,7 +255,7 @@ def create_canonical_ir(
         document_ir=document_ir,
         decision_set=segment_decisions,
         overwrite=config.overwrite,
-        spine=config.spine_policy,
+        spine_policy=config.spine_policy,
     )
 
     # 11.

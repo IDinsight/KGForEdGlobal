@@ -27,7 +27,6 @@ from skg.utils.constants import (
     DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
     NodeRole,
     SegmentDecisionType,
-    SpineSplitApplyTo,
     SpineViolationPolicy,
 )
 from skg.utils.general import make_dir, validate_bbox_order, validate_bcp47
@@ -266,53 +265,31 @@ class SpineCorrectionReport(BaseSchema):
     warnings: list[str] = Field(default_factory=list)
 
 
-class SpineEmitGroupingTemplate(BaseSchema):
-    """A single emitted grouping produced by a split rule.
+class CaptionContextPattern(BaseSchema):
+    """A regex pattern for extracting groupings from table caption text.
 
-    `title_template` uses regex capture groups via Match.expand, e.g.:
-      - "GRADE \\1"
-      - "\\2" (subject)
+    The pattern is searched (not full-match) against the caption text. If a match is
+    found, `title_template` is expanded using `Match.expand` (supporting capture group
+    back-references like `\\1`).
     """
 
-    inherit_source_label: bool = Field(
-        True, description="If True, copy source_label from the original grouping."
+    flags: int = Field(
+        re.IGNORECASE, description="Regex flags (int). Default IGNORECASE."
     )
-    role: NodeRole = Field(..., description="Role of the emitted grouping.")
-    source_label: str | None = Field(
-        None,
-        description="If provided, overrides the emitted grouping's source_label (verbatim).",
-    )
+    match: str = Field(..., description="Regex pattern to search in caption text.")
+    role: NodeRole = Field(..., description="Role of the derived grouping.")
     title_template: str = Field(
         ..., description="Regex expansion template using capture groups (Match.expand)."
     )
 
-
-class SpineSplitRule(BaseSchema):
-    """Deterministic splitting of fused headings/groupings into multiple groupings."""
-
-    match: str = Field(..., description="Regex pattern used to match the input title.")
-    flags: int = Field(
-        re.IGNORECASE,
-        description="Regex flags (int). Default IGNORECASE.",
-    )
-    apply_to: SpineSplitApplyTo = Field(
-        SpineSplitApplyTo.ANY,
-        description="Which grouping list(s) this rule may rewrite.",
-    )
-    emit: list[SpineEmitGroupingTemplate] = Field(
-        ...,
-        min_length=1,
-        description="One or more emitted groupings produced from capture groups.",
-    )
-
     @model_validator(mode="after")
-    def _validate_regex(self) -> SpineSplitRule:
+    def _validate_regex(self) -> CaptionContextPattern:
         """Validate that the regex pattern is valid.
 
         Returns
         -------
-        SpineSplitRule
-            The validated SpineSplitRule instance.
+        CaptionContextPattern
+            The validated CaptionContextPattern instance.
 
         Raises
         ------
@@ -325,84 +302,24 @@ class SpineSplitRule(BaseSchema):
         return self
 
 
-class SpineNormalizeConfig(BaseSchema):
-    """Deterministic normalization knobs (no guessing)."""
-
-    drop_stage_if_grade_present: bool = Field(
-        False,
-        description=(
-            "If True, drop STAGE when any GRADE_LEVEL is present. "
-            "Prefer keeping False and using wrapper patterns instead."
-        ),
-    )
-    drop_stage_if_matches_wrapper_patterns: bool = Field(
-        True,
-        description="If True, drop STAGE titles that match wrapper patterns (non-curricular wrappers).",
-    )
-    stage_wrapper_title_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns (case-insensitive recommended) that identify non-curricular "
-            "STAGE wrappers (e.g., 'lower primary', 'basic education')."
-        ),
-    )
-
-    # Grade-band suppression (remove bands from GRADE_LEVEL containers)
-    drop_grade_bands: bool = Field(
-        False,
-        description=(
-            "If True, drop grade-band labels like 'Grades 1–3' from context_groupings. "
-            "This should NOT delete the information; it can be recorded in spine notes."
-        ),
-    )
-    grade_band_title_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns that identify grade-band titles (e.g., '^grades?\\s*\\d+\\s*[-–]\\s*\\d+')."
-        ),
-    )
-
-    role_order: list[NodeRole] = Field(
-        default_factory=lambda: list(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER),
-        description="Canonical role order used when reordering grouping lists.",
-    )
-    normalize_whitespace: bool = Field(
-        True,
-        description="Collapse internal whitespace and trim titles during normalization.",
-    )
-    casefold_titles_for_matching: bool = Field(
-        True,
-        description="Casefold titles for internal matching/deduping (does not change stored title unless you choose).",
-    )
-
-    @model_validator(mode="after")
-    def _validate_role_order(self) -> SpineNormalizeConfig:
-        """Validate that role_order contains no duplicates.
-
-        Returns
-        -------
-        SpineNormalizeConfig
-            The validated SpineNormalizeConfig instance.
-
-        Raises
-        ------
-        ValueError
-            If role_order contains duplicate roles.
-        """
-
-        seen: set[NodeRole] = set()
-
-        for r in self.role_order:
-            if r in seen:
-                raise ValueError(f"normalize.role_order contains duplicate role: {r}")
-
-            seen.add(r)
-
-        return self
-
-
 class SpineConfig(BaseSchema):
-    """Policy config for deterministic 'spine correction' between LLM decisions and compilation."""
+    """Policy config for deterministic 'spine correction' between LLM decisions and
+    compilation.
+
+    Responsibilities:
+
+    1. Caption context injection: derive missing outer-context anchors from table
+        captions.
+    2. Role allow/disallow filtering: enforce where specific roles may appear.
+    3. Table-local-only role relocation: move roles from context to row groupings.
+    4. Cross-chunk consistency check: detect conflicting context across table chunks.
+    5. Hard shape enforcement: clear outputs for IGNORE/UNRESOLVED; demote empty
+        flagged.
+
+    Title normalization, deduplication, precedence reordering, regex-based splitting,
+    and wrapper/grade-band dropping are handled by the segment decision cleaning and
+    LLM grouping canonicalization steps.
+    """
 
     allow_partial_context: bool = Field(
         True,
@@ -411,6 +328,21 @@ class SpineConfig(BaseSchema):
     block_local_roles: list[NodeRole] = Field(
         default_factory=list,
         description="Allow-list for SegmentDecision.groupings[] (blocks).",
+    )
+    caption_context_patterns: list[CaptionContextPattern] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns for extracting groupings from table caption text. "
+            "Each pattern is searched against the caption; if matched, a grouping is "
+            "derived using the role and title_template. First match per role wins."
+        ),
+    )
+    casefold_titles_for_matching: bool = Field(
+        True,
+        description=(
+            "Casefold and strip accents from titles for internal conflict detection "
+            "(caption injection, chunk consistency). Does not change stored titles."
+        ),
     )
     disallowed_block_local_roles: list[NodeRole] = Field(
         default_factory=list,
@@ -427,10 +359,6 @@ class SpineConfig(BaseSchema):
         ...,
         description="Human-readable spine template name (e.g., 'zambia_competence_tables').",
     )
-    normalize: SpineNormalizeConfig = Field(
-        default_factory=SpineNormalizeConfig,  # type: ignore[arg-type]
-        description="Deterministic normalization knobs.",
-    )
     outer_context_roles: list[NodeRole] = Field(
         ...,
         min_length=0,
@@ -443,9 +371,6 @@ class SpineConfig(BaseSchema):
     row_roles: list[NodeRole] = Field(
         default_factory=list,
         description="Allow-list for RowDecision.groupings[] (tables).",
-    )
-    split_rules: list[SpineSplitRule] = Field(
-        default_factory=list, description="Deterministic regex-based split rules."
     )
     table_local_only_roles: list[NodeRole] = Field(
         default_factory=list,

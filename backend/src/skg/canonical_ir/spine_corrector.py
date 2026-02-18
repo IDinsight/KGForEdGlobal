@@ -1,9 +1,20 @@
 """This module contains the spine corrector logic for applying spine policies to
 SegmentDecisionSets.
+
+Responsibilities:
+
+1. Caption context injection: derive missing outer-context anchors from table captions.
+2. Role allow/disallow filtering: enforce where specific roles may appear.
+3. Table-local-only role relocation: move roles from context to row groupings.
+4. Cross-chunk consistency check: detect conflicting context across table chunks.
+5. Hard shape enforcement: clear outputs for IGNORE/UNRESOLVED; demote empty flagged.
+
+Title normalization, deduplication, precedence reordering, regex-based splitting, and
+wrapper/grade-band dropping are handled by the segment decision cleaning and LLM
+grouping canonicalization steps.
 """
 
 # Standard Library
-import re
 import unicodedata
 
 from dataclasses import dataclass
@@ -26,7 +37,6 @@ from skg.schemas import SpineConfig, SpineCorrection, SpineCorrectionReport
 from skg.utils.constants import (
     NodeRole,
     SegmentDecisionType,
-    SpineSplitApplyTo,
     SpineViolationPolicy,
 )
 from skg.utils.general import open_json_type, write_to_json
@@ -41,107 +51,24 @@ class SpineDecisionResult:
     flagged_unresolved: bool
 
 
-def _apply_outer_normalizations(
-    *, groupings: list[GroupingDecision], spine: SpineConfig
-) -> tuple[list[GroupingDecision], list[SpineCorrection]]:
-    """Apply outer context normalizations (wrapper minimization, grade band dropping).
-
-    Parameters
-    ----------
-    groupings
-        The list of GroupingDecision to normalize.
-    spine
-        The SpineConfig defining the normalization policy.
-
-    Returns
-    -------
-    tuple[list[GroupingDecision], list[SpineCorrection]]
-        The normalized list of GroupingDecision and any corrections made.
-    """
-
-    corrections: list[SpineCorrection] = []
-    gs = list(groupings)
-    has_grade = any(g.role == NodeRole.GRADE_LEVEL for g in gs)
-
-    # Drop stage if grade present.
-    if spine.normalize.drop_stage_if_grade_present and has_grade:
-        before = len(gs)
-        gs = [g for g in gs if g.role != NodeRole.STAGE]
-        if len(gs) != before:
-            corrections.append(
-                SpineCorrection(
-                    kind="drop_stage",
-                    detail="Dropped STAGE because GRADE_LEVEL present.",
-                )
-            )
-
-    # Drop stage if wrapper patterns match.
-    if (
-        spine.normalize.drop_stage_if_matches_wrapper_patterns
-        and spine.normalize.stage_wrapper_title_patterns
-    ):
-        pats = [
-            re.compile(p, re.IGNORECASE)
-            for p in spine.normalize.stage_wrapper_title_patterns
-        ]
-        new_gs: list[GroupingDecision] = []
-
-        for g in gs:
-            if g.role == NodeRole.STAGE and any(p.search(g.title) for p in pats):
-                corrections.append(
-                    SpineCorrection(
-                        kind="drop_stage_wrapper",
-                        detail=f"Dropped STAGE wrapper '{g.title}'",
-                    )
-                )
-                continue
-
-            new_gs.append(g)
-
-        gs = new_gs
-
-    # Drop grade bands.
-    if spine.normalize.drop_grade_bands and spine.normalize.grade_band_title_patterns:
-        pats = [
-            re.compile(p, re.IGNORECASE)
-            for p in spine.normalize.grade_band_title_patterns
-        ]
-        new_gs = []
-
-        for g in gs:
-            if g.role == NodeRole.GRADE_LEVEL and any(p.search(g.title) for p in pats):
-                corrections.append(
-                    SpineCorrection(
-                        kind="drop_grade_band", detail=f"Dropped grade band '{g.title}'"
-                    )
-                )
-                continue
-
-            new_gs.append(g)
-
-        gs = new_gs
-
-    return gs, corrections
-
-
 def _apply_spine_to_single_decision(
     *,
     canonical_outer_context: list[GroupingDecision] | None,
     caption_bindings: dict[str, CaptionBinding],
     decision: SegmentDecision,
-    spine: SpineConfig,
+    spine_policy: SpineConfig,
 ) -> SpineDecisionResult:
     """Apply spine correction policy to a single SegmentDecision.
 
     The process is as follows:
 
     1. Inject outer context from caption (if applicable).
-    2. Normalize/split/filter/reorder outer context.
-    3. Table-only relocation of local-only roles.
-    4. Correct local groupings (block-local or row-local).
-    5. Chunk consistency check (for tables with canonical_outer_context).
+    2. Filter outer context by role policy.
+    3. Relocate table-local-only roles from context to rows.
+    4. Filter local groupings (block-local or row-local) by role policy.
+    5. Cross-chunk consistency check (for tables with canonical_outer_context).
     6. Hard-shape enforcement (no outputs for ignore/unresolved; flagged_unresolved
-        must emit something).
+       must emit something).
 
     Parameters
     ----------
@@ -151,7 +78,7 @@ def _apply_spine_to_single_decision(
         Caption bindings for the decision.
     decision
         The SegmentDecision to correct.
-    spine
+    spine_policy
         The SpineConfig defining the correction policy.
 
     Returns
@@ -166,24 +93,26 @@ def _apply_spine_to_single_decision(
     corrections: list[SpineCorrection] = []
 
     # 1.
-    d, c = _inject_caption_context(caption_bindings=caption_bindings, d=d, spine=spine)
+    d, c = _inject_caption_context(
+        caption_bindings=caption_bindings, d=d, spine_policy=spine_policy
+    )
     corrections.extend(c)
 
     # 2.
-    d, c = _correct_outer_context(d=d, spine=spine)
+    d, c = _correct_outer_context(d=d, spine_policy=spine_policy)
     corrections.extend(c)
 
     # 3.
-    d, c = _relocate_local_roles(d=d, spine=spine)
+    d, c = _relocate_local_roles(d=d, spine_policy=spine_policy)
     corrections.extend(c)
 
     # 4.
-    d, c = _correct_local_structure(d=d, spine=spine)
+    d, c = _correct_local_structure(d=d, spine_policy=spine_policy)
     corrections.extend(c)
 
     # 5.
     c = _check_canonical_consistency(
-        d=d, canonical_ctx=canonical_outer_context, spine=spine
+        d=d, canonical_ctx=canonical_outer_context, spine_policy=spine_policy
     )
     corrections.extend(c)
 
@@ -192,8 +121,8 @@ def _apply_spine_to_single_decision(
         if d.context_groupings or d.groupings or d.leaves or d.rows:
             corrections.append(
                 SpineCorrection(
-                    kind="clear_noop",
                     detail=f"Cleared context/outputs for decision_type={d.decision_type.value}.",
+                    kind="clear_noop",
                 )
             )
 
@@ -204,14 +133,15 @@ def _apply_spine_to_single_decision(
 
     if d.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
         has_any_output = bool(d.context_groupings or d.groupings or d.leaves or d.rows)
+
         if not has_any_output:
             corrections.append(
                 SpineCorrection(
-                    kind="demote_flagged_unresolved_empty",
                     detail=(
                         "Demoted to UNRESOLVED because flagged_unresolved emitted nothing "
                         "(context_groupings/groupings/leaves/rows all empty)."
                     ),
+                    kind="demote_flagged_unresolved_empty",
                 )
             )
             d.context_groupings = []
@@ -225,11 +155,10 @@ def _apply_spine_to_single_decision(
     except Exception as e:  # pylint: disable=broad-exception-caught
         corrections.append(
             SpineCorrection(
-                kind="revalidate_failed",
                 detail=f"Post-spine revalidation failed; demoted to UNRESOLVED. err={e!s}",
+                kind="revalidate_failed",
             )
         )
-
         d = d.model_copy(
             update={
                 "context_groupings": [],
@@ -240,9 +169,6 @@ def _apply_spine_to_single_decision(
             }
         )
 
-        # Derive flagged_unresolved from the final decision_type. This covers both
-        # LLM-originated EMIT_FLAGGED_UNRESOLVED and spine-originated flags, and
-        # correctly reflects any demotions (to UNRESOLVED) that occurred above.
     return SpineDecisionResult(
         corrected=d,
         corrections=corrections,
@@ -252,81 +178,13 @@ def _apply_spine_to_single_decision(
     )
 
 
-def _apply_split_rules_to_grouping(
-    *, apply_to: SpineSplitApplyTo, g: GroupingDecision, spine: SpineConfig
-) -> tuple[list[GroupingDecision], list[SpineCorrection]]:
-    """Apply first-matching split rule (deterministic order = config order).
-
-    Parameters
-    ----------
-    apply_to
-        Where these groupings are applied (for split rules).
-    g
-        The GroupingDecision to potentially split.
-    spine
-        The SpineConfig defining the split rules.
-
-    Returns
-    -------
-    tuple[list[GroupingDecision], list[SpineCorrection]]
-        The resulting list of GroupingDecision (possibly split) and any corrections
-        made.
-    """
-
-    corrections: list[SpineCorrection] = []
-
-    for rule in spine.split_rules:
-        if rule.apply_to not in (SpineSplitApplyTo.ANY, apply_to):
-            continue
-
-        m = rule._compiled_re.match(g.title)
-
-        if not m:
-            continue
-
-        outputs: list[GroupingDecision] = []
-
-        for tmpl in rule.emit:
-            title = m.expand(tmpl.title_template).strip()
-
-            if not title:
-                continue
-
-            outputs.append(
-                GroupingDecision(
-                    local_code=None,  # Do not inherit local_code on splits
-                    role=tmpl.role,
-                    source_label=(  # Preserve provenance label
-                        g.source_label
-                        if tmpl.inherit_source_label
-                        else (tmpl.source_label or g.source_label)
-                    ),
-                    title=title,
-                )
-            )
-
-        if outputs:
-            corrections.append(
-                SpineCorrection(
-                    kind="split",
-                    detail=f"Split '{g.title}' -> {[o.title for o in outputs]}",
-                )
-            )
-            return outputs, corrections
-
-        # If matched but emitted nothing, treat as no-op.
-        return [g], corrections
-
-    return [g], corrections
-
-
 def _check_canonical_consistency(
     *,
     d: SegmentDecision,
     canonical_ctx: list[GroupingDecision] | None,
-    spine: SpineConfig,
+    spine_policy: SpineConfig,
 ) -> list[SpineCorrection]:
-    """Check consistency with canonical outer context.
+    """Check consistency with canonical outer context (cross-chunk).
 
     Parameters
     ----------
@@ -334,7 +192,7 @@ def _check_canonical_consistency(
         The SegmentDecision to check.
     canonical_ctx
         The canonical outer context for the segment (if any).
-    spine
+    spine_policy
         The SpineConfig defining the correction policy.
 
     Returns
@@ -343,89 +201,284 @@ def _check_canonical_consistency(
         List containing any corrections made.
     """
 
-    corrections = []
+    corrections: list[SpineCorrection] = []
 
     if canonical_ctx is not None and d.segment_kind == "table":
         has_conflict, details = _outer_context_conflicts(
             canonical_ctx=canonical_ctx,
             candidate_ctx=list(d.context_groupings or []),
-            casefold_titles_for_matching=spine.normalize.casefold_titles_for_matching,
+            casefold_titles_for_matching=spine_policy.casefold_titles_for_matching,
             compare_roles=(
-                set(spine.outer_context_roles) if spine.outer_context_roles else None
+                set(spine_policy.outer_context_roles)
+                if spine_policy.outer_context_roles
+                else None
             ),
         )
 
         if has_conflict:
             for msg in details:
                 corrections.append(
-                    SpineCorrection(kind="chunk_context_conflict", detail=msg)
+                    SpineCorrection(detail=msg, kind="chunk_context_conflict")
                 )
 
-            if spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED:
+            if spine_policy.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED:
                 d.decision_type = SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
 
     return corrections
 
 
-def _correct_grouping_list(
-    *,
-    allow: list[NodeRole],
-    apply_to: SpineSplitApplyTo,
-    disallow: set[NodeRole],
-    groupings: list[GroupingDecision],
-    spine: SpineConfig,
-) -> tuple[list[GroupingDecision], list[SpineCorrection], bool]:
-    """Correct a list of GroupingDecision according to spine policy.
+def _correct_local_structure(
+    *, d: SegmentDecision, spine_policy: SpineConfig
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
+    """Filter block-local or table-row-local groupings by role policy.
 
     Parameters
     ----------
-    allow
-        Allow-list of roles.
-    apply_to
-        Where these groupings are applied (for split rules).
-    disallow
-        Disallow-list of roles.
-    groupings
-        The list of GroupingDecision to correct.
-    spine
+    d
+        The SegmentDecision to correct.
+    spine_policy
         The SpineConfig defining the correction policy.
 
     Returns
     -------
-    tuple[list[GroupingDecision], list[SpineCorrection], bool]
-        - The corrected list of GroupingDecision.
+    tuple[SegmentDecision, list[SpineCorrection]]
+        - The corrected SegmentDecision.
         - Any corrections made.
-        - True if the resulting list would be empty but allow_partial_context is False.
     """
 
     corrections: list[SpineCorrection] = []
-    needs_flag = False
-    output: list[GroupingDecision] = []
 
-    # Normalize titles.
-    for g in groupings:
-        g2 = g.model_copy(deep=True)
-
-        if spine.normalize.normalize_whitespace:
-            g2.title = " ".join(g2.title.split()).strip()
-
-        output.append(g2)
-
-    # Split fused groupings (first matching rule wins).
-    output2: list[GroupingDecision] = []
-
-    for g in output:
-        split_outs, split_corr = _apply_split_rules_to_grouping(
-            apply_to=apply_to, g=g, spine=spine
+    if d.segment_kind == "block":
+        d.groupings, c = _filter_roles(
+            allow=spine_policy.block_local_roles,
+            disallow=set(spine_policy.disallowed_block_local_roles),
+            groupings=list(d.groupings or []),
         )
-        output2.extend(split_outs)
-        corrections.extend(split_corr)
+        corrections.extend(c)
+    elif d.segment_kind == "table" and d.rows:
+        new_rows: list[RowDecision] = []
 
-    # Allow/disallow list.
+        for row in d.rows:
+            row2 = row.model_copy(deep=True)
+            row2.groupings, c = _filter_roles(
+                allow=spine_policy.row_roles,
+                disallow=set(spine_policy.disallowed_row_roles),
+                groupings=list(row2.groupings or []),
+            )
+            corrections.extend(c)
+
+            # If spine removed all row-local structure and the row has no leaves, drop
+            # it.
+            if not row2.groupings and not row2.leaves:
+                corrections.append(
+                    SpineCorrection(
+                        detail=(
+                            f"Dropped RowDecision row_index={row2.row_index} "
+                            f"(no groupings/leaves after role filtering)."
+                        ),
+                        kind="drop_empty_row",
+                    )
+                )
+                continue
+
+            new_rows.append(row2)
+
+        d.rows = new_rows
+
+    return d, corrections
+
+
+def _correct_outer_context(
+    *, d: SegmentDecision, spine_policy: SpineConfig
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
+    """Filter outer context by role policy.
+
+    Parameters
+    ----------
+    d
+        The SegmentDecision to correct.
+    spine_policy
+        The SpineConfig defining the correction policy.
+
+    Returns
+    -------
+    tuple[SegmentDecision, list[SpineCorrection]]
+        - The corrected SegmentDecision.
+        - Any corrections made.
+    """
+
+    corrections: list[SpineCorrection] = []
+
+    # Build the effective allow-list: include table-local-only roles long enough to
+    # relocate them in the next step.
+    outer_allow = list(spine_policy.outer_context_roles or [])
+
+    if (
+        d.segment_kind == "table"
+        and spine_policy.relocate_table_local_only_roles_to_rows
+    ):
+        outer_allow = list(
+            dict.fromkeys(outer_allow + list(spine_policy.table_local_only_roles or []))
+        )
+
+    original_groupings = list(d.context_groupings or [])
+
+    # Filter by role policy.
+    d.context_groupings, c = _filter_roles(
+        allow=outer_allow,
+        disallow=set(spine_policy.disallowed_outer_roles),
+        groupings=original_groupings,
+    )
+    corrections.extend(c)
+
+    # Check if outer context became empty after filtering (partial context check).
+    if (
+        not d.context_groupings
+        and original_groupings
+        and not spine_policy.allow_partial_context
+        and d.decision_type
+        not in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED)
+        and spine_policy.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED
+    ):
+        corrections.append(
+            SpineCorrection(
+                detail="Outer context became empty after role filtering.",
+                kind="outer_context_would_be_empty",
+            )
+        )
+        d.decision_type = SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
+
+    return d, corrections
+
+
+def _derive_groupings_from_caption(
+    *, caption_text: str, spine_policy: SpineConfig
+) -> tuple[list[GroupingDecision], list[SpineCorrection]]:
+    """Extract groupings from caption text using `spine.caption_context_patterns`.
+
+    Each pattern is searched (not full-match) against the caption text. The first match
+    per role wins.
+
+    Parameters
+    ----------
+    caption_text
+        The caption text to extract groupings from.
+    spine_policy
+        The SpineConfig containing ``caption_context_patterns``.
+
+    Returns
+    -------
+    tuple[list[GroupingDecision], list[SpineCorrection]]
+        - The derived list of GroupingDecision.
+        - Any corrections made.
+    """
+
+    corrections: list[SpineCorrection] = []
+    derived: list[GroupingDecision] = []
+    seen_roles: set[NodeRole] = set()
+
+    for pattern in spine_policy.caption_context_patterns:
+        # One grouping per role (first-match wins).
+        if pattern.role in seen_roles:
+            continue
+
+        m = pattern._compiled_re.search(caption_text)
+
+        if not m:
+            continue
+
+        title = m.expand(pattern.title_template).strip()
+
+        if not title:
+            continue
+
+        seen_roles.add(pattern.role)
+        derived.append(
+            GroupingDecision(
+                local_code=None,
+                role=pattern.role,
+                source_label="caption_binding",
+                title=title,
+            )
+        )
+
+    if derived:
+        corrections.append(
+            SpineCorrection(
+                detail=(
+                    f"Derived {len(derived)} grouping(s) from caption: "
+                    f"{[f'{g.role.value}={g.title!r}' for g in derived]}"
+                ),
+                kind="caption_derive",
+            )
+        )
+
+    return derived, corrections
+
+
+def _filter_derived_roles(
+    *,
+    decision: SegmentDecision,
+    derived: list[GroupingDecision],
+    spine_policy: SpineConfig,
+) -> list[GroupingDecision]:
+    """Filter the derived groupings based on allowed outer context roles.
+
+    Parameters
+    ----------
+    decision
+        The SegmentDecision being processed.
+    derived
+        The list of derived GroupingDecision.
+    spine_policy
+        The SpineConfig defining the filtering policy.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The filtered list of GroupingDecision.
+    """
+
+    allowed_outer = set(spine_policy.outer_context_roles or [])
+
+    if (
+        decision.segment_kind == "table"
+        and spine_policy.relocate_table_local_only_roles_to_rows
+    ):
+        allowed_outer |= set(spine_policy.table_local_only_roles or [])
+
+    if allowed_outer:
+        return [g for g in derived if g.role in allowed_outer]
+
+    return derived
+
+
+def _filter_roles(
+    *, allow: list[NodeRole], disallow: set[NodeRole], groupings: list[GroupingDecision]
+) -> tuple[list[GroupingDecision], list[SpineCorrection]]:
+    """Filter a grouping list by role allow/disallow policy.
+
+    Parameters
+    ----------
+    allow
+        Allow-list of roles. If non-empty, only these roles are kept.
+    disallow
+        Disallow-list of roles. These roles are always dropped.
+    groupings
+        The list of GroupingDecision to filter.
+
+    Returns
+    -------
+    tuple[list[GroupingDecision], list[SpineCorrection]]
+        - The filtered list of GroupingDecision.
+        - Any corrections made.
+    """
+
+    corrections: list[SpineCorrection] = []
     allowed_set = set(allow)
     filtered: list[GroupingDecision] = []
 
-    for g in output2:
+    for g in groupings:
         if g.role in disallow:
             corrections.append(
                 SpineCorrection(
@@ -446,499 +499,13 @@ def _correct_grouping_list(
 
         filtered.append(g)
 
-    # Dedupe deterministically (merge metadata into keep-first). Outer context:
-    # singleton per role always. Block/row local: singleton per role except SECTION can
-    # repeat.
-    enforce_singleton = True
-
-    # Determine which roles must be singletons.
-    singleton_roles = _get_singleton_roles(apply_to=apply_to, spine=spine)
-
-    if (
-        apply_to == SpineSplitApplyTo.OUTER_CONTEXT
-        and not filtered
-        and groupings
-        and not spine.allow_partial_context
-    ):
-        needs_flag = True
-        corrections.append(
-            SpineCorrection(
-                kind="outer_context_would_be_empty",
-                detail="Outer context became empty after filtering...",
-            )
-        )
-
-    deduped, notes = _dedupe_groupings(
-        casefold_titles_for_matching=spine.normalize.casefold_titles_for_matching,
-        enforce_singleton_per_role=enforce_singleton,
-        groupings=filtered,
-        singleton_roles=singleton_roles,
-    )
-
-    for n in notes:
-        corrections.append(SpineCorrection(kind="dedupe", detail=n))
-
-    # Reorder by role order (stable by original order as secondary).
-    role_rank = {r: i for i, r in enumerate(spine.normalize.role_order)}
-    final = [
-        g
-        for _, g in sorted(
-            enumerate(deduped),
-            key=lambda t: (role_rank.get(t[1].role, 10**9), t[0]),
-        )
-    ]
-
-    return final, corrections, needs_flag
-
-
-def _correct_local_structure(
-    *, d: SegmentDecision, spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection]]:
-    """Correct block-local or table-row-local groupings.
-
-    Parameters
-    ----------
-    d
-        The SegmentDecision to correct.
-    spine
-        The SpineConfig defining the correction policy.
-
-    Returns
-    -------
-    tuple[SegmentDecision, list[SpineCorrection]]
-        - The corrected SegmentDecision.
-        - Any corrections made.
-    """
-
-    corrections = []
-
-    if d.segment_kind == "block":
-        d.groupings, c, _ = _correct_grouping_list(
-            allow=spine.block_local_roles,
-            apply_to=SpineSplitApplyTo.BLOCK_LOCAL,
-            disallow=set(spine.disallowed_block_local_roles),
-            groupings=list(d.groupings or []),
-            spine=spine,
-        )
-        corrections.extend(c)
-
-    elif d.segment_kind == "table" and d.rows:
-        new_rows: list[RowDecision] = []
-
-        for row in d.rows:
-            row2 = row.model_copy(deep=True)
-
-            # Correct the row's internal groupings. NB: needs_flag is always False for
-            # TABLE_ROW_LOCAL (only set for OUTER_CONTEXT).
-            row2.groupings, c, _ = _correct_grouping_list(
-                allow=spine.row_roles,
-                apply_to=SpineSplitApplyTo.TABLE_ROW_LOCAL,
-                disallow=set(spine.disallowed_row_roles),
-                groupings=list(row2.groupings or []),
-                spine=spine,
-            )
-            corrections.extend(c)
-
-            # If spine removed all row-local structure and the row has no leaves, drop
-            # it.
-            if not row2.groupings and not row2.leaves:
-                corrections.append(
-                    SpineCorrection(
-                        detail=f"Dropped RowDecision row_index={row2.row_index} (no groupings/leaves after spine correction).",
-                        kind="drop_empty_row",
-                    )
-                )
-                continue
-
-            new_rows.append(row2)
-
-        d.rows = new_rows
-
-    return d, corrections
-
-
-def _correct_outer_context(
-    *, d: SegmentDecision, spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection]]:
-    """Filter, normalize, and split outer context.
-
-    Parameters
-    ----------
-    d
-        The SegmentDecision to correct.
-    spine
-        The SpineConfig defining the correction policy.
-
-    Returns
-    -------
-    tuple[SegmentDecision, list[SpineCorrection]]
-        - The corrected SegmentDecision.
-        - Any corrections made.
-    """
-
-    corrections = []
-
-    # Keep table-local-only roles long enough to relocate them deterministically.
-    outer_allow = list(spine.outer_context_roles or [])
-
-    if d.segment_kind == "table" and spine.relocate_table_local_only_roles_to_rows:
-        outer_allow = list(
-            dict.fromkeys(outer_allow + list(spine.table_local_only_roles or []))
-        )
-
-    # Correct grouping list.
-    d.context_groupings, c, needs_flag = _correct_grouping_list(
-        allow=outer_allow,
-        apply_to=SpineSplitApplyTo.OUTER_CONTEXT,
-        disallow=set(spine.disallowed_outer_roles),
-        groupings=list(d.context_groupings or []),
-        spine=spine,
-    )
-    corrections.extend(c)
-
-    # Check violation policy.
-    if (
-        needs_flag
-        and d.decision_type
-        not in (
-            SegmentDecisionType.IGNORE,
-            SegmentDecisionType.UNRESOLVED,
-        )
-        and spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED
-    ):
-        d.decision_type = SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
-
-    # Apply outer normalizations.
-    d.context_groupings, c = _apply_outer_normalizations(
-        groupings=list(d.context_groupings or []), spine=spine
-    )
-    corrections.extend(c)
-
-    return d, corrections
-
-
-def _dedupe_groupings(
-    *,
-    casefold_titles_for_matching: bool,
-    enforce_singleton_per_role: bool,
-    groupings: list[GroupingDecision],
-    singleton_roles: set[NodeRole] | None = None,
-) -> tuple[list[GroupingDecision], list[str]]:
-    """Deterministic dedupe that matches GroupingDecision schema constraints.
-
-    Two passes:
-
-    1. Exact dedupe by (role, normalized_title).
-    2. Optionally enforce singleton per role (keep-first), merging metadata.
-
-    NB: For outer context you almost always want 1 per role; for row-local you might
-    not.
-
-    Parameters
-    ----------
-    groupings
-        List of GroupingDecision to dedupe.
-    casefold_titles_for_matching
-        If True, casefold titles when normalizing for matching.
-    enforce_singleton_per_role
-        If True, enforce singleton per role in second pass.
-    singleton_roles
-        If provided, only enforce singleton for these roles in second pass.
-
-    Returns
-    -------
-    tuple[list[GroupingDecision], list[str]]
-      - Deduped list in stable encounter order
-      - Notes describing merges/drops/conflicts
-    """
-
-    notes: list[str] = []
-
-    if not groupings:
-        return [], notes
-
-    # Deep copy so we never mutate caller models.
-    gs = [g.model_copy(deep=True) for g in groupings]
-
-    # Pass 1: exact duplicates (role and normalized title).
-    idx_by_key: dict[tuple[NodeRole, str], int] = {}
-    kept: list[GroupingDecision] = []
-
-    for g in gs:
-        k = (g.role, _norm_title(casefold=casefold_titles_for_matching, title=g.title))
-
-        if k not in idx_by_key:
-            idx_by_key[k] = len(kept)
-            kept.append(g)
-            continue
-
-        i = idx_by_key[k]
-        merged, merge_notes = _merge_grouping_metadata_keep_first(
-            incoming=g, keep=kept[i]
-        )
-        kept[i] = merged
-        notes.extend(merge_notes)
-        notes.append(f"dedupe_exact: dropped duplicate {g.role.value} '{g.title}'")
-
-    # Pass 2: enforce singleton per role (optional).
-    if not enforce_singleton_per_role:
-        return kept, notes
-
-    roles_to_singleton = (
-        singleton_roles if singleton_roles is not None else set(NodeRole)
-    )
-
-    final: list[GroupingDecision] = []
-    idx_by_role: dict[NodeRole, int] = {}
-
-    for g in kept:
-        if g.role not in roles_to_singleton:
-            final.append(g)
-            continue
-
-        if g.role not in idx_by_role:
-            idx_by_role[g.role] = len(final)
-            final.append(g)
-            continue
-
-        i = idx_by_role[g.role]
-        merged, merge_notes = _merge_grouping_metadata_keep_first(
-            incoming=g, keep=final[i]
-        )
-        final[i] = merged
-        notes.extend(merge_notes)
-        notes.append(
-            f"dedupe_role: dropped extra {g.role.value} '{g.title}' (kept '{final[i].title}')"
-        )
-
-    return final, notes
-
-
-def _derive_groupings_from_caption(
-    *, caption_text: str, spine: SpineConfig
-) -> tuple[list[GroupingDecision], list[SpineCorrection]]:
-    """Apply split rules and ensure source labels exist.
-
-    Parameters
-    ----------
-    caption_text
-        The caption text to extract groupings from.
-    spine
-        The SpineConfig defining the split rules.
-
-    Returns
-    -------
-    tuple[list[GroupingDecision], list[SpineCorrection]]
-        - The derived list of GroupingDecision.
-        - Any corrections made.
-    """
-
-    # Build a synthetic grouping so split_rules can operate deterministically. Use
-    # PROSE so the raw caption never "sticks" as a hierarchy node.
-    cap_g = GroupingDecision.model_construct(
-        local_code=None,
-        role=NodeRole.PROSE,
-        source_label="caption_binding",
-        title=caption_text,
-    )
-
-    # Apply split rules.
-    split_outs, split_corr = _apply_split_rules_to_grouping(
-        apply_to=SpineSplitApplyTo.OUTER_CONTEXT, g=cap_g, spine=spine
-    )
-
-    # Filter PROSE and ensure source_label.
-    derived = []
-    for g in split_outs:
-        # Keep only non-PROSE outputs (we don't want the caption node itself).
-        if g.role == NodeRole.PROSE:
-            continue
-
-        # Ensure provenance label survives.
-        if g.source_label is None:
-            g = g.model_copy(update={"source_label": cap_g.source_label})
-        derived.append(g)
-
-    return derived, split_corr
-
-
-def _detect_caption_conflicts(
-    *,
-    derived: list[GroupingDecision],
-    existing_map: dict[NodeRole, str],
-    raw_caption: str,
-    spine: SpineConfig,
-) -> list[str]:
-    """Compare derived candidates against the effective existing map. If any conflicts
-    exist, do NOT inject.
-
-    Parameters
-    ----------
-    derived
-        The list of derived GroupingDecision.
-    existing_map
-        The map of existing effective anchors by role to normalized title.
-    raw_caption
-        The raw caption text for logging.
-    spine
-        The SpineConfig defining the normalization policy.
-
-    Returns
-    -------
-    list[str]
-        The list of conflict messages detected.
-    """
-
-    casefold = spine.normalize.casefold_titles_for_matching
-    msgs = []
-
-    for cg in derived:
-        if cg.role not in existing_map:
-            continue
-
-        existing_norm = existing_map[cg.role]
-        derived_norm = _norm_title(casefold=casefold, title=cg.title)
-
-        if existing_norm != derived_norm:
-            msgs.append(
-                f"caption_context_conflict: role={cg.role.value} "
-                f"existing='{existing_norm}' caption='{derived_norm}' (raw_caption='{raw_caption}')"
-            )
-
-    return msgs
-
-
-def _filter_derived_roles(
-    *, decision: SegmentDecision, derived: list[GroupingDecision], spine: SpineConfig
-) -> list[GroupingDecision]:
-    """Filter the derived groupings based on allowed outer context roles.
-
-    Parameters
-    ----------
-    decision
-        The SegmentDecision being processed.
-    derived
-        The list of derived GroupingDecision.
-    spine
-        The SpineConfig defining the filtering policy.
-
-    Returns
-    -------
-    list[GroupingDecision]
-        The filtered list of GroupingDecision.
-    """
-
-    allowed_outer = set(spine.outer_context_roles or [])
-
-    if (
-        decision.segment_kind == "table"
-        and spine.relocate_table_local_only_roles_to_rows
-    ):
-        allowed_outer |= set(spine.table_local_only_roles or [])
-
-    if allowed_outer:
-        return [g for g in derived if g.role in allowed_outer]
-
-    return derived
-
-
-def _get_effective_existing_anchors(
-    *,
-    existing_all: list[GroupingDecision],
-    grade_present_after: bool,
-    spine: SpineConfig,
-) -> dict[NodeRole, str]:
-    """Return a map of {Role: NormalizedTitle} for existing anchors that are considered
-    'non-droppable' (effective).
-
-    Parameters
-    ----------
-    existing_all
-        The list of existing GroupingDecision.
-    grade_present_after
-        True if a GRADE_LEVEL grouping is present either in existing or derived
-        groupings.
-    spine
-        The SpineConfig defining the normalization policy.
-
-    Returns
-    -------
-    dict[NodeRole, str]
-        Map of effective existing anchors by role to normalized title.
-    """
-
-    casefold = spine.normalize.casefold_titles_for_matching
-
-    stage_pats = []
-    if (
-        spine.normalize.drop_stage_if_matches_wrapper_patterns
-        and spine.normalize.stage_wrapper_title_patterns
-    ):
-        stage_pats = [
-            re.compile(p, re.IGNORECASE)
-            for p in spine.normalize.stage_wrapper_title_patterns
-        ]
-
-    grade_band_pats = []
-    if spine.normalize.drop_grade_bands and spine.normalize.grade_band_title_patterns:
-        grade_band_pats = [
-            re.compile(p, re.IGNORECASE)
-            for p in spine.normalize.grade_band_title_patterns
-        ]
-
-    effective_map = {}
-
-    for g in existing_all:
-        if _is_droppable_existing(
-            g=g,
-            grade_band_pats=grade_band_pats,
-            grade_present_after=grade_present_after,
-            spine=spine,
-            stage_pats=stage_pats,
-        ):
-            continue
-
-        if g.role not in effective_map:
-            effective_map[g.role] = _norm_title(casefold=casefold, title=g.title)
-
-    return effective_map
-
-
-def _get_singleton_roles(
-    apply_to: SpineSplitApplyTo, spine: SpineConfig
-) -> set[NodeRole]:
-    """Determine which roles must be singletons.
-
-    Parameters
-    ----------
-    apply_to
-        Where these groupings are applied (for split rules).
-    spine
-        The SpineConfig defining the correction policy.
-
-    Returns
-    -------
-    set[NodeRole]
-        The set of roles that must be singletons.
-    """
-
-    if apply_to == SpineSplitApplyTo.OUTER_CONTEXT:
-        return set(NodeRole)
-
-    if apply_to == SpineSplitApplyTo.TABLE_ROW_LOCAL:
-        base = set(spine.row_roles) if spine.row_roles else set(NodeRole)
-    else:  # block_local
-        base = (
-            set(spine.block_local_roles) if spine.block_local_roles else set(NodeRole)
-        )
-
-    return base - {NodeRole.SECTION}
+    return filtered, corrections
 
 
 def _handle_caption_conflicts(
-    *, decision: SegmentDecision, msgs: list[str], spine: SpineConfig
+    *, decision: SegmentDecision, msgs: list[str], spine_policy: SpineConfig
 ) -> tuple[SegmentDecision, list[SpineCorrection]]:
-    """Generate corrections and flags the decision if necessary.
+    """Generate corrections and flag the decision if necessary.
 
     Parameters
     ----------
@@ -946,13 +513,13 @@ def _handle_caption_conflicts(
         The SegmentDecision to handle.
     msgs
         The list of conflict messages detected.
-    spine
+    spine_policy
         The SpineConfig defining the violation policy.
 
     Returns
     -------
     tuple[SegmentDecision, list[SpineCorrection]]
-        - The corrected SegmentDecision.
+        - The (possibly flagged) SegmentDecision.
         - Any corrections made.
     """
 
@@ -961,7 +528,7 @@ def _handle_caption_conflicts(
     ]
 
     if (
-        spine.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED
+        spine_policy.violation_policy == SpineViolationPolicy.FLAG_UNRESOLVED
         and decision.decision_type
         not in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED)
     ):
@@ -974,7 +541,7 @@ def _inject_caption_context(
     *,
     caption_bindings: dict[str, CaptionBinding],
     d: SegmentDecision,
-    spine: SpineConfig,
+    spine_policy: SpineConfig,
 ) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Inject outer context from caption if applicable.
 
@@ -984,7 +551,7 @@ def _inject_caption_context(
         Caption bindings for the decision.
     d
         The SegmentDecision to inject into.
-    spine
+    spine_policy
         The SpineConfig defining the injection policy.
 
     Returns
@@ -1001,26 +568,26 @@ def _inject_caption_context(
 
     if caption_binding and caption_binding.caption_text:
         return _inject_outer_context_from_caption(
-            caption_text=caption_binding.caption_text, decision=d, spine=spine
+            caption_text=caption_binding.caption_text,
+            decision=d,
+            spine_policy=spine_policy,
         )
 
     return d, []
 
 
 def _inject_outer_context_from_caption(
-    *, caption_text: str, decision: SegmentDecision, spine: SpineConfig
+    *, caption_text: str, decision: SegmentDecision, spine_policy: SpineConfig
 ) -> tuple[SegmentDecision, list[SpineCorrection]]:
     """Use caption text as deterministic evidence to *inject missing* outer-context
-    anchors into decision.context_groupings.
+    anchors into `decision.context_groupings`.
 
-    NB:
+    Rules:
 
-    1. Only use config-driven split_rules to derive groupings from caption text.
-    2. Never overwrite an existing non-droppable anchor role with a different title.
-    3. If a real conflict exists, flag unresolved (per spine.violation_policy) and do
-        NOT inject.
-    4. Ignore existing wrapper-ish STAGE and grade-band GRADE_LEVEL when checking
-        conflicts, because those will be dropped by _apply_outer_normalizations anyway.
+    1. Use `caption_context_patterns` to derive groupings from caption text.
+    2. Never overwrite an existing anchor role with a different title.
+    3. If a real conflict exists, flag unresolved (per `spine.violation_policy`) and do
+       NOT inject.
 
     Parameters
     ----------
@@ -1028,7 +595,7 @@ def _inject_outer_context_from_caption(
         The caption text to extract context from.
     decision
         The SegmentDecision to inject into.
-    spine
+    spine_policy
         The SpineConfig defining the injection policy.
 
     Returns
@@ -1044,252 +611,57 @@ def _inject_outer_context_from_caption(
     if not caption_text:
         return decision, corrections
 
-    # Normalize caption whitespace in the same way as grouping normalization.
-    if spine.normalize.normalize_whitespace:
-        caption_text = " ".join(caption_text.split()).strip()
-
-    # Derive groupings and apply split rules.
-    derived, split_corr = _derive_groupings_from_caption(
-        caption_text=caption_text, spine=spine
+    # Derive groupings from caption patterns.
+    derived, derive_corr = _derive_groupings_from_caption(
+        caption_text=caption_text, spine_policy=spine_policy
     )
-    corrections.extend(split_corr)
+    corrections.extend(derive_corr)
 
     if not derived:
         return decision, corrections
 
-    # Filter roles.
-    derived = _filter_derived_roles(decision=decision, derived=derived, spine=spine)
+    # Filter by allowed outer roles.
+    derived = _filter_derived_roles(
+        decision=decision, derived=derived, spine_policy=spine_policy
+    )
 
     if not derived:
         return decision, corrections
 
-    # Analyze existing context (identify conflicts vs. merges).
-    existing_all = list(decision.context_groupings or [])
+    # Build existing context map for conflict detection.
+    casefold = spine_policy.casefold_titles_for_matching
+    existing = list(decision.context_groupings or [])
+    existing_by_role = {
+        g.role: _norm_title(casefold=casefold, title=g.title)
+        for g in reversed(existing)
+    }
 
-    # Pre-normalize existing context through the same split rules used on the caption
-    # so that conflict comparison uses canonical forms. Without this, an LLM-emitted
-    # "DEUXIEME ETAPE" would false-conflict with a caption-derived "ÉTAPE 2" even
-    # though they are the same stage in different surface forms.
-    existing_for_comparison: list[GroupingDecision] = []
+    # Detect conflicts (same role, different normalized title).
+    conflict_msgs: list[str] = []
 
-    for g in existing_all:
-        split_outs, _ = _apply_split_rules_to_grouping(
-            apply_to=SpineSplitApplyTo.OUTER_CONTEXT, g=g, spine=spine
-        )
-        existing_for_comparison.extend(split_outs)
+    for cg in derived:
+        if cg.role not in existing_by_role:
+            continue
 
-    # Determine if Grade Level exists in current OR derived to determine whether or not
-    # to drop.
-    grade_present_after = any(
-        g.role == NodeRole.GRADE_LEVEL for g in existing_for_comparison
-    ) or any(g.role == NodeRole.GRADE_LEVEL for g in derived)
+        derived_norm = _norm_title(casefold=casefold, title=cg.title)
 
-    existing_effective_map = _get_effective_existing_anchors(
-        existing_all=existing_for_comparison,
-        grade_present_after=grade_present_after,
-        spine=spine,
-    )
-
-    # Check conflicts.
-    conflict_msgs = _detect_caption_conflicts(
-        derived=derived,
-        existing_map=existing_effective_map,
-        raw_caption=caption_text,
-        spine=spine,
-    )
+        if existing_by_role[cg.role] != derived_norm:
+            conflict_msgs.append(
+                f"caption_context_conflict: role={cg.role.value} "
+                f"existing='{existing_by_role[cg.role]}' caption='{derived_norm}' "
+                f"(raw_caption='{caption_text}')"
+            )
 
     if conflict_msgs:
         return _handle_caption_conflicts(
-            decision=decision, msgs=conflict_msgs, spine=spine
+            decision=decision, msgs=conflict_msgs, spine_policy=spine_policy
         )
 
-    # Merge provenances and inject new items.
-    new_context, merge_corrections = _merge_and_inject(
-        derived=derived,
-        existing_all=existing_all,
-        existing_map=existing_effective_map,
-        grade_present_after=grade_present_after,
-        spine=spine,
-    )
-
-    decision.context_groupings = new_context
-    corrections.extend(merge_corrections)
-
-    return decision, corrections
-
-
-def _is_droppable_existing(
-    *,
-    g: GroupingDecision,
-    grade_band_pats: list[re.Pattern],
-    grade_present_after: bool,
-    spine: SpineConfig,
-    stage_pats: list[re.Pattern],
-) -> bool:
-    """Determine if an anchor is weak/droppable.
-
-    Parameters
-    ----------
-    g
-        The GroupingDecision to check.
-    grade_band_pats
-        Compiled patterns for grade band titles.
-    grade_present_after
-        True if a GRADE_LEVEL grouping is present either in existing or derived
-        groupings.
-    spine
-        The SpineConfig defining the normalization policy.
-    stage_pats
-        Compiled patterns for stage wrapper titles.
-
-    Returns
-    -------
-    bool
-        True if the anchor is droppable.
-    """
-
-    if g.role in {NodeRole.PROSE}:
-        return True
-
-    if g.role == NodeRole.STAGE:
-        if spine.normalize.drop_stage_if_grade_present and grade_present_after:
-            return True
-        if stage_pats and any(p.search(g.title or "") for p in stage_pats):
-            return True
-
-    if (
-        g.role == NodeRole.GRADE_LEVEL
-        and grade_band_pats
-        and any(p.search(g.title or "") for p in grade_band_pats)
-    ):
-        return True
-
-    return False
-
-
-def _is_grade_level_present(
-    *, derived: list[GroupingDecision], existing: list[GroupingDecision]
-) -> bool:
-    """Determine if a GRADE_LEVEL grouping is present in either existing or derived.
-
-    Parameters
-    ----------
-    derived
-        The list of derived GroupingDecision.
-    existing
-        The list of existing GroupingDecision.
-
-    Returns
-    -------
-    bool
-        True if a GRADE_LEVEL grouping is present in either list.
-    """
-
-    return any(g.role == NodeRole.GRADE_LEVEL for g in existing) or any(
-        g.role == NodeRole.GRADE_LEVEL for g in derived
-    )
-
-
-def _merge_and_inject(
-    *,
-    derived: list[GroupingDecision],
-    existing_all: list[GroupingDecision],
-    existing_map: dict[NodeRole, str],
-    grade_present_after: bool,
-    spine: SpineConfig,
-) -> tuple[list[GroupingDecision], list[SpineCorrection]]:
-    """Merge provenance for existing matches or inject new items.
-
-    Parameters
-    ----------
-    derived
-        The list of derived GroupingDecision.
-    existing_all
-        The list of existing GroupingDecision.
-    existing_map
-        The map of existing effective anchors by role to normalized title.
-    grade_present_after
-        True if a GRADE_LEVEL grouping is present in either the existing or derived
-        groupings (used for droppable detection during injection).
-    spine
-        The SpineConfig defining the normalization policy.
-
-    Returns
-    -------
-    tuple[list[GroupingDecision], list[SpineCorrection]]
-        - The merged list of GroupingDecision.
-        - Any corrections made.
-    """
-
-    # No conflicts: inject only missing roles and optionally merge provenance.
+    # Inject only missing roles (no conflict case).
     additions: list[GroupingDecision] = []
-    casefold = spine.normalize.casefold_titles_for_matching
-    corrections: list[SpineCorrection] = []
-
-    # Start with the existing context; we will rebuild this list if updates occur.
-    current_context = list(existing_all)
-
-    # If we are injecting a role that currently exists only as a droppable wrapper
-    # (e.g., wrapper-ish STAGE or a grade-band GRADE_LEVEL), drop the droppable
-    # instance so the injected anchor becomes the first/kept singleton for that role.
-    roles_to_inject = {cg.role for cg in derived if cg.role not in existing_map}
-
-    if roles_to_inject:
-        stage_pats = (
-            [
-                re.compile(p, re.IGNORECASE)
-                for p in spine.normalize.stage_wrapper_title_patterns
-            ]
-            if (
-                spine.normalize.drop_stage_if_matches_wrapper_patterns
-                and spine.normalize.stage_wrapper_title_patterns
-            )
-            else []
-        )
-
-        grade_band_pats = (
-            [
-                re.compile(p, re.IGNORECASE)
-                for p in spine.normalize.grade_band_title_patterns
-            ]
-            if (
-                spine.normalize.drop_grade_bands
-                and spine.normalize.grade_band_title_patterns
-            )
-            else []
-        )
-        injected_title_by_role = {
-            cg.role: cg.title for cg in reversed(derived) if cg.role in roles_to_inject
-        }
-        pruned_context: list[GroupingDecision] = []
-
-        for eg in current_context:
-            if eg.role in roles_to_inject and _is_droppable_existing(
-                g=eg,
-                grade_band_pats=grade_band_pats,
-                grade_present_after=grade_present_after,
-                spine=spine,
-                stage_pats=stage_pats,
-            ):
-                target_title = injected_title_by_role.get(eg.role, "?")
-                corrections.append(
-                    SpineCorrection(
-                        detail=(
-                            f"Dropped droppable existing {eg.role.value}='{eg.title}' "
-                            f"so caption-injected {eg.role.value}='{target_title}' can take precedence."
-                        ),
-                        kind="caption_drop_droppable_existing",
-                    )
-                )
-                continue
-
-            pruned_context.append(eg)
-
-        current_context = pruned_context
 
     for cg in derived:
-        # If the role is not known in our 'effective' map, it's a new addition.
-        if cg.role not in existing_map:
+        if cg.role not in existing_by_role:
             additions.append(cg)
             corrections.append(
                 SpineCorrection(
@@ -1297,109 +669,14 @@ def _merge_and_inject(
                     kind="caption_inject",
                 )
             )
-            continue
 
-        # If we are here, the role exists. We know from the previous conflict check
-        # that the titles match (normalized). We try to merge provenance if missing.
-        candidate_norm = _norm_title(casefold=casefold, title=cg.title)
-        next_context_state = []
-        merged_in_this_pass = False
+    decision.context_groupings = existing + additions
 
-        for eg in current_context:
-            # We want to find the specific existing item that matches this role/title
-            # and needs a source_label.
-            if (
-                not merged_in_this_pass
-                and eg.role == cg.role
-                and eg.source_label is None
-                and cg.source_label
-                and _norm_title(casefold=casefold, title=eg.title) == candidate_norm
-            ):
-                # Update the item with the new source_label.
-                next_context_state.append(
-                    eg.model_copy(update={"source_label": cg.source_label})
-                )
-                corrections.append(
-                    SpineCorrection(
-                        detail=(
-                            f"Filled missing source_label for {cg.role.value} '{eg.title}' "
-                            f"from caption_binding."
-                        ),
-                        kind="caption_merge_provenance",
-                    )
-                )
-                merged_in_this_pass = True
-            else:
-                next_context_state.append(eg)
-
-        # Update the context state for the next iteration of 'derived'.
-        current_context = next_context_state
-
-    return current_context + additions, corrections
-
-
-def _merge_grouping_metadata_keep_first(
-    *, incoming: GroupingDecision, keep: GroupingDecision
-) -> tuple[GroupingDecision, list[str]]:
-    """Deterministically merge metadata into `keep` WITHOUT changing its role/title.
-    Rule: keep-first for conflicting values; only fill missing fields.
-
-    Parameters
-    ----------
-    incoming
-        The incoming GroupingDecision to merge from.
-    keep
-        The GroupingDecision to keep and merge into.
-
-    Returns
-    -------
-    tuple[GroupingDecision, list[str]]
-        - The merged GroupingDecision (based on `keep`).
-        - Notes describing any merges or conflicts observed.
-    """
-
-    notes: list[str] = []
-    updates: dict = {}
-
-    if keep.local_code is None and incoming.local_code:
-        updates["local_code"] = incoming.local_code
-        notes.append(
-            f"merged local_code='{incoming.local_code}' into kept {keep.role.value} '{keep.title}'"
-        )
-    elif (
-        keep.local_code
-        and incoming.local_code
-        and keep.local_code != incoming.local_code
-    ):
-        # Keep-first; record that we observed a conflict.
-        notes.append(
-            f"local_code conflict for {keep.role.value} '{keep.title}': "
-            f"kept='{keep.local_code}' dropped='{incoming.local_code}'"
-        )
-
-    if keep.source_label is None and incoming.source_label:
-        updates["source_label"] = incoming.source_label
-        notes.append(
-            f"merged source_label='{incoming.source_label}' into kept {keep.role.value} '{keep.title}'"
-        )
-    elif (
-        keep.source_label
-        and incoming.source_label
-        and keep.source_label != incoming.source_label
-    ):
-        notes.append(
-            f"source_label conflict for {keep.role.value} '{keep.title}': "
-            f"kept='{keep.source_label}' dropped='{incoming.source_label}'"
-        )
-
-    if updates:
-        keep = keep.model_copy(update=updates)
-
-    return keep, notes
+    return decision, corrections
 
 
 def _norm_title(*, casefold: bool, title: str) -> str:
-    """Normalize a title for matching/deduping.
+    """Normalize a title for matching/conflict detection.
 
     Parameters
     ----------
@@ -1475,7 +752,7 @@ def _outer_context_conflicts(
         ) - {NodeRole.TOPIC, NodeRole.SUBTOPIC, NodeRole.SECTION, NodeRole.PROSE}
 
     def to_map(ctx: list[GroupingDecision]) -> dict[NodeRole, str]:
-        """Convert a list of GroupingDecision to a map of role -> normalized title.
+        """Convert a list of GroupingDecision to a map of role → normalized title.
 
         Parameters
         ----------
@@ -1515,18 +792,46 @@ def _outer_context_conflicts(
     return (len(details) > 0), details
 
 
+def _relocate_local_roles(
+    *, d: SegmentDecision, spine_policy: SpineConfig
+) -> tuple[SegmentDecision, list[SpineCorrection]]:
+    """Relocate table-local roles if configured.
+
+    Parameters
+    ----------
+    d
+        The SegmentDecision to correct.
+    spine_policy
+        The SpineConfig defining the correction policy.
+
+    Returns
+    -------
+    tuple[SegmentDecision, list[SpineCorrection]]
+        - The corrected SegmentDecision.
+        - Any corrections made.
+    """
+
+    if (
+        d.segment_kind == "table"
+        and spine_policy.relocate_table_local_only_roles_to_rows
+    ):
+        return _relocate_table_local_only_roles(decision=d, spine=spine_policy)
+
+    return d, []
+
+
 def _relocate_table_local_only_roles(
     *, decision: SegmentDecision, spine: SpineConfig
 ) -> tuple[SegmentDecision, list[SpineCorrection]]:
-    """Move any spine.table_local_only_roles out of decision.context_groupings and into
-    each row.groupings.
+    """Move any `spine.table_local_only_roles` out of `decision.context_groupings` and
+    into each `row.groupings`.
 
     Rules:
 
     1. Never introduces duplicate roles into a row.
     2. If a conflict exists between a table-local-only role in context and the same
-        role in a row (same role, different title), do NOT relocate that role into that
-        row, and record a correction. Do this for each row independently.
+       role in a row (same role, different title), do NOT relocate that role into that
+       row, and record a correction. Do this for each row independently.
 
     Parameters
     ----------
@@ -1561,8 +866,8 @@ def _relocate_table_local_only_roles(
             decision.decision_type = SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
             corrections.append(
                 SpineCorrection(
-                    kind="flag_unresolved",
                     detail="No rows present to relocate table-local-only roles into; flagged unresolved.",
+                    kind="flag_unresolved",
                 )
             )
             return decision, corrections
@@ -1581,6 +886,8 @@ def _relocate_table_local_only_roles(
         )
     )
 
+    casefold = spine.casefold_titles_for_matching
+
     # Inject moved roles into each row, and avoid duplicates/contradictions.
     new_rows: list[RowDecision] = []
 
@@ -1589,18 +896,14 @@ def _relocate_table_local_only_roles(
         additions: list[GroupingDecision] = []
         existing = list(r2.groupings or [])
         existing_by_role = {
-            eg.role: _norm_title(
-                casefold=spine.normalize.casefold_titles_for_matching, title=eg.title
-            )
-            for eg in existing
+            eg.role: _norm_title(casefold=casefold, title=eg.title) for eg in existing
         }
 
         for mg in moved:
             if mg.role in existing_by_role:
-                # If same role exists but different title -> contradiction.
+                # If same role exists but different title → contradiction.
                 if existing_by_role[mg.role] != _norm_title(
-                    casefold=spine.normalize.casefold_titles_for_matching,
-                    title=mg.title,
+                    casefold=casefold, title=mg.title
                 ):
                     actual_title = next(e.title for e in existing if e.role == mg.role)
                     msg = (
@@ -1608,14 +911,11 @@ def _relocate_table_local_only_roles(
                         f"outer='{mg.title}' row='{actual_title}'"
                     )
                     corrections.append(
-                        SpineCorrection(kind="relocate_conflict", detail=msg)
+                        SpineCorrection(detail=msg, kind="relocate_conflict")
                     )
 
                     # NB: Do NOT mark the whole decision as unresolved for a single
-                    # row-level contradiction. We record the conflict and simply avoid
-                    # injecting the conflicting moved role into this row.
-                    #
-                    # NB: Do not add conflicting mg.
+                    # row-level contradiction. Record the conflict and avoid injecting.
                     continue
 
                 # Same title -> skip (avoid duplicate role).
@@ -1631,31 +931,6 @@ def _relocate_table_local_only_roles(
     return decision, corrections
 
 
-def _relocate_local_roles(
-    *, d: SegmentDecision, spine: SpineConfig
-) -> tuple[SegmentDecision, list[SpineCorrection]]:
-    """Relocate table-local roles if configured.
-
-    Parameters
-    ----------
-    d
-        The SegmentDecision to correct.
-    spine
-        The SpineConfig defining the correction policy.
-
-    Returns
-    -------
-    tuple[SegmentDecision, list[SpineCorrection]]
-        - The corrected SegmentDecision.
-        - Any corrections made.
-    """
-
-    if d.segment_kind == "table" and spine.relocate_table_local_only_roles_to_rows:
-        return _relocate_table_local_only_roles(decision=d, spine=spine)
-
-    return d, []
-
-
 def apply_spine_policy_to_decision_set(
     *,
     caption_bindings: dict[str, CaptionBinding],
@@ -1663,7 +938,7 @@ def apply_spine_policy_to_decision_set(
     decision_set: SegmentDecisionSet,
     document_ir: DocumentIR,
     overwrite: bool,
-    spine: SpineConfig,
+    spine_policy: SpineConfig,
 ) -> SegmentDecisionSet:
     """Apply spine correction policy to a SegmentDecisionSet.
 
@@ -1679,7 +954,7 @@ def apply_spine_policy_to_decision_set(
         The DocumentIR corresponding to the decision set.
     overwrite
         If True, overwrite existing spine corrected decision set files.
-    spine
+    spine_policy
         The SpineConfig defining the correction policy.
 
     Returns
@@ -1713,7 +988,7 @@ def apply_spine_policy_to_decision_set(
         decision_results={},
         decision_set_id="",  # Will be set to the corrected decision set ID below
         flagged_decisions=[],
-        spine_name=spine.name,
+        spine_name=spine_policy.name,
         warnings=[],
     )
 
@@ -1741,7 +1016,7 @@ def apply_spine_policy_to_decision_set(
                 canonical_outer_context=canonical_outer_context,
                 caption_bindings=caption_bindings,
                 decision=d,
-                spine=spine,
+                spine_policy=spine_policy,
             )
             corrected_decisions.append(result.corrected)
             spine_report.decision_results[result.corrected.decision_id] = (
