@@ -790,6 +790,7 @@ def generate_segment_decision(
     *,
     always_double_check_first_attempt: bool,
     context_groupings_role_order: list[str],
+    country: str,
     doc_key: str,
     heading_role_hints: list[dict[str, str]],
     max_retries: int = 3,
@@ -811,6 +812,9 @@ def generate_segment_decision(
     context_groupings_role_order
         The context grouping role precedence order, used for quality checks and LLM
         instructions.
+    country
+        The country for this document, used for LLM context when making the segment
+        decision.
     doc_key
         The document key.
     heading_role_hints
@@ -855,6 +859,7 @@ def generate_segment_decision(
         NodeRole(role): i for i, role in enumerate(context_groupings_role_order)
     } or DEFAULT_CONTEXT_GROUPINGS_ROLE_PRECEDENCE
     prompts = decide_on_segment(
+        country=country,
         context_groupings_role_dict=context_groupings_role_dict,
         heading_role_hints=heading_role_hints,
         outer_context_roles=outer_context_roles,
