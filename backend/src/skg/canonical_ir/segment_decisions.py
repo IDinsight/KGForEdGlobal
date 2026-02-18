@@ -77,13 +77,6 @@ def _classify_caption_kind(text: str) -> CaptionKind:
         if t.startswith(p):
             return "figure"
 
-    # Regex fallback for common patterns.
-    if re.match(r"^(table|tab\.?|tbl\.?|jedwali|tableau)\s*\d+", t):
-        return "table"
-
-    if re.match(r"^(figure|fig\.?)\s*\d+", t):
-        return "figure"
-
     return "unknown"
 
 
@@ -472,10 +465,16 @@ def _filter_section_path_for_llm(
         filtered.append(section_path)
 
     # If we filtered too aggressively, keep the closest prior heading as a fallback.
+    # NB: Apply the same front-matter/non-artifact filter so that document furniture
+    # headings (e.g., "Introduction", "Preface") never leak into the LLM payload.
     if not filtered:
-        # Get the first matching item in reverse, or keep list empty if none found.
+        front_matter_norms = {h.value for h in FrontMatterHeadings}
         filtered = [
-            sp for sp in reversed(section_paths) if sp.page_index <= segment_page_index
+            sp
+            for sp in reversed(section_paths)
+            if sp.page_index <= segment_page_index
+            and normalize_heading_key(sp.text) not in front_matter_norms
+            and normalize_heading_key(sp.text) not in NonArtifacts
         ][:1]
 
     output = [sp.model_dump(mode="json") for sp in filtered]
