@@ -2161,10 +2161,22 @@ def apply_grouping_canonicalization_map(
     }
 
     # Validate SPLIT precedence for the rules that we'll actually apply.
-    for item in mapping_index.values():
+    #
+    # NB: We iterate the original mapping.items (GroupingCanonicalizationItem objects)
+    # rather than mapping_index.values(), because the index flattens items into
+    # GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None — losing the
+    # .action and .output attributes that _check_split_output_precedence requires.
+    skip_role_values = {r.value for r in canonicalization_skip_roles}
+
+    for item in mapping.items:
+        if (
+            item.confidence < canonical_grouping_min_confidence
+            or item.input.role.value in skip_role_values
+        ):
+            continue
+
         _check_split_output_precedence(
-            item=item,
-            context_groupings_role_dict=context_groupings_role_dict,
+            item=item, context_groupings_role_dict=context_groupings_role_dict
         )
 
     new_decisions: list[SegmentDecision] = []
