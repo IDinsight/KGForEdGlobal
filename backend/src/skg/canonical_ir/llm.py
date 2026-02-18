@@ -66,7 +66,12 @@ from skg.canonical_ir.validators import (
 from skg.document_ir.schemas import Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import Limits
-from skg.utils.constants import GroupingCanonicalizationAction, SegmentDecisionType
+from skg.utils.constants import (
+    DEFAULT_CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
+    GroupingCanonicalizationAction,
+    NodeRole,
+    SegmentDecisionType,
+)
 from skg.utils.general import open_json_type, write_to_json
 
 limits = Limits(max_retry_attempts=5)
@@ -181,10 +186,12 @@ def _call_openai_api_to_decide_on_segment(
     *,
     always_double_check_first_attempt: bool,
     attempt: int,
+    context_groupings_role_dict: dict[NodeRole, int],
     doc_key: str,
     input_items: list[Any],
     instructions: str,
     model: str,
+    outer_context_roles: list[str],
     row_range_end: int | None,
     row_range_start: int | None,
     segment: Segment,
@@ -200,6 +207,10 @@ def _call_openai_api_to_decide_on_segment(
         Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The segment decision attempt number (0-based).
+    context_groupings_role_dict
+        The precedence mapping for context grouping roles, used in quality checks to
+        enforce consistent ordering of context groupings and determine "outer-ness" for
+        chunked table validations.
     doc_key
         The document key.
     input_items
@@ -208,6 +219,10 @@ def _call_openai_api_to_decide_on_segment(
         The extraction instructions to include.
     model
         The OpenAI model to use.
+    outer_context_roles
+        The list of NodeRoles that are considered outer context for chunked tables. For
+        chunked tables, groupings with these roles MUST go in context_groupings[] (not
+        segment-level groupings[]) so that all chunks share a stable context stack.
     row_range_end
         The optional row range end for table segments.
     row_range_start
@@ -281,6 +296,8 @@ def _call_openai_api_to_decide_on_segment(
         verify_segment_decision_quality(
             always_double_check_first_attempt=always_double_check_first_attempt,
             attempt=attempt,
+            context_groupings_role_dict=context_groupings_role_dict,
+            outer_context_roles=outer_context_roles,
             segment=segment,
             segment_decision=parsed,
             segment_decision_conf_threshold=segment_decision_conf_threshold,
@@ -360,6 +377,7 @@ def _process_canonicalization_batch(
     *,
     batch_index: int,
     batch_keys: list[GroupingCanonicalizationKey],
+    context_groupings_role_dict: dict[NodeRole, int],
     doc_key: str,
     known_canonicals_list: list[dict[str, str]],
     max_retries: int,
@@ -374,6 +392,9 @@ def _process_canonicalization_batch(
         The index of the current batch.
     batch_keys
         The list of grouping canonicalization keys in the batch.
+    context_groupings_role_dict
+        The context grouping role precedence mapping, used for quality checks and LLM
+        instructions.
     doc_key
         The document key.
     known_canonicals_list
@@ -399,7 +420,9 @@ def _process_canonicalization_batch(
     )
 
     prompts = grouping_canonicalization_instructions(
-        grouping_keys=batch_keys, known_canonical_keys=known_canonicals_list
+        context_groupings_role_dict=context_groupings_role_dict,
+        grouping_keys=batch_keys,
+        known_canonical_keys=known_canonicals_list,
     )
     base_input_items = [
         {
@@ -636,6 +659,7 @@ def generate_heading_levels(
 def generate_grouping_canonicalization_map(
     *,
     batch_size: int = 600,
+    context_groupings_role_order: list[str],
     creation_dirs: CanonicalIRDirs,
     doc_key: str,
     grouping_keys: list[GroupingCanonicalizationKey],
@@ -650,6 +674,9 @@ def generate_grouping_canonicalization_map(
     ----------
     batch_size
         Number of items to process per LLM call.
+    context_groupings_role_order
+        The context grouping role precedence order, used for quality checks and LLM
+        instructions.
     creation_dirs
         The CanonicalIRDirs for this document.
     doc_key
@@ -701,6 +728,9 @@ def generate_grouping_canonicalization_map(
 
     all_canonical_items = []
     batch_size = min(batch_size, len(grouping_keys))
+    context_groupings_role_dict: dict[NodeRole, int] = {
+        NodeRole(role): i for i, role in enumerate(context_groupings_role_order)
+    }
 
     for i in range(0, len(grouping_keys), batch_size):
         batch_keys = grouping_keys[i : i + batch_size]
@@ -716,6 +746,7 @@ def generate_grouping_canonicalization_map(
         batch_result = _process_canonicalization_batch(
             batch_index=batch_index,
             batch_keys=batch_keys,
+            context_groupings_role_dict=context_groupings_role_dict,
             doc_key=doc_key,
             known_canonicals_list=known_canonicals_list,
             max_retries=max_retries,
@@ -758,10 +789,12 @@ def generate_grouping_canonicalization_map(
 def generate_segment_decision(
     *,
     always_double_check_first_attempt: bool,
+    context_groupings_role_order: list[str],
     doc_key: str,
     heading_role_hints: list[dict[str, str]],
     max_retries: int = 3,
     model: str,
+    outer_context_roles: list[str],
     row_range_end: int | None = None,
     row_range_start: int | None = None,
     segment: Segment,
@@ -775,6 +808,9 @@ def generate_segment_decision(
     ----------
     always_double_check_first_attempt
         Whether to force a retry on the first attempt. Useful for difficult/messy pages.
+    context_groupings_role_order
+        The context grouping role precedence order, used for quality checks and LLM
+        instructions.
     doc_key
         The document key.
     heading_role_hints
@@ -783,6 +819,10 @@ def generate_segment_decision(
         Maximum number of retries for quality errors.
     model
         The OpenAI model to use.
+    outer_context_roles
+        The list of NodeRoles that are considered outer context for chunked tables. For
+        chunked tables, groupings with these roles MUST go in context_groupings[] (not
+        segment-level groupings[]) so that all chunks share a stable context stack.
     row_range_end
         The optional row range end for table segments.
     row_range_start
@@ -811,8 +851,13 @@ def generate_segment_decision(
         If segment decision fails after retries.
     """
 
+    context_groupings_role_dict: dict[NodeRole, int] = {
+        NodeRole(role): i for i, role in enumerate(context_groupings_role_order)
+    } or DEFAULT_CONTEXT_GROUPINGS_ROLE_PRECEDENCE
     prompts = decide_on_segment(
+        context_groupings_role_dict=context_groupings_role_dict,
         heading_role_hints=heading_role_hints,
+        outer_context_roles=outer_context_roles,
         segment=segment_payload,
         segment_decision_conf_threshold=segment_decision_conf_threshold,
     )
@@ -845,10 +890,12 @@ def generate_segment_decision(
             return _call_openai_api_to_decide_on_segment(
                 always_double_check_first_attempt=always_double_check_first_attempt,
                 attempt=attempt,
+                context_groupings_role_dict=context_groupings_role_dict,
                 doc_key=doc_key,
                 input_items=input_items,
                 instructions=instructions,
                 model=model,
+                outer_context_roles=outer_context_roles,
                 row_range_end=row_range_end,
                 row_range_start=row_range_start,
                 segment=segment,
@@ -1009,6 +1056,8 @@ def verify_segment_decision_quality(
     *,
     always_double_check_first_attempt: bool,
     attempt: int,
+    context_groupings_role_dict: dict[NodeRole, int],
+    outer_context_roles: list[str],
     segment: Segment,
     segment_decision: SegmentDecision,
     segment_decision_conf_threshold: float,
@@ -1023,6 +1072,14 @@ def verify_segment_decision_quality(
         Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The current attempt number (0-based).
+    context_groupings_role_dict
+        The precedence mapping for context grouping roles, used in quality checks to
+        enforce consistent ordering of context groupings and determine "outer-ness" for
+        chunked table validations.
+    outer_context_roles
+        The list of NodeRoles that are considered outer context for chunked tables. For
+        chunked tables, groupings with these roles MUST go in context_groupings[] (not
+        segment-level groupings[]) so that all chunks share a stable context stack.
     segment
         The Segment being decided on.
     segment_decision
@@ -1071,7 +1128,9 @@ def verify_segment_decision_quality(
 
     # Internal context sanity checks (safe to enforce even for flagged_unresolved).
     validate_context_groupings_role_order(
-        segment=segment, segment_decision=segment_decision
+        context_groupings_role_dict=context_groupings_role_dict,
+        segment=segment,
+        segment_decision=segment_decision,
     )
     validate_context_groupings_no_duplicate_roles(
         segment=segment, segment_decision=segment_decision
@@ -1105,6 +1164,7 @@ def verify_segment_decision_quality(
         table_chunking=table_chunking,
     )
     validate_chunked_table_outer_anchors_in_context_groupings(
+        outer_context_roles=outer_context_roles,
         segment_decision=segment_decision,
         segment_payload=segment_payload,
         table_chunking=table_chunking,
@@ -1134,5 +1194,7 @@ def verify_segment_decision_quality(
         segment=segment, segment_decision=segment_decision
     )
     validate_groupings_not_outer_than_context(
-        segment=segment, segment_decision=segment_decision
+        context_groupings_role_dict=context_groupings_role_dict,
+        segment=segment,
+        segment_decision=segment_decision,
     )

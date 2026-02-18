@@ -266,6 +266,7 @@ def create_canonical_ir(
 
     # 12.
     mapping = generate_grouping_canonicalization_map(
+        context_groupings_role_order=config.context_groupings_role_order,
         creation_dirs=creation_dirs,
         doc_key=doc_key,
         grouping_keys=grouping_keys,
@@ -277,6 +278,7 @@ def create_canonical_ir(
     segment_decisions = apply_grouping_canonicalization_map(
         canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
         canonicalization_skip_roles=config.canonicalization_skip_roles,
+        context_groupings_role_order=config.context_groupings_role_order,
         creation_dirs=creation_dirs,
         mapping=mapping,
         overwrite=config.overwrite,

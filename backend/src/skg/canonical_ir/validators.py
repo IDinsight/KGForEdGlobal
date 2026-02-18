@@ -18,9 +18,7 @@ from skg.canonical_ir.utils import _DASH_RE
 from skg.document_ir.schemas import DocumentIR, Segment
 from skg.page_ir_extraction.validators import QualityError
 from skg.utils.constants import (
-    CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
     OUTER_ANCHOR_ROLES,
-    OUTER_CONTEXT_ROLES,
     BlockType,
     FrontMatterHeadings,
     NodeRole,
@@ -886,6 +884,7 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
 
 def validate_chunked_table_outer_anchors_in_context_groupings(
     *,
+    outer_context_roles: list[str],
     segment_decision: SegmentDecision,
     segment_payload: dict[str, Any] | None,
     table_chunking: dict[str, Any] | None = None,
@@ -902,6 +901,10 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
 
     Parameters
     ----------
+    outer_context_roles
+        The list of NodeRoles that are considered outer context for chunked tables. For
+        chunked tables, groupings with these roles MUST go in context_groupings[] (not
+        segment-level groupings[]) so that all chunks share a stable context stack.
     segment_decision
         The SegmentDecision to validate.
     segment_payload
@@ -926,7 +929,7 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
     bad = [
         g
         for g in (segment_decision.groupings or [])
-        if getattr(g, "role", None) in OUTER_CONTEXT_ROLES
+        if getattr(g, "role", None) in outer_context_roles
     ]
 
     if not bad:
@@ -1066,8 +1069,17 @@ def validate_context_groupings_required_for_emit(
     has_caption = bool((payload.get("caption_text") or "").strip())
 
     # Check if any outer anchor grouping is emitted.
-    emits_outer_anchor_grouping = any(
-        (g.role in OUTER_ANCHOR_ROLES) for g in (segment_decision.groupings or [])
+    emits_outer_anchor_grouping = (
+        any(
+            g.role in OUTER_ANCHOR_ROLES
+            for g in (segment_decision.context_groupings or [])
+        )
+        or any(g.role in OUTER_ANCHOR_ROLES for g in (segment_decision.groupings or []))
+        or any(
+            g.role in OUTER_ANCHOR_ROLES
+            for rd in (segment_decision.rows or [])
+            for g in (rd.groupings or [])
+        )
     )
 
     if (
@@ -1090,7 +1102,10 @@ def validate_context_groupings_required_for_emit(
 
 
 def validate_context_groupings_role_order(
-    *, segment: Segment, segment_decision: SegmentDecision
+    *,
+    context_groupings_role_dict: dict[NodeRole, int],
+    segment: Segment,
+    segment_decision: SegmentDecision,
 ) -> None:
     """Enforce stable outer -> inner ordering of context_groupings[] using a fixed role
     precedence. This prevents drift like: stage -> subject -> grade -> subject -> strand
@@ -1098,6 +1113,8 @@ def validate_context_groupings_role_order(
 
     Parameters
     ----------
+    context_groupings_role_dict
+        A dictionary mapping NodeRoles to their precedence index.
     segment
         The Segment being decided on.
     segment_decision
@@ -1132,17 +1149,19 @@ def validate_context_groupings_role_order(
                 f"title={g.title}"
             )
 
-    # Convert NodeRole -> precedence index (unknown roles are treated as errors).
-    indices: list[int] = []
-    for r in roles:
-        if r not in CONTEXT_GROUPINGS_ROLE_PRECEDENCE:
-            raise QualityError(
-                f"Unknown NodeRole in context_groupings[].\n"
-                f"segment_id={segment.segment_id}\n"
-                f"decision_id={segment_decision.decision_id}\n"
-                f"role={getattr(r, 'value', str(r))}"
-            )
-        indices.append(CONTEXT_GROUPINGS_ROLE_PRECEDENCE[r])
+    # Convert NodeRole -> precedence index for *ranked* roles only. Roles omitted from
+    # the configured precedence are treated as unranked and do not participate in
+    # ordering checks.
+    indices: list[int] = [
+        context_groupings_role_dict[r]
+        for r in roles
+        if r in context_groupings_role_dict
+    ]
+
+    # If the configured precedence excludes all roles in context_groupings[], there is
+    # nothing to validate.
+    if not indices:
+        return
 
     # Must be non-decreasing outer -> inner.
     for i in range(1, len(indices)):
@@ -1555,7 +1574,10 @@ def validate_grouping_canonicalization_coverage(
 
 
 def validate_groupings_not_outer_than_context(
-    *, segment: Segment, segment_decision: SegmentDecision
+    *,
+    context_groupings_role_dict: dict[NodeRole, int],
+    segment: Segment,
+    segment_decision: SegmentDecision,
 ) -> None:
     """Since groupings[] are children under the context stack tip, they must not be
     OUTER than the deepest role in context_groupings[]. This prevents SUBJECT -> GRADE
@@ -1563,6 +1585,8 @@ def validate_groupings_not_outer_than_context(
 
     Parameters
     ----------
+    context_groupings_role_dict
+        A dictionary mapping NodeRoles to their precedence index.
     segment
         The Segment being decided on.
     segment_decision
@@ -1585,7 +1609,14 @@ def validate_groupings_not_outer_than_context(
         return
 
     context_roles = [g.role for g in (segment_decision.context_groupings or [])]
-    context_max = max(CONTEXT_GROUPINGS_ROLE_PRECEDENCE[r] for r in context_roles)
+    ranked_context_roles = [
+        r for r in context_roles if r in context_groupings_role_dict
+    ]
+
+    if not ranked_context_roles:
+        return
+
+    context_max = max(context_groupings_role_dict[r] for r in ranked_context_roles)
 
     def check(groupings: list[GroupingDecision], where: str) -> None:
         """Check that no grouping is outer than context.
@@ -1604,10 +1635,10 @@ def validate_groupings_not_outer_than_context(
         """
 
         for g in groupings or []:
-            if g.role not in CONTEXT_GROUPINGS_ROLE_PRECEDENCE:
+            if g.role not in context_groupings_role_dict:
                 continue
 
-            if CONTEXT_GROUPINGS_ROLE_PRECEDENCE[g.role] < context_max:
+            if context_groupings_role_dict[g.role] < context_max:
                 raise QualityError(
                     f"grouping_outer_than_context\n"
                     f"segment_id={segment.segment_id}\n"

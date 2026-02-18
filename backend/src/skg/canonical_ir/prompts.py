@@ -14,18 +14,22 @@ from dotmap import DotMap
 # Package Library
 from skg.canonical_ir.schemas import GroupingCanonicalizationKey
 from skg.utils.constants import (
-    CONTEXT_GROUPINGS_ROLE_ORDER,
-    GROUPING_ROLES,
     OUTER_ANCHOR_ROLES,
     BlockType,
     FrontMatterHeadings,
+    NodeRole,
     NonArtifacts,
     SegmentDecisionType,
     StatementRole,
 )
 
-CONTEXT_GROUPINGS_ORDER_STR = " → ".join(r.value for r in CONTEXT_GROUPINGS_ROLE_ORDER)
-DOC_CONTEXT_MAPPING: dict[str, str] = {
+# Build a mapping of document-specific heading patterns to fixed role assignments, to
+# be included in the heading level instructions for relevant documents. The prompt will
+# instruct the model to apply these roles when the patterns are observed, but only when
+# consistent with the global structural rules (e.g., if a pattern is observed but it
+# appears in a section of the document that looks like front matter, the model should
+# ignore the pattern and assign level 0).
+HEADING_LEVEL_CONTEXT: dict[str, str] = {
     "senegal": dedent(
         """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
 
@@ -53,6 +57,17 @@ Prefer levels that preserve local monotonic structure such as:
         """
     )
 }
+
+# Roles that are valid for GroupingDecision.role/context_groupings/groupings. Excludes
+# FRAMEWORK (root), UNRESOLVED (error bucket), and PROSE (document furniture).
+GROUPING_ROLES: tuple[NodeRole, ...] = tuple(
+    r
+    for r in NodeRole
+    if r not in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED, NodeRole.PROSE)
+)
+
+# For the outer-anchor requirement: build a string listing the roles that are
+# considered valid outer anchors for emitted leaves.
 OUTER_ANCHOR_ROLES_STR = ", ".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
 
 # Build a de-duplicated, sorted list of document-structure words that should NOT become
@@ -73,7 +88,9 @@ SECTION_EXCLUSION_WORDS: list[str] = sorted(
 
 def decide_on_segment(
     *,
+    context_groupings_role_dict: dict[NodeRole, int],
     heading_role_hints: list[dict[str, str]],
+    outer_context_roles: list[Any] | None = None,
     segment: dict[str, Any],
     segment_decision_conf_threshold: float,
 ) -> DotMap:
@@ -81,9 +98,16 @@ def decide_on_segment(
 
     Parameters
     ----------
+    context_groupings_role_dict
+        The current context groupings as a dict of NodeRole to index, used to provide
+        hints about which roles are currently active in the context stack.
     heading_role_hints
         A list of dictionaries containing 'text' and 'role_hint' for each heading in
         the document, to be used as potential evidence for grouping roles.
+    outer_context_roles
+        A list of roles that are considered stable outer anchors for chunked tables,
+        which must be placed in context_groupings[] rather than segment-level
+        groupings[].
     segment
         The segment dictionary containing segment details.
     segment_decision_conf_threshold
@@ -104,6 +128,36 @@ def decide_on_segment(
     )
     node_roles_str = "\n".join(
         [f'  - "{r.value}"' for r in sorted(GROUPING_ROLES, key=lambda x: x.value)]
+    )
+
+    context_role_order = list(context_groupings_role_dict)
+    context_order_str = (
+        " → ".join(r.value for r in context_groupings_role_dict)
+        if context_role_order
+        else "(no precedence configured)"
+    )
+    ranked_roles_note = (
+        ", ".join(r.value for r in context_role_order)
+        if context_role_order
+        else "(none; all roles treated as unranked)"
+    )
+
+    # For chunked tables: roles that MUST be expressed in context_groupings[] (not
+    # segment-level groupings[]) so that all chunks share a stable outer context stack.
+    # This list is policy/config-driven.
+    outer_context_roles = outer_context_roles or []
+    outer_context_roles_str = (
+        ", ".join(
+            sorted(
+                [
+                    getattr(r, "value", str(r))
+                    for r in outer_context_roles
+                    if r is not None
+                ]
+            )
+        )
+        if outer_context_roles
+        else "(none configured)"
     )
 
     system_message = dedent(
@@ -149,7 +203,8 @@ LEARNING_AREA vs. SUBJECT:
 ## 4. CONTEXT GROUPINGS
 The compiler WILL NOT create hierarchy from segment.section_path[]. You MUST provide the hierarchy context snapshot in context_groupings[] when supported by evidence.
 
-**Ordering:** context_groupings[] MUST be ordered OUTER → INNER: {CONTEXT_GROUPINGS_ORDER_STR}
+**Ordering:** context_groupings[] MUST be ordered OUTER → INNER for ranked roles: {context_order_str}
+Only roles listed in the configured precedence are *ranked*: {ranked_roles_note}. Roles not listed are treated as unranked and will not be penalized by precedence-based validators.
 Do NOT repeat the same NodeRole. Do NOT include TOPIC/SUBTOPIC (those belong in RowDecision.groupings[] for tables).
 
 **Evidence support:** Every context_groupings[].title MUST be supported by one of:
@@ -176,7 +231,8 @@ If BOTH direct evidence and carry-forward are unavailable:
 ## 5. CHUNKED TABLES
 If segment includes a `chunking` object:
   - ONLY decide on the rows in this chunk. Never assume rows outside this chunk.
-  - Table-wide anchors MUST go in context_groupings[], NOT segment-level groupings[].
+  - For chunked tables, any grouping whose role is in the configured OUTER CONTEXT ROLES MUST be placed in context_groupings[] (NOT segment-level groupings[]) so all chunks share an identical context stack.
+    OUTER CONTEXT ROLES for this run: {outer_context_roles_str}
   - FIRST CHUNK: apply outer-evidence support strictly; DROP any unsupported prior grouping.
   - FIRST CHUNK: if you cannot establish ANY outer anchor for emitted leaves without inventing it, use "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (set confidence < threshold) rather than a proper emit_* decision.
   - LATER CHUNKS: repeat context_groupings[] EXACTLY as prior_context_groupings[] unless this chunk's outer evidence explicitly contradicts it.
@@ -269,7 +325,7 @@ def double_check_decision_on_segment() -> DotMap:
 1. **Hallucination check:** Is every title/body/code directly supported by the segment text? No invented content?
 2. **Decision-type invariants:** Does your output satisfy the invariant table in §2? (e.g., ignore/unresolved → all arrays empty; emit_groupings_only → no leaves anywhere)
 3. **Role sanity:** Did you assign SUBJECT/STRAND to something that is actually document metadata (mentions curriculum/syllabus/framework/ministry/publisher/TOC)? If so, change to ignore or omit.
-4. **Outer anchor:** If emitting leaves, is there ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[] or groupings[]? If not, carry forward from prior_context_groupings[]. If you still cannot establish an outer anchor without inventing it, switch to "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (set confidence < threshold) or "{SegmentDecisionType.UNRESOLVED.value}" — do NOT emit leaves in a proper emit_* decision.
+4. **Outer anchor:** If emitting leaves, is there ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[] or groupings[]? or rows[].groupings[]? If not, carry forward from prior_context_groupings[]. If you still cannot establish an outer anchor without inventing it, switch to "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" (set confidence < threshold) or "{SegmentDecisionType.UNRESOLVED.value}" — do NOT emit leaves in a proper emit_* decision.
 5. **Context depth:** Are groupings[] all INNER relative to context_groupings[]? (No GRADE_LEVEL in groupings[] when SUBJECT is the deepest context role.)
 6. **Table row_index:** If table, does every RowDecision.row_index match the row's abs_row_index? No RowDecisions for header/blank/context-only rows?
 7. **Context evidence:** Is every context_groupings[].title supported by outer evidence (section_path/caption/header_rows) or valid carry-forward?
@@ -285,6 +341,7 @@ If any check fails, fix it and return the corrected SegmentDecision. Otherwise, 
 
 def grouping_canonicalization_instructions(
     *,
+    context_groupings_role_dict: dict[NodeRole, int],
     grouping_keys: list[GroupingCanonicalizationKey],
     known_canonical_keys: list[dict[str, str]] | None = None,
 ) -> DotMap:
@@ -292,6 +349,9 @@ def grouping_canonicalization_instructions(
 
     Parameters
     ----------
+    context_groupings_role_dict
+        The current context groupings as a dict of NodeRole to index, used to determine
+        allowed roles and precedence for canonicalization.
     grouping_keys
         The list of GroupingCanonicalizationKey objects to be canonicalized.
     known_canonical_keys
@@ -304,9 +364,16 @@ def grouping_canonicalization_instructions(
         A DotMap containing 'system_message' and 'user_message'.
     """
 
-    # Build allowed roles/precedence strings.
-    allowed_roles = [r.value for r in CONTEXT_GROUPINGS_ROLE_ORDER]
-    precedence_str = " > ".join(allowed_roles)
+    # Build allowed roles + precedence strings.
+    ranked_roles = [r.value for r in context_groupings_role_dict]
+
+    # Allowed roles are all grouping container roles.
+    allowed_roles = [r.value for r in sorted(GROUPING_ROLES, key=lambda x: x.value)]
+
+    # Precedence is only defined for the configured ranked roles.
+    precedence_str = (
+        " > ".join(ranked_roles) if ranked_roles else "(no precedence configured)"
+    )
 
     context_str = ""
 
@@ -423,15 +490,15 @@ Hard rules:
     """
     )
 
-    doc_context = DOC_CONTEXT_MAPPING.get(country.lower(), None)
+    heading_level_context = HEADING_LEVEL_CONTEXT.get(country.lower(), None)
 
-    if doc_context and doc_context.strip():
+    if heading_level_context and heading_level_context.strip():
         system_message += (
             "\n\n"
             + dedent(
-                f"""Document-specific hints (optional):
+                f"""Document-specific heading level hints (optional):
 
-{doc_context.strip()}
+{heading_level_context.strip()}
 
 Use these hints only when consistent with the hard rules above.
 If a hint conflicts with the document’s observed structure, ignore the hint.

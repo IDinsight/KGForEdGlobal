@@ -19,7 +19,6 @@ from pydantic import Field, model_validator
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import (
-    CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
     BlockType,
     CaptionKind,
     GroupingCanonicalizationAction,
@@ -910,6 +909,14 @@ class GroupingCanonicalizationItem(BaseSchema):
     def _validate_split(self) -> None:
         """Validate SPLIT action.
 
+        SPLIT is a structural rewrite rule only:
+
+        1. Must produce 2+ output groupings.
+        2. Output uniqueness is enforced separately by _ensure_unique_outputs().
+
+        NB: Role precedence/ordering is per-document policy and must be validated at
+        runtime (where config is available), not in this schema.
+
         Raises
         ------
         ValueError
@@ -919,15 +926,9 @@ class GroupingCanonicalizationItem(BaseSchema):
         if len(self.output) < 2:
             raise ValueError("SPLIT requires 2+ output groupings")
 
-        # Validate precedence.
-        idxs = [CONTEXT_GROUPINGS_ROLE_PRECEDENCE[o.role] for o in self.output]
-
-        if idxs != sorted(idxs):
-            roles = [o.role.value for o in self.output]
-
-            raise ValueError(
-                f"SPLIT output roles must follow precedence order: {roles}"
-            )
+        # Prevent useless SPLITs that don't change anything.
+        if self.output == [self.input]:
+            raise ValueError("SPLIT identical to input; use KEEP instead.")
 
     @model_validator(mode="after")
     def _validate_action_output_contract(self) -> GroupingCanonicalizationItem:

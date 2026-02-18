@@ -21,6 +21,7 @@ from skg.canonical_ir.schemas import (
     CanonicalEdge,
     CanonicalIR,
     CanonicalNode,
+    GroupingCanonicalizationItem,
     GroupingCanonicalizationKey,
     GroupingCanonicalizationMap,
     GroupingDecision,
@@ -35,7 +36,6 @@ from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegm
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import (
-    CONTEXT_GROUPINGS_ROLE_PRECEDENCE,
     OUTER_ANCHOR_ROLES,
     GroupingCanonicalizationAction,
     NodeRole,
@@ -306,6 +306,46 @@ def _check_root_as_child(
             msg = f"root_has_parent_edge:{root_id} parent={e.parent_id}"
             logger.warning(msg)
             warnings.append(msg)
+
+
+def _check_split_output_precedence(
+    *,
+    item: GroupingCanonicalizationItem,
+    context_groupings_role_dict: dict[NodeRole, int],
+) -> None:
+    """If the canonicalization action is SPLIT, validate that the output groupings are
+    in the correct precedence order as defined by role_precedence. This ensures that
+    when a single input grouping is split into multiple output groupings, the resulting
+    groupings maintain a consistent hierarchical order based on their roles.
+
+    Parameters
+    ----------
+    item
+        The GroupingCanonicalizationItem to validate.
+    context_groupings_role_dict
+        A dictionary mapping NodeRoles to their precedence index, where a lower index
+        indicates a higher-level role in the hierarchy.
+
+    Raises
+    ------
+    ValueError
+        If the output groupings are not in the correct precedence order.
+    """
+
+    if item.action != GroupingCanonicalizationAction.SPLIT:
+        return
+
+    idxs: list[int] = []
+
+    for o in item.output:
+        p = context_groupings_role_dict.get(o.role)
+
+        if p is not None:  # Ranked roles only
+            idxs.append(p)
+
+    if idxs and idxs != sorted(idxs):
+        roles = [o.role.value for o in item.output]
+        raise ValueError(f"SPLIT output roles must follow precedence order: {roles}")
 
 
 def _check_structural_warnings(
@@ -1648,6 +1688,7 @@ def _resolve_collision(
 
 def _rewrite_grouping_list(
     *,
+    context_groupings_role_dict: dict[NodeRole, int],
     enforce_unique_roles: bool,
     groupings: list[GroupingDecision] | None,
     mapping_index: dict[
@@ -1660,6 +1701,8 @@ def _rewrite_grouping_list(
 
     Parameters
     ----------
+    context_groupings_role_dict
+        The mapping of NodeRole to precedence order for sorting.
     enforce_unique_roles
         Whether to enforce unique roles in the output list.
     groupings
@@ -1726,7 +1769,10 @@ def _rewrite_grouping_list(
         rewritten = _drop_duplicate_roles_keep_first(rewritten)
 
     if sort_by_precedence:
-        rewritten = _sort_by_context_precedence(rewritten)
+        rewritten = _sort_by_context_precedence(
+            context_groupings_role_dict=context_groupings_role_dict,
+            groupings=rewritten,
+        )
 
     return rewritten
 
@@ -1752,6 +1798,8 @@ def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
 
 
 def _sort_by_context_precedence(
+    *,
+    context_groupings_role_dict: dict[NodeRole, int],
     groupings: list[GroupingDecision],
 ) -> list[GroupingDecision]:
     """Sort groupings by the global precedence order used for context_groupings.
@@ -1759,6 +1807,8 @@ def _sort_by_context_precedence(
 
     Parameters
     ----------
+    context_groupings_role_dict
+        The mapping of NodeRole to precedence order.
     groupings
         The list of GroupingDecisions to sort.
 
@@ -1782,7 +1832,7 @@ def _sort_by_context_precedence(
             The sort key as (precedence, title).
         """
 
-        return CONTEXT_GROUPINGS_ROLE_PRECEDENCE.get(g.role, 10_000), g.title
+        return context_groupings_role_dict.get(g.role, 10_000), g.title
 
     return sorted(groupings, key=key_fn)
 
@@ -2022,6 +2072,7 @@ def apply_grouping_canonicalization_map(
     *,
     canonical_grouping_min_confidence: float,
     canonicalization_skip_roles: list[NodeRole] | None = None,
+    context_groupings_role_order: list[str],
     creation_dirs: CanonicalIRDirs,
     mapping: GroupingCanonicalizationMap,
     overwrite: bool,
@@ -2057,6 +2108,9 @@ def apply_grouping_canonicalization_map(
     canonicalization_skip_roles
         The list of NodeRoles to skip during canonicalization (e.g., if you want to
         preserve all "topic" groupings as emitted without merging them).
+    context_groupings_role_order
+        List containing the NodeRoles in the order of precedence for context groupings
+        (outer to inner).
     creation_dirs
         The canonical IR creation directories.
     mapping
@@ -2086,6 +2140,9 @@ def apply_grouping_canonicalization_map(
             open_json_type(normalized_segment_decisions_fp)
         )
 
+    context_groupings_role_dict: dict[NodeRole, int] = {
+        NodeRole(role): i for i, role in enumerate(context_groupings_role_order)
+    }
     mapping_index = _build_mapping_index(
         canonical_grouping_min_confidence=canonical_grouping_min_confidence,
         mapping=mapping,
@@ -2102,6 +2159,14 @@ def apply_grouping_canonicalization_map(
         for k, v in mapping_index.items()
         if k[0] not in {r.value for r in canonicalization_skip_roles}
     }
+
+    # Validate SPLIT precedence for the rules that we'll actually apply.
+    for item in mapping_index.values():
+        _check_split_output_precedence(
+            item=item,
+            context_groupings_role_dict=context_groupings_role_dict,
+        )
+
     new_decisions: list[SegmentDecision] = []
 
     for decision in segment_decisions.decisions:
@@ -2110,6 +2175,7 @@ def apply_grouping_canonicalization_map(
         # Context groupings: enforce precedence + no duplicate roles.
         if decision.context_groupings:
             updates["context_groupings"] = _rewrite_grouping_list(
+                context_groupings_role_dict=context_groupings_role_dict,
                 enforce_unique_roles=True,
                 groupings=decision.context_groupings,
                 mapping_index=mapping_index,
@@ -2119,6 +2185,7 @@ def apply_grouping_canonicalization_map(
         # Segment-level groupings: keep order by default.
         if decision.groupings:
             updates["groupings"] = _rewrite_grouping_list(
+                context_groupings_role_dict=context_groupings_role_dict,
                 enforce_unique_roles=False,
                 groupings=decision.groupings,
                 mapping_index=mapping_index,
@@ -2132,6 +2199,7 @@ def apply_grouping_canonicalization_map(
             for row in decision.rows:
                 if row.groupings:
                     new_groupings = _rewrite_grouping_list(
+                        context_groupings_role_dict=context_groupings_role_dict,
                         enforce_unique_roles=True,
                         groupings=row.groupings,
                         mapping_index={},  # Don't canonicalize row-local groupings
