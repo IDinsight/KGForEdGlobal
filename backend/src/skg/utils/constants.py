@@ -169,15 +169,6 @@ class SegmentDecisionType(str, Enum):
     UNRESOLVED = "unresolved"
 
 
-class SpineSplitApplyTo(str, Enum):
-    """Define where split rules may be applied."""
-
-    ANY = "any"
-    BLOCK_LOCAL = "block_local"  # SegmentDecision.groupings
-    OUTER_CONTEXT = "outer_context"  # SegmentDecision.context_groupings
-    TABLE_ROW_LOCAL = "table_row_local"  # RowDecision.groupings
-
-
 class SpineViolationPolicy(str, Enum):
     """Define what to do when a decision cannot be normalized to the spine without
     guessing.
