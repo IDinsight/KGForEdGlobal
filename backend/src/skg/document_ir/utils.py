@@ -1313,25 +1313,42 @@ def _process_next_table_slice(
         logger.warning(msg)
         warnings.append(msg)
 
-    # Normalize repeats_header + header_row_count for downstream consumers. If we did
-    # NOT actually drop any header rows, and the slice declares zero header rows, then
-    # repeats_header=True is misleading.
+    # Normalize repeats_header + header_row_count for downstream consumers. For
+    # continuation slices, header_row_count reflects *effective/confirmed* repeated
+    # headers (i.e., rows actually dropped), not the extractor's guess.
     repeats_header_norm = next_item.repeats_header
-    next_hrc_effective = next_hrc
-    if next_hrc == 0 and dropped_header_rows > 0:
-        # We inferred headers by matching; record the effective header row count.
-        next_hrc_effective = match_k
-        msg = (
-            f"Inferred header_row_count={match_k} for continuation slice (was 0) "
-            f"because we dropped repeated headers. segment_id={segment_id}, page={next_page_index}."
-        )
-        logger.warning(msg)
-        warnings.append(msg)
+    next_hrc_effective = dropped_header_rows
 
+    # If we dropped header rows, we have confirmed repetition regardless of the
+    # extractor/verifier hint. Normalize repeats_header accordingly (and warn if it
+    # contradicts an explicit False).
+    if dropped_header_rows > 0:
+        if repeats_header_norm is False:
+            msg = (
+                f"Table continuation had repeats_header=False but we dropped {dropped_header_rows} "
+                f"repeated header rows by matching the base header; normalizing repeats_header to True. "
+                f"segment_id={segment_id}, page={next_page_index}, item_index={next_item_index}."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        repeats_header_norm = True
+
+        # If the slice declared 0 header rows but we dropped some, record that
+        # inference.
+        if next_hrc == 0:
+            msg = (
+                f"Inferred header_row_count={dropped_header_rows} for continuation slice (was 0) "
+                f"because we dropped repeated headers. segment_id={segment_id}, page={next_page_index}."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+    # If nothing was dropped, repeats_header=True is misleading; normalize away.
     if repeats_header_norm is True and next_hrc_effective == 0:
         repeats_header_norm = None
         msg = (
-            f"Normalized repeats_header from True to None because header_row_count==0 "
+            f"Normalized repeats_header from True to None because effective header_row_count==0 "
             f"and no repeated header rows were dropped. "
             f"segment_id={segment_id}, page={next_page_index}, item_index={next_item_index}."
         )
