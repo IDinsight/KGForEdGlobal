@@ -1031,13 +1031,25 @@ def _validate_groupings_against_evidence(
                 f"  section_path_headings: {headings}"
             )
 
-        # Role-specific evidence blob expansion for wrapper-style blocks.
+        # Block-text evidence expansion.
+        #
+        # A heading block's own text IS the curriculum evidence it introduces: subject,
+        # stage, grade, strand, etc. are all grounded by the heading itself. Accept the
+        # block's text as outer evidence for ALL grouping roles when the segment is a
+        # heading.
+        #
+        # For non-heading blocks (paragraphs, lists) we keep the original conservative
+        # policy: only GRADE_LEVEL may be grounded by block text (handles inline grade
+        # cues like "(niveau 1: CE1)").
         evidence_blob = evidence_blob_base
+        is_heading_block = (
+            seg_kind == "block" and segment_decision.block_type == BlockType.HEADING
+        )
 
         if (
             block_text_norm
             and seg_kind == "block"
-            and g.role == NodeRole.GRADE_LEVEL
+            and (is_heading_block or g.role == NodeRole.GRADE_LEVEL)
             and segment_decision.decision_type
             in (
                 SegmentDecisionType.EMIT_GROUPINGS_ONLY,
