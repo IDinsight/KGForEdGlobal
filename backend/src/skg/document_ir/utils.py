@@ -68,6 +68,7 @@ _LOCAL_CODE_RE = re.compile(r"\s+")
 _TABLE_CODE_RE = re.compile(
     rf"(?i)^\s*(?:{_TABLE_PREFIX_RE})\s*(?:no\.?|n\.?|na\.)?\s*(?P<num>\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?"
 )
+_TRAILING_SEP_RE = re.compile(r"[\s:.\-–—]+$")
 
 
 @dataclass(frozen=True)
@@ -426,6 +427,39 @@ def _caption_anchor(item: Block) -> str:
     return normalize_local_code(code) or ""
 
 
+def _classify_code_kind(code: str) -> Optional[str]:
+    """Classify a local code as 'table', 'figure', or None.
+
+    Uses the multilingual regex patterns (_TABLE_CODE_RE, _FIGURE_CODE_RE) to determine
+    whether a code string refers to a table or figure, regardless of the language
+    prefix. Unlike `_extract_table_or_figure_local_code`, this function does **not**
+    canonicalize the code--it only classifies.
+
+    Parameters
+    ----------
+    code
+        The raw local code string.
+
+    Returns
+    -------
+    Optional[str]
+        ``"table"``, ``"figure"``, or ``None``.
+    """
+
+    s = (code or "").strip()
+
+    if not s:
+        return None
+
+    if _TABLE_CODE_RE.match(s) is not None:
+        return "table"
+
+    if _FIGURE_CODE_RE.match(s) is not None:
+        return "figure"
+
+    return None
+
+
 def _column_signature(*, mode: str, table: Table) -> str:
     """Compute a deterministic, semantic-light columns signature from a PageIR Table.
 
@@ -656,6 +690,39 @@ def _expand_header_row_to_n_cols(
         expanded = expanded[:n_cols]
 
     return expanded
+
+
+def _extract_raw_table_or_figure_code(text: str) -> Optional[str]:
+    """Extract a table/figure code from text, preserving the original prefix.
+
+    Like `_extract_table_or_figure_local_code`, but returns the matched portion in its
+    original form instead of canonicalizing (e.g., `"Tableau 4"` stays `"Tableau 4"`
+    and not `"Table 4"`).
+
+    Parameters
+    ----------
+    text
+        The text to extract from.
+
+    Returns
+    -------
+    Optional[str]
+        The extracted code in its original form, or ``None`` if not found.
+    """
+
+    s = (text or "").strip()
+
+    if not s:
+        return None
+
+    for regex in (_TABLE_CODE_RE, _FIGURE_CODE_RE):
+        m = regex.match(s)
+
+        if m is not None:
+            # Strip trailing separators (:, ., -, —) that the regex may capture.
+            return _TRAILING_SEP_RE.sub("", m.group(0)).strip()
+
+    return None
 
 
 def _extract_table_or_figure_local_code(text: str) -> Optional[str]:
@@ -1257,7 +1324,7 @@ def _process_next_table_slice(
     """
 
     # 1.
-    next_local_code = canonicalize_local_code(next_item.local_code)
+    next_local_code = _strip_local_code(next_item.local_code)
 
     if next_local_code and current_local_code:
         if normalize_local_code(next_local_code) != normalize_local_code(
@@ -1431,6 +1498,10 @@ def _resolve_header_row_count(
 def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional[str]:
     """Return the first non-null local code found in the chain.
 
+    NB: Returns the raw (stripped) local code as extracted — no canonicalization
+    (e.g., "Tableau 4" stays "Tableau 4"). Canonicalization is deferred to
+    post-stitching.
+
     Parameters
     ----------
     chain
@@ -1444,21 +1515,18 @@ def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional
     """
 
     _, _, first_item = chain[0]
-    first_code = canonicalize_local_code(first_item.local_code)
+    first_code = _strip_local_code(first_item.local_code)
 
     return first_code or next(
-        (
-            c
-            for *_, item in chain[1:]
-            if (c := canonicalize_local_code(item.local_code))
-        ),
+        (c for *_, item in chain[1:] if (c := _strip_local_code(item.local_code))),
         None,
     )
 
 
 def _resolve_label_code(item: Block) -> Optional[str]:
-    """Resolve a table/figure code from a label-like Block using local_code first, then
-    falling back to the block text.
+    """Resolve a table/figure code from a label-like Block.
+
+    Checks `local_code` first, then falls back to the block text.
 
     Parameters
     ----------
@@ -1468,17 +1536,15 @@ def _resolve_label_code(item: Block) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        The resolved code, or None if not found.
+        The resolved code in its original form, or `None` if not found.
     """
 
     if isinstance(item.local_code, str) and item.local_code.strip():
-        code = _extract_table_or_figure_local_code(item.local_code)
-
-        if code:
-            return code
+        if _classify_code_kind(item.local_code) is not None:
+            return item.local_code.strip()
 
     if item.text is not None and isinstance(item.text, TextUnit):
-        return _extract_table_or_figure_local_code(item.text.text)
+        return _extract_raw_table_or_figure_code(item.text.text)
 
     return None
 
@@ -1768,6 +1834,28 @@ def _score_table_match(
     return score
 
 
+def _strip_local_code(local_code: Optional[str]) -> Optional[str]:
+    """Strip whitespace from a local code, returning None if empty.
+
+    Parameters
+    ----------
+    local_code
+        The raw local code from extraction.
+
+    Returns
+    -------
+    Optional[str]
+        The stripped local code, or None if input is None/whitespace-only.
+    """
+
+    if not local_code:
+        return None
+
+    s = local_code.strip()
+
+    return s if s else None
+
+
 def _summarize_chain_items(chain: list[ChainItem]) -> str:
     """Create a compact, human-readable summaries for a stitched chain (for
     warnings/debug).
@@ -1815,7 +1903,6 @@ def _summarize_chain_items(chain: list[ChainItem]) -> str:
 def _try_assign_immediate(
     *,
     code: str,
-    code_norm: str,
     label_info: tuple[int, Block],
     target_info: tuple[int, Block | Table],
     page_index: int,
@@ -1825,12 +1912,14 @@ def _try_assign_immediate(
     immediate next item matches the label type (Table code -> Table item,
     Figure code -> Figure item).
 
+    NB: The `code` written to the target item is the **raw** form from the caption
+    (e.g., ``"Tableau 4"``), not a canonicalized English form. Canonical comparison
+    (for conflict detection) uses `_extract_table_or_figure_local_code` internally.
+
     Parameters
     ----------
     code
-        The resolved code to assign.
-    code_norm
-        The normalized form of the code for comparison.
+        The resolved code to assign (raw form).
     label_info
         A tuple of (original item index, Block) for the label.
     target_info
@@ -1852,14 +1941,18 @@ def _try_assign_immediate(
     did_write_code = False
     conflict_msg: Optional[str] = None
 
-    if code_norm.startswith("table") and isinstance(next_item, Table):
-        existing_norm = normalize_local_code(next_item.local_code)
+    code_kind = _classify_code_kind(code)
 
-        if not existing_norm:
+    if code_kind == "table" and isinstance(next_item, Table):
+        # Use canonical forms for comparison only (never stored).
+        existing_canon = _extract_table_or_figure_local_code(next_item.local_code)
+        code_canon = _extract_table_or_figure_local_code(code)
+
+        if not existing_canon:
             next_item.local_code = code
             assigned = True
             did_write_code = True
-        elif existing_norm == code_norm:
+        elif existing_canon == code_canon:
             # Already consistent--treat as success so we DO NOT fallback-scan.
             assigned = True
         else:
@@ -1872,17 +1965,18 @@ def _try_assign_immediate(
             )
             assigned = True
     elif (
-        code_norm.startswith("figure")
+        code_kind == "figure"
         and isinstance(next_item, Block)
         and next_item.block_type == BlockType.FIGURE
     ):
-        existing_norm = normalize_local_code(next_item.local_code)
+        existing_canon = _extract_table_or_figure_local_code(next_item.local_code)
+        code_canon = _extract_table_or_figure_local_code(code)
 
-        if not existing_norm:
+        if not existing_canon:
             next_item.local_code = code
             assigned = True
             did_write_code = True
-        elif existing_norm == code_norm:
+        elif existing_canon == code_canon:
             assigned = True
         else:
             conflict_msg = (
@@ -1892,7 +1986,7 @@ def _try_assign_immediate(
             )
             assigned = True
 
-    # Only log “propagated” when we actually wrote a code.
+    # Only log "propagated" when we actually wrote a code.
     if did_write_code:
         msg = (
             f"Propagated label code '{code}' on page {page_index}: "
@@ -1926,10 +2020,13 @@ def _try_fallback_scan(
     a fallback when a Caption is not immediately followed by its Table. Stops scanning
     if another Caption or Label is encountered.
 
+    NB: Writes the **raw** code form (e.g., `"Tableau 4"`) to the target table's
+    `local_code`.
+
     Parameters
     ----------
     code
-        The code to assign to the next Table.
+        The code to assign to the next Table (raw form).
     items
         The list of (original item index, item) tuples for the page.
     label_orig_index
@@ -2382,47 +2479,6 @@ def compute_segment_id(
     name = f"{doc_key}:segment:{kind}:p{page_index:04d}:i{item_index:04d}"
 
     return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
-
-
-def canonicalize_local_code(local_code: Optional[str]) -> Optional[str]:
-    """Canonicalize a local code for display.
-
-    NB:
-
-    1. This is NOT for matching/comparison (use normalize_local_code for that).
-    2. Goal is to preserve a display-safe value like "Table 4", not "table 4".
-
-    Parameters
-    ----------
-    local_code
-        The local code to canonicalize.
-
-    Returns
-    -------
-    Optional[str]
-        The canonicalized local code, or None if input is None/empty.
-    """
-
-    if not local_code:
-        return None
-
-    s = local_code.strip()
-    if not s:
-        return None
-
-    # Canonicalize common table/figure code prefixes to a stable display form.
-    # Examples:
-    #   - "TABLE 4" -> "Table 4"
-    #   - "Jedwali 4" -> "Table 4"
-    #   - "Tableau 4" -> "Table 4"
-    #   - "Figure 2" -> "Figure 2"
-    code = _extract_table_or_figure_local_code(s)
-
-    if code:
-        return code
-
-    # Otherwise keep as-is (trimmed).
-    return s
 
 
 def create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
@@ -3247,6 +3303,10 @@ def propagate_caption_table_local_codes(
     """Propagate Table/Figure codes from label blocks to the appropriate content item
     on the same page.
 
+    NB: This function **mutates** `local_code` on target items in-place. The propagated
+    code preserves the original form from the caption (e.g., `"Tableau 4"` stays
+    `"Tableau 4"`; it is NOT canonicalized to `"Table 4"`).
+
     Parameters
     ----------
     items
@@ -3281,12 +3341,10 @@ def propagate_caption_table_local_codes(
             continue
 
         next_idx, next_orig_index, next_item = next_data
-        code_norm = normalize_local_code(code) or ""
 
         # Try immediate assignment (Table or Figure).
         was_assigned = _try_assign_immediate(
             code=code,
-            code_norm=code_norm,
             label_info=(label_orig_index, label_item),
             target_info=(next_orig_index, next_item),
             page_index=page_index,
@@ -3296,8 +3354,11 @@ def propagate_caption_table_local_codes(
         if was_assigned:
             continue
 
-        # Fallback: scan forward for tables (only for Captions).
-        if label_item.block_type == BlockType.CAPTION and code_norm.startswith("table"):
+        # Fallback: scan forward for tables (only for Captions with table codes).
+        if (
+            label_item.block_type == BlockType.CAPTION
+            and _classify_code_kind(code) == "table"
+        ):
             _try_fallback_scan(
                 code=code,
                 items=items,
@@ -3864,9 +3925,9 @@ def stitch_block_chain(
 
     for page_index, item_index, block in chain:
         # Promote local_code across the stitched chain: take the first non-empty code
-        # encountered in any slice.
+        # encountered in any slice. NB: preserves original form (no canonicalization).
         if resolved_local_code is None:
-            if lc := canonicalize_local_code(block.local_code):
+            if lc := _strip_local_code(block.local_code):
                 resolved_local_code = lc
 
         block_figure = (
