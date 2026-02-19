@@ -147,6 +147,9 @@
 		"max_table_rows_per_decision": null,
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
+		"row_grouping_canonicalization_roles": [
+			"week"
+		],
 		"segment_decision_conf_threshold": 0.5,
 		"spine_policy": {
 			"allow_partial_context": true,

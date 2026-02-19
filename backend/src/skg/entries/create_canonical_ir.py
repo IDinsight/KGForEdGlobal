@@ -268,6 +268,7 @@ def create_canonical_ir(
         canonicalization_skip_roles=config.canonicalization_skip_roles,
         creation_dirs=creation_dirs,
         overwrite=config.overwrite,
+        row_grouping_canonicalization_roles=config.row_grouping_canonicalization_roles,
         segment_decisions=segment_decisions,
     )
 
@@ -290,6 +291,7 @@ def create_canonical_ir(
         creation_dirs=creation_dirs,
         mapping=mapping,
         overwrite=config.overwrite,
+        row_grouping_canonicalization_roles=config.row_grouping_canonicalization_roles,
         segment_decisions=segment_decisions,
     )
 
