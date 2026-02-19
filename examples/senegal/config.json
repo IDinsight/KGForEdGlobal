@@ -235,7 +235,7 @@
 		"structural_leaf_warn_threshold": 0.5
 	},
 	"kgs": {
-		"academic_subject_default": "Mathematics",
+		"academic_subject_default": "Mathématiques",
 		"adoption_status": "Adopted",
 		"always_double_check_first_attempt": false,
 		"attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-francais), Mathematiques, 2eme etape (CE1 - CE2).",

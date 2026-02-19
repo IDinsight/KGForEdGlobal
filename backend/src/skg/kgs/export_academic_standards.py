@@ -869,12 +869,7 @@ def _emit_sfi(
         # Code retrieval (should work across countries/canonicalizers).
         grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
         stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
-        code_raw = (
-            node.get("local_code")
-            or node.get("code")
-            or (node.get("metadata") or {}).get("code")
-            or ""
-        )
+        code_raw = node.get("local_code") or ""
         code_features = _parse_code_features(
             code=str(code_raw), grade_ordinal_low=grade_low
         )
@@ -914,12 +909,7 @@ def _emit_sfi(
         normalized_statement_type=_normalized_statement_type(config=config, role=role),
         notes=None,
         provider=config.provider,
-        statement_code=(
-            node.get("local_code")
-            or node.get("code")
-            or (node.get("metadata") or {}).get("code")
-            or None
-        ),
+        statement_code=node.get("local_code"),
         statement_type=(node.get("source_label") or role or None),
     )
 
