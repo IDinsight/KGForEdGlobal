@@ -89,20 +89,7 @@ class ExportContext:
 
         role = node["role"]
         assert role, f"Node {child_id} is missing role in provenance: {node}"
-        code = normalize_ws(str(node.get("local_code") or ""))
-
-        # Build the base piece first (no early returns), then apply order
-        # disambiguation if needed.
-        if role in {item.value for item in StatementRole}:
-            text_for_hash = str(
-                node.get("normalized_text") or node_display_text(node=node)
-            )
-            piece = f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
-        else:
-            label = _slugify(
-                s=str(node.get("normalized_text") or node_display_text(node=node))
-            )
-            piece = f"{role}:{code}:{label}" if code else f"{role}:{label}"
+        piece = _compute_base_piece(node=node)
 
         if (parent_id, child_id) in self._needs_order_disambiguator:
             oi = self.edge_order_index.get((parent_id, child_id), 0)
@@ -224,6 +211,36 @@ class KGDirs:
     combined: Path
 
 
+def _compute_base_piece(*, node: dict[str, Any]) -> str:
+    """Compute the base path piece for a canonical node (before order disambiguation).
+
+    This is the single source of truth for the string used to identify a node within
+    its sibling set. It is called by both `ExportContext._path_piece` (for path-key
+    generation) and `_detect_sibling_collisions` (for order disambiguation detection).
+
+    Parameters
+    ----------
+    node
+        The canonical node dictionary.
+
+    Returns
+    -------
+    str
+        The base piece string for the node.
+    """
+
+    role = str(node.get("role") or "")
+    code = normalize_ws(str(node.get("local_code") or ""))
+
+    if role in {item.value for item in StatementRole}:
+        text_for_hash = str(node.get("normalized_text") or node_display_text(node=node))
+        return f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
+
+    label = _slugify(s=str(node.get("normalized_text") or node_display_text(node=node)))
+
+    return f"{role}:{code}:{label}" if code else f"{role}:{label}"
+
+
 def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
     """Detect sibling nodes that may require order disambiguation.
 
@@ -245,20 +262,7 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
 
         for cid in kids:
             node = ctx.nodes_by_id[cid]
-            role = str(node.get("role") or "")
-            code = normalize_ws(str(node.get("local_code") or ""))
-
-            # NB: include statement roles too, using the same base as _path_piece.
-            if role in {item.value for item in StatementRole}:
-                text_for_hash = str(
-                    node.get("normalized_text") or node_display_text(node=node)
-                )
-                base = f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
-            else:
-                label = _slugify(
-                    s=str(node.get("normalized_text") or node_display_text(node=node))
-                )
-                base = f"{role}:{code}:{label}" if code else f"{role}:{label}"
+            base = _compute_base_piece(node=node)
 
             if base in seen:
                 needs.add((pid, seen[base]))
@@ -575,7 +579,15 @@ def build_kg_export_context(
     2. Build tree indexes
     3. Serialize decisions by ID
     4. Serialize decisions by segment ID (choose a representative decision per
-        segment_id to handle chunking).
+        segment_id to handle chunking). For segments with multiple decisions (e.g.,
+        chunked tables), choose a single representative decision per segment_id.
+        Tiebreaker: (confidence DESC, decision_id DESC).
+            - `confidence` reflects the LLM's reported certainty, so higher is
+                preferred.
+            - `decision_id` is a deterministic hash-based string, so its lexicographic
+                ordering is stable across reruns but carries no semantic meaning. It
+                serves solely to break ties when confidence values are equal, ensuring
+                a single deterministic winner per segment.
     5. Initialize context
     6. Post-init calculations
 

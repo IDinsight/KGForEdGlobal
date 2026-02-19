@@ -167,8 +167,8 @@ def _build_learning_progressions_graph_bundle(
     Parameters
     ----------
     academic_standards
-        The exported Academic Standards KG artifacts, containing the framework and items
-        to include as nodes in the graph.
+        The exported Academic Standards KG artifacts, containing the framework and
+        items to include as nodes in the graph.
     ctx
         The KG export context, providing information such as the document key for the
         graph bundle metadata.
@@ -351,6 +351,51 @@ def _build_sfi_index(
                 }
 
     return index
+
+
+def _build_item_payload(
+    item: dict[str, Any],
+    *,
+    include_order_index: bool = False,
+    thread_key_field: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a compact item payload for the LLM prompt from a bucket item.
+
+    This is the single source of truth for which fields are sent to the LLM for each
+    StandardsFrameworkItem in the learning progressions inference prompts.
+
+    Parameters
+    ----------
+    item
+        A bucket item dictionary containing SFI fields.
+    include_order_index
+        Whether to include ``order_index_within_parent`` in the payload. Used by
+        buildsTowards phases where sequence ordering matters.
+    thread_key_field
+        If provided, the item key to read for an additional ``thread_key`` field in the
+        payload (e.g., ``"_thread_key"``). Used by Phase 4 cross-grade relatesTo.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the SFI fields to include in the LLM prompt payload.
+    """
+
+    payload: dict[str, Any] = {
+        "sfi_uuid": item["sfi_uuid"],
+        "statement_code": item.get("statement_code"),
+        "description": item.get("description"),
+        "notes": item.get("notes"),
+        "page_index": item.get("page_index"),
+    }
+
+    if include_order_index:
+        payload["order_index_within_parent"] = item.get("order_index_within_parent")
+
+    if thread_key_field:
+        payload["thread_key"] = item.get(thread_key_field)
+
+    return payload
 
 
 def _build_thread_map(
@@ -973,31 +1018,16 @@ def _infer_cross_grade_builds_towards(
             )
 
             lower_payload = [
-                {
-                    "sfi_uuid": it["sfi_uuid"],
-                    "statement_code": it.get("statement_code"),
-                    "description": it.get("description"),
-                    "notes": it.get("notes"),
-                    "page_index": it.get("page_index"),
-                    "order_index_within_parent": it.get("order_index_within_parent"),
-                }
-                for it in lower_items
+                _build_item_payload(it, include_order_index=True) for it in lower_items
             ]
             upper_payload = [
-                {
-                    "sfi_uuid": it["sfi_uuid"],
-                    "statement_code": it.get("statement_code"),
-                    "description": it.get("description"),
-                    "notes": it.get("notes"),
-                    "page_index": it.get("page_index"),
-                    "order_index_within_parent": it.get("order_index_within_parent"),
-                }
-                for it in upper_items
+                _build_item_payload(it, include_order_index=True) for it in upper_items
             ]
 
             prompt = prompt_builder(
                 lower_items=lower_payload,
                 lower_grade_label=lo_label,
+                min_confidence=config.progressions_builds_towards_min_confidence,
                 thread_key=thread_key,
                 thread_path=str(b_hi.get("topic_path") or b_hi.get("topic_path_key")),
                 upper_grade_label=hi_label,
@@ -1156,6 +1186,7 @@ def _infer_cross_grade_relates_to(
                 lower_grade_label=str(lower["level_label"]),
                 lower_items=lower_items,
                 max_edges_per_sfi=max_edges_per_sfi,
+                min_confidence=config.progressions_relates_to_min_confidence,
                 subject_label=subject_label,
                 upper_grade_label=str(upper["level_label"]),
                 upper_items=upper_items,
@@ -1185,6 +1216,7 @@ def _infer_cross_grade_relates_to(
                 lower_grade_label=str(upper["level_label"]),
                 lower_items=upper_items,
                 max_edges_per_sfi=max_edges_per_sfi,
+                min_confidence=config.progressions_relates_to_min_confidence,
                 subject_label=subject_label,
                 upper_grade_label=str(lower["level_label"]),
                 upper_items=lower_items,
@@ -1315,24 +1347,14 @@ def _infer_within_grade_builds_towards(
                 f"({grade_label} - {bucket.get('topic_path_key')})"
             )
 
-            ordered_items = []
-            for item in items:
-                ordered_items.append(
-                    {
-                        "sfi_uuid": item["sfi_uuid"],
-                        "statement_code": item.get("statement_code"),
-                        "description": item.get("description"),
-                        "notes": item.get("notes"),
-                        "page_index": item.get("page_index"),
-                        "order_index_within_parent": item.get(
-                            "order_index_within_parent"
-                        ),
-                    }
-                )
+            ordered_items = [
+                _build_item_payload(item, include_order_index=True) for item in items
+            ]
 
             prompt = within_grade_builds_towards(
                 grade_label=str(grade_label),
                 items=ordered_items,
+                min_confidence=config.progressions_builds_towards_min_confidence,
                 thread_path=str(
                     bucket.get("topic_path") or bucket.get("topic_path_key")
                 ),
@@ -1480,26 +1502,8 @@ def _infer_within_grade_relates_to(
                 # only actual LLM calls (A -> B and B -> A), which are logged below.
                 logger.info(f"Phase 3 Pair: ({grade_label}: {subject_a} × {subject_b})")
 
-                items_a = [
-                    {
-                        "sfi_uuid": it["sfi_uuid"],
-                        "statement_code": it.get("statement_code"),
-                        "description": it.get("description"),
-                        "notes": it.get("notes"),
-                        "page_index": it.get("page_index"),
-                    }
-                    for it in sampled_a
-                ]
-                items_b = [
-                    {
-                        "sfi_uuid": it["sfi_uuid"],
-                        "statement_code": it.get("statement_code"),
-                        "description": it.get("description"),
-                        "notes": it.get("notes"),
-                        "page_index": it.get("page_index"),
-                    }
-                    for it in sampled_b
-                ]
+                items_a = [_build_item_payload(it) for it in sampled_a]
+                items_b = [_build_item_payload(it) for it in sampled_b]
 
                 allowed_a = {str(it["sfi_uuid"]) for it in items_a}
                 allowed_b = {str(it["sfi_uuid"]) for it in items_b}
@@ -1511,6 +1515,7 @@ def _infer_within_grade_relates_to(
                     items_a=items_a,
                     items_b=items_b,
                     max_edges_per_sfi=max_edges_per_sfi,
+                    min_confidence=config.progressions_relates_to_min_confidence,
                     subject_label=f"{subject_a} × {subject_b}",
                     thread_a_key=f"subject:{subject_a}",
                     thread_b_key=f"subject:{subject_b}",
@@ -1541,6 +1546,7 @@ def _infer_within_grade_relates_to(
                     items_a=items_b,
                     items_b=items_a,
                     max_edges_per_sfi=max_edges_per_sfi,
+                    min_confidence=config.progressions_relates_to_min_confidence,
                     subject_label=f"{subject_a} × {subject_b}",
                     thread_a_key=f"subject:{subject_b}",
                     thread_b_key=f"subject:{subject_a}",
@@ -1928,14 +1934,7 @@ def _prepare_subject_grade_samples(
                 continue
 
             prompt_items = [
-                {
-                    "sfi_uuid": it["sfi_uuid"],
-                    "statement_code": it.get("statement_code"),
-                    "description": it.get("description"),
-                    "notes": it.get("notes"),
-                    "page_index": it.get("page_index"),
-                    "thread_key": it.get("_thread_key"),
-                }
+                _build_item_payload(it, thread_key_field="_thread_key")
                 for it in sampled
             ]
             subject_level_samples[subject_label][level_key] = {
@@ -2014,7 +2013,26 @@ def _process_and_filter_candidates(
     builds_relationships: list[Relationship] = []
     relates_relationships: list[Relationship] = []
 
-    for e in builds_kept:
+    def _emit(e: CandidateEdge) -> Relationship:
+        """Convert a CandidateEdge to a Relationship, enriching metadata as needed.
+
+        Parameters
+        ----------
+        e
+            The CandidateEdge instance to convert into a Relationship. This edge is
+            expected to have attributes such as confidence, evidence, inference_source,
+            inference_type, rel_type, source_sfi_uuid, target_sfi_uuid, and metadata
+            containing any additional information from the inference process.
+
+        Returns
+        -------
+        Relationship
+            A Relationship instance constructed from the CandidateEdge, with enriched
+            metadata that includes the original metadata from the edge as well as
+            additional fields such as confidence, evidence, inference source/type, and
+            optionally source/target SFI context if an sfi_index is provided.
+        """
+
         metadata = dict(e.metadata)
         metadata.update(
             {
@@ -2029,40 +2047,19 @@ def _process_and_filter_candidates(
             metadata["source_sfi_context"] = sfi_index.get(str(e.source_sfi_uuid))
             metadata["target_sfi_context"] = sfi_index.get(str(e.target_sfi_uuid))
 
-        builds_relationships.append(
-            _build_relationship(
-                config=config,
-                metadata=metadata,
-                rel_type="buildsTowards",
-                source=e.source_sfi_uuid,
-                target=e.target_sfi_uuid,
-            )
+        return _build_relationship(
+            config=config,
+            metadata=metadata,
+            rel_type=e.rel_type,
+            source=e.source_sfi_uuid,
+            target=e.target_sfi_uuid,
         )
+
+    for e in builds_kept:
+        builds_relationships.append(_emit(e))
 
     for e in relates_kept:
-        metadata = dict(e.metadata)
-        metadata.update(
-            {
-                "confidence": e.confidence,
-                "evidence": e.evidence,
-                "inference_source": e.inference_source,
-                "inference_type": e.inference_type,
-            }
-        )
-
-        if sfi_index:
-            metadata["source_sfi_context"] = sfi_index.get(str(e.source_sfi_uuid))
-            metadata["target_sfi_context"] = sfi_index.get(str(e.target_sfi_uuid))
-
-        relates_relationships.append(
-            _build_relationship(
-                config=config,
-                metadata=metadata,
-                rel_type="relatesTo",
-                source=e.source_sfi_uuid,
-                target=e.target_sfi_uuid,
-            )
-        )
+        relates_relationships.append(_emit(e))
 
     stats = {
         "candidate_edges_total_after_dedupe": len(candidates),
@@ -2542,14 +2539,17 @@ def export_learning_progressions(
         "phase_toggles": {
             "within_grade_builds_towards": config.progressions_within_grade_builds_towards,
             "cross_grade_builds_towards": config.progressions_cross_grade_builds_towards,
+            "cross_stage_builds_towards": config.progressions_cross_stage_builds_towards,
             "within_grade_relates_to": config.progressions_within_grade_relates_to,
             "cross_grade_relates_to": config.progressions_cross_grade_relates_to,
+            "cross_stage_relates_to": config.progressions_cross_stage_relates_to,
         },
         "thresholds": {
             "builds_towards_min_confidence": config.progressions_builds_towards_min_confidence,
             "relates_to_min_confidence": config.progressions_relates_to_min_confidence,
             "relates_to_max_edges_per_sfi": config.progressions_relates_to_max_edges_per_sfi,
             "within_grade_relates_to_max_items_per_subject": config.progressions_within_grade_relates_to_max_items_per_subject,
+            "cross_grade_relates_to_max_items_per_subject": config.progressions_cross_grade_relates_to_max_items_per_subject,
         },
         "drops": buckets_info.get("drops") or {},
     }

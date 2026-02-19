@@ -33,6 +33,209 @@ NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 ValidationLevel = Literal["error", "warning", "info"]
 
 
+def _strip_and_require_non_empty_str(v: str) -> str:
+    """Strip whitespace and require non-empty string for required fields.
+
+    Parameters
+    ----------
+    v
+        The input string value to validate.
+
+    Returns
+    -------
+    str
+        The validated and stripped string value.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a string.
+    ValueError
+        If the input value is None or an empty string after stripping.
+    """
+
+    if v is None:
+        raise ValueError("Required field cannot be None")
+
+    if not isinstance(v, str):
+        raise TypeError("Expected a string")
+
+    v2 = v.strip()
+
+    if not v2:
+        raise ValueError("Required string field cannot be empty")
+
+    return v2
+
+
+def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
+    """Validate ISO-8601 parseability for timestamps if provided.
+
+    Parameters
+    ----------
+    v
+        The date string to validate.
+
+    Returns
+    -------
+    Optional[str]
+        The validated date string or None.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a string or None.
+    ValueError
+        If the input string is not a valid ISO-8601 datetime.
+    """
+
+    if v is None:
+        return None
+
+    if not isinstance(v, str):
+        raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
+
+    v2 = v.strip()
+
+    if not v2:
+        return None
+
+    # Accept common ISO-8601 forms; supports "Z" suffix via replace.
+    try:
+        datetime.fromisoformat(v2.replace("Z", "+00:00"))
+    except Exception as e:
+        raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
+
+    return v2
+
+
+class _HasDateFields:
+    """Structural type stub for models with date_created/date_modified fields."""
+
+    date_created: Optional[str]
+    date_modified: Optional[str]
+
+
+class _HasCaseIdentifierFields:
+    """Structural type stub for models with case_identifier_uri/uuid fields."""
+
+    case_identifier_uri: str
+    case_identifier_uuid: UUID
+
+
+class _CaseIdentifierMixin:
+    """Mixin providing CASE-style URI/UUID validation.
+
+    Consuming models must declare `case_identifier_uri: str` and
+    `case_identifier_uuid: UUID`.
+    """
+
+    @field_validator("case_identifier_uri")
+    @classmethod
+    def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
+        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
+        etc.).
+
+        Parameters
+        ----------
+        v
+            The case_identifier_uri string to validate.
+
+        Returns
+        -------
+        str
+            The validated case_identifier_uri string.
+
+        Raises
+        ------
+        ValueError
+            If the case_identifier_uri does not include a URI scheme.
+        """
+
+        parsed = urlparse(v)
+
+        if not parsed.scheme:
+            raise ValueError(
+                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
+            )
+
+        return v
+
+    @model_validator(mode="after")
+    def _check_case_uri_contains_uuid(
+        self: _HasCaseIdentifierFields,
+    ) -> _HasCaseIdentifierFields:
+        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
+        traceability).
+
+        Returns
+        -------
+        Self
+            The validated model instance.
+
+        Raises
+        ------
+        ValueError
+            If case_identifier_uri does not include case_identifier_uuid.
+        """
+
+        if str(self.case_identifier_uuid) not in self.case_identifier_uri:
+            raise ValueError("case_identifier_uri must include case_identifier_uuid")
+
+        return self
+
+
+class _DateValidationMixin:
+    """Mixin providing ISO-8601 date validation and modified >= created check.
+
+    Consuming models must declare `date_created: Optional[str]` and
+    `date_modified: Optional[str]`.
+    """
+
+    @field_validator("date_created", "date_modified")
+    @classmethod
+    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
+        """Validate that date_created and date_modified, if provided, are valid
+        ISO-8601 strings.
+
+        Parameters
+        ----------
+        v
+            The date string to validate.
+
+        Returns
+        -------
+        Optional[str]
+            The validated date string or None.
+        """
+
+        return _validate_iso8601_str(v)
+
+    @model_validator(mode="after")
+    def _check_modified_not_before_created(self: _HasDateFields) -> _HasDateFields:
+        """If both dates exist, ensure dateModified >= dateCreated.
+
+        Returns
+        -------
+        Self
+            The validated model instance.
+
+        Raises
+        ------
+        ValueError
+            If dateModified is before dateCreated.
+        """
+
+        if self.date_created and self.date_modified:
+            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
+            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
+
+            if modified < created:
+                raise ValueError("dateModified must be >= dateCreated")
+
+        return self
+
+
 # Schemas for LLM responses.
 class ProgressionEdge(BaseSchema):
     """A single suggested edge between two StandardsFrameworkItems."""
@@ -119,7 +322,7 @@ class ProgressionEdgesResponse(BaseSchema):
 
 
 # Schemas for nodes.
-class StandardsFramework(BaseSchema):
+class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema):
     """Root node for a standards framework (typically one per PDF).
 
     This represents the top-level standards document/container in the LC KG. All
@@ -258,7 +461,7 @@ class StandardsFramework(BaseSchema):
     )
     @classmethod
     def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty string for required fields.
+        """Strip whitespace and require non-empty strings for required fields.
 
         Parameters
         ----------
@@ -269,146 +472,12 @@ class StandardsFramework(BaseSchema):
         -------
         str
             The validated and stripped string value.
-
-        Raises
-        ------
-        ValueError
-            If the input value is None or an empty string after stripping.
         """
 
-        if v is None:
-            raise ValueError("Required field cannot be None")
-
-        if not isinstance(v, str):
-            raise TypeError("Expected a string")
-
-        v2 = v.strip()
-
-        if not v2:
-            raise ValueError("Required string field cannot be empty")
-
-        return v2
-
-    @field_validator("case_identifier_uri")
-    @classmethod
-    def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
-        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
-        etc.).
-
-        Parameters
-        ----------
-        v
-            The case_identifier_uri string to validate.
-
-        Returns
-        -------
-        str
-            The validated case_identifier_uri string.
-
-        Raises
-        ------
-        ValueError
-            If the case_identifier_uri does not include a URI scheme.
-        """
-
-        parsed = urlparse(v)
-
-        if not parsed.scheme:
-            raise ValueError(
-                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
-            )
-
-        return v
-
-    @field_validator("date_created", "date_modified")
-    @classmethod
-    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
-        """Validate ISO-8601 parseability for timestamps if provided.
-
-        Parameters
-        ----------
-        v
-            The date string to validate.
-
-        Returns
-        -------
-        Optional[str]
-            The validated date string or None.
-
-        Raises
-        ------
-        TypeError
-            If the input is not a string or None.
-        ValueError
-            If the input string is not a valid ISO-8601 datetime.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
-
-        v2 = v.strip()
-
-        if not v2:
-            return None
-
-        # Accept common ISO-8601 forms; supports "Z" suffix via replace.
-        try:
-            datetime.fromisoformat(v2.replace("Z", "+00:00"))
-        except Exception as e:
-            raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
-
-        return v2
-
-    @model_validator(mode="after")
-    def _check_case_uri_contains_uuid(self) -> StandardsFramework:
-        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
-        traceability).
-
-        Returns
-        -------
-        StandardsFramework
-            The validated StandardsFramework object.
-
-        Raises
-        ------
-        ValueError
-            If case_identifier_uri does not include case_identifier_uuid.
-        """
-
-        if str(self.case_identifier_uuid) not in self.case_identifier_uri:
-            raise ValueError("case_identifier_uri must include case_identifier_uuid")
-
-        return self
-
-    @model_validator(mode="after")
-    def _check_modified_not_before_created(self) -> StandardsFramework:
-        """If both dates exist, ensure dateModified >= dateCreated.
-
-        Returns
-        -------
-        StandardsFramework
-            The validated StandardsFramework object.
-
-        Raises
-        ------
-        ValueError
-            If dateModified is before dateCreated.
-        """
-
-        if self.date_created and self.date_modified:
-            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
-            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
-
-            if modified < created:
-                raise ValueError("dateModified must be >= dateCreated")
-
-        return self
+        return _strip_and_require_non_empty_str(v)
 
 
-class StandardsFrameworkItem(BaseSchema):
+class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema):
     """Standards item or grouping within a standards framework.
 
     This is the primary node type in the academic standards hierarchy. Both
@@ -563,7 +632,7 @@ class StandardsFrameworkItem(BaseSchema):
     )
     @classmethod
     def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty string for required fields.
+        """Strip whitespace and require non-empty strings for required fields.
 
         Parameters
         ----------
@@ -574,25 +643,9 @@ class StandardsFrameworkItem(BaseSchema):
         -------
         str
             The validated and stripped string value.
-
-        Raises
-        ------
-        ValueError
-            If the input value is None or an empty string after stripping.
         """
 
-        if v is None:
-            raise ValueError("Required field cannot be None")
-
-        if not isinstance(v, str):
-            raise TypeError("Expected a string")
-
-        v2 = v.strip()
-
-        if not v2:
-            raise ValueError("Required string field cannot be empty")
-
-        return v2
+        return _strip_and_require_non_empty_str(v)
 
     @field_validator("statement_code", "statement_type", mode="before")
     @classmethod
@@ -624,78 +677,6 @@ class StandardsFrameworkItem(BaseSchema):
         v2 = v.strip()
 
         return v2 if v2 else None
-
-    @field_validator("case_identifier_uri")
-    @classmethod
-    def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
-        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
-        etc.).
-
-        Parameters
-        ----------
-        v
-            The case_identifier_uri string to validate.
-
-        Returns
-        -------
-        str
-            The validated case_identifier_uri string.
-
-        Raises
-        ------
-        ValueError
-            If the case_identifier_uri does not include a URI scheme.
-        """
-
-        parsed = urlparse(v)
-
-        if not parsed.scheme:
-            raise ValueError(
-                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
-            )
-
-        return v
-
-    @field_validator("date_created", "date_modified")
-    @classmethod
-    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
-        """Validate ISO-8601 parseability for timestamps if provided.
-
-        Parameters
-        ----------
-        v
-            The date string to validate.
-
-        Returns
-        -------
-        Optional[str]
-            The validated date string or None.
-
-        Raises
-        ------
-        TypeError
-            If the input is not a string or None.
-        ValueError
-            If the input string is not a valid ISO-8601 datetime.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
-
-        v2 = v.strip()
-
-        if not v2:
-            return None
-
-        try:
-            datetime.fromisoformat(v2.replace("Z", "+00:00"))
-        except Exception as e:
-            raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
-
-        return v2
 
     @field_validator("grade_level")
     @classmethod
@@ -744,51 +725,6 @@ class StandardsFrameworkItem(BaseSchema):
         return cleaned
 
     @model_validator(mode="after")
-    def _check_case_uri_contains_uuid(self) -> StandardsFrameworkItem:
-        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
-        traceability).
-
-        Returns
-        -------
-        StandardsFrameworkItem
-            The validated StandardsFrameworkItem object.
-
-        Raises
-        ------
-        ValueError
-            If case_identifier_uri does not include case_identifier_uuid.
-        """
-
-        if str(self.case_identifier_uuid) not in self.case_identifier_uri:
-            raise ValueError("case_identifier_uri must include case_identifier_uuid")
-
-        return self
-
-    @model_validator(mode="after")
-    def _check_modified_not_before_created(self) -> StandardsFrameworkItem:
-        """If both dates exist, ensure dateModified >= dateCreated.
-
-        Returns
-        -------
-        StandardsFrameworkItem
-            The validated StandardsFrameworkItem object.
-
-        Raises
-        ------
-        ValueError
-            If dateModified is before dateCreated.
-        """
-
-        if self.date_created and self.date_modified:
-            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
-            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
-
-            if modified < created:
-                raise ValueError("dateModified must be >= dateCreated")
-
-        return self
-
-    @model_validator(mode="after")
     def _check_statement_code_not_empty_if_present(self) -> StandardsFrameworkItem:
         """If statementCode is present, it must be a non-empty trimmed string.
 
@@ -809,7 +745,7 @@ class StandardsFrameworkItem(BaseSchema):
         return self
 
 
-class LearningComponent(BaseSchema):
+class LearningComponent(_DateValidationMixin, BaseSchema):
     """Granular skill/concept aligned to one or more standards items via `supports`.
 
     LearningComponents represent skill/concept units that can be aligned to
@@ -901,7 +837,7 @@ class LearningComponent(BaseSchema):
     )
     @classmethod
     def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty string for required fields.
+        """Strip whitespace and require non-empty strings for required fields.
 
         Parameters
         ----------
@@ -912,96 +848,13 @@ class LearningComponent(BaseSchema):
         -------
         str
             The validated and stripped string value.
-
-        Raises
-        ------
-        TypeError
-            If the input is not a string.
-        ValueError
-            If the input value is None or an empty string after stripping.
         """
 
-        if v is None:
-            raise ValueError("Required field cannot be None")
-
-        if not isinstance(v, str):
-            raise TypeError("Expected a string")
-
-        v2 = v.strip()
-
-        if not v2:
-            raise ValueError("Required string field cannot be empty")
-
-        return v2
-
-    @field_validator("date_created", "date_modified")
-    @classmethod
-    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
-        """Validate ISO-8601 parseability for timestamps if provided.
-
-        Parameters
-        ----------
-        v
-            The date string to validate.
-
-        Returns
-        -------
-        Optional[str]
-            The validated date string or None.
-
-        Raises
-        ------
-        TypeError
-            If the input is not a string or None.
-        ValueError
-            If the input string is not a valid ISO-8601 datetime.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
-
-        v2 = v.strip()
-
-        if not v2:
-            return None
-
-        try:
-            datetime.fromisoformat(v2.replace("Z", "+00:00"))
-        except Exception as e:
-            raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
-
-        return v2
-
-    @model_validator(mode="after")
-    def _check_modified_not_before_created(self) -> LearningComponent:
-        """If both dates exist, ensure dateModified >= dateCreated.
-
-        Returns
-        -------
-        LearningComponent
-            The validated LearningComponent object.
-
-        Raises
-        ------
-        ValueError
-            If dateModified is before dateCreated.
-        """
-
-        if self.date_created and self.date_modified:
-            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
-            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
-
-            if modified < created:
-                raise ValueError("dateModified must be >= dateCreated")
-
-        return self
+        return _strip_and_require_non_empty_str(v)
 
 
 # Schemas for relationship.
-class Relationship(BaseSchema):
+class Relationship(_DateValidationMixin, BaseSchema):
     """LC KG relationship record (shared schema across relationship types).
 
     Relationships connect two entities in the LC KG export. The meaning of the edge is
@@ -1110,7 +963,7 @@ class Relationship(BaseSchema):
     )
     @classmethod
     def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty string for required fields.
+        """Strip whitespace and require non-empty strings for required fields.
 
         Parameters
         ----------
@@ -1121,27 +974,9 @@ class Relationship(BaseSchema):
         -------
         str
             The validated and stripped string value.
-
-        Raises
-        ------
-        ValueError
-            If the input value is None or an empty string after stripping.
-        TypeError
-            If the input is not a string.
         """
 
-        if v is None:
-            raise ValueError("Required field cannot be None")
-
-        if not isinstance(v, str):
-            raise TypeError("Expected a string")
-
-        v2 = v.strip()
-
-        if not v2:
-            raise ValueError("Required string field cannot be empty")
-
-        return v2
+        return _strip_and_require_non_empty_str(v)
 
     @field_validator("description", mode="before")
     @classmethod
@@ -1172,47 +1007,6 @@ class Relationship(BaseSchema):
             raise TypeError("description must be a string")
 
         return v.strip()
-
-    @field_validator("date_created", "date_modified")
-    @classmethod
-    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
-        """Validate ISO-8601 parseability for timestamps if provided.
-
-        Parameters
-        ----------
-        v
-            The date string to validate.
-
-        Returns
-        -------
-        Optional[str]
-            The validated date string or None.
-
-        Raises
-        ------
-        TypeError
-            If the input is not a string or None.
-        ValueError
-            If the input string is not a valid ISO-8601 datetime.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
-
-        v2 = v.strip()
-
-        if not v2:
-            return None
-
-        try:
-            datetime.fromisoformat(v2.replace("Z", "+00:00"))
-        except Exception as e:
-            raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
-
-        return v2
 
     def _validate_has_child(self) -> None:
         """Validate 'hasChild' constraints: (Framework|SFI) -> SFI using CASE UUID
@@ -1365,30 +1159,6 @@ class Relationship(BaseSchema):
                 self.relationship_type,
                 f"A {self.relationship_type} relationship between {self.source_entity} and {self.target_entity}.",
             )
-
-        return self
-
-    @model_validator(mode="after")
-    def _check_modified_not_before_created(self) -> Relationship:
-        """If both dates exist, ensure dateModified >= dateCreated.
-
-        Returns
-        -------
-        Relationship
-            The validated Relationship object.
-
-        Raises
-        ------
-        ValueError
-            If dateModified is before dateCreated.
-        """
-
-        if self.date_created and self.date_modified:
-            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
-            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
-
-            if modified < created:
-                raise ValueError("dateModified must be >= dateCreated")
 
         return self
 
