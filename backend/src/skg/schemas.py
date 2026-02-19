@@ -461,6 +461,13 @@ class CreateCanonicalConfig(BaseSchema):
         False,
         description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
     )
+    bind_unknown_caption: bool = Field(
+        True,
+        description=(
+            "Whether to bind captions whose kind cannot be classified (unknown) to the "
+            "next eligible table. If false, only explicit table captions are bound."
+        ),
+    )
     canonical_grouping_min_confidence: float = Field(
         0.80,
         description="Minimum confidence level for canonical grouping.",
@@ -474,6 +481,22 @@ class CreateCanonicalConfig(BaseSchema):
             "(SegmentDecision.context_groupings and SegmentDecision.groupings). "
             "Default skips TOPIC/SUBTOPIC to avoid incorrect global merges."
         ),
+    )
+    caption_max_gap_segments: int = Field(
+        2,
+        description=(
+            "Caption-to-table binding: maximum number of non-table segments allowed "
+            "between a CAPTION block and the next TABLE segment."
+        ),
+        ge=0,
+    )
+    caption_max_page_distance: int = Field(
+        1,
+        description=(
+            "Caption-to-table binding: maximum absolute page distance allowed between "
+            "a CAPTION block and the next TABLE segment."
+        ),
+        ge=0,
     )
     context_groupings_role_order: list[NodeRole] = Field(
         default_factory=lambda: list(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER),

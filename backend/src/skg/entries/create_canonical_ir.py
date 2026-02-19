@@ -137,7 +137,12 @@ def create_canonical_ir(
 
     # 3.
     caption_bindings = load_or_build_caption_bindings(
-        creation_dirs=creation_dirs, document_ir=document_ir, overwrite=config.overwrite
+        bind_unknown_caption=config.bind_unknown_caption,
+        creation_dirs=creation_dirs,
+        document_ir=document_ir,
+        max_gap_segments=config.caption_max_gap_segments,
+        max_page_distance=config.caption_max_page_distance,
+        overwrite=config.overwrite,
     )
 
     if not config.overwrite and segment_decisions_fp.exists():

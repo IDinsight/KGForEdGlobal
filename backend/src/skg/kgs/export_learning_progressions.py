@@ -925,6 +925,10 @@ def _grade_label_and_ordinal(sfi: StandardsFrameworkItem) -> tuple[str, int | No
                 )
 
         label = stage_label or f"GRADES {grade_ordinal_low}–{grade_ordinal_high}"
+
+        # Return grade_ordinal_low as the representative ordinal; callers should prefer
+        # grade_ordinal_low/grade_ordinal_high from progression_context for accurate
+        # bounds.
         return label, grade_ordinal_low
 
     if isinstance(grade_ordinal_low, int):

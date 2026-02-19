@@ -37,13 +37,15 @@
 	},
 	"canonical_ir": {
 		"always_double_check_first_attempt": false,
+		"bind_unknown_caption": true,
 		"canonical_grouping_min_confidence": 0.8,
 		"canonicalization_skip_roles": [
 			"topic",
 			"subtopic",
-			"section",
 			"prose"
 		],
+		"caption_max_gap_segments": 2,
+		"caption_max_page_distance": 1,
 		"context_groupings_role_order": [
 			"subject",
 			"stage",
@@ -123,8 +125,8 @@
 			},
 			{
 				"pattern": "(?i)\\bapprentissages\\s+ponctuels\\b",
-				"role": "prose",
-				"note": "Wrapper heading immediately before ponctuels tables"
+				"role": "section",
+				"note": "Structural wrapper for ponctuels tables (Tableau 5+)"
 			},
 			{
 				"pattern": "(?i)\\bactivit[ée]s?\\s+(num[ée]riques|de\\s+mesure|g[ée]om[ée]triques)\\b",
