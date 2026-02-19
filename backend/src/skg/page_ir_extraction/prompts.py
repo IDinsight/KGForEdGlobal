@@ -8,20 +8,18 @@ import json
 from textwrap import dedent
 from typing import Optional
 
-# Third Party Library
-from dotmap import DotMap
-
 # Package Library
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary
+from skg.utils.general import PromptPair
 
 
-def double_check_page_ir_extraction() -> DotMap:
+def double_check_page_ir_extraction() -> PromptPair:
     """Generate the prompts for double-checking page IR extraction results.
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     system_message = None
@@ -53,9 +51,7 @@ Now return the corrected PageIR JSON only.
         """
     )
 
-    return DotMap(
-        {"system_message": system_message, "user_message": user_message.strip()}
-    )
+    return PromptPair(system_message=system_message, user_message=user_message.strip())
 
 
 def extract_page_ir_from_pdf_page(
@@ -67,7 +63,7 @@ def extract_page_ir_from_pdf_page(
     page_index: int,
     text_layer_hints: Optional[str] = None,
     year: Optional[int] = None,
-) -> DotMap:
+) -> PromptPair:
     """Generate the prompts for extracting page IRs from a page image.
 
     Parameters
@@ -89,8 +85,8 @@ def extract_page_ir_from_pdf_page(
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     allowed_block_types = json.dumps([bt.value for bt in BlockType], ensure_ascii=False)
@@ -229,6 +225,6 @@ Return the PageIR JSON only.
         """
     )
 
-    return DotMap(
-        {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
     )

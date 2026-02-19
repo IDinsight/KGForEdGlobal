@@ -46,8 +46,8 @@ QUOTES_TRANSLATION = str.maketrans(
 class PromptPair:
     """Immutable pair of system and user messages for an LLM prompt."""
 
-    system_message: str
-    user_message: str
+    system_message: str | None
+    user_message: str | None
 
 
 class Valid(BaseModel):

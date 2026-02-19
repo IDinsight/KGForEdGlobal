@@ -8,9 +8,6 @@ import json
 from textwrap import dedent
 from typing import Any
 
-# Third Party Library
-from dotmap import DotMap
-
 # Package Library
 from skg.canonical_ir.schemas import GroupingCanonicalizationKey
 from skg.utils.constants import (
@@ -22,6 +19,7 @@ from skg.utils.constants import (
     SegmentDecisionType,
     StatementRole,
 )
+from skg.utils.general import PromptPair
 
 # Build a mapping of document-specific heading patterns to fixed role assignments, to
 # be included in the heading level instructions for relevant documents. The prompt will
@@ -129,7 +127,7 @@ def decide_on_segment(
     outer_context_roles: list[Any] | None = None,
     segment: dict[str, Any],
     segment_decision_conf_threshold: float,
-) -> DotMap:
+) -> PromptPair:
     """Generate the prompts for deciding on a segment.
 
     Parameters
@@ -155,8 +153,8 @@ def decide_on_segment(
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     decision_types_str = "\n".join(
@@ -363,18 +361,18 @@ Segment JSON:
         """
     )
 
-    return DotMap(
-        {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
     )
 
 
-def double_check_decision_on_segment() -> DotMap:
+def double_check_decision_on_segment() -> PromptPair:
     """Generate the prompts for double-checking segment decision results.
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     system_message = None
@@ -395,9 +393,7 @@ If any check fails, fix it and return the corrected SegmentDecision. Otherwise, 
         """
     )
 
-    return DotMap(
-        {"system_message": system_message, "user_message": user_message.strip()}
-    )
+    return PromptPair(system_message=system_message, user_message=user_message.strip())
 
 
 def grouping_canonicalization_instructions(
@@ -405,7 +401,7 @@ def grouping_canonicalization_instructions(
     context_groupings_role_dict: dict[NodeRole, int],
     grouping_keys: list[GroupingCanonicalizationKey],
     known_canonical_keys: list[dict[str, str]] | None = None,
-) -> DotMap:
+) -> PromptPair:
     """Return the grouping canonicalization instructions.
 
     Parameters
@@ -421,8 +417,8 @@ def grouping_canonicalization_instructions(
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     # Build allowed roles + precedence strings.
@@ -500,8 +496,8 @@ Input keys (JSON array):
         """
     )
 
-    return DotMap(
-        {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
     )
 
 
@@ -510,7 +506,7 @@ def heading_level_instructions(
     country: str,
     headings: list[dict[str, Any]],
     include_neighbor_context: bool = True,
-) -> DotMap:
+) -> PromptPair:
     """Return the heading level instructions.
 
     Parameters
@@ -525,8 +521,8 @@ def heading_level_instructions(
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     system_message = dedent(
@@ -590,6 +586,6 @@ If a hint conflicts with the document’s observed structure, ignore the hint.
 
     user_message = "\n".join(lines)
 
-    return DotMap(
-        {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
     )

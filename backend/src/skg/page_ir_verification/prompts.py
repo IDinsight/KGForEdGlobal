@@ -8,20 +8,18 @@ import json
 from textwrap import dedent
 from typing import Any
 
-# Third Party Library
-from dotmap import DotMap
-
 # Package Library
 from skg.utils.constants import PageContinuationKind
+from skg.utils.general import PromptPair
 
 
-def double_check_page_ir_verification() -> DotMap:
+def double_check_page_ir_verification() -> PromptPair:
     """Generate the prompts for double-checking page IR verification results.
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     system_message = None
@@ -58,9 +56,7 @@ If anything above is violated or your reasoning is weak, correct it now and retu
         """
     )
 
-    return DotMap(
-        {"system_message": system_message, "user_message": user_message.strip()}
-    )
+    return PromptPair(system_message=system_message, user_message=user_message.strip())
 
 
 def verify_page_ir_pairs_from_extraction(
@@ -69,7 +65,7 @@ def verify_page_ir_pairs_from_extraction(
     next_page_index: int,
     prev_item: dict[str, Any],
     prev_page_index: int,
-) -> DotMap:
+) -> PromptPair:
     """Generate the prompts for verifying PageIR pairs from the extraction step.
 
     Parameters
@@ -85,8 +81,8 @@ def verify_page_ir_pairs_from_extraction(
 
     Returns
     -------
-    DotMap
-        A DotMap containing 'system_message' and 'user_message'.
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
     """
 
     system_message = dedent(
@@ -223,6 +219,6 @@ When BOTH candidates are tables:
         separators=(",", ":"),  # Remove spaces after commas/colons
     )
 
-    return DotMap(
-        {"system_message": system_message.strip(), "user_message": user_message.strip()}
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
     )
