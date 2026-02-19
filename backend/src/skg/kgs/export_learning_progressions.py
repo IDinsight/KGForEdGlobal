@@ -342,7 +342,7 @@ def _build_sfi_index(
                     "grade_label": grade_label,
                     "subject_label": b.get("subject_label"),
                     "topic_path_key": b.get("topic_path_key"),
-                    "normalized_topic_path_key": b.get("normalized_topic_path_key"),
+                    "normalized_topic_path_key": b.get("thread_key"),
                     "thread_key": b.get("thread_key"),
                     "topic_path": b.get("topic_path"),
                     "statement_code": it.get("statement_code"),
@@ -1946,10 +1946,9 @@ def _prepare_subject_grade_samples(
             if isinstance(lo, int) and isinstance(hi, int):
                 bounds.append((lo, hi))
                 exemplar_bucket = exemplar_bucket or b
-
-            buckets_by_subject[
-                str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            ].append(b)
+                buckets_by_subject[
+                    str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
+                ].append(b)
 
         if not bounds:
             continue
