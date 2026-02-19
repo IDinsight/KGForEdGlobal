@@ -233,5 +233,60 @@
 			"violation_policy": "flag_unresolved"
 		},
 		"structural_leaf_warn_threshold": 0.5
+	},
+	"kgs": {
+		"academic_subject_default": "Mathematics",
+		"adoption_status": "Adopted",
+		"always_double_check_first_attempt": false,
+		"attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-francais), Mathematiques, 2eme etape (CE1 - CE2).",
+		"author": "Ministère de l’Éducation nationale",
+		"aux_statement_parenting": "as_siblings",
+		"case_uri_base": "urn:lc:case:",
+		"descriptor_handling": "drop",
+		"export_dialect": "global_relaxed",
+		"generate_progressions": true,
+		"grouping_role_policy": "whitelist",
+		"grouping_roles_whitelist": [
+			"stage",
+			"grade_level",
+			"subject",
+			"strand",
+			"substage",
+			"unit",
+			"week",
+			"topic",
+			"subtopic"
+		],
+		"guidance_handling": "drop",
+		"jurisdiction_default": "Senegal",
+		"language_default": "fr",
+		"lc_max_splits_per_standard": 10,
+		"learning_component_policy": "1_to_1",
+		"license": "All rights reserved (source PDF)",
+		"model": "gpt-5.2-2025-12-11",
+		"non_grouping_role_handling": "drop",
+		"non_standard_columns_signature": [],
+		"non_standard_decision_types": [
+			"ignore",
+			"unresolved"
+		],
+		"non_standard_segment_drop_policy": [
+			"by_decision_type"
+		],
+		"overwrite": false,
+		"progressions_builds_towards_min_confidence": 0.7,
+		"progressions_cross_grade_builds_towards": true,
+		"progressions_cross_grade_relates_to": true,
+		"progressions_cross_grade_relates_to_max_items_per_subject": 10,
+		"progressions_cross_stage_builds_towards": false,
+		"progressions_cross_stage_relates_to": false,
+		"progressions_relates_to_max_edges_per_sfi": 3,
+		"progressions_relates_to_min_confidence": 0.85,
+		"progressions_within_grade_allow_banded_levels": false,
+		"progressions_within_grade_builds_towards": true,
+		"progressions_within_grade_relates_to": true,
+		"progressions_within_grade_relates_to_max_items_per_subject": 5,
+		"provider": "IDinsight | Learning Commons",
+		"prune_empty_groupings": true
 	}
 }

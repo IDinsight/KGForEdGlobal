@@ -14,6 +14,7 @@ import re
 import unicodedata
 
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -39,6 +40,14 @@ QUOTES_TRANSLATION = str.maketrans(
         "\u00a0": " ",  # NBSP -> space
     }
 )
+
+
+@dataclass(frozen=True)
+class PromptPair:
+    """Immutable pair of system and user messages for an LLM prompt."""
+
+    system_message: str
+    user_message: str
 
 
 class Valid(BaseModel):

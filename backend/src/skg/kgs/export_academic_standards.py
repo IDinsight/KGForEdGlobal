@@ -528,10 +528,12 @@ def _compute_export_children(
 
         existing = export_children.get(parent_id, [])
         merged = list(new_kids)
+        merged_set = set(merged)
 
         for c in existing:
-            if c not in merged:
+            if c not in merged_set:
                 merged.append(c)
+                merged_set.add(c)
 
         export_children[parent_id] = merged
 
@@ -779,14 +781,22 @@ def _emit_sfi(
     sfi_in_language = str(fw_metadata.get("in_language") or "")
 
     if config.export_in_language_policy == "source":
-        node_lang = (
-            node.get("in_language")
-            or node.get("language")
-            or (node.get("metadata") or {}).get("in_language")
-            or (node.get("metadata") or {}).get("language")
-        )
+        # Canonical IR stores language inside TextUnit dicts (title/body), not as a
+        # top-level field. Check title first, then body, skipping "und" (undetermined).
+        node_lang = None
+
+        for text_field in ("title", "body"):
+            text_unit = node.get(text_field)
+
+            if isinstance(text_unit, dict):
+                lang = text_unit.get("language")
+
+                if lang and str(lang).strip().lower() != "und":
+                    node_lang = str(lang).strip()
+                    break
+
         if node_lang:
-            sfi_in_language = str(node_lang)
+            sfi_in_language = node_lang
 
     path_key = ctx.compute_path_key(node_id)
     sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
@@ -1289,9 +1299,8 @@ def _prune_empty_groupings(
 
         for nid in list(emitted):
             role = str(ctx.nodes_by_id[nid].get("role") or "")
-            is_expectation = role == StatementRole.EXPECTATION.value
 
-            if _is_grouping_role(config=config, role=role) and not is_expectation:
+            if _is_grouping_role(config=config, role=role):
                 live_children = [
                     c for c in export_children.get(nid, []) if c in emitted
                 ]

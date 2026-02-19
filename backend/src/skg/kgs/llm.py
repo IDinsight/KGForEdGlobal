@@ -90,9 +90,10 @@ def _call_openai_api_for_learning_progressions(
             input=input_items,
             instructions=instructions,
             model=model,
-            temperature=0,
+            reasoning={"effort": "high"},
+            # temperature=0,
             text_format=ProgressionEdgesResponse,
-            top_p=1,
+            # top_p=1,
         )
     else:
         response = openai_client.responses.parse(
