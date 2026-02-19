@@ -2254,10 +2254,11 @@ def apply_grouping_canonicalization_map(
 
     # Default: preserve existing behavior (skip TOPIC/SUBTOPIC), but allow config
     # override.
-    canonicalization_skip_roles = canonicalization_skip_roles or [
-        NodeRole.TOPIC,
-        NodeRole.SUBTOPIC,
-    ]
+    if canonicalization_skip_roles is None:
+        canonicalization_skip_roles = [
+            NodeRole.TOPIC,
+            NodeRole.SUBTOPIC,
+        ]
     mapping_index = {
         k: v
         for k, v in mapping_index.items()
