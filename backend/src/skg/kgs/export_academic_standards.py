@@ -218,10 +218,13 @@ STATEMENT_ROLE_VALUES: set[str] = {item.value for item in StatementRole}
 class AcademicStandardsExport:
     """The output of exporting Academic Standards KG artifacts."""
 
+    drop_reasons: dict[str, str]  # canonical_node_id -> drop reason string
     framework: StandardsFramework
     items: list[StandardsFrameworkItem]
     order: HierarchyOrderExport
+    pruned_node_ids: set[str]  # Node IDs pruned as empty groupings
     relationships: list[Relationship]
+    reparent_stats: dict[str, int]  # aux_reparented_count, orphan_aux_count
 
 
 def _build_academic_standards_graph_bundle(
@@ -310,6 +313,42 @@ def _build_academic_standards_graph_bundle(
         "nodes": nodes,
         "relationships": relationships,
     }
+
+
+def _build_initial_emit_flags(
+    *, config: Any, ctx: Any
+) -> tuple[dict[str, bool], dict[str, str]]:
+    """Precompute node-level emit flags and drop reasons before pruning.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+
+    Returns
+    -------
+    tuple[dict[str, bool], dict[str, str]]
+        A tuple containing the emit_flag dictionary and drop_reasons dictionary.
+    """
+
+    emit_flag: dict[str, bool] = {}
+    drop_reasons: dict[str, str] = {}
+
+    for node_id in ctx.nodes_by_id:
+        if node_id == ctx.root_id:
+            continue
+
+        ok, reason = should_emit_node_with_reason(
+            ctx=ctx, config=config, node_id=node_id
+        )
+        emit_flag[node_id] = ok
+
+        if not ok:
+            drop_reasons[node_id] = reason
+
+    return emit_flag, drop_reasons
 
 
 def _build_relationships_and_order(
@@ -481,7 +520,9 @@ def _collect_grade_levels(
 
 def _compute_export_children(
     *, config: CreateKGConfig, ctx: ExportContext, emit_flag: dict[str, bool]
-) -> tuple[dict[str, list[str]], DefaultDict[str, list[dict[str, Any]]]]:
+) -> tuple[
+    dict[str, list[str]], DefaultDict[str, list[dict[str, Any]]], dict[str, int]
+]:
     """Build export-time parent-to-children mapping with aux reparenting.
 
     Parameters
@@ -496,14 +537,17 @@ def _compute_export_children(
     Returns
     -------
     tuple
-        (export_children, aux_attach_to_expectation) — the parent-to-children
-        mapping and metadata attachments for expectation nodes.
+        (export_children, aux_attach_to_expectation, reparent_stats)--the
+        parent-to-children mapping, metadata attachments for expectation nodes, and a
+        dict with `aux_reparented_count` and `orphan_aux_count`.
     """
 
     aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]] = defaultdict(
         list
     )
     export_children: dict[str, list[str]] = {}
+    reparented_count = 0
+    orphan_aux_count = 0
 
     for parent_id, kids in ctx.children_by_parent.items():
         if parent_id == ctx.root_id:
@@ -516,6 +560,13 @@ def _compute_export_children(
         if config.aux_statement_parenting == "under_expectation" and _is_grouping_role(
             config=config, role=parent_role
         ):
+            # Count aux nodes before reparenting to detect orphans.
+            aux_before = sum(
+                1
+                for cid in ordered_emitted_kids
+                if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
+            )
+
             new_kids = _reparent_aux_under_expectations(
                 aux_attach_to_expectation=aux_attach_to_expectation,
                 config=config,
@@ -523,6 +574,16 @@ def _compute_export_children(
                 export_children=export_children,
                 ordered_kids=ordered_emitted_kids,
             )
+
+            # Aux nodes that ended up in new_kids had no preceding expectation
+            # (orphans).
+            aux_after_in_new_kids = sum(
+                1
+                for cid in new_kids
+                if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
+            )
+            reparented_count += aux_before - aux_after_in_new_kids
+            orphan_aux_count += aux_after_in_new_kids
         else:
             new_kids = ordered_emitted_kids
 
@@ -537,7 +598,14 @@ def _compute_export_children(
 
         export_children[parent_id] = merged
 
-    return export_children, aux_attach_to_expectation
+    return (
+        export_children,
+        aux_attach_to_expectation,
+        {
+            "aux_reparented_count": reparented_count,
+            "orphan_aux_count": orphan_aux_count,
+        },
+    )
 
 
 def _compute_topic_path_key(
@@ -1008,6 +1076,48 @@ def _first_ancestor_label_for_role(
     return None
 
 
+def _handle_empty_grouping_pruning(
+    *,
+    config: Any,
+    ctx: Any,
+    drop_reasons: dict[str, str],
+    emit_flag: dict[str, bool],
+    export_children: dict[str, list[str]],
+) -> set[str]:
+    """Prune empty groupings strictly, without reattachment.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    drop_reasons
+        Dictionary mapping node IDs to reasons they were dropped.
+    emit_flag
+        Dictionary mapping node IDs to boolean emit flags.
+    export_children
+        Dictionary mapping parent node IDs to lists of child node IDs.
+
+    Returns
+    -------
+    set[str]
+        A set of node IDs that were pruned.
+    """
+
+    pruned_node_ids: set[str] = set()
+
+    if config.prune_empty_groupings:
+        pruned_node_ids = _prune_empty_groupings(
+            config=config, ctx=ctx, emit_flag=emit_flag, export_children=export_children
+        )
+
+        for nid in pruned_node_ids:
+            drop_reasons[nid] = "dropped:pruned_empty_grouping"
+
+    return pruned_node_ids
+
+
 def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     """Determine if a role is a grouping role (not expectation/aux).
 
@@ -1263,13 +1373,70 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
     return None, None
 
 
+def _process_attach_to_expectation(
+    *,
+    config: Any,
+    ctx: Any,
+    drop_reasons: dict[str, str],
+    emit_flag: dict[str, bool],
+    reparent_stats: dict[str, int],
+) -> None:
+    """Modify emit flags and track stats for attach-to-expectation handling.
+
+    If aux statements are "attach_to_expectation_metadata", they should NOT be counted
+    as emitted nodes for pruning.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    drop_reasons
+        Dictionary mapping node IDs to reasons they were dropped. Mutated in-place.
+    emit_flag
+        Dictionary mapping node IDs to boolean emit flags. Mutated in-place.
+    reparent_stats
+        Dictionary containing reparenting statistics. Mutated in-place.
+    """
+
+    attach_to_exp_count = 0
+
+    if (
+        config.guidance_handling == "attach_to_expectation_metadata"
+        or config.descriptor_handling == "attach_to_expectation_metadata"
+    ):
+        for nid, ok in list(emit_flag.items()):
+            if not ok:
+                continue
+
+            role = str(ctx.nodes_by_id[nid].get("role") or "")
+
+            if (
+                role == StatementRole.GUIDANCE.value
+                and config.guidance_handling == "attach_to_expectation_metadata"
+            ):
+                emit_flag[nid] = False
+                drop_reasons[nid] = "dropped:attach_to_expectation_metadata"
+                attach_to_exp_count += 1
+            elif (
+                role == StatementRole.DESCRIPTOR.value
+                and config.descriptor_handling == "attach_to_expectation_metadata"
+            ):
+                emit_flag[nid] = False
+                drop_reasons[nid] = "dropped:attach_to_expectation_metadata"
+                attach_to_exp_count += 1
+
+    reparent_stats["attach_to_expectation_count"] = attach_to_exp_count
+
+
 def _prune_empty_groupings(
     *,
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
-) -> None:
+) -> set[str]:
     """Iteratively prune grouping nodes that have no emitted children. Mutates
     emit_flag and export_children in place.
 
@@ -1283,10 +1450,16 @@ def _prune_empty_groupings(
         Node-level emit flags (mutated in place).
     export_children
         Parent-to-children mapping (mutated in place).
+
+    Returns
+    -------
+    set[str]
+        The set of canonical node IDs that were pruned.
     """
 
     changed = True
     emitted: set[str] = {nid for nid, ok in emit_flag.items() if ok}
+    all_pruned: set[str] = set()
 
     while changed:
         changed = False
@@ -1305,6 +1478,7 @@ def _prune_empty_groupings(
 
         if to_prune:
             changed = True
+            all_pruned.update(to_prune)
 
             for nid in to_prune:
                 emitted.discard(nid)
@@ -1321,6 +1495,8 @@ def _prune_empty_groupings(
     # Reflect pruning back into emit_flag.
     for nid in list(emit_flag.keys()):
         emit_flag[nid] = nid in emitted
+
+    return all_pruned
 
 
 def _reparent_aux_under_expectations(
@@ -1404,6 +1580,36 @@ def _reparent_aux_under_expectations(
         new_kids.append(cid)
 
     return new_kids
+
+
+def _sort_order_map(
+    *, framework_uuid: Any, order_map: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """Stabilize parent key ordering while preserving deterministic child order.
+
+    Parameters
+    ----------
+    framework_uuid
+        The UUID of the framework.
+    order_map
+        Dictionary mapping parent IDs to sorted child IDs.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        A new order map dictionary sorted by parent keys.
+    """
+
+    fw_id = str(framework_uuid)
+    order_map_sorted: dict[str, list[str]] = {}
+
+    if fw_id in order_map:
+        order_map_sorted[fw_id] = order_map[fw_id]
+
+    for k in sorted(k for k in order_map if k != fw_id):
+        order_map_sorted[k] = order_map[k]
+
+    return order_map_sorted
 
 
 def _to_int_or_roman(s: str) -> int | str:
@@ -1604,6 +1810,20 @@ def export_academic_standards(
 ) -> AcademicStandardsExport:
     """Export Academic Standards KG artifacts from Canonical IR context.
 
+    The process is as follows:
+
+    1. Emit the framework node.
+    2. Precompute node-level emit flags based on drop policies.
+    3. Compute export-time aux parenting based on preceding expectation siblings.
+    4. Handle attach-to-expectation rules for guidance/descriptors, modifying emit
+        flags accordingly.
+    5. Prune empty groupings iteratively, modifying emit flags accordingly.
+    6. Emit StandardsFrameworkItems for all nodes still flagged for emission.
+    7. Build relationships and hierarchy order mapping.
+    8. Verify the integrity of the exported artifacts.
+    9. Sort items and relationships for deterministic output.
+    10. Write all artifacts to their respective JSON files.
+
     Parameters
     ----------
     canonical_ir_created_at
@@ -1636,54 +1856,33 @@ def export_academic_standards(
     )
     framework_uuid = framework.case_identifier_uuid
 
-    # Precompute node-level emit flags before pruning.
-    emit_flag: dict[str, bool] = {
-        node_id: should_emit_node(ctx=ctx, config=config, node_id=node_id)
-        for node_id in ctx.nodes_by_id
-        if node_id != ctx.root_id
-    }
+    # 1.
+    emit_flag, drop_reasons = _build_initial_emit_flags(config=config, ctx=ctx)
 
-    # Export-time aux parenting: operate on canonical IDs.
-    export_children, aux_attach_to_expectation = _compute_export_children(
-        config=config,
-        ctx=ctx,
-        emit_flag=emit_flag,
+    # 2.
+    export_children, aux_attach_to_expectation, reparent_stats = (
+        _compute_export_children(config=config, ctx=ctx, emit_flag=emit_flag)
     )
 
-    # NB: If aux statements are "attach_to_expectation_metadata", they should NOT be
-    # counted as emitted nodes for pruning. Aux-parenting needed to see them to build
-    # aux_attach_to_expectation, but they will not be emitted as SFIs later.
-    if (
-        config.guidance_handling == "attach_to_expectation_metadata"
-        or config.descriptor_handling == "attach_to_expectation_metadata"
-    ):
-        for nid, ok in list(emit_flag.items()):
-            if not ok:
-                continue
+    # 3.
+    _process_attach_to_expectation(
+        config=config,
+        ctx=ctx,
+        drop_reasons=drop_reasons,
+        emit_flag=emit_flag,
+        reparent_stats=reparent_stats,
+    )
 
-            role = str(ctx.nodes_by_id[nid].get("role") or "")
+    # 4.
+    pruned_node_ids = _handle_empty_grouping_pruning(
+        config=config,
+        ctx=ctx,
+        drop_reasons=drop_reasons,
+        emit_flag=emit_flag,
+        export_children=export_children,
+    )
 
-            if (
-                role == StatementRole.GUIDANCE.value
-                and config.guidance_handling == "attach_to_expectation_metadata"
-            ):
-                emit_flag[nid] = False
-            elif (
-                role == StatementRole.DESCRIPTOR.value
-                and config.descriptor_handling == "attach_to_expectation_metadata"
-            ):
-                emit_flag[nid] = False
-
-    # Prune empty groupings (strict; no reattachment).
-    if config.prune_empty_groupings:
-        _prune_empty_groupings(
-            config=config,
-            ctx=ctx,
-            emit_flag=emit_flag,
-            export_children=export_children,
-        )
-
-    # Emit SFIs.
+    # 5.
     sfi_by_node = _emit_sfis(
         aux_attach_to_expectation=aux_attach_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
@@ -1692,7 +1891,7 @@ def export_academic_standards(
         emit_flag=emit_flag,
     )
 
-    # Build relationships + order mapping.
+    # 6.
     relationships, order_map = _build_relationships_and_order(
         config=config,
         ctx=ctx,
@@ -1700,7 +1899,6 @@ def export_academic_standards(
         framework_uuid=framework_uuid,
         sfi_by_node=sfi_by_node,
     )
-
     _verify_standards_export(
         framework=framework,
         parent_to_children=order_map,
@@ -1708,7 +1906,7 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
-    # Stable ordering: make file outputs deterministic across runs.
+    # 7.
     items_sorted = sorted(
         sfi_by_node.values(), key=lambda sfi: str(sfi.case_identifier_uuid)
     )
@@ -1721,24 +1919,22 @@ def export_academic_standards(
             str(r.identifier),
         ),
     )
+    order_map_sorted = _sort_order_map(
+        framework_uuid=framework_uuid, order_map=order_map
+    )
 
-    # Preserve deterministic child ordering, but stabilize parent key ordering too.
-    fw_id = str(framework_uuid)
-    order_map_sorted: dict[str, list[str]] = {}
-
-    if fw_id in order_map:
-        order_map_sorted[fw_id] = order_map[fw_id]
-
-    for k in sorted(k for k in order_map if k != fw_id):
-        order_map_sorted[k] = order_map[k]
-
+    # 8.
     academic_standards = AcademicStandardsExport(
+        drop_reasons=drop_reasons,
         framework=framework,
         items=items_sorted,
         order=HierarchyOrderExport(order=order_map_sorted),
+        pruned_node_ids=pruned_node_ids,
         relationships=relationships_sorted,
+        reparent_stats=reparent_stats,
     )
 
+    # 9.
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_framework.json",
         json_info=academic_standards.framework.model_dump(mode="json"),
@@ -1789,6 +1985,32 @@ def should_emit_node(
         should be dropped.
     """
 
+    ok, _ = should_emit_node_with_reason(config=config, ctx=ctx, node_id=node_id)
+    return ok
+
+
+def should_emit_node_with_reason(
+    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
+) -> tuple[bool, str]:
+    """Determine whether a canonical node should be emitted, with a drop reason.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export, which may influence drop policies.
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties and
+        decision/segment information for drop policies.
+    node_id
+        The ID of the canonical node to evaluate.
+
+    Returns
+    -------
+    tuple[bool, str]
+        (True, "emitted") if the node should be emitted, or (False, reason) where
+        reason is a human-readable string explaining why the node was dropped.
+    """
+
     node = ctx.nodes_by_id[node_id]
     role = str(node.get("role") or "")
 
@@ -1797,14 +2019,20 @@ def should_emit_node(
         dec = ctx.decisions_by_id.get(did)
 
         if dec and ctx.should_drop_segment(decision=dec):
-            return False
+            dt = dec.get("decision_type", "unknown")
+            sig = dec.get("columns_signature")
+
+            if sig and sig in (ctx.kg_config.non_standard_columns_signature or set()):
+                return False, f"dropped:columns_signature:{sig}"
+
+            return False, f"dropped:segment_decision:{dt}"
 
     # Role handling.
     if role == StatementRole.GUIDANCE.value and config.guidance_handling == "drop":
-        return False
+        return False, "dropped:guidance_handling:drop"
 
     if role == StatementRole.DESCRIPTOR.value and config.descriptor_handling == "drop":
-        return False
+        return False, "dropped:descriptor_handling:drop"
 
     # Strict grouping policy: if it's not a statement role, it must be an allowed
     # grouping (otherwise drop or export-as-Other depending on config).
@@ -1814,6 +2042,10 @@ def should_emit_node(
         and role not in STATEMENT_ROLE_VALUES
         and not _is_grouping_role(config=config, role=role)
     ):
-        return config.non_grouping_role_handling != "drop"
+        return (
+            (False, "dropped:non_grouping_role:drop")
+            if config.non_grouping_role_handling == "drop"
+            else (True, "emitted")
+        )
 
-    return True
+    return True, "emitted"

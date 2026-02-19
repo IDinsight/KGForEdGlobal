@@ -342,7 +342,7 @@ def _build_sfi_index(
                     "grade_label": grade_label,
                     "subject_label": b.get("subject_label"),
                     "topic_path_key": b.get("topic_path_key"),
-                    "normalized_topic_path_key": b.get("thread_key"),
+                    "normalized_topic_path_key": b.get("normalized_topic_path_key"),
                     "thread_key": b.get("thread_key"),
                     "topic_path": b.get("topic_path"),
                     "statement_code": it.get("statement_code"),
@@ -1946,9 +1946,10 @@ def _prepare_subject_grade_samples(
             if isinstance(lo, int) and isinstance(hi, int):
                 bounds.append((lo, hi))
                 exemplar_bucket = exemplar_bucket or b
-                buckets_by_subject[
-                    str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-                ].append(b)
+
+            buckets_by_subject[
+                str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
+            ].append(b)
 
         if not bounds:
             continue
@@ -2006,7 +2007,12 @@ def _process_and_filter_candidates(
     candidates: list[CandidateEdge],
     config: CreateKGConfig,
     sfi_index: Optional[dict[str, dict[str, Any]]] = None,
-) -> tuple[list[Relationship], list[Relationship], dict[str, int]]:
+) -> tuple[
+    list[Relationship],
+    list[Relationship],
+    dict[str, int],
+    dict[tuple[str, str, str], str],
+]:
     """Process candidates: dedupe, filter by confidence, limit, and convert.
 
     Parameters
@@ -2022,11 +2028,13 @@ def _process_and_filter_candidates(
 
     Returns
     -------
-    tuple[list[Relationship], list[Relationship], dict[str, int]]
+    tuple
         A tuple containing:
         1. List of final buildsTowards relationships.
         2. List of final relatesTo relationships.
         3. A dictionary of counts/statistics for the report.
+        4. A disposition map keyed by (rel_type, source_uuid, target_uuid) ->
+            disposition string (kept, dropped_low_conf, dropped_cap, dropped_dedupe).
     """
 
     candidates = _dedupe_edges(candidates)
@@ -2126,7 +2134,36 @@ def _process_and_filter_candidates(
         "relates_dropped_cap": len(relates_dropped_cap),
     }
 
-    return builds_relationships, relates_relationships, stats
+    # Build disposition map keyed by (rel_type, source_uuid, target_uuid) for enriching
+    # provenance rows downstream.
+    disposition_map: dict[tuple[str, str, str], str] = {}
+
+    for e in builds_kept:
+        disposition_map[
+            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+        ] = "kept"
+
+    for e in builds_dropped_low:
+        disposition_map[
+            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+        ] = "dropped_low_conf"
+
+    for e in relates_kept:
+        disposition_map[
+            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+        ] = "kept"
+
+    for e in relates_dropped_low:
+        disposition_map[
+            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+        ] = "dropped_low_conf"
+
+    for e in relates_dropped_cap:
+        disposition_map[
+            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+        ] = "dropped_cap"
+
+    return builds_relationships, relates_relationships, stats, disposition_map
 
 
 def _process_single_standard(
@@ -2543,9 +2580,18 @@ def export_learning_progressions(
     provenance_rows.extend(p4_prov)
 
     # Dedupe, filter, limit, and emit final relationships, and gather stats for the report.
-    builds_rels, relates_rels, stats = _process_and_filter_candidates(
+    builds_rels, relates_rels, stats, disposition_map = _process_and_filter_candidates(
         candidates=candidates, config=config, sfi_index=sfi_index
     )
+
+    # Enrich provenance rows with post-filtering disposition.
+    for row in provenance_rows:
+        key = (
+            row.get("rel_type", ""),
+            row.get("source", ""),
+            row.get("target", ""),
+        )
+        row["disposition"] = disposition_map.get(key, "dropped_dedupe")
 
     # Write artifacts.
     write_to_json(
