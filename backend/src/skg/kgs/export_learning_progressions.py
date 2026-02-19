@@ -798,6 +798,46 @@ def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
     return list(best.values())
 
 
+def _extract_code_tuple(
+    *, code_string: str, raw_code_tuple: Any
+) -> tuple[int, ...] | None:
+    """Extract a numeric tuple from a raw code tuple or falls back to the code string.
+
+    Evaluates the raw code tuple to parse integer sequences from strings, mixed lists,
+    or pure integer lists. If no valid integers are found, attempts to parse digits
+    from the fallback code string.
+
+    Parameters
+    ----------
+    code_string
+        The stripped statement code string used as a fallback for digit extraction.
+    raw_code_tuple
+        The raw 'code_tuple' value retrieved from the item dictionary.
+
+    Returns
+    -------
+    tuple[int, ...] | None
+        A tuple of extracted integers, or None if no numeric values could be parsed.
+    """
+
+    nums: list[int] = []
+
+    # Process all list types (pure int, pure str, or mixed) in a single pass.
+    if isinstance(raw_code_tuple, list):
+        for item in raw_code_tuple:
+            if isinstance(item, int):
+                nums.append(item)
+            elif isinstance(item, str):
+                # re.findall(r"\d+") guarantees digits, making int() conversion safe.
+                nums.extend(int(match) for match in re.findall(r"\d+", item))
+
+    # Fallback to code_string if no digits were extracted from the tuple.
+    if not nums and code_string:
+        nums = [int(match) for match in re.findall(r"\d+", code_string)]
+
+    return tuple(nums) if nums else None
+
+
 def _format_learning_progressions_dict(
     *,
     buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
@@ -867,18 +907,22 @@ def _grade_label_and_ordinal(sfi: StandardsFrameworkItem) -> tuple[str, int | No
         and isinstance(grade_ordinal_high, int)
         and grade_ordinal_high != grade_ordinal_low
     ):
-        parts = progression_context.get("topic_path_parts") or []
-        stage_label = ""
+        # Prefer explicit stage_key from progression_context. Note: "stage" is not
+        # guaranteed to exist in topic_path_parts (it is commonly excluded upstream).
+        stage_label = str(progression_context.get("stage_key") or "").strip()
 
-        if isinstance(parts, list):
-            stage_label = next(
-                (
-                    str(p.get("label") or "").strip()
-                    for p in parts
-                    if p.get("role") == "stage" and p.get("label")
-                ),
-                "",
-            )
+        if not stage_label:
+            parts = progression_context.get("topic_path_parts") or []
+
+            if isinstance(parts, list):
+                stage_label = next(
+                    (
+                        str(p.get("label") or "").strip()
+                        for p in parts
+                        if p.get("role") == "stage" and p.get("label")
+                    ),
+                    "",
+                )
 
         label = stage_label or f"GRADES {grade_ordinal_low}–{grade_ordinal_high}"
         return label, grade_ordinal_low
@@ -1703,6 +1747,12 @@ def _level_label(b: dict[str, Any]) -> str:
     lo, hi = _level_bounds(b)
 
     if isinstance(lo, int) and isinstance(hi, int) and hi != lo:
+        # Prefer stage_key stored directly on the bucket.
+        stage_key = b.get("stage_key")
+
+        if isinstance(stage_key, str) and stage_key.strip():
+            return stage_key.strip()
+
         parts = b.get("topic_path_parts") or []
 
         if isinstance(parts, list):
@@ -2204,6 +2254,11 @@ def _process_single_standard(
                     else grade_ord
                 )
             ),
+            "stage_key": (
+                progression_context.get("stage_key")
+                if isinstance(progression_context.get("stage_key"), str)
+                else None
+            ),
             "subject_label": subject_label,
             "thread_key": progression_context.get("thread_key"),
             "topic_path_key": topic_path_key,
@@ -2384,23 +2439,9 @@ def _sort_key_for_bucket_sfi(
     order_index = order_index if isinstance(order_index, int) else 10**9
     code = (s.get("statement_code") or "").strip()
 
-    # Prefer numeric tuple ordering over lexicographic string ordering.
-    ct = s.get("code_tuple")
-    code_tuple: tuple[int, ...] | None = None
-
-    if isinstance(ct, list) and ct and all(isinstance(x, int) for x in ct):
-        code_tuple = tuple(ct)
-    elif isinstance(ct, list) and ct and all(isinstance(x, str) for x in ct):
-        # Defensive: if upstream ever stores numeric segments as strings.
-        try:
-            code_tuple = tuple(int(x) for x in ct)
-        except Exception:  # pylint: disable=broad-except
-            code_tuple = None
-
-    if code_tuple is None and code:
-        # Fallback: parse any digits from statement_code (e.g., "3.9.4.1" -> (3,9,4,1)).
-        nums = [int(x) for x in re.findall(r"\d+", code)]
-        code_tuple = tuple(nums) if nums else None
+    code_tuple = _extract_code_tuple(
+        code_string=code, raw_code_tuple=s.get("code_tuple")
+    )
 
     missing_code_tuple = 1 if code_tuple is None else 0
     code_tuple_key = code_tuple if code_tuple is not None else (10**9,)
