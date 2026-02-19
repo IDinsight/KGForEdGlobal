@@ -134,14 +134,14 @@
 				"note": "French strand headings"
 			},
 			{
-				"pattern": "(?i)\\br[ée]solution\\s+de\\s+probl[ée]mes\\b",
+				"pattern": "(?i)\\br[éeè]solution\\s+de\\s+probl[èée]mes\\b",
 				"role": "strand",
 				"note": "French strand heading: Résolution de problèmes"
 			},
 			{
-				"pattern": "(?i)\\by[ëe]ngute\\b.*\\bactivit[ée]s?\\b",
+				"pattern": "(?i)(\\by[ëe]ngute\\b.*\\bactivit[ée]s?\\b|\\bactivit[ée]s?\\b.*\\by[ëe]ngute\\b)",
 				"role": "strand",
-				"note": "Wolof/French combined strand headings like 'Yëngute … /Activités …'"
+				"note": "Wolof/French combined strand headings like 'Yëngute … /Activités …' (bidirectional)"
 			}
 		],
 		"max_table_rows_per_decision": null,
@@ -201,9 +201,24 @@
 					"title_template": "Activités de mesure"
 				},
 				{
-					"match": "(?i)\\bactivit[ée]s\\s+(?:de\\s+)?r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èe]mes",
+					"match": "(?i)\\bactivit[ée]s\\s+(?:de\\s+)?r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes",
 					"role": "strand",
 					"title_template": "Activités de résolution de problèmes"
+				},
+				{
+					"match": "(?i)\\br[éeè]solution\\s+de\\s+probl[èée]mes",
+					"role": "strand",
+					"title_template": "Activités de résolution de problèmes"
+				},
+				{
+					"match": "(?i)\\bg[éeè]om[éeè]trie\\b",
+					"role": "strand",
+					"title_template": "Activités géométriques"
+				},
+				{
+					"match": "(?i)\\bMesure\\s+CE\\s*[12]\\b",
+					"role": "strand",
+					"title_template": "Activités de mesure"
 				},
 				{
 					"match": "(?i)\\bpalier\\s*(\\d+)\\b",

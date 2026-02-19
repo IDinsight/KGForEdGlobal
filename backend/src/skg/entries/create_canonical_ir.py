@@ -207,6 +207,16 @@ def create_canonical_ir(
             new_decisions = decision_set.decisions[prev_number_decisions:]
 
             # 6.
+            #
+            # NB: EMIT_FLAGGED_UNRESOLVED is intentionally included here. Global
+            # context_hint propagates flagged context because later *non-table*
+            # segments may still benefit from a reasonable prior (and the next proper
+            # emit_* decision will overwrite it anyway).
+            #
+            # This is ASYMMETRIC with _determine_stable_context() for chunked tables,
+            # where flagged_unresolved is deliberately EXCLUDED from becoming the
+            # stable prior for subsequent chunks of the same table--because all chunks
+            # of a table must share a reliable, materializable context stack.
             if new_decisions:
                 last = new_decisions[-1]
 
