@@ -121,9 +121,10 @@ def _call_openai_api_for_page_ir_extraction(
             input=input_items,  # User content items
             instructions=instructions,  # System message at top-level
             model=model,
-            temperature=0,
+            reasoning={"effort": "high"},
+            # temperature=0,
             text_format=PageIR,  # Pydantic for structured output parsing
-            top_p=1,
+            # top_p=1,
         )
     else:
         response = openai_client.responses.parse(

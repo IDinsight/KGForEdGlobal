@@ -1,6 +1,6 @@
 {
 	"page_ir_extraction": {
-		"always_double_check_first_attempt": true,
+		"always_double_check_first_attempt": false,
 		"country": "Senegal",
 		"dpi": 250,
 		"end_page": null,
@@ -11,7 +11,7 @@
 		"model": "gpt-5.2-2025-12-11",
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
 		"overwrite": true,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/math_wolof_draft.pdf",
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/math_wolof_corrected.pdf",
 		"start_page": 0,
 		"use_text_layer_hints": true,
 		"year": 2024

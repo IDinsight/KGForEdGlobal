@@ -914,7 +914,12 @@ def _emit_sfi(
         normalized_statement_type=_normalized_statement_type(config=config, role=role),
         notes=None,
         provider=config.provider,
-        statement_code=(node.get("local_code") or None),
+        statement_code=(
+            node.get("local_code")
+            or node.get("code")
+            or (node.get("metadata") or {}).get("code")
+            or None
+        ),
         statement_type=(node.get("source_label") or role or None),
     )
 
@@ -1383,16 +1388,23 @@ def _reparent_aux_under_expectations(
             )
 
             if attach_to_metadata:
-                aux_attach_to_expectation[last_expectation].append(
-                    {
-                        "role": role,
-                        "text": node_display_text(node=node, prefer_text_en=prefer_en),
-                        "canonical_node_id": cid,
-                        "page_indices": node.get("page_indices", []),
-                        "source_decision_ids": node.get("source_decision_ids", []),
-                        "source_segment_ids": node.get("source_segment_ids", []),
-                    }
-                )
+                bbox = node.get("bbox")
+                aux_payload = {
+                    "role": role,
+                    "text": node_display_text(node=node, prefer_text_en=prefer_en),
+                    "canonical_node_id": cid,
+                    "page_indices": node.get("page_indices", []),
+                    "source_decision_ids": node.get("source_decision_ids", []),
+                    "source_segment_ids": node.get("source_segment_ids", []),
+                    "bbox": bbox,
+                }
+
+                if bbox is not None:
+                    aux_payload["bbox_ref"] = (
+                        "framework.metadata.provenance_context.bbox"
+                    )
+
+                aux_attach_to_expectation[last_expectation].append(aux_payload)
                 continue
 
             export_children.setdefault(last_expectation, [])
