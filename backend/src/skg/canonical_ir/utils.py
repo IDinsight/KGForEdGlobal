@@ -797,7 +797,7 @@ def _emit_edge(
     child_to_parent: dict[str, str],
     decision_id: str,
     edges: list[CanonicalEdge],
-    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     parent_id: str,
     segment_id: str,
@@ -822,7 +822,7 @@ def _emit_edge(
     edges
         The list of CanonicalEdges to append to.
     edges_by_key
-        The mapping of (parent_id, child_id) to CanonicalEdge.
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
     next_order_index
         The mapping of parent_id to next order_index.
     parent_id
@@ -848,8 +848,8 @@ def _emit_edge(
     if existing_parent is None:
         child_to_parent[child_id] = parent_id
 
-    # Edge key.
-    key = (parent_id, child_id)
+    # Edge key: includes rel for consistency with dedupe_edges_postpass.
+    key = (parent_id, child_id, "hasChild")
 
     # If edge already exists, merge provenance into the first-emitted edge.
     existing = edges_by_key.get(key)
@@ -1181,7 +1181,7 @@ def _materialize_block_leaves(
     decision: SegmentDecision,
     doc_key: str,
     edges: list[CanonicalEdge],
-    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
@@ -1206,7 +1206,7 @@ def _materialize_block_leaves(
     edges
         The list of CanonicalEdges to append to.
     edges_by_key
-        The mapping of (parent_id, child_id) to CanonicalEdge.
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
     next_order_index
         The mapping of parent_id to next order_index.
     nodes_by_id
@@ -1270,7 +1270,7 @@ def _materialize_decision_structure(
     decision: SegmentDecision,
     doc_key: str,
     edges: list[CanonicalEdge],
-    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
@@ -1299,7 +1299,7 @@ def _materialize_decision_structure(
     edges
         The list of CanonicalEdges to append to.
     edges_by_key
-        The mapping of (parent_id, child_id) to CanonicalEdge.
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
     next_order_index
         The mapping of parent_id to next order_index.
     nodes_by_id
@@ -1398,7 +1398,10 @@ def _materialize_decision_structure(
             warnings=warnings,
         )
     elif segment.kind == "table":
-        if not decision.leaves and not decision.rows:
+        # NB: decision.groupings (segment-level grouping containers) have already been
+        # materialized above; only warn when there are truly no leaves, rows, OR
+        # groupings to emit.
+        if not decision.leaves and not decision.rows and not decision.groupings:
             msg = f"table_decision_emits_nothing:{segment.segment_id}:{decision.decision_id}"
             logger.warning(msg)
             warnings.append(msg)
@@ -1455,7 +1458,7 @@ def _materialize_table_leaves(
     decision: SegmentDecision,
     doc_key: str,
     edges: list[CanonicalEdge],
-    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
@@ -1482,7 +1485,7 @@ def _materialize_table_leaves(
     edges
         The list of CanonicalEdges to append to.
     edges_by_key
-        The mapping of (parent_id, child_id) to CanonicalEdge.
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
     next_order_index
         The mapping of parent_id to next order_index.
     nodes_by_id
@@ -1546,7 +1549,7 @@ def _materialize_table_rows(
     decision: SegmentDecision,
     doc_key: str,
     edges: list[CanonicalEdge],
-    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
@@ -1571,7 +1574,7 @@ def _materialize_table_rows(
     edges
         The list of CanonicalEdges to append to.
     edges_by_key
-        The mapping of (parent_id, child_id) to CanonicalEdge.
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
     next_order_index
         The mapping of parent_id to next order_index.
     nodes_by_id
@@ -2334,7 +2337,7 @@ def apply_table_signatures(
         seg_id = segment.segment_id
         col_sig = getattr(segment, "columns_signature", None)
 
-        if seg_id and col_sig:
+        if seg_id and col_sig is not None:
             signature_map[seg_id] = col_sig
 
     # Update decisions.
@@ -2816,7 +2819,7 @@ def compile_canonical_ir(
     active_context_stack: list[ContextFrame] = []
     child_to_parent: dict[str, str] = {}
     edges: list[CanonicalEdge] = []
-    edges_by_key: dict[tuple[str, str], CanonicalEdge] = {}
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge] = {}
     next_order_index: dict[str, int] = defaultdict(int)
     nodes_by_id: dict[str, CanonicalNode] = {}
     unresolved: list[UnresolvedItem] = []
@@ -3338,11 +3341,20 @@ def perform_postpass_hygiene(
 
     warnings = list(canonical_ir.warnings)
 
-    # 1.
+    # 1. Merge duplicate nodes by node_id.
+    #
+    # NB: Currently a no-op because compile_canonical_ir() stores nodes in a dict keyed
+    # by node_id, so duplicates are impossible at construction time. Retained as a
+    # defensive postpass for future entry points (e.g., deserialization, IR merging).
     nodes_merged = merge_nodes_postpass(nodes=canonical_ir.nodes, warnings=warnings)
     node_ids = {n.node_id for n in nodes_merged}
 
-    # 2.
+    # 2. Dedupe edges and drop dangling references.
+    #
+    # NB: Currently a no-op because _emit_edge() already deduplicates via edges_by_key
+    # and emits edges only for valid (possibly collision-resolved) node_ids. Retained as
+    # a defensive postpass — the dangling-edge check guards against future changes to
+    # collision handling or multi-source IR assembly.
     edges_merged = dedupe_edges_postpass(
         edges=canonical_ir.edges, node_ids=node_ids, warnings=warnings
     )
@@ -3351,7 +3363,8 @@ def perform_postpass_hygiene(
     nodes_pruned_empty, edges_pruned_empty = prune_empty_groupings(
         edges=edges_merged,
         nodes=nodes_merged,
-        prune_roles={NodeRole.PROSE, NodeRole.SECTION},
+        # prune_roles={NodeRole.PROSE, NodeRole.SECTION},
+        prune_roles=None,
         root_id=canonical_ir.root_id,
         warnings=warnings,
     )
@@ -3606,7 +3619,7 @@ def reconcile_context_stack(
     desired_context: list[GroupingDecision],
     doc_key: str,
     edges: list[CanonicalEdge],
-    edges_by_key: dict[tuple[str, str], CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     root_id: str,
@@ -3632,7 +3645,7 @@ def reconcile_context_stack(
     edges
         The list of CanonicalEdges to append new edges to.
     edges_by_key
-        The mapping of (parent_id, child_id) to CanonicalEdge for deduplication.
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
     next_order_index
         The mapping of parent_id to next order index for child edges.
     nodes_by_id
