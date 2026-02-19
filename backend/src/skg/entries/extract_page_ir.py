@@ -70,6 +70,8 @@ def extract_page_by_page(
         The extraction directories.
     """
 
+    total_pages = end_page - config.start_page + 1
+
     for page_index in range(config.start_page, end_page):
         page_ir_fp = extraction_dirs.page_irs / f"{page_index:04d}.json"
         png_fp = extraction_dirs.page_images / f"{page_index:04d}.png"
@@ -99,7 +101,7 @@ def extract_page_by_page(
             continue
 
         # Extract information from the page image.
-        logger.info(f"Extracting and saving page: {page_index}...")
+        logger.info(f"Extracting and saving page: {page_index}/{total_pages}...")
         image_width, image_height = read_png_dimensions(png_fp=png_fp)
 
         text_layer_hints = (
