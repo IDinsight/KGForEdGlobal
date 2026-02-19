@@ -204,12 +204,11 @@ def _clean_leaf(leaf: LeafDecision) -> LeafDecision:
 
     updates: dict[str, Any] = {}
 
-    # Body is required by schema; normalize but never allow empty.
-    if leaf.body is not None:
-        cleaned_body = _normalize_leaf_body(leaf.body)
+    # NB: lead.body is required by schema.
+    cleaned_body = _normalize_leaf_body(leaf.body)
 
-        if cleaned_body and cleaned_body != leaf.body:
-            updates["body"] = cleaned_body
+    if cleaned_body and cleaned_body != leaf.body:
+        updates["body"] = cleaned_body
 
     # Normalize list_marker whitespace if it exists; preserve None for empties.
     if leaf.list_marker is not None:
@@ -276,6 +275,12 @@ def _determine_stable_context(
     # Only trust context_groupings from decisions we intend to materialize.
     # EMIT_FLAGGED_UNRESOLVED explicitly means "store for review; not reliable enough
     # to compile", so it must NOT become the stable prior context for later chunks.
+    #
+    # NB: This is deliberately STRICTER than the global context_hint update in
+    # create_canonical_ir.py step 6, which DOES propagate flagged context to subsequent
+    # segments. The asymmetry is intentional: within a single chunked table, all chunks
+    # must share a reliable context stack that compiles cleanly; globally, a flagged
+    # context is a reasonable prior that the next proper emit will overwrite.
     usable = decision.decision_type in (
         SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
         SegmentDecisionType.EMIT_GROUPINGS_ONLY,
