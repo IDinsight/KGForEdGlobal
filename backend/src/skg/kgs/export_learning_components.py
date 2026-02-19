@@ -10,6 +10,7 @@ This module implements a shape-preserving Learning Commons Learning Components e
 # Standard Library
 import re
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -36,6 +37,7 @@ _LINE_BULLET_CHARS = r"[\u2022\u00b7•·\-\–\—\*]"
 class LearningComponentsExport:
     """The output of exporting Learning Components KG artifacts."""
 
+    lc_stats: dict[str, Any]  # split_policy, splits_distribution, max_splits_observed
     learning_components: list[LearningComponent]
     supports_relationships: list[Relationship]
 
@@ -463,6 +465,7 @@ def export_learning_components(
     fw_metadata = ctx.get_framework_metadata()
     lcs: list[LearningComponent] = []
     rels: list[Relationship] = []
+    splits_per_sfi: defaultdict[int, int] = defaultdict(int)
 
     # Deterministic order for determinism: sort by SFI UUID string.
     expectation_sfis_sorted = sorted(
@@ -473,6 +476,8 @@ def export_learning_components(
         created = _create_lcs_for_expectation(
             config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
         )
+        splits_per_sfi[len(created)] += 1
+
         for lc in created:
             lcs.append(lc)
             rels.append(
@@ -514,6 +519,14 @@ def export_learning_components(
         ),
     )
 
+    lc_stats = {
+        "split_policy": str(config.learning_component_policy),
+        "total_expectations": len(expectation_sfis_sorted),
+        "total_lcs": len(lcs),
+        "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
+        "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
+    }
+
     return LearningComponentsExport(
-        learning_components=lcs, supports_relationships=rels
+        learning_components=lcs, supports_relationships=rels, lc_stats=lc_stats
     )

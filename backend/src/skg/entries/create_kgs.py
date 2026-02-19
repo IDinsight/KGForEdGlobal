@@ -10,6 +10,7 @@ Step 5 does the following:
     graph bundle.
 5. Optionally exports Learning Progressions KG and writes combined Standards +
     Learning Components + Learning Progressions graph bundle.
+6. Builds reporting and validation artifacts, writes to disk, and logs console summary.
 
 Invoke from the backend directory via:
 
@@ -41,6 +42,13 @@ from skg.canonical_ir.schemas import CanonicalIR
 from skg.kgs.export_academic_standards import export_academic_standards
 from skg.kgs.export_learning_components import export_learning_components
 from skg.kgs.export_learning_progressions import export_learning_progressions
+from skg.kgs.reporting import (
+    build_entity_provenance_export,
+    build_policy_coverage_report,
+    log_console_summary,
+    validate_graph,
+    write_reports,
+)
 from skg.kgs.utils import (
     KGDirs,
     build_kg_export_context,
@@ -74,6 +82,7 @@ def create_kgs(
         graph bundle.
     5. Optionally export Learning Progressions KG and write combined Standards +
         Learning Components + Learning Progressions graph bundle.
+    6. Build reporting and validation artifacts, write to disk, and log console summary.
 
     Parameters
     ----------
@@ -86,6 +95,12 @@ def create_kgs(
     provenance_context
         An optional dictionary containing provenance context information to be included
         in the knowledge graphs.
+
+    Raises
+    ------
+    ValueError
+        If the CanonicalIR JSON is invalid or if any part of the knowledge graph export
+        process fails.
     """
 
     # 1.
@@ -140,6 +155,8 @@ def create_kgs(
     )
 
     # 5.
+    learning_progressions = None
+
     if config.generate_progressions is True:
         learning_progressions = export_learning_progressions(
             academic_standards=academic_standards,
@@ -166,6 +183,41 @@ def create_kgs(
             fp=kg_dirs.combined
             / "academic_standards_plus_learning_components_plus_learning_progressions_kg.json",
             json_info=combined_bundle,
+        )
+
+    # 6.
+    policy_report = build_policy_coverage_report(
+        academic_standards=academic_standards,
+        ctx=kg_export_ctx,
+        learning_components=learning_components,
+        learning_progressions=learning_progressions,
+    )
+    entity_provenance = build_entity_provenance_export(
+        academic_standards=academic_standards,
+        ctx=kg_export_ctx,
+        learning_components=learning_components,
+    )
+    validation_report = validate_graph(
+        academic_standards=academic_standards,
+        ctx=kg_export_ctx,
+        learning_components=learning_components,
+        learning_progressions=learning_progressions,
+    )
+    write_reports(
+        entity_provenance=entity_provenance,
+        kg_dirs=kg_dirs,
+        policy_report=policy_report,
+        validation_report=validation_report,
+    )
+    log_console_summary(
+        policy_report=policy_report,
+        validation_report=validation_report,
+    )
+
+    if validation_report.has_errors():
+        raise ValueError(
+            f"Graph validation failed with {len(validation_report.errors())} error(s). "
+            f"See graph_validation_report.json for details."
         )
 
 

@@ -24,7 +24,6 @@ from pydantic import Field, field_validator, model_validator
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BaseSchema, ExportDialect
-from skg.utils.constants import NodeRole, StatementRole
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
@@ -1214,11 +1213,28 @@ class EntityProvenance(BaseSchema):
 
     bbox: Optional[BBox] = None
     canonical_node_id: str
+    columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Columns signature(s) from the source segment decision(s) for this entity, "
+            "if the node originated from table-based extraction. Empty for non-table nodes."
+        ),
+    )
     dialect_fallbacks: dict[str, str] = Field(default_factory=dict)
     entity_identifier: UUID
+    entity_type: str = Field(
+        default="",
+        description="Entity type label (e.g., StandardsFrameworkItem, LearningComponent).",
+    )
     local_code: Optional[str] = Field(default=None)
     page_indices: list[int] = Field(default_factory=list)
-    role: NodeRole | StatementRole
+    role: str = Field(
+        default="",
+        description=(
+            "Source role label for the entity (e.g., NodeRole value for SFIs, "
+            "'framework' for StandardsFramework, 'learning_component' for LCs)."
+        ),
+    )
     section_path_text: list[str] = Field(default_factory=list)
     source_decision_ids: list[str] = Field(default_factory=list)
     source_segment_ids: list[str] = Field(default_factory=list)
@@ -1250,11 +1266,17 @@ class RelationshipProvenance(BaseSchema):
 
 # Schemas for export configurations.
 class EntityProvenanceExport(BaseSchema):
-    """Schema for entity provenance export."""
+    """Schema for entity provenance export.
 
+    Flat lookup table: export_id -> canonical_node_id, source provenance fields.
+    Designed for debugging and auditing without cracking open nested entity metadata.
+    """
+
+    doc_key: Optional[str] = None
     entities: list[EntityProvenance] = Field(
         default_factory=list, description="List of entities."
     )
+    pdf_name: Optional[str] = None
 
 
 class HierarchyOrderExport(BaseSchema):
@@ -1675,3 +1697,81 @@ class GraphValidationReport(BaseSchema):
         """
 
         return [i for i in self.issues if i.level == "warning"]
+
+
+class PolicyCoverageReport(BaseSchema):
+    """Aggregate report explaining what was emitted, dropped, and why.
+
+    This is the primary debuggability artifact for the KG export pipeline. It answers
+    "why was this node dropped?" and provides summary statistics for every export phase.
+    """
+
+    doc_key: Optional[str] = None
+    generated_at: Optional[str] = None
+    pdf_name: Optional[str] = None
+
+    # Node-level drop accounting (academic standards).
+    dropped_attach_to_expectation: int = Field(
+        default=0,
+        description="Aux nodes converted to metadata attachments (not emitted as SFIs).",
+    )
+    dropped_by_columns_signature: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of nodes dropped per columns_signature value.",
+    )
+    dropped_by_decision_type: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of nodes dropped per segment decision type (e.g., ignore, unresolved).",
+    )
+    dropped_descriptor: int = Field(
+        default=0, description="Nodes dropped because descriptor_handling == 'drop'."
+    )
+    dropped_guidance: int = Field(
+        default=0, description="Nodes dropped because guidance_handling == 'drop'."
+    )
+    dropped_non_grouping_role: int = Field(
+        default=0,
+        description="Nodes dropped because non_grouping_role_handling == 'drop'.",
+    )
+    pruned_empty_groupings: int = Field(
+        default=0,
+        description="Grouping nodes pruned because they had zero emitted children.",
+    )
+    total_canonical_nodes: int = 0
+    total_emitted_sfis: int = 0
+
+    # Aux reparenting.
+    aux_reparented_count: int = Field(
+        default=0, description="Aux statement nodes reparented under expectations."
+    )
+    orphan_aux_count: int = Field(
+        default=0,
+        description="Aux nodes that could not be reparented (no preceding expectation).",
+    )
+
+    # LC stats.
+    lc_max_splits_observed: int = 0
+    lc_split_policy: str = ""
+    lc_splits_distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Distribution of split counts: how many SFIs produced N LCs. Keys are stringified integers (e.g., '1': 500, '2': 50).",
+    )
+    total_expectations: int = 0
+    total_lcs: int = 0
+
+    # Progression stats (populated only when generate_progressions is True).
+    progression_candidate_edges: int = 0
+    progression_dropped_cap_relates: int = 0
+    progression_dropped_low_conf_builds: int = 0
+    progression_dropped_low_conf_relates: int = 0
+    progression_kept_builds_towards: int = 0
+    progression_kept_relates_to: int = 0
+
+    # Detailed per-node drop log (first N for debuggability).
+    drop_details: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Per-node drop log (capped at ~200 entries). Each entry includes "
+            "canonical_node_id, role, and drop_reason."
+        ),
+    )
