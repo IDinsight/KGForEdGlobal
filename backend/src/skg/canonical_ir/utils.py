@@ -15,6 +15,7 @@ from typing import Any, Iterable, Optional, TypeVar
 
 # Third Party Library
 from loguru import logger
+from pydantic import ValidationError
 
 # Package Library
 from skg.canonical_ir.schemas import (
@@ -181,6 +182,102 @@ def _build_mapping_index(
             continue
 
     return index
+
+
+def _canonicalize_single_decision(
+    *,
+    context_groupings_role_dict: dict[NodeRole, int],
+    decision: SegmentDecision,
+    mapping_index: dict,
+) -> SegmentDecision:
+    """Canonicalize groupings for a single segment decision.
+
+    Rewrites context_groupings, groupings, and row groupings based on the provided
+    mapping index and role dictionaries. Performs validation on the result; if
+    validation fails, the decision is demoted to UNRESOLVED.
+
+    Parameters
+    ----------
+    context_groupings_role_dict
+        Dictionary mapping NodeRoles to their precedence integers.
+    decision
+        The SegmentDecision to canonicalize.
+    mapping_index
+        The index of canonicalization rules to apply.
+
+    Returns
+    -------
+    SegmentDecision
+        The updated SegmentDecision, or the original if no changes were made,
+        or an UNRESOLVED decision if validation failed.
+    """
+
+    updates = {}
+
+    # Context groupings: enforce precedence + no duplicate roles.
+    if decision.context_groupings:
+        updates["context_groupings"] = _rewrite_grouping_list(
+            context_groupings_role_dict=context_groupings_role_dict,
+            enforce_unique_roles=True,
+            groupings=decision.context_groupings,
+            mapping_index=mapping_index,
+            sort_by_precedence=True,
+        )
+
+    # Segment-level groupings: keep order by default.
+    if decision.groupings:
+        updates["groupings"] = _rewrite_grouping_list(
+            context_groupings_role_dict=context_groupings_role_dict,
+            enforce_unique_roles=False,
+            groupings=decision.groupings,
+            mapping_index=mapping_index,
+            sort_by_precedence=False,
+        )
+
+    # Row-level groupings: enforce unique roles.
+    if decision.rows:
+        new_rows = []
+
+        for row in decision.rows:
+            if row.groupings:
+                new_groupings = _rewrite_grouping_list(
+                    context_groupings_role_dict=context_groupings_role_dict,
+                    enforce_unique_roles=True,
+                    groupings=row.groupings,
+                    mapping_index={},  # Don't canonicalize row-local groupings
+                    sort_by_precedence=False,
+                )
+                new_rows.append(row.model_copy(update={"groupings": new_groupings}))
+            else:
+                new_rows.append(row)
+
+        updates["rows"] = new_rows
+
+    # Re-validate after canonicalization to catch decisions that became structurally
+    # invalid (e.g., emit_groupings_only with all groupings dropped).
+    if updates:
+        candidate = decision.model_copy(update=updates)
+
+        try:
+            return SegmentDecision.model_validate(candidate.model_dump())
+        except ValidationError as e:
+            logger.error(
+                f"Post-canonicalization revalidation failed for "
+                f"decision_id={decision.decision_id}, "
+                f"segment_id={decision.segment_id}; "
+                f"demoting to UNRESOLVED. err={e!s}"
+            )
+            return decision.model_copy(
+                update={
+                    "context_groupings": [],
+                    "decision_type": SegmentDecisionType.UNRESOLVED,
+                    "groupings": [],
+                    "leaves": [],
+                    "rows": [],
+                }
+            )
+
+    return decision
 
 
 def _check_cycles(*, child_to_parent: dict[str, str], warnings: list[str]) -> None:
@@ -948,18 +1045,22 @@ def _index_decisions_by_segment(
 
 
 def _iter_all_grouping_decisions(
-    decision_set: SegmentDecisionSet,
+    *, decision_set: SegmentDecisionSet, include_row_groupings: bool = False
 ) -> Iterable[GroupingDecision]:
     """Yield every GroupingDecision present anywhere in the decision set:
 
     1. context_groupings
     2. segment-level groupings
-    3. row-level groupings
+    3. row-level groupings (optional)
 
     Parameters
     ----------
     decision_set
         The SegmentDecisionSet to iterate over.
+    include_row_groupings
+        If True, include row-level groupings (table-row local). This is typically
+        False for global canonicalization because row-local groupings are not
+        rewritten in apply_grouping_canonicalization_map().
 
     Yields
     -------
@@ -974,7 +1075,7 @@ def _iter_all_grouping_decisions(
         if d.groupings:
             yield from d.groupings
 
-        if d.rows:
+        if include_row_groupings and d.rows:
             for r in d.rows:
                 if r.groupings:
                     yield from r.groupings
@@ -2072,7 +2173,7 @@ def apply_grouping_canonicalization_map(
     *,
     canonical_grouping_min_confidence: float,
     canonicalization_skip_roles: list[NodeRole] | None = None,
-    context_groupings_role_order: list[str],
+    context_groupings_role_order: list[NodeRole],
     creation_dirs: CanonicalIRDirs,
     mapping: GroupingCanonicalizationMap,
     overwrite: bool,
@@ -2179,51 +2280,14 @@ def apply_grouping_canonicalization_map(
             item=item, context_groupings_role_dict=context_groupings_role_dict
         )
 
-    new_decisions: list[SegmentDecision] = []
-
-    for decision in segment_decisions.decisions:
-        updates = {}
-
-        # Context groupings: enforce precedence + no duplicate roles.
-        if decision.context_groupings:
-            updates["context_groupings"] = _rewrite_grouping_list(
-                context_groupings_role_dict=context_groupings_role_dict,
-                enforce_unique_roles=True,
-                groupings=decision.context_groupings,
-                mapping_index=mapping_index,
-                sort_by_precedence=True,
-            )
-
-        # Segment-level groupings: keep order by default.
-        if decision.groupings:
-            updates["groupings"] = _rewrite_grouping_list(
-                context_groupings_role_dict=context_groupings_role_dict,
-                enforce_unique_roles=False,
-                groupings=decision.groupings,
-                mapping_index=mapping_index,
-                sort_by_precedence=False,
-            )
-
-        # Row-level groupings: enforce unique roles.
-        if decision.rows:
-            new_rows = []
-
-            for row in decision.rows:
-                if row.groupings:
-                    new_groupings = _rewrite_grouping_list(
-                        context_groupings_role_dict=context_groupings_role_dict,
-                        enforce_unique_roles=True,
-                        groupings=row.groupings,
-                        mapping_index={},  # Don't canonicalize row-local groupings
-                        sort_by_precedence=False,
-                    )
-                    new_rows.append(row.model_copy(update={"groupings": new_groupings}))
-                else:
-                    new_rows.append(row)
-
-            updates["rows"] = new_rows
-
-        new_decisions.append(decision.model_copy(update=updates))
+    new_decisions: list[SegmentDecision] = [
+        _canonicalize_single_decision(
+            context_groupings_role_dict=context_groupings_role_dict,
+            decision=decision,
+            mapping_index=mapping_index,
+        )
+        for decision in segment_decisions.decisions
+    ]
 
     # NB: Recompute decision set ID since decisions have changed.
     new_id = compute_decision_set_id(decisions=new_decisions)
@@ -2662,7 +2726,9 @@ def collect_unique_grouping_keys(
     seen: set[tuple[str, str, str, str]] = set()
     skip_roles: frozenset[NodeRole] = frozenset(canonicalization_skip_roles or [])
 
-    for g in _iter_all_grouping_decisions(segment_decisions):
+    for g in _iter_all_grouping_decisions(
+        decision_set=segment_decisions, include_row_groupings=False
+    ):
         role = g.role
 
         # Roles whose mappings are discarded at apply time are excluded here to avoid
