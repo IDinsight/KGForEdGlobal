@@ -27,6 +27,7 @@ from skg.canonical_ir.schemas import (
     GroupingCanonicalizationMap,
     GroupingDecision,
     LeafDecision,
+    RowDecision,
     SegmentDecision,
     SegmentDecisionSet,
     UnresolvedItem,
@@ -188,13 +189,26 @@ def _canonicalize_single_decision(
     *,
     context_groupings_role_dict: dict[NodeRole, int],
     decision: SegmentDecision,
-    mapping_index: dict,
+    mapping_index: dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ],
+    row_mapping_index: dict[
+        tuple[str, str, str, str],
+        GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None,
+    ],
 ) -> SegmentDecision:
-    """Canonicalize groupings for a single segment decision.
+    """Canonicalize groupings for a single SegmentDecision.
 
-    Rewrites context_groupings, groupings, and row groupings based on the provided
-    mapping index and role dictionaries. Performs validation on the result; if
-    validation fails, the decision is demoted to UNRESOLVED.
+    Rewrites:
+
+    1. SegmentDecision.context_groupings (mapping applied; unique roles enforced;
+        sorted by outer-to-inner precedence)
+    2. SegmentDecision.groupings (mapping applied; order preserved)
+    3. RowDecision.groupings (mapping applied via ``row_mapping_index``; unique roles
+       enforced; order preserved)
+
+    If validation fails after rewriting, the decision is demoted to UNRESOLVED.
 
     Parameters
     ----------
@@ -203,16 +217,18 @@ def _canonicalize_single_decision(
     decision
         The SegmentDecision to canonicalize.
     mapping_index
-        The index of canonicalization rules to apply.
+        Mapping index used to rewrite context_groupings and segment-level groupings.
+    row_mapping_index
+        Mapping index used to rewrite row-level groupings. Pass an empty dict to
+        preserve existing row-local groupings (aside from dedupe/role-uniquing).
 
     Returns
     -------
     SegmentDecision
-        The updated SegmentDecision, or the original if no changes were made,
-        or an UNRESOLVED decision if validation failed.
+        The updated SegmentDecision (or an UNRESOLVED decision if validation failed).
     """
 
-    updates = {}
+    updates: dict[str, Any] = {}
 
     # Context groupings: enforce precedence + no duplicate roles.
     if decision.context_groupings:
@@ -236,7 +252,7 @@ def _canonicalize_single_decision(
 
     # Row-level groupings: enforce unique roles.
     if decision.rows:
-        new_rows = []
+        new_rows: list[RowDecision] = []
 
         for row in decision.rows:
             if row.groupings:
@@ -244,7 +260,7 @@ def _canonicalize_single_decision(
                     context_groupings_role_dict=context_groupings_role_dict,
                     enforce_unique_roles=True,
                     groupings=row.groupings,
-                    mapping_index={},  # Don't canonicalize row-local groupings
+                    mapping_index=row_mapping_index,
                     sort_by_precedence=False,
                 )
                 new_rows.append(row.model_copy(update={"groupings": new_groupings}))
@@ -1045,28 +1061,43 @@ def _index_decisions_by_segment(
 
 
 def _iter_all_grouping_decisions(
-    *, decision_set: SegmentDecisionSet, include_row_groupings: bool = False
+    *,
+    decision_set: SegmentDecisionSet,
+    row_grouping_roles: frozenset[NodeRole] | None = None,
 ) -> Iterable[GroupingDecision]:
-    """Yield every GroupingDecision present anywhere in the decision set:
+    """Yield GroupingDecision objects from a SegmentDecisionSet in stable order.
 
-    1. context_groupings
-    2. segment-level groupings
-    3. row-level groupings (optional)
+    This iterator is used to construct the global grouping canonicalization inventory.
+    It always yields:
+
+    1. SegmentDecision.context_groupings
+    2. SegmentDecision.groupings
+
+    It optionally yields row-level groupings:
+
+    3. RowDecision.groupings (only when ``row_grouping_roles`` is provided and
+        non-empty).
+
+    When row-level groupings are enabled, only groupings whose role is in
+    `row_grouping_roles` are yielded. This supports generalized PDFs where important
+    curriculum structure can appear at the row level (e.g., week/term/palier), without
+    pulling every row-local token into global canonicalization.
 
     Parameters
     ----------
     decision_set
         The SegmentDecisionSet to iterate over.
-    include_row_groupings
-        If True, include row-level groupings (table-row local). This is typically
-        False for global canonicalization because row-local groupings are not
-        rewritten in apply_grouping_canonicalization_map().
+    row_grouping_roles
+        Optional set of NodeRoles that are allowed to be yielded from row-level
+        groupings. If None or empty, row-level groupings are not yielded.
 
     Yields
-    -------
+    ------
     GroupingDecision
-        The next GroupingDecision.
+        The next GroupingDecision in deterministic traversal order.
     """
+
+    include_rows = bool(row_grouping_roles)
 
     for d in decision_set.decisions:
         if d.context_groupings:
@@ -1075,10 +1106,14 @@ def _iter_all_grouping_decisions(
         if d.groupings:
             yield from d.groupings
 
-        if include_row_groupings and d.rows:
+        if include_rows and d.rows:
             for r in d.rows:
-                if r.groupings:
-                    yield from r.groupings
+                if not r.groupings:
+                    continue
+
+                for g in r.groupings:
+                    if g.role in (row_grouping_roles or frozenset()):
+                        yield g
 
 
 def _make_unmatched_segment_sample(
@@ -2180,47 +2215,50 @@ def apply_grouping_canonicalization_map(
     creation_dirs: CanonicalIRDirs,
     mapping: GroupingCanonicalizationMap,
     overwrite: bool,
+    row_grouping_canonicalization_roles: list[NodeRole] | None = None,
     segment_decisions: SegmentDecisionSet,
 ) -> SegmentDecisionSet:
-    """Deterministically apply a GroupingCanonicalizationMap to all grouping lists in a
-    decision set.
+    """Deterministically apply a GroupingCanonicalizationMap to grouping lists.
 
     Applies to:
 
     1. SegmentDecision.context_groupings
     2. SegmentDecision.groupings
-    3. RowDecision.groupings are only deduped/role-uniqued; mapping is not applied by
-        default.
+    3. RowDecision.groupings are canonicalized only for roles listed in
+       `row_grouping_canonicalization_roles`. When this list is empty, row-level
+       groupings are only deduped and role-uniqued.
 
-    The mapping is as follows:
+    The mapping semantics are:
 
     1. KEEP: no-op
     2. DROP: remove the grouping
     3. REPLACE: replace with 1 canonical grouping (same role)
     4. SPLIT: replace with 2+ canonical groupings (may change roles)
 
-    The process is as follows:
+    The process is:
 
-    1. Dedupe exact duplicates (stable)
-    2. Enforce unique roles for context_groupings + row groupings (keep-first)
-    3. Sort context_groupings by global outer→inner precedence for stability
+    1. Build a fast mapping index from the LLM-produced map (confidence-gated).
+    2. Filter out skipped roles so their keys are treated as KEEP at apply time.
+    3. Validate SPLIT precedence consistency for the rules we will apply.
+    4. Apply mapping to decisions, revalidating each decision post-rewrite.
 
     Parameters
     ----------
     canonical_grouping_min_confidence
         The minimum confidence threshold for applying canonical grouping.
     canonicalization_skip_roles
-        The list of NodeRoles to skip during canonicalization (e.g., if you want to
-        preserve all "topic" groupings as emitted without merging them).
+        NodeRoles to skip during canonicalization map application.
     context_groupings_role_order
-        List containing the NodeRoles in the order of precedence for context groupings
-        (outer to inner).
+        Outer -> inner precedence for context groupings, used for stable sorting.
     creation_dirs
         The canonical IR creation directories.
     mapping
         The GroupingCanonicalizationMap to apply.
     overwrite
         Whether to overwrite existing normalized decisions.
+    row_grouping_canonicalization_roles
+        Optional list of roles to canonicalize at table row level. When empty,
+        row-level groupings are not rewritten by the mapping.
     segment_decisions
         The SegmentDecisionSet to update.
 
@@ -2252,27 +2290,24 @@ def apply_grouping_canonicalization_map(
         mapping=mapping,
     )
 
-    # Default: preserve existing behavior (skip TOPIC/SUBTOPIC), but allow config
-    # override.
     if canonicalization_skip_roles is None:
         canonicalization_skip_roles = [
             NodeRole.TOPIC,
             NodeRole.SUBTOPIC,
         ]
+
+    skip_role_values = {r.value for r in canonicalization_skip_roles}
+
     mapping_index = {
-        k: v
-        for k, v in mapping_index.items()
-        if k[0] not in {r.value for r in canonicalization_skip_roles}
+        k: v for k, v in mapping_index.items() if k[0] not in skip_role_values
     }
 
     # Validate SPLIT precedence for the rules that we'll actually apply.
     #
-    # NB: We iterate the original mapping.items (GroupingCanonicalizationItem objects)
-    # rather than mapping_index.values(), because the index flattens items into
-    # GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None — losing the
-    # .action and .output attributes that _check_split_output_precedence requires.
-    skip_role_values = {r.value for r in canonicalization_skip_roles}
-
+    # NB: We iterate mapping.items (GroupingCanonicalizationItem objects) rather than
+    # mapping_index.values(), because the index flattens items into
+    # GroupingCanonicalizationKey | list[GroupingCanonicalizationKey] | None — losing
+    # .action/.output attributes needed for precedence checks.
     for item in mapping.items:
         if (
             item.confidence < canonical_grouping_min_confidence
@@ -2281,14 +2316,26 @@ def apply_grouping_canonicalization_map(
             continue
 
         _check_split_output_precedence(
-            item=item, context_groupings_role_dict=context_groupings_role_dict
+            context_groupings_role_dict=context_groupings_role_dict, item=item
         )
+
+    row_roles: frozenset[NodeRole] = frozenset(
+        row_grouping_canonicalization_roles or []
+    )
+
+    if row_roles:
+        row_mapping_index = {
+            k: v for k, v in mapping_index.items() if NodeRole(k[0]) in row_roles
+        }
+    else:
+        row_mapping_index = {}
 
     new_decisions: list[SegmentDecision] = [
         _canonicalize_single_decision(
             context_groupings_role_dict=context_groupings_role_dict,
             decision=decision,
             mapping_index=mapping_index,
+            row_mapping_index=row_mapping_index,
         )
         for decision in segment_decisions.decisions
     ]
@@ -2296,7 +2343,6 @@ def apply_grouping_canonicalization_map(
     # NB: Recompute decision set ID since decisions have changed.
     new_id = compute_decision_set_id(decisions=new_decisions)
 
-    # Save updated decision set.
     normalized_segment_decisions = segment_decisions.model_copy(
         update={"decision_set_id": new_id, "decisions": new_decisions}
     )
@@ -2681,18 +2727,23 @@ def collect_unique_grouping_keys(
     canonicalization_skip_roles: list[NodeRole] | None = None,
     creation_dirs: CanonicalIRDirs,
     overwrite: bool,
+    row_grouping_canonicalization_roles: list[NodeRole] | None = None,
     segment_decisions: SegmentDecisionSet,
 ) -> list[GroupingCanonicalizationKey]:
-    """Collect the set of unique grouping candidates
-    (role/title/local_code/source_label) from a SegmentDecisionSet to feed into the
-    LLM-based global grouping canonicalizer.
+    """Collect unique grouping candidates for global canonicalization.
 
-    The process ensures:
+    This extracts stable grouping "atoms" (role/title/local_code/source_label) from a
+    SegmentDecisionSet so they can be canonicalized once globally (step 12) and then
+    applied deterministically (step 13).
 
-    1. Input traversal is stable
-    2. Dedupe uses exact tuple matching
-    3. Roles in ``canonicalization_skip_roles`` are excluded (their mappings would be
-       discarded at apply time anyway, so filtering them here avoids wasted LLM tokens).
+    By default, keys are collected from:
+
+    1. SegmentDecision.context_groupings
+    2. SegmentDecision.groupings
+
+    Row-level groupings are included only when `row_grouping_canonicalization_roles` is
+    provided and non-empty; in that case, only row groupings whose role is in that
+    allow-list are collected.
 
     Parameters
     ----------
@@ -2704,13 +2755,16 @@ def collect_unique_grouping_keys(
         The canonical IR creation directories.
     overwrite
         Whether to overwrite existing unique grouping keys.
+    row_grouping_canonicalization_roles
+        Optional list of NodeRoles to include from row-level groupings when collecting
+        global grouping keys (e.g., WEEK, TERM).
     segment_decisions
         The SegmentDecisionSet to extract grouping keys from.
 
     Returns
     -------
     list[GroupingCanonicalizationKey]
-        The list of unique grouping keys.
+        The list of unique grouping keys, sorted deterministically.
     """
 
     grouping_keys_unique_fp = creation_dirs.group_mapping / "grouping_keys_unique.json"
@@ -2729,9 +2783,12 @@ def collect_unique_grouping_keys(
     grouping_keys: list[GroupingCanonicalizationKey] = []
     seen: set[tuple[str, str, str, str]] = set()
     skip_roles: frozenset[NodeRole] = frozenset(canonicalization_skip_roles or [])
+    row_roles: frozenset[NodeRole] | None = (
+        frozenset(row_grouping_canonicalization_roles or []) or None
+    )
 
     for g in _iter_all_grouping_decisions(
-        decision_set=segment_decisions, include_row_groupings=False
+        decision_set=segment_decisions, row_grouping_roles=row_roles
     ):
         role = g.role
 

@@ -463,10 +463,17 @@ class CreateCanonicalConfig(BaseSchema):
     )
     bind_unknown_caption: bool = Field(
         True,
-        description=(
-            "Whether to bind captions whose kind cannot be classified (unknown) to the "
-            "next eligible table. If false, only explicit table captions are bound."
-        ),
+        description="Whether to bind captions whose kind cannot be confidently classified during deterministic caption→table binding.",
+    )
+    caption_max_gap_segments: int = Field(
+        2,
+        description="Maximum number of non-table segments allowed between a caption block and the table it binds to.",
+        ge=0,
+    )
+    caption_max_page_distance: int = Field(
+        1,
+        description="Maximum page distance allowed between a caption block and the table it binds to.",
+        ge=0,
     )
     canonical_grouping_min_confidence: float = Field(
         0.80,
@@ -481,22 +488,6 @@ class CreateCanonicalConfig(BaseSchema):
             "(SegmentDecision.context_groupings and SegmentDecision.groupings). "
             "Default skips TOPIC/SUBTOPIC to avoid incorrect global merges."
         ),
-    )
-    caption_max_gap_segments: int = Field(
-        2,
-        description=(
-            "Caption-to-table binding: maximum number of non-table segments allowed "
-            "between a CAPTION block and the next TABLE segment."
-        ),
-        ge=0,
-    )
-    caption_max_page_distance: int = Field(
-        1,
-        description=(
-            "Caption-to-table binding: maximum absolute page distance allowed between "
-            "a CAPTION block and the next TABLE segment."
-        ),
-        ge=0,
     )
     context_groupings_role_order: list[NodeRole] = Field(
         default_factory=lambda: list(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER),
@@ -524,6 +515,15 @@ class CreateCanonicalConfig(BaseSchema):
         "gpt-5.2-2025-12-11", description="OpenAI model for canonical IR."
     )
     overwrite: bool = Field(False, description="Overwrite existing canonical IR JSON.")
+    row_grouping_canonicalization_roles: list[NodeRole] = Field(
+        default_factory=list,
+        description=(
+            "Optional list of roles for which table row-level groupings "
+            "(RowDecision.groupings) should be included in global grouping "
+            "canonicalization. When empty, row-level groupings are left as-emitted, and "
+            "only context_groupings/groupings are canonicalized."
+        ),
+    )
     segment_decision_conf_threshold: float = Field(
         0.75,
         description="The low confidence threshold for segment decisions. This is reflected in the segment decision system prompt for the LLM.",
@@ -579,6 +579,49 @@ class CreateCanonicalConfig(BaseSchema):
             if r in (NodeRole.FRAMEWORK, NodeRole.PROSE, NodeRole.UNRESOLVED):
                 raise ValueError(
                     f"Invalid NodeRole in context_groupings_role_order (not a grouping container): {r.value}"
+                )
+
+            seen.add(r)
+
+        return v
+
+    @field_validator("row_grouping_canonicalization_roles")
+    @classmethod
+    def validate_row_grouping_canonicalization_roles(
+        cls, v: list[NodeRole]
+    ) -> list[NodeRole]:
+        """Validate row-grouping canonicalization role list.
+
+        Parameters
+        ----------
+        v
+            The configured roles to canonicalize at row level.
+
+        Returns
+        -------
+        list[NodeRole]
+            The validated roles with duplicates rejected.
+
+        Raises
+        ------
+        ValueError
+            If the list contains duplicates or invalid roles.
+        """
+
+        if not v:
+            return v
+
+        seen: set[NodeRole] = set()
+
+        for r in v:
+            if r in seen:
+                raise ValueError(
+                    f"Duplicate NodeRole in row_grouping_canonicalization_roles: {r.value}"
+                )
+
+            if r in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED):
+                raise ValueError(
+                    f"Invalid NodeRole in row_grouping_canonicalization_roles: {r.value}"
                 )
 
             seen.add(r)
