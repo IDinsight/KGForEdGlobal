@@ -104,10 +104,10 @@ def _call_openai_api_for_page_ir_verification(
             input=input_items,
             instructions=instructions,
             model=model,
-            # reasoning={"effort": "high"},
-            temperature=0,
+            reasoning={"effort": "high"},
+            # temperature=0,
             text_format=PageIRContinuityVerdict,
-            top_p=1.0,
+            # top_p=1.0,
         )
     else:
         response = openai_client.responses.parse(

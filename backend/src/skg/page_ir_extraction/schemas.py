@@ -106,10 +106,6 @@ class Table(BaseSchema):
             If header_row_count exceeds number of rows.
         """
 
-        if self.header_row_count < 0:
-            raise ValueError(
-                f"header_row_count ({self.header_row_count}) cannot be negative."
-            )
         if self.header_row_count > len(self.rows):
             raise ValueError(
                 f"header_row_count ({self.header_row_count}) cannot exceed number of "
