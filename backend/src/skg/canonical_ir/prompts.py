@@ -101,39 +101,34 @@ A. Planning tables are often normative (Issue D):
   materials/resources ("matériel", "supports"), duration/time ("durée"), pedagogy/method ("démarche"), evaluation instructions.
 - Use StatementRole=DESCRIPTOR only for explicit performance criteria/benchmarks/checkpoints (rare in the week tables; more common near "paliers" summaries).
 
-B. Column-header heuristics for Senegal planning tables:
+B. Senegal mixed-organization rule (IMPORTANT):
+- For "Apprentissages ponctuels" tables (typically Tableaux 4–27): the document is STRAND-first. If the active section_path/headings/caption indicate a strand, ALWAYS include that STRAND as an OUTER context_groupings entry (stable for the table). Do not encode grade in the strand title (e.g., avoid "Activités numériques CE1/CE2" as a strand); keep grade_level separate and let paliers carry CE1 vs CE2 scope.
+- For weekly "Planification" tables (typically Tableau 2–3): the document is GRADE-first. Treat the table as a grade-scoped UNIT (Planification CE1/CE2). Even if the caption contains multiple strands (e.g., "Activités numériques et Résolution de problèmes"), DO NOT set STRAND in context_groupings. Instead, represent strands row/column-locally using the column-header fanout pattern:
+  - emit RowDecision items with col_index for each strand column, and set RowDecision.groupings=[{role:"strand", title:<column header>}].
+
+C. Column-header heuristics for Senegal planning tables:
 - Headers implying EXPECTATION (normative content): "apprentissages", "objectifs", "contenus", "compétence(s)", "savoirs", "habiletés", "capacités".
 - Headers implying GUIDANCE: "situations", "démarche", "méthode", "matériel", "durée", "évaluation", "ressources".
 - IMPORTANT: strand-name column headers like "Activités numériques", "Activités géométriques", "Activités de mesure", "Activités Résolution de problèmes" are STRUCTURAL strand labels, NOT GUIDANCE indicators. Cells under these headers typically contain EXPECTATION statements (learning outcomes), not teacher activities. Do NOT classify them as GUIDANCE merely because the header contains the word "activités".
 - Headers like "Semaine" / "Sem." and "Palier" are STRUCTURE, not leaves. Treat their values as row-local groupings (week/substage cues) rather than leaf statements.
 
-C. Multi-strand planification tables (Tableaux 2–3):
-- Captions and titles often mention multiple strands (e.g., "Activités numériques et Résolution de problèmes"). Because context_groupings[] cannot contain duplicate STRAND roles, DO NOT force a single strand into context_groupings[] for these.
-- Instead, model the strand as **row-local / column-local structure**:
-  - Use column-anchored fanout: for each row_index, emit one RowDecision per strand column (set col_index).
-  - Add RowDecision.groupings=[{role=STRAND, title=<exact column header>}].
-  - Emit the cell text under that column as EXPECTATION (unless it is clearly logistics/empty).
-- Keep grade_level/stage/subject as outer anchors (context_groupings[]), and keep weeks as RowDecision.groupings(role=WEEK) if present.
-
 D. Grade refinement from unit headings (Issue E):
-
 - Prefer grade_level from a parent/outer heading like "Paliers du niveau CE1" / "... CE2".
 - HOWEVER, if the current segment’s strongest visible evidence for grade is embedded in a UNIT heading/caption like "(niveau 1: CE1)" or "(niveau 2: CE2)", you SHOULD refine context_groupings.grade_level to that specific grade ("CE1" or "CE2") *while keeping the full UNIT title intact*.
   - Do NOT create a separate grade grouping from the inline "(niveau ...: CE...)" fragment.
   - If prior_context_groupings has a broader grade band (e.g., "CE1–CE2") and the unit heading clearly specifies CE1 or CE2, override/refine to the specific grade and note it in rationale.
 
-D. Language markers are not hierarchy:
+E. Language markers are not hierarchy:
 - "Mooñaale ci wolof" and similar language-of-instruction directives are prose labels, not structural groupings and not expectations.
 
-E. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27):
+F. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27):
 - "Objectif d'apprentissage" column contains a numeric learning-objective index (e.g., "1", "2", "3") that groups related rows. Treat as a row-local grouping identifier (role=TOPIC), not a leaf statement.
 - "Objectif spécifique" and "Contenus" columns contain bilingual (Wolof then French) learning outcomes — these are EXPECTATION.
 - "Durée" column contains lesson/session logistics (e.g., "2 leçons de 2 séances chacune") — this is GUIDANCE.
 
-F. Competency overview table (Tableau 1 — "Compétences de base par domaine d'activité"):
-- This table has one column per strand with high-level competency descriptions.
-- Preferred emission: use **column-anchored fanout** (see §6A). For each row_index, emit one RowDecision per strand-column (set col_index), add RowDecision.groupings=[{role=STRAND, title=<exact column header>}], and emit the cell text as an EXPECTATION leaf.
-- IGNORE is acceptable only if you are explicitly choosing to rely on the later palier/week tables for all competency statements.
+G. Competency overview table (Tableau 1 — "Compétences de base par domaine d'activité"):
+- This table has one column per strand with high-level competency descriptions. These are general competence statements repeated at finer granularity in the palier definitions.
+- Treat as EXPECTATION if emitted. IGNORE is also acceptable since the palier-level tables provide the same content at finer granularity.
 """
     )
 }
