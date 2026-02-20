@@ -70,7 +70,7 @@ def extract_page_by_page(
         The extraction directories.
     """
 
-    total_pages = end_page - config.start_page + 1
+    total_pages = end_page - config.start_page
 
     for page_index in range(config.start_page, end_page):
         page_ir_fp = extraction_dirs.page_irs / f"{page_index:04d}.json"
