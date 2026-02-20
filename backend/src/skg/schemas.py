@@ -515,8 +515,8 @@ class CreateCanonicalConfig(BaseSchema):
         "gpt-5.2-2025-12-11", description="OpenAI model for canonical IR."
     )
     overwrite: bool = Field(False, description="Overwrite existing canonical IR JSON.")
-    row_grouping_canonicalization_roles: list[NodeRole] = Field(
-        default_factory=list,
+    row_grouping_canonicalization_roles: Optional[list[NodeRole]] = Field(
+        None,
         description=(
             "Optional list of roles for which table row-level groupings "
             "(RowDecision.groupings) should be included in global grouping "
