@@ -38,7 +38,7 @@ Document-specific patterns (use when consistent with the observed heading sequen
 - Enforce this nesting when these headings co-occur in the same section:
   ACTIVITES (strand/domain)  <  PALIERS DU ...  <  JÉEGO N  <  PALIER N  <  APPRENTISSAGES PONCTUELS.
   ("<" means strictly deeper: larger integer level.)
-  - "JÉEGO N" denotes a unit grouping within a strand. "PALIER N" denotes a milestone within a Jéego. JÉEGO is always exactly one level above PALIER.
+  - "JÉEGO N" lines are Wolof-language competency statements paired with the French PALIER N lines. They are content, not structural hierarchy. If detected as headings, assign them level 0.
   - Keep levels consistent across N.
   - Variants like "(suite)" or "(yeggale)" are continuations and MUST keep the same level as the base "JÉEGO N" or "PALIER N".
 - Only treat headings of the form "PALIER <number>" (or clearly equivalent heading formatting) as a substage grouping. Mentions of "palier/paliers" inside table cells are content (often descriptors/checkpoints), not hierarchy, unless they are clearly formatted as headings.
@@ -103,7 +103,8 @@ A. Planning tables are often normative (Issue D):
 
 B. Column-header heuristics for Senegal planning tables:
 - Headers implying EXPECTATION (normative content): "apprentissages", "objectifs", "contenus", "compétence(s)", "savoirs", "habiletés", "capacités".
-- Headers implying GUIDANCE: "activités", "situations", "démarche", "méthode", "matériel", "durée", "évaluation", "ressources".
+- Headers implying GUIDANCE: "situations", "démarche", "méthode", "matériel", "durée", "évaluation", "ressources".
+- IMPORTANT: strand-name column headers like "Activités numériques", "Activités géométriques", "Activités de mesure", "Activités Résolution de problèmes" are STRUCTURAL strand labels, NOT GUIDANCE indicators. Cells under these headers typically contain EXPECTATION statements (learning outcomes), not teacher activities. Do NOT classify them as GUIDANCE merely because the header contains the word "activités".
 - Headers like "Semaine" / "Sem." and "Palier" are STRUCTURE, not leaves. Treat their values as row-local groupings (week/substage cues) rather than leaf statements.
 
 C. Grade refinement from unit headings (Issue E):
@@ -112,8 +113,17 @@ C. Grade refinement from unit headings (Issue E):
   - Do NOT create a separate grade grouping from the inline "(niveau ...: CE...)" fragment.
   - If prior_context_groupings has a broader grade band (e.g., "CE1–CE2") and the unit heading clearly specifies CE1 or CE2, override/refine to the specific grade and note it in rationale.
 
-D) Language markers are not hierarchy:
+D. Language markers are not hierarchy:
 - "Mooñaale ci wolof" and similar language-of-instruction directives are prose labels, not structural groupings and not expectations.
+
+E. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27):
+- "Objectif d'apprentissage" column contains a numeric learning-objective index (e.g., "1", "2", "3") that groups related rows. Treat as a row-local grouping identifier (role=TOPIC), not a leaf statement.
+- "Objectif spécifique" and "Contenus" columns contain bilingual (Wolof then French) learning outcomes — these are EXPECTATION.
+- "Durée" column contains lesson/session logistics (e.g., "2 leçons de 2 séances chacune") — this is GUIDANCE.
+
+F. Competency overview table (Tableau 1 — "Compétences de base par domaine d'activité"):
+- This table has one column per strand with high-level competency descriptions. These are general competence statements repeated at finer granularity in the palier definitions.
+- Treat as EXPECTATION if emitted. IGNORE is also acceptable since the palier-level tables provide the same content at finer granularity.
 """
     )
 }
@@ -386,8 +396,8 @@ def double_check_decision_on_segment() -> PromptPair:
 5. **Context depth:** Are groupings[] all INNER relative to context_groupings[]? (No GRADE_LEVEL in groupings[] when SUBJECT is the deepest context role.)
 6. **Table row_index:** If table, does every RowDecision.row_index match the row's abs_row_index? If any RowDecision uses col_index, is it a valid 0-based table column and are its leaves grounded in that column’s cell text? No RowDecisions for header/blank/context-only rows?
 7. **Context evidence:** Is every context_groupings[].title supported by outer evidence (section_path/caption/header_rows) or valid carry-forward?
-8. **Planning-table role sanity:** If the segment looks like a scope-and-sequence/planning table (e.g., caption/section_path/header_rows mention "Tableau de planification" or "Apprentissages ponctuels"), did you incorrectly label *all* (or nearly all) row leaves as GUIDANCE? Re-evaluate: outcome/skill/knowledge cells are usually EXPECTATION; reserve GUIDANCE for teacher actions, materials, duration, pedagogy.
-9. **Grade refinement sanity:** If a UNIT heading/caption contains an embedded grade cue like "(niveau 1: CE1)" / "(niveau 2: CE2)" and the current grade_level context is missing or broader than that, refine context_groupings.grade_level to the specific CE grade while keeping the UNIT title intact (do not create a separate grade node from the inline fragment).
+8. **Planning-table role sanity:** If the segment is a scope-and-sequence or planning table, did you incorrectly label *all* (or nearly all) row leaves as GUIDANCE? Re-evaluate: cells describing learner outcomes, skills, or knowledge are EXPECTATION even in planning tables; reserve GUIDANCE for teacher actions, materials, duration/logistics, and pedagogy. Also check: are strand-name column headers (e.g., "Activités numériques") being confused for activity/guidance indicators? Cells under strand-label headers typically contain EXPECTATION content, not teacher activities.
+9. **Grade refinement sanity:** If a UNIT heading or caption contains an embedded grade indicator (e.g., "(Grade 3)", "(Year 5)", "(niveau 1: CE1)") and the current grade_level context is missing or broader, refine context_groupings.grade_level to the specific grade while keeping the UNIT title intact (do not create a separate grade node from the inline fragment).
 
 If any check fails, fix it and return the corrected SegmentDecision. Otherwise, return your original output unchanged.
         """
@@ -539,7 +549,7 @@ Hard rules:
 3. Avoid artificial resets: do NOT jump to a broader level (smaller number) unless the heading clearly starts a new major section.
 4. Continuations: headings containing continuation markers like "(suite)", "(continued)", "(part ...)" must match the base heading’s level.
 5. Level 0 is ONLY for non-structural text OR curriculum-content misdetected as a heading that we want processed downstream as CONTENT (not hierarchy).
-   Examples (document-specific): long competency sentences like "Boole mooñ ...", or language directives like "Mooñaale ci wolof", "en wolof", "(Wolof)", "(Français)".
+   Examples: long competency/objective sentences mistakenly extracted as headings, language-of-instruction directives, or document metadata like edition/publisher lines.
    Do NOT assign 0 merely because a heading is long; assign 0 only when it is clearly not a structural container/label.
 6. If a heading appears between two clearly structural headings, it MUST receive a non-zero level consistent with that neighborhood
    EXCEPT when it matches a known content-heading or language-directive pattern (see rule 5 and document hints). In those cases, assign level 0.

@@ -935,10 +935,6 @@ class GroupingCanonicalizationItem(BaseSchema):
         if len(self.output) < 2:
             raise ValueError("SPLIT requires 2+ output groupings")
 
-        # Prevent useless SPLITs that don't change anything.
-        if self.output == [self.input]:
-            raise ValueError("SPLIT identical to input; use KEEP instead.")
-
     @model_validator(mode="after")
     def _validate_action_output_contract(self) -> GroupingCanonicalizationItem:
         """Enforce action/output consistency rules.

@@ -1955,9 +1955,9 @@ def save_segment_decision_set(
         The updated SegmentDecisionSet with recomputed decision_set_id.
     """
 
-    # Recompute stable ID every write and keep the in-memory object consistent.
+    # Recompute stable ID every write.
     new_id = compute_decision_set_id(decisions=decision_set.decisions)
-    decision_set.decision_set_id = new_id
+    decision_set = decision_set.model_copy(update={"decision_set_id": new_id})
 
     write_to_json(fp=segment_decisions_fp, json_info=decision_set)
 
