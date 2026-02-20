@@ -38,7 +38,7 @@
 	"canonical_ir": {
 		"always_double_check_first_attempt": false,
 		"bind_unknown_caption": true,
-		"canonical_grouping_min_confidence": 0.8,
+		"canonical_grouping_min_confidence": 0.7,
 		"canonicalization_skip_roles": [
 			"topic",
 			"subtopic",
@@ -49,13 +49,11 @@
 		"context_groupings_role_order": [
 			"subject",
 			"stage",
-			"strand",
+			"section",
 			"grade_level",
 			"unit",
 			"substage",
-			"week",
-			"topic",
-			"subtopic"
+			"week"
 		],
 		"heading_role_hints": [
 			{
@@ -130,9 +128,9 @@
 		"row_grouping_canonicalization_roles": [
 			"week"
 		],
-		"segment_decision_conf_threshold": 0.5,
+		"segment_decision_conf_threshold": 0.6,
 		"spine_policy": {
-			"allow_partial_context": true,
+			"allow_partial_context": false,
 			"block_local_roles": [],
 			"caption_context_patterns": [
 				{
@@ -166,7 +164,7 @@
 					"title_template": "ÉTAPE \\1"
 				},
 				{
-					"match": "(?i)\\bactivit[ée]s\\s+num[eéè]riques",
+					"match": "(?is)\\bactivit[ée]s\\s+num[eéè]riques\\b(?!.*\\br[éeè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes\\b)",
 					"role": "strand",
 					"title_template": "Activités numériques"
 				},
@@ -181,12 +179,7 @@
 					"title_template": "Activités de mesure"
 				},
 				{
-					"match": "(?i)\\bactivit[ée]s\\s+(?:de\\s+)?r[eéè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes",
-					"role": "strand",
-					"title_template": "Activités de résolution de problèmes"
-				},
-				{
-					"match": "(?i)\\br[éeè]solution\\s+de\\s+probl[èée]mes",
+					"match": "(?is)\\br[éeè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes\\b(?!.*\\bactivit[ée]s\\s+num[eéè]riques\\b)",
 					"role": "strand",
 					"title_template": "Activités de résolution de problèmes"
 				},
@@ -203,7 +196,7 @@
 				{
 					"match": "(?i)\\bpalier\\s*(\\d+)\\b",
 					"role": "substage",
-					"title_template": "PALIER \\1"
+					"title_template": "Palier \\1"
 				}
 			],
 			"casefold_titles_for_matching": true,
@@ -214,6 +207,7 @@
 			"outer_context_roles": [
 				"subject",
 				"stage",
+				"section",
 				"strand",
 				"grade_level",
 				"unit",
@@ -221,6 +215,7 @@
 			],
 			"relocate_table_local_only_roles_to_rows": true,
 			"row_roles": [
+				"strand",
 				"week",
 				"topic",
 				"subtopic"

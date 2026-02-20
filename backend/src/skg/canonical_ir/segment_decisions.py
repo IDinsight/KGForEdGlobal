@@ -506,6 +506,36 @@ def _filter_section_path_for_llm(
     return deduped[-max_items:]
 
 
+def _has_anchor(*, anchor_roles: set[str], decision: SegmentDecision) -> bool:
+    """Check if the decision has at least one outer anchor in its context_groupings,
+    groupings, or row.groupings.
+
+    Parameters
+    ----------
+    anchor_roles
+        A set of role values considered as outer anchors.
+    decision
+        The SegmentDecision to check for anchors.
+
+    Returns
+    -------
+    bool
+        True if at least one outer anchor is found, False otherwise.
+    """
+
+    context_groupings = decision.context_groupings or []
+    groupings = decision.groupings or []
+    rows = decision.rows or []
+
+    return (
+        any(g.role.value in anchor_roles for g in context_groupings)
+        or any(g.role.value in anchor_roles for g in groupings)
+        or any(
+            g.role.value in anchor_roles for row in rows for g in (row.groupings or [])
+        )
+    )
+
+
 def _is_code_like_token(token: str) -> bool:
     """Return True for compact curriculum-style codes like 'CE1' or 'NUM1'.
 
@@ -1887,6 +1917,70 @@ def process_segment_decisions(
         segment_decisions_fp=segment_decisions_fp,
         warnings=warnings,
     )
+
+
+def promote_flagged_unresolved_decisions(
+    *, outer_anchor_roles: list[str], segment_decisions: SegmentDecisionSet
+) -> SegmentDecisionSet:
+    """Promote EMIT_FLAGGED_UNRESOLVED decisions to a proper emit_* type when possible.
+
+    Why: Downstream compilation may skip flagged-unresolved decisions. If the decision
+    already contains enough grounded structure (and at least one outer anchor), we
+    prefer to compile it rather than drop it entirely.
+
+    This function is intentionally conservative:
+
+    1. If no outer anchor can be found in context_groupings/groupings/row.groupings,
+        the decision is left as-is.
+    2. Otherwise, we pick the narrowest compatible emit_* type based on which arrays
+        are populated, and we preserve the original decision_type in rationale.
+
+    Parameters
+    ----------
+    outer_anchor_roles
+        The list of roles considered as outer anchors for the purpose of promotion.
+    segment_decisions
+        The SegmentDecisionSet to process.
+
+    Returns
+    -------
+    SegmentDecisionSet
+        The updated SegmentDecisionSet with promoted decisions where applicable.
+    """
+
+    anchor_roles = set(outer_anchor_roles)
+
+    for d in segment_decisions.decisions:
+        # Keep flagged-unresolved if unanchored; better to drop than to invent.
+        if (
+            d.decision_type != SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED
+            or not _has_anchor(anchor_roles=anchor_roles, decision=d)
+        ):
+            continue
+
+        has_groupings = bool(d.groupings) or any(
+            (r.groupings or []) for r in (d.rows or [])
+        )
+        has_leaves = bool(d.leaves) or any((r.leaves or []) for r in (d.rows or []))
+
+        original = d.decision_type.value
+
+        if has_groupings and has_leaves:
+            d.decision_type = SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES
+        elif has_leaves:
+            # Ensure segment-level groupings are empty for emit_leaves_only.
+            d.groupings = []
+            d.decision_type = SegmentDecisionType.EMIT_LEAVES_ONLY
+        elif has_groupings:
+            d.leaves = []
+            d.decision_type = SegmentDecisionType.EMIT_GROUPINGS_ONLY
+        else:
+            d.decision_type = SegmentDecisionType.UNRESOLVED
+
+        prefix = f"[PROMOTED_FROM:{original}] "
+        d.rationale = prefix + (d.rationale or "").strip()
+
+    return segment_decisions
 
 
 def reconstruct_section_path(

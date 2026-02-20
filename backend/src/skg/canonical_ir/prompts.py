@@ -107,7 +107,16 @@ B. Column-header heuristics for Senegal planning tables:
 - IMPORTANT: strand-name column headers like "Activités numériques", "Activités géométriques", "Activités de mesure", "Activités Résolution de problèmes" are STRUCTURAL strand labels, NOT GUIDANCE indicators. Cells under these headers typically contain EXPECTATION statements (learning outcomes), not teacher activities. Do NOT classify them as GUIDANCE merely because the header contains the word "activités".
 - Headers like "Semaine" / "Sem." and "Palier" are STRUCTURE, not leaves. Treat their values as row-local groupings (week/substage cues) rather than leaf statements.
 
-C. Grade refinement from unit headings (Issue E):
+C. Multi-strand planification tables (Tableaux 2–3):
+- Captions and titles often mention multiple strands (e.g., "Activités numériques et Résolution de problèmes"). Because context_groupings[] cannot contain duplicate STRAND roles, DO NOT force a single strand into context_groupings[] for these.
+- Instead, model the strand as **row-local / column-local structure**:
+  - Use column-anchored fanout: for each row_index, emit one RowDecision per strand column (set col_index).
+  - Add RowDecision.groupings=[{role=STRAND, title=<exact column header>}].
+  - Emit the cell text under that column as EXPECTATION (unless it is clearly logistics/empty).
+- Keep grade_level/stage/subject as outer anchors (context_groupings[]), and keep weeks as RowDecision.groupings(role=WEEK) if present.
+
+D. Grade refinement from unit headings (Issue E):
+
 - Prefer grade_level from a parent/outer heading like "Paliers du niveau CE1" / "... CE2".
 - HOWEVER, if the current segment’s strongest visible evidence for grade is embedded in a UNIT heading/caption like "(niveau 1: CE1)" or "(niveau 2: CE2)", you SHOULD refine context_groupings.grade_level to that specific grade ("CE1" or "CE2") *while keeping the full UNIT title intact*.
   - Do NOT create a separate grade grouping from the inline "(niveau ...: CE...)" fragment.
@@ -122,8 +131,9 @@ E. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27
 - "Durée" column contains lesson/session logistics (e.g., "2 leçons de 2 séances chacune") — this is GUIDANCE.
 
 F. Competency overview table (Tableau 1 — "Compétences de base par domaine d'activité"):
-- This table has one column per strand with high-level competency descriptions. These are general competence statements repeated at finer granularity in the palier definitions.
-- Treat as EXPECTATION if emitted. IGNORE is also acceptable since the palier-level tables provide the same content at finer granularity.
+- This table has one column per strand with high-level competency descriptions.
+- Preferred emission: use **column-anchored fanout** (see §6A). For each row_index, emit one RowDecision per strand-column (set col_index), add RowDecision.groupings=[{role=STRAND, title=<exact column header>}], and emit the cell text as an EXPECTATION leaf.
+- IGNORE is acceptable only if you are explicitly choosing to rely on the later palier/week tables for all competency statements.
 """
     )
 }
@@ -236,7 +246,7 @@ Your job: Given ONE segment from a stitched curriculum DocumentIR (either a BLOC
 |---|---|---|---|
 | ignore | MUST be [] | MUST be [] | Page furniture, artifacts, captions, TOC content |
 | unresolved | MUST be [] | MUST be [] | Cannot safely emit anything; explain in rationale |
-| emit_flagged_unresolved | MAY be [] or non-empty | MUST emit ≥1 of groupings/leaves/rows | ONLY when confidence < {segment_decision_conf_threshold}. Will NOT compile into final tree. |
+| emit_flagged_unresolved | MAY be [] or non-empty | MUST emit ≥1 of groupings/leaves/rows | ONLY when confidence < {segment_decision_conf_threshold}. Use to surface audit-worthy ambiguity; keep rationale explicit. |
 | emit_groupings_only | required (may be []) | groupings[] and/or rows[].groupings[] allowed; NO leaves anywhere | |
 | emit_leaves_only | required (may be []) | segment-level groupings[] MUST be []; row-local RowDecision.groupings[] allowed | |
 | emit_groupings_and_leaves | required (may be []) | MUST emit ≥1 grouping AND ≥1 leaf somewhere | |
@@ -279,7 +289,7 @@ Do NOT repeat the same NodeRole. Do NOT include TOPIC/SUBTOPIC (those belong in 
 **Outer anchor requirement:** If emitting any leaves (EXPECTATION/DESCRIPTOR/GUIDANCE), the decision MUST include ≥1 outer anchor ({OUTER_ANCHOR_ROLES_STR}) in context_groupings[], groupings[], or rows[].groupings[]. If no anchor is directly in this segment's evidence, carry forward from prior_context_groupings[] (see carry-forward rules above).
 If BOTH direct evidence and carry-forward are unavailable:
 - NEVER emit leaves in a proper emit_* decision (it will be rejected for TABLE segments).
-- Prefer "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" and set confidence < {segment_decision_conf_threshold:.2f} so the content is preserved for audit but will NOT compile into the final tree.
+- Prefer "{SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED.value}" and set confidence < {segment_decision_conf_threshold:.2f} so the content is preserved for audit, and keep rationale explicit about what is missing/ambiguous.
 - If you truly cannot emit anything without inventing an anchor (or the segment is pure noise), use "{SegmentDecisionType.UNRESOLVED.value}" or "{SegmentDecisionType.IGNORE.value}".
 
 **Role depth ordering:** groupings[] are children under the context stack tip. Never emit a grouping whose role is OUTER than the deepest role in context_groupings[]. Fix by placing the outer role in context_groupings[] or emitting both in groupings[] in correct order.
@@ -483,10 +493,11 @@ Output: GroupingCanonicalizationMap with items[] — EXACTLY one item per input,
 
 ## Rules
 1. Do NOT invent curriculum concepts not in the input.
-2. Prefer minimal changes: whitespace/punctuation normalization, synonym folding. Avoid casing changes unless matching an established canonical.
-3. REPLACE must not change role (validator enforces this). If output would be identical to input, use KEEP.
-4. SPLIT only when the title clearly contains multiple groupings (e.g., "Grade 1 - Mathematics") AND each part is directly present as a substring.
-5. If unsure, choose KEEP with lower confidence (0.6–0.8). Do NOT DROP uncertain items.
+2. Prefer minimal changes, but DO normalize superficial formatting when meaning is unchanged: whitespace, punctuation, ALL-CAPS → Title Case, and minor accent/case variants.
+3. For bilingual titles separated by '/', treat variants as equivalent when they share a clear common French (or English) substring. Prefer the most informative form already present in inputs (often the bilingual form) as the canonical, and REPLACE monolingual variants to that form.
+4. REPLACE must not change role (validator enforces this). If output would be identical to input, use KEEP.
+5. SPLIT only when the title clearly contains multiple groupings (e.g., "Grade 1 - Mathematics") AND each part is directly present as a substring.
+6. If unsure, choose KEEP with lower confidence (0.6–0.8). Do NOT DROP uncertain items. However, do NOT use KEEP merely because of casing, accents, or bilingual ordering differences—use REPLACE when semantically equivalent and role matches.
         """
     )
 
