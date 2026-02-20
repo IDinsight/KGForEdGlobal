@@ -2629,6 +2629,10 @@ def expand_table_rows_to_rows_grid(
     grid of shape (n_rows x n_cols). Output rows have exactly n_cols cells each, and
     every output TableCell has row_span=1, col_span=1.
 
+    NB: For downstream stability, visually empty grid cells are normalized to an
+    explicit empty TextUnit (language='und', text='') rather than null. This ensures
+    every TableCell in `rows_grid` has a `text` payload in JSON (even if blank).
+
     Parameters
     ----------
     segment
@@ -2665,7 +2669,9 @@ def expand_table_rows_to_rows_grid(
         src_row: list[dict[str, Any]] = []
 
         for c in range(n_cols):
-            out_cells.append(TableCell(text=grid[r][c]["text"], row_span=1, col_span=1))
+            cell_text = grid[r][c]["text"]
+            cell_text = cell_text or TextUnit(language="und", text="", text_en=None)
+            out_cells.append(TableCell(col_span=1, row_span=1, text=cell_text))
             src_row.append({"source_row": grid[r][c]["source_row"]})
 
         out_rows.append(TableRow(cells=out_cells))
