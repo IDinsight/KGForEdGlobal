@@ -84,29 +84,14 @@
 				"note": "Grade container headings like 'Paliers du niveau CE1/CE2' (this is where grade should come from)"
 			},
 			{
-				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+des\\s+apprentissages\\b\\s*\\(\\s*niveau\\s*\\d+\\s*:?\\s*ce\\s*[12]\\s*\\)",
-				"role": "unit",
-				"note": "Treat the whole heading as the unit wrapper; do NOT extract grade from the inline '(niveau … : CE…)'"
-			},
-			{
 				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+ce\\s*[12]\\b(?:\\s*[—\\-]\\s*partie\\s*\\d+\\b.*)?",
 				"role": "unit",
 				"note": "Planification headings like 'Tableau de planification CE2 — Partie 1 ...' are unit wrappers"
 			},
 			{
-				"pattern": "(?i)\\bplanification\\s+des\\s+apprentissages\\b",
+				"pattern": "(?i)\\b(?:tableau\\s+de\\s+)?planification\\s+des\\s+apprentissages\\b",
 				"role": "unit",
-				"note": "Planning wrapper heading"
-			},
-			{
-				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+des\\s+apprentissages\\b",
-				"role": "unit",
-				"note": "Planning-table wrapper heading (generic)"
-			},
-			{
-				"pattern": "(?i)(\\bdeuxi[eè]me\\s+[eéèë]tape\\b|\\b2\\s*(?:e|è|eme|ème)\\s*[eéèë]tape\\b)",
-				"role": "stage",
-				"note": "Stage heading (Deuxième étape / 2ème étape variants)"
+				"note": "Planning wrapper heading (with or without 'Tableau de' prefix). Do NOT extract grade from any inline '(niveau … : CE…)'."
 			},
 			{
 				"pattern": "(?i)\\btolluwaay\\b",
@@ -137,11 +122,6 @@
 				"pattern": "(?i)\\br[éeè]solution\\s+de\\s+probl[èée]mes\\b",
 				"role": "strand",
 				"note": "French strand heading: Résolution de problèmes"
-			},
-			{
-				"pattern": "(?i)(\\by[ëe]ngute\\b.*\\bactivit[ée]s?\\b|\\bactivit[ée]s?\\b.*\\by[ëe]ngute\\b)",
-				"role": "strand",
-				"note": "Wolof/French combined strand headings like 'Yëngute … /Activités …' (bidirectional)"
 			}
 		],
 		"max_table_rows_per_decision": null,
