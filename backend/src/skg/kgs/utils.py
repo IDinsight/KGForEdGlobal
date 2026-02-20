@@ -49,7 +49,6 @@ class ExportContext:
     def _infer_language_from_nodes(self) -> str | None:
         """Infer the primary language from the nodes in the KG.
 
-        None
         Returns
         -------
         str | None
@@ -464,20 +463,6 @@ def _validate_root_structure(ctx: ExportContext) -> None:
     ), f"Root ID unexpectedly has a parent: {ctx.root_id}"
 
 
-def _detect_cycle_for_node(ctx: ExportContext, start_nid: str) -> bool:
-    """Helper to walk up the tree for a single node to check for cycles."""
-    walk_seen: set[str] = set()
-    cur: str | None = start_nid
-
-    while cur and cur != ctx.root_id:
-        if cur in walk_seen:
-            return True
-        walk_seen.add(cur)
-        cur = ctx.parent_by_child.get(cur)
-
-    return False
-
-
 def _verify_columns_signature(
     *, ctx: ExportContext, segment_decisions: list[SegmentDecision]
 ) -> None:
@@ -647,6 +632,7 @@ def build_kg_export_context(
 
     # 3.
     decisions_by_id: dict[str, dict[str, Any]] = {}
+
     for d in canonical_ir.segment_decisions:
         assert d.decision_id, f"Missing decision_id for segment decision: {d}"
         decisions_by_id[d.decision_id] = d.model_dump(mode="json")
