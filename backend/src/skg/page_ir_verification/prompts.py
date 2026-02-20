@@ -51,6 +51,7 @@ Border reminders:
 3. A "checkpoint" row (e.g., a merged row naming a unit/term/assessment/checkpoint) can appear INSIDE the table grid.
   If the grid continues below/after it, the table may still be continuing across the page break.
   (closed boxes, ruled edges) do NOT indicate a table has ended. Judge table continuity by content: same column structure, continuing row sequence, and absence of a new table title or restructured header row.
+4. A language switch between rows (e.g., Wolof → French, or any other bilingual alternation) is normal bilingual formatting and is NOT evidence of a new table or text discontinuity.
 
 If anything above is violated or your reasoning is weak, correct it now and return a complete `PageIRContinuityVerdict` (rationale >= 50 chars). Return ONLY the object.
         """
@@ -192,15 +193,15 @@ E. BILINGUAL / MULTILINGUAL DOCUMENTS:
   - Unfamiliar scripts or languages are NOT evidence of truncation or corruption.
 
 ## UNCERTAINTY POLICY
-When BOTH candidates are tables:
-- If the column/grid schema matches visually (same number of columns; aligned vertical gridlines) and there is NO explicit new-table marker,
-  you SHOULD choose is_continuation=true (table) with moderate confidence (~0.60–0.80), even if row labels restart or content shifts.
-- You SHOULD choose is_continuation=false ONLY when you see explicit new-table evidence (new caption/title/number) OR a clear schema change.
-
 1. Default when uncertain: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
-2. Exception for TABLE<->TABLE candidates:
-  If BOTH candidates are tables, and you see at least one strong SAME-table cue, and there is NO visible new-table marker,
-  you SHOULD set is_continuation=true and continuation_kind="{PageContinuationKind.TABLE.value}".
+2. TABLE<->TABLE candidate guidance (this is NOT an exception to rule 1; it clarifies when you are NOT uncertain):
+  When BOTH candidates are tables and the column/grid schema matches visually (same number of columns; aligned vertical gridlines)
+  and there is NO explicit new-table marker (no new caption/title/number, no restructured header row), this constitutes moderate
+  positive evidence of continuation — you are not uncertain. In this case:
+  - Set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", with confidence ~0.60–0.80,
+    even if row labels restart or content/topic shifts.
+  - You SHOULD choose is_continuation=false ONLY when you see explicit new-table evidence (new caption/title/number) OR a clear
+    column schema change. Row restarts, topic shifts, or closed visual borders alone are NOT such evidence.
 
 ## CONFIDENCE CALIBRATION
 - >= 0.5: clear or plausible visual evidence supports your decision.
