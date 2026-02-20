@@ -1,6 +1,6 @@
 {
 	"page_ir_extraction": {
-		"always_double_check_first_attempt": false,
+		"always_double_check_first_attempt": true,
 		"country": "Senegal",
 		"dpi": 250,
 		"end_page": null,
