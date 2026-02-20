@@ -302,8 +302,6 @@ def _apply_verification_verdict(
         The previous page's normalized items list.
     verdict
         The high-confidence verification verdict to apply.
-    warnings
-        A list to append warning messages to.
 
     Returns
     -------
@@ -3462,7 +3460,7 @@ def process_page_pair(
     page_pair_debug: list[dict[str, Any]],
     prev_page_items: list[tuple[int, Block | Table]],
     verdict: VerificationVerdict,
-    verdict_confidence_threshold: float = 0.75,
+    verdict_confidence_threshold: float,
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
     """Orchestrate candidate finding, warning logging, and linking for a single pair of
@@ -3672,10 +3670,10 @@ def process_page_pair(
                 f"prev_candidates={len(prev_candidate_indices)} prev_rejected={len(prev_rejected_indices)} "
                 f"next_candidates={len(next_candidate_indices)} next_rejected={len(next_rejected_indices)}."
             )
-            logger.error(f"{prev_candidate_indices = }")
-            logger.error(f"{next_candidate_indices = }")
-            logger.error(f"{prev_rejected_indices = }")
-            logger.error(f"{next_rejected_indices = }")
+            logger.warning(f"{prev_candidate_indices = }")
+            logger.warning(f"{next_candidate_indices = }")
+            logger.warning(f"{prev_rejected_indices = }")
+            logger.warning(f"{next_rejected_indices = }")
             logger.warning(msg)
             warnings.append(msg)
 
@@ -3895,7 +3893,7 @@ def save_document_ir(
         if segment.kind != "table":
             continue
 
-        pages = [slice.page_index for slice in segment.slices]
+        pages = [sl.page_index for sl in segment.slices]
         table_segments_summary.append(
             {
                 "segment_id": segment.segment_id,
@@ -3906,13 +3904,13 @@ def save_document_ir(
                 "header_row_count": segment.header_row_count,
                 "slices": [
                     {
-                        "page_index": slice.page_index,
-                        "item_index": slice.item_index,
-                        "boundary": slice.boundary.value,
-                        "repeats_header": slice.repeats_header,
-                        "dropped_header_rows": slice.dropped_header_rows,
+                        "page_index": sl.page_index,
+                        "item_index": sl.item_index,
+                        "boundary": sl.boundary.value,
+                        "repeats_header": sl.repeats_header,
+                        "dropped_header_rows": sl.dropped_header_rows,
                     }
-                    for slice in segment.slices
+                    for sl in segment.slices
                 ],
             }
         )
