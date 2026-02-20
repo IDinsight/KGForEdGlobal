@@ -316,7 +316,7 @@ def _build_academic_standards_graph_bundle(
 
 
 def _build_initial_emit_flags(
-    *, config: Any, ctx: Any
+    *, config: CreateKGConfig, ctx: ExportContext
 ) -> tuple[dict[str, bool], dict[str, str]]:
     """Precompute node-level emit flags and drop reasons before pruning.
 
@@ -1078,8 +1078,8 @@ def _first_ancestor_label_for_role(
 
 def _handle_empty_grouping_pruning(
     *,
-    config: Any,
-    ctx: Any,
+    config: CreateKGConfig,
+    ctx: ExportContext,
     drop_reasons: dict[str, str],
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
@@ -1375,8 +1375,8 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
 
 def _process_attach_to_expectation(
     *,
-    config: Any,
-    ctx: Any,
+    config: CreateKGConfig,
+    ctx: ExportContext,
     drop_reasons: dict[str, str],
     emit_flag: dict[str, bool],
     reparent_stats: dict[str, int],
@@ -1847,6 +1847,7 @@ def export_academic_standards(
 
     canonical_created_at_iso = _to_iso8601_or_none(canonical_ir_created_at)
 
+    # 1.
     framework = _emit_framework(
         canonical_ir_created_at=canonical_created_at_iso,
         config=config,
@@ -1856,15 +1857,15 @@ def export_academic_standards(
     )
     framework_uuid = framework.case_identifier_uuid
 
-    # 1.
+    # 2.
     emit_flag, drop_reasons = _build_initial_emit_flags(config=config, ctx=ctx)
 
-    # 2.
+    # 3.
     export_children, aux_attach_to_expectation, reparent_stats = (
         _compute_export_children(config=config, ctx=ctx, emit_flag=emit_flag)
     )
 
-    # 3.
+    # 4.
     _process_attach_to_expectation(
         config=config,
         ctx=ctx,
@@ -1873,7 +1874,7 @@ def export_academic_standards(
         reparent_stats=reparent_stats,
     )
 
-    # 4.
+    # 5.
     pruned_node_ids = _handle_empty_grouping_pruning(
         config=config,
         ctx=ctx,
@@ -1882,7 +1883,7 @@ def export_academic_standards(
         export_children=export_children,
     )
 
-    # 5.
+    # 6.
     sfi_by_node = _emit_sfis(
         aux_attach_to_expectation=aux_attach_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
@@ -1891,7 +1892,7 @@ def export_academic_standards(
         emit_flag=emit_flag,
     )
 
-    # 6.
+    # 7.
     relationships, order_map = _build_relationships_and_order(
         config=config,
         ctx=ctx,
@@ -1906,7 +1907,7 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
-    # 7.
+    # 8.
     items_sorted = sorted(
         sfi_by_node.values(), key=lambda sfi: str(sfi.case_identifier_uuid)
     )
@@ -1923,7 +1924,7 @@ def export_academic_standards(
         framework_uuid=framework_uuid, order_map=order_map
     )
 
-    # 8.
+    # 9.
     academic_standards = AcademicStandardsExport(
         drop_reasons=drop_reasons,
         framework=framework,
@@ -1934,7 +1935,7 @@ def export_academic_standards(
         reparent_stats=reparent_stats,
     )
 
-    # 9.
+    # 10.
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_framework.json",
         json_info=academic_standards.framework.model_dump(mode="json"),

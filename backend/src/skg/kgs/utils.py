@@ -631,20 +631,8 @@ def build_kg_export_context(
         edge_order_index[(pid, cid)] = oi
 
         # Preserve edge-level provenance if present (best-effort).
-        try:
-            edge_metadata_by_pair[(pid, cid)] = edge.model_dump(mode="json")
-        except Exception:  # pylint: disable=broad-except
-            edge_metadata_by_pair[(pid, cid)] = {
-                "child_id": cid,
-                "order_index": oi,
-                "parent_id": pid,
-                "rel": getattr(edge, "rel", None),
-                "source_decision_ids": getattr(edge, "source_decision_ids", None),
-                "source_segment_ids": getattr(edge, "source_segment_ids", None),
-            }
-
+        edge_metadata_by_pair[(pid, cid)] = edge.model_dump(mode="json")
         assert cid not in parent_by_child, f"Node has multiple parents: {cid}"
-
         parent_by_child[cid] = pid
 
     # Sort children by (order_index, child_id) for stability.
