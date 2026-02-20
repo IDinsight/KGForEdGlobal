@@ -24,30 +24,26 @@ def double_check_page_ir_extraction() -> PromptPair:
 
     system_message = None
     user_message = dedent(
-        """**Double-check your last PageIR against the image.** Fix anything that’s off, then return a COMPLETE corrected PageIR JSON (and nothing else).
+        """**Double-check your last PageIR against the image.** Fix anything that's off, then return a COMPLETE corrected PageIR JSON (and nothing else).
 
 Checklist:
 1. **Missing content**: Did you miss anything near the very top or bottom margins?
-2. **Misclassification**:
-   - Any ruled grid/cells must be a TABLE (not a FIGURE).
-   - Section titles are HEADING (not ARTIFACT).
-   - Running headers/footers/page numbers are ARTIFACT (small bboxes).
-3. **Tables**:
-   - rows/cells captured faithfully; blank cells are `text:null` (no invented content).
+2. **Reading order**: Items are in correct visual reading order.
+3. **Misclassification**:
+   - Ruled grid/cells → TABLE (not FIGURE).
+   - Section titles → HEADING (not ARTIFACT).
+   - Running headers/footers/page numbers → ARTIFACT.
+4. **Tables**:
+   - Rows/cells captured faithfully; blank cells are `text:null`.
    - `header_row_count` reasonable; `n_cols` set only if clearly inferable.
-   - row_span/col_span only when merges are clearly visible (don’t hallucinate merges).
-   - `repeats_header` true/false only when clear; otherwise null/omit.
-4. **BBoxes**:
-   - Tight to content; inside page bounds; not reused across multiple items.
-   - No accidental full-page bbox unless the strict single full-page FIGURE exception truly applies.
-5. **Text fidelity**:
-   - Verbatim text; no invented bullets/numbers; marker=null when no explicit marker exists.
-6. **Figures** (if any):
-   - figure.alt_text present + non-empty.
-   - If figure.contains_text=true then embedded_text present and verbatim.
-7. **Reading order**: Items are in correct visual reading order.
+   - row_span/col_span only for clearly visible merges.
+   - `repeats_header` true/false only when clear; otherwise null.
+5. **BBoxes**: Tight to content; inside page bounds; unique per item.
+6. **Text fidelity**: Verbatim text; `text` field contains the complete visible text even
+   when `local_code` is set.
+7. **Figures** (if any): alt_text present; embedded_text present when contains_text=true.
 
-Now return the corrected PageIR JSON only.
+Return the corrected PageIR JSON only.
         """
     )
 
@@ -95,15 +91,6 @@ def extract_page_ir_from_pdf_page(
     )
     doc_context = f"from {country}" + (f" ({year})" if year else "")
     lang_context = ", ".join(languages)
-    text_block_types = json.dumps(
-        [
-            BlockType.CAPTION.value,
-            BlockType.FOOTNOTE.value,
-            BlockType.HEADING.value,
-            BlockType.PARAGRAPH.value,
-        ],
-        ensure_ascii=False,
-    )
     text_layer_context = (
         ""
         if not text_layer_hints
@@ -117,109 +104,105 @@ def extract_page_ir_from_pdf_page(
 
 ## HARD RULES
 1. **IMAGE IS SOURCE OF TRUTH**: If text-layer hints contradict the image, trust the image.
-2. **READING ORDER**: Populate `items` in visual reading order: left-to-right across columns, then top-to-bottom. For multi-column pages: read top-to-bottom within the left column first, then the next column to the right.
+2. **READING ORDER**: Populate `items` top-to-bottom within each column, left column before
+   right. For single-column pages this is simply top-to-bottom.
 3. **VERBATIM / NO HALLUCINATION**:
-   - Extract text exactly as seen (including typos, punctuation, dot leaders, spacing). Do not complete cut-off sentences.
+   - Extract text exactly as seen (including typos, punctuation, dot leaders, spacing). Do
+     not complete cut-off sentences.
    - Do not add rows/cells/text not visible. If a table cell is blank, set `text: null`.
-   - **Never invent list markers**. If no explicit marker is visible, set `marker: null`.
-5. **ITEM KIND**: Every item MUST include `"kind"` and it must be either `"block"` or `"table"`.
-6. **BOTTOM SCAN**: Do a final scan of the bottom ~10% of the page before finishing; do not stop early.
-7. **LOCAL CODES (optional)**:
-   - If you see an explicit curriculum/section/table code tightly associated with a block/table, put it in `local_code` verbatim (punctuation matters).
-   - If the code appears as a clean leading prefix (e.g., "3.9.4.1 ..."), you MAY omit that prefix from the block/table text to avoid duplication. If separation is not clean, keep the text verbatim and still set `local_code` if you can.
-8. **IGNORE DRAWN LINES**: Ignore thin drawn separator rules/lines used to visually separate sections (including the horizontal line above footnotes). Do not emit items for drawn lines.
-   - If a separator is made of actual text characters (e.g., "***", "— — —") and is present as text, it may be extracted as a small "{BlockType.ARTIFACT.value}" block.
+4. **ITEM KIND**: Every item MUST include `"kind"` — either `"block"` or `"table"`.
+5. **BOTTOM SCAN**: Do a final scan of the bottom ~10% of the page before finishing; do not
+   stop early.
+6. **LOCAL CODES (optional)**:
+   - If you see an explicit curriculum/section/table code tightly associated with a
+     block/table, put it in `local_code` verbatim (punctuation matters).
+   - **Always keep the full visible text verbatim in `text`**. Do NOT strip or remove any
+     portion of the text to avoid duplication with `local_code`. The `local_code` field is
+     an annotation, not a replacement.
+7. **IGNORE DRAWN LINES**: Ignore thin separator rules/lines (including the line above
+   footnotes). Do not emit items for drawn lines. If a separator is made of text characters
+   (e.g., "***"), it may be extracted as a small "{BlockType.ARTIFACT.value}" block.
 
-## DO NOT POPULATE PYTHON-FILLED FIELDS
-1. PageIR fields filled/overwritten by Python must be omitted or left null:
-  - boundary_state MUST be omitted (do not include it at all).
-  - doc_key, pdf_name, page_index, dpi, image_width, image_height MUST be null or omitted.
-2. You may omit `coord_space`; if you include it, it MUST be exactly "px".
+## PYTHON-FILLED FIELDS
+Omit or leave null: boundary_state, doc_key, pdf_name, page_index, dpi, image_width,
+image_height, coord_space. Python populates these.
 
 ## BOUNDING BOXES
-1. **COORDINATES**: Use pixel coordinates (px) relative to {image_width}x{image_height}.
-2. **BBOX REQUIRED**: Every block/table MUST include a bbox [x0,y0,x1,y1]. BBoxes must be tight to the visible content.
-3. **BBOX VALIDITY**: 0 <= x0 < x1 <= image_width and 0 <= y0 < y1 <= image_height.
-4. **NO PLACEHOLDER/REUSED BBOXES**: Do not reuse the same bbox for multiple items. Do not copy the page bbox into items.
-5. **FULL-PAGE FIGURE EXCEPTION (EXTREMELY STRICT)**:
-   - A full-page bbox is allowed ONLY if ALL are true:
-     - The output contains exactly ONE item.
-     - That item is kind="block" and block_type="{BlockType.FIGURE.value}".
-     - The page is visually dominated by a non-table graphic or scanned image (NOT primarily text).
-     - The page has no readable body text beyond ~1–2 short lines total.
-     - figure.figure_kind MUST NOT be "unknown". If you cannot classify the figure kind, do NOT use the full-page exception.
-   - If ANY condition is not met, split the page into multiple localized bboxes (headings/paragraphs/lists/tables as appropriate).
+1. **COORDINATES**: Pixel coordinates (px) relative to {image_width}x{image_height}.
+2. **BBOX REQUIRED**: Every block/table MUST have a bbox [x0,y0,x1,y1] tight to visible
+   content.
+3. **BBOX VALIDITY**: 0 <= x0 < x1 <= {image_width} and 0 <= y0 < y1 <= {image_height}.
+4. **NO PLACEHOLDER/REUSED BBOXES**: Each item gets a unique, localized bbox.
+5. **NO FULL-PAGE BBOXES** unless the page contains exactly one non-table visual (diagram/
+   illustration) with no readable body text. Such pages are rare in curriculum PDFs.
 
 ## BOUNDARIES (item.boundary only)
-1. Item `boundary` is semantic continuity across pages (not missing borders):
-  - "{ItemBoundary.RESUMED.value}": continuation from previous page
-  - "{ItemBoundary.TRUNCATED.value}": continues onto next page
-  - "{ItemBoundary.BOTH.value}": continues from previous AND to next page
-  - "{ItemBoundary.COMPLETE.value}": fully contained on this page
-2. Set each item’s boundary based on visible continuation cues. Do NOT rely on whether table borders are drawn.
+1. Semantic continuity across pages (not missing borders):
+   - "{ItemBoundary.RESUMED.value}": continues from previous page
+   - "{ItemBoundary.TRUNCATED.value}": continues onto next page
+   - "{ItemBoundary.BOTH.value}": both directions
+   - "{ItemBoundary.COMPLETE.value}": fully contained on this page
+2. Set boundary from visible continuation cues. Do NOT rely on whether borders are drawn.
 
 ## BLOCK CLASSIFICATIONS
-1. Valid block_type values: {allowed_block_types}
+Valid block_type values: {allowed_block_types}
   - "{BlockType.HEADING.value}": Section titles.
   - "{BlockType.PARAGRAPH.value}": Prose text.
-  - "{BlockType.LIST.value}": Bulleted/numbered/outlined items (use `list_items`, set `text=null`).
-  - "{BlockType.CAPTION.value}": Labels for figures/tables (e.g., "Table 1: ...", "Figure 2: ...").
-  - "{BlockType.FOOTNOTE.value}": Bottom-of-page footnotes/numbered notes (not page numbers).
-  - "{BlockType.ARTIFACT.value}": ONLY running headers/footers, page numbers (arabic/roman), or textual decorative separators ("***", "— — —"). Never use artifact for true section headings.
-  - "{BlockType.FIGURE.value}": Diagrams/illustrations/charts/flowcharts that are NOT a ruled table grid (use `figure`, set `text=null`, `list_items=null`).
+  - "{BlockType.LIST.value}": Bulleted/numbered/outlined items (use `list_items`,
+    `text=null`).
+  - "{BlockType.CAPTION.value}": Labels for figures/tables (e.g., "Table 1: …").
+  - "{BlockType.FOOTNOTE.value}": Bottom-of-page footnotes (not page numbers).
+  - "{BlockType.ARTIFACT.value}": ONLY running headers/footers and page numbers. Never
+    use for true section headings.
+  - "{BlockType.FIGURE.value}": Diagrams/illustrations/charts that are NOT a ruled table
+    grid (use `figure`, `text=null`, `list_items=null`).
 
 ## BLOCK CONTENT REQUIREMENTS
-1. Do not emit any block that contains no content.
-  - For block_type in {text_block_types}: block must have non-empty `text` as a TextUnit object ({{"text": "...", "language": "...", "text_en": null}}).
-  - For block_type="{BlockType.LIST.value}": block must have non-empty `list_items` and `text=null`.
-  - For block_type="{BlockType.FIGURE.value}": block must have non-null `figure` and `text=null` and `list_items=null`.
-2. If block_type != "{BlockType.FIGURE.value}", then `figure` MUST be null or omitted.
-3. For any non-list block, `list_items` MUST be null or omitted (never []).
+1. Do not emit blocks with no content.
+   - Text-bearing blocks (heading/paragraph/caption/footnote): non-empty `text` required.
+   - List blocks: non-empty `list_items` required, `text=null`.
+   - Figure blocks: non-null `figure` required, `text=null`, `list_items=null`.
+2. Field exclusivity: `figure` is null except on figure blocks; `list_items` is null except
+   on list blocks (never []).
 
 ## LANGUAGES
-1. Expected Languages (hints): {lang_context}.
-2. Use the best-match BCP-47 language for the visible text; use "und" if unknown. Numeric-only page numbers should be "und".
-3. Use "mul" only if multiple languages appear in the SAME TextUnit (e.g., bilingual sentence in one cell).
-4. **NO TRANSLATION**: Do NOT translate or paraphrase. For every TextUnit, `text_en` MUST be null or omitted.
+1. Expected languages (hints): {lang_context}.
+2. Use best-match BCP-47 code; "und" if unknown; "mul" if multiple languages appear in the
+   SAME TextUnit.
+3. **NO TRANSLATION**: `text_en` MUST be null or omitted for every TextUnit.
 
 ## TABLES
-1. **TABLE VS FIGURE**: If there is a ruled grid with cells, it MUST be a table (not a figure).
-2. **CELL TEXT TYPE**: `TableCell.text` is either null OR a TextUnit object.
-3. **HEADER ROWS**: If the table has header rows at the top, set `header_row_count` accordingly (keep headers inside `rows`). If unsure, leave 0 or omit.
-4. **n_cols (optional)**: If the number of visual columns is clearly inferable, set `n_cols`. If unsure, omit or null.
-5. **MERGED CELLS (spans)**:
-   - Use `row_span`/`col_span` only when a merge is clearly visible.
-   - If unsure, do not merge (use row_span=1, col_span=1).
-   - Do not duplicate merged-cell text into covered cells unless it is visibly repeated.
-6. **ROW BOUNDARIES**:
-   - Table rows may be separated by ruling lines OR by consistent horizontal spacing/alignment that clearly forms rows.
-   - Numbered/bulleted lines inside a single cell stay inside that cell’s text (do not create extra rows/items).
-7. **INSIDE vs OUTSIDE GRID**: Do not absorb outside-of-grid headings/paragraphs into the table. End the table when the grid ends.
-8. **REPEATS HEADER**: If the table continues from a previous page and header rows are visibly repeated, set `repeats_header=true`. If clearly not repeated, set false. If unsure, set null/omit.
-9. Do not output empty tables; if you emit a table, it must have at least one row.
+1. **HEADER ROWS**: Set `header_row_count` if the top rows are headers (keep them inside
+   `rows`). If unsure, leave 0.
+2. **n_cols**: Set if the column count is clearly inferable. Omit if unsure.
+3. **MERGED CELLS**: Use row_span/col_span only for clearly visible merges. If unsure, use
+   1/1. Do not duplicate merged-cell text into covered cells.
+4. **ROW BOUNDARIES**: Rows may be separated by rules or by consistent spacing. Numbered/
+   bulleted lines inside a cell stay in that cell's text.
+5. **INSIDE vs OUTSIDE GRID**: Do not absorb outside-grid headings/paragraphs into the
+   table. End the table when the grid ends.
+6. **REPEATS HEADER**: For continuation tables, set true/false if clear; null if unsure.
 
 ## LISTS
-1. For each list item:
-  - If an explicit marker is visible (e.g., "•", "1.", "a)", "(i)", "3.9.4.1"), set `marker` to that EXACT marker verbatim.
-  - If list-like but has NO explicit marker (common in TOC/dot-leader entries/indented outlines), set `marker=null`. Do NOT invent markers.
+For each list item:
+  - If an explicit marker is visible ("•", "1.", "a)", "(i)"), set `marker` to the EXACT
+    marker verbatim.
+  - If no explicit marker exists, set `marker=null`. Do NOT invent markers.
   - Keep dot leaders and page numbers inside `text` verbatim.
 
 ## FIGURES
-1. If you emit a FIGURE block:
-  - figure.alt_text MUST be present and non-empty (<= ~200 chars). Describe only what is visible (type + key elements). Do not interpret meaning.
-  - Set figure.figure_kind to one of {allowed_figure_kinds}; keep conservative (avoid over-specific).
-  - If figure.contains_text=true, you MUST populate figure.embedded_text (best-effort verbatim). Otherwise set contains_text=false (or null if unknown).
+If you emit a FIGURE block:
+  - figure.alt_text MUST be present and non-empty (≤ ~200 chars). Describe what is visible.
+  - Set figure.figure_kind to one of {allowed_figure_kinds}; keep conservative.
+  - If figure.contains_text=true, populate figure.embedded_text (best-effort verbatim).
+    Otherwise set contains_text=false (or null if unknown).
         """
     )
 
     user_message = dedent(
         f"""Extract PageIR for the provided image (context: page_index={page_index}).
 
-## QUICK CHECKS (before you finalize)
-1. **Reading order**: Are items ordered left-to-right then top-to-bottom (column-by-column if multi-column)?
-2. **Tables**: If the page shows a grid/columns, emit a TABLE item and capture rows/cells faithfully (blank cells => text:null). If columns are clear, set `n_cols`.
-3. **Continuations**: If the page begins mid-table or mid-paragraph, set boundary="{ItemBoundary.RESUMED.value}" (or "{ItemBoundary.BOTH.value}"). If it continues off the page, use "{ItemBoundary.TRUNCATED.value}" (or "{ItemBoundary.BOTH.value}").
-4. **Full-page figure exception**: Only use a single full-page FIGURE when the page is truly dominated by a non-table image/scan with at most ~1–2 short text lines.
+Before returning, scan the bottom ~10% of the page for any missed content.
 
 Return the PageIR JSON only.
         """

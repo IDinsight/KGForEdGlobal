@@ -565,7 +565,7 @@ def validate_full_page_figure_requires_double_check(
     Parameters
     ----------
     attempt
-        The extraction attempt number (1-based).
+        The extraction attempt number.
     ctx
         The PageIR extraction quality context.
 
