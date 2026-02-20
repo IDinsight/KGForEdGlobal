@@ -45,6 +45,7 @@ from skg.canonical_ir.segment_decisions import (
     collect_unique_headings,
     load_or_build_caption_bindings,
     process_segment_decisions,
+    promote_flagged_unresolved_decisions,
     segment_hint,
 )
 from skg.canonical_ir.spine_corrector import apply_spine_policy_to_decision_set
@@ -91,11 +92,13 @@ def create_canonical_ir(
     8. Load the raw segment decisions.
     9. Clean up segment decisions before LLM canonicalization.
     10. Apply spine correction deterministically.
-    11. Collect unique grouping keys for validation later.
-    12. Generate and apply grouping canonicalization map.
-    13. Apply grouping canonicalization map to segment decisions.
-    14. Decision-set level validation for chunked tables.
-    15. Parse the segment decisions into a canonical IR and write results to file.
+    11. Promote any remaining flagged_unresolved decisions to proper EMIT decisions, so
+        that they can be included in the context for subsequent decisions.
+    12. Collect unique grouping keys for validation later.
+    13. Generate and apply grouping canonicalization map.
+    14. Apply grouping canonicalization map to segment decisions.
+    15. Decision-set level validation for chunked tables.
+    16. Parse the segment decisions into a canonical IR and write results to file.
 
     Parameters
     ----------
@@ -274,6 +277,12 @@ def create_canonical_ir(
     )
 
     # 11.
+    segment_decisions = promote_flagged_unresolved_decisions(
+        outer_anchor_roles=config.spine_policy.outer_context_roles,
+        segment_decisions=segment_decisions,
+    )
+
+    # 12.
     grouping_keys = collect_unique_grouping_keys(
         canonicalization_skip_roles=config.canonicalization_skip_roles,
         creation_dirs=creation_dirs,
@@ -282,7 +291,7 @@ def create_canonical_ir(
         segment_decisions=segment_decisions,
     )
 
-    # 12.
+    # 13.
     mapping = generate_grouping_canonicalization_map(
         canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
         context_groupings_role_order=config.context_groupings_role_order,
@@ -293,7 +302,7 @@ def create_canonical_ir(
         overwrite=config.overwrite,
     )
 
-    # 13.
+    # 14.
     segment_decisions = apply_grouping_canonicalization_map(
         canonical_grouping_min_confidence=config.canonical_grouping_min_confidence,
         canonicalization_skip_roles=config.canonicalization_skip_roles,
@@ -305,12 +314,12 @@ def create_canonical_ir(
         segment_decisions=segment_decisions,
     )
 
-    # 14.
+    # 15.
     validate_table_chunk_coverage_and_overlap(
         document_ir=document_ir, segment_decisions=segment_decisions
     )
 
-    # 15.
+    # 16.
     compile_canonical_ir(
         canonical_ir_fp=canonical_ir_fp,
         doc_key=doc_key,

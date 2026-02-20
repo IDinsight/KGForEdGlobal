@@ -608,13 +608,18 @@ class SegmentDecision(BaseSchema):
                 "Use RowDecision.groupings[] for row-local containers if needed."
             )
 
-        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES and (
-            not has_any_groupings or not has_any_leaves
-        ):
-            raise ValueError(
-                "Decision type 'emit_groupings_and_leaves' must include BOTH "
-                "groupings and leaves (either segment-level or row-level for tables)."
-            )
+        # Some upstream policies (e.g., spine correction) may legitimately drop either
+        # groupings or leaves. Rather than failing validation (and demoting to
+        # UNRESOLVED), coerce to the most specific compatible emit type.
+        if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES:
+            if has_any_groupings and not has_any_leaves:
+                self.decision_type = SegmentDecisionType.EMIT_GROUPINGS_ONLY
+            elif has_any_leaves and not has_any_groupings:
+                self.decision_type = SegmentDecisionType.EMIT_LEAVES_ONLY
+            elif not has_any_groupings and not has_any_leaves:
+                raise ValueError(
+                    "Decision type 'emit_groupings_and_leaves' produced no groupings or leaves."
+                )
 
     def _check_non_noop_emit(self) -> None:
         """Any emit_* decision must produce *some* output.
