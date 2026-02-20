@@ -342,7 +342,7 @@ def _iter_expectation_sfis(
     for sfi in items:
         nst = sfi.normalized_statement_type
 
-        if str(nst).strip().lower() == "standard":
+        if nst == "Standard":
             output.append(sfi)
 
     return output

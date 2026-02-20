@@ -1367,8 +1367,8 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
 
         if len(valid_romans) >= 2:
             return min(valid_romans), max(valid_romans)
-        if valid_romans:
-            return valid_romans[0], valid_romans[0]
+
+        return valid_romans[0], valid_romans[0]
 
     return None, None
 
@@ -1820,8 +1820,8 @@ def export_academic_standards(
     5. Prune empty groupings iteratively, modifying emit flags accordingly.
     6. Emit StandardsFrameworkItems for all nodes still flagged for emission.
     7. Build relationships and hierarchy order mapping.
-    8. Verify the integrity of the exported artifacts.
-    9. Sort items and relationships for deterministic output.
+    8. Sort items and relationships for deterministic output.
+    9. Construct the AcademicStandardsExport dataclass instance.
     10. Write all artifacts to their respective JSON files.
 
     Parameters
