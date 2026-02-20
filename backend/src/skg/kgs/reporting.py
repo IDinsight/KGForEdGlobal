@@ -212,6 +212,76 @@ def _check_lc_supports(
         )
 
 
+def _check_progression_invariants(
+    *,
+    learning_progressions: LearningProgressionsExport,
+    report: GraphValidationReport,
+    sfi_ids: set[str],
+) -> None:
+    """Check progression-specific semantic invariants.
+
+    Parameters
+    ----------
+    learning_progressions
+        The exported Learning Progressions KG artifacts.
+    report
+        The GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs.
+    """
+
+    all_prog_rels = list(learning_progressions.builds_towards_relationships) + list(
+        learning_progressions.relates_to_relationships
+    )
+
+    # All progression endpoints must be SFIs.
+    non_sfi_endpoints = 0
+
+    for r in all_prog_rels:
+        if r.source_entity_value not in sfi_ids or r.target_entity_value not in sfi_ids:
+            non_sfi_endpoints += 1
+
+    if non_sfi_endpoints:
+        report.error(
+            code="PROGRESSION_NON_SFI_ENDPOINT",
+            message=(
+                f"{non_sfi_endpoints} progression relationship(s) reference "
+                f"non-SFI entities."
+            ),
+        )
+    else:
+        report.info(
+            code="PROGRESSION_ENDPOINTS_OK",
+            message="All progression endpoints are SFIs.",
+        )
+
+    # No duplicate relatesTo pairs (A, B) and (B, A) after canonicalization.
+    relates_pairs: set[tuple[str, str]] = set()
+    duplicate_relates = 0
+
+    for r in learning_progressions.relates_to_relationships:
+        a, b = sorted([r.source_entity_value, r.target_entity_value])
+        pair = (a, b)
+
+        if pair in relates_pairs:
+            duplicate_relates += 1
+        else:
+            relates_pairs.add(pair)
+
+    if duplicate_relates:
+        report.error(
+            code="RELATES_TO_DUPLICATE_PAIR",
+            message=(
+                f"{duplicate_relates} duplicate relatesTo pair(s) detected "
+                f"(same endpoints in different directions)."
+            ),
+        )
+    else:
+        report.info(
+            code="RELATES_TO_NO_DUPLICATES", message="No duplicate relatesTo pairs."
+        )
+
+
 def _check_referential_integrity(
     *, all_entity_ids: set[str], all_rels: list[Any], report: GraphValidationReport
 ) -> None:
@@ -510,9 +580,11 @@ def build_policy_coverage_report(
 
     # Build per-node drop detail log (capped for file size).
     drop_details: list[dict[str, Any]] = []
+    total_drops = len(drop_reasons)
+    max_drop_details = 200
 
     for node_id, reason in sorted(drop_reasons.items()):
-        if len(drop_details) >= 200:
+        if len(drop_details) >= max_drop_details:
             break
 
         node = ctx.nodes_by_id.get(node_id, {})
@@ -522,6 +594,12 @@ def build_policy_coverage_report(
                 "role": str(node.get("role") or ""),
                 "drop_reason": reason,
             }
+        )
+
+    if total_drops > max_drop_details:
+        logger.info(
+            f"Drop details truncated: showing {max_drop_details} of {total_drops} "
+            f"dropped nodes in policy_coverage_report.json."
         )
 
     # LC stats.
@@ -600,11 +678,15 @@ def log_console_summary(
         f"Emitted SFIs: {policy_report.total_emitted_sfis}"
     )
 
+    # NB: total_dropped is approximate — it includes the framework root node (which
+    # becomes a StandardsFramework, not an SFI), pruned empty groupings, and nodes
+    # reclassified as expectation metadata. The per-category breakdown below is the
+    # authoritative accounting.
     total_dropped = (
         policy_report.total_canonical_nodes - policy_report.total_emitted_sfis
     )
     if total_dropped > 0:
-        logger.info(f"Total dropped: {total_dropped}")
+        logger.info(f"Total dropped (approx): {total_dropped}")
 
         # Consolidate dictionary-based dropped stats.
         dict_stats = [
@@ -730,6 +812,11 @@ def validate_graph(
     _check_standards_presence(academic_standards=academic_standards, report=report)
 
     _check_self_loops(all_rels=all_rels, report=report)
+
+    if learning_progressions:
+        _check_progression_invariants(
+            learning_progressions=learning_progressions, report=report, sfi_ids=sfi_ids
+        )
 
     # Finalize summary statistics.
     has_child_rels_count = sum(1 for r in all_rels if r.relationship_type == "hasChild")

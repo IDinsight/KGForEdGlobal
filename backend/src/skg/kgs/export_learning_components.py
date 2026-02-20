@@ -177,6 +177,15 @@ def _create_lcs_for_expectation(
     if not id_parts:
         id_parts = [display_text] if display_text else []
 
+    if not id_parts:
+        logger.warning(
+            f"Zero LearningComponents for expectation SFI "
+            f"{sfi.case_identifier_uuid}: both id_source_text and display_text "
+            f"are empty (canonical_node_id={metadata.get('canonical_node_id')}). "
+            f"This SFI will have no `supports` edge."
+        )
+        return []
+
     # Build display parts (used for LC.description). Try to split display_text the same
     # way as ID text so each LC gets a meaningful description.
     display_source_text = display_text or id_source_text
@@ -375,8 +384,9 @@ def _split_bullets_deterministic(*, text: str) -> list[str]:
 
     src = src.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Detect markers before we mutate heavily.
-    has_inline_bullet = bool(re.search(rf"\s+{_INLINE_BULLET_CHARS}\s+", src))
+    # Detect markers before we mutate heavily. NB: (?:^|\s+) so a leading bullet
+    # ("• item 1 • item 2") is detected too.
+    has_inline_bullet = bool(re.search(rf"(?:^|\s+){_INLINE_BULLET_CHARS}\s+", src))
     has_line_bullet = any(
         re.match(rf"^{_LINE_BULLET_CHARS}\s*", ln.strip()) for ln in src.split("\n")
     )
@@ -385,7 +395,9 @@ def _split_bullets_deterministic(*, text: str) -> list[str]:
     )
     had_list_marker = has_inline_bullet or has_line_bullet or has_numbering
 
-    src = re.sub(rf"\s+{_INLINE_BULLET_CHARS}\s+", "\n• ", src)
+    # NB: (?:^|\s+) so a leading bullet is also converted to a newline split point.
+    # A leading \n from ^-match is harmless; the split+strip below discards it.
+    src = re.sub(rf"(?:^|\s+){_INLINE_BULLET_CHARS}\s+", "\n• ", src)
     lines = [ln.strip() for ln in re.split(r"\n+", src) if ln.strip()]
 
     if not lines:
@@ -491,6 +503,14 @@ def export_learning_components(
             )
 
     # Integrity checks.
+    zero_lc_count = splits_per_sfi.get(0, 0)
+
+    if zero_lc_count > 0:
+        logger.warning(
+            f"Learning Components: {zero_lc_count} expectation SFI(s) produced 0 "
+            f"LearningComponents (empty text). These SFIs have no `supports` edges."
+        )
+
     if any(r.relationship_type != "supports" for r in rels):
         raise ValueError(
             "Non-supports relationship found in Learning Components export."
