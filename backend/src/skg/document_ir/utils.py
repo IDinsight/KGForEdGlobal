@@ -1455,6 +1455,83 @@ def _process_next_table_slice(
     }
 
 
+def _repair_short_rows_missing_trailing_cols_as_colspan(
+    *,
+    header_row_count: int,
+    n_cols: int,
+    rows: list[TableRow],
+    segment_id: str,
+    warnings: list[str],
+) -> list[TableRow]:
+    """If a non-header row is "short" (<=2 cells) and the last cell has text, and the
+    row's col_span total is < n_cols, treat the missing columns as a colspan on the
+    last cell.
+
+    Parameters
+    ----------
+    header_row_count
+        The number of header rows at the top of the table (which should be exempt from
+        this repair).
+    n_cols
+        The target number of columns in the table.
+    rows
+        The list of TableRow objects to process.
+    segment_id
+        The TableSegment ID (for logging).
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    list[TableRow]
+        The repaired rows.
+    """
+
+    out: list[TableRow] = []
+
+    for r_idx, row in enumerate(rows):
+        # Never touch headers.
+        if r_idx < header_row_count:
+            out.append(row)
+            continue
+
+        cells = list(row.cells)
+
+        if not cells or len(cells) > 2:
+            out.append(row)
+            continue
+
+        # Avoid interacting with true row-spans.
+        if any(c.row_span != 1 for c in cells):
+            out.append(row)
+            continue
+
+        last = cells[-1]
+        last_text = last.text.text if isinstance(last.text, TextUnit) else ""
+
+        if not last_text.strip():
+            out.append(row)
+            continue
+
+        colsum = sum(c.col_span for c in cells)
+
+        if colsum >= n_cols:
+            out.append(row)
+            continue
+
+        missing = n_cols - colsum
+        new_last = last.model_copy(update={"col_span": last.col_span + missing})
+        new_row = TableRow(cells=cells[:-1] + [new_last])
+
+        warnings.append(
+            f"[table_colspan_repair] segment_id={segment_id} row={r_idx}: "
+            f"extended last cell col_span by +{missing} to fill n_cols={n_cols}."
+        )
+        out.append(new_row)
+
+    return out
+
+
 def _resolve_header_row_count(
     *, first_item: Table, item_index: int, page_index: int, warnings: list[str]
 ) -> int:
@@ -4027,6 +4104,7 @@ def stitch_table_chain(
     3. After the loop, if local_code was discovered mid-chain, then backfill
         slices[0].local_code and provenance[0].local_code if missing.
 
+
     Parameters
     ----------
     chain
@@ -4051,7 +4129,7 @@ def stitch_table_chain(
 
     first_page_index, first_item_index, first_item = chain[0]
 
-    # 1. Resolve initial segment state (ID, local_code, header_count).
+    # 1.
     segment_id = compute_segment_id(
         doc_key=doc_key,
         item_index=first_item_index,
@@ -4070,7 +4148,7 @@ def stitch_table_chain(
         warnings=warnings,
     )
 
-    # 2. Initialize stitched data.
+    # 2.
     stitched_rows: list[TableRow] = list(first_item.rows)
     header_rows = stitched_rows[:header_row_count] if header_row_count > 0 else []
 
@@ -4103,7 +4181,7 @@ def stitch_table_chain(
         )
     ]
 
-    # 3. Process the chain loop.
+    # 3.
     for next_page, next_item_idx, next_item in chain[1:]:
         slice_result = _process_next_table_slice(
             current_local_code=local_code,
@@ -4122,7 +4200,7 @@ def stitch_table_chain(
         segment_provenance.append(slice_result["provenance"])
         stitched_rows.extend(slice_result["rows_to_add"])
 
-    # 4. Finalize columns.
+    # Finalize columns.
     n_cols, columns_signature, header_rows_canonical = _finalize_table_structure(
         chain=chain,
         stitched_rows=stitched_rows,
@@ -4132,15 +4210,32 @@ def stitch_table_chain(
         warnings=warnings,
     )
 
+    # Structural repair: short continuation rows often represent a colspan label (e.g.,
+    # "Intégration" spanning remaining columns). Repair before building TableSegment.
+    stitched_rows_for_segment = [r.model_copy(deep=True) for r in stitched_rows]
+    stitched_rows_for_segment = _repair_short_rows_missing_trailing_cols_as_colspan(
+        header_row_count=header_row_count,
+        n_cols=n_cols,
+        rows=stitched_rows_for_segment,
+        segment_id=segment_id,
+        warnings=warnings,
+    )
+
+    # Keep header_rows consistent with the repaired row objects
+    header_rows = (
+        stitched_rows_for_segment[:header_row_count] if header_row_count > 0 else []
+    )
+
     # 5. Build objects.
     table_segment = TableSegment(
         columns_signature=columns_signature,
         header_row_count=header_row_count,
         header_rows=header_rows,
         header_rows_canonical=header_rows_canonical,
+        kind="table",
         local_code=local_code,
         n_cols=n_cols,
-        rows=stitched_rows,
+        rows=stitched_rows_for_segment,
         section_path=section_path,
         segment_id=segment_id,
         segment_provenance=segment_provenance,
