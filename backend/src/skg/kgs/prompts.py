@@ -501,7 +501,7 @@ Definition:
 
 HARD RULES:
 1. Use ONLY the provided items. Do NOT invent new items.
-2. Only emit edges ACROSS the threads: one endpoint must come from thread A, the other from thread B.
+2. Only emit edges ACROSS the two threads: one endpoint must come from ``thread_a_items``, the other from ``thread_b_items``.
 3. Do NOT output edges that are "related" only because they are in the same grade.
 4. Keep it sparse: prefer a small number of strong conceptual links.
 5. Soft cap: do not exceed about {max_edges_per_sfi} relatesTo edges per item across your output.

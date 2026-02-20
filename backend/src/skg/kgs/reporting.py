@@ -393,6 +393,59 @@ def _check_standards_presence(
         )
 
 
+def _check_supports_targets_are_standards(
+    *, academic_standards: Any, learning_components: Any, report: GraphValidationReport
+) -> None:
+    """Check that every supports relationship targets a Standard-type SFI.
+
+    The generic referential integrity check ensures the target exists; this
+    additionally verifies the target is an expectation (normalized_statement_type ==
+    "Standard") rather than a grouping or other node type.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported Academic Standards KG artifacts.
+    learning_components
+        The exported Learning Components KG artifacts.
+    report
+        The GraphValidationReport to append findings to.
+    """
+
+    standard_sfi_ids: set[str] = {
+        str(sfi.case_identifier_uuid)
+        for sfi in academic_standards.items
+        if sfi.normalized_statement_type == "Standard"
+    }
+
+    non_standard_targets = 0
+    examples: list[str] = []
+
+    for r in learning_components.supports_relationships:
+        if r.relationship_type == "supports":
+            if r.target_entity_value not in standard_sfi_ids:
+                non_standard_targets += 1
+
+                if len(examples) < 5:
+                    examples.append(
+                        f"{r.source_entity_value} -> {r.target_entity_value}"
+                    )
+
+    if non_standard_targets:
+        report.error(
+            code="SUPPORTS_TARGET_NOT_STANDARD",
+            message=(
+                f"{non_standard_targets} supports relationship(s) target a "
+                f"non-Standard SFI (e.g., a grouping). Examples: {examples}"
+            ),
+        )
+    else:
+        report.info(
+            code="SUPPORTS_TARGETS_OK",
+            message="All supports relationships target Standard-type SFIs.",
+        )
+
+
 def _collect_columns_signatures(
     *, ctx: ExportContext, decision_ids: list[str]
 ) -> list[str]:
@@ -804,6 +857,11 @@ def validate_graph(
     _check_lc_supports(
         lc_ids=lc_ids, learning_components=learning_components, report=report
     )
+    _check_supports_targets_are_standards(
+        academic_standards=academic_standards,
+        learning_components=learning_components,
+        report=report,
+    )
     adj = _build_has_child_adjacency(all_rels=all_rels)
     _check_has_child_cycles(adj=adj, fw_id=fw_id, report=report, sfi_ids=sfi_ids)
 
@@ -812,6 +870,25 @@ def validate_graph(
     _check_standards_presence(academic_standards=academic_standards, report=report)
 
     _check_self_loops(all_rels=all_rels, report=report)
+
+    # Duplicate relationship identifiers.
+    rel_ids = [str(r.identifier) for r in all_rels]
+    unique_rel_ids = set(rel_ids)
+
+    if len(rel_ids) != len(unique_rel_ids):
+        dup_count = len(rel_ids) - len(unique_rel_ids)
+        report.error(
+            code="DUPLICATE_RELATIONSHIP_IDS",
+            message=(
+                f"{dup_count} duplicate relationship identifier(s) detected "
+                f"across all exports."
+            ),
+        )
+    else:
+        report.info(
+            code="RELATIONSHIP_IDS_UNIQUE",
+            message=f"All {len(rel_ids)} relationship identifiers are unique.",
+        )
 
     if learning_progressions:
         _check_progression_invariants(
