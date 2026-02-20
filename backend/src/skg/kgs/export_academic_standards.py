@@ -521,7 +521,7 @@ def _collect_grade_levels(
 def _compute_export_children(
     *, config: CreateKGConfig, ctx: ExportContext, emit_flag: dict[str, bool]
 ) -> tuple[
-    dict[str, list[str]], DefaultDict[str, list[dict[str, Any]]], dict[str, int]
+    dict[str, list[str]], DefaultDict[str, list[dict[str, Any]]], dict[str, Any]
 ]:
     """Build export-time parent-to-children mapping with aux reparenting.
 
@@ -536,7 +536,9 @@ def _compute_export_children(
 
     Returns
     -------
-    tuple
+    tuple[
+        dict[str, list[str]], DefaultDict[str, list[dict[str, Any]]], dict[str, Any]
+    ]
         (export_children, aux_attach_to_expectation, reparent_stats)--the
         parent-to-children mapping, metadata attachments for expectation nodes, and a
         dict with `aux_reparented_count` and `orphan_aux_count`.
@@ -548,6 +550,7 @@ def _compute_export_children(
     export_children: dict[str, list[str]] = {}
     reparented_count = 0
     orphan_aux_count = 0
+    orphan_aux_node_ids: set[str] = set()
 
     for parent_id, kids in ctx.children_by_parent.items():
         if parent_id == ctx.root_id:
@@ -577,13 +580,14 @@ def _compute_export_children(
 
             # Aux nodes that ended up in new_kids had no preceding expectation
             # (orphans).
-            aux_after_in_new_kids = sum(
-                1
+            orphan_ids_in_batch = {
+                cid
                 for cid in new_kids
                 if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
-            )
-            reparented_count += aux_before - aux_after_in_new_kids
-            orphan_aux_count += aux_after_in_new_kids
+            }
+            reparented_count += aux_before - len(orphan_ids_in_batch)
+            orphan_aux_count += len(orphan_ids_in_batch)
+            orphan_aux_node_ids.update(orphan_ids_in_batch)
         else:
             new_kids = ordered_emitted_kids
 
@@ -604,6 +608,7 @@ def _compute_export_children(
         {
             "aux_reparented_count": reparented_count,
             "orphan_aux_count": orphan_aux_count,
+            "orphan_aux_node_ids": orphan_aux_node_ids,
         },
     )
 
@@ -810,6 +815,7 @@ def _emit_sfi(
     config: CreateKGConfig,
     ctx: ExportContext,
     fw_metadata: dict[str, Any],
+    is_orphan_aux: bool = False,
     node_id: str,
 ) -> StandardsFrameworkItem:
     """Emit a StandardsFrameworkItem for a given canonical node.
@@ -831,6 +837,9 @@ def _emit_sfi(
     fw_metadata
         Pre-computed framework metadata dict (from ctx.get_framework_metadata()).
         Passed in to avoid redundant recomputation per node.
+    is_orphan_aux
+        Whether this node is an orphan auxiliary statement (guidance/descriptor that
+        had no preceding expectation sibling during reparenting).
     node_id
         The ID of the canonical node to emit as an SFI.
 
@@ -851,17 +860,16 @@ def _emit_sfi(
     if config.export_in_language_policy == "source":
         # Canonical IR stores language inside TextUnit dicts (title/body), not as a
         # top-level field. Check title first, then body, skipping "und" (undetermined).
-        node_lang = None
-
-        for text_field in ("title", "body"):
-            text_unit = node.get(text_field)
-
-            if isinstance(text_unit, dict):
-                lang = text_unit.get("language")
-
-                if lang and str(lang).strip().lower() != "und":
-                    node_lang = str(lang).strip()
-                    break
+        node_lang = next(
+            (
+                str(node[f]["language"]).strip()
+                for f in ("title", "body")
+                if isinstance(node.get(f), dict)
+                and node[f].get("language")
+                and str(node[f]["language"]).strip().lower() != "und"
+            ),
+            None,
+        )
 
         if node_lang:
             sfi_in_language = node_lang
@@ -895,6 +903,9 @@ def _emit_sfi(
 
     if aux_attachments:
         metadata["aux_statements"] = aux_attachments
+
+    if is_orphan_aux:
+        metadata["orphan_aux"] = True
 
     # Deterministic progression context keys (for Learning Progressions KG inference).
     if role == StatementRole.EXPECTATION.value:
@@ -989,6 +1000,7 @@ def _emit_sfis(
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
+    orphan_aux_node_ids: set[str] | None = None,
 ) -> dict[str, StandardsFrameworkItem]:
     """Emit StandardsFrameworkItems for all flagged nodes.
 
@@ -1004,6 +1016,10 @@ def _emit_sfis(
         The ExportContext for the CanonicalIR.
     emit_flag
         Node-level emit flags.
+    orphan_aux_node_ids
+        Set of canonical node IDs for aux statements that had no preceding expectation
+        sibling (orphans). If provided, their emitted SFIs will carry
+        `metadata.orphan_aux = True`.
 
     Returns
     -------
@@ -1013,6 +1029,7 @@ def _emit_sfis(
 
     fw_metadata = ctx.get_framework_metadata()  # Compute once for all SFIs
     sfi_by_node: dict[str, StandardsFrameworkItem] = {}
+    _orphans = orphan_aux_node_ids or set()
 
     for node_id, ok in emit_flag.items():
         if not ok:
@@ -1024,6 +1041,7 @@ def _emit_sfis(
             config=config,
             ctx=ctx,
             fw_metadata=fw_metadata,
+            is_orphan_aux=node_id in _orphans,
             node_id=node_id,
         )
 
@@ -1367,8 +1385,8 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
 
         if len(valid_romans) >= 2:
             return min(valid_romans), max(valid_romans)
-
-        return valid_romans[0], valid_romans[0]
+        if valid_romans:
+            return valid_romans[0], valid_romans[0]
 
     return None, None
 
@@ -1820,8 +1838,8 @@ def export_academic_standards(
     5. Prune empty groupings iteratively, modifying emit flags accordingly.
     6. Emit StandardsFrameworkItems for all nodes still flagged for emission.
     7. Build relationships and hierarchy order mapping.
-    8. Sort items and relationships for deterministic output.
-    9. Construct the AcademicStandardsExport dataclass instance.
+    8. Verify the integrity of the exported artifacts.
+    9. Sort items and relationships for deterministic output.
     10. Write all artifacts to their respective JSON files.
 
     Parameters
@@ -1890,6 +1908,7 @@ def export_academic_standards(
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
+        orphan_aux_node_ids=reparent_stats.get("orphan_aux_node_ids"),
     )
 
     # 7.

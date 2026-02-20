@@ -427,8 +427,9 @@ def _build_thread_map(
     Raises
     ------
     ValueError
-        If any bucket is missing a valid thread key in its progression_context, since
-        the thread key is essential for grouping buckets for cross-grade inference.
+        If any bucket is missing a valid thread key, which is required for grouping and
+        inference. The error message includes examples of bucket keys that are missing
+        thread keys to aid in debugging the Academic Standards export data.
     """
 
     thread_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -477,6 +478,11 @@ def _build_thread_map(
         )
 
     if missing_thread_key > 0:
+        # The check is deferred until after full iteration so we can collect all
+        # examples for a more actionable error message. Clear the partial thread_map
+        # before raising so callers that catch the exception cannot accidentally use
+        # incomplete data.
+        thread_map.clear()
         raise ValueError(
             f"Missing progression_context.thread_key in "
             f"{missing_thread_key} bucket(s). Re-export Academic Standards so each "
@@ -1142,16 +1148,13 @@ def _infer_within_grade_builds_towards(
             )
             candidates.append(candidate_edge)
             provenance_rows.append(
-                {
-                    "phase": 1,
-                    "inference_type": "within_grade_builds_towards",
-                    "rel_type": "buildsTowards",
-                    "source": str(candidate_edge.source_sfi_uuid),
-                    "target": str(candidate_edge.target_sfi_uuid),
-                    "confidence": candidate_edge.confidence,
-                    "rationale": edge.rationale,
-                    "bucket_key": bucket.get("bucket_key"),
-                }
+                _make_provenance_row(
+                    candidate=candidate_edge,
+                    inference_type="within_grade_builds_towards",
+                    phase=1,
+                    rationale=edge.rationale,
+                    bucket_key=bucket.get("bucket_key"),
+                )
             )
 
     return candidates, provenance_rows
@@ -1400,22 +1403,19 @@ def _infer_within_grade_relates_to(
             )
             candidates.append(ce)
             provenance_rows.append(
-                {
-                    "phase": 3,
-                    "inference_type": "within_grade_cross_subject_relates_to",
-                    "rel_type": "relatesTo",
-                    "source": str(ce.source_sfi_uuid),
-                    "target": str(ce.target_sfi_uuid),
-                    "confidence": ce.confidence,
-                    "bidirectional_confirmed": True,
-                    "confidence_fwd": float(conf_ab),
-                    "confidence_rev": float(conf_ba),
-                    "rationale_fwd": rat_ab,
-                    "rationale_rev": rat_ba,
-                    "grade_label": grade_label,
-                    "subject_a": subject_a,
-                    "subject_b": subject_b,
-                }
+                _make_provenance_row(
+                    candidate=ce,
+                    inference_type="within_grade_cross_subject_relates_to",
+                    phase=3,
+                    bidirectional_confirmed=True,
+                    confidence_fwd=float(conf_ab),
+                    confidence_rev=float(conf_ba),
+                    rationale_fwd=rat_ab,
+                    rationale_rev=rat_ba,
+                    grade_label=grade_label,
+                    subject_a=subject_a,
+                    subject_b=subject_b,
+                )
             )
 
     return candidates, provenance_rows
@@ -1606,6 +1606,44 @@ def _limit_relates_to_edges_per_sfi(
         counts[b] += 1
 
     return kept, dropped
+
+
+def _make_provenance_row(
+    *, candidate: CandidateEdge, inference_type: str, phase: int, **extra: Any
+) -> dict[str, Any]:
+    """Build a provenance row from a CandidateEdge plus phase-specific extras.
+
+    This is the single source of truth for the common fields present in every
+    provenance row. Phase-specific fields (e.g., rationale, grade labels, bidirectional
+    confirmation flags) are passed as keyword arguments.
+
+    Parameters
+    ----------
+    candidate
+        The CandidateEdge that produced this row.
+    inference_type
+        The inference type string (e.g., `"within_grade_builds_towards"`).
+    phase
+        The numeric phase identifier (1–4).
+    **extra
+        Additional phase-specific fields to include in the row.
+
+    Returns
+    -------
+    dict[str, Any]
+        A provenance row dictionary ready for serialization.
+    """
+
+    row: dict[str, Any] = {
+        "phase": phase,
+        "inference_type": inference_type,
+        "rel_type": candidate.rel_type,
+        "source": str(candidate.source_sfi_uuid),
+        "target": str(candidate.target_sfi_uuid),
+        "confidence": candidate.confidence,
+    }
+    row.update(extra)
+    return row
 
 
 def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
@@ -2020,24 +2058,21 @@ def _process_single_standard(
             ),
             "UNSPECIFIED_SUBJECT",
         )
+
+        # Resolve grade_ordinal_low once; grade_ordinal_high falls back to it when the
+        # explicit high bound is absent (single-grade bucket).
+        _raw_low = progression_context.get("grade_ordinal_low")
+        resolved_low = _raw_low if isinstance(_raw_low, int) else grade_ord
+
+        _raw_high = progression_context.get("grade_ordinal_high")
+        resolved_high = _raw_high if isinstance(_raw_high, int) else resolved_low
+
         b = {
             "bucket_key": f"{grade_label}::{topic_path_key}",
             "grade_level": grade_label,
             "grade_ordinal": grade_ord,
-            "grade_ordinal_low": (
-                progression_context.get("grade_ordinal_low")
-                if isinstance(progression_context.get("grade_ordinal_low"), int)
-                else grade_ord
-            ),
-            "grade_ordinal_high": (
-                progression_context.get("grade_ordinal_high")
-                if isinstance(progression_context.get("grade_ordinal_high"), int)
-                else (
-                    progression_context.get("grade_ordinal_low")
-                    if isinstance(progression_context.get("grade_ordinal_low"), int)
-                    else grade_ord
-                )
-            ),
+            "grade_ordinal_low": resolved_low,
+            "grade_ordinal_high": resolved_high,
             "stage_key": (
                 progression_context.get("stage_key")
                 if isinstance(progression_context.get("stage_key"), str)
@@ -2185,18 +2220,15 @@ def _process_builds_towards_work_item(
         candidates.append(ce)
         cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
         provenance_rows.append(
-            {
-                "phase": 2,
-                "inference_type": inference_type,
-                "rel_type": "buildsTowards",
-                "source": str(ce.source_sfi_uuid),
-                "target": str(ce.target_sfi_uuid),
-                "confidence": ce.confidence,
-                "rationale": e.rationale,
-                "lower_level": lo_label,
-                "upper_level": hi_label,
-                "thread_key": thread_key,
-            }
+            _make_provenance_row(
+                candidate=ce,
+                inference_type=inference_type,
+                phase=2,
+                rationale=e.rationale,
+                lower_level=lo_label,
+                upper_level=hi_label,
+                thread_key=thread_key,
+            )
         )
 
     return candidates, provenance_rows, cross_level_build_pairs
@@ -2378,22 +2410,19 @@ def _process_relates_to_work_item(
         )
         candidates.append(ce)
         provenance_rows.append(
-            {
-                "phase": 4,
-                "inference_type": inference_type,
-                "rel_type": "relatesTo",
-                "source": str(ce.source_sfi_uuid),
-                "target": str(ce.target_sfi_uuid),
-                "confidence": ce.confidence,
-                "bidirectional_confirmed": True,
-                "confidence_fwd": float(conf_lo_hi),
-                "confidence_rev": float(conf_hi_lo),
-                "rationale_fwd": rat_lo_hi,
-                "rationale_rev": rat_hi_lo,
-                "subject_label": subject_label,
-                "lower_level": lower["level_label"],
-                "upper_level": upper["level_label"],
-            }
+            _make_provenance_row(
+                candidate=ce,
+                inference_type=inference_type,
+                phase=4,
+                bidirectional_confirmed=True,
+                confidence_fwd=float(conf_lo_hi),
+                confidence_rev=float(conf_hi_lo),
+                rationale_fwd=rat_lo_hi,
+                rationale_rev=rat_hi_lo,
+                subject_label=subject_label,
+                lower_level=lower["level_label"],
+                upper_level=upper["level_label"],
+            )
         )
 
     return candidates, provenance_rows

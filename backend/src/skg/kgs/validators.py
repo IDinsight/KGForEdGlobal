@@ -7,6 +7,55 @@ from skg.kgs.schemas import ProgressionEdgesResponse
 from skg.page_ir_extraction.validators import QualityError
 
 
+def _check_common_edge_invariants(
+    *, directed: bool, response: ProgressionEdgesResponse
+) -> None:
+    """Check invariants shared by all progression edge validators.
+
+    Parameters
+    ----------
+    directed
+        If True, treat (A, B) and (B, A) as distinct edges (buildsTowards). If False,
+        canonicalize pairs so (A, B) and (B, A) are considered duplicates (relatesTo).
+    response
+        The response containing edges to validate.
+
+    Raises
+    ------
+    QualityError
+        If any edge has out-of-range confidence or if duplicate edges are detected.
+    """
+
+    seen: set[tuple[str, str]] = set()
+
+    for e in response.edges:
+        # Confidence bounds.
+        try:
+            conf = float(e.confidence)
+        except (TypeError, ValueError) as exc:
+            raise QualityError(
+                f"Edge confidence is not a valid number: {e.confidence!r}"
+            ) from exc
+
+        if conf < 0.0 or conf > 1.0:
+            raise QualityError(f"Edge confidence must be between 0 and 1, got {conf}.")
+
+        # Duplicate detection.
+        if directed:
+            pair = (e.source_sfi_uuid, e.target_sfi_uuid)
+        else:
+            a, b = sorted([e.source_sfi_uuid, e.target_sfi_uuid])
+            pair = (a, b)
+
+        if pair in seen:
+            raise QualityError(
+                f"Duplicate edge detected: {pair[0]} -> {pair[1]}. "
+                f"Each (source, target) pair must appear at most once."
+            )
+
+        seen.add(pair)
+
+
 def validate_cross_grade_builds_towards(
     response: ProgressionEdgesResponse, allowed_lo: set[str], allowed_hi: set[str]
 ) -> None:
@@ -26,6 +75,8 @@ def validate_cross_grade_builds_towards(
     QualityError
         If any edge violates validation rules (unknown UUIDs, self-edges, etc).
     """
+
+    _check_common_edge_invariants(directed=True, response=response)
 
     for e in response.edges:
         if e.source_sfi_uuid not in allowed_lo:
@@ -67,6 +118,8 @@ def validate_cross_grade_relates_to(
     QualityError
         If edges are self-referential, fail to cross grades, or are forbidden.
     """
+
+    _check_common_edge_invariants(directed=False, response=response)
 
     for e in response.edges:
         if e.source_sfi_uuid == e.target_sfi_uuid:
@@ -115,6 +168,8 @@ def validate_within_grade_builds_towards(
         list ordering.
     """
 
+    _check_common_edge_invariants(directed=True, response=response)
+
     for e in response.edges:
         if (
             e.source_sfi_uuid not in allowed_uuids
@@ -155,6 +210,8 @@ def validate_within_grade_relates_to(
         If edges refer to unknown items, are self-referential, or fail to
         bridge the two different threads.
     """
+
+    _check_common_edge_invariants(directed=False, response=response)
 
     for e in response.edges:
         if e.source_sfi_uuid == e.target_sfi_uuid:
