@@ -1837,10 +1837,10 @@ def export_academic_standards(
         flags accordingly.
     5. Prune empty groupings iteratively, modifying emit flags accordingly.
     6. Emit StandardsFrameworkItems for all nodes still flagged for emission.
-    7. Build relationships and hierarchy order mapping.
-    8. Verify the integrity of the exported artifacts.
-    9. Sort items and relationships for deterministic output.
-    10. Write all artifacts to their respective JSON files.
+    7. Build hasChild relationships and hierarchy order mappings.
+    8. Sort items and relationships for stable output.
+    9. Package everything into an AcademicStandardsExport dataclass.
+    10. Write JSON artifacts to disk.
 
     Parameters
     ----------
