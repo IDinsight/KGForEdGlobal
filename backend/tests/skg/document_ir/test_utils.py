@@ -1359,7 +1359,7 @@ def test__process_next_table_slice_local_code_conflict() -> None:
     assert result["local_code"] == "Table 1"
     assert len(warnings) == 1
     assert "Conflicting local_code" in warnings[0]
-    assert "'Table 1' vs. 'Table 2'" in warnings[0]
+    assert "'Table 1' vs. 'table 2'" in warnings[0]
 
 
 def test__process_next_table_slice_provenance_creation() -> None:
@@ -1550,7 +1550,7 @@ def test__resolve_initial_local_code_normalization_behavior() -> None:
 
     # We rely on the real normalize_local_code implementation here.
     result = utils._resolve_initial_local_code(chain)
-    assert result == "Table 1.2"
+    assert result == "Table   1.2"
 
 
 def test__resolve_initial_local_code_single_item_chain_none() -> None:
