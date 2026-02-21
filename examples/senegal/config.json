@@ -11,7 +11,7 @@
 		"model": "gpt-5.2-2025-12-11",
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
 		"overwrite": true,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/math_wolof_corrected.pdf",
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/math_wolof_OA_fixed.pdf",
 		"start_page": 0,
 		"use_text_layer_hints": true,
 		"year": 2024
