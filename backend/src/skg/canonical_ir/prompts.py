@@ -105,6 +105,11 @@ B. Senegal mixed-organization rule (IMPORTANT):
 - For "Apprentissages ponctuels" tables (typically Tableaux 4–27): the document is STRAND-first. If the active section_path/headings/caption indicate a strand, ALWAYS include that STRAND as an OUTER context_groupings entry (stable for the table). Do not encode grade in the strand title (e.g., avoid "Activités numériques CE1/CE2" as a strand); keep grade_level separate and let paliers carry CE1 vs CE2 scope.
 - For weekly "Planification" tables (typically Tableau 2–3): the document is GRADE-first. Treat the table as a grade-scoped UNIT (Planification CE1/CE2). Even if the caption contains multiple strands (e.g., "Activités numériques et Résolution de problèmes"), DO NOT set STRAND in context_groupings. Instead, represent strands row/column-locally using the column-header fanout pattern:
   - emit RowDecision items with col_index for each strand column, and set RowDecision.groupings=[{role:"strand", title:<column header>}].
+- When emitting STRAND in context_groupings, use the FRENCH form of the strand name
+  (e.g., "Activités numériques"), not the bilingual heading form
+  (e.g., "Activités numériques / Kenug xayma"). The bilingual form will be preserved
+  in section_path provenance; context_groupings needs the canonical French form for
+  spine correction alignment.
 
 C. Column-header heuristics for Senegal planning tables:
 - Headers implying EXPECTATION (normative content): "apprentissages", "objectifs", "contenus", "compétence(s)", "savoirs", "habiletés", "capacités".
@@ -488,11 +493,12 @@ Output: GroupingCanonicalizationMap with items[] — EXACTLY one item per input,
 
 ## Rules
 1. Do NOT invent curriculum concepts not in the input.
-2. Prefer minimal changes, but DO normalize superficial formatting when meaning is unchanged: whitespace, punctuation, ALL-CAPS → Title Case, and minor accent/case variants.
+2. Prefer minimal changes, but DO normalize superficial formatting when meaning is unchanged: whitespace, punctuation, and minor accent/case variants. For ALL-CAPS titles, normalize to sentence case (capitalize only the first word and proper nouns), not Title Case — this is correct for French, Wolof, and most non-English languages.
 3. For bilingual titles separated by '/', treat variants as equivalent when they share a clear common French (or English) substring. Prefer the most informative form already present in inputs (often the bilingual form) as the canonical, and REPLACE monolingual variants to that form.
 4. REPLACE must not change role (validator enforces this). If output would be identical to input, use KEEP.
 5. SPLIT only when the title clearly contains multiple groupings (e.g., "Grade 1 - Mathematics") AND each part is directly present as a substring.
-6. If unsure, choose KEEP with lower confidence (0.6–0.8). Do NOT DROP uncertain items. However, do NOT use KEEP merely because of casing, accents, or bilingual ordering differences—use REPLACE when semantically equivalent and role matches.
+6. Do NOT SPLIT a title when the resulting sub-grouping already exists as a separate key in this batch with the same role. For example, if section:"Apprentissages ponctuels — Activités numériques" is a key AND strand:"Activités numériques" is also a separate key, prefer KEEP over SPLIT.
+7. If unsure, choose KEEP with lower confidence (0.6–0.8). Do NOT DROP uncertain items. However, do NOT use KEEP merely because of casing, accents, or bilingual ordering differences—use REPLACE when semantically equivalent and role matches.
         """
     )
 
