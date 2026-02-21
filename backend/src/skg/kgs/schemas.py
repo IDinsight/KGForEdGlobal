@@ -1207,6 +1207,28 @@ class BBox(BaseSchema):
     y0: float = Field(..., description="Top coordinate in pixels.", ge=0.0)
     y1: float = Field(..., description="Bottom coordinate in pixels.", ge=0.0)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_list(cls, data: Any) -> Any:
+        """Coerce a list or tuple of 4 numbers into a BBox dict.
+
+        Parameters
+        ----------
+        data
+            The input data to validate, which may be a dict or a list/tuple of 4
+            numbers.
+
+        Returns
+        -------
+        Any
+            The validated BBox data, either as a dict or the original data if it was
+            not a list/tuple of 4 numbers.
+        """
+
+        if isinstance(data, (list, tuple)) and len(data) == 4:
+            return {"x0": data[0], "y0": data[1], "x1": data[2], "y1": data[3]}
+        return data
+
 
 class EntityProvenance(BaseSchema):
     """Provenance information for a node."""
