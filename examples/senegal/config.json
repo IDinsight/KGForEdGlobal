@@ -63,6 +63,16 @@
 				"note": "Language marker line (appears between Jéego and PALIER); do not treat as structural heading"
 			},
 			{
+				"pattern": "(?i)^\\s*math[éeè]matiques\\s*$",
+				"role": "subject",
+				"note": "Standalone subject header"
+			},
+			{
+				"pattern": "(?i)\\b(?:deuxi[eè]me|2\\s*(?:e|è|eme|ème))\\s*[eéèë]tape\\b",
+				"role": "stage",
+				"note": "Stage label variants like 'Deuxième étape' / '2ème étape' (treat as STAGE)"
+			},
+			{
 				"pattern": "(?i)\\bpalier\\s*\\d+\\b(?:\\s*\\(.*?\\))?\\s*:?",
 				"role": "substage",
 				"note": "PALIER N (optionally with '(Niveau I/II)' and/or ':')"
@@ -137,7 +147,8 @@
 		"model": "gpt-5.2-2025-12-11",
 		"overwrite": false,
 		"row_grouping_canonicalization_roles": [
-			"week"
+			"week",
+			"substage"
 		],
 		"segment_decision_conf_threshold": 0.6,
 		"spine_policy": {
@@ -168,6 +179,26 @@
 					"match": "(?i)\\bapprentissages\\s+ponctuels\\b",
 					"role": "section",
 					"title_template": "Apprentissages ponctuels"
+				},
+				{
+					"match": "(?i)\\bplanification\\s+CE\\s*1\\b",
+					"role": "unit",
+					"title_template": "Planification CE1"
+				},
+				{
+					"match": "(?i)\\bplanification\\s+CE\\s*2\\b",
+					"role": "unit",
+					"title_template": "Planification CE2"
+				},
+				{
+					"match": "(?i)\\bniveau\\s*1\\s*:\\s*CE\\s*1\\b",
+					"role": "unit",
+					"title_template": "Planification CE1"
+				},
+				{
+					"match": "(?i)\\bniveau\\s*2\\s*:\\s*CE\\s*2\\b",
+					"role": "unit",
+					"title_template": "Planification CE2"
 				},
 				{
 					"match": "(?i)\\btolluwaay\\s*(\\d+)",
