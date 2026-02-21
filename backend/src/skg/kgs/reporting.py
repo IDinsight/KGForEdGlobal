@@ -255,18 +255,33 @@ def _check_progression_invariants(
             message="All progression endpoints are SFIs.",
         )
 
+    # No duplicate directed buildsTowards pairs (exact (source, target) repeats).
+    builds_list = [
+        (r.source_entity_value, r.target_entity_value)
+        for r in learning_progressions.builds_towards_relationships
+    ]
+    duplicate_builds = len(builds_list) - len(set(builds_list))
+
+    if duplicate_builds:
+        report.error(
+            code="BUILDS_TOWARDS_DUPLICATE_PAIR",
+            message=(
+                f"{duplicate_builds} duplicate buildsTowards pair(s) detected "
+                f"(identical directed edges)."
+            ),
+        )
+    else:
+        report.info(
+            code="BUILDS_TOWARDS_NO_DUPLICATES",
+            message="No duplicate buildsTowards pairs.",
+        )
+
     # No duplicate relatesTo pairs (A, B) and (B, A) after canonicalization.
-    relates_pairs: set[tuple[str, str]] = set()
-    duplicate_relates = 0
-
-    for r in learning_progressions.relates_to_relationships:
-        a, b = sorted([r.source_entity_value, r.target_entity_value])
-        pair = (a, b)
-
-        if pair in relates_pairs:
-            duplicate_relates += 1
-        else:
-            relates_pairs.add(pair)
+    relates_list = [
+        tuple(sorted([r.source_entity_value, r.target_entity_value]))
+        for r in learning_progressions.relates_to_relationships
+    ]
+    duplicate_relates = len(relates_list) - len(set(relates_list))
 
     if duplicate_relates:
         report.error(

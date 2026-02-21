@@ -416,7 +416,7 @@ HARD RULES:
 1. Use ONLY the provided items. Do NOT invent new items.
 2. Only emit edges that are plausible prerequisites a teacher would rely on.
 3. Prefer fewer, higher-quality edges over many weak edges.
-4. Direction constraint: items are presented in intended sequence order. You MUST NOT point from a later item to an earlier item.
+4. Direction constraint: items are presented in the order they appear in the curriculum document (by position within their parent section, then by statement code). You MUST NOT point from a later item to an earlier item — i.e., source must have a lower list index than target.
 
 {confidence_block}
 

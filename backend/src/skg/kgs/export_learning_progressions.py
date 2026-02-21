@@ -49,6 +49,7 @@ from skg.kgs.schemas import (
 )
 from skg.kgs.utils import ExportContext, KGDirs
 from skg.kgs.validators import (
+    canon_str_pair,
     validate_cross_grade_builds_towards,
     validate_cross_grade_relates_to,
     validate_within_grade_builds_towards,
@@ -491,6 +492,39 @@ def _build_thread_map(
         )
 
     return thread_map
+
+
+def _canon_disposition_key(
+    *, rel_type: str, source: str, target: str
+) -> tuple[str, str, str]:
+    """Build a canonicalized disposition-map key.
+
+    For directed relationship types (buildsTowards) the key preserves the original
+    (source, target) order. For undirected types (relatesTo) the two UUID strings are
+    sorted so that keys match regardless of which direction the edge was originally
+    emitted in.
+
+    Parameters
+    ----------
+    rel_type
+        The relationship type string (e.g., `"buildsTowards"` or `"relatesTo"`).
+    source
+        The source SFI UUID as a string.
+    target
+        The target SFI UUID as a string.
+
+    Returns
+    -------
+    tuple[str, str, str]
+        A 3-tuple `(rel_type, a, b)` suitable for use as a dictionary key where
+        `(a, b)` is canonicalized for undirected relationship types.
+    """
+
+    if rel_type == "relatesTo":
+        a, b = sorted([source, target])
+        return rel_type, a, b
+
+    return rel_type, source, target
 
 
 def _canon_uuid_pair(a: UUID, b: UUID) -> tuple[UUID, UUID]:
@@ -1918,31 +1952,56 @@ def _process_and_filter_candidates(
 
     # Build disposition map keyed by (rel_type, source_uuid, target_uuid) for enriching
     # provenance rows downstream.
+    #
+    # NB: relatesTo edges are canonicalized during dedup (source < target by UUID.int),
+    # so keys here are already canonical for relatesTo. The *lookup* side (in
+    # export_learning_progressions) must canonicalize provenance row keys the same way
+    # (see _canon_disposition_key).
     disposition_map: dict[tuple[str, str, str], str] = {}
 
     for e in builds_kept:
         disposition_map[
-            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+            _canon_disposition_key(
+                rel_type=e.rel_type,
+                source=str(e.source_sfi_uuid),
+                target=str(e.target_sfi_uuid),
+            )
         ] = "kept"
 
     for e in builds_dropped_low:
         disposition_map[
-            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+            _canon_disposition_key(
+                rel_type=e.rel_type,
+                source=str(e.source_sfi_uuid),
+                target=str(e.target_sfi_uuid),
+            )
         ] = "dropped_low_conf"
 
     for e in relates_kept:
         disposition_map[
-            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+            _canon_disposition_key(
+                rel_type=e.rel_type,
+                source=str(e.source_sfi_uuid),
+                target=str(e.target_sfi_uuid),
+            )
         ] = "kept"
 
     for e in relates_dropped_low:
         disposition_map[
-            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+            _canon_disposition_key(
+                rel_type=e.rel_type,
+                source=str(e.source_sfi_uuid),
+                target=str(e.target_sfi_uuid),
+            )
         ] = "dropped_low_conf"
 
     for e in relates_dropped_cap:
         disposition_map[
-            (e.rel_type, str(e.source_sfi_uuid), str(e.target_sfi_uuid))
+            _canon_disposition_key(
+                rel_type=e.rel_type,
+                source=str(e.source_sfi_uuid),
+                target=str(e.target_sfi_uuid),
+            )
         ] = "dropped_cap"
 
     return builds_relationships, relates_relationships, stats, disposition_map
@@ -2474,13 +2533,12 @@ def _resolve_forbidden_pairs(
     for s, t in forbidden_builds_pairs:
         ss, tt = str(s), str(t)
 
-        # Record forbidden pairs as *undirected* canonicalized UUID string tuples.
-        # Canonicalization is by string sort to match validator behavior.
+        # Record forbidden pairs as *undirected* canonicalized UUID string tuples. Uses
+        # canon_str_pair for consistency with validator canonicalization.
         if (ss in allowed_lo and tt in allowed_hi) or (
             ss in allowed_hi and tt in allowed_lo
         ):
-            a, b = sorted([ss, tt])
-            forbidden_pairs_set.add((a, b))
+            forbidden_pairs_set.add(canon_str_pair(ss, tt))
 
     forbidden_pairs_list = [
         {"a_sfi_uuid": a, "b_sfi_uuid": b} for a, b in sorted(forbidden_pairs_set)
@@ -2681,11 +2739,17 @@ def export_learning_progressions(
     )
 
     # Enrich provenance rows with post-filtering disposition.
+    #
+    # NB: relatesTo edges are canonicalized during dedup (source < target by UUID.int),
+    # so the disposition map keys for relatesTo are already canonical. Provenance rows,
+    # however, carry the *original* (pre-dedup) source/target which may be in either
+    # order. _canon_disposition_key normalises the lookup key so that the match
+    # succeeds regardless of the original edge direction.
     for row in provenance_rows:
-        key = (
-            row.get("rel_type", ""),
-            row.get("source", ""),
-            row.get("target", ""),
+        key = _canon_disposition_key(
+            rel_type=row.get("rel_type", ""),
+            source=row.get("source", ""),
+            target=row.get("target", ""),
         )
         row["disposition"] = disposition_map.get(key, "dropped_dedupe")
 
@@ -2759,6 +2823,23 @@ def group_standards_for_learning_progressions(
     strict_single_grade: bool = False,
 ) -> dict[str, Any]:
     """Build learning progression buckets for the LLM.
+
+    NB: When `strict_single_grade=False` (the default), items whose grade cannot be
+    resolved are bucketed under the synthetic label `"UNSPECIFIED_GRADE"`. These
+    buckets have `grade_ordinal_low=None` and `grade_ordinal_high=None`, which means:
+
+    1. **Phase 1 (within-grade buildsTowards):** These buckets *are* eligible when
+      `progressions_within_grade_allow_banded_levels=True` (since
+      `_is_single_grade_bucket` returns `False` and the allow-banded gate applies).
+      With the default (`allow_banded_levels=False`), they are skipped.
+    2. **Phases 2–4 (cross-grade/cross-stage):** These buckets are always skipped
+      because `_build_thread_map` and `_prepare_subject_grade_samples` require integer
+      grade bounds (via `_level_bounds`), which returns `(None, None)` for unresolved
+      grades.
+
+    Items routed to `UNSPECIFIED_GRADE` are also recorded in
+    `drops["unassigned_grade"]` for audit purposes, regardless of whether they end up
+    in a bucket.
 
     Parameters
     ----------

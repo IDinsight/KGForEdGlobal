@@ -7,6 +7,30 @@ from skg.kgs.schemas import ProgressionEdgesResponse
 from skg.page_ir_extraction.validators import QualityError
 
 
+def canon_str_pair(a: str, b: str) -> tuple[str, str]:
+    """Canonicalize an undirected pair of UUID strings by lexicographic sort.
+
+    This is the single source of truth for how undirected (relatesTo) edge pairs are
+    canonicalized when compared as *strings*. All code that builds or checks
+    forbidden-pair sets, validator duplicate detection, and disposition-map keys for
+    undirected relationships should use this function to ensure consistent ordering.
+
+    Parameters
+    ----------
+    a
+        The first UUID string.
+    b
+        The second UUID string.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple ``(lo, hi)`` where ``lo <= hi`` lexicographically.
+    """
+
+    return (a, b) if a <= b else (b, a)
+
+
 def _check_common_edge_invariants(
     *, directed: bool, response: ProgressionEdgesResponse
 ) -> None:
@@ -44,8 +68,7 @@ def _check_common_edge_invariants(
         if directed:
             pair = (e.source_sfi_uuid, e.target_sfi_uuid)
         else:
-            a, b = sorted([e.source_sfi_uuid, e.target_sfi_uuid])
-            pair = (a, b)
+            pair = canon_str_pair(e.source_sfi_uuid, e.target_sfi_uuid)
 
         if pair in seen:
             raise QualityError(
@@ -138,9 +161,9 @@ def validate_cross_grade_relates_to(
             )
 
         # Treat forbidden_pairs as undirected (canonicalized pairs).
-        a, b = sorted([e.source_sfi_uuid, e.target_sfi_uuid])
+        pair = canon_str_pair(e.source_sfi_uuid, e.target_sfi_uuid)
 
-        if (a, b) in forbidden_pairs:
+        if pair in forbidden_pairs:
             raise QualityError("Edge is in forbidden_pairs (already buildsTowards).")
 
 
