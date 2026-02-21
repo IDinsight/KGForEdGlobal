@@ -6,6 +6,9 @@ import unicodedata
 
 from typing import Any, Optional
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
 from skg.canonical_ir.schemas import (
     GroupingCanonicalizationKey,
@@ -673,7 +676,7 @@ def _validate_and_fingerprint_row(
 
     # Global range check.
     if rd.row_index < 0 or rd.row_index > max_row_index:
-        raise QualityError(
+        msg = (
             f"RowDecision.row_index out of range.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
@@ -681,18 +684,22 @@ def _validate_and_fingerprint_row(
             f"  allowed: 0..{max_row_index}\n"
             f"  table_rows: {table_rows_count}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
     if (
         row_range_start is not None
         and not row_range_start <= rd.row_index < row_range_end
     ):
-        raise QualityError(
+        msg = (
             f"RowDecision.row_index outside decision chunk boundaries.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  row_index: {rd.row_index}\n"
             f"  allowed_chunk: [{row_range_start}, {row_range_end})"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
     # Optional col_index validation.
     col_i = getattr(rd, "col_index", None)
@@ -701,16 +708,18 @@ def _validate_and_fingerprint_row(
         try:
             col_int = int(col_i)
         except Exception as exc:  # pylint: disable=broad-except
-            raise QualityError(
+            msg = (
                 f"RowDecision.col_index must be an integer when provided.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  row_index: {rd.row_index}\n"
                 f"  col_index: {col_i}"
-            ) from exc
+            )
+            logger.error(msg)
+            raise QualityError(msg) from exc
 
         if n_cols is not None and (col_int < 0 or col_int >= int(n_cols)):
-            raise QualityError(
+            msg = (
                 f"RowDecision.col_index out of range for table.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
@@ -718,6 +727,8 @@ def _validate_and_fingerprint_row(
                 f"  col_index: {col_int}\n"
                 f"  allowed: 0..{int(n_cols) - 1}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
     # Fingerprint the *entire* row decision so we can allow sibling fanout while still
     # catching accidental repeats. Sort components so exact-duplicate detection is
@@ -774,56 +785,68 @@ def _validate_chunk_sequence(
 
     for start, end in intervals:
         if start >= end:
-            raise QualityError(
+            msg = (
                 f"Invalid chunk interval (start must be < end).\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  interval: [{start}, {end})"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         if start < expected_start:
-            raise QualityError(
+            msg = (
                 f"Chunk interval begins before the table body rows (likely includes header rows).\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  header_row_count: {segment.header_row_count}\n"
                 f"  body_row_range: [{expected_start}, {expected_end})\n"
                 f"  interval: [{start}, {end})"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         if end > expected_end:
-            raise QualityError(
+            msg = (
                 f"Chunk interval ends past the end of the table rows.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  table_row_count: {expected_end}\n"
                 f"  interval: [{start}, {end})"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         if start < cursor:
-            raise QualityError(
+            msg = (
                 f"Overlapping chunk intervals detected.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  overlap_at: row_index={start}\n"
                 f"  previous_end: {cursor}\n"
                 f"  interval: [{start}, {end})"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         if start > cursor:
-            raise QualityError(
+            msg = (
                 f"Gap between chunk intervals detected (missing coverage).\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  missing_row_range: [{cursor}, {start})\n"
                 f"  next_interval: [{start}, {end})"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         cursor = end
 
     if cursor != expected_end:
-        raise QualityError(
+        msg = (
             f"Chunk intervals do not fully cover the table body rows.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  covered_end: {cursor}\n"
             f"  expected_end: {expected_end}\n"
             f"  body_row_range: [{expected_start}, {expected_end})"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def _validate_decision_types(
@@ -857,13 +880,15 @@ def _validate_decision_types(
             for d in all_decisions
             if d.row_range_start is not None and d.row_range_end is not None
         )
-        raise QualityError(
+        msg = (
             f"Chunked + unchunked SegmentDecisions detected for the same table segment. "
             f"This can happen if you generated chunked decisions with one config and later "
             f"generated an unchunked decision (or vice-versa).\n"
             f"  segment_id: {segment_id}\n"
             f"  chunk_decision_count: {chunk_count}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
     # Half-Chunked (one none, one not none).
     has_half_chunked = any(
@@ -871,11 +896,13 @@ def _validate_decision_types(
     )
 
     if has_half_chunked:
-        raise QualityError(
+        msg = (
             f"Half-chunked SegmentDecision detected "
             f"(one of row_range_start/end is None, the other is not).\n"
             f"  segment_id: {segment_id}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def _validate_emit_groupings_and_leaves(
@@ -901,24 +928,28 @@ def _validate_emit_groupings_and_leaves(
     )
 
     if not has_any_grouping:
-        raise QualityError(
+        msg = (
             f"decision_type=emit_groupings_and_leaves but no groupings were emitted.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  Fix: emit ≥1 grouping or change decision_type to emit_leaves_only."
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
     has_any_leaf = bool(segment_decision.leaves) or any(
         bool(r.leaves) for r in (segment_decision.rows or [])
     )
 
     if not has_any_leaf:
-        raise QualityError(
+        msg = (
             f"decision_type=emit_groupings_and_leaves but no leaves were emitted.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  Fix: emit ≥1 leaf or change decision_type to emit_groupings_only."
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def _validate_emit_groupings_only(
@@ -954,7 +985,7 @@ def _validate_emit_groupings_only(
         row_l_count = sum(len(r.leaves or []) for r in (segment_decision.rows or []))
         where.append(f"row-level leaves ({row_l_count})")
 
-    raise QualityError(
+    msg = (
         f"decision_type=emit_groupings_only but leaves were emitted.\n"
         f"  segment_id: {segment.segment_id}\n"
         f"  decision_id: {segment_decision.decision_id}\n"
@@ -962,6 +993,8 @@ def _validate_emit_groupings_only(
         f"  Fix: change decision_type to emit_groupings_and_leaves "
         f"(if both groupings and leaves are needed) or remove all leaves."
     )
+    logger.error(msg)
+    raise QualityError(msg)
 
 
 def _validate_emit_leaves_only(
@@ -997,7 +1030,7 @@ def _validate_emit_leaves_only(
         row_g_count = sum(len(r.groupings or []) for r in (segment_decision.rows or []))
         where.append(f"row-local groupings ({row_g_count})")
 
-    raise QualityError(
+    msg = (
         f"decision_type=emit_leaves_only but groupings were emitted.\n"
         f"  segment_id: {segment.segment_id}\n"
         f"  decision_id: {segment_decision.decision_id}\n"
@@ -1005,6 +1038,8 @@ def _validate_emit_leaves_only(
         f"  Fix: change decision_type to emit_groupings_and_leaves "
         f"(if both groupings and leaves are needed) or remove all groupings."
     )
+    logger.error(msg)
+    raise QualityError(msg)
 
 
 def _validate_grouping_grounding(
@@ -1054,12 +1089,14 @@ def _validate_grouping_grounding(
             title = _normalize_text(g.title)
 
             if not title:
-                raise QualityError(
+                msg = (
                     f"RowDecision.groupings contains an empty title.\n"
                     f"  segment_id: {segment_id}\n"
                     f"  decision_id: {decision_id}\n"
                     f"  row_index: {rd.row_index}"
                 )
+                logger.error(msg)
+                raise QualityError(msg)
 
             # Row-cell grounding first (preferred).
             if row_blob and title in row_blob:
@@ -1070,16 +1107,18 @@ def _validate_grouping_grounding(
                 try:
                     col_int = int(col_i)
                 except Exception as exc:  # pylint: disable=broad-except
-                    raise QualityError(
+                    msg = (
                         f"RowDecision.col_index must be an integer when provided.\n"
                         f"  segment_id: {segment_id}\n"
                         f"  decision_id: {decision_id}\n"
                         f"  row_index: {rd.row_index}\n"
                         f"  col_index: {col_i}"
-                    ) from exc
+                    )
+                    logger.error(msg)
+                    raise QualityError(msg) from exc
 
                 if n_cols is not None and (col_int < 0 or col_int >= int(n_cols)):
-                    raise QualityError(
+                    msg = (
                         f"RowDecision.col_index out of range for table.\n"
                         f"  segment_id: {segment_id}\n"
                         f"  decision_id: {decision_id}\n"
@@ -1087,6 +1126,8 @@ def _validate_grouping_grounding(
                         f"  col_index: {col_int}\n"
                         f"  allowed: 0..{int(n_cols) - 1}"
                     )
+                    logger.error(msg)
+                    raise QualityError(msg)
 
                 header_blob = header_text_by_col.get(col_int)
 
@@ -1094,7 +1135,7 @@ def _validate_grouping_grounding(
                     continue
 
             # No valid grounding.
-            raise QualityError(
+            msg = (
                 f"RowDecision grouping title not supported by visible row cell text or column header.\n"
                 f"  segment_id: {segment_id}\n"
                 f"  decision_id: {decision_id}\n"
@@ -1102,6 +1143,8 @@ def _validate_grouping_grounding(
                 f"  col_index: {col_i}\n"
                 f"  unsupported_title: {g.title}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def _validate_groupings_against_evidence(
@@ -1152,16 +1195,18 @@ def _validate_groupings_against_evidence(
         title = _normalize_text(g.title)
 
         if not title:
-            raise QualityError(
+            msg = (
                 f"context_groupings contains an empty title.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         # Front-matter headings (Preface, Contents, etc.) are intentionally filtered
         # out of OUTER evidence to prevent them from becoming curricular context.
         if title in NonArtifacts:
-            raise QualityError(
+            msg = (
                 f"context_groupings contains a FRONT-MATTER title (non-curricular): '{g.title}'. "
                 f"Fix: REMOVE this grouping from context_groupings[] and attach directly under the framework root "
                 f"(or under a real curricular grouping like Grade/Subject if present).\n"
@@ -1170,6 +1215,8 @@ def _validate_groupings_against_evidence(
                 f"  front_matter_title: {g.title}\n"
                 f"  section_path_headings: {headings}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         # Block-text evidence expansion.
         #
@@ -1205,7 +1252,7 @@ def _validate_groupings_against_evidence(
             role=g.role,
             title_norm=title,
         ):
-            raise QualityError(
+            msg = (
                 f"context_groupings title not supported by OUTER evidence (section_path/caption/header_rows) "
                 f"or prior_context_groupings. "
                 f"Fix: REMOVE this grouping from context_groupings[] or change it to a title supported by "
@@ -1219,6 +1266,8 @@ def _validate_groupings_against_evidence(
                 f"  has_caption_text: {bool((caption or '').strip())}\n"
                 f"  prior_context_titles: {sorted(list(prior_titles_norm))[:10]}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def _validate_interval_uniqueness(
@@ -1249,11 +1298,13 @@ def _validate_interval_uniqueness(
 
     if duplicate_intervals:
         interval_sample = list(duplicate_intervals.items())[:5]
-        raise QualityError(
+        msg = (
             f"Duplicate chunk intervals detected for the same table segment.\n"
             f"  segment_id: {segment_id}\n"
             f"  duplicates(sample): {interval_sample}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def _validate_row_anchors(
@@ -1294,16 +1345,18 @@ def _validate_row_anchors(
         try:
             col_int = int(col_i)
         except Exception as exc:  # pylint: disable=broad-except
-            raise QualityError(
+            msg = (
                 f"RowDecision.col_index must be an integer when provided.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  row_index: {rd.row_index}\n"
                 f"  col_index: {col_i}"
-            ) from exc
+            )
+            logger.error(msg)
+            raise QualityError(msg) from exc
 
         if n_cols is not None and (col_int < 0 or col_int >= int(n_cols)):
-            raise QualityError(
+            msg = (
                 f"RowDecision.col_index out of range for table.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
@@ -1311,6 +1364,8 @@ def _validate_row_anchors(
                 f"  col_index: {col_int}\n"
                 f"  allowed: 0..{int(n_cols) - 1}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         col_texts = row_cells_map.get(rd.row_index)
 
@@ -1325,7 +1380,7 @@ def _validate_row_anchors(
             leaf_norm = _normalize_text(getattr(leaf, "body", "") or "")
 
             if leaf_norm and leaf_norm not in cell_blob:
-                raise QualityError(
+                msg = (
                     f"RowDecision leaf body not supported by visible cell text for col_index.\n"
                     f"  segment_id: {segment.segment_id}\n"
                     f"  decision_id: {segment_decision.decision_id}\n"
@@ -1333,6 +1388,8 @@ def _validate_row_anchors(
                     f"  col_index: {col_int}\n"
                     f"  leaf_preview: {(getattr(leaf, 'body', '') or '')[:160]}"
                 )
+                logger.error(msg)
+                raise QualityError(msg)
 
 
 def _validate_single_table_segment(*, decisions: list[Any], segment: Any) -> None:
@@ -1454,7 +1511,7 @@ def validate_chunked_table_context_matches_prior_context(
     )
 
     if decision_fp != prior_fp:
-        raise QualityError(
+        msg = (
             f"chunked_table_context_must_match_prior_exactly\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
@@ -1462,8 +1519,10 @@ def validate_chunked_table_context_matches_prior_context(
             f"chunk_row_range_end={chunking.get('row_range_end')}\n"
             f"prior_context_groupings={prior_fp}\n"
             f"decision_context_groupings={decision_fp}\n"
-            "Fix: repeat prior_context_groupings exactly OR mark unresolved if contradictory."
+            f"Fix: repeat prior_context_groupings exactly OR mark unresolved if contradictory."
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
@@ -1514,7 +1573,7 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
         SegmentDecisionType.IGNORE,
         SegmentDecisionType.UNRESOLVED,
     ):
-        raise QualityError(
+        msg = (
             f"chunked_table_first_chunk_must_not_be_ignore_or_unresolved\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
@@ -1526,6 +1585,8 @@ def validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
             f"context is NOT propagated to later chunks; they will inherit the "
             f"segment-level context_hint as a stable fallback."
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_chunked_table_outer_anchors_in_context_groupings(
@@ -1582,12 +1643,13 @@ def validate_chunked_table_outer_anchors_in_context_groupings(
         return
 
     examples = ", ".join([f"{g.role.value}:{g.title}" for g in bad[:5]])
-
-    raise QualityError(
+    msg = (
         f"Chunked table emitted table-wide OUTER anchor(s) in segment-level groupings[]. "
         f"Move these into context_groupings[] instead so chunked tables have stable context. "
         f"Found: {examples}"
     )
+    logger.error(msg)
+    raise QualityError(msg)
 
 
 def validate_context_groupings_no_duplicate_roles(
@@ -1619,13 +1681,15 @@ def validate_context_groupings_no_duplicate_roles(
 
     for g in segment_decision.context_groupings or []:
         if g.role in seen:
-            raise QualityError(
+            msg = (
                 f"Duplicate NodeRole in context_groupings[].\n"
                 f"segment_id={segment.segment_id}\n"
                 f"decision_id={segment_decision.decision_id}\n"
                 f"role={g.role.value}\n"
                 f"title={g.title}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         seen.add(g.role)
 
@@ -1734,7 +1798,7 @@ def validate_context_groupings_required_for_emit(
         and not emits_outer_anchor_grouping
     ):
         anchor_names = "/".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
-        raise QualityError(
+        msg = (
             f"Emitting decision must include non-empty context_groupings[] when "
             f"meaningful section_path or caption_text evidence exists, UNLESS the "
             f"decision emits an outer anchor grouping ({anchor_names}).\n"
@@ -1745,6 +1809,8 @@ def validate_context_groupings_required_for_emit(
             f"  emits_outer_anchor_grouping: {emits_outer_anchor_grouping}\n"
             f"  section_path_headings: {meaningful_heading_texts}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_context_groupings_role_order(
@@ -1787,13 +1853,15 @@ def validate_context_groupings_role_order(
     # implicit (root); UNRESOLVED is a bucket, not a context node.
     for g in segment_decision.context_groupings or []:
         if g.role in (NodeRole.FRAMEWORK, NodeRole.UNRESOLVED):
-            raise QualityError(
+            msg = (
                 f"Invalid NodeRole in context_groupings[].\n"
                 f"segment_id={segment.segment_id}\n"
                 f"decision_id={segment_decision.decision_id}\n"
                 f"role={g.role.value}\n"
                 f"title={g.title}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
     # Convert NodeRole -> precedence index for *ranked* roles only. Roles omitted from
     # the configured precedence are treated as unranked and do not participate in
@@ -1816,12 +1884,14 @@ def validate_context_groupings_role_order(
                 (g.role.value, g.title)
                 for g in (segment_decision.context_groupings or [])
             ]
-            raise QualityError(
+            msg = (
                 f"context_groupings[] roles are out of order (must be outer→inner).\n"
                 f"segment_id={segment.segment_id}\n"
                 f"decision_id={segment_decision.decision_id}\n"
                 f"context_groupings={pretty}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_context_groupings_supported_by_outer_evidence(
@@ -2070,7 +2140,7 @@ def validate_emit_flagged_unresolved_confidence(
         conf = getattr(segment_decision, "confidence", None)
 
         if conf is not None and conf >= segment_decision_conf_threshold:
-            raise QualityError(
+            msg = (
                 f"emit_flagged_unresolved_above_threshold\n"
                 f"segment_id={segment.segment_id}\n"
                 f"decision_id={segment_decision.decision_id}\n"
@@ -2082,6 +2152,8 @@ def validate_emit_flagged_unresolved_confidence(
                 f"when confidence is above threshold. Note any concerns in rationale "
                 f"instead."
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_emitted_statements_have_outer_anchor(
@@ -2147,13 +2219,15 @@ def validate_emitted_statements_have_outer_anchor(
         and not any(has_anchor(r.groupings) for r in (segment_decision.rows or []))
     ):
         anchor_names = ", ".join(sorted(r.value for r in OUTER_ANCHOR_ROLES))
-        raise QualityError(
+        msg = (
             f"emitted_leaves_missing_outer_anchor\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
             f"Fix: include at least one of: {anchor_names} "
             f"in context_groupings or emitted groupings (or mark unresolved)."
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_established_canonicals(
@@ -2227,7 +2301,9 @@ def validate_established_canonicals(
                 )
 
     if violations:
-        raise QualityError(" ".join(violations))
+        msg = " ".join(violations)
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_grouping_canonicalization_coverage(
@@ -2274,24 +2350,25 @@ def validate_grouping_canonicalization_coverage(
     ]
 
     if len(got) != len(expected):
-        raise QualityError(
-            f"CanonicalizationMap.items size mismatch: got={len(got)} expected={len(expected)}"
-        )
+        msg = f"CanonicalizationMap.items size mismatch: got={len(got)} expected={len(expected)}"
+        logger.error(msg)
+        raise QualityError(msg)
 
     # Exact set match.
     if set(got) != set(expected):
         missing = set(expected) - set(got)
         extra = set(got) - set(expected)
-
-        raise QualityError(
-            f"CanonicalizationMap coverage mismatch. missing={missing} extra={extra}"
-        )
+        msg = f"CanonicalizationMap coverage mismatch. missing={missing} extra={extra}"
+        logger.error(msg)
+        raise QualityError(msg)
 
     # Require same order as inputs for determinism.
     if got != expected:
-        raise QualityError(
+        msg = (
             "CanonicalizationMap.items are not in the same order as input grouping_keys"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_groupings_not_outer_than_context(
@@ -2339,7 +2416,7 @@ def validate_groupings_not_outer_than_context(
 
     context_max = max(context_groupings_role_dict[r] for r in ranked_context_roles)
 
-    def check(groupings: list[GroupingDecision], where: str) -> None:
+    def check(*, groupings: list[GroupingDecision], where: str) -> None:
         """Check that no grouping is outer than context.
 
         Parameters
@@ -2360,7 +2437,7 @@ def validate_groupings_not_outer_than_context(
                 continue
 
             if context_groupings_role_dict[g.role] < context_max:
-                raise QualityError(
+                msg = (
                     f"grouping_outer_than_context\n"
                     f"segment_id={segment.segment_id}\n"
                     f"decision_id={segment_decision.decision_id}\n"
@@ -2369,11 +2446,13 @@ def validate_groupings_not_outer_than_context(
                     f"bad_grouping={(g.role.value, g.title)}\n"
                     f"Fix: move this grouping into context_groupings OR reorder so outer roles are emitted first."
                 )
+                logger.error(msg)
+                raise QualityError(msg)
 
-    check(segment_decision.groupings, "decision.groupings")
+    check(groupings=segment_decision.groupings, where="decision.groupings")
 
     for r in segment_decision.rows or []:
-        check(r.groupings, f"row[{r.row_index}].groupings")
+        check(groupings=r.groupings, where=f"row[{r.row_index}].groupings")
 
 
 def validate_heading_segments_emit_groupings(
@@ -2414,12 +2493,14 @@ def validate_heading_segments_emit_groupings(
         return
 
     if not segment_decision.groupings:
-        raise QualityError(
+        msg = (
             f"Heading segment emitted a decision but did not emit any grouping nodes.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  decision_type: {segment_decision.decision_type.value}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_ignore_unresolved_emit_nothing(
@@ -2448,20 +2529,22 @@ def validate_ignore_unresolved_emit_nothing(
         return
 
     if segment_decision.context_groupings:
-        raise QualityError(
+        msg = (
             f"ignore_or_unresolved_must_have_empty_context_groupings\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
             f"decision_type={segment_decision.decision_type.value}\n"
             f"context_groupings_count={len(segment_decision.context_groupings or [])}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
     has_groupings = bool(segment_decision.groupings)
     has_leaves = bool(segment_decision.leaves)
     has_rows = bool(segment_decision.rows)
 
     if has_groupings or has_leaves or has_rows:
-        raise QualityError(
+        msg = (
             f"ignore_or_unresolved_must_not_emit_nodes\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
@@ -2470,6 +2553,8 @@ def validate_ignore_unresolved_emit_nothing(
             f"leaves_count={len(segment_decision.leaves or [])}\n"
             f"rows_count={len(segment_decision.rows or [])}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_leaf_codes_use_local_code(
@@ -2520,7 +2605,7 @@ def validate_leaf_codes_use_local_code(
         m = _LEAF_BODY_CODE_PREFIX_RE.match(body)
         if m and _looks_like_curriculum_code(m.group(1)):
             code = m.group(1)
-            raise QualityError(
+            msg = (
                 f"LeafDecision.body appears to start with an official curriculum code. "
                 f"Move the code into LeafDecision.local_code and remove it from body.\n"
                 f"  segment_id: {segment.segment_id}\n"
@@ -2528,6 +2613,8 @@ def validate_leaf_codes_use_local_code(
                 f"  detected_code: {code}\n"
                 f"  body: {body[:200]}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_leaf_list_marker_not_code(
@@ -2564,14 +2651,16 @@ def validate_leaf_list_marker_not_code(
     for leaf in leaves:
         lm = getattr(leaf, "list_marker", None)
         if _looks_like_curriculum_code(lm):
-            raise QualityError(
+            msg = (
                 f"LeafDecision.list_marker looks like an official curriculum code. "
                 f"Move this value to LeafDecision.local_code.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  list_marker: {lm}\n"
-                f"  body: {getattr(leaf,'body','')[:200]}"
+                f"  body: {getattr(leaf, 'body', '')[:200]}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_row_groupings_no_duplicate_roles(
@@ -2607,11 +2696,13 @@ def validate_row_groupings_no_duplicate_roles(
 
         if dup_roles:
             dup_roles_str = sorted(r.value for r in dup_roles)
-            raise QualityError(
+            msg = (
                 f"Row {row.row_index} contains duplicate grouping roles {dup_roles_str}. "
                 f"This usually means the row contains multiple siblings (e.g. multiple subjects). "
                 f"Split into multiple RowDecision entries with the SAME row_index, one per sibling."
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_row_groupings_supported_by_row_cells(
@@ -2685,13 +2776,15 @@ def validate_row_groupings_supported_by_row_cells(
         )
 
         if missing:
-            raise QualityError(
+            msg = (
                 f"row_index_not_absolute_or_not_in_payload\n"
                 f"segment_id={segment.segment_id}\n"
                 f"decision_id={segment_decision.decision_id}\n"
                 f"missing_row_indices={missing[:20]}\n"
                 f"hint=RowDecision.row_index MUST equal row.abs_row_index values shown in the payload."
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_row_leaf_hierarchy_not_flattened(
@@ -2767,7 +2860,7 @@ def validate_row_leaf_hierarchy_not_flattened(
                 and parent_leaf.role == StatementRole.EXPECTATION
                 and child_leaf.role == StatementRole.EXPECTATION
             ):
-                raise QualityError(
+                msg = (
                     f"RowDecision appears to flatten a hierarchical code structure into leaves. "
                     f"When a parent code (e.g., '1.1') and child code (e.g., '1.1.1') occur in the same row, "
                     f"treat the parent item as a grouping (RowDecision.groupings) and emit only the child items as leaf expectations.\n"
@@ -2777,6 +2870,8 @@ def validate_row_leaf_hierarchy_not_flattened(
                     f"  parent_local_code: {parent_code}\n"
                     f"  child_local_code: {child_code}"
                 )
+                logger.error(msg)
+                raise QualityError(msg)
 
 
 def validate_row_leaves_supported_by_cell(
@@ -2846,13 +2941,15 @@ def validate_row_leaves_supported_by_cell(
         )
 
         if missing:
-            raise QualityError(
+            msg = (
                 f"row_index_not_absolute_or_not_in_payload\n"
                 f"segment_id={segment.segment_id}\n"
                 f"decision_id={segment_decision.decision_id}\n"
                 f"missing_row_indices={missing[:20]}\n"
                 f"hint=RowDecision.row_index MUST equal row.abs_row_index values shown in the payload."
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_section_titles_not_front_matter(
@@ -2885,19 +2982,22 @@ def validate_section_titles_not_front_matter(
     grouping_lists = []
     grouping_lists.append(segment_decision.context_groupings or [])
     grouping_lists.append(segment_decision.groupings or [])
+
     for rd in segment_decision.rows or []:
         grouping_lists.append(rd.groupings or [])
 
     for groupings in grouping_lists:
         for g in groupings:
             if g.role == NodeRole.SECTION and _looks_like_front_matter_heading(g.title):
-                raise QualityError(
+                msg = (
                     f"NodeRole.SECTION used for a document front-matter heading.\n"
                     f"Use NodeRole.PROSE for document structure (or IGNORE).\n"
                     f"  segment_id: {segment.segment_id}\n"
                     f"  decision_id: {segment_decision.decision_id}\n"
                     f"  title: {g.title}"
                 )
+                logger.error(msg)
+                raise QualityError(msg)
 
 
 def validate_segment_kind_coherence(
@@ -2925,29 +3025,34 @@ def validate_segment_kind_coherence(
 
     if segment.kind == "block":
         if segment_decision.rows:
-            raise QualityError(
+            msg = (
                 f"Block segment decision must not include rows[].\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         if segment_decision.block_type != segment.block_type:
-            raise QualityError(
+            msg = (
                 f"Block segment decision has mismatched block_type.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  expected: {segment.block_type}\n"
                 f"  got: {segment_decision.block_type}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
-    if segment.kind == "table":
-        if segment_decision.block_type is not None:
-            raise QualityError(
-                f"Table segment decision must not include block_type.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  decision_id: {segment_decision.decision_id}\n"
-                f"  block_type: {segment_decision.block_type}"
-            )
+    if segment.kind == "table" and segment_decision.block_type is not None:
+        msg = (
+            f"Table segment decision must not include block_type.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  block_type: {segment_decision.block_type}"
+        )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_table_chunk_coverage_and_overlap(
@@ -3020,13 +3125,15 @@ def validate_table_context_groupings_exclude_row_local_roles(
 
     if bad:
         roles = ", ".join(sorted({g.role.value for g in bad}))
-        raise QualityError(
+        msg = (
             f"table_context_groupings_contains_row_local_roles\n"
             f"segment_id={segment.segment_id}\n"
             f"decision_id={segment_decision.decision_id}\n"
             f"forbidden_roles={roles}\n"
             f"Fix: move these roles into RowDecision.groupings[] (row-level), not context_groupings."
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_table_row_index(
@@ -3057,34 +3164,40 @@ def validate_table_row_index(
 
     # If chunking is declared, it must be well-formed.
     if (start is None) != (end is None):
-        raise QualityError(
+        msg = (
             f"Chunked table decision must include both row_range_start and row_range_end (exclusive).\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  row_range_start: {start}\n"
             f"  row_range_end: {end}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
     is_chunked = start is not None
     table_rows = segment.rows
 
     if is_chunked:
         if start < 0 or end < 0 or start >= end:
-            raise QualityError(
+            msg = (
                 f"Invalid chunk boundaries for table decision. Expected start < end and both >= 0.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  row_range: [{start}, {end})"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
         if end > len(table_rows):
-            raise QualityError(
+            msg = (
                 f"Chunk boundary row_range_end exceeds table length.\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  row_range: [{start}, {end})\n"
                 f"  table_rows: {len(table_rows)}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_table_header_rows_not_emitted(
@@ -3119,13 +3232,15 @@ def validate_table_header_rows_not_emitted(
         {rd.row_index for rd in segment_decision.rows if rd.row_index < header_n}
     )
     if bad:
-        raise QualityError(
+        msg = (
             f"RowDecision.row_index includes header rows; header rows must not be emitted.\n"
             f"  segment_id: {segment.segment_id}\n"
             f"  decision_id: {segment_decision.decision_id}\n"
             f"  header_row_count: {header_n}\n"
             f"  bad_row_indices: {bad}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
 
 
 def validate_table_split_explosion(
@@ -3153,13 +3268,15 @@ def validate_table_split_explosion(
 
     for rd in segment_decision.rows or []:
         if len(rd.leaves) > max_leaves_per_row:
-            raise QualityError(
+            msg = (
                 f"RowDecision produced too many leaves (>{max_leaves_per_row}).\n"
                 f"  segment_id: {segment.segment_id}\n"
                 f"  decision_id: {segment_decision.decision_id}\n"
                 f"  row_index: {rd.row_index}\n"
                 f"  leaves_count: {len(rd.leaves)}"
             )
+            logger.error(msg)
+            raise QualityError(msg)
 
 
 def validate_unique_table_rows(
@@ -3219,7 +3336,7 @@ def validate_unique_table_rows(
 
     if dup_fingerprints:
         dup_row_indices = sorted({ri for (ri, _) in dup_fingerprints})
-        raise QualityError(
+        msg = (
             f"Exact duplicate RowDecision entries detected (duplicates are not allowed).\n"
             f"  NOTE: Multiple RowDecisions with the SAME row_index are allowed when representing sibling fanout;\n"
             f"        but they must differ in groupings and/or leaves.\n"
@@ -3228,3 +3345,5 @@ def validate_unique_table_rows(
             f"  affected_row_indices: {dup_row_indices}\n"
             f"  duplicate_count: {len(dup_fingerprints)}"
         )
+        logger.error(msg)
+        raise QualityError(msg)
