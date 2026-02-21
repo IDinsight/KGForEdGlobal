@@ -878,6 +878,135 @@ def _validate_decision_types(
         )
 
 
+def _validate_emit_groupings_and_leaves(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Validate that the decision emits at least one grouping and one leaf.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If the decision fails to emit at least one grouping and at least one leaf.
+    """
+
+    has_any_grouping = bool(segment_decision.groupings) or any(
+        bool(r.groupings) for r in (segment_decision.rows or [])
+    )
+
+    if not has_any_grouping:
+        raise QualityError(
+            f"decision_type=emit_groupings_and_leaves but no groupings were emitted.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  Fix: emit ≥1 grouping or change decision_type to emit_leaves_only."
+        )
+
+    has_any_leaf = bool(segment_decision.leaves) or any(
+        bool(r.leaves) for r in (segment_decision.rows or [])
+    )
+
+    if not has_any_leaf:
+        raise QualityError(
+            f"decision_type=emit_groupings_and_leaves but no leaves were emitted.\n"
+            f"  segment_id: {segment.segment_id}\n"
+            f"  decision_id: {segment_decision.decision_id}\n"
+            f"  Fix: emit ≥1 leaf or change decision_type to emit_groupings_only."
+        )
+
+
+def _validate_emit_groupings_only(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Validate that no leaves exist anywhere in the segment decision.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If the decision contains any segment-level or row-level leaves.
+    """
+
+    has_segment_leaves = bool(segment_decision.leaves)
+    has_row_leaves = any(bool(r.leaves) for r in (segment_decision.rows or []))
+
+    if not (has_segment_leaves or has_row_leaves):
+        return
+
+    where = []
+
+    if has_segment_leaves:
+        where.append(f"segment-level leaves ({len(segment_decision.leaves)})")
+
+    if has_row_leaves:
+        row_l_count = sum(len(r.leaves or []) for r in (segment_decision.rows or []))
+        where.append(f"row-level leaves ({row_l_count})")
+
+    raise QualityError(
+        f"decision_type=emit_groupings_only but leaves were emitted.\n"
+        f"  segment_id: {segment.segment_id}\n"
+        f"  decision_id: {segment_decision.decision_id}\n"
+        f"  where: {', '.join(where)}\n"
+        f"  Fix: change decision_type to emit_groupings_and_leaves "
+        f"(if both groupings and leaves are needed) or remove all leaves."
+    )
+
+
+def _validate_emit_leaves_only(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Validate that no groupings exist anywhere in the segment decision.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If the decision contains any segment-level or row-local groupings.
+    """
+
+    has_segment_groupings = bool(segment_decision.groupings)
+    has_row_groupings = any(bool(r.groupings) for r in (segment_decision.rows or []))
+
+    if not (has_segment_groupings or has_row_groupings):
+        return
+
+    where = []
+
+    if has_segment_groupings:
+        where.append(f"segment-level groupings ({len(segment_decision.groupings)})")
+
+    if has_row_groupings:
+        row_g_count = sum(len(r.groupings or []) for r in (segment_decision.rows or []))
+        where.append(f"row-local groupings ({row_g_count})")
+
+    raise QualityError(
+        f"decision_type=emit_leaves_only but groupings were emitted.\n"
+        f"  segment_id: {segment.segment_id}\n"
+        f"  decision_id: {segment_decision.decision_id}\n"
+        f"  where: {', '.join(where)}\n"
+        f"  Fix: change decision_type to emit_groupings_and_leaves "
+        f"(if both groupings and leaves are needed) or remove all groupings."
+    )
+
+
 def _validate_grouping_grounding(
     *,
     decision_id: str,
@@ -1867,6 +1996,47 @@ def validate_context_groupings_supported_by_outer_evidence(
         segment=segment,
         segment_decision=segment_decision,
     )
+
+
+def validate_decision_type_coherence(
+    *, segment: Segment, segment_decision: SegmentDecision
+) -> None:
+    """Enforce decision-type invariants beyond ignore/unresolved (which are handled by
+    `validate_ignore_unresolved_emit_nothing`).
+
+    Checks:
+
+    1. `emit_leaves_only` -> NO groupings anywhere (segment-level or row-local). If the
+        decision needs row-local groupings, use `emit_groupings_and_leaves`.
+    2. `emit_groupings_only` -> NO leaves anywhere (segment-level or row-level).
+    3. `emit_groupings_and_leaves` -> MUST emit at least 1 grouping AND  at least 1
+        leaf somewhere.
+
+    Parameters
+    ----------
+    segment
+        The Segment being decided on.
+    segment_decision
+        The SegmentDecision to validate.
+
+    Raises
+    ------
+    QualityError
+        If the decision contents violate the decision_type invariants.
+    """
+
+    dt = segment_decision.decision_type
+
+    if dt == SegmentDecisionType.EMIT_LEAVES_ONLY:
+        _validate_emit_leaves_only(segment=segment, segment_decision=segment_decision)
+    elif dt == SegmentDecisionType.EMIT_GROUPINGS_ONLY:
+        _validate_emit_groupings_only(
+            segment=segment, segment_decision=segment_decision
+        )
+    elif dt == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES:
+        _validate_emit_groupings_and_leaves(
+            segment=segment, segment_decision=segment_decision
+        )
 
 
 def validate_emit_flagged_unresolved_confidence(

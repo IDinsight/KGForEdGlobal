@@ -44,6 +44,7 @@ from skg.canonical_ir.validators import (
     validate_context_groupings_required_for_emit,
     validate_context_groupings_role_order,
     validate_context_groupings_supported_by_outer_evidence,
+    validate_decision_type_coherence,
     validate_emit_flagged_unresolved_confidence,
     validate_emitted_statements_have_outer_anchor,
     validate_established_canonicals,
@@ -1125,6 +1126,7 @@ def verify_segment_decision_quality(
     validate_ignore_unresolved_emit_nothing(
         segment=segment, segment_decision=segment_decision
     )
+    validate_decision_type_coherence(segment=segment, segment_decision=segment_decision)
     validate_chunked_table_first_chunk_must_not_ignore_or_unresolved(
         segment=segment,
         segment_decision=segment_decision,
