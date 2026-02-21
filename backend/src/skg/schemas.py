@@ -710,12 +710,16 @@ class CreateCanonicalConfig(BaseSchema):
                 )
 
             # Ensure outer-context roles are not ranked *inside* row-local roles when
-            # both are ranked.
+            # both are ranked. Skip dual-duty roles (in BOTH outer_context_roles and
+            # row_roles) on the row side--these legitimately serve both roles depending
+            # on table type.
+            purely_row_roles = row_roles - outer_ctx
+
             for oc in outer_ctx:
                 if oc not in idx:
                     continue
 
-                for rr in row_roles:
+                for rr in purely_row_roles:
                     if rr not in idx:
                         continue
 

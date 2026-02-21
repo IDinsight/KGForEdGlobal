@@ -49,6 +49,7 @@
 		"context_groupings_role_order": [
 			"subject",
 			"stage",
+			"strand",
 			"section",
 			"grade_level",
 			"unit",
@@ -92,9 +93,9 @@
 				"note": "Planning wrapper heading (with or without 'Tableau de' prefix). Do NOT extract grade from any inline '(niveau … : CE…)'."
 			},
 			{
-				"pattern": "(?i)\\btolluwaay\\b",
+				"pattern": "(?i)\\btolluwaay\\b(?!.*comp[ée]tence)",
 				"role": "stage",
-				"note": "Wolof stage marker"
+				"note": "Wolof stage marker (excludes compétence-of-stage headings, which should be section)"
 			},
 			{
 				"pattern": "(?i)comp[ée]tence\\s+de\\s+cycle",
@@ -164,7 +165,7 @@
 					"title_template": "ÉTAPE \\1"
 				},
 				{
-					"match": "(?is)\\bactivit[ée]s\\s+num[eéè]riques\\b(?!.*\\br[éeè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes\\b)",
+					"match": "(?is)^(?!.*\\br[éeè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes\\b).*\\bactivit[ée]s\\s+num[eéè]riques\\b",
 					"role": "strand",
 					"title_template": "Activités numériques"
 				},
@@ -179,7 +180,7 @@
 					"title_template": "Activités de mesure"
 				},
 				{
-					"match": "(?is)\\br[éeè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes\\b(?!.*\\bactivit[ée]s\\s+num[eéè]riques\\b)",
+					"match": "(?is)^(?!.*\\bactivit[ée]s\\s+num[eéè]riques\\b).*\\br[éeè]so(?:u?l|ul)u?tion\\s+de\\s+probl[èée]mes\\b",
 					"role": "strand",
 					"title_template": "Activités de résolution de problèmes"
 				},
