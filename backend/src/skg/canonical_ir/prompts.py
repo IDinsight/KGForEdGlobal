@@ -32,19 +32,25 @@ HEADING_LEVEL_CONTEXT: dict[str, str] = {
         """This document is a Senegal primary mathematics curriculum for the Deuxième étape (CE1–CE2). It contains bilingual Wolof/French text and many planning tables organized by weeks and by "palier" (checkpoint).
 
 Document-specific patterns (use when consistent with the observed heading sequence):
-- Standalone container headings like "MATHÉMATIQUES", "DEUXIÈME ÉTAPE (CE1–CE2)", "PLANIFICATION DES APPRENTISSAGES", and "APPRENTISSAGES PONCTUELS" are structural (non-zero).
+- Standalone container headings like "MATHÉMATIQUES", "DEUXIÈME ÉTAPE (CE1–CE2)", "PLANIFICATION DES APPRENTISSAGES" are structural (non-zero).
   - Even if these appear on the cover/front matter, treat them as document-identity headings and assign level 1 when they represent instructional scope (subject + stage/grade span).
 - Special case: **Document identity headings** (subject + stage/grade span) are structural.
   - If a heading clearly encodes instructional scope (e.g., "Mathematics — Grade 1–3", "Mathématiques — Deuxième étape (CE1–CE2)", "Science — Primary Cycle"), assign a non-zero level (usually 1), even if it resembles a cover/title line.
   - Only assign level 0 if it is purely administrative metadata (publisher/ministry/edition/approval/copyright) with no instructional scope.
+  - “Référentiel bilingue (wolof-français)” is a format/edition descriptor, not instructional scope. Assign level 0.
 - Treat any heading containing “tolluwaay” (especially bilingual “tolluwaay <n> / étape <n>”) as a stage identity container and assign it level 1, even if it appears repeatedly.
 - Domain/strand containers include headings containing: "ACTIVITÉS NUMÉRIQUES", "ACTIVITÉS GÉOMÉTRIQUES", "MESURE", "RÉSOLUTION DE PROBLÈMES" (sometimes combined, and sometimes bilingual with a "/" + Wolof label). Treat these as structural STRAND headings at a consistent level (non-zero).
-- Headings like "Paliers du niveau CE1" / "Paliers du niveau CE2" are structural containers under the current strand (non-zero), grouping multiple palier statements.
+- CRITICAL — “Apprentissages ponctuels — [strand name]” nesting:
+  Headings like “Apprentissages ponctuels — Activités numériques”, “Apprentissages ponctuels — Résolution de problèmes”, “Apprentissages ponctuels — Activités géométriques”, “Apprentissages ponctuels — Activités de mesure” are SUB-SECTIONS nested WITHIN their respective strand container — they are NOT siblings of “PLANIFICATION DES APPRENTISSAGES”.
+  Evidence: each such heading appears after the planning tables within a single strand’s content, and it groups only the detailed lesson tables (“Tableaux ponctuels”) for that one strand. Their level MUST be deeper than the strand headings (e.g., if strands are at level 3, these headings should be at level 4).
+  Do NOT assign them the same level as “PLANIFICATION DES APPRENTISSAGES” or the strand headings.
+- “Paliers du niveau CE1” / “Paliers du niveau CE2” are structural containers that appear in two contexts: (a) directly under a strand heading (grouping Jéego/PALIER statements), and (b) under an “Apprentissages ponctuels — [strand]” heading (grouping ponctuels tables). They must be DEEPER than the “Apprentissages ponctuels” headings (e.g., if AP headings are level 4, “Paliers du niveau” must be level 5). A non-contiguous jump from strand (level 3) to paliers (level 5) in context (a) is fine — the stack only cares about relative depth.
 - IMPORTANT: lines starting with "Jéego <number>:" or "PALIER <number>:" usually contain the FULL competency/expectation statement (not just a label). These should be treated as curriculum CONTENT if they appear in the heading list:
   - Assign level 0 so the downstream pipeline can process them as expectation content.
   - Only treat "PALIER <number>" as structural (non-zero) when it is a short label without the statement text (rare).
 - Continuations like "(suite)" / "(yeggale)" are continuations and MUST keep the same level as the base heading.
-- "Tableau <number>" / "Tableau ... — ..." / "Tableau de ..." are table captions. Prefer level 0 for these even if formatted like headings.
+- Numbered table captions like "Tableau 2 — Planification CE1: …" or "Tableau 5 — Apprentissages ponctuels: …" are table captions. Assign level 0.
+  EXCEPTION: "Tableau de planification des apprentissages (niveau 1: CE1)" / "… (niveau 2: CE2)" are NOT captions — they are UNIT wrapper headings that introduce a planification table within a strand. Assign them a non-zero level nested within the strand (e.g., level 5 if strands are at level 3). They encode grade via "(niveau …: CE…)" and must remain in the section path.
 - "Semaine <number>" is usually a table-row label. If it appears as a true heading, treat it as a WEEK container nested under the current planification/unit context.
 """
     )
@@ -136,12 +142,13 @@ E. Language markers are not hierarchy:
 
 F. Bilingual duplication rule for PALIER / JÉEGO (fixes duplicate expectations):
 - "Jéego <number>" (Wolof) and "PALIER <number>" (French) are two language renderings of the SAME competency milestone.
-- If BOTH languages appear within the SAME segment/table cell (e.g., separated by "/" or repeated lines), emit ONE EXPECTATION leaf only:
+- BLOCK segments only: If BOTH languages appear within the SAME block segment (e.g., separated by "/" or repeated lines), emit ONE EXPECTATION leaf only:
   - Prefer the French form as the primary phrasing, and include BOTH variants in the leaf.body with clear labels, e.g.:
     "Wolof: ...
 French: ..."
   - Use a single substage grouping title "PALIER <number>".
-- If a segment/cell appears to be Wolof-only "Jéego <number> ..." (no French wording present), do NOT emit it as an EXPECTATION by default. Emit it as DESCRIPTOR (translation text) under the SAME substage grouping title "PALIER <number>".
+- TABLE cells: Do NOT add synthetic "Wolof:"/"French:" labels to leaf bodies. Leaf bodies MUST be verbatim substrings of the cell text (the validator requires cell-text grounding). If a cell contains both Wolof and French text, preserve the original cell text as-is — do not restructure, relabel, or reorder it.
+- If a block segment appears to be Wolof-only "Jéego <number> ..." (no French wording present), do NOT emit it as an EXPECTATION by default. Emit it as DESCRIPTOR (translation text) under the SAME substage grouping title "PALIER <number>".
   - Exception: if the Wolof text is clearly the only available version in the current segment evidence (no nearby French version in the same cell/segment), you MAY emit it as EXPECTATION.
 
 G. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27):
@@ -154,9 +161,10 @@ G. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27
 - "Durée" column contains lesson/session logistics → GUIDANCE.
 - If you emit both Objectif spécifique and Contenus for the same objective group, give them the SAME LeafDecision.local_code (the objective index) so they can be associated deterministically downstream.
 
-H. Competency overview table (Tableau 1 — "Compétences de base par domaine d'activité"):
+H. Competency overview table (Tableau 1 — “Compétences de base par domaine d’activité”):
 - This table has one column per strand with high-level competency descriptions. These are general competence statements repeated at finer granularity in the palier definitions.
 - Treat as EXPECTATION if emitted. IGNORE is also acceptable since the palier-level tables provide the same content at finer granularity.
+- The section_path heading “Les compétences de base des activités” is a sub-section label under “Cadre de compétences”, NOT a thematic grouping. Use role=SECTION (not THEME) for this heading in context_groupings[]. THEME is reserved for curriculum-defined thematic units (e.g., “Our Community”, “Health and Nutrition”), which do not exist in this document.
 """
     )
 }
@@ -271,7 +279,7 @@ Your job: Given ONE segment from a stitched curriculum DocumentIR (either a BLOC
 | unresolved | MUST be [] | MUST be [] | Cannot safely emit anything; explain in rationale |
 | emit_flagged_unresolved | MAY be [] or non-empty | MUST emit ≥1 of groupings/leaves/rows | ONLY when confidence < {segment_decision_conf_threshold}. Use to surface audit-worthy ambiguity; keep rationale explicit. |
 | emit_groupings_only | required (may be []) | groupings[] and/or rows[].groupings[] allowed; NO leaves anywhere | |
-| emit_leaves_only | required (may be []) | segment-level groupings[] MUST be []; row-local RowDecision.groupings[] allowed | |
+| emit_leaves_only | required (may be []) | NO groupings[] anywhere (segment-level or row-local); leaves only | Use emit_groupings_and_leaves if row-local groupings are needed |
 | emit_groupings_and_leaves | required (may be []) | MUST emit ≥1 grouping AND ≥1 leaf somewhere | |
 
 ## 3. ALLOWED ENUM VALUES
