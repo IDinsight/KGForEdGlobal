@@ -29,31 +29,19 @@ from skg.utils.general import PromptPair
 # ignore the pattern and assign level 0).
 HEADING_LEVEL_CONTEXT: dict[str, str] = {
     "senegal": dedent(
-        """This document is a Senegal primary mathematics curriculum with bilingual Wolof/French headings and many planning tables organized by weeks.
+        """This document is a Senegal primary mathematics curriculum for the Deuxième étape (CE1–CE2). It contains bilingual Wolof/French text and many planning tables organized by weeks and by "palier" (checkpoint).
 
 Document-specific patterns (use when consistent with the observed heading sequence):
-- "COMPÉTENCE DE CYCLE" and "COMPÉTENCE DE L’ÉTAPE" are section labels (structural), not the expectation itself. The expectation is typically in the immediately following paragraph(s)/block(s); emit those following statement(s) as EXPECTATION leaves under the current stage/subject context (and under strand if one is active).
-- Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
-- Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
-- Wolof-only strand labels may appear without a '/' (e.g., "caxu xayma" for Résolution de problèmes). Treat these as structural STRAND headings at the SAME level as other strand/domain headings (never level 0).
-- Enforce this nesting when these headings co-occur in the same section:
-  ACTIVITES (strand/domain)  <  PALIERS DU ...  <  (JÉEGO N and PALIER N at the same level)  <  APPRENTISSAGES PONCTUELS.
-  ("<" means strictly deeper: larger integer level.)
-  - Headings of the form "JÉEGO <number>" are Wolof-language labels for the same SUBSTAGE as the corresponding French "PALIER <number>". Treat "JÉEGO <number>" as a structural SUBSTAGE heading at the SAME level as "PALIER <number>" (not level 0).
-  - Keep levels consistent across N.
-  - Variants like "(suite)" or "(yeggale)" are continuations and MUST keep the same level as the base "JÉEGO N" or "PALIER N".
-- Only treat headings of the form "PALIER <number>" (or clearly equivalent heading formatting) as a substage grouping. Mentions of "palier/paliers" inside table cells are content (often descriptors/checkpoints), not hierarchy, unless they are clearly formatted as headings.
-- Headings like "PALIERS DU NIVEAU CE..." or "PALIERS DU CE..." are structural containers WITHIN the current strand and group multiple JÉEGO units.
-  They MUST be nested under the current "ACTIVITES ..." strand (deeper than ACTIVITES) and MUST be strictly ABOVE any "JÉEGO ..." that occurs under them.
-- Some Wolof headings are actually competency CONTENT misdetected as headings (e.g., starting with "Boole mooñ ..."). These are not structural containers.
-  Assign them level 0 even if they appear between structural headings, so the downstream pipeline can process them as content blocks.
-- In weekly planning tables ("Tableau de planification..."), labels like "Semaine <number>" / "Sem. <number>" denote a WEEK grouping for that table section. When present, attach row leaves under that WEEK grouping (under the current strand/unit/substage context).
-- "Mooñaale ci wolof" (and variants) and any language-of-instruction directives like "en wolof", "en français", "(Wolof)", "(Français)" are not hierarchy.
-  Prefer level 0 for these so they do not enter the hierarchy.
-
-Prefer levels that preserve local monotonic structure such as:
-... "ACTIVITES ..." -> ("PALIERS DU ...") -> "JÉEGO ..." -> ("PALIER ...") -> "Apprentissages ponctuels" -> tables
-        """
+- Standalone container headings like "MATHÉMATIQUES", "DEUXIÈME ÉTAPE (CE1–CE2)", "PLANIFICATION DES APPRENTISSAGES", and "APPRENTISSAGES PONCTUELS" are structural (non-zero).
+- Domain/strand containers include headings containing: "ACTIVITÉS NUMÉRIQUES", "ACTIVITÉS GÉOMÉTRIQUES", "MESURE", "RÉSOLUTION DE PROBLÈMES" (sometimes combined, and sometimes bilingual with a "/" + Wolof label). Treat these as structural STRAND headings at a consistent level (non-zero).
+- Headings like "Paliers du niveau CE1" / "Paliers du niveau CE2" are structural containers under the current strand (non-zero), grouping multiple palier statements.
+- IMPORTANT: lines starting with "Jéego <number>:" or "PALIER <number>:" usually contain the FULL competency/expectation statement (not just a label). These should be treated as curriculum CONTENT if they appear in the heading list:
+  - Assign level 0 so the downstream pipeline can process them as expectation content.
+  - Only treat "PALIER <number>" as structural (non-zero) when it is a short label without the statement text (rare).
+- Continuations like "(suite)" / "(yeggale)" are continuations and MUST keep the same level as the base heading.
+- "Tableau <number>" / "Tableau ... — ..." / "Tableau de ..." are table captions. Prefer level 0 for these even if formatted like headings.
+- "Semaine <number>" is usually a table-row label. If it appears as a true heading, treat it as a WEEK container nested under the current planification/unit context.
+"""
     )
 }
 
@@ -581,9 +569,9 @@ def heading_level_instructions(
         """You are a document structure analyst. You will be given a numbered list of headings extracted IN ORDER from a document (with page numbers).
 
 Task: assign each heading an integer structural depth level:
+- 0 = front matter/document furniture OR curriculum-content mistakenly detected as a heading that we want processed downstream as CONTENT (not hierarchy)
 - 1 = broadest/highest-level structural container in the body
 - 2+ = deeper nesting
-- 0 = front matter/document furniture/slogans/or content mistakenly detected as a heading
 
 Hard rules:
 1. Siblings (same structural role/pattern) MUST have the same level.
@@ -591,12 +579,12 @@ Hard rules:
 3. Avoid artificial resets: do NOT jump to a broader level (smaller number) unless the heading clearly starts a new major section.
 4. Continuations: headings containing continuation markers like "(suite)", "(continued)", "(part ...)" must match the base heading’s level.
 5. Level 0 is ONLY for non-structural text OR curriculum-content misdetected as a heading that we want processed downstream as CONTENT (not hierarchy).
-   Examples: long competency/objective sentences mistakenly extracted as headings, language-of-instruction directives, or document metadata like edition/publisher lines.
+   Examples: long competency/objective sentences mistakenly extracted as headings, table/figure captions, language-of-instruction directives, or document metadata like edition/publisher lines.
    Do NOT assign 0 merely because a heading is long; assign 0 only when it is clearly not a structural container/label.
 6. If a heading appears between two clearly structural headings, it MUST receive a non-zero level consistent with that neighborhood
-   EXCEPT when it matches a known content-heading or language-directive pattern (see rule 5 and document hints). In those cases, assign level 0.
+   EXCEPT when it is clearly (a) a table/figure caption (e.g., "Tableau 3 — ...", "Table 3:", "Figure 2:"), or (b) a competency/objective sentence (rule 5). In those cases, assign level 0.
 7. Important: the heading list may be DEDUPED; [prev]/[next] neighbors are only weak hints. Do not overfit to them if they conflict with global consistency rules.
-    """
+        """
     )
 
     heading_level_context = HEADING_LEVEL_CONTEXT.get(country.lower(), None)
