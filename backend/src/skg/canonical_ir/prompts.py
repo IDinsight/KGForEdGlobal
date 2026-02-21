@@ -37,9 +37,9 @@ Document-specific patterns (use when consistent with the observed heading sequen
 - Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
 - Wolof-only strand labels may appear without a '/' (e.g., "caxu xayma" for Résolution de problèmes). Treat these as structural STRAND headings at the SAME level as other strand/domain headings (never level 0).
 - Enforce this nesting when these headings co-occur in the same section:
-  ACTIVITES (strand/domain)  <  PALIERS DU ...  <  JÉEGO N  <  PALIER N  <  APPRENTISSAGES PONCTUELS.
+  ACTIVITES (strand/domain)  <  PALIERS DU ...  <  (JÉEGO N and PALIER N at the same level)  <  APPRENTISSAGES PONCTUELS.
   ("<" means strictly deeper: larger integer level.)
-  - "JÉEGO N" lines are Wolof-language competency statements paired with the French PALIER N lines. They are content, not structural hierarchy. If detected as headings, assign them level 0.
+  - Headings of the form "JÉEGO <number>" are Wolof-language labels for the same SUBSTAGE as the corresponding French "PALIER <number>". Treat "JÉEGO <number>" as a structural SUBSTAGE heading at the SAME level as "PALIER <number>" (not level 0).
   - Keep levels consistent across N.
   - Variants like "(suite)" or "(yeggale)" are continuations and MUST keep the same level as the base "JÉEGO N" or "PALIER N".
 - Only treat headings of the form "PALIER <number>" (or clearly equivalent heading formatting) as a substage grouping. Mentions of "palier/paliers" inside table cells are content (often descriptors/checkpoints), not hierarchy, unless they are clearly formatted as headings.
@@ -111,8 +111,14 @@ B. Senegal mixed-organization rule (IMPORTANT):
   - If a standalone Wolof heading such as "caxu xayma" appears, treat it as STRAND reinforcement (Résolution de problèmes). Do NOT emit it as role=TOPIC or SUBTOPIC.
 
 - For "Apprentissages ponctuels" tables (typically Tableaux 4–27): the document is STRAND-first. If the active section_path/headings/caption indicate a strand, ALWAYS include that STRAND as an OUTER context_groupings entry (stable for the table). Do not encode grade in the strand title (e.g., avoid "Activités numériques CE1/CE2" as a strand); keep grade_level separate and let paliers carry CE1 vs CE2 scope.
-- For weekly "Planification" tables (typically Tableau 2–3): the document is GRADE-first. Treat the table as a grade-scoped UNIT (Planification CE1/CE2). Even if the caption contains multiple strands (e.g., "Activités numériques et Résolution de problèmes"), DO NOT set STRAND in context_groupings. Instead, represent strands row/column-locally using the column-header fanout pattern:
-  - emit RowDecision items with col_index for each strand column, and set RowDecision.groupings=[{role:"strand", title:<column header>}].
+- For weekly "Planification" tables (typically Tableau 2–3): the document is GRADE-first. Treat the table as a grade-scoped UNIT (Planification CE1/CE2). Even if the caption contains multiple strands (e.g., "Activités numériques et Résolution de problèmes"), DO NOT set STRAND in context_groupings. Instead, represent strands row/column-locally using the column-header fanout pattern (STRICT — REQUIRED):
+  - You MUST emit separate RowDecision entries per (row_index, strand column). That means:
+    * RowDecision.col_index MUST be set to the strand column index (0-based in the ORIGINAL stitched table).
+    * RowDecision.leaves MUST come ONLY from that column's cell for that row.
+    * RowDecision.groupings MUST include exactly one strand grouping: {role:"strand", title:<canonical French column header>}.
+  - DO NOT pack multiple strand leaves into one RowDecision with col_index=null and different source_label values. If you do not split by col_index, the decision is incorrect.
+  - If a row has content under two strand columns, emit TWO RowDecision objects for the same row_index (different col_index), each with its own strand grouping.
+  - If you cannot reliably map which cell belongs to which strand header, set decision_type="emit_unresolved" (or emit_flagged_unresolved if confidence is below threshold).
 - When emitting STRAND in context_groupings, use the FRENCH form of the strand name
   (e.g., "Activités numériques"), not the bilingual heading form
   (e.g., "Activités numériques / Kenug xayma"). The bilingual form will be preserved
@@ -120,7 +126,8 @@ B. Senegal mixed-organization rule (IMPORTANT):
   spine correction alignment.
 
 C. Column-header heuristics for Senegal planning tables:
-- Headers implying EXPECTATION (normative content): "apprentissages", "objectifs", "contenus", "compétence(s)", "savoirs", "habiletés", "capacités".
+- Headers implying EXPECTATION (normative content): "apprentissages", "objectifs", "compétence(s)", "habiletés", "capacités".
+- NOTE: headers like "contenus" / "contenu" usually indicate DESCRIPTOR (coverage/topics) unless the cell is clearly phrased as a learner outcome (see §G).
 - Headers implying GUIDANCE: "situations", "démarche", "méthode", "matériel", "durée", "évaluation", "ressources".
 - IMPORTANT: strand-name column headers like "Activités numériques", "Activités géométriques", "Activités de mesure", "Activités Résolution de problèmes" are STRUCTURAL strand labels, NOT GUIDANCE indicators. Cells under these headers typically contain EXPECTATION statements (learning outcomes), not teacher activities. Do NOT classify them as GUIDANCE merely because the header contains the word "activités".
 - Headers like "Semaine" / "Sem." and "Palier" are STRUCTURE, not leaves. Treat their values as row-local groupings (week/substage cues) rather than leaf statements.
@@ -134,12 +141,27 @@ D. Grade refinement from unit headings (Issue E):
 E. Language markers are not hierarchy:
 - "Mooñaale ci wolof" and similar language-of-instruction directives are prose labels, not structural groupings and not expectations.
 
-F. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27):
-- "Objectif d'apprentissage" column contains a numeric learning-objective index (e.g., "1", "2", "3") that groups related rows. Treat as a row-local grouping identifier (role=TOPIC), not a leaf statement.
-- "Objectif spécifique" and "Contenus" columns contain bilingual (Wolof then French) learning outcomes — these are EXPECTATION.
-- "Durée" column contains lesson/session logistics (e.g., "2 leçons de 2 séances chacune") — this is GUIDANCE.
+F. Bilingual duplication rule for PALIER / JÉEGO (fixes duplicate expectations):
+- "Jéego <number>" (Wolof) and "PALIER <number>" (French) are two language renderings of the SAME competency milestone.
+- If BOTH languages appear within the SAME segment/table cell (e.g., separated by "/" or repeated lines), emit ONE EXPECTATION leaf only:
+  - Prefer the French form as the primary phrasing, and include BOTH variants in the leaf.body with clear labels, e.g.:
+    "Wolof: ...
+French: ..."
+  - Use a single substage grouping title "PALIER <number>".
+- If a segment/cell appears to be Wolof-only "Jéego <number> ..." (no French wording present), do NOT emit it as an EXPECTATION by default. Emit it as DESCRIPTOR (translation text) under the SAME substage grouping title "PALIER <number>".
+  - Exception: if the Wolof text is clearly the only available version in the current segment evidence (no nearby French version in the same cell/segment), you MAY emit it as EXPECTATION.
 
-G. Competency overview table (Tableau 1 — "Compétences de base par domaine d'activité"):
+G. Column-specific guidance for apprentissages ponctuels tables (Tableaux 4–27):
+- "Objectif d'apprentissage" column is a numeric learning-objective index (e.g., "4", "5") used as a stable local identifier for the rows that follow.
+  - DO NOT create a grouping node (role=TOPIC) solely for this number.
+  - Instead, propagate this identifier into LeafDecision.local_code for every emitted leaf tied to that objective group (use the printed number, optionally prefixed e.g., "OA-4" if helpful for clarity).
+- "Objectif spécifique" column is the normative learner outcome for that objective group → EXPECTATION.
+- "Contenus" column is usually a content/coverage list (topics, knowledge items, examples) → DESCRIPTOR by default.
+  - Only treat "Contenus" as EXPECTATION if the cell is phrased as a learner capability/outcome (action verbs like "peut", "réaliser", "résoudre", "utiliser", or an explicit "L'élève ...").
+- "Durée" column contains lesson/session logistics → GUIDANCE.
+- If you emit both Objectif spécifique and Contenus for the same objective group, give them the SAME LeafDecision.local_code (the objective index) so they can be associated deterministically downstream.
+
+H. Competency overview table (Tableau 1 — "Compétences de base par domaine d'activité"):
 - This table has one column per strand with high-level competency descriptions. These are general competence statements repeated at finer granularity in the palier definitions.
 - Treat as EXPECTATION if emitted. IGNORE is also acceptable since the palier-level tables provide the same content at finer granularity.
 """
