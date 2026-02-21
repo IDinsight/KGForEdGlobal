@@ -49,8 +49,8 @@
 		"context_groupings_role_order": [
 			"subject",
 			"stage",
-			"strand",
 			"section",
+			"strand",
 			"grade_level",
 			"unit",
 			"substage",
@@ -83,19 +83,29 @@
 				"note": "Grade container headings like 'Paliers du niveau CE1/CE2' (this is where grade should come from)"
 			},
 			{
+				"pattern": "(?i)^\\s*planification\\s+des\\s+apprentissages\\s*$",
+				"role": "section",
+				"note": "Top-level section heading for the planning portion"
+			},
+			{
+				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+des\\s+apprentissages\\b",
+				"role": "unit",
+				"note": "Wrapper heading introducing a specific planification table (unit)"
+			},
+			{
 				"pattern": "(?i)\\btableau\\s+de\\s+planification\\s+ce\\s*[12]\\b(?:\\s*[—\\-]\\s*partie\\s*\\d+\\b.*)?",
 				"role": "unit",
 				"note": "Planification headings like 'Tableau de planification CE2 — Partie 1 ...' are unit wrappers"
 			},
 			{
-				"pattern": "(?i)\\b(?:tableau\\s+de\\s+)?planification\\s+des\\s+apprentissages\\b",
-				"role": "unit",
-				"note": "Planning wrapper heading (with or without 'Tableau de' prefix). Do NOT extract grade from any inline '(niveau … : CE…)'."
-			},
-			{
 				"pattern": "(?i)\\btolluwaay\\b(?!.*comp[ée]tence)",
 				"role": "stage",
 				"note": "Wolof stage marker (excludes compétence-of-stage headings, which should be section)"
+			},
+			{
+				"pattern": "(?i)^\\s*[eéèë]tape\\s*\\(\\s*ce\\s*1\\s*[-–]\\s*ce\\s*2\\s*\\)\\s*$",
+				"role": "stage",
+				"note": "Stage label 'Étape (CE1–CE2)' — treat as STAGE (never SECTION)"
 			},
 			{
 				"pattern": "(?i)comp[ée]tence\\s+de\\s+cycle",
@@ -148,6 +158,16 @@
 					"match": "(?i)\\bmath[eéè]matiques\\b",
 					"role": "subject",
 					"title_template": "Mathématiques"
+				},
+				{
+					"match": "(?i)\\bplanification\\b",
+					"role": "section",
+					"title_template": "Planification des apprentissages"
+				},
+				{
+					"match": "(?i)\\bapprentissages\\s+ponctuels\\b",
+					"role": "section",
+					"title_template": "Apprentissages ponctuels"
 				},
 				{
 					"match": "(?i)\\btolluwaay\\s*(\\d+)",

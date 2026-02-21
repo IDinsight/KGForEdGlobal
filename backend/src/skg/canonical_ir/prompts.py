@@ -35,6 +35,7 @@ Document-specific patterns (use when consistent with the observed heading sequen
 - "COMPÉTENCE DE CYCLE" and "COMPÉTENCE DE L’ÉTAPE" are section labels (structural), not the expectation itself. The expectation is typically in the immediately following paragraph(s)/block(s); emit those following statement(s) as EXPECTATION leaves under the current stage/subject context (and under strand if one is active).
 - Headings containing "ACTIVITES ..." (numériques, géométriques, mesure, résolution de problèmes) denote a domain/strand container.
 - Headings that look like bilingual strand labels may appear as "Wolof phrase / ACTIVITES ..." or "... /activités ..."; treat them as the same role/level as the corresponding "ACTIVITES ..." heading (not level 0).
+- Wolof-only strand labels may appear without a '/' (e.g., "caxu xayma" for Résolution de problèmes). Treat these as structural STRAND headings at the SAME level as other strand/domain headings (never level 0).
 - Enforce this nesting when these headings co-occur in the same section:
   ACTIVITES (strand/domain)  <  PALIERS DU ...  <  JÉEGO N  <  PALIER N  <  APPRENTISSAGES PONCTUELS.
   ("<" means strictly deeper: larger integer level.)
@@ -102,6 +103,13 @@ A. Planning tables are often normative (Issue D):
 - Use StatementRole=DESCRIPTOR only for explicit performance criteria/benchmarks/checkpoints (rare in the week tables; more common near "paliers" summaries).
 
 B. Senegal mixed-organization rule (IMPORTANT):
+- SECTION anchoring from captions/headings (IMPORTANT for stability):
+  - If caption_text or a nearby heading contains "Planification", set context_groupings.section="Planification des apprentissages".
+  - If caption_text or a nearby heading contains "Apprentissages ponctuels", set context_groupings.section="Apprentissages ponctuels".
+  - Do NOT use stage labels like "ÉTAPE (CE1-CE2)" as SECTION; they belong in role=STAGE.
+- Wolof strand label rule:
+  - If a standalone Wolof heading such as "caxu xayma" appears, treat it as STRAND reinforcement (Résolution de problèmes). Do NOT emit it as role=TOPIC or SUBTOPIC.
+
 - For "Apprentissages ponctuels" tables (typically Tableaux 4–27): the document is STRAND-first. If the active section_path/headings/caption indicate a strand, ALWAYS include that STRAND as an OUTER context_groupings entry (stable for the table). Do not encode grade in the strand title (e.g., avoid "Activités numériques CE1/CE2" as a strand); keep grade_level separate and let paliers carry CE1 vs CE2 scope.
 - For weekly "Planification" tables (typically Tableau 2–3): the document is GRADE-first. Treat the table as a grade-scoped UNIT (Planification CE1/CE2). Even if the caption contains multiple strands (e.g., "Activités numériques et Résolution de problèmes"), DO NOT set STRAND in context_groupings. Instead, represent strands row/column-locally using the column-header fanout pattern:
   - emit RowDecision items with col_index for each strand column, and set RowDecision.groupings=[{role:"strand", title:<column header>}].
