@@ -33,6 +33,11 @@ HEADING_LEVEL_CONTEXT: dict[str, str] = {
 
 Document-specific patterns (use when consistent with the observed heading sequence):
 - Standalone container headings like "MATHÉMATIQUES", "DEUXIÈME ÉTAPE (CE1–CE2)", "PLANIFICATION DES APPRENTISSAGES", and "APPRENTISSAGES PONCTUELS" are structural (non-zero).
+  - Even if these appear on the cover/front matter, treat them as document-identity headings and assign level 1 when they represent instructional scope (subject + stage/grade span).
+- Special case: **Document identity headings** (subject + stage/grade span) are structural.
+  - If a heading clearly encodes instructional scope (e.g., "Mathematics — Grade 1–3", "Mathématiques — Deuxième étape (CE1–CE2)", "Science — Primary Cycle"), assign a non-zero level (usually 1), even if it resembles a cover/title line.
+  - Only assign level 0 if it is purely administrative metadata (publisher/ministry/edition/approval/copyright) with no instructional scope.
+- Treat any heading containing “tolluwaay” (especially bilingual “tolluwaay <n> / étape <n>”) as a stage identity container and assign it level 1, even if it appears repeatedly.
 - Domain/strand containers include headings containing: "ACTIVITÉS NUMÉRIQUES", "ACTIVITÉS GÉOMÉTRIQUES", "MESURE", "RÉSOLUTION DE PROBLÈMES" (sometimes combined, and sometimes bilingual with a "/" + Wolof label). Treat these as structural STRAND headings at a consistent level (non-zero).
 - Headings like "Paliers du niveau CE1" / "Paliers du niveau CE2" are structural containers under the current strand (non-zero), grouping multiple palier statements.
 - IMPORTANT: lines starting with "Jéego <number>:" or "PALIER <number>:" usually contain the FULL competency/expectation statement (not just a label). These should be treated as curriculum CONTENT if they appear in the heading list:

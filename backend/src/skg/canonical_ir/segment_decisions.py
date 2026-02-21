@@ -1349,6 +1349,10 @@ def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
     2. Instead we build a stream from actual HEADING blocks in reading order.
     3. Fallback: if no heading blocks exist, we derive a heading-change stream from
         section_path deltas (suffix events).
+    4. If a heading repeats, we prefer an occurrence after the first couple pages,
+        because early pages often contain cover/title/front-matter variants that
+        mislead level inference. This keeps the method general (no curriculum-specific
+        regexes) while reducing bias toward cover-first occurrences.
 
     Parameters
     ----------
@@ -1360,6 +1364,11 @@ def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
     list[dict[str, Any]]
         A list of unique headings with their text, page/item indices, and true
         prev/next context from the heading stream.
+
+    Raises
+    ------
+    AssertionError
+        If no headings are found in the document IR.
     """
 
     # Try to build stream from explicit heading blocks. Fallback: derive stream from
@@ -1368,20 +1377,42 @@ def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
         document_ir.segments
     ) or _extract_stream_from_paths(document_ir.segments)
 
-    # Create UNIQUE headings preserving first occurrence, with true prev/next.
-    ordered: list[dict[str, Any]] = []
-    seen: set[str] = set()
     stream_len = len(stream)
 
-    for i, h in enumerate(stream):
-        if h["norm"] in seen:
-            continue
+    if stream_len == 0:
+        raise AssertionError(
+            "No headings found in document IR; expected at least one heading for context."
+        )
 
-        seen.add(h["norm"])
+    # If a heading repeats, prefer an occurrence after early cover/front-matter pages
+    # (page indices are 0-based.)
+    num_front_matter_pages = 1  # Treat page 0 as likely front matter
+
+    first_idx: dict[str, int] = {}
+    first_body_idx: dict[str, int] = {}
+
+    for i, h in enumerate(stream):
+        norm = h["norm"]
+
+        if norm not in first_idx:
+            first_idx[norm] = i
+
+        if norm not in first_body_idx and h["page_index"] >= num_front_matter_pages:
+            first_body_idx[norm] = i
+
+    chosen_idx: dict[str, int] = {
+        norm: first_body_idx.get(norm, idx) for norm, idx in first_idx.items()
+    }
+
+    # Emit UNIQUE headings in true document order of the chosen occurrences.
+    ordered: list[dict[str, Any]] = []
+
+    for idx, norm in sorted((i, n) for n, i in chosen_idx.items()):
+        h = stream[idx]
 
         # Context is based on the stream neighbors of this specific occurrence.
-        prev_text = stream[i - 1]["text"] if i > 0 else ""
-        next_text = stream[i + 1]["text"] if i + 1 < stream_len else ""
+        prev_text = stream[idx - 1]["text"] if idx > 0 else ""
+        next_text = stream[idx + 1]["text"] if idx + 1 < stream_len else ""
 
         ordered.append(
             {
@@ -1392,10 +1423,6 @@ def collect_unique_headings(document_ir: DocumentIR) -> list[dict[str, Any]]:
                 "next_text": next_text,
             }
         )
-
-    assert (
-        ordered
-    ), "No headings found in document IR; expected at least one heading for context."
 
     return ordered
 
