@@ -380,7 +380,8 @@
 												"pattern": "j[ée]ego\\s+1"
 											},
 											{
-												"pattern": "palier\\s+1"
+												"pattern": "palier\\s+1",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -403,7 +404,8 @@
 												"pattern": "j[ée]ego\\s+2"
 											},
 											{
-												"pattern": "palier\\s+2"
+												"pattern": "palier\\s+2",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -426,7 +428,8 @@
 												"pattern": "j[ée]ego\\s+3"
 											},
 											{
-												"pattern": "palier\\s+3"
+												"pattern": "palier\\s+3",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -475,7 +478,8 @@
 												"pattern": "j[ée]ego\\s+4"
 											},
 											{
-												"pattern": "palier\\s+4"
+												"pattern": "palier\\s+4",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -498,7 +502,8 @@
 												"pattern": "j[ée]ego\\s+5"
 											},
 											{
-												"pattern": "palier\\s+5"
+												"pattern": "palier\\s+5",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -521,7 +526,8 @@
 												"pattern": "j[ée]ego\\s+6"
 											},
 											{
-												"pattern": "palier\\s+6"
+												"pattern": "palier\\s+6",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1241,7 +1247,8 @@
 												"pattern": "j[ée]ego\\s+1"
 											},
 											{
-												"pattern": "palier\\s+1"
+												"pattern": "palier\\s+1",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1264,7 +1271,8 @@
 												"pattern": "j[ée]ego\\s+2"
 											},
 											{
-												"pattern": "palier\\s+2"
+												"pattern": "palier\\s+2",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1286,7 +1294,8 @@
 												"pattern": "j[ée]ego\\s+3"
 											},
 											{
-												"pattern": "palier\\s+3"
+												"pattern": "palier\\s+3",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1334,7 +1343,8 @@
 												"pattern": "j[ée]ego\\s+4"
 											},
 											{
-												"pattern": "palier\\s+4"
+												"pattern": "palier\\s+4",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1356,7 +1366,8 @@
 												"pattern": "j[ée]ego\\s+5"
 											},
 											{
-												"pattern": "palier\\s+5"
+												"pattern": "palier\\s+5",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1378,7 +1389,8 @@
 												"pattern": "j[ée]ego\\s+6"
 											},
 											{
-												"pattern": "palier\\s+6"
+												"pattern": "palier\\s+6",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1961,7 +1973,8 @@
 												"pattern": "j[ée]ego\\s+1"
 											},
 											{
-												"pattern": "palier\\s+1"
+												"pattern": "palier\\s+1",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -1984,7 +1997,8 @@
 												"pattern": "j[ée]ego\\s+2"
 											},
 											{
-												"pattern": "palier\\s+2"
+												"pattern": "palier\\s+2",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2033,7 +2047,8 @@
 												"pattern": "j[ée]ego\\s+3"
 											},
 											{
-												"pattern": "palier\\s+3"
+												"pattern": "palier\\s+3",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2055,7 +2070,8 @@
 												"pattern": "j[ée]ego\\s+4"
 											},
 											{
-												"pattern": "palier\\s+4"
+												"pattern": "palier\\s+4",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2645,7 +2661,8 @@
 												"pattern": "j[ée]ego\\s+1"
 											},
 											{
-												"pattern": "palier\\s+1"
+												"pattern": "palier\\s+1",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2668,7 +2685,8 @@
 												"pattern": "j[ée]ego\\s+2"
 											},
 											{
-												"pattern": "palier\\s+2"
+												"pattern": "palier\\s+2",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2691,7 +2709,8 @@
 												"pattern": "j[ée]ego\\s+3"
 											},
 											{
-												"pattern": "palier\\s+3"
+												"pattern": "palier\\s+3",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2740,7 +2759,8 @@
 												"pattern": "j[ée]ego\\s+4"
 											},
 											{
-												"pattern": "palier\\s+4"
+												"pattern": "palier\\s+4",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2762,7 +2782,8 @@
 												"pattern": "j[ée]ego\\s+5"
 											},
 											{
-												"pattern": "palier\\s+5"
+												"pattern": "palier\\s+5",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -2784,7 +2805,8 @@
 												"pattern": "j[ée]ego\\s+6"
 											},
 											{
-												"pattern": "palier\\s+6"
+												"pattern": "palier\\s+6",
+												"require_block_type": "paragraph"
 											}
 										],
 										"allow_multiple_segments": true,
