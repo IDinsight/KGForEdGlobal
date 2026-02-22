@@ -268,7 +268,7 @@ class CreateCanonicalConfig(BaseSchema):
     )
     max_skip_distance: int = Field(
         20,
-        description="Maximum number of skeleton nodes to probe ahead during forward-only matching.",
+        description="Maximum number of curriculum skeleton nodes to probe ahead during forward-only matching.",
         ge=1,
     )
     overwrite: bool = Field(

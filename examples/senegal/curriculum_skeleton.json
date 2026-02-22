@@ -1,2101 +1,3306 @@
 {
-	"metadata": {
-		"country": "Sénégal",
-		"ministry": "Ministère de l'Éducation nationale",
-		"languages": [
-			"fr",
-			"wo"
-		],
-		"primary_language": "fr",
-		"academic_subject": "Mathématiques",
-		"stage": "Étape 2",
-		"grades": [
-			"CE1",
-			"CE2"
-		]
-	},
-	"root": {
-		"id": "root",
-		"canonical_name": {
-			"primary": "Mathématiques, Deuxième Étape (CE1-CE2)",
-			"translations": {
-				"wo": "Xayma, Tolluwaay 2 (CE1-CE2)"
-			}
-		},
-		"emit": "container_only",
-		"grouping_role": "framework",
-		"children": [
-			{
-				"id": "front-matter",
-				"canonical_name": {
-					"primary": "Page de couverture",
-					"translations": {}
-				},
-				"emit": "ignore",
-				"match_rules": [
-					{
-						"pattern": "r[ée]publique du s[ée]n[ée]gal"
-					},
-					{
-						"pattern": "minist[èe]re"
-					}
-				],
-				"doc_note": "Cover page: Republic, ministry, document title block. No curricular content."
-			},
-			{
-				"id": "cadre-competences",
-				"canonical_name": {
-					"primary": "Cadre de compétences",
-					"translations": {
-						"wo": "Cëslaayu manoore"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "section",
-				"match_rules": [
-					{
-						"pattern": "cadre de comp[ée]tences"
-					},
-					{
-						"pattern": "c[ëe]slaayu manoore"
-					}
-				],
-				"children": [
-					{
-						"id": "competence-cycle",
-						"canonical_name": {
-							"primary": "Compétence de cycle",
-							"translations": {
-								"wo": "Manoore diirub njàng mi"
-							}
-						},
-						"emit": "emit_leaf",
-						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "comp[ée]tence de cycle"
-							},
-							{
-								"pattern": "manoore diirub"
-							}
-						],
-						"doc_note": "Overall cycle competency in Wolof then French. Single bilingual prose block."
-					},
-					{
-						"id": "competence-etape",
-						"canonical_name": {
-							"primary": "Compétence de l'étape",
-							"translations": {
-								"wo": "Manoore tolluwaay bi"
-							}
-						},
-						"emit": "emit_leaf",
-						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "comp[ée]tence de l'[ée]tape"
-							},
-							{
-								"pattern": "manoore tolluwaay"
-							}
-						],
-						"doc_note": "Stage 2 competency in Wolof then French. Single bilingual prose block."
-					},
-					{
-						"id": "tableau-1",
-						"canonical_name": {
-							"primary": "Tableau 1 — Compétences de base par domaine d'activité",
-							"translations": {}
-						},
-						"emit": "emit_table_rows",
-						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "tableau\\s+1",
-								"target": "caption"
-							}
-						],
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)domaine|activit[ée]",
-								"role": "grouping:strand"
-							},
-							{
-								"header_pattern": "(?i)comp[ée]tence",
-								"role": "leaf:expectation",
-								"source_label_override": "Compétence de base"
-							}
-						],
-						"doc_note": "4-column overview table: base competencies for each of the 4 strands."
-					}
-				]
-			},
-			{
-				"id": "strand-numeriques",
-				"canonical_name": {
-					"primary": "Activités numériques",
-					"translations": {
-						"wo": "Kenug xayma"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s num[ée]riques"
-					},
-					{
-						"pattern": "kenug xayma"
-					}
-				],
-				"children": [
-					{
-						"id": "num-palier-defs",
-						"canonical_name": {
-							"primary": "Définitions des paliers — Activités numériques",
-							"translations": {}
-						},
-						"emit": "container_only",
-						"doc_note": "Bilingual Jéego/PALIER pairs defining each palier's competency scope.",
-						"children": [
-							{
-								"id": "num-ce1-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"implicit": true,
-								"children": [
-									{
-										"id": "num-palier-1-def",
-										"canonical_name": {
-											"primary": "Palier 1",
-											"translations": {
-												"wo": "Jéego 1"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 1,
-										"doc_note": "Jéego 1 (Wolof) + PALIER 1 (French): integers 0–5000, arithmetic operations."
-									},
-									{
-										"id": "num-palier-2-def",
-										"canonical_name": {
-											"primary": "Palier 2",
-											"translations": {
-												"wo": "Jéego 2"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 2,
-										"doc_note": "Jéego 2 + PALIER 2: integers 0–8000."
-									},
-									{
-										"id": "num-palier-3-def",
-										"canonical_name": {
-											"primary": "Palier 3",
-											"translations": {
-												"wo": "Jéego 3"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 3,
-										"doc_note": "Jéego 3 + PALIER 3: integers 0–10000."
-									}
-								]
-							},
-							{
-								"id": "num-ce2-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"implicit": true,
-								"children": [
-									{
-										"id": "num-palier-4-def",
-										"canonical_name": {
-											"primary": "Palier 4",
-											"translations": {
-												"wo": "Jéego 4"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 4,
-										"doc_note": "Jéego 4 + PALIER 4: integers 0–50000."
-									},
-									{
-										"id": "num-palier-5-def",
-										"canonical_name": {
-											"primary": "Palier 5",
-											"translations": {
-												"wo": "Jéego 5"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+5"
-											},
-											{
-												"pattern": "palier\\s+5"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 5,
-										"doc_note": "Jéego 5 + PALIER 5: integers 0–80000."
-									},
-									{
-										"id": "num-palier-6-def",
-										"canonical_name": {
-											"primary": "Palier 6",
-											"translations": {
-												"wo": "Jéego 6"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+6"
-											},
-											{
-												"pattern": "palier\\s+6"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 6,
-										"doc_note": "Jéego 6 + PALIER 6: integers 0–100000."
-									}
-								]
-							}
-						]
-					},
-					{
-						"id": "num-planification",
-						"canonical_name": {
-							"primary": "Planification des apprentissages — Activités numériques",
-							"translations": {}
-						},
-						"emit": "container_only",
-						"doc_note": "Overview 25-week planning tables. UNIQUE to Activités numériques (other strands don't have these).",
-						"children": [
-							{
-								"id": "num-plan-ce1",
-								"canonical_name": {
-									"primary": "Planification CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "tableau-2",
-										"canonical_name": {
-											"primary": "Tableau 2 — Planification CE1: Activités numériques et Résolution de problèmes (Semaines 1–25)",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+2",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)semaine|palier",
-												"role": "grouping:week"
-											},
-											{
-												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-												"role": "leaf:expectation",
-												"source_label_override": "Activités numériques"
-											},
-											{
-												"header_pattern": "(?i)r[ée]solution",
-												"role": "leaf:expectation",
-												"source_label_override": "Résolution de problèmes"
-											}
-										],
-										"doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French)."
-									}
-								]
-							},
-							{
-								"id": "num-plan-ce2",
-								"canonical_name": {
-									"primary": "Planification CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "tableau-3",
-										"canonical_name": {
-											"primary": "Tableau 3 — Planification CE2: Activités numériques et Résolution de problèmes (Semaines 1–25)",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+3",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)semaine|palier",
-												"role": "grouping:week"
-											},
-											{
-												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-												"role": "leaf:expectation",
-												"source_label_override": "Activités numériques"
-											},
-											{
-												"header_pattern": "(?i)r[ée]solution",
-												"role": "leaf:expectation",
-												"source_label_override": "Résolution de problèmes"
-											}
-										],
-										"doc_note": "Same structure as Tableau 2, for CE2."
-									}
-								]
-							}
-						]
-					},
-					{
-						"id": "num-apprentissages",
-						"canonical_name": {
-							"primary": "Apprentissages ponctuels — Activités numériques",
-							"translations": {}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages ponctuels.*num[ée]riques"
-							}
-						],
-						"children": [
-							{
-								"id": "num-ap-ce1",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "tableau-4",
-										"canonical_name": {
-											"primary": "Tableau 4 — Apprentissages ponctuels: Palier 1, Activités numériques CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+4",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 1,
-										"doc_note": "Detailed OA table: Objectif d'apprentissage, Objectif spécifique, Contenus, Durée. Bilingual rows."
-									},
-									{
-										"id": "tableau-5",
-										"canonical_name": {
-											"primary": "Tableau 5 — Apprentissages ponctuels: Palier 2, Activités numériques CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+5",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 2
-									},
-									{
-										"id": "tableau-6",
-										"canonical_name": {
-											"primary": "Tableau 6 — Apprentissages ponctuels: Palier 3, Activités numériques CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+6",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 3
-									}
-								]
-							},
-							{
-								"id": "num-ap-ce2",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "tableau-7",
-										"canonical_name": {
-											"primary": "Tableau 7 — Apprentissages ponctuels: Palier 4, Activités numériques CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+7",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 4
-									},
-									{
-										"id": "tableau-8",
-										"canonical_name": {
-											"primary": "Tableau 8 — Apprentissages ponctuels: Palier 5, Activités numériques CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+8",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 5
-									},
-									{
-										"id": "tableau-9",
-										"canonical_name": {
-											"primary": "Tableau 9 — Apprentissages ponctuels: Palier 6, Activités numériques CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+9",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 6
-									}
-								]
-							}
-						]
-					}
-				]
-			},
-			{
-				"id": "strand-resolution",
-				"canonical_name": {
-					"primary": "Activités de résolution de problèmes",
-					"translations": {
-						"wo": "Yëngute ci tekkim caxu xayma"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s de r[ée]solution"
-					},
-					{
-						"pattern": "r[ée]solution de probl[èe]mes"
-					},
-					{
-						"pattern": "tekkim caxu xayma"
-					}
-				],
-				"children": [
-					{
-						"id": "res-palier-defs",
-						"canonical_name": {
-							"primary": "Définitions des paliers — Résolution de problèmes",
-							"translations": {}
-						},
-						"emit": "container_only",
-						"children": [
-							{
-								"id": "res-ce1-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "res-palier-1-def",
-										"canonical_name": {
-											"primary": "Palier 1",
-											"translations": {
-												"wo": "Jéego 1"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 1,
-										"doc_note": "Data categories in problem analysis."
-									},
-									{
-										"id": "res-palier-2-def",
-										"canonical_name": {
-											"primary": "Palier 2",
-											"translations": {
-												"wo": "Jéego 2"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 2
-									},
-									{
-										"id": "res-palier-3-def",
-										"canonical_name": {
-											"primary": "Palier 3",
-											"translations": {
-												"wo": "Jéego 3"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 3
-									}
-								]
-							},
-							{
-								"id": "res-ce2-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "res-palier-4-def",
-										"canonical_name": {
-											"primary": "Palier 4",
-											"translations": {
-												"wo": "Jéego 4"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 4
-									},
-									{
-										"id": "res-palier-5-def",
-										"canonical_name": {
-											"primary": "Palier 5",
-											"translations": {
-												"wo": "Jéego 5"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+5"
-											},
-											{
-												"pattern": "palier\\s+5"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 5
-									},
-									{
-										"id": "res-palier-6-def",
-										"canonical_name": {
-											"primary": "Palier 6",
-											"translations": {
-												"wo": "Jéego 6"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+6"
-											},
-											{
-												"pattern": "palier\\s+6"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 6
-									}
-								]
-							}
-						]
-					},
-					{
-						"id": "res-apprentissages",
-						"canonical_name": {
-							"primary": "Apprentissages ponctuels — Résolution de problèmes",
-							"translations": {}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages ponctuels.*r[ée]solution"
-							}
-						],
-						"children": [
-							{
-								"id": "res-ap-ce1",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "tableau-10",
-										"canonical_name": {
-											"primary": "Tableau 10 — Apprentissages ponctuels: Palier 1, Résolution de problèmes CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+10",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 1
-									},
-									{
-										"id": "tableau-11",
-										"canonical_name": {
-											"primary": "Tableau 11 — Apprentissages ponctuels: Palier 2, Résolution de problèmes CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+11",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 2
-									},
-									{
-										"id": "tableau-12",
-										"canonical_name": {
-											"primary": "Tableau 12 — Apprentissages ponctuels: Palier 3, Résolution de problèmes CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+12",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 3
-									}
-								]
-							},
-							{
-								"id": "res-ap-ce2",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "tableau-13",
-										"canonical_name": {
-											"primary": "Tableau 13 — Apprentissages ponctuels: Palier 4, Résolution de problèmes CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+13",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 4
-									},
-									{
-										"id": "tableau-14",
-										"canonical_name": {
-											"primary": "Tableau 14 — Apprentissages ponctuels: Palier 5, Résolution de problèmes CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+14",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 5
-									},
-									{
-										"id": "tableau-15",
-										"canonical_name": {
-											"primary": "Tableau 15 — Apprentissages ponctuels: Palier 6, Résolution de problèmes CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+15",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 6
-									}
-								]
-							}
-						]
-					}
-				]
-			},
-			{
-				"id": "strand-geometrie",
-				"canonical_name": {
-					"primary": "Activités géométriques",
-					"translations": {
-						"wo": "Yëngute xam-xamu dénd"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s g[ée]om[ée]triques"
-					},
-					{
-						"pattern": "xam-xamu d[ée]nd"
-					}
-				],
-				"doc_note": "UNIQUE: Only 4 paliers (2 per grade, not 3). Paliers 2 and 3 each split across 2 tables via '(suite)' continuation.",
-				"children": [
-					{
-						"id": "geo-palier-defs",
-						"canonical_name": {
-							"primary": "Définitions des paliers — Activités géométriques",
-							"translations": {}
-						},
-						"emit": "container_only",
-						"children": [
-							{
-								"id": "geo-ce1-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "geo-palier-1-def",
-										"canonical_name": {
-											"primary": "Palier 1",
-											"translations": {
-												"wo": "Jéego 1"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 1,
-										"doc_note": "Lines, special/relative positions of lines, plane figures, instruments."
-									},
-									{
-										"id": "geo-palier-2-def",
-										"canonical_name": {
-											"primary": "Palier 2",
-											"translations": {
-												"wo": "Jéego 2"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 2,
-										"doc_note": "Lines, special/relative positions, plane figure properties, solids, instruments."
-									}
-								]
-							},
-							{
-								"id": "geo-ce2-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "geo-palier-3-def",
-										"canonical_name": {
-											"primary": "Palier 3",
-											"translations": {
-												"wo": "Jéego 3"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 3
-									},
-									{
-										"id": "geo-palier-4-def",
-										"canonical_name": {
-											"primary": "Palier 4",
-											"translations": {
-												"wo": "Jéego 4"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 4
-									}
-								]
-							}
-						]
-					},
-					{
-						"id": "geo-apprentissages",
-						"canonical_name": {
-							"primary": "Apprentissages ponctuels — Activités géométriques",
-							"translations": {}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages ponctuels.*g[ée]om[ée]triques"
-							}
-						],
-						"children": [
-							{
-								"id": "geo-ap-ce1",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "tableau-16",
-										"canonical_name": {
-											"primary": "Tableau 16 — Apprentissages ponctuels: Palier 1, Géométrie CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+16",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 1,
-										"topic": {
-											"primary": "Lignes et positions de droites",
-											"translations": {
-												"wo": "Rëdd yi ak seen taxawaay"
-											}
-										}
-									},
-									{
-										"id": "tableau-17",
-										"canonical_name": {
-											"primary": "Tableau 17 — Apprentissages ponctuels: Palier 2, Géométrie CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+17",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 2,
-										"topic": {
-											"primary": "Le carré",
-											"translations": {
-												"wo": "Kaare"
-											}
-										}
-									},
-									{
-										"id": "tableau-18",
-										"canonical_name": {
-											"primary": "Tableau 18 — Apprentissages ponctuels: Palier 2 (suite), Géométrie CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+18",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 2,
-										"is_continuation": true,
-										"topic": {
-											"primary": "Le rectangle",
-											"translations": {
-												"wo": "Rektàngal"
-											}
-										},
-										"doc_note": "Continuation of Palier 2 — separate topic (rectangle vs carré) but same palier."
-									}
-								]
-							},
-							{
-								"id": "geo-ap-ce2",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "tableau-19",
-										"canonical_name": {
-											"primary": "Tableau 19 — Apprentissages ponctuels: Palier 3, Géométrie CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+19",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 3,
-										"topic": {
-											"primary": "Lignes, angles, carré et rectangle",
-											"translations": {}
-										}
-									},
-									{
-										"id": "tableau-20",
-										"canonical_name": {
-											"primary": "Tableau 20 — Apprentissages ponctuels: Palier 3 (suite), Géométrie CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+20",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 3,
-										"is_continuation": true,
-										"topic": {
-											"primary": "Le triangle",
-											"translations": {}
-										},
-										"doc_note": "Continuation of Palier 3 — triangle is a separate topic within same palier."
-									},
-									{
-										"id": "tableau-21",
-										"canonical_name": {
-											"primary": "Tableau 21 — Apprentissages ponctuels: Palier 4, Géométrie CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+21",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 4,
-										"topic": {
-											"primary": "Cercle, symétrie et solides",
-											"translations": {}
-										}
-									}
-								]
-							}
-						]
-					}
-				]
-			},
-			{
-				"id": "strand-mesure",
-				"canonical_name": {
-					"primary": "Activités de mesure",
-					"translations": {
-						"wo": "Yëngute xam-xamu natt"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s de mesure"
-					},
-					{
-						"pattern": "xam-xamu natt"
-					}
-				],
-				"doc_note": "UNIQUE: Has a strand-level competency statement (Wolof+French) BEFORE the palier definitions. This is NOT grade-specific — it covers the entire stage (CE1-CE2).",
-				"children": [
-					{
-						"id": "mes-strand-competency",
-						"canonical_name": {
-							"primary": "Compétence de base — Activités de mesure",
-							"translations": {
-								"wo": "Manoore mi lalu — Yëngute xam-xamu natt"
-							}
-						},
-						"emit": "emit_leaf",
-						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "int[ée]grer les notions de longueur.*capacit[ée].*masse.*dur[ée]e.*aire.*monnaie"
-							}
-						],
-						"doc_note": "Stage-level competency covering all measurement topics. Appears BEFORE any grade/palier content. Must NOT be assigned to CE1 or CE2 specifically."
-					},
-					{
-						"id": "mes-palier-defs",
-						"canonical_name": {
-							"primary": "Définitions des paliers — Activités de mesure",
-							"translations": {}
-						},
-						"emit": "container_only",
-						"children": [
-							{
-								"id": "mes-ce1-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "mes-palier-1-def",
-										"canonical_name": {
-											"primary": "Palier 1",
-											"translations": {
-												"wo": "Jéego 1"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 1,
-										"doc_note": "Length and capacity, conventional instruments."
-									},
-									{
-										"id": "mes-palier-2-def",
-										"canonical_name": {
-											"primary": "Palier 2",
-											"translations": {
-												"wo": "Jéego 2"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 2,
-										"doc_note": "Length, capacity, mass and duration."
-									},
-									{
-										"id": "mes-palier-3-def",
-										"canonical_name": {
-											"primary": "Palier 3",
-											"translations": {
-												"wo": "Jéego 3"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 3,
-										"doc_note": "Length, money, perimeters and prices."
-									}
-								]
-							},
-							{
-								"id": "mes-ce2-paliers",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "mes-palier-4-def",
-										"canonical_name": {
-											"primary": "Palier 4",
-											"translations": {
-												"wo": "Jéego 4"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 4
-									},
-									{
-										"id": "mes-palier-5-def",
-										"canonical_name": {
-											"primary": "Palier 5",
-											"translations": {
-												"wo": "Jéego 5"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+5"
-											},
-											{
-												"pattern": "palier\\s+5"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 5
-									},
-									{
-										"id": "mes-palier-6-def",
-										"canonical_name": {
-											"primary": "Palier 6",
-											"translations": {
-												"wo": "Jéego 6"
-											}
-										},
-										"emit": "emit_grouping_and_leaf",
-										"grouping_role": "substage",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+6"
-											},
-											{
-												"pattern": "palier\\s+6"
-											}
-										],
-										"allow_multiple_segments": true,
-										"substage_index": 6
-									}
-								]
-							}
-						]
-					},
-					{
-						"id": "mes-apprentissages",
-						"canonical_name": {
-							"primary": "Apprentissages ponctuels — Activités de mesure",
-							"translations": {}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages ponctuels.*mesure"
-							}
-						],
-						"children": [
-							{
-								"id": "mes-ap-ce1",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE1",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "tableau-22",
-										"canonical_name": {
-											"primary": "Tableau 22 — Apprentissages ponctuels: Palier 1, Mesure CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+22",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 1,
-										"topic": {
-											"primary": "Longueur et capacité",
-											"translations": {}
-										}
-									},
-									{
-										"id": "tableau-23",
-										"canonical_name": {
-											"primary": "Tableau 23 — Apprentissages ponctuels: Palier 2, Mesure CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+23",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 2,
-										"topic": {
-											"primary": "Masse et durée",
-											"translations": {}
-										}
-									},
-									{
-										"id": "tableau-24",
-										"canonical_name": {
-											"primary": "Tableau 24 — Apprentissages ponctuels: Palier 3, Mesure CE1",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+24",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 3,
-										"topic": {
-											"primary": "Périmètre et monnaie",
-											"translations": {}
-										}
-									}
-								]
-							},
-							{
-								"id": "mes-ap-ce2",
-								"canonical_name": {
-									"primary": "Paliers du niveau CE2",
-									"translations": {}
-								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
-									{
-										"id": "tableau-25",
-										"canonical_name": {
-											"primary": "Tableau 25 — Apprentissages ponctuels: Palier 4, Mesure CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+25",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 4,
-										"topic": {
-											"primary": "Longueur, masse et capacité",
-											"translations": {}
-										}
-									},
-									{
-										"id": "tableau-26",
-										"canonical_name": {
-											"primary": "Tableau 26 — Apprentissages ponctuels: Palier 5, Mesure CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+26",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 5,
-										"topic": {
-											"primary": "Masse, durée et monnaie",
-											"translations": {}
-										}
-									},
-									{
-										"id": "tableau-27",
-										"canonical_name": {
-											"primary": "Tableau 27 — Apprentissages ponctuels: Palier 6, Mesure CE2",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+27",
-												"target": "caption"
-											}
-										],
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)objectif d.apprentissage",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif d'apprentissage"
-											},
-											{
-												"header_pattern": "(?i)objectif sp[ée]cifique",
-												"role": "leaf:expectation",
-												"source_label_override": "Objectif spécifique"
-											},
-											{
-												"header_pattern": "(?i)contenus?",
-												"role": "leaf:guidance",
-												"source_label_override": "Contenus"
-											},
-											{
-												"header_pattern": "(?i)dur[ée]e",
-												"role": "skip"
-											}
-										],
-										"substage_index": 6,
-										"topic": {
-											"primary": "Périmètre et aire",
-											"translations": {}
-										}
-									}
-								]
-							}
-						]
-					}
-				]
-			}
-		],
-		"doc_note": "Framework root. CONTAINER_ONLY because the compiler creates the framework root node independently. The first matchable segment should be 'front-matter' or 'cadre-competences'."
-	},
-	"schema_version": "1.0",
-	"skeleton_id": "senegal-math-etape2-wolof-fr"
+  "metadata": {
+    "country": "Sénégal",
+    "ministry": "Ministère de l'Éducation nationale",
+    "languages": [
+      "fr",
+      "wo"
+    ],
+    "primary_language": "fr",
+    "academic_subject": "Mathématiques",
+    "stage": "Étape 2",
+    "grades": [
+      "CE1",
+      "CE2"
+    ]
+  },
+  "root": {
+    "id": "root",
+    "canonical_name": {
+      "primary": "Mathématiques, Deuxième Étape (CE1-CE2)",
+      "translations": {
+        "wo": "Xayma, Tolluwaay 2 (CE1-CE2)"
+      }
+    },
+    "emit": "container_only",
+    "grouping_role": "framework",
+    "children": [
+      {
+        "id": "front-matter",
+        "canonical_name": {
+          "primary": "Page de couverture",
+          "translations": {}
+        },
+        "emit": "ignore",
+        "match_rules": [
+          {
+            "pattern": "r[ée]publique du s[ée]n[ée]gal",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "r[ée]publique du s[ée]n[ée]gal",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "minist[èe]re",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "minist[èe]re",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "r[ée]f[ée]rentiel bilingue",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "r[ée]f[ée]rentiel bilingue",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "math[ée]matiques",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "math[ée]matiques",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "deuxi[èe]me",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "deuxi[èe]me",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "\\b[ée]tape\\b",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "\\b[ée]tape\\b",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "\\btolluwaay\\b",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "\\btolluwaay\\b",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "\\bxayma\\b",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "\\bxayma\\b",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "c[ëe]slaayu",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "c[ëe]slaayu",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "doc_note": "Cover page: Republic, ministry, document title block. No curricular content.",
+        "allow_multiple_segments": true
+      },
+      {
+        "id": "cadre-competences",
+        "canonical_name": {
+          "primary": "Cadre de compétences",
+          "translations": {
+            "wo": "Cëslaayu manoore"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "section",
+        "match_rules": [
+          {
+            "pattern": "cadre de comp[ée]tences",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "cadre de comp[ée]tences",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "c[ëe]slaayu manoore",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "c[ëe]slaayu manoore",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "children": [
+          {
+            "id": "competence-cycle",
+            "canonical_name": {
+              "primary": "Compétence de cycle",
+              "translations": {
+                "wo": "Manoore diirub njàng mi"
+              }
+            },
+            "emit": "emit_leaf",
+            "leaf_role": "expectation",
+            "match_rules": [
+              {
+                "pattern": "comp[ée]tence de cycle"
+              },
+              {
+                "pattern": "manoore diirub"
+              },
+              {
+                "pattern": "ca\\s+njeextel\\s+diirub"
+              },
+              {
+                "pattern": "a\\s+la\\s+fin\\s+du\\s+cycle"
+              }
+            ],
+            "doc_note": "Cycle competency appears as a bilingual heading followed by two consecutive paragraphs (Wolof then French). Match the heading and both paragraphs.",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "competence-etape",
+            "canonical_name": {
+              "primary": "Compétence de l'étape",
+              "translations": {
+                "wo": "Manoore tolluwaay bi"
+              }
+            },
+            "emit": "emit_leaf",
+            "leaf_role": "expectation",
+            "match_rules": [
+              {
+                "pattern": "comp[ée]tence de l'[ée]tape"
+              },
+              {
+                "pattern": "manoore tolluwaay"
+              },
+              {
+                "pattern": "ca\\s+njeextel\\s+tolluwaay"
+              },
+              {
+                "pattern": "a\\s+la\\s+fin\\s+de\\s+la\\s+deuxi[èe]me\\s+[ée]tape"
+              }
+            ],
+            "doc_note": "Stage (Étape 2) competency appears as a bilingual heading followed by two consecutive paragraphs (Wolof then French). Match the heading and both paragraphs.",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "competences-base-heading",
+            "canonical_name": {
+              "primary": "Les compétences de base des activités",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "match_rules": [
+              {
+                "pattern": "les\\s+comp[ée]tences\\s+de\\s+base\\s+des\\s+activit[ée]s",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "les\\s+comp[ée]tences\\s+de\\s+base\\s+des\\s+activit[ée]s",
+                "target": "text",
+                "require_segment_kind": "block"
+              }
+            ],
+            "doc_note": "Auto-added to consume structural text and avoid unresolved segments."
+          },
+          {
+            "id": "tableau-1",
+            "canonical_name": {
+              "primary": "Tableau 1 — Compétences de base par domaine d'activité",
+              "translations": {}
+            },
+            "emit": "emit_table_rows",
+            "leaf_role": "expectation",
+            "match_rules": [
+              {
+                "pattern": "tableau\\s+1",
+                "target": "caption"
+              }
+            ],
+            "column_mappings": [
+              {
+                "header_pattern": "(?i)activit[ée]s\\s+num[ée]riques|kenug\\s+xayma",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Activités numériques"
+              },
+              {
+                "header_pattern": "(?i)activit[ée]s\\s+g[ée]om[ée]triques|d[ée]nd",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Activités géométriques"
+              },
+              {
+                "header_pattern": "(?i)activit[ée]s\\s+de\\s+mesure|natt",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Activités de mesure"
+              },
+              {
+                "header_pattern": "(?i)r[ée]s\\.\\s*de\\s+probl[èe]mes|r[ée]solution\\s+de\\s+probl[èe]mes|tekkim\\s+cax",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Résolution de problèmes"
+              }
+            ],
+            "doc_note": "4-column overview table: base competencies for each of the 4 strands."
+          }
+        ]
+      },
+      {
+        "id": "planification-separator-1",
+        "canonical_name": {
+          "primary": "PLANIFICATION DES APPRENTISSAGES",
+          "translations": {}
+        },
+        "emit": "ignore",
+        "match_rules": [
+          {
+            "pattern": "planification\\s+des\\s+apprentissages",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "planification\\s+des\\s+apprentissages",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "doc_note": "Separator heading between sections; consumed to avoid unresolved."
+      },
+      {
+        "id": "strand-numeriques",
+        "canonical_name": {
+          "primary": "Activités numériques",
+          "translations": {
+            "wo": "Kenug xayma"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "strand",
+        "match_rules": [
+          {
+            "pattern": "activit[ée]s num[ée]riques",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "activit[ée]s num[ée]riques",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "kenug xayma",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "kenug xayma",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "children": [
+          {
+            "id": "num-palier-defs",
+            "canonical_name": {
+              "primary": "Définitions des paliers — Activités numériques",
+              "translations": {}
+            },
+            "emit": "container_only",
+            "doc_note": "Bilingual Jéego/PALIER pairs defining each palier's competency scope.",
+            "children": [
+              {
+                "id": "num-ce1-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "implicit": false,
+                "children": [
+                  {
+                    "id": "num-palier-1-def",
+                    "canonical_name": {
+                      "primary": "Palier 1",
+                      "translations": {
+                        "wo": "Jéego 1"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+1"
+                      },
+                      {
+                        "pattern": "palier\\s+1"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 1,
+                    "doc_note": "Jéego 1 (Wolof) + PALIER 1 (French): integers 0–5000, arithmetic operations."
+                  },
+                  {
+                    "id": "num-palier-2-def",
+                    "canonical_name": {
+                      "primary": "Palier 2",
+                      "translations": {
+                        "wo": "Jéego 2"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+2"
+                      },
+                      {
+                        "pattern": "palier\\s+2"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 2,
+                    "doc_note": "Jéego 2 + PALIER 2: integers 0–8000."
+                  },
+                  {
+                    "id": "num-palier-3-def",
+                    "canonical_name": {
+                      "primary": "Palier 3",
+                      "translations": {
+                        "wo": "Jéego 3"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+3"
+                      },
+                      {
+                        "pattern": "palier\\s+3"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 3,
+                    "doc_note": "Jéego 3 + PALIER 3: integers 0–10000."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "num-ce2-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "implicit": false,
+                "children": [
+                  {
+                    "id": "num-palier-4-def",
+                    "canonical_name": {
+                      "primary": "Palier 4",
+                      "translations": {
+                        "wo": "Jéego 4"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+4"
+                      },
+                      {
+                        "pattern": "palier\\s+4"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 4,
+                    "doc_note": "Jéego 4 + PALIER 4: integers 0–50000."
+                  },
+                  {
+                    "id": "num-palier-5-def",
+                    "canonical_name": {
+                      "primary": "Palier 5",
+                      "translations": {
+                        "wo": "Jéego 5"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+5"
+                      },
+                      {
+                        "pattern": "palier\\s+5"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 5,
+                    "doc_note": "Jéego 5 + PALIER 5: integers 0–80000."
+                  },
+                  {
+                    "id": "num-palier-6-def",
+                    "canonical_name": {
+                      "primary": "Palier 6",
+                      "translations": {
+                        "wo": "Jéego 6"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+6"
+                      },
+                      {
+                        "pattern": "palier\\s+6"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 6,
+                    "doc_note": "Jéego 6 + PALIER 6: integers 0–100000."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "num-planification",
+            "canonical_name": {
+              "primary": "Planification des apprentissages — Activités numériques et Résolution de problèmes",
+              "translations": {
+                "wo": "Planifikasiyoŋ bu njàng mi"
+              }
+            },
+            "emit": "container_only",
+            "doc_note": "Planification tables are presented under the 'Activités numériques' heading, but each planification row includes BOTH an 'Activités numériques' column and an 'Activités résolution de problèmes' column (cross-strand scope-and-sequence).",
+            "children": [
+              {
+                "id": "num-plan-ce1",
+                "canonical_name": {
+                  "primary": "Planification CE1",
+                  "translations": {}
+                },
+                "implicit": true,
+                "emit": "container_only",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "num-plan-ce1-label",
+                    "canonical_name": {
+                      "primary": "Tableau de planification des apprentissages (CE1)",
+                      "translations": {}
+                    },
+                    "emit": "ignore",
+                    "match_rules": [
+                      {
+                        "pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "doc_note": "Consumes the planification intro line preceding the planification table."
+                  },
+                  {
+                    "id": "tableau-2",
+                    "canonical_name": {
+                      "primary": "Tableau 2 — Planification CE1: Activités numériques et Résolution de problèmes (Semaines 1–25)",
+                      "translations": {}
+                    },
+                    "emit": "emit_table_rows",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "tableau\\s+2",
+                        "target": "caption"
+                      }
+                    ],
+                    "column_mappings": [
+                      {
+                        "header_pattern": "(?i)semaine|palier",
+                        "role": "grouping:week"
+                      },
+                      {
+                        "header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
+                        "role": "leaf:expectation",
+                        "source_label_override": "Activités numériques"
+                      },
+                      {
+                        "header_pattern": "(?i)r[ée]solution",
+                        "role": "leaf:expectation",
+                        "source_label_override": "Résolution de problèmes"
+                      }
+                    ],
+                    "doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French)."
+                  }
+                ]
+              },
+              {
+                "id": "num-plan-ce2",
+                "canonical_name": {
+                  "primary": "Planification CE2",
+                  "translations": {}
+                },
+                "implicit": true,
+                "emit": "container_only",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "num-plan-ce2-label",
+                    "canonical_name": {
+                      "primary": "Tableau de planification des apprentissages (CE2)",
+                      "translations": {}
+                    },
+                    "emit": "ignore",
+                    "match_rules": [
+                      {
+                        "pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "doc_note": "Consumes the planification intro line preceding the planification table."
+                  },
+                  {
+                    "id": "tableau-3",
+                    "canonical_name": {
+                      "primary": "Tableau 3 — Planification CE2: Activités numériques et Résolution de problèmes (Semaines 1–25)",
+                      "translations": {}
+                    },
+                    "emit": "emit_table_rows",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "tableau\\s+3",
+                        "target": "caption"
+                      }
+                    ],
+                    "column_mappings": [
+                      {
+                        "header_pattern": "(?i)semaine|palier",
+                        "role": "grouping:week"
+                      },
+                      {
+                        "header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
+                        "role": "leaf:expectation",
+                        "source_label_override": "Activités numériques"
+                      },
+                      {
+                        "header_pattern": "(?i)r[ée]solution",
+                        "role": "leaf:expectation",
+                        "source_label_override": "Résolution de problèmes"
+                      }
+                    ],
+                    "doc_note": "Same structure as Tableau 2, for CE2."
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "num-apprentissages",
+            "canonical_name": {
+              "primary": "Apprentissages ponctuels — Activités numériques",
+              "translations": {}
+            },
+            "emit": "emit_grouping",
+            "grouping_role": "section",
+            "match_rules": [
+              {
+                "pattern": "apprentissages\\s+ponctuels.*num[ée]riques",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "apprentissages\\s+ponctuels.*num[ée]riques",
+                "target": "text",
+                "require_segment_kind": "block"
+              },
+              {
+                "pattern": "activit[ée]s\\s+num[ée]riques",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "activit[ée]s\\s+num[ée]riques",
+                "target": "text",
+                "require_segment_kind": "block"
+              }
+            ],
+            "children": [
+              {
+                "id": "num-ap-ce1",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "num-ap-ce1-palier-1",
+                    "canonical_name": {
+                      "primary": "Palier 1 — Activités numériques CE1",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 1,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-4",
+                        "canonical_name": {
+                          "primary": "Tableau 4 — Apprentissages ponctuels: Palier 1, Activités numériques CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+4",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 1,
+                        "doc_note": "Detailed OA table: Objectif d'apprentissage, Objectif spécifique, Contenus, Durée. Bilingual rows."
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "num-ap-ce1-palier-2",
+                    "canonical_name": {
+                      "primary": "Palier 2 — Activités numériques CE1",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 2,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-5",
+                        "canonical_name": {
+                          "primary": "Tableau 5 — Apprentissages ponctuels: Palier 2, Activités numériques CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+5",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 2
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "num-ap-ce1-palier-3",
+                    "canonical_name": {
+                      "primary": "Palier 3 — Activités numériques CE1",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 3,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-6",
+                        "canonical_name": {
+                          "primary": "Tableau 6 — Apprentissages ponctuels: Palier 3, Activités numériques CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+6",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 3
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "num-ap-ce2",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "num-ap-ce2-palier-4",
+                    "canonical_name": {
+                      "primary": "Palier 4 — Activités numériques CE2",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 4,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-7",
+                        "canonical_name": {
+                          "primary": "Tableau 7 — Apprentissages ponctuels: Palier 4, Activités numériques CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+7",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 4
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "num-ap-ce2-palier-5",
+                    "canonical_name": {
+                      "primary": "Palier 5 — Activités numériques CE2",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 5,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+5\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+5\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-8",
+                        "canonical_name": {
+                          "primary": "Tableau 8 — Apprentissages ponctuels: Palier 5, Activités numériques CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+8",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 5
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "num-ap-ce2-palier-6",
+                    "canonical_name": {
+                      "primary": "Palier 6 — Activités numériques CE2",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 6,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+6\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+6\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-9",
+                        "canonical_name": {
+                          "primary": "Tableau 9 — Apprentissages ponctuels: Palier 6, Activités numériques CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+9",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 6
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "strand-resolution",
+        "canonical_name": {
+          "primary": "Activités de résolution de problèmes",
+          "translations": {
+            "wo": "Yëngute ci tekkim caxu xayma"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "strand",
+        "match_rules": [
+          {
+            "pattern": "activit[ée]s de r[ée]solution",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "activit[ée]s de r[ée]solution",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "r[ée]solution de probl[èe]mes",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "r[ée]solution de probl[èe]mes",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "tekkim caxu xayma",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "tekkim caxu xayma",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "children": [
+          {
+            "id": "res-palier-defs",
+            "canonical_name": {
+              "primary": "Définitions des paliers — Résolution de problèmes",
+              "translations": {}
+            },
+            "emit": "container_only",
+            "children": [
+              {
+                "id": "res-ce1-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "res-palier-1-def",
+                    "canonical_name": {
+                      "primary": "Palier 1",
+                      "translations": {
+                        "wo": "Jéego 1"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+1"
+                      },
+                      {
+                        "pattern": "palier\\s+1"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 1,
+                    "doc_note": "Data categories in problem analysis."
+                  },
+                  {
+                    "id": "res-palier-2-def",
+                    "canonical_name": {
+                      "primary": "Palier 2",
+                      "translations": {
+                        "wo": "Jéego 2"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+2"
+                      },
+                      {
+                        "pattern": "palier\\s+2"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 2
+                  },
+                  {
+                    "id": "res-palier-3-def",
+                    "canonical_name": {
+                      "primary": "Palier 3",
+                      "translations": {
+                        "wo": "Jéego 3"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+3"
+                      },
+                      {
+                        "pattern": "palier\\s+3"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 3
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "res-ce2-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "res-palier-4-def",
+                    "canonical_name": {
+                      "primary": "Palier 4",
+                      "translations": {
+                        "wo": "Jéego 4"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+4"
+                      },
+                      {
+                        "pattern": "palier\\s+4"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 4
+                  },
+                  {
+                    "id": "res-palier-5-def",
+                    "canonical_name": {
+                      "primary": "Palier 5",
+                      "translations": {
+                        "wo": "Jéego 5"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+5"
+                      },
+                      {
+                        "pattern": "palier\\s+5"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 5
+                  },
+                  {
+                    "id": "res-palier-6-def",
+                    "canonical_name": {
+                      "primary": "Palier 6",
+                      "translations": {
+                        "wo": "Jéego 6"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+6"
+                      },
+                      {
+                        "pattern": "palier\\s+6"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 6
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "res-apprentissages",
+            "canonical_name": {
+              "primary": "Apprentissages ponctuels — Résolution de problèmes",
+              "translations": {}
+            },
+            "emit": "emit_grouping",
+            "grouping_role": "section",
+            "match_rules": [
+              {
+                "pattern": "apprentissages\\s+ponctuels.*r[ée]solution",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "apprentissages\\s+ponctuels.*r[ée]solution",
+                "target": "text",
+                "require_segment_kind": "block"
+              },
+              {
+                "pattern": "r[ée]solution\\s+de\\s+probl[èe]mes",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "r[ée]solution\\s+de\\s+probl[èe]mes",
+                "target": "text",
+                "require_segment_kind": "block"
+              }
+            ],
+            "children": [
+              {
+                "id": "res-ap-ce1",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "res-ap-ce1-palier-1",
+                    "canonical_name": {
+                      "primary": "Palier 1 — Résolution de problèmes CE1",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 1,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-10",
+                        "canonical_name": {
+                          "primary": "Tableau 10 — Apprentissages ponctuels: Palier 1, Résolution de problèmes CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+10",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 1
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "res-ap-ce1-palier-2",
+                    "canonical_name": {
+                      "primary": "Palier 2 — Résolution de problèmes CE1",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 2,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-11",
+                        "canonical_name": {
+                          "primary": "Tableau 11 — Apprentissages ponctuels: Palier 2, Résolution de problèmes CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+11",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 2
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "res-ap-ce1-palier-3",
+                    "canonical_name": {
+                      "primary": "Palier 3 — Résolution de problèmes CE1",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 3,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-12",
+                        "canonical_name": {
+                          "primary": "Tableau 12 — Apprentissages ponctuels: Palier 3, Résolution de problèmes CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+12",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 3
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "res-ap-ce2",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "res-ap-ce2-palier-4",
+                    "canonical_name": {
+                      "primary": "Palier 4 — Résolution de problèmes CE2",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 4,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-13",
+                        "canonical_name": {
+                          "primary": "Tableau 13 — Apprentissages ponctuels: Palier 4, Résolution de problèmes CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+13",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 4
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "res-ap-ce2-palier-5",
+                    "canonical_name": {
+                      "primary": "Palier 5 — Résolution de problèmes CE2",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 5,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+5\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+5\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-14",
+                        "canonical_name": {
+                          "primary": "Tableau 14 — Apprentissages ponctuels: Palier 5, Résolution de problèmes CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+14",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 5
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "res-ap-ce2-palier-6",
+                    "canonical_name": {
+                      "primary": "Palier 6 — Résolution de problèmes CE2",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 6,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+6\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+6\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-15",
+                        "canonical_name": {
+                          "primary": "Tableau 15 — Apprentissages ponctuels: Palier 6, Résolution de problèmes CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+15",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 6
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "planification-separator-2",
+        "canonical_name": {
+          "primary": "PLANIFICATION DES APPRENTISSAGES",
+          "translations": {}
+        },
+        "emit": "ignore",
+        "match_rules": [
+          {
+            "pattern": "planification\\s+des\\s+apprentissages",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "planification\\s+des\\s+apprentissages",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "doc_note": "Separator heading between sections; consumed to avoid unresolved."
+      },
+      {
+        "id": "strand-geometrie",
+        "canonical_name": {
+          "primary": "Activités géométriques",
+          "translations": {
+            "wo": "Yëngute xam-xamu dénd"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "strand",
+        "match_rules": [
+          {
+            "pattern": "activit[ée]s g[ée]om[ée]triques",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "activit[ée]s g[ée]om[ée]triques",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "xam-xamu d[ée]nd",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "xam-xamu d[ée]nd",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "doc_note": "UNIQUE: Only 4 paliers (2 per grade, not 3). Paliers 2 and 3 each split across 2 tables via '(suite)' continuation.",
+        "children": [
+          {
+            "id": "geo-palier-defs",
+            "canonical_name": {
+              "primary": "Définitions des paliers — Activités géométriques",
+              "translations": {}
+            },
+            "emit": "container_only",
+            "children": [
+              {
+                "id": "geo-ce1-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "geo-palier-1-def",
+                    "canonical_name": {
+                      "primary": "Palier 1",
+                      "translations": {
+                        "wo": "Jéego 1"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+1"
+                      },
+                      {
+                        "pattern": "palier\\s+1"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 1,
+                    "doc_note": "Lines, special/relative positions of lines, plane figures, instruments."
+                  },
+                  {
+                    "id": "geo-palier-2-def",
+                    "canonical_name": {
+                      "primary": "Palier 2",
+                      "translations": {
+                        "wo": "Jéego 2"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+2"
+                      },
+                      {
+                        "pattern": "palier\\s+2"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 2,
+                    "doc_note": "Lines, special/relative positions, plane figure properties, solids, instruments."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "geo-ce2-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "geo-palier-3-def",
+                    "canonical_name": {
+                      "primary": "Palier 3",
+                      "translations": {
+                        "wo": "Jéego 3"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+3"
+                      },
+                      {
+                        "pattern": "palier\\s+3"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 3
+                  },
+                  {
+                    "id": "geo-palier-4-def",
+                    "canonical_name": {
+                      "primary": "Palier 4",
+                      "translations": {
+                        "wo": "Jéego 4"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+4"
+                      },
+                      {
+                        "pattern": "palier\\s+4"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 4
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "geo-apprentissages",
+            "canonical_name": {
+              "primary": "Apprentissages ponctuels — Activités géométriques",
+              "translations": {}
+            },
+            "emit": "emit_grouping",
+            "grouping_role": "section",
+            "match_rules": [
+              {
+                "pattern": "apprentissages\\s+ponctuels.*g[ée]om[ée]tr",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "apprentissages\\s+ponctuels.*g[ée]om[ée]tr",
+                "target": "text",
+                "require_segment_kind": "block"
+              },
+              {
+                "pattern": "activit[ée]s\\s+g[ée]om[ée]tr",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "activit[ée]s\\s+g[ée]om[ée]tr",
+                "target": "text",
+                "require_segment_kind": "block"
+              }
+            ],
+            "children": [
+              {
+                "id": "geo-ap-ce1",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "geo-ap-ce1-palier-1",
+                    "canonical_name": {
+                      "primary": "Palier 1 — Lignes et positions de droites",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 1,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-16",
+                        "canonical_name": {
+                          "primary": "Tableau 16 — Apprentissages ponctuels: Palier 1, Géométrie CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+16",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 1,
+                        "topic": {
+                          "primary": "Lignes et positions de droites",
+                          "translations": {
+                            "wo": "Rëdd yi ak seen taxawaay"
+                          }
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "geo-ap-ce1-palier-2",
+                    "canonical_name": {
+                      "primary": "Palier 2 — Le carré / Le rectangle",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 2,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-17",
+                        "canonical_name": {
+                          "primary": "Tableau 17 — Apprentissages ponctuels: Palier 2, Géométrie CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+17",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 2,
+                        "topic": {
+                          "primary": "Le carré",
+                          "translations": {
+                            "wo": "Kaare"
+                          }
+                        }
+                      },
+                      {
+                        "id": "tableau-18",
+                        "canonical_name": {
+                          "primary": "Tableau 18 — Apprentissages ponctuels: Palier 2 (suite), Géométrie CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+18",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 2,
+                        "is_continuation": true,
+                        "topic": {
+                          "primary": "Le rectangle",
+                          "translations": {
+                            "wo": "Rektàngal"
+                          }
+                        },
+                        "doc_note": "Continuation of Palier 2 — separate topic (rectangle vs carré) but same palier."
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "geo-ap-ce2",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "geo-ap-ce2-palier-3",
+                    "canonical_name": {
+                      "primary": "Palier 3 — Lignes, angles, carré et rectangle / Triangle",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 3,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-19",
+                        "canonical_name": {
+                          "primary": "Tableau 19 — Apprentissages ponctuels: Palier 3, Géométrie CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+19",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 3,
+                        "topic": {
+                          "primary": "Lignes, angles, carré et rectangle",
+                          "translations": {}
+                        }
+                      },
+                      {
+                        "id": "tableau-20",
+                        "canonical_name": {
+                          "primary": "Tableau 20 — Apprentissages ponctuels: Palier 3 (suite), Géométrie CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+20",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 3,
+                        "is_continuation": true,
+                        "topic": {
+                          "primary": "Le triangle",
+                          "translations": {}
+                        },
+                        "doc_note": "Continuation of Palier 3 — triangle is a separate topic within same palier."
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "geo-ap-ce2-palier-4",
+                    "canonical_name": {
+                      "primary": "Palier 4 — Cercle, symétrie et solides",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 4,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-21",
+                        "canonical_name": {
+                          "primary": "Tableau 21 — Apprentissages ponctuels: Palier 4, Géométrie CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+21",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 4,
+                        "topic": {
+                          "primary": "Cercle, symétrie et solides",
+                          "translations": {}
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "planification-separator-3",
+        "canonical_name": {
+          "primary": "PLANIFICATION DES APPRENTISSAGES",
+          "translations": {}
+        },
+        "emit": "ignore",
+        "match_rules": [
+          {
+            "pattern": "planification\\s+des\\s+apprentissages",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "planification\\s+des\\s+apprentissages",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "doc_note": "Separator heading between sections; consumed to avoid unresolved."
+      },
+      {
+        "id": "strand-mesure",
+        "canonical_name": {
+          "primary": "Activités de mesure",
+          "translations": {
+            "wo": "Yëngute xam-xamu natt"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "strand",
+        "match_rules": [
+          {
+            "pattern": "activit[ée]s de mesure",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "activit[ée]s de mesure",
+            "target": "text",
+            "require_segment_kind": "block"
+          },
+          {
+            "pattern": "xam-xamu natt",
+            "target": "heading",
+            "require_segment_kind": "block",
+            "require_block_type": "heading"
+          },
+          {
+            "pattern": "xam-xamu natt",
+            "target": "text",
+            "require_segment_kind": "block"
+          }
+        ],
+        "doc_note": "UNIQUE: Has a strand-level competency statement (Wolof+French) BEFORE the palier definitions. This is NOT grade-specific — it covers the entire stage (CE1-CE2).",
+        "children": [
+          {
+            "id": "mes-strand-competency",
+            "canonical_name": {
+              "primary": "Compétence de base — Activités de mesure",
+              "translations": {
+                "wo": "Manoore mi lalu — Yëngute xam-xamu natt"
+              }
+            },
+            "emit": "emit_leaf",
+            "leaf_role": "expectation",
+            "match_rules": [
+              {
+                "pattern": "boole\\s+mooñ\\s+jëfandikoo",
+                "target": "text",
+                "require_segment_kind": "block"
+              },
+              {
+                "pattern": "int[ée]grer\\s+les\\s+notions\\s+de\\s+longueur",
+                "target": "text",
+                "require_segment_kind": "block"
+              }
+            ],
+            "doc_note": "Stage-level competency covering all measurement topics. Appears BEFORE any grade/palier content. Must NOT be assigned to CE1 or CE2 specifically.",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "mes-palier-defs",
+            "canonical_name": {
+              "primary": "Définitions des paliers — Activités de mesure",
+              "translations": {}
+            },
+            "emit": "container_only",
+            "children": [
+              {
+                "id": "mes-ce1-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "mes-palier-1-def",
+                    "canonical_name": {
+                      "primary": "Palier 1",
+                      "translations": {
+                        "wo": "Jéego 1"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+1"
+                      },
+                      {
+                        "pattern": "palier\\s+1"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 1,
+                    "doc_note": "Length and capacity, conventional instruments."
+                  },
+                  {
+                    "id": "mes-palier-2-def",
+                    "canonical_name": {
+                      "primary": "Palier 2",
+                      "translations": {
+                        "wo": "Jéego 2"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+2"
+                      },
+                      {
+                        "pattern": "palier\\s+2"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 2,
+                    "doc_note": "Length, capacity, mass and duration."
+                  },
+                  {
+                    "id": "mes-palier-3-def",
+                    "canonical_name": {
+                      "primary": "Palier 3",
+                      "translations": {
+                        "wo": "Jéego 3"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+3"
+                      },
+                      {
+                        "pattern": "palier\\s+3"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 3,
+                    "doc_note": "Length, money, perimeters and prices."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "mes-ce2-paliers",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "mes-palier-4-def",
+                    "canonical_name": {
+                      "primary": "Palier 4",
+                      "translations": {
+                        "wo": "Jéego 4"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+4"
+                      },
+                      {
+                        "pattern": "palier\\s+4"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 4
+                  },
+                  {
+                    "id": "mes-palier-5-def",
+                    "canonical_name": {
+                      "primary": "Palier 5",
+                      "translations": {
+                        "wo": "Jéego 5"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+5"
+                      },
+                      {
+                        "pattern": "palier\\s+5"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 5
+                  },
+                  {
+                    "id": "mes-palier-6-def",
+                    "canonical_name": {
+                      "primary": "Palier 6",
+                      "translations": {
+                        "wo": "Jéego 6"
+                      }
+                    },
+                    "emit": "emit_grouping_and_leaf",
+                    "grouping_role": "substage",
+                    "leaf_role": "expectation",
+                    "match_rules": [
+                      {
+                        "pattern": "j[ée]ego\\s+6"
+                      },
+                      {
+                        "pattern": "palier\\s+6"
+                      }
+                    ],
+                    "allow_multiple_segments": true,
+                    "substage_index": 6
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "mes-apprentissages",
+            "canonical_name": {
+              "primary": "Apprentissages ponctuels — Activités de mesure",
+              "translations": {}
+            },
+            "emit": "emit_grouping",
+            "grouping_role": "section",
+            "match_rules": [
+              {
+                "pattern": "apprentissages\\s+ponctuels.*mesure",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "apprentissages\\s+ponctuels.*mesure",
+                "target": "text",
+                "require_segment_kind": "block"
+              },
+              {
+                "pattern": "activit[ée]s\\s+de\\s+mesure",
+                "target": "heading",
+                "require_segment_kind": "block",
+                "require_block_type": "heading"
+              },
+              {
+                "pattern": "activit[ée]s\\s+de\\s+mesure",
+                "target": "text",
+                "require_segment_kind": "block"
+              }
+            ],
+            "children": [
+              {
+                "id": "mes-ap-ce1",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE1",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE1",
+                "children": [
+                  {
+                    "id": "mes-ap-ce1-palier-1",
+                    "canonical_name": {
+                      "primary": "Palier 1 — Longueur et capacité",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 1,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+1\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-22",
+                        "canonical_name": {
+                          "primary": "Tableau 22 — Apprentissages ponctuels: Palier 1, Mesure CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+22",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 1,
+                        "topic": {
+                          "primary": "Longueur et capacité",
+                          "translations": {}
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "mes-ap-ce1-palier-2",
+                    "canonical_name": {
+                      "primary": "Palier 2 — Masse et durée",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 2,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+2\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-23",
+                        "canonical_name": {
+                          "primary": "Tableau 23 — Apprentissages ponctuels: Palier 2, Mesure CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+23",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 2,
+                        "topic": {
+                          "primary": "Masse et durée",
+                          "translations": {}
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "mes-ap-ce1-palier-3",
+                    "canonical_name": {
+                      "primary": "Palier 3 — Périmètre et monnaie",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 3,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+3\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-24",
+                        "canonical_name": {
+                          "primary": "Tableau 24 — Apprentissages ponctuels: Palier 3, Mesure CE1",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+24",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 3,
+                        "topic": {
+                          "primary": "Périmètre et monnaie",
+                          "translations": {}
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce1",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              },
+              {
+                "id": "mes-ap-ce2",
+                "canonical_name": {
+                  "primary": "Paliers du niveau CE2",
+                  "translations": {}
+                },
+                "implicit": false,
+                "emit": "emit_grouping",
+                "grouping_role": "grade_level",
+                "grade": "CE2",
+                "children": [
+                  {
+                    "id": "mes-ap-ce2-palier-4",
+                    "canonical_name": {
+                      "primary": "Palier 4 — Longueur, masse et capacité",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 4,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+4\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-25",
+                        "canonical_name": {
+                          "primary": "Tableau 25 — Apprentissages ponctuels: Palier 4, Mesure CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+25",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 4,
+                        "topic": {
+                          "primary": "Longueur, masse et capacité",
+                          "translations": {}
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "mes-ap-ce2-palier-5",
+                    "canonical_name": {
+                      "primary": "Palier 5 — Masse, durée et monnaie",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 5,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+5\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+5\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-26",
+                        "canonical_name": {
+                          "primary": "Tableau 26 — Apprentissages ponctuels: Palier 5, Mesure CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+26",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 5,
+                        "topic": {
+                          "primary": "Masse, durée et monnaie",
+                          "translations": {}
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  },
+                  {
+                    "id": "mes-ap-ce2-palier-6",
+                    "canonical_name": {
+                      "primary": "Palier 6 — Périmètre et aire",
+                      "translations": {}
+                    },
+                    "emit": "emit_grouping",
+                    "grouping_role": "substage",
+                    "substage_index": 6,
+                    "match_rules": [
+                      {
+                        "pattern": "palier\\s+6\\b",
+                        "target": "heading",
+                        "require_segment_kind": "block",
+                        "require_block_type": "heading"
+                      },
+                      {
+                        "pattern": "palier\\s+6\\b",
+                        "target": "text",
+                        "require_segment_kind": "block"
+                      }
+                    ],
+                    "children": [
+                      {
+                        "id": "tableau-27",
+                        "canonical_name": {
+                          "primary": "Tableau 27 — Apprentissages ponctuels: Palier 6, Mesure CE2",
+                          "translations": {}
+                        },
+                        "emit": "emit_table_rows",
+                        "leaf_role": "expectation",
+                        "match_rules": [
+                          {
+                            "pattern": "tableau\\s+27",
+                            "target": "caption"
+                          }
+                        ],
+                        "column_mappings": [
+                          {
+                            "header_pattern": "(?i)objectif d.apprentissage",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif d'apprentissage"
+                          },
+                          {
+                            "header_pattern": "(?i)objectif sp[ée]cifique",
+                            "role": "leaf:expectation",
+                            "source_label_override": "Objectif spécifique"
+                          },
+                          {
+                            "header_pattern": "(?i)contenus?",
+                            "role": "leaf:guidance",
+                            "source_label_override": "Contenus"
+                          },
+                          {
+                            "header_pattern": "(?i)dur[ée]e",
+                            "role": "skip"
+                          }
+                        ],
+                        "substage_index": 6,
+                        "topic": {
+                          "primary": "Périmètre et aire",
+                          "translations": {}
+                        }
+                      }
+                    ],
+                    "doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+                  }
+                ],
+                "match_rules": [
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "heading",
+                    "require_segment_kind": "block",
+                    "require_block_type": "heading"
+                  },
+                  {
+                    "pattern": "paliers\\s+du\\s+niveau\\s+ce2",
+                    "target": "text",
+                    "require_segment_kind": "block"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "doc_note": "Framework root. CONTAINER_ONLY because the compiler creates the framework root node independently. The first matchable segment should be 'front-matter' or 'cadre-competences'."
+  },
+  "schema_version": "1.0",
+  "skeleton_id": "senegal-math-etape2-wolof-fr"
 }
