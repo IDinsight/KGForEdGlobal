@@ -8,7 +8,9 @@ from __future__ import annotations
 # Standard Library
 import hashlib
 import json
+import re
 
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Literal, Optional, Self
 
@@ -21,7 +23,8 @@ from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import (
     BlockType,
     CaptionKind,
-    GroupingCanonicalizationAction,
+    CurriculumEmitPolicy,
+    CurriculumMatchTarget,
     NodeRole,
     SegmentDecisionType,
     StatementRole,
@@ -154,28 +157,501 @@ class UnresolvedItem(BaseSchema):
     )
 
 
-# Schemas for decisions produced by the LLM and used for deterministic parsing.
-class HeadingLevelEntry(BaseSchema):
-    """A single heading level assignment for a heading in the input list."""
+# Schemas for the curriculum skeleton.
+class CurriculumColumnMapping(BaseSchema):
+    """Maps a table column to a semantic role for EMIT_TABLE_ROWS nodes.
 
-    index: int = Field(..., description="The index number matching the input list.")
-    level: int = Field(
+    The `header_pattern` is matched (regex, case-insensitive) against the canonical
+    header text for each column. The `role` string encodes both the kind ("grouping" or
+    "leaf") and the specific enum value.
+    """
+
+    header_pattern: str = Field(
+        ..., description="Regex matched against header_rows_canonical cell text."
+    )
+    role: str = Field(
         ...,
-        description="The structural depth level (0 for non-structural/front-matter, 1 for top-level, etc.).",
+        description=(
+            "Semantic role: 'grouping:{NodeRole.value}' (e.g., 'grouping:strand'), "
+            "'leaf:{StatementRole.value}' (e.g., 'leaf:expectation'), or 'skip'."
+        ),
+    )
+    source_label_override: Optional[str] = Field(
+        default=None,
+        description="If set, use this as source_label instead of the column header text.",
+    )
+
+    @model_validator(mode="after")
+    def validate_role_format(self) -> CurriculumColumnMapping:
+        """Ensure `role` is parseable as 'kind:value' or 'skip', and that the value is
+        a valid NodeRole or StatementRole member.
+
+        Returns
+        -------
+        CurriculumColumnMapping
+            The validated CurriculumColumnMapping object.
+
+        Raises
+        ------
+        ValueError
+            If `role` is not in the correct format or contains invalid enum values.
+        """
+
+        if self.role == "skip":
+            return self
+
+        parts = self.role.split(":", 1)
+
+        if len(parts) != 2 or parts[0] not in ("grouping", "leaf"):
+            raise ValueError(
+                f"ColumnMapping.role must be 'grouping:{{role}}', "
+                f"'leaf:{{role}}', or 'skip'. Got: {self.role!r}"
+            )
+
+        kind, value = parts
+
+        if kind == "grouping":
+            try:
+                NodeRole(value)
+            except ValueError:
+                raise ValueError(
+                    f"Unknown NodeRole in ColumnMapping.role: {value!r}. "
+                    f"Valid values: {[r.value for r in NodeRole]}"
+                ) from None
+        elif kind == "leaf":
+            try:
+                StatementRole(value)
+            except ValueError:
+                raise ValueError(
+                    f"Unknown StatementRole in ColumnMapping.role: {value!r}. "
+                    f"Valid values: {[r.value for r in StatementRole]}"
+                ) from None
+
+        return self
+
+
+class CurriculumMatchRule(BaseSchema):
+    """A single matching rule that binds document segments to skeleton nodes.
+
+    Multiple rules on a node are OR'd--any match suffices. Within a rule, all specified
+    conditions must hold (AND logic): `pattern` must match AND `require_segment_kind`
+    (if set) AND `require_block_type` (if set).
+    """
+
+    pattern: str = Field(
+        ...,
+        description=(
+            "Regex pattern. Compiled with re.IGNORECASE | re.UNICODE by the engine. "
+            'In JSON, escape backslashes once: e.g., "tableau\\\\s+4".'
+        ),
+    )
+    require_block_type: Optional[str] = Field(
+        default=None,
+        description="If set, block segment must also have this block_type (e.g., 'heading').",
+    )
+    require_segment_kind: Optional[str] = Field(
+        default=None,
+        description="If set, segment must also have this kind ('block' or 'table').",
+    )
+    target: CurriculumMatchTarget = Field(
+        default=CurriculumMatchTarget.TEXT,
+        description="What part of the segment to test.",
     )
 
 
-class HeadingLevelAnalysis(BaseSchema):
-    """Result of LLM heading level analysis for a list of headings."""
+class CurriculumMultilingualLabel(BaseSchema):
+    """Canonical name in one or more languages.
 
-    entries: list[HeadingLevelEntry] = Field(
+    The `primary` field is the canonical form used in the KG. Additional languages are
+    stored in `translations`.
+    """
+
+    primary: str = Field(
         ...,
-        description="The list of assigned levels corresponding strictly to the input order.",
+        description="Canonical name in the document's primary administrative language.",
+    )
+    translations: dict[str, str] = Field(
+        default_factory=dict,
+        description="Other language versions. Key = BCP-47 code, value = translated name.",
     )
 
 
+class CurriculumSkeletonMetadata(BaseSchema):
+    """Document-level metadata for the curriculum."""
+
+    academic_subject: str = Field(
+        ..., description="Canonical subject name in primary language."
+    )
+    context_groupings_role_order: Optional[list[NodeRole]] = Field(
+        default=None,
+        description=(
+            "Custom role precedence for context_groupings sorting. "
+            "If None, uses DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER from constants.py."
+        ),
+    )
+    country: str = Field(
+        ..., description="Country name (e.g., 'Senegal', 'India', 'Kenya')."
+    )
+    grades: list[str] = Field(
+        ..., min_length=1, description="Grade levels covered (e.g., ['CE1', 'CE2'])."
+    )
+    languages: list[str] = Field(
+        ..., min_length=1, description="BCP-47 codes of languages in the document."
+    )
+    ministry: Optional[str] = Field(default=None, description="Issuing ministry/body.")
+    primary_language: str = Field(
+        ..., description="Primary administrative language (BCP-47)."
+    )
+    stage: Optional[str] = Field(
+        default=None,
+        description="Stage/cycle name (e.g., 'Etape 2', 'Upper Primary').",
+    )
+
+
+class CurriculumSkeletonNode(BaseSchema):
+    """A single node in the curriculum skeleton tree.
+
+    1. Every node has an `id` (unique within the skeleton) and a canonical name.
+    2. Roles are split: `grouping_role` (NodeRole) for grouping context and `leaf_role`
+        (StatementRole) for leaf content. A single node can have both.
+    3. Match rules are optional: CONTAINER_ONLY nodes have no rules because they don't
+        correspond to document segments.
+    4. Metadata fields (grade, substage_index, topic, etc.) are inherited downward.
+    5. Children are ordered: their position in the list reflects expected document
+        order.
+    """
+
+    canonical_name: CurriculumMultilingualLabel
+    children: list[CurriculumSkeletonNode] = Field(default_factory=list)
+    doc_note: Optional[str] = Field(default=None)
+    emit: CurriculumEmitPolicy = Field(default=CurriculumEmitPolicy.EMIT_GROUPING)
+    id: str = Field(
+        ...,
+        description=(
+            "Unique identifier within the skeleton (kebab-case). "
+            "Convention: '{strand}-{role}-{index}', e.g., 'num-palier-1-def'."
+        ),
+    )
+    match_rules: list[CurriculumMatchRule] = Field(default_factory=list)
+
+    # Roles.
+    grouping_role: Optional[NodeRole] = Field(
+        default=None,
+        description="NodeRole for grouping output. Set for nodes that emit groupings.",
+    )
+    leaf_role: Optional[StatementRole] = Field(
+        default=None,
+        description="StatementRole for leaf output. Set for nodes that emit leaves.",
+    )
+
+    # Column mappings (required for EMIT_TABLE_ROWS).
+    column_mappings: list[CurriculumColumnMapping] = Field(
+        default_factory=list,
+        description="Column-to-role mappings. Required when emit=EMIT_TABLE_ROWS.",
+    )
+
+    # Metadata (inherited downward unless overridden by a descendant).
+    allow_multiple_segments: bool = Field(
+        default=False,
+        description="If True, multiple consecutive segments can match this node. Used for bilingual pairs (Jéego + PALIER) that map to one unit.",
+    )
+    grade: Optional[str] = Field(
+        default=None,
+        description="Grade level (e.g., 'CE1'). Inherited by children.",
+    )
+    implicit: bool = Field(
+        default=False,
+        description=(
+            "If True with CONTAINER_ONLY, this node's grouping_role still appears in "
+            "context_groupings of descendant matches. Use for logical groupings that "
+            "have no document heading but must provide context."
+        ),
+    )
+    is_continuation: bool = Field(
+        default=False,
+        description="True if this node continues a previous node's substage (e.g., Geometry 'Palier 2 (suite)').",
+    )
+    local_code: Optional[str] = Field(
+        default=None,
+        description="Maps to GroupingDecision.local_code (e.g., 'Tableau 4').",
+    )
+    source_label: Optional[str] = Field(
+        default=None,
+        description="Maps to GroupingDecision.source_label — original document text.",
+    )
+    substage_index: Optional[int] = Field(
+        default=None,
+        description="1-based substage/palier number. For building progression chains.",
+    )
+    topic: Optional[CurriculumMultilingualLabel] = Field(
+        default=None, description="Topic subdivision within a substage."
+    )
+
+    @model_validator(mode="after")
+    def validate_emit_match_consistency(self) -> CurriculumSkeletonNode:
+        """CONTAINER_ONLY nodes must have no match rules; others should have at least 1.
+
+        Returns
+        -------
+        CurriculumSkeletonNode
+            The validated CurriculumSkeletonNode object.
+
+        Raises
+        ------
+        ValueError
+            If a CONTAINER_ONLY node has match rules, or if a non-CONTAINER_ONLY node
+            has no match rules (unless it's a FRAMEWORK node).
+        """
+
+        if self.emit == CurriculumEmitPolicy.CONTAINER_ONLY and self.match_rules:
+            raise ValueError(
+                f"Node '{self.id}': CONTAINER_ONLY must not have match_rules."
+            )
+
+        if (
+            self.emit != CurriculumEmitPolicy.CONTAINER_ONLY
+            and not self.match_rules
+            and self.grouping_role != NodeRole.FRAMEWORK
+        ):
+            raise ValueError(
+                f"Node '{self.id}': non-CONTAINER_ONLY nodes must have >= 1 match_rule."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_role_emit_consistency(self) -> CurriculumSkeletonNode:
+        """Ensure the node has the right roles for its emit policy.
+
+        Returns
+        -------
+        CurriculumSkeletonNode
+            The validated CurriculumSkeletonNode object.
+
+        Raises
+        ------
+        ValueError
+            If the node's roles are inconsistent with its emit policy.
+        """
+
+        if (
+            self.emit == CurriculumEmitPolicy.EMIT_GROUPING
+            and self.grouping_role is None
+        ):
+            raise ValueError(f"Node '{self.id}': EMIT_GROUPING requires grouping_role.")
+
+        if self.emit == CurriculumEmitPolicy.EMIT_LEAF and self.leaf_role is None:
+            raise ValueError(f"Node '{self.id}': EMIT_LEAF requires leaf_role.")
+
+        if self.emit == CurriculumEmitPolicy.EMIT_GROUPING_AND_LEAF:
+            if self.grouping_role is None:
+                raise ValueError(
+                    f"Node '{self.id}': EMIT_GROUPING_AND_LEAF requires grouping_role."
+                )
+            if self.leaf_role is None:
+                raise ValueError(
+                    f"Node '{self.id}': EMIT_GROUPING_AND_LEAF requires leaf_role."
+                )
+
+        if self.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS:
+            if self.leaf_role is None:
+                raise ValueError(
+                    f"Node '{self.id}': EMIT_TABLE_ROWS requires leaf_role."
+                )
+            if not self.column_mappings:
+                raise ValueError(
+                    f"Node '{self.id}': EMIT_TABLE_ROWS requires >=1 column_mapping."
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_implicit_flag(self) -> CurriculumSkeletonNode:
+        """`implicit=True` only valid on CONTAINER_ONLY nodes with grouping_role.
+
+        Returns
+        -------
+        CurriculumSkeletonNode
+            The validated CurriculumSkeletonNode object.
+
+        Raises
+        ------
+        ValueError
+            If implicit=True is set on a node that is not CONTAINER_ONLY or lacks a
+            grouping_role.
+        """
+
+        if self.implicit:
+            if self.emit != CurriculumEmitPolicy.CONTAINER_ONLY:
+                raise ValueError(
+                    f"Node '{self.id}': implicit=True only valid with CONTAINER_ONLY."
+                )
+            if self.grouping_role is None:
+                raise ValueError(
+                    f"Node '{self.id}': implicit=True requires grouping_role."
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_match_rule_patterns(self) -> CurriculumSkeletonNode:
+        """Ensure all match_rule regex patterns are compilable.
+
+        Returns
+        -------
+        CurriculumSkeletonNode
+            The validated CurriculumSkeletonNode object.
+
+        Raises
+        ------
+        ValueError
+            If any match_rule pattern is not a valid regex.
+        """
+
+        for rule in self.match_rules:
+            try:
+                re.compile(rule.pattern, re.IGNORECASE | re.UNICODE)
+            except re.error as exc:
+                raise ValueError(
+                    f"Node '{self.id}': invalid regex pattern {rule.pattern!r}: {exc}"
+                ) from exc
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_table_rows_target_tables(self) -> CurriculumSkeletonNode:
+        """EMIT_TABLE_ROWS match rules must target table segments.
+
+        1. Rules with `target=TEXT` must set `require_segment_kind='table'`.
+        2. Rules with `target=CAPTION` implicitly target tables (via caption bindings).
+        3. Rules with `target=HEADING` are invalid for EMIT_TABLE_ROWS since headings
+            are block segments.
+
+        Returns
+        -------
+        CurriculumSkeletonNode
+            The validated CurriculumSkeletonNode object.
+
+        Raises
+        ------
+        ValueError
+            If any match_rule for an EMIT_TABLE_ROWS node targets non-table segments.
+        """
+
+        if self.emit != CurriculumEmitPolicy.EMIT_TABLE_ROWS:
+            return self
+
+        for rule in self.match_rules:
+            if rule.target == CurriculumMatchTarget.HEADING:
+                raise ValueError(
+                    f"Node '{self.id}': EMIT_TABLE_ROWS cannot use target=HEADING "
+                    f"(headings are block segments, not tables)."
+                )
+
+            if (
+                rule.target == CurriculumMatchTarget.TEXT
+                and rule.require_segment_kind != "table"
+            ):
+                raise ValueError(
+                    f"Node '{self.id}': EMIT_TABLE_ROWS with target=TEXT must set "
+                    f"require_segment_kind='table'."
+                )
+
+        return self
+
+
+class CurriculumSkeleton(BaseSchema):
+    """Root model for a curriculum skeleton file.
+
+    Authored once per curriculum type (e.g., "Senegal Maths CE1-CE2",
+    "NCERT Science Grade 6", "KICD English Grade 4").
+
+    The curriculum skeleton encodes the complete expected hierarchy of the curriculum
+    document as a tree. The curriculum skeleton matching engine walks document IR
+    segments in order and binds each segment to the deepest matching node.
+    """
+
+    metadata: CurriculumSkeletonMetadata
+    schema_version: str = Field(
+        default="1.0", description="Schema version for forward compatibility."
+    )
+    skeleton_id: str = Field(
+        ...,
+        description=(
+            "Globally unique identifier for this skeleton. "
+            "Convention: '{country}-{subject}-{stage}-{language}', "
+            "e.g., 'senegal-math-etape2-wolof-fr'."
+        ),
+    )
+    root: CurriculumSkeletonNode = Field(
+        ...,
+        description="Root of the curriculum tree. Must have grouping_role=FRAMEWORK.",
+    )
+
+    @model_validator(mode="after")
+    def validate_root_is_framework(self) -> CurriculumSkeleton:
+        """Root node must have grouping_role=FRAMEWORK.
+
+        Returns
+        -------
+        CurriculumSkeleton
+            The validated CurriculumSkeleton object.
+
+        Raises
+        ------
+        ValueError
+            If the root node does not have grouping_role=FRAMEWORK.
+        """
+
+        if self.root.grouping_role != NodeRole.FRAMEWORK:
+            raise ValueError("Root node must have grouping_role=FRAMEWORK.")
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> CurriculumSkeleton:
+        """All node IDs within the skeleton must be unique.
+
+        Returns
+        -------
+        CurriculumSkeleton
+            The validated CurriculumSkeleton object.
+
+        Raises
+        ------
+        ValueError
+            If duplicate node IDs are found in the skeleton.
+        """
+
+        ids: list[str] = []
+
+        def _collect(node: CurriculumSkeletonNode) -> None:
+            """Recursively collect node IDs from the skeleton tree.
+
+            Parameters
+            ----------
+            node
+                The current CurriculumSkeletonNode being processed.
+            """
+
+            ids.append(node.id)
+
+            for child in node.children:
+                _collect(child)
+
+        _collect(self.root)
+        counts = Counter(ids)
+        dupes = sorted(k for k, v in counts.items() if v > 1)
+
+        if dupes:
+            raise ValueError(f"Duplicate node IDs in skeleton: {dupes}")
+
+        return self
+
+
+# Schemas for segment decisions.
 class GroupingDecision(BaseSchema):
-    """A grouping node the LLM believes should exist in the canonical hierarchy.
+    """A grouping node in the canonical hierarchy.
 
     Examples: Grade, Subject, Theme, Strand, Topic, Unit, Week, Stage, Section.
     """
@@ -235,8 +711,8 @@ class GroupingDecision(BaseSchema):
 
 
 class LeafDecision(BaseSchema):
-    """An atomic leaf statement extracted by the LLM. Leaves become CanonicalNodes with
-    StatementRole roles (expectation/descriptor/guidance).
+    """An atomic leaf statement. Leaves become CanonicalNodes with StatementRole roles
+    (expectation/descriptor/guidance).
     """
 
     body: str = Field(..., description="Atomic leaf statement body text (original).")
@@ -348,15 +824,15 @@ class RowDecision(BaseSchema):
 
 
 class SegmentDecision(BaseSchema):
-    """LLM-produced canonicalization decision for one DocumentIR segment.
+    """Canonicalization decision for one DocumentIR segment.
 
     A segment may be:
 
     1. A block segment (paragraph/list/heading/caption/etc.).
     2. A table segment (optionally chunked via row ranges).
 
-    The Step 4 compiler should treat SegmentDecision as an auditable semantic plan and
-    compile it deterministically into canonical nodes/edges.
+    The Step 4 compiler treats SegmentDecision as an auditable semantic plan and
+    compiles it deterministically into canonical nodes/edges.
     """
 
     block_type: BlockType | None = Field(
@@ -391,7 +867,7 @@ class SegmentDecision(BaseSchema):
     )
     confidence: float = Field(
         ...,
-        description="LLM confidence for this decision in [0,1]. Used for QA and human review, not determinism.",
+        description="Confidence for this decision in [0,1]. Skeleton-generated decisions use 1.0. Used for QA and human review, not determinism.",
         ge=0.0,
         le=1.0,
     )
@@ -421,7 +897,7 @@ class SegmentDecision(BaseSchema):
     )
     rationale: str = Field(
         ...,
-        description="Brief concrete explanation of why the LLM chose this decision and interpretation.",
+        description="Brief explanation of why this decision and interpretation were chosen.",
     )
     row_range_end: int | None = Field(
         default=None,
@@ -696,9 +1172,7 @@ class SegmentDecision(BaseSchema):
 
 
 class SegmentDecisionSet(BaseSchema):
-    """A persisted, replayable set of LLM decisions for canonical IR creation. This
-    object is the ONLY non-deterministic input to the CanonicalIR compiler.
-    """
+    """A persisted, replayable set of segment decisions for canonical IR creation."""
 
     created_at: datetime | None = Field(
         default=None,
@@ -718,7 +1192,7 @@ class SegmentDecisionSet(BaseSchema):
     )
     generator: str | None = Field(
         default=None,
-        description="Optional string describing how these decisions were generated (model name/version, etc).",
+        description="Optional string describing how these decisions were generated (e.g., skeleton ID, model name).",
     )
     pdf_name: str = Field(
         ..., description="Optional PDF name for audit/provenance convenience."
@@ -764,265 +1238,6 @@ class SegmentDecisionSet(BaseSchema):
                 f"  expected: {expected}\n"
                 "This usually means the file was edited or regenerated without updating decision_set_id."
             )
-
-        return self
-
-
-# Schemas for canonicalization of segment decisions.
-class GroupingCanonicalizationKey(BaseSchema):
-    """The minimal identity of a grouping candidate that we want to canonicalize.
-
-    NB:
-
-    1. role + title is usually enough.
-    2. local_code/source_label are optional but useful to preserve provenance and
-        disambiguate weird cases.
-    """
-
-    local_code: Optional[str] = Field(
-        default=None, description="Optional local code associated with this grouping."
-    )
-    role: NodeRole = Field(
-        ..., description="Grouping node role (GRADE_LEVEL, SUBJECT, THEME, etc.)"
-    )
-    source_label: Optional[str] = Field(
-        default=None,
-        description="Optional verbatim label that introduced this grouping (e.g. 'Topic', 'Strand').",
-    )
-    title: str = Field(
-        ...,
-        description="Grouping title as emitted by the segment-decision LLM (may be noisy).",
-    )
-
-    @model_validator(mode="after")
-    def _validate_title_nonempty(self) -> GroupingCanonicalizationKey:
-        """Ensure title is non-empty after trimming whitespace.
-
-        Returns
-        -------
-        GroupingCanonicalizationKey
-            The validated GroupingCanonicalizationKey object.
-
-        Raises
-        ------
-        ValueError
-            If the title is empty after trimming.
-        """
-
-        t = (self.title or "").strip()
-
-        if not t:
-            raise ValueError("GroupingKey.title must be non-empty.")
-
-        self.title = t
-
-        if self.local_code is not None:
-            self.local_code = self.local_code.strip() or None
-
-        if self.source_label is not None:
-            self.source_label = self.source_label.strip() or None
-
-        return self
-
-
-class GroupingCanonicalizationItem(BaseSchema):
-    """Canonicalization rewrite rule for grouping candidates.
-
-    We just have one rewrite rule: input grouping -> action -> output grouping(s).
-    Matching should be done deterministically in Python (exact match on
-    role/title/local_code/source_label).
-    """
-
-    action: GroupingCanonicalizationAction = Field(
-        ..., description="Canonicalization action to apply."
-    )
-    confidence: float = Field(
-        default=1.0,
-        description="Confidence in this rewrite. If below threshold, you may choose not to apply automatically.",
-        ge=0.0,
-        le=1.0,
-    )
-    input: GroupingCanonicalizationKey = Field(
-        ..., description="Original grouping candidate (verbatim-ish from decisions)."
-    )
-    output: list[GroupingCanonicalizationKey] = Field(
-        default_factory=list,
-        description="Canonical grouping(s) that replace the input. Empty for KEEP/DROP.",
-    )
-    rationale: Optional[str] = Field(
-        default=None,
-        description="Short justification for audit/debugging (not used for determinism).",
-    )
-
-    def _ensure_unique_outputs(self) -> None:
-        """Ensure no duplicate keys in the output list.
-
-        Raises
-        ------
-        ValueError
-            If duplicate output groupings are detected.
-        """
-
-        output_seen = set()
-
-        for o in self.output:
-            # Create a hashable tuple key for the object.
-            k = (o.role.value, o.title, o.local_code or "", o.source_label or "")
-
-            if k in output_seen:
-                raise ValueError(f"Duplicate output grouping in mapping item: {k}")
-
-            output_seen.add(k)
-
-    def _validate_drop(self) -> None:
-        """Validate DROP action.
-
-        Raises
-        ------
-        ValueError
-            If the output is not empty for DROP action.
-        """
-
-        if self.output:
-            raise ValueError("DROP requires output=[]")
-
-    def _validate_keep(self) -> None:
-        """Validate KEEP action.
-
-        Raises
-        ------
-        ValueError
-            If the output is not empty or not equal to input for KEEP action.
-        """
-
-        if self.output and self.output != [self.input]:
-            raise ValueError("KEEP requires output=[] (preferred) or output=[input]")
-
-    def _validate_replace(self) -> None:
-        """Validate REPLACE action.
-
-        Raises
-        ------
-        ValueError
-            If the output does not meet REPLACE action requirements.
-        """
-
-        if len(self.output) != 1:
-            raise ValueError("REPLACE requires exactly one output grouping")
-
-        target = self.output[0]
-
-        if target.role != self.input.role:
-            raise ValueError(
-                "REPLACE must not change role (use SPLIT if role must change)"
-            )
-
-        if target == self.input:
-            raise ValueError("REPLACE identical to input; use KEEP instead.")
-
-    def _validate_split(self) -> None:
-        """Validate SPLIT action.
-
-        SPLIT is a structural rewrite rule only:
-
-        1. Must produce 2+ output groupings.
-        2. Output uniqueness is enforced separately by _ensure_unique_outputs().
-
-        NB: Role precedence/ordering is per-document policy and must be validated at
-        runtime (where config is available), not in this schema.
-
-        Raises
-        ------
-        ValueError
-            If the output does not meet SPLIT action requirements.
-        """
-
-        if len(self.output) < 2:
-            raise ValueError("SPLIT requires 2+ output groupings")
-
-    @model_validator(mode="after")
-    def _validate_action_output_contract(self) -> GroupingCanonicalizationItem:
-        """Enforce action/output consistency rules.
-
-        Returns
-        -------
-        GroupingCanonicalizationItem
-            The validated GroupingCanonicalizationItem object.
-
-        Raises
-        ------
-        ValueError
-            If the action/output combination is inconsistent.
-        """
-
-        self._ensure_unique_outputs()
-
-        validators = {
-            GroupingCanonicalizationAction.DROP: self._validate_drop,
-            GroupingCanonicalizationAction.KEEP: self._validate_keep,
-            GroupingCanonicalizationAction.REPLACE: self._validate_replace,
-            GroupingCanonicalizationAction.SPLIT: self._validate_split,
-        }
-        validator_func = validators.get(self.action)
-
-        if validator_func:
-            validator_func()
-
-        return self
-
-
-class GroupingCanonicalizationMap(BaseSchema):
-    """Top-level LLM response: a full mapping for all unique groupings found in a
-    decision set.
-
-    This mapping should be applied deterministically to:
-
-    1. SegmentDecision.context_groupings
-    2. SegmentDecision.groupings
-    3. RowDecision.groupings
-    """
-
-    doc_key: Optional[str] = Field(
-        default=None,
-        description="Deterministic hash key of the source PDF bytes (e.g., SHA-256 hex). This should be populated by the Python pipeline; it may be null.",
-    )
-    generator: Optional[str] = Field(
-        default=None,
-        description="Model identifier for audit/debugging. This should be populated by the Python pipeline; it may be null.",
-    )
-    items: list[GroupingCanonicalizationItem] = Field(
-        default_factory=list,
-        description="Rewrite rules covering all unique input groupings.",
-    )
-
-    @model_validator(mode="after")
-    def _validate_no_duplicate_inputs(self) -> GroupingCanonicalizationMap:
-        """Ensure no duplicate inputs in the mapping.
-
-        Returns
-        -------
-        GroupingCanonicalizationMap
-
-        Raises
-        ------
-        ValueError
-            If duplicate mapping inputs are detected.
-        """
-
-        seen = set()
-
-        for item in self.items:
-            key = (
-                item.input.role.value,
-                item.input.title,
-                item.input.local_code or "",
-                item.input.source_label or "",
-            )
-
-            if key in seen:
-                raise ValueError(f"Duplicate mapping input detected for {key}")
-
-            seen.add(key)
 
         return self
 
@@ -1175,7 +1390,7 @@ class CanonicalIR(BaseSchema):
     CanonicalIR is produced deterministically from:
 
     1. The stitched DocumentIR.
-    2. The list of SegmentDecision objects (LLM output).
+    2. A SegmentDecisionSet (from skeleton matching or other generators).
     """
 
     created_at: datetime = Field(
@@ -1205,7 +1420,7 @@ class CanonicalIR(BaseSchema):
     )
     segment_decisions: list[SegmentDecision] = Field(
         default_factory=list,
-        description="Audit trail: per-segment LLM decisions used to compile this CanonicalIR.",
+        description="Audit trail: per-segment decisions used to compile this CanonicalIR.",
     )
     unresolved: list[UnresolvedItem] = Field(
         default_factory=list,
