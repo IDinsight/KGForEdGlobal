@@ -126,6 +126,12 @@ class CurriculumMatchableSegment:
     document_order: int  # Index in document_ir.segments
     raw_segment: Segment  # Reference back to full segment
 
+    # §4.4: True when this block is a caption bound to a table via
+    # caption_bindings.  Bound captions have text="" so they cannot
+    # accidentally match structural skeleton rules; they fall through
+    # to IGNORE as expected.
+    is_bound_caption: bool = False
+
     # Table-specific (populated from caption_bindings + TableSegment).
     caption_gap_segments: Optional[int] = None
     caption_kind: Optional[str] = None
@@ -154,6 +160,10 @@ class CurriculumMatchReport:
 
     Attributes
     ----------
+    caption_blocks_ignored
+        Number of bound caption blocks that correctly fell through to IGNORE
+        (§4.4). These are block segments whose text was transferred to their
+        table's ``caption_text`` field, so they do not participate in matching.
     container_only_nodes
         Number of CONTAINER_ONLY nodes (structural-only, never matched).
     cursor_jumps
@@ -177,6 +187,7 @@ class CurriculumMatchReport:
         Number of segments that did NOT match any node.
     """
 
+    caption_blocks_ignored: int = 0
     container_only_nodes: int = 0
     cursor_jumps: list[CurriculumCursorJump] = field(default_factory=list)
     matched_nodes: int = 0
@@ -251,6 +262,7 @@ class CurriculumMatchReport:
             f"  Nodes:     {self.matched_nodes}/{self.total_matchable_nodes} matched "
             f"({self.node_coverage:.1%})",
             f"  Container: {self.container_only_nodes} (structural-only)",
+            f"  Captions:  {self.caption_blocks_ignored} (bound → IGNORE, §4.4)",
             f"  Jumps:     {len(self.cursor_jumps)}",
             f"  Healthy:   {'YES' if self.is_healthy else 'NO'}",
         ]
@@ -309,6 +321,7 @@ class CurriculumMatchReport:
             "total_matchable_nodes": self.total_matchable_nodes,
             "matched_nodes": self.matched_nodes,
             "container_only_nodes": self.container_only_nodes,
+            "caption_blocks_ignored": self.caption_blocks_ignored,
             "segment_coverage": round(self.segment_coverage, 4),
             "node_coverage": round(self.node_coverage, 4),
             "is_healthy": self.is_healthy,
@@ -1952,18 +1965,18 @@ def _resolve_column_mappings(
     """Match skeleton column_mappings against actual table headers.
 
     Builds per-column header signatures by joining all header rows for each column
-    using `HEADER_SIGNATURE_SEPARATOR`. Each column is tested against every mapping in
-    order; first match wins. Unmatched columns default to `skip`.
+    using ``HEADER_SIGNATURE_SEPARATOR`` (§6.2). Each column is tested against every
+    mapping in order; first match wins. Unmatched columns default to ``skip``.
 
-    NB: `column_mappings` patterns use inline `(?i)` flags (self-contained), so this
-    function compiles with `re.UNICODE` only, not `re.IGNORECASE`.
+    Note: ``column_mappings`` patterns use inline ``(?i)`` flags (self-contained),
+    so this function compiles with ``re.UNICODE`` only — not ``re.IGNORECASE``.
 
     Parameters
     ----------
     column_mappings
         Column-to-role mappings from the skeleton node.
     header_rows_canonical
-        Canonical header rows as `list[list[str]]` from the table segment.
+        Canonical header rows as ``list[list[str]]`` from the table segment.
 
     Returns
     -------
@@ -1974,13 +1987,13 @@ def _resolve_column_mappings(
     if not header_rows_canonical:
         return []
 
-    # Determine column count from the widest header row.
+    # §6.2: Determine column count from the widest header row.
     n_cols = max(len(row) for row in header_rows_canonical)
 
     if n_cols == 0:
         return []
 
-    # Build per-column header signature by joining all header rows.
+    # §6.2: Build per-column header signature by joining all header rows.
     col_headers: list[str] = []
 
     for col_idx in range(n_cols):
@@ -2001,14 +2014,14 @@ def _resolve_column_mappings(
         match_count = 0
 
         for mapping in column_mappings:
-            # column_mappings use inline (?i) flags; compile with re.UNICODE only.
+            # §6.2: column_mappings use inline (?i) flags; compile with re.UNICODE only.
             if re.search(mapping.header_pattern, header_text, re.UNICODE):
                 match_count += 1
 
                 if matched_mapping is None:
                     matched_mapping = mapping
 
-        # Warn if multiple mappings match the same column.
+        # §6.2: Warn if multiple mappings match the same column.
         if match_count > 1:
             logger.warning(
                 f"Column {col_idx} header {header_text!r} matched "
@@ -2040,7 +2053,7 @@ def _resolve_column_mappings(
                 )
             )
 
-    # Diagnostic warnings (logged, not hard failures).
+    # §6.2: Diagnostic warnings (logged, not hard failures).
     if not any_column_matched:
         logger.warning(
             f"No column matched any mapping (table may be incorrectly targeted). "
@@ -2261,7 +2274,7 @@ def _translate_table_rows(
         header_rows_canonical=list(list(row) for row in seg.header_rows_canonical),
     )
 
-    # Row source fallback chain (rows_filldown -> rows_grid → rows).
+    # §6.1: Row source fallback chain (rows_filldown → rows_grid → rows).
     if table_seg.rows_filldown is not None:
         rows_source = table_seg.rows_filldown
     elif table_seg.rows_grid is not None:
@@ -2305,7 +2318,7 @@ def _translate_table_rows(
             )
         )
 
-    # Determine decision type from actual row outputs (not node metadata).
+    # §6.4: Determine decision type from actual row outputs (not node metadata).
     has_any_groupings = bool(segment_groupings) or any(
         r.groupings for r in row_decisions
     )
@@ -3283,10 +3296,10 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
 
 def create_canonical_ir_from_curriculum_skeleton(
     *,
-    canonical_ir_fp: Path,
     caption_bindings: dict[str, CaptionBinding],
     curriculum_match_report_fp: Path,
     curriculum_skeleton: CurriculumSkeleton,
+    canonical_ir_fp: Path,
     doc_key: str,
     document_ir: DocumentIR,
     max_skip_distance: int = 20,
@@ -3299,21 +3312,21 @@ def create_canonical_ir_from_curriculum_skeleton(
 
     Parameters
     ----------
-    canonical_ir_fp
-        Output path for the compiled CanonicalIR JSON.
     caption_bindings
         Mapping from table segment_id to CaptionBinding.
     curriculum_match_report_fp
         Path to persist the CurriculumMatchReport JSON.
     curriculum_skeleton
         A validated CurriculumSkeleton for this document.
+    canonical_ir_fp
+        Output path for the compiled CanonicalIR JSON.
     doc_key
         The expected document key for all page IRs.
     document_ir
         The loaded DocumentIR JSON from stitching.
     max_skip_distance
-        Maximum skeleton nodes to probe ahead from the cursor during matching (bounded
-        lookahead window).
+        Maximum skeleton nodes to probe ahead from the cursor during matching
+        (bounded lookahead window).
     segment_decision_conf_threshold
         The low confidence threshold for segment decisions.
     segment_decisions_fp
@@ -3673,7 +3686,13 @@ def generate_match_report(
         if node.id not in matched_node_ids and node.emit != CurriculumEmitPolicy.IGNORE:
             unexpected_skipped.append(node.id)
 
+    # §4.4: Count bound caption blocks that correctly fell through to IGNORE.
+    caption_blocks_ignored = sum(
+        1 for s in match_result.unmatched if s.is_bound_caption
+    )
+
     return CurriculumMatchReport(
+        caption_blocks_ignored=caption_blocks_ignored,
         total_segments=total_segments,
         matched_segments=len(match_result.matched),
         unmatched_segments=len(match_result.unmatched),
@@ -3893,17 +3912,17 @@ def match(
     """Deterministic forward-only matching of document segments to skeleton nodes.
 
     The cursor starts at the first matchable node and only moves forward within a
-    bounded lookahead window of `max_skip_distance` nodes. For
-    `allow_multiple_segments` nodes, the cursor is pinned until a different node
-    matches; then it releases and resumes bounded probing.
+    bounded lookahead window of ``max_skip_distance`` nodes (§4.2). For
+    ``allow_multiple_segments`` nodes, the cursor is pinned until a different node
+    matches; then it releases and resumes bounded probing (§4.3).
 
     Parameters
     ----------
     curriculum_skeleton
         A validated CurriculumSkeleton.
     max_skip_distance
-        Maximum nodes to probe ahead from the current cursor position. The engine will
-        NOT scan beyond this window (bounded probe).
+        Maximum nodes to probe ahead from the current cursor position. The engine
+        will NOT scan beyond this window (bounded probe).
     segments
         CurriculumMatchableSegment in document order.
 
@@ -3924,7 +3943,7 @@ def match(
     for segment in segments:
         matched = False
 
-        # Bounded lookahead probe from cursor.
+        # §4.2: Bounded lookahead probe from cursor.
         probe_end = min(cursor + max_skip_distance, len(matchable_nodes))
 
         for probe in range(cursor, probe_end):
@@ -3935,7 +3954,7 @@ def match(
 
             ancestry = ancestry_map[node.id]
 
-            # Multi-match: append to previous match if same node.
+            # §4.3: Multi-match — append to previous match if same node.
             if (
                 node.allow_multiple_segments
                 and results
@@ -3949,12 +3968,12 @@ def match(
                     )
                 )
 
-            # Advance cursor (pinned for allow_multiple_segments).
+            # §4.3: Advance cursor (pinned for allow_multiple_segments).
             cursor = probe if node.allow_multiple_segments else probe + 1
             matched = True
             break
 
-        # Cursor release: if we didn't match and the cursor was pinned on a
+        # §4.3: Cursor release — if we didn't match and the cursor was pinned on a
         # multi-segment node, release it and retry with a fresh bounded probe.
         if not matched and results and results[-1].node.allow_multiple_segments:
             # Find the index of the pinned node and advance past it.
@@ -3991,7 +4010,11 @@ def match(
 
     # Compute skipped nodes.
     matched_node_ids = {r.node.id for r in results}
-    all_ids: set[str] = {n.id for n in dfs_all(curriculum_skeleton.root)}
+    all_ids: set[str] = set()
+
+    for n in dfs_all(curriculum_skeleton.root):
+        all_ids.add(n.id)
+
     skipped = all_ids - matched_node_ids
 
     return CurriculumMatchResult(
@@ -4257,6 +4280,15 @@ def prepare_matchable_segments(
 
     result: list[CurriculumMatchableSegment] = []
 
+    # §4.4: Build the set of block segment IDs that are bound captions.
+    # These blocks have their text transferred to the table's caption_text
+    # field and must not participate in pattern matching (text="").
+    bound_caption_sids: set[str] = {
+        binding.caption_segment_id
+        for binding in caption_bindings.values()
+        if binding.caption_segment_id
+    }
+
     for idx, segment in enumerate(document_ir.segments):
         if not segment.slices:
             logger.warning(
@@ -4268,8 +4300,21 @@ def prepare_matchable_segments(
 
         if segment.kind == "block":
             assert isinstance(segment, BlockSegment)
-            text = _extract_block_segment_text(segment) or ""
             block_type_val = segment.block_type.value if segment.block_type else None
+
+            # §4.4: Bound caption blocks have their content transferred to
+            # the table MatchableSegment's caption_text field.  Neutralize
+            # the block's text so it cannot accidentally match structural
+            # skeleton rules (e.g. "palier\s+1" inside a caption like
+            # "Tableau 4 — Apprentissages ponctuels: Palier 1, …").
+            is_bound = segment.segment_id in bound_caption_sids
+            text = "" if is_bound else (_extract_block_segment_text(segment) or "")
+
+            if is_bound:
+                logger.debug(
+                    f"§4.4 bound caption block {segment.segment_id}: "
+                    f"text neutralized (will fall through to IGNORE)."
+                )
 
             result.append(
                 CurriculumMatchableSegment(
@@ -4280,6 +4325,7 @@ def prepare_matchable_segments(
                     page_index=page_index,
                     document_order=idx,
                     raw_segment=segment,
+                    is_bound_caption=is_bound,
                 )
             )
 
@@ -4297,7 +4343,7 @@ def prepare_matchable_segments(
                     segment_id=segment.segment_id,
                     segment_kind="table",
                     block_type=None,
-                    text="",  # Tables matched via CAPTION/require_segment_kindq
+                    text="",  # §3.2: Tables matched via CAPTION/require_segment_kind.
                     page_index=page_index,
                     document_order=idx,
                     raw_segment=segment,
