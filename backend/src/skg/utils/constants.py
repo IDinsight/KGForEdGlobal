@@ -27,6 +27,37 @@ class BlockType(str, Enum):
     PARAGRAPH = "paragraph"
 
 
+class CurriculumEmitPolicy(str, Enum):
+    """Controls what the curriculum skeleton matching engine does when a segment
+    matches a node.
+
+    Policies include:
+        - CONTAINER_ONLY: Structural-only node--no document segment to match.
+        - EMIT_GROUPING: Node becomes a grouping in the SegmentDecision
+        - EMIT_GROUPING_AND_LEAF: Node produces BOTH a grouping AND leaves.
+        - EMIT_LEAF: Node's matched content is emitted as a leaf statement.
+        - EMIT_TABLE_ROWS: Node is a table container; rows become RowDecision[].
+        - IGNORE: Matched segment is consumed but not emitted.
+    """
+
+    CONTAINER_ONLY = "container_only"
+    EMIT_GROUPING = "emit_grouping"
+    EMIT_GROUPING_AND_LEAF = "emit_grouping_and_leaf"
+    EMIT_LEAF = "emit_leaf"
+    EMIT_TABLE_ROWS = "emit_table_rows"
+    IGNORE = "ignore"
+
+
+class CurriculumMatchTarget(str, Enum):
+    """The specific content to extract from a matched segment for curriculum skeleton
+    matching.
+    """
+
+    CAPTION = "caption"  # Caption text bound to a table (from caption_bindings)
+    HEADING = "heading"  # Heading text only (requires block_type == HEADING)
+    TEXT = "text"  # Block segment text content (combined_text or text.text)
+
+
 class FigureKind(str, Enum):
     """Classification of figure/diagram type (non-semantic)."""
 
@@ -44,52 +75,6 @@ class FigureKind(str, Enum):
     SCHEMATIC = "schematic"
     TIMELINE = "timeline"
     UNKNOWN = "unknown"
-
-
-class FrontMatterHeadings(str, Enum):
-    """Document-structure headings that are NOT part of curriculum hierarchy.
-
-    These are common in curriculum PDFs (Vision, Introduction, Assessment guidance,
-    etc.) but should NOT become NodeRole.SECTION in the standards tree.
-    """
-
-    ACKNOWLEDGMENT = "acknowledgment"
-    ACKNOWLEDGMENTS = "acknowledgments"
-    ACKNOWLEDGEMENT = "acknowledgement"
-    ACKNOWLEDGEMENTS = "acknowledgements"
-    AIMS = "aims"
-    ASSESSMENT = "assessment"
-    BACKGROUND = "background"
-    FOREWORD = "foreword"
-    INTRODUCTION = "introduction"
-    MISSION = "mission"
-    OBJECTIVES = "objectives"
-    PREFACE = "preface"
-    PURPOSE = "purpose"
-    RATIONALE = "rationale"
-    SUGGESTED_TEACHING_METHODOLOGY = "suggested teaching methodology"
-    STRUCTURE_OF_SYLLABUS = "structure of syllabus"
-    STRUCTURE_OF_THE_SYLLABUS = "structure of the syllabus"
-    TEACHING_METHODOLOGY = "teaching methodology"
-    TIME_ALLOCATION = "time allocation"
-    VISION = "vision"
-
-
-class GroupingCanonicalizationAction(str, Enum):
-    """Canonicalization action for curriculum groupings.
-
-    Options are:
-
-    1. DROP -> drop this grouping entirely (output must be empty)
-    2. KEEP -> keep as-is (output must be empty or exactly the same as input)
-    3. REPLACE -> replace with exactly 1 canonical grouping (same role)
-    4. SPLIT -> replace with 2+ canonical groupings (roles may differ)
-    """
-
-    DROP = "drop"
-    KEEP = "keep"
-    REPLACE = "replace"
-    SPLIT = "split"
 
 
 class ItemBoundary(str, Enum):
@@ -169,22 +154,6 @@ class SegmentDecisionType(str, Enum):
     UNRESOLVED = "unresolved"
 
 
-class SpineViolationPolicy(str, Enum):
-    """Define what to do when a decision cannot be normalized to the spine without
-    guessing.
-
-    Attributes
-    ----------
-    FLAG_UNRESOLVED
-        Set decision_type=EMIT_FLAGGED_UNRESOLVED
-    KEEP_AS_IS
-        Do not rewrite; allow compiler to proceed (rarely recommended)
-    """
-
-    FLAG_UNRESOLVED = "flag_unresolved"
-    KEEP_AS_IS = "keep_as_is"
-
-
 class StatementRole(str, Enum):
     """Semantic role of a KG node in the hierarchy."""
 
@@ -238,9 +207,9 @@ CaptionTablePrefixes: tuple[str, ...] = (
 # 1. This order is *configurable per curriculum document* (via config.json) because
 #   some curricula place certain containers (e.g., SECTION vs. WEEK) in different
 #   relative positions.
-# 2. Only roles present in CONTEXT_GROUPINGS_ROLE_ORDER participate in precedence-based
-#   checks. Roles omitted from the configured order are treated as "unranked" and do
-#   not factor into context-grouping ordering/outer-ness validators.
+# 2. Only roles present in DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER participate in
+#   precedence-based checks. Roles omitted from the configured order are treated as
+#   "unranked" and do not factor into context-grouping ordering/outer-ness validators.
 # 3. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
 # 4. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
 # 5. Order matters here!
@@ -261,9 +230,6 @@ DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.TOPIC,
     NodeRole.SUBTOPIC,
 )
-DEFAULT_CONTEXT_GROUPINGS_ROLE_PRECEDENCE: dict[NodeRole, int] = {
-    role: i for i, role in enumerate(list(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER))
-}
 
 NonArtifacts = {
     "abbreviations and acronyms",
@@ -278,23 +244,3 @@ NonArtifacts = {
     "references",
     "table of contents",
 }
-
-# Roles that are stable enough to satisfy the "outer anchor" requirement when emitting
-# leaves. If a decision emits ANY leaves (expectations/descriptors/guidance), at least
-# one of these roles MUST appear in context_groupings[], groupings[], or
-# rows[].groupings[]. This prevents "floating" statements attached directly to the
-# framework root.
-OUTER_ANCHOR_ROLES: frozenset[NodeRole] = frozenset(
-    {
-        NodeRole.GRADE_LEVEL,
-        NodeRole.LEARNING_AREA,
-        NodeRole.STAGE,
-        NodeRole.STRAND,
-        NodeRole.SUBJECT,
-        NodeRole.SUBSTRAND,
-        NodeRole.SUBTHEME,
-        NodeRole.TERM,
-        NodeRole.THEME,
-        NodeRole.UNIT,
-    }
-)
