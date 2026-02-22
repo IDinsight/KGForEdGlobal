@@ -62,6 +62,10 @@ from skg.utils.general import (
 
 T = TypeVar("T")
 
+# Separator used to join multi-row header cells into a single column signature for
+# deterministic column-mapping resolution.
+HEADER_SIGNATURE_SEPARATOR: str = " / "
+
 # Compiled regexes.
 _DASH_RE = re.compile(r"[‐-‒–—−]+")  # Common unicode dash characters
 _STRUCTURAL_CONTEXT_CUE_RE = re.compile(
@@ -708,40 +712,6 @@ def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
     return start, end, decision_id
 
 
-def _dedupe_preserve_order(groupings: list[GroupingDecision]) -> list[GroupingDecision]:
-    """Deduplicate GroupingDecisions while preserving order.
-
-    Parameters
-    ----------
-    groupings
-        The list of GroupingDecisions to deduplicate.
-
-    Returns
-    -------
-    list[GroupingDecision]
-        The deduplicated list of GroupingDecisions.
-    """
-
-    output: list[GroupingDecision] = []
-    seen: set[tuple[str, str, str, str]] = set()
-
-    for g in groupings:
-        key = _gkey_tuple(
-            local_code=g.local_code,
-            role=g.role,
-            source_label=g.source_label,
-            title=g.title,
-        )
-
-        if key in seen:
-            continue
-
-        output.append(g)
-        seen.add(key)
-
-    return output
-
-
 def _detect_semantic_collision(
     *, existing: CanonicalNode, node: CanonicalNode, warnings: list[str]
 ) -> bool:
@@ -891,37 +861,6 @@ def _detect_semantic_collision(
         warnings.append(msg)
 
     return collision
-
-
-def _drop_duplicate_roles_keep_first(
-    groupings: list[GroupingDecision],
-) -> list[GroupingDecision]:
-    """Drop duplicate roles, keeping the first occurrence.
-
-    Parameters
-    ----------
-    groupings
-        The list of GroupingDecisions to process.
-
-    Returns
-    -------
-    list[GroupingDecision]
-        The filtered list of GroupingDecisions.
-    """
-
-    output: list[GroupingDecision] = []
-    seen_roles: set[str] = set()
-
-    for g in groupings:
-        role_value = g.role.value
-
-        if role_value in seen_roles:
-            continue
-
-        output.append(g)
-        seen_roles.add(role_value)
-
-    return output
 
 
 def _emit_edge(
@@ -1240,46 +1179,6 @@ def _get_target_text(
     return None
 
 
-def _gkey_tuple(
-    *,
-    role: NodeRole,
-    title: str,
-    local_code: Optional[str],
-    source_label: Optional[str],
-) -> tuple[str, str, str, str]:
-    """Create a grouping key tuple.
-
-    NB: All string fields are stripped to ensure lookup parity with
-    `collect_unique_grouping_keys`, which strips titles before building dedupe keys and
-    persisting `GroupingCanonicalizationKey` objects. Without stripping here, a
-    `GroupingDecision` whose title carries leading/trailing whitespace would silently
-    miss the mapping index and default to KEEP.
-
-    Parameters
-    ----------
-    role
-        The NodeRole of the grouping.
-    title
-        The title of the grouping.
-    local_code
-        The local code of the grouping.
-    source_label
-        The source label of the grouping.
-
-    Returns
-    -------
-    tuple[str, str, str, str]
-        The grouping key tuple.
-    """
-
-    return (
-        role.value,
-        (title or "").strip(),
-        (local_code or "").strip(),
-        (source_label or "").strip(),
-    )
-
-
 def _grouping_key(g: GroupingDecision) -> str:
     """Create a stable string for path_fingerprint().
 
@@ -1334,62 +1233,6 @@ def _index_decisions_by_segment(
         decisions_by_segment[d.segment_id].append(d)
 
     return decisions_by_segment
-
-
-def _iter_all_grouping_decisions(
-    *,
-    decision_set: SegmentDecisionSet,
-    row_grouping_roles: frozenset[NodeRole] | None = None,
-) -> Iterable[GroupingDecision]:
-    """Yield GroupingDecision objects from a SegmentDecisionSet in stable order.
-
-    This iterator is used to construct the global grouping canonicalization inventory.
-    It always yields:
-
-    1. SegmentDecision.context_groupings
-    2. SegmentDecision.groupings
-
-    It optionally yields row-level groupings:
-
-    3. RowDecision.groupings (only when ``row_grouping_roles`` is provided and
-        non-empty).
-
-    When row-level groupings are enabled, only groupings whose role is in
-    `row_grouping_roles` are yielded. This supports generalized PDFs where important
-    curriculum structure can appear at the row level (e.g., week/term/palier), without
-    pulling every row-local token into global canonicalization.
-
-    Parameters
-    ----------
-    decision_set
-        The SegmentDecisionSet to iterate over.
-    row_grouping_roles
-        Optional set of NodeRoles that are allowed to be yielded from row-level
-        groupings. If None or empty, row-level groupings are not yielded.
-
-    Yields
-    ------
-    GroupingDecision
-        The next GroupingDecision in deterministic traversal order.
-    """
-
-    include_rows = bool(row_grouping_roles)
-
-    for d in decision_set.decisions:
-        if d.context_groupings:
-            yield from d.context_groupings
-
-        if d.groupings:
-            yield from d.groupings
-
-        if include_rows and d.rows:
-            for r in d.rows:
-                if not r.groupings:
-                    continue
-
-                for g in r.groupings:
-                    if g.role in (row_grouping_roles or frozenset()):
-                        yield g
 
 
 def _make_unmatched_segment_sample(
@@ -2108,8 +1951,12 @@ def _resolve_column_mappings(
 ) -> list[CurriculumResolvedColumnRole]:
     """Match skeleton column_mappings against actual table headers.
 
-    Uses the first canonical header row for matching. Each column is tested against
-    every mapping in order; first match wins. Unmatched columns default to ``skip``.
+    Builds per-column header signatures by joining all header rows for each column
+    using `HEADER_SIGNATURE_SEPARATOR`. Each column is tested against every mapping in
+    order; first match wins. Unmatched columns default to `skip`.
+
+    NB: `column_mappings` patterns use inline `(?i)` flags (self-contained), so this
+    function compiles with `re.UNICODE` only, not `re.IGNORECASE`.
 
     Parameters
     ----------
@@ -2121,27 +1968,52 @@ def _resolve_column_mappings(
     Returns
     -------
     list[CurriculumResolvedColumnRole]
-        One entry per column in the header row.
+        One entry per column in the (widest) header row.
     """
 
     if not header_rows_canonical:
         return []
 
-    # Use the first header row for matching.
-    headers = header_rows_canonical[0]
-    resolved: list[CurriculumResolvedColumnRole] = []
+    # Determine column count from the widest header row.
+    n_cols = max(len(row) for row in header_rows_canonical)
 
-    for col_idx, header_text in enumerate(headers):
+    if n_cols == 0:
+        return []
+
+    # Build per-column header signature by joining all header rows.
+    col_headers: list[str] = []
+
+    for col_idx in range(n_cols):
+        parts: list[str] = []
+
+        for row in header_rows_canonical:
+            if col_idx < len(row) and row[col_idx]:
+                parts.append(row[col_idx])
+
+        col_headers.append(HEADER_SIGNATURE_SEPARATOR.join(parts))
+
+    resolved: list[CurriculumResolvedColumnRole] = []
+    any_column_matched = False
+    has_leaf_column = False
+
+    for col_idx, header_text in enumerate(col_headers):
         matched_mapping: CurriculumColumnMapping | None = None
+        match_count = 0
 
         for mapping in column_mappings:
-            if re.search(
-                mapping.header_pattern,
-                header_text,
-                re.IGNORECASE | re.UNICODE,
-            ):
-                matched_mapping = mapping
-                break
+            # column_mappings use inline (?i) flags; compile with re.UNICODE only.
+            if re.search(mapping.header_pattern, header_text, re.UNICODE):
+                match_count += 1
+
+                if matched_mapping is None:
+                    matched_mapping = mapping
+
+        # Warn if multiple mappings match the same column.
+        if match_count > 1:
+            logger.warning(
+                f"Column {col_idx} header {header_text!r} matched "
+                f"{match_count} mappings; using first match."
+            )
 
         if matched_mapping is None or matched_mapping.role == "skip":
             resolved.append(
@@ -2153,7 +2025,12 @@ def _resolve_column_mappings(
                 )
             )
         else:
+            any_column_matched = True
             kind, role_value = matched_mapping.role.split(":", 1)
+
+            if kind == "leaf":
+                has_leaf_column = True
+
             resolved.append(
                 CurriculumResolvedColumnRole(
                     col_index=col_idx,
@@ -2162,6 +2039,19 @@ def _resolve_column_mappings(
                     source_label=(matched_mapping.source_label_override or header_text),
                 )
             )
+
+    # Diagnostic warnings (logged, not hard failures).
+    if not any_column_matched:
+        logger.warning(
+            f"No column matched any mapping (table may be incorrectly targeted). "
+            f"Headers: {col_headers}"
+        )
+
+    if any_column_matched and not has_leaf_column:
+        logger.warning(
+            f"No leaf column resolved (table will produce groupings-only). "
+            f"Headers: {col_headers}"
+        )
 
     return resolved
 
@@ -2220,46 +2110,6 @@ def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
     """
 
     return segment.segment_provenance[0].bbox if segment.segment_provenance else None
-
-
-def _sort_by_context_precedence(
-    *,
-    context_groupings_role_dict: dict[NodeRole, int],
-    groupings: list[GroupingDecision],
-) -> list[GroupingDecision]:
-    """Sort groupings by the global precedence order used for context_groupings.
-    Unknown roles fall to the end deterministically.
-
-    Parameters
-    ----------
-    context_groupings_role_dict
-        The mapping of NodeRole to precedence order.
-    groupings
-        The list of GroupingDecisions to sort.
-
-    Returns
-    -------
-    list[GroupingDecision]
-        The sorted list of GroupingDecisions.
-    """
-
-    def key_fn(g: GroupingDecision) -> tuple[int, str]:
-        """Key function for sorting groupings by precedence and title.
-
-        Parameters
-        ----------
-        g
-            The GroupingDecision to generate a sort key for.
-
-        Returns
-        -------
-        tuple[int, str]
-            The sort key as (precedence, title).
-        """
-
-        return context_groupings_role_dict.get(g.role, 10_000), g.title
-
-    return sorted(groupings, key=key_fn)
 
 
 def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
@@ -2411,8 +2261,19 @@ def _translate_table_rows(
         header_rows_canonical=list(list(row) for row in seg.header_rows_canonical),
     )
 
-    # Prefer rows_filldown if available (merged cells filled down).
-    rows_source = table_seg.rows_filldown or table_seg.rows
+    # Row source fallback chain (rows_filldown -> rows_grid → rows).
+    if table_seg.rows_filldown is not None:
+        rows_source = table_seg.rows_filldown
+    elif table_seg.rows_grid is not None:
+        rows_source = table_seg.rows_grid
+    else:
+        logger.warning(
+            f"Table {seg.segment_id}: falling back to raw rows "
+            f"(rows_filldown and rows_grid are both None). "
+            f"Column-index alignment may be broken due to col_span > 1 cells."
+        )
+        rows_source = table_seg.rows
+
     header_n = table_seg.header_row_count or 0
     row_decisions: list[RowDecision] = []
 
@@ -2431,23 +2292,11 @@ def _translate_table_rows(
             RowDecision(groupings=row_groupings, leaves=row_leaves, row_index=abs_i)
         )
 
-    # Determine decision type.
-    has_grouping = bool(node.grouping_role)
-    has_rows = bool(row_decisions)
-
-    if has_grouping and has_rows:
-        dt = SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES
-    elif has_rows:
-        dt = SegmentDecisionType.EMIT_LEAVES_ONLY
-    elif has_grouping:
-        dt = SegmentDecisionType.EMIT_GROUPINGS_ONLY
-    else:
-        dt = SegmentDecisionType.IGNORE
-
-    groupings: list[GroupingDecision] = []
+    # Build segment-level groupings from node metadata.
+    segment_groupings: list[GroupingDecision] = []
 
     if node.grouping_role:
-        groupings.append(
+        segment_groupings.append(
             GroupingDecision(
                 local_code=node.local_code,
                 role=node.grouping_role,
@@ -2455,6 +2304,26 @@ def _translate_table_rows(
                 title=node.canonical_name.primary,
             )
         )
+
+    # Determine decision type from actual row outputs (not node metadata).
+    has_any_groupings = bool(segment_groupings) or any(
+        r.groupings for r in row_decisions
+    )
+    has_any_leaves = any(r.leaves for r in row_decisions)
+
+    if has_any_groupings and has_any_leaves:
+        dt = SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES
+    elif has_any_leaves:
+        dt = SegmentDecisionType.EMIT_LEAVES_ONLY
+    elif has_any_groupings:
+        dt = SegmentDecisionType.EMIT_GROUPINGS_ONLY
+    else:
+        logger.warning(
+            f"Table {seg.segment_id}: no groupings or leaves produced from "
+            f"{len(rows_source) - header_n} data rows "
+            f"(bad column mapping or empty table body)."
+        )
+        dt = SegmentDecisionType.IGNORE
 
     return SegmentDecision(
         block_type=None,
@@ -2465,13 +2334,13 @@ def _translate_table_rows(
         caption_text=seg.caption_text,
         columns_signature=seg.columns_signature,
         confidence=1.0,
-        context_groupings=context,
+        context_groupings=context if dt != SegmentDecisionType.IGNORE else [],
         decision_id=decision_id,
         decision_type=dt,
-        groupings=groupings,
+        groupings=segment_groupings if dt != SegmentDecisionType.IGNORE else [],
         leaves=[],
         rationale=f"Skeleton TABLE: '{node.id}' → {len(row_decisions)} data rows.",
-        rows=row_decisions,
+        rows=row_decisions if dt != SegmentDecisionType.IGNORE else [],
         segment_id=seg.segment_id,
         segment_kind="table",
     )
@@ -3414,10 +3283,10 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
 
 def create_canonical_ir_from_curriculum_skeleton(
     *,
+    canonical_ir_fp: Path,
     caption_bindings: dict[str, CaptionBinding],
     curriculum_match_report_fp: Path,
     curriculum_skeleton: CurriculumSkeleton,
-    canonical_ir_fp: Path,
     doc_key: str,
     document_ir: DocumentIR,
     max_skip_distance: int = 20,
@@ -3430,20 +3299,21 @@ def create_canonical_ir_from_curriculum_skeleton(
 
     Parameters
     ----------
+    canonical_ir_fp
+        Output path for the compiled CanonicalIR JSON.
     caption_bindings
         Mapping from table segment_id to CaptionBinding.
     curriculum_match_report_fp
         Path to persist the CurriculumMatchReport JSON.
     curriculum_skeleton
         A validated CurriculumSkeleton for this document.
-    canonical_ir_fp
-        Output path for the compiled CanonicalIR JSON.
     doc_key
         The expected document key for all page IRs.
     document_ir
         The loaded DocumentIR JSON from stitching.
     max_skip_distance
-        Maximum skeleton nodes to skip before flagging a cursor jump.
+        Maximum skeleton nodes to probe ahead from the cursor during matching (bounded
+        lookahead window).
     segment_decision_conf_threshold
         The low confidence threshold for segment decisions.
     segment_decisions_fp
@@ -3515,7 +3385,7 @@ def create_canonical_ir_from_curriculum_skeleton(
         }
     )
 
-    # Save the segment decisions.
+    # 5. Persist the segment decisions.
     write_to_json(fp=segment_decisions_fp, json_info=decision_set)
     logger.info(f"Saved segment decisions to: {segment_decisions_fp}")
 
@@ -4022,17 +3892,18 @@ def match(
 ) -> CurriculumMatchResult:
     """Deterministic forward-only matching of document segments to skeleton nodes.
 
-    The cursor starts at the first matchable node and only moves forward. When a
-    segment matches a node beyond `max_skip_distance`, a diagnostic `CursorJump` is
-    recorded.
+    The cursor starts at the first matchable node and only moves forward within a
+    bounded lookahead window of `max_skip_distance` nodes. For
+    `allow_multiple_segments` nodes, the cursor is pinned until a different node
+    matches; then it releases and resumes bounded probing.
 
     Parameters
     ----------
     curriculum_skeleton
         A validated CurriculumSkeleton.
     max_skip_distance
-        Maximum nodes to skip before recording a diagnostic warning. The engine will
-        still find the match (full scan) but will flag it.
+        Maximum nodes to probe ahead from the current cursor position. The engine will
+        NOT scan beyond this window (bounded probe).
     segments
         CurriculumMatchableSegment in document order.
 
@@ -4053,27 +3924,14 @@ def match(
     for segment in segments:
         matched = False
 
-        for probe in range(cursor, len(matchable_nodes)):
+        # Bounded lookahead probe from cursor.
+        probe_end = min(cursor + max_skip_distance, len(matchable_nodes))
+
+        for probe in range(cursor, probe_end):
             node = matchable_nodes[probe]
 
             if not segment_matches_node(node=node, segment=segment):
                 continue
-
-            # Record large jump diagnostic.
-            if probe - cursor > max_skip_distance:
-                prev_id = (
-                    matchable_nodes[cursor].id
-                    if cursor < len(matchable_nodes)
-                    else "END"
-                )
-                cursor_jumps.append(
-                    CurriculumCursorJump(
-                        from_node_id=prev_id,
-                        segment_id=segment.segment_id,
-                        skipped_count=probe - cursor,
-                        to_node_id=node.id,
-                    )
-                )
 
             ancestry = ancestry_map[node.id]
 
@@ -4091,21 +3949,49 @@ def match(
                     )
                 )
 
-            # Advance cursor.
+            # Advance cursor (pinned for allow_multiple_segments).
             cursor = probe if node.allow_multiple_segments else probe + 1
             matched = True
             break
+
+        # Cursor release: if we didn't match and the cursor was pinned on a
+        # multi-segment node, release it and retry with a fresh bounded probe.
+        if not matched and results and results[-1].node.allow_multiple_segments:
+            # Find the index of the pinned node and advance past it.
+            pinned_node = results[-1].node
+            pinned_idx = next(
+                (i for i, n in enumerate(matchable_nodes) if n.id == pinned_node.id),
+                cursor,
+            )
+            released_cursor = pinned_idx + 1
+            release_end = min(released_cursor + max_skip_distance, len(matchable_nodes))
+
+            for probe in range(released_cursor, release_end):
+                node = matchable_nodes[probe]
+
+                if not segment_matches_node(node=node, segment=segment):
+                    continue
+
+                ancestry = ancestry_map[node.id]
+                results.append(
+                    CurriculumMatchedSegment(
+                        ancestry=ancestry, node=node, segment=segment
+                    )
+                )
+                cursor = probe if node.allow_multiple_segments else probe + 1
+                matched = True
+                break
+
+            # Even if no match found after release, advance cursor past pinned node.
+            if not matched:
+                cursor = released_cursor
 
         if not matched:
             unmatched.append(segment)
 
     # Compute skipped nodes.
     matched_node_ids = {r.node.id for r in results}
-    all_ids: set[str] = set()
-
-    for n in dfs_all(curriculum_skeleton.root):
-        all_ids.add(n.id)
-
+    all_ids: set[str] = {n.id for n in dfs_all(curriculum_skeleton.root)}
     skipped = all_ids - matched_node_ids
 
     return CurriculumMatchResult(
@@ -4411,7 +4297,7 @@ def prepare_matchable_segments(
                     segment_id=segment.segment_id,
                     segment_kind="table",
                     block_type=None,
-                    text=None,
+                    text="",  # Tables matched via CAPTION/require_segment_kindq
                     page_index=page_index,
                     document_order=idx,
                     raw_segment=segment,
