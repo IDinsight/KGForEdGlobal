@@ -8,7 +8,7 @@ import unicodedata
 import uuid
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional, TypeVar
@@ -23,38 +23,34 @@ from skg.canonical_ir.schemas import (
     CanonicalIR,
     CanonicalNode,
     CaptionBinding,
+    CurriculumColumnMapping,
+    CurriculumMatchRule,
+    CurriculumMatchTarget,
     CurriculumSkeleton,
+    CurriculumSkeletonNode,
     GroupingDecision,
     LeafDecision,
+    RowDecision,
     SegmentDecision,
     SegmentDecisionSet,
     UnresolvedItem,
     compute_decision_set_id,
 )
-from skg.canonical_ir.skeleton_engine import (
-    MatchableSegment,
-    match,
-    CursorJump,
-    MatchResult,
-    dfs_all,
-    dfs_matchable,
-)
-from skg.canonical_ir.skeleton_translator import (
-    translate_matched_segment,
-    translate_unmatched,
-)
 from skg.config import Settings
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
-from skg.page_ir_extraction.schemas import TextUnit
+from skg.page_ir_extraction.schemas import TableRow, TextUnit
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import (
+    DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
     BlockType,
     CaptionFigurePrefixes,
     CaptionKind,
     CaptionTablePrefixes,
+    CurriculumEmitPolicy,
     NodeRole,
     SegmentDecisionType,
+    StatementRole,
     UnresolvedReason,
 )
 from skg.utils.general import (
@@ -98,67 +94,150 @@ class ContextFrame:
 
 
 @dataclass
-class MatchReport:
+class CurriculumCursorJump:
+    """Represents a large jump in the curriculum skeleton matching cursor, which may
+    indicate a significant ordering misalignment between the document and skeleton.
+    """
+
+    from_node_id: str
+    segment_id: str
+    skipped_count: int
+    to_node_id: str
+
+
+@dataclass(frozen=True)
+class CurriculumMatchableSegment:
+    """Normalized view of a DocumentIR segment for the matching engine.
+
+    All fields the matching engine needs are pre-extracted here so the engine never
+    touches DocumentIR internals. The `raw_segment` reference is kept for downstream
+    translation (table row extraction needs the full TableSegment).
+    """
+
+    segment_id: str
+    segment_kind: str  # "block" or "table"
+    block_type: Optional[str]  # BlockType.value or None for tables
+    text: Optional[str]  # Combined text for blocks; None for tables
+    page_index: int  # From first slice
+    document_order: int  # Index in document_ir.segments
+    raw_segment: Segment  # Reference back to full segment
+
+    # Table-specific (populated from caption_bindings + TableSegment).
+    caption_gap_segments: Optional[int] = None
+    caption_kind: Optional[str] = None
+    caption_page_index: Optional[int] = None
+    caption_segment_id: Optional[str] = None
+    caption_text: Optional[str] = None
+    columns_signature: Optional[str] = None
+    header_rows_canonical: tuple[tuple[str, ...], ...] = ()  # Immutable for frozen
+
+
+@dataclass
+class CurriculumMatchedSegment:
+    """A document segment successfully matched to a curriculum skeleton node."""
+
+    ancestry: list[CurriculumSkeletonNode]  # Root -> matched node (inclusive)
+    node: CurriculumSkeletonNode
+    segment: CurriculumMatchableSegment
+
+    # For allow_multiple_segments (bilingual pairs).
+    additional_segments: list[CurriculumMatchableSegment] = field(default_factory=list)
+
+
+@dataclass
+class CurriculumMatchReport:
     """Structured diagnostics from a skeleton matching run.
 
     Attributes
     ----------
-    total_segments
-        Total number of matchable segments in the document.
-    matched_segments
-        Number of segments that matched a skeleton node.
-    unmatched_segments
-        Number of segments that did NOT match any node.
-    total_skeleton_nodes
-        Total nodes in the skeleton (all types).
-    total_matchable_nodes
-        Nodes that participate in matching (not CONTAINER_ONLY).
-    matched_nodes
-        Number of distinct matchable nodes that received at least one match.
     container_only_nodes
         Number of CONTAINER_ONLY nodes (structural-only, never matched).
     cursor_jumps
         List of large cursor jumps (potential document/skeleton ordering issues).
+    matched_nodes
+        Number of distinct matchable nodes that received at least one match.
+    matched_segments
+        Number of segments that matched a skeleton node.
+    total_matchable_nodes
+        Nodes that participate in matching (not CONTAINER_ONLY).
+    total_segments
+        Total number of matchable segments in the document.
+    total_skeleton_nodes
+        Total nodes in the skeleton (all types).
+    unexpected_skipped_node_ids
+        IDs of matchable nodes that expected a match but received none. CONTAINER_ONLY
+        and IGNORE nodes are excluded from this list.
     unmatched_segment_ids
         IDs of document segments that found no match.
-    unexpected_skipped_node_ids
-        IDs of matchable nodes that expected a match but received none.
-        CONTAINER_ONLY and IGNORE nodes are excluded from this list.
+    unmatched_segments
+        Number of segments that did NOT match any node.
     """
 
-    total_segments: int = 0
-    matched_segments: int = 0
-    unmatched_segments: int = 0
-    total_skeleton_nodes: int = 0
-    total_matchable_nodes: int = 0
-    matched_nodes: int = 0
     container_only_nodes: int = 0
-    cursor_jumps: list[CursorJump] = field(default_factory=list)
-    unmatched_segment_ids: list[str] = field(default_factory=list)
+    cursor_jumps: list[CurriculumCursorJump] = field(default_factory=list)
+    matched_nodes: int = 0
+    matched_segments: int = 0
+    total_matchable_nodes: int = 0
+    total_segments: int = 0
+    total_skeleton_nodes: int = 0
     unexpected_skipped_node_ids: list[str] = field(default_factory=list)
+    unmatched_segment_ids: list[str] = field(default_factory=list)
+    unmatched_segments: int = 0
 
     @property
-    def segment_coverage(self) -> float:
-        """Fraction of document segments that matched a skeleton node."""
-        if self.total_segments == 0:
-            return 0.0
-        return self.matched_segments / self.total_segments
+    def is_healthy(self) -> bool:
+        """A match is healthy when > 90% of matchable nodes matched and there are no
+        large cursor jumps (which indicate ordering misalignment).
+
+        Returns
+        -------
+        bool
+            True if the match is healthy, False otherwise.
+        """
+
+        return self.node_coverage > 0.9 and len(self.cursor_jumps) == 0
 
     @property
     def node_coverage(self) -> float:
-        """Fraction of matchable skeleton nodes that received a match."""
+        """Fraction of matchable curriculum skeleton nodes that received a match.
+
+        Returns
+        -------
+        float
+            The node coverage as a float between 0.0 and 1.0. Returns 0.0 if there are
+            no matchable nodes.
+        """
+
         if self.total_matchable_nodes == 0:
             return 0.0
         return self.matched_nodes / self.total_matchable_nodes
 
     @property
-    def is_healthy(self) -> bool:
-        """A match is healthy when >90% of matchable nodes matched and there
-        are no large cursor jumps (which indicate ordering misalignment)."""
-        return self.node_coverage > 0.9 and len(self.cursor_jumps) == 0
+    def segment_coverage(self) -> float:
+        """Fraction of document segments that matched a skeleton node.
+
+        Returns
+        -------
+        float
+            The segment coverage as a float between 0.0 and 1.0. Returns 0.0 if there
+            are no segments.
+        """
+
+        if self.total_segments == 0:
+            return 0.0
+        return self.matched_segments / self.total_segments
 
     def summary(self) -> str:
-        """Return a human-readable summary string."""
+        """Return a human-readable summary string for the curriculum match report.
+
+        Returns
+        -------
+        str
+            A formatted multi-line string summarizing the match report, including
+            coverage metrics, counts of matched/unmatched segments and nodes, and
+            details on unmatched segments and cursor jumps.
+        """
+
         lines = [
             f"{'═' * 60}",
             "  Skeleton Match Report",
@@ -174,8 +253,10 @@ class MatchReport:
 
         if self.unmatched_segment_ids:
             lines.append(f"\n  Unmatched segments ({len(self.unmatched_segment_ids)}):")
+
             for sid in self.unmatched_segment_ids[:10]:
                 lines.append(f"    - {sid}")
+
             if len(self.unmatched_segment_ids) > 10:
                 lines.append(f"    ... and {len(self.unmatched_segment_ids) - 10} more")
 
@@ -184,8 +265,10 @@ class MatchReport:
                 f"\n  Unexpected skipped nodes "
                 f"({len(self.unexpected_skipped_node_ids)}):"
             )
+
             for nid in self.unexpected_skipped_node_ids[:10]:
                 lines.append(f"    - {nid}")
+
             if len(self.unexpected_skipped_node_ids) > 10:
                 lines.append(
                     f"    ... and {len(self.unexpected_skipped_node_ids) - 10} more"
@@ -193,6 +276,7 @@ class MatchReport:
 
         if self.cursor_jumps:
             lines.append(f"\n  Cursor jumps ({len(self.cursor_jumps)}):")
+
             for jump in self.cursor_jumps[:5]:
                 lines.append(
                     f"    - {jump.from_node_id} → {jump.to_node_id} "
@@ -202,8 +286,17 @@ class MatchReport:
         lines.append(f"{'═' * 60}")
         return "\n".join(lines)
 
-    def to_dict(self) -> dict:
-        """Serialize to a JSON-compatible dict for persistence."""
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the curriculum match report to a JSON-compatible dict for
+        persistence.
+
+        Returns
+        -------
+        dict[str, Any]
+            A dictionary representation of the match report, including all metrics,
+            lists of unmatched segments and cursor jumps, and the overall health status.
+        """
+
         return {
             "total_segments": self.total_segments,
             "matched_segments": self.matched_segments,
@@ -229,44 +322,67 @@ class MatchReport:
         }
 
 
-def _gkey_tuple(
-    *,
-    role: NodeRole,
-    title: str,
-    local_code: Optional[str],
-    source_label: Optional[str],
-) -> tuple[str, str, str, str]:
-    """Create a grouping key tuple.
+@dataclass
+class CurriculumMatchResult:
+    """Complete output of the curriculum matching engine."""
 
-    NB: All string fields are stripped to ensure lookup parity with
-    `collect_unique_grouping_keys`, which strips titles before building dedupe keys and
-    persisting `GroupingCanonicalizationKey` objects. Without stripping here, a
-    `GroupingDecision` whose title carries leading/trailing whitespace would silently
-    miss the mapping index and default to KEEP.
+    cursor_jumps: list[CurriculumCursorJump]
+    matched: list[CurriculumMatchedSegment]
+    skipped_node_ids: set[str]
+    unmatched: list[CurriculumMatchableSegment]
+
+
+@dataclass
+class CurriculumResolvedColumnRole:
+    """Resolved role for a single table column."""
+
+    col_index: int
+    kind: str  # "grouping", "leaf", or "skip"
+    role_value: str  # e.g., "strand", "expectation"
+    source_label: str  # Column header text (for source_label)
+
+
+def _cell_to_text(cell: TextUnit | dict[str, Any]) -> str:
+    """Extract plain text from a table cell.
+
+    Handles both `TextUnit` objects (with `.text` attribute) and dicts.
 
     Parameters
     ----------
-    role
-        The NodeRole of the grouping.
-    title
-        The title of the grouping.
-    local_code
-        The local code of the grouping.
-    source_label
-        The source label of the grouping.
+    cell
+        A table cell object (typically TextUnit or dict).
 
     Returns
     -------
-    tuple[str, str, str, str]
-        The grouping key tuple.
+    str
+        The extracted text, or empty string.
     """
 
-    return (
-        role.value,
-        (title or "").strip(),
-        (local_code or "").strip(),
-        (source_label or "").strip(),
-    )
+    if cell is None:
+        return ""
+
+    # TextUnit object.
+    if isinstance(cell, TextUnit):
+        return (cell.text or "").strip()
+
+    if hasattr(cell, "text"):
+        inner = cell.text
+
+        if isinstance(inner, TextUnit):
+            return (inner.text or "").strip()
+
+        return inner.strip() if isinstance(inner, str) else str(inner or "")
+
+    # Dict fallback.
+    if isinstance(cell, dict):
+        t = cell.get("text", "")
+        return (
+            (t.get("text", "") or "").strip()
+            if isinstance(t, dict)
+            else str(t or "").strip()
+        )
+
+    return str(cell or "").strip()
 
 
 def _check_cycles(*, child_to_parent: dict[str, str], warnings: list[str]) -> None:
@@ -529,6 +645,46 @@ def _count_decision_leaves(d: SegmentDecision) -> int:
         n += len(r.leaves or [])
 
     return n
+
+
+def _create_decision_from_role(
+    *, cell_text: str, col_role: CurriculumResolvedColumnRole
+) -> GroupingDecision | LeafDecision | None:
+    """Create a GroupingDecision or LeafDecision based on the column role.
+
+    Parameters
+    ----------
+    cell_text
+        The extracted and stripped text from the cell.
+    col_role
+        The resolved column role definition.
+
+    Returns
+    -------
+    GroupingDecision | LeafDecision | None
+        The appropriate decision object, or None if the role is invalid.
+    """
+
+    try:
+        if col_role.kind == "grouping":
+            return GroupingDecision(
+                role=NodeRole(col_role.role_value),
+                source_label=col_role.source_label,
+                title=cell_text,
+            )
+        if col_role.kind == "leaf":
+            return LeafDecision(
+                body=cell_text,
+                role=StatementRole(col_role.role_value),
+                source_label=col_role.source_label,
+            )
+    except ValueError:
+        logger.warning(
+            f"Invalid role '{col_role.role_value}' for kind '{col_role.kind}'; "
+            f"skipping column {col_role.col_index}."
+        )
+
+    return None
 
 
 def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
@@ -889,6 +1045,95 @@ def _extract_block_segment_text(segment: BlockSegment) -> str | None:
     return None
 
 
+def _extract_fallback_content(
+    *, cells: list[Any], default_leaf_role: StatementRole | None
+) -> tuple[list[GroupingDecision], list[LeafDecision]]:
+    """Extract fallback content when no column mapping is provided.
+
+    Parameters
+    ----------
+    cells
+        The cells from the table row.
+    default_leaf_role
+        Fallback leaf role to use for the extracted text.
+
+    Returns
+    -------
+    tuple[list[GroupingDecision], list[LeafDecision]]
+        Empty groupings and a list of fallback leaves, if applicable.
+    """
+
+    if not default_leaf_role:
+        return [], []
+
+    parts: list[str] = []
+
+    for cell in cells:
+        text = _cell_to_text(cell)
+
+        if text and (stripped := text.strip()):
+            parts.append(stripped)
+
+    if not parts:
+        return [], []
+
+    return [], [LeafDecision(body="\n\n".join(parts), role=default_leaf_role)]
+
+
+def _extract_row_content(
+    *,
+    col_map: list[CurriculumResolvedColumnRole],
+    default_leaf_role: StatementRole | None,
+    row: TableRow,
+) -> tuple[list[GroupingDecision], list[LeafDecision]]:
+    """Extract groupings and leaves from a single table row using column map.
+
+    Parameters
+    ----------
+    col_map
+        Resolved column-to-role mapping.
+    default_leaf_role
+        Fallback leaf role when no column_mappings matched any column.
+    row
+        A TableRow object from DocumentIR.
+
+    Returns
+    -------
+    tuple[list[GroupingDecision], list[LeafDecision]]
+        Row-level groupings and leaves.
+    """
+
+    cells = getattr(row, "cells", [])
+
+    if not col_map:
+        return _extract_fallback_content(
+            cells=cells, default_leaf_role=default_leaf_role
+        )
+
+    groupings: list[GroupingDecision] = []
+    leaves: list[LeafDecision] = []
+
+    for col_role in col_map:
+        if col_role.col_index >= len(cells) or col_role.kind == "skip":
+            continue
+
+        cell_text = _cell_to_text(cells[col_role.col_index])
+
+        if not cell_text or not (cell_text_stripped := cell_text.strip()):
+            continue
+
+        decision = _create_decision_from_role(
+            cell_text=cell_text_stripped, col_role=col_role
+        )
+
+        if isinstance(decision, GroupingDecision):
+            groupings.append(decision)
+        elif isinstance(decision, LeafDecision):
+            leaves.append(decision)
+
+    return groupings, leaves
+
+
 def _extract_table_headers(segment: Segment) -> list[str]:
     """Best-effort extraction of header cell strings for unresolved table items.
 
@@ -963,6 +1208,76 @@ def _format_section_path(*, max_items: int = 6, section_path_text: list[str]) ->
     tail = section_path_text[-max_items:]
 
     return " > ".join(tail)
+
+
+def _get_target_text(
+    *, segment: CurriculumMatchableSegment, target: CurriculumMatchTarget
+) -> str | None:
+    """Extract the text field from the segment based on match target.
+
+    Parameters
+    ----------
+    segment
+        The CurriculumMatchableSegment to extract text from.
+    target
+        Which text field to extract.
+
+    Returns
+    -------
+    str | None
+        The relevant text, or None if the target is not available.
+    """
+
+    if target == CurriculumMatchTarget.TEXT:
+        return segment.text
+
+    if target == CurriculumMatchTarget.HEADING:
+        return segment.text if segment.block_type == "heading" else None
+
+    if target == CurriculumMatchTarget.CAPTION:
+        return segment.caption_text
+
+    return None
+
+
+def _gkey_tuple(
+    *,
+    role: NodeRole,
+    title: str,
+    local_code: Optional[str],
+    source_label: Optional[str],
+) -> tuple[str, str, str, str]:
+    """Create a grouping key tuple.
+
+    NB: All string fields are stripped to ensure lookup parity with
+    `collect_unique_grouping_keys`, which strips titles before building dedupe keys and
+    persisting `GroupingCanonicalizationKey` objects. Without stripping here, a
+    `GroupingDecision` whose title carries leading/trailing whitespace would silently
+    miss the mapping index and default to KEEP.
+
+    Parameters
+    ----------
+    role
+        The NodeRole of the grouping.
+    title
+        The title of the grouping.
+    local_code
+        The local code of the grouping.
+    source_label
+        The source label of the grouping.
+
+    Returns
+    -------
+    tuple[str, str, str, str]
+        The grouping key tuple.
+    """
+
+    return (
+        role.value,
+        (title or "").strip(),
+        (local_code or "").strip(),
+        (source_label or "").strip(),
+    )
 
 
 def _grouping_key(g: GroupingDecision) -> str:
@@ -1786,6 +2101,107 @@ def _resolve_collision(
     return new_id
 
 
+def _resolve_column_mappings(
+    *,
+    column_mappings: list[CurriculumColumnMapping],
+    header_rows_canonical: list[list[str]],
+) -> list[CurriculumResolvedColumnRole]:
+    """Match skeleton column_mappings against actual table headers.
+
+    Uses the first canonical header row for matching. Each column is tested against
+    every mapping in order; first match wins. Unmatched columns default to ``skip``.
+
+    Parameters
+    ----------
+    column_mappings
+        Column-to-role mappings from the skeleton node.
+    header_rows_canonical
+        Canonical header rows as `list[list[str]]` from the table segment.
+
+    Returns
+    -------
+    list[CurriculumResolvedColumnRole]
+        One entry per column in the header row.
+    """
+
+    if not header_rows_canonical:
+        return []
+
+    # Use the first header row for matching.
+    headers = header_rows_canonical[0]
+    resolved: list[CurriculumResolvedColumnRole] = []
+
+    for col_idx, header_text in enumerate(headers):
+        matched_mapping: CurriculumColumnMapping | None = None
+
+        for mapping in column_mappings:
+            if re.search(
+                mapping.header_pattern,
+                header_text,
+                re.IGNORECASE | re.UNICODE,
+            ):
+                matched_mapping = mapping
+                break
+
+        if matched_mapping is None or matched_mapping.role == "skip":
+            resolved.append(
+                CurriculumResolvedColumnRole(
+                    col_index=col_idx,
+                    kind="skip",
+                    role_value="",
+                    source_label=header_text,
+                )
+            )
+        else:
+            kind, role_value = matched_mapping.role.split(":", 1)
+            resolved.append(
+                CurriculumResolvedColumnRole(
+                    col_index=col_idx,
+                    kind=kind,
+                    role_value=role_value,
+                    source_label=(matched_mapping.source_label_override or header_text),
+                )
+            )
+
+    return resolved
+
+
+def _rule_matches(
+    *, rule: CurriculumMatchRule, segment: CurriculumMatchableSegment
+) -> bool:
+    """Test a single match rule against a segment. Within a rule, ALL specified
+    conditions must hold (AND logic).
+
+    Parameters
+    ----------
+    rule
+        The CurriculumMatchRule to apply.
+    segment
+        The CurriculumMatchableSegment to test.
+
+    Returns
+    -------
+    bool
+        True if all conditions in the rule are satisfied.
+    """
+
+    # Check structural constraints first.
+    if rule.require_segment_kind and segment.segment_kind != rule.require_segment_kind:
+        return False
+
+    if rule.require_block_type and segment.block_type != rule.require_block_type:
+        return False
+
+    # Get the text to match against.
+    target_text = _get_target_text(segment=segment, target=rule.target)
+
+    if target_text is None:
+        return False
+
+    # Regex match.
+    return bool(re.search(rule.pattern, target_text, re.IGNORECASE | re.UNICODE))
+
+
 def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
     """Best-effort bbox for a segment.
 
@@ -1958,6 +2374,107 @@ def _table_row_bbox(*, row_index: int, table_segment: TableSegment) -> Optional[
         return rp.row_bbox or rp.bbox
 
     return None
+
+
+def _translate_table_rows(
+    *,
+    context: list[GroupingDecision],
+    decision_id: str,
+    node: CurriculumSkeletonNode,
+    seg: CurriculumMatchableSegment,
+) -> SegmentDecision:
+    """Build a SegmentDecision with RowDecision[] from a table segment.
+
+    Parameters
+    ----------
+    context
+        Pre-built context_groupings from skeleton ancestry.
+    decision_id
+        The decision ID string.
+    node
+        The skeleton node that matched (has column_mappings).
+    seg
+        The MatchableSegment wrapper.
+
+    Returns
+    -------
+    SegmentDecision
+        A table decision with per-row RowDecisions.
+    """
+
+    assert isinstance(seg.raw_segment, TableSegment)
+    table_seg: TableSegment = seg.raw_segment
+
+    # Build column index -> role mapping from skeleton + table headers.
+    col_map = _resolve_column_mappings(
+        column_mappings=node.column_mappings,
+        header_rows_canonical=list(list(row) for row in seg.header_rows_canonical),
+    )
+
+    # Prefer rows_filldown if available (merged cells filled down).
+    rows_source = table_seg.rows_filldown or table_seg.rows
+    header_n = table_seg.header_row_count or 0
+    row_decisions: list[RowDecision] = []
+
+    for abs_i, row in enumerate(rows_source):
+        if abs_i < header_n:
+            continue  # Skip header rows
+
+        row_groupings, row_leaves = _extract_row_content(
+            col_map=col_map, default_leaf_role=node.leaf_role, row=row
+        )
+
+        if not row_groupings and not row_leaves:
+            continue
+
+        row_decisions.append(
+            RowDecision(groupings=row_groupings, leaves=row_leaves, row_index=abs_i)
+        )
+
+    # Determine decision type.
+    has_grouping = bool(node.grouping_role)
+    has_rows = bool(row_decisions)
+
+    if has_grouping and has_rows:
+        dt = SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES
+    elif has_rows:
+        dt = SegmentDecisionType.EMIT_LEAVES_ONLY
+    elif has_grouping:
+        dt = SegmentDecisionType.EMIT_GROUPINGS_ONLY
+    else:
+        dt = SegmentDecisionType.IGNORE
+
+    groupings: list[GroupingDecision] = []
+
+    if node.grouping_role:
+        groupings.append(
+            GroupingDecision(
+                local_code=node.local_code,
+                role=node.grouping_role,
+                source_label=node.source_label,
+                title=node.canonical_name.primary,
+            )
+        )
+
+    return SegmentDecision(
+        block_type=None,
+        caption_gap_segments=seg.caption_gap_segments,
+        caption_kind=seg.caption_kind,
+        caption_page_index=seg.caption_page_index,
+        caption_segment_id=seg.caption_segment_id,
+        caption_text=seg.caption_text,
+        columns_signature=seg.columns_signature,
+        confidence=1.0,
+        context_groupings=context,
+        decision_id=decision_id,
+        decision_type=dt,
+        groupings=groupings,
+        leaves=[],
+        rationale=f"Skeleton TABLE: '{node.id}' → {len(row_decisions)} data rows.",
+        rows=row_decisions,
+        segment_id=seg.segment_id,
+        segment_kind="table",
+    )
 
 
 def _validate_and_handle_unresolved(
@@ -2347,6 +2864,112 @@ def apply_table_signatures(
         updated_decisions.append(d)
 
     return updated_decisions
+
+
+def build_ancestry_map(
+    root: CurriculumSkeletonNode,
+) -> dict[str, list[CurriculumSkeletonNode]]:
+    """Build node_id -> full ancestry chain (root -> node, inclusive).
+
+    Parameters
+    ----------
+    root
+        The root SkeletonNode.
+
+    Returns
+    -------
+    dict[str, list[CurriculumSkeletonNode]]
+        Mapping from each node ID to its full ancestry chain.
+    """
+
+    result: dict[str, list[CurriculumSkeletonNode]] = {}
+
+    def _walk(
+        *, ancestors: list[CurriculumSkeletonNode], node: CurriculumSkeletonNode
+    ) -> None:
+        """DFS walk to build ancestry map.
+
+        Parameters
+        ----------
+        ancestors
+            Ancestry chain from root to parent of current node.
+        node
+            Current SkeletonNode being visited.
+        """
+
+        chain = ancestors + [node]
+        result[node.id] = chain
+
+        for child in node.children:
+            _walk(ancestors=chain, node=child)
+
+    _walk(ancestors=[], node=root)
+    return result
+
+
+def build_context_groupings(
+    *,
+    ancestry: list[CurriculumSkeletonNode],
+    matched_node: CurriculumSkeletonNode,
+    role_order: list[NodeRole] | None = None,
+) -> list[GroupingDecision]:
+    """Build context_groupings from the skeleton ancestry chain.
+
+    Includes ancestors that:
+
+    1. Have a `grouping_role` (not None, not FRAMEWORK).
+    2. Are NOT the matched node itself (that goes in `groupings`).
+    3. Are `EMIT_GROUPING`/`EMIT_GROUPING_AND_LEAF`/`EMIT_TABLE_ROWS` (visible in
+        document), OR are `CONTAINER_ONLY` with `implicit=True`.
+
+    The result is sorted by role precedence (outer → inner).
+
+    Parameters
+    ----------
+    ancestry
+        Full ancestry chain from root to matched node (inclusive).
+    matched_node
+        The node that was matched (excluded from context).
+    role_order
+        Custom role precedence order. Falls back to
+        `DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER`.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        Sorted context groupings for the SegmentDecision.
+    """
+
+    precedence = {
+        role: i
+        for i, role in enumerate(role_order or DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER)
+    }
+    context: list[GroupingDecision] = []
+
+    for node in ancestry:
+        # Stop before the matched node itself.
+        if node.id == matched_node.id:
+            break
+
+        # Skip nodes without grouping roles.
+        if node.grouping_role is None or node.grouping_role == NodeRole.FRAMEWORK:
+            continue
+
+        # CONTAINER_ONLY nodes are invisible UNLESS implicit=True.
+        if node.emit == CurriculumEmitPolicy.CONTAINER_ONLY and not node.implicit:
+            continue
+
+        context.append(
+            GroupingDecision(
+                local_code=node.local_code,
+                role=node.grouping_role,
+                source_label=node.source_label,
+                title=node.canonical_name.primary,
+            )
+        )
+
+    context.sort(key=lambda g: precedence.get(g.role, 999))
+    return context
 
 
 def canonical_grade_level_title(title: str) -> str:
@@ -2798,8 +3421,10 @@ def create_canonical_ir_from_curriculum_skeleton(
     doc_key: str,
     document_ir: DocumentIR,
     max_skip_distance: int = 20,
+    segment_decision_conf_threshold: float = 0.8,
     segment_decisions_fp: Path,
-) -> MatchReport:
+    structural_leaf_warn_threshold: float = 0.8,
+) -> CurriculumMatchReport:
     """Create a CanonicalIR from a CurriculumSkeleton by matching against DocumentIR
     segments.
 
@@ -2808,7 +3433,7 @@ def create_canonical_ir_from_curriculum_skeleton(
     caption_bindings
         Mapping from table segment_id to CaptionBinding.
     curriculum_match_report_fp
-        Path to persist the MatchReport JSON.
+        Path to persist the CurriculumMatchReport JSON.
     curriculum_skeleton
         A validated CurriculumSkeleton for this document.
     canonical_ir_fp
@@ -2819,13 +3444,17 @@ def create_canonical_ir_from_curriculum_skeleton(
         The loaded DocumentIR JSON from stitching.
     max_skip_distance
         Maximum skeleton nodes to skip before flagging a cursor jump.
+    segment_decision_conf_threshold
+        The low confidence threshold for segment decisions.
     segment_decisions_fp
         Optional path to persist the generated SegmentDecisionSet JSON.
         Useful for auditing and debugging.
+    structural_leaf_warn_threshold
+        The confidence threshold below which structural leaves will emit warnings.
 
     Returns
     -------
-    MatchReport
+    CurriculumMatchReport
         Curriculum matching diagnostics from the matching run.
     """
 
@@ -2842,9 +3471,9 @@ def create_canonical_ir_from_curriculum_skeleton(
         f"Running skeleton matching engine (skeleton={curriculum_skeleton.skeleton_id})..."
     )
     match_result = match(
-        segments=matchable_segments,
         curriculum_skeleton=curriculum_skeleton,
         max_skip_distance=max_skip_distance,
+        segments=matchable_segments,
     )
     logger.info(
         f"Match complete: {len(match_result.matched)} matched, "
@@ -2859,17 +3488,12 @@ def create_canonical_ir_from_curriculum_skeleton(
 
     for matched_seg in match_result.matched:
         decision = translate_matched_segment(
-            matched_seg,
-            doc_key=doc_key,
-            role_order=role_order,
+            doc_key=doc_key, matched=matched_seg, role_order=role_order
         )
         decisions.append(decision)
 
     for unmatched_seg in match_result.unmatched:
-        decision = translate_unmatched(
-            unmatched_seg,
-            doc_key=doc_key,
-        )
+        decision = translate_unmatched(doc_key=doc_key, seg=unmatched_seg)
         decisions.append(decision)
 
     # Sort by document order for consistency.
@@ -2902,6 +3526,8 @@ def create_canonical_ir_from_curriculum_skeleton(
         doc_key=doc_key,
         document_ir=document_ir,
         segment_decisions=decision_set,
+        segment_decision_conf_threshold=segment_decision_conf_threshold,
+        structural_leaf_warn_threshold=structural_leaf_warn_threshold,
     )
     logger.success(f"CanonicalIR compiled and saved to: {canonical_ir_fp}")
 
@@ -2985,6 +3611,78 @@ def dedupe_edges_postpass(
     return list(merged.values())
 
 
+def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
+    """Flatten ALL skeleton nodes into DFS order (including CONTAINER_ONLY).
+
+    Parameters
+    ----------
+    root
+        The root SkeletonNode.
+
+    Returns
+    -------
+    list[SkeletonNode]
+        All nodes in DFS traversal order.
+    """
+
+    nodes: list[CurriculumSkeletonNode] = []
+
+    def _walk(node: CurriculumSkeletonNode) -> None:
+        """DFS walk to collect all nodes.
+
+        Parameters
+        ----------
+        node
+            Current SkeletonNode being visited.
+        """
+
+        nodes.append(node)
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+    return nodes
+
+
+def dfs_matchable(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
+    """Flatten skeleton into DFS order, keeping only matchable nodes.
+
+    A node is matchable if it is NOT `CONTAINER_ONLY` and has at least one
+    `match_rule`. The framework root is excluded (it has no match rules).
+
+    Parameters
+    ----------
+    root
+        The root SkeletonNode.
+
+    Returns
+    -------
+    list[SkeletonNode]
+        Matchable nodes in DFS traversal order.
+    """
+
+    nodes: list[CurriculumSkeletonNode] = []
+
+    def _walk(node: CurriculumSkeletonNode) -> None:
+        """DFS walk to collect matchable nodes.
+
+        Parameters
+        ----------
+        node
+            Current SkeletonNode being visited.
+        """
+
+        if node.emit != CurriculumEmitPolicy.CONTAINER_ONLY and node.match_rules:
+            nodes.append(node)
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+    return nodes
+
+
 def ensure_node(
     *, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode], warnings: list[str]
 ) -> str:
@@ -3041,12 +3739,12 @@ def ensure_node(
         "source_decision_ids",
         "section_path_text",
     )
-    for field in list_fields:
-        base = getattr(existing, field)
-        extra = getattr(node, field)
+    for field_ in list_fields:
+        base = getattr(existing, field_)
+        extra = getattr(node, field_)
 
         # Update existing in-place.
-        setattr(existing, field, _stable_extend_unique(base=base, extra=extra))
+        setattr(existing, field_, _stable_extend_unique(base=base, extra=extra))
 
     # Keep-first semantics, fill missing values if present.
     scalar_fields = (
@@ -3059,22 +3757,22 @@ def ensure_node(
         "list_marker",
         "bbox",
     )
-    for field in scalar_fields:
+    for field_ in scalar_fields:
         # Only overwrite if existing is None. If node.field is also None, this is a
         # harmless no-op.
-        if getattr(existing, field) is None:
-            setattr(existing, field, getattr(node, field))
+        if getattr(existing, field_) is None:
+            setattr(existing, field_, getattr(node, field_))
 
     return existing.node_id
 
 
 def generate_match_report(
     *,
-    match_result: MatchResult,
+    match_result: CurriculumMatchResult,
     curriculum_skeleton: CurriculumSkeleton,
     total_segments: int,
-) -> MatchReport:
-    """Build a MatchReport from the engine's MatchResult.
+) -> CurriculumMatchReport:
+    """Build a CurriculumMatchReport from the engine's CurriculumMatchResult.
 
     Parameters
     ----------
@@ -3087,7 +3785,7 @@ def generate_match_report(
 
     Returns
     -------
-    MatchReport
+    CurriculumMatchReport
         Structured diagnostics.
     """
 
@@ -3105,7 +3803,7 @@ def generate_match_report(
         if node.id not in matched_node_ids and node.emit != CurriculumEmitPolicy.IGNORE:
             unexpected_skipped.append(node.id)
 
-    report = MatchReport(
+    return CurriculumMatchReport(
         total_segments=total_segments,
         matched_segments=len(match_result.matched),
         unmatched_segments=len(match_result.unmatched),
@@ -3117,8 +3815,6 @@ def generate_match_report(
         unmatched_segment_ids=[s.segment_id for s in match_result.unmatched],
         unexpected_skipped_node_ids=unexpected_skipped,
     )
-
-    return report
 
 
 def load_curriculum_skeleton(curriculum_skeleton_fp: Path) -> CurriculumSkeleton:
@@ -3318,6 +4014,108 @@ def load_or_build_caption_bindings(
     return caption_bindings
 
 
+def match(
+    *,
+    curriculum_skeleton: CurriculumSkeleton,
+    max_skip_distance: int = 20,
+    segments: list[CurriculumMatchableSegment],
+) -> CurriculumMatchResult:
+    """Deterministic forward-only matching of document segments to skeleton nodes.
+
+    The cursor starts at the first matchable node and only moves forward. When a
+    segment matches a node beyond `max_skip_distance`, a diagnostic `CursorJump` is
+    recorded.
+
+    Parameters
+    ----------
+    curriculum_skeleton
+        A validated CurriculumSkeleton.
+    max_skip_distance
+        Maximum nodes to skip before recording a diagnostic warning. The engine will
+        still find the match (full scan) but will flag it.
+    segments
+        CurriculumMatchableSegment in document order.
+
+    Returns
+    -------
+    CurriculumMatchResult
+        Matched segments, unmatched segments, skipped node IDs, and jumps.
+    """
+
+    matchable_nodes = dfs_matchable(curriculum_skeleton.root)
+    ancestry_map = build_ancestry_map(curriculum_skeleton.root)
+
+    cursor = 0
+    cursor_jumps: list[CurriculumCursorJump] = []
+    results: list[CurriculumMatchedSegment] = []
+    unmatched: list[CurriculumMatchableSegment] = []
+
+    for segment in segments:
+        matched = False
+
+        for probe in range(cursor, len(matchable_nodes)):
+            node = matchable_nodes[probe]
+
+            if not segment_matches_node(node=node, segment=segment):
+                continue
+
+            # Record large jump diagnostic.
+            if probe - cursor > max_skip_distance:
+                prev_id = (
+                    matchable_nodes[cursor].id
+                    if cursor < len(matchable_nodes)
+                    else "END"
+                )
+                cursor_jumps.append(
+                    CurriculumCursorJump(
+                        from_node_id=prev_id,
+                        segment_id=segment.segment_id,
+                        skipped_count=probe - cursor,
+                        to_node_id=node.id,
+                    )
+                )
+
+            ancestry = ancestry_map[node.id]
+
+            # Multi-match: append to previous match if same node.
+            if (
+                node.allow_multiple_segments
+                and results
+                and results[-1].node.id == node.id
+            ):
+                results[-1].additional_segments.append(segment)
+            else:
+                results.append(
+                    CurriculumMatchedSegment(
+                        ancestry=ancestry, node=node, segment=segment
+                    )
+                )
+
+            # Advance cursor.
+            cursor = probe if node.allow_multiple_segments else probe + 1
+            matched = True
+            break
+
+        if not matched:
+            unmatched.append(segment)
+
+    # Compute skipped nodes.
+    matched_node_ids = {r.node.id for r in results}
+    all_ids: set[str] = set()
+
+    for n in dfs_all(curriculum_skeleton.root):
+        all_ids.add(n.id)
+
+    skipped = all_ids - matched_node_ids
+
+    return CurriculumMatchResult(
+        cursor_jumps=cursor_jumps,
+        matched=results,
+        skipped_node_ids=skipped,
+        unmatched=unmatched,
+    )
+
+
 def merge_nodes_postpass(
     *, nodes: list[CanonicalNode], warnings: list[str]
 ) -> list[CanonicalNode]:
@@ -3374,7 +4172,7 @@ def merge_nodes_postpass(
         )
 
         # Merge optional fields conservatively: keep first non-null.
-        for field in (
+        for field_ in (
             "normalized_text",
             "source_label",
             "source_type",
@@ -3382,8 +4180,8 @@ def merge_nodes_postpass(
             "local_code",
             "bbox",
         ):
-            if getattr(m, field) is None and getattr(n, field) is not None:
-                setattr(m, field, getattr(n, field))
+            if getattr(m, field_) is None and getattr(n, field_) is not None:
+                setattr(m, field_, getattr(n, field_))
 
     # Preserve deterministic order: first-seen node_id order.
     return list(merged.values())
@@ -3550,7 +4348,7 @@ def prepare_matchable_segments(
     *,
     document_ir: DocumentIR,
     caption_bindings: dict[str, CaptionBinding],
-) -> list[MatchableSegment]:
+) -> list[CurriculumMatchableSegment]:
     """Convert DocumentIR segments into MatchableSegments.
 
     This is the ONLY place that touches DocumentIR internals.  Downstream code
@@ -3571,7 +4369,7 @@ def prepare_matchable_segments(
         Segments in document order, ready for the matching engine.
     """
 
-    result: list[MatchableSegment] = []
+    result: list[CurriculumMatchableSegment] = []
 
     for idx, segment in enumerate(document_ir.segments):
         if not segment.slices:
@@ -3588,7 +4386,7 @@ def prepare_matchable_segments(
             block_type_val = segment.block_type.value if segment.block_type else None
 
             result.append(
-                MatchableSegment(
+                CurriculumMatchableSegment(
                     segment_id=segment.segment_id,
                     segment_kind="block",
                     block_type=block_type_val,
@@ -3609,7 +4407,7 @@ def prepare_matchable_segments(
             )
 
             result.append(
-                MatchableSegment(
+                CurriculumMatchableSegment(
                     segment_id=segment.segment_id,
                     segment_kind="table",
                     block_type=None,
@@ -4047,6 +4845,210 @@ def save_canonical_ir(*, canonical_ir: CanonicalIR, canonical_ir_fp: Path) -> No
 
     write_to_json(fp=canonical_ir_fp, json_info=canonical_ir)
     logger.success(f"Saved canonical IR to: {canonical_ir_fp}")
+
+
+def segment_matches_node(
+    *, node: CurriculumSkeletonNode, segment: CurriculumMatchableSegment
+) -> bool:
+    """Test whether a document segment matches a skeleton node. ANY match_rule
+    succeeding is sufficient (OR logic across rules).
+
+    Parameters
+    ----------
+    node
+        The SkeletonNode to test against.
+    segment
+        The MatchableSegment to test.
+
+    Returns
+    -------
+    bool
+        True if any of the node's match_rules match the segment.
+    """
+
+    if node.emit == CurriculumEmitPolicy.CONTAINER_ONLY:
+        return False
+
+    return any(_rule_matches(rule=rule, segment=segment) for rule in node.match_rules)
+
+
+def translate_matched_segment(
+    *,
+    doc_key: str,
+    matched: CurriculumMatchedSegment,
+    role_order: list[NodeRole] | None = None,
+) -> SegmentDecision:
+    """Convert a CurriculumMatchedSegment into a SegmentDecision.
+
+    Parameters
+    ----------
+    doc_key
+        Document key for decision ID generation.
+    matched
+        The matched curriculum segment from the engine.
+    role_order
+        Custom role precedence for context_groupings sorting.
+
+    Returns
+    -------
+    SegmentDecision
+        A valid SegmentDecision ready for canonical IR compilation.
+
+    Raises
+    ------
+    ValueError
+        If the matched node has an unhandled emit policy.
+    """
+
+    node = matched.node
+    seg = matched.segment
+    context = build_context_groupings(
+        ancestry=matched.ancestry, matched_node=node, role_order=role_order
+    )
+    decision_id = f"skeleton:{doc_key}:{seg.segment_id}"
+    block_type = BlockType(seg.block_type) if seg.block_type else None
+
+    # Combine text from bilingual pairs.
+    all_texts = [seg.text or ""]
+
+    for extra in matched.additional_segments:
+        if extra.text:
+            all_texts.append(extra.text)
+
+    combined_text = "\n\n".join(t for t in all_texts if t.strip())
+
+    # Ignore.
+    if node.emit == CurriculumEmitPolicy.IGNORE:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=[],
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.IGNORE,
+            groupings=[],
+            leaves=[],
+            rationale=f"Skeleton IGNORE: '{node.id}'.",
+            rows=[],
+            segment_id=seg.segment_id,
+            segment_kind=seg.segment_kind,
+        )
+
+    # EMIT_GROUPING.
+    if node.emit == CurriculumEmitPolicy.EMIT_GROUPING:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=context,
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.EMIT_GROUPINGS_ONLY,
+            groupings=[
+                GroupingDecision(
+                    role=node.grouping_role,
+                    title=node.canonical_name.primary,
+                    source_label=node.source_label,
+                    local_code=node.local_code,
+                )
+            ],
+            leaves=[],
+            rationale=(
+                f"Skeleton EMIT_GROUPING: '{node.id}' " f"→ {node.grouping_role.value}."
+            ),
+            rows=[],
+            segment_id=seg.segment_id,
+            segment_kind=seg.segment_kind,
+        )
+
+    # EMIT_LEAF.
+    if node.emit == CurriculumEmitPolicy.EMIT_LEAF:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=context,
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.EMIT_LEAVES_ONLY,
+            groupings=[],
+            leaves=[
+                LeafDecision(
+                    role=node.leaf_role,
+                    body=combined_text,
+                    source_label=node.source_label,
+                )
+            ],
+            rationale=(f"Skeleton EMIT_LEAF: '{node.id}' → {node.leaf_role.value}."),
+            rows=[],
+            segment_id=seg.segment_id,
+            segment_kind=seg.segment_kind,
+        )
+
+    # EMIT_GROUPING_AND_LEAF.
+    if node.emit == CurriculumEmitPolicy.EMIT_GROUPING_AND_LEAF:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=context,
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
+            groupings=[
+                GroupingDecision(
+                    role=node.grouping_role,
+                    title=node.canonical_name.primary,
+                    source_label=node.source_label,
+                    local_code=node.local_code,
+                )
+            ],
+            leaves=[
+                LeafDecision(
+                    role=node.leaf_role,
+                    body=combined_text,
+                    source_label=node.source_label,
+                )
+            ],
+            rationale=f"Skeleton EMIT_GROUPING_AND_LEAF: '{node.id}'.",
+            rows=[],
+            segment_id=seg.segment_id,
+            segment_kind=seg.segment_kind,
+        )
+
+    # EMIT_TABLE_ROWS.
+    if node.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS:
+        return _translate_table_rows(
+            context=context, decision_id=decision_id, node=node, seg=seg
+        )
+
+    raise ValueError(f"Unhandled emit policy: {node.emit}")
+
+
+def translate_unmatched(
+    *, doc_key: str, seg: CurriculumMatchableSegment
+) -> SegmentDecision:
+    """Convert an unmatched segment into an IGNORE SegmentDecision.
+
+    Parameters
+    ----------
+    doc_key
+        Document key for decision ID generation.
+    seg
+        The unmatched MatchableSegment.
+
+    Returns
+    -------
+    SegmentDecision
+        An IGNORE decision.
+    """
+
+    return SegmentDecision(
+        block_type=BlockType(seg.block_type) if seg.block_type else None,
+        confidence=1.0,
+        context_groupings=[],
+        decision_id=f"skeleton:{doc_key}:{seg.segment_id}:unmatched",
+        decision_type=SegmentDecisionType.IGNORE,
+        groupings=[],
+        leaves=[],
+        rationale="No skeleton node matched this segment.",
+        rows=[],
+        segment_id=seg.segment_id,
+        segment_kind=seg.segment_kind,
+    )
 
 
 def uuidv5_from_key(key: str) -> str:
