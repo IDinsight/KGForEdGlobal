@@ -22,16 +22,8 @@
 				"wo": "Xayma, Tolluwaay 2 (CE1-CE2)"
 			}
 		},
-		"emit": "emit_grouping",
+		"emit": "container_only",
 		"grouping_role": "framework",
-		"match_rules": [
-			{
-				"pattern": "math[éeè]matiques"
-			},
-			{
-				"pattern": "xayma"
-			}
-		],
 		"children": [
 			{
 				"id": "front-matter",
@@ -119,7 +111,7 @@
 						"leaf_role": "expectation",
 						"match_rules": [
 							{
-								"pattern": "tableau 1",
+								"pattern": "tableau\\s+1",
 								"target": "caption"
 							}
 						],
@@ -172,14 +164,10 @@
 									"primary": "Paliers du niveau CE1",
 									"translations": {}
 								},
-								"emit": "emit_grouping",
+								"emit": "container_only",
 								"grouping_role": "grade_level",
-								"match_rules": [
-									{
-										"pattern": "paliers du niveau CE1"
-									}
-								],
 								"grade": "CE1",
+								"implicit": true,
 								"children": [
 									{
 										"id": "num-palier-1-def",
@@ -194,10 +182,10 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "j[ée]ego 1"
+												"pattern": "j[ée]ego\\s+1"
 											},
 											{
-												"pattern": "palier 1"
+												"pattern": "palier\\s+1"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -217,10 +205,10 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "j[ée]ego 2"
+												"pattern": "j[ée]ego\\s+2"
 											},
 											{
-												"pattern": "palier 2"
+												"pattern": "palier\\s+2"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -240,10 +228,10 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "j[ée]ego 3"
+												"pattern": "j[ée]ego\\s+3"
 											},
 											{
-												"pattern": "palier 3"
+												"pattern": "palier\\s+3"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -258,14 +246,10 @@
 									"primary": "Paliers du niveau CE2",
 									"translations": {}
 								},
-								"emit": "emit_grouping",
+								"emit": "container_only",
 								"grouping_role": "grade_level",
-								"match_rules": [
-									{
-										"pattern": "paliers du niveau CE2"
-									}
-								],
 								"grade": "CE2",
+								"implicit": true,
 								"children": [
 									{
 										"id": "num-palier-4-def",
@@ -280,10 +264,10 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "j[ée]ego 4"
+												"pattern": "j[ée]ego\\s+4"
 											},
 											{
-												"pattern": "palier 4"
+												"pattern": "palier\\s+4"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -303,10 +287,10 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "j[ée]ego 5"
+												"pattern": "j[ée]ego\\s+5"
 											},
 											{
-												"pattern": "palier 5"
+												"pattern": "palier\\s+5"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -326,10 +310,10 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "j[ée]ego 6"
+												"pattern": "j[ée]ego\\s+6"
 											},
 											{
-												"pattern": "palier 6"
+												"pattern": "palier\\s+6"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -350,70 +334,94 @@
 						"doc_note": "Overview 25-week planning tables. UNIQUE to Activités numériques (other strands don't have these).",
 						"children": [
 							{
-								"id": "tableau-2",
+								"id": "num-plan-ce1",
 								"canonical_name": {
-									"primary": "Tableau 2 — Planification CE1: Activités numériques et Résolution de problèmes (Semaines 1–25)",
+									"primary": "Planification CE1",
 									"translations": {}
 								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"match_rules": [
-									{
-										"pattern": "tableau 2",
-										"target": "caption"
-									}
-								],
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)semaine|palier",
-										"role": "grouping:week"
-									},
-									{
-										"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-										"role": "leaf:expectation",
-										"source_label_override": "Activités numériques"
-									},
-									{
-										"header_pattern": "(?i)r[ée]solution",
-										"role": "leaf:expectation",
-										"source_label_override": "Résolution de problèmes"
-									}
-								],
+								"implicit": true,
+								"emit": "container_only",
+								"grouping_role": "grade_level",
 								"grade": "CE1",
-								"doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French)."
+								"children": [
+									{
+										"id": "tableau-2",
+										"canonical_name": {
+											"primary": "Tableau 2 — Planification CE1: Activités numériques et Résolution de problèmes (Semaines 1–25)",
+											"translations": {}
+										},
+										"emit": "emit_table_rows",
+										"leaf_role": "expectation",
+										"match_rules": [
+											{
+												"pattern": "tableau\\s+2",
+												"target": "caption"
+											}
+										],
+										"column_mappings": [
+											{
+												"header_pattern": "(?i)semaine|palier",
+												"role": "grouping:week"
+											},
+											{
+												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
+												"role": "leaf:expectation",
+												"source_label_override": "Activités numériques"
+											},
+											{
+												"header_pattern": "(?i)r[ée]solution",
+												"role": "leaf:expectation",
+												"source_label_override": "Résolution de problèmes"
+											}
+										],
+										"doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French)."
+									}
+								]
 							},
 							{
-								"id": "tableau-3",
+								"id": "num-plan-ce2",
 								"canonical_name": {
-									"primary": "Tableau 3 — Planification CE2: Activités numériques et Résolution de problèmes (Semaines 1–25)",
+									"primary": "Planification CE2",
 									"translations": {}
 								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"match_rules": [
-									{
-										"pattern": "tableau 3",
-										"target": "caption"
-									}
-								],
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)semaine|palier",
-										"role": "grouping:week"
-									},
-									{
-										"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-										"role": "leaf:expectation",
-										"source_label_override": "Activités numériques"
-									},
-									{
-										"header_pattern": "(?i)r[ée]solution",
-										"role": "leaf:expectation",
-										"source_label_override": "Résolution de problèmes"
-									}
-								],
+								"implicit": true,
+								"emit": "container_only",
+								"grouping_role": "grade_level",
 								"grade": "CE2",
-								"doc_note": "Same structure as Tableau 2, for CE2."
+								"children": [
+									{
+										"id": "tableau-3",
+										"canonical_name": {
+											"primary": "Tableau 3 — Planification CE2: Activités numériques et Résolution de problèmes (Semaines 1–25)",
+											"translations": {}
+										},
+										"emit": "emit_table_rows",
+										"leaf_role": "expectation",
+										"match_rules": [
+											{
+												"pattern": "tableau\\s+3",
+												"target": "caption"
+											}
+										],
+										"column_mappings": [
+											{
+												"header_pattern": "(?i)semaine|palier",
+												"role": "grouping:week"
+											},
+											{
+												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
+												"role": "leaf:expectation",
+												"source_label_override": "Activités numériques"
+											},
+											{
+												"header_pattern": "(?i)r[ée]solution",
+												"role": "leaf:expectation",
+												"source_label_override": "Résolution de problèmes"
+											}
+										],
+										"doc_note": "Same structure as Tableau 2, for CE2."
+									}
+								]
 							}
 						]
 					},
@@ -452,7 +460,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 4",
+												"pattern": "tableau\\s+4",
 												"target": "caption"
 											}
 										],
@@ -490,7 +498,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 5",
+												"pattern": "tableau\\s+5",
 												"target": "caption"
 											}
 										],
@@ -527,7 +535,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 6",
+												"pattern": "tableau\\s+6",
 												"target": "caption"
 											}
 										],
@@ -577,7 +585,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 7",
+												"pattern": "tableau\\s+7",
 												"target": "caption"
 											}
 										],
@@ -614,7 +622,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 8",
+												"pattern": "tableau\\s+8",
 												"target": "caption"
 											}
 										],
@@ -651,7 +659,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 9",
+												"pattern": "tableau\\s+9",
 												"target": "caption"
 											}
 										],
@@ -738,10 +746,10 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "j[ée]ego 1"
+												"pattern": "j[ée]ego\\s+1"
 											},
 											{
-												"pattern": "palier 1"
+												"pattern": "palier\\s+1"
 											}
 										],
 										"allow_multiple_segments": true,
@@ -910,7 +918,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 10",
+												"pattern": "tableau\\s+10",
 												"target": "caption"
 											}
 										],
@@ -947,7 +955,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 11",
+												"pattern": "tableau\\s+11",
 												"target": "caption"
 											}
 										],
@@ -984,7 +992,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 12",
+												"pattern": "tableau\\s+12",
 												"target": "caption"
 											}
 										],
@@ -1034,7 +1042,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 13",
+												"pattern": "tableau\\s+13",
 												"target": "caption"
 											}
 										],
@@ -1071,7 +1079,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 14",
+												"pattern": "tableau\\s+14",
 												"target": "caption"
 											}
 										],
@@ -1108,7 +1116,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 15",
+												"pattern": "tableau\\s+15",
 												"target": "caption"
 											}
 										],
@@ -1322,7 +1330,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 16",
+												"pattern": "tableau\\s+16",
 												"target": "caption"
 											}
 										],
@@ -1365,7 +1373,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 17",
+												"pattern": "tableau\\s+17",
 												"target": "caption"
 											}
 										],
@@ -1408,7 +1416,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 18",
+												"pattern": "tableau\\s+18",
 												"target": "caption"
 											}
 										],
@@ -1466,7 +1474,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 19",
+												"pattern": "tableau\\s+19",
 												"target": "caption"
 											}
 										],
@@ -1507,7 +1515,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 20",
+												"pattern": "tableau\\s+20",
 												"target": "caption"
 											}
 										],
@@ -1550,7 +1558,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 21",
+												"pattern": "tableau\\s+21",
 												"target": "caption"
 											}
 										],
@@ -1830,7 +1838,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 22",
+												"pattern": "tableau\\s+22",
 												"target": "caption"
 											}
 										],
@@ -1871,7 +1879,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 23",
+												"pattern": "tableau\\s+23",
 												"target": "caption"
 											}
 										],
@@ -1912,7 +1920,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 24",
+												"pattern": "tableau\\s+24",
 												"target": "caption"
 											}
 										],
@@ -1966,7 +1974,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 25",
+												"pattern": "tableau\\s+25",
 												"target": "caption"
 											}
 										],
@@ -2007,7 +2015,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 26",
+												"pattern": "tableau\\s+26",
 												"target": "caption"
 											}
 										],
@@ -2048,7 +2056,7 @@
 										"leaf_role": "expectation",
 										"match_rules": [
 											{
-												"pattern": "tableau 27",
+												"pattern": "tableau\\s+27",
 												"target": "caption"
 											}
 										],
@@ -2085,7 +2093,8 @@
 					}
 				]
 			}
-		]
+		],
+		"doc_note": "Framework root. CONTAINER_ONLY because the compiler creates the framework root node independently. The first matchable segment should be 'front-matter' or 'cadre-competences'."
 	},
 	"schema_version": "1.0",
 	"skeleton_id": "senegal-math-etape2-wolof-fr"
