@@ -4,31 +4,8 @@ information.
 
 # Package Library
 from skg.kgs.schemas import ProgressionEdgesResponse
+from skg.kgs.utils import canon_str_pair
 from skg.page_ir_extraction.validators import QualityError
-
-
-def canon_str_pair(a: str, b: str) -> tuple[str, str]:
-    """Canonicalize an undirected pair of UUID strings by lexicographic sort.
-
-    This is the single source of truth for how undirected (relatesTo) edge pairs are
-    canonicalized when compared as *strings*. All code that builds or checks
-    forbidden-pair sets, validator duplicate detection, and disposition-map keys for
-    undirected relationships should use this function to ensure consistent ordering.
-
-    Parameters
-    ----------
-    a
-        The first UUID string.
-    b
-        The second UUID string.
-
-    Returns
-    -------
-    tuple[str, str]
-        A tuple `(lo, hi)` where `lo <= hi` lexicographically.
-    """
-
-    return (a, b) if a <= b else (b, a)
 
 
 def _check_common_edge_invariants(

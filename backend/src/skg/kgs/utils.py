@@ -515,6 +515,30 @@ def _verify_tree_integrity(ctx: ExportContext) -> None:
     _validate_no_cycles(ctx)
 
 
+def canon_str_pair(a: str, b: str) -> tuple[str, str]:
+    """Canonicalize an undirected pair of UUID strings by lexicographic sort.
+
+    This is the single source of truth for how undirected (relatesTo) edge pairs are
+    canonicalized when compared as *strings*. All code that builds or checks
+    forbidden-pair sets, validator duplicate detection, and disposition-map keys for
+    undirected relationships should use this function to ensure consistent ordering.
+
+    Parameters
+    ----------
+    a
+        The first UUID string.
+    b
+        The second UUID string.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple `(lo, hi)` where `lo <= hi` lexicographically.
+    """
+
+    return (a, b) if a <= b else (b, a)
+
+
 def create_kg_dirs(*, output_dir: Path) -> KGDirs:
     """Create KG directories for a given KG run.
 

@@ -26,7 +26,7 @@ from skg.kgs.schemas import (
     GraphValidationReport,
     PolicyCoverageReport,
 )
-from skg.kgs.utils import ExportContext, KGDirs
+from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair
 from skg.utils.general import write_to_json
 
 
@@ -255,19 +255,32 @@ def _check_progression_invariants(
             message="All progression endpoints are SFIs.",
         )
 
-    # No duplicate directed buildsTowards pairs (exact (source, target) repeats).
-    builds_list = [
+    # No duplicate directed buildsTowards pairs (exact (source, target) repeats) and no
+    # duplicate relationship identifiers within type.
+    builds_pairs = [
         (r.source_entity_value, r.target_entity_value)
         for r in learning_progressions.builds_towards_relationships
     ]
-    duplicate_builds = len(builds_list) - len(set(builds_list))
+    builds_ids = [
+        str(r.identifier) for r in learning_progressions.builds_towards_relationships
+    ]
+    duplicate_builds_pairs = len(builds_pairs) - len(set(builds_pairs))
+    duplicate_builds_ids = len(builds_ids) - len(set(builds_ids))
 
-    if duplicate_builds:
+    if duplicate_builds_pairs:
         report.error(
             code="BUILDS_TOWARDS_DUPLICATE_PAIR",
             message=(
-                f"{duplicate_builds} duplicate buildsTowards pair(s) detected "
+                f"{duplicate_builds_pairs} duplicate buildsTowards pair(s) detected "
                 f"(identical directed edges)."
+            ),
+        )
+    elif duplicate_builds_ids:
+        report.error(
+            code="BUILDS_TOWARDS_DUPLICATE_IDS",
+            message=(
+                f"{duplicate_builds_ids} duplicate buildsTowards identifier(s) "
+                f"detected (different pairs sharing the same relationship UUID)."
             ),
         )
     else:
@@ -277,18 +290,30 @@ def _check_progression_invariants(
         )
 
     # No duplicate relatesTo pairs (A, B) and (B, A) after canonicalization.
-    relates_list = [
-        tuple(sorted([r.source_entity_value, r.target_entity_value]))
+    relates_pairs = [
+        canon_str_pair(r.source_entity_value, r.target_entity_value)
         for r in learning_progressions.relates_to_relationships
     ]
-    duplicate_relates = len(relates_list) - len(set(relates_list))
+    relates_ids = [
+        str(r.identifier) for r in learning_progressions.relates_to_relationships
+    ]
+    duplicate_relates_pairs = len(relates_pairs) - len(set(relates_pairs))
+    duplicate_relates_ids = len(relates_ids) - len(set(relates_ids))
 
-    if duplicate_relates:
+    if duplicate_relates_pairs:
         report.error(
             code="RELATES_TO_DUPLICATE_PAIR",
             message=(
-                f"{duplicate_relates} duplicate relatesTo pair(s) detected "
+                f"{duplicate_relates_pairs} duplicate relatesTo pair(s) detected "
                 f"(same endpoints in different directions)."
+            ),
+        )
+    elif duplicate_relates_ids:
+        report.error(
+            code="RELATES_TO_DUPLICATE_IDS",
+            message=(
+                f"{duplicate_relates_ids} duplicate relatesTo identifier(s) "
+                f"detected (different pairs sharing the same relationship UUID)."
             ),
         )
     else:
@@ -617,52 +642,50 @@ def build_policy_coverage_report(
 
     drop_reasons = academic_standards.drop_reasons
     reparent_stats = academic_standards.reparent_stats
-
-    # Aggregate drop reasons by category.
     reason_counter: Counter[str] = Counter(drop_reasons.values())
 
-    dropped_by_decision_type: dict[str, int] = {}
-    dropped_by_columns_signature: dict[str, int] = {}
-    dropped_guidance = 0
-    dropped_descriptor = 0
-    dropped_non_grouping_role = 0
+    dropped_guidance = reason_counter.get("dropped:guidance_handling:drop", 0)
+    dropped_descriptor = reason_counter.get("dropped:descriptor_handling:drop", 0)
+    dropped_non_grouping_role = reason_counter.get("dropped:non_grouping_role:drop", 0)
+
+    dropped_by_decision_type = {
+        r.split(":", 2)[2]: c
+        for r, c in reason_counter.items()
+        if r.startswith("dropped:segment_decision:")
+    }
+    dropped_by_columns_signature = {
+        r.split(":", 2)[2]: c
+        for r, c in reason_counter.items()
+        if r.startswith("dropped:columns_signature:")
+    }
+
+    known_exacts = {
+        "dropped:guidance_handling:drop",
+        "dropped:descriptor_handling:drop",
+        "dropped:non_grouping_role:drop",
+        "dropped:pruned_empty_grouping",
+        "dropped:attach_to_expectation_metadata",
+    }
+    known_prefixes = ("dropped:segment_decision:", "dropped:columns_signature:")
 
     for reason, count in reason_counter.items():
-        if reason.startswith("dropped:segment_decision:"):
-            dt = reason.split(":", 2)[2]
-            dropped_by_decision_type[dt] = dropped_by_decision_type.get(dt, 0) + count
-        elif reason.startswith("dropped:columns_signature:"):
-            sig = reason.split(":", 2)[2]
-            dropped_by_columns_signature[sig] = (
-                dropped_by_columns_signature.get(sig, 0) + count
+        if reason not in known_exacts and not reason.startswith(known_prefixes):
+            logger.warning(
+                f"Unrecognized drop reason in policy report: {reason!r} "
+                f"({count} node(s)). This may indicate a new drop category was added "
+                f"upstream without a corresponding reporting handler."
             )
-        elif reason == "dropped:guidance_handling:drop":
-            dropped_guidance = count
-        elif reason == "dropped:descriptor_handling:drop":
-            dropped_descriptor = count
-        elif reason == "dropped:non_grouping_role:drop":
-            dropped_non_grouping_role = count
 
-    pruned_count = len(academic_standards.pruned_node_ids)
-    attach_count = reparent_stats.get("attach_to_expectation_count", 0)
-
-    # Build per-node drop detail log (capped for file size).
-    drop_details: list[dict[str, Any]] = []
-    total_drops = len(drop_reasons)
     max_drop_details = 200
-
-    for node_id, reason in sorted(drop_reasons.items()):
-        if len(drop_details) >= max_drop_details:
-            break
-
-        node = ctx.nodes_by_id.get(node_id, {})
-        drop_details.append(
-            {
-                "canonical_node_id": node_id,
-                "role": str(node.get("role") or ""),
-                "drop_reason": reason,
-            }
-        )
+    total_drops = len(drop_reasons)
+    drop_details = [
+        {
+            "canonical_node_id": node_id,
+            "role": str(ctx.nodes_by_id.get(node_id, {}).get("role") or ""),
+            "drop_reason": reason,
+        }
+        for node_id, reason in sorted(drop_reasons.items())[:max_drop_details]
+    ]
 
     if total_drops > max_drop_details:
         logger.info(
@@ -670,40 +693,39 @@ def build_policy_coverage_report(
             f"dropped nodes in policy_coverage_report.json."
         )
 
-    # LC stats.
     lc_stats = learning_components.lc_stats
-
-    # Progression stats.
     p_stats = (
         (learning_progressions.report.get("counts") or {})
         if learning_progressions
         else {}
     )
 
-    report = PolicyCoverageReport(
+    return PolicyCoverageReport(
         doc_key=ctx.doc_key,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         pdf_name=str((ctx.get_framework_metadata() or {}).get("pdf_name") or ""),
-        # Node-level drop accounting.
-        dropped_attach_to_expectation=attach_count,
+        # Node-level drop accounting
+        dropped_attach_to_expectation=reparent_stats.get(
+            "attach_to_expectation_count", 0
+        ),
         dropped_by_columns_signature=dropped_by_columns_signature,
         dropped_by_decision_type=dropped_by_decision_type,
         dropped_descriptor=dropped_descriptor,
         dropped_guidance=dropped_guidance,
         dropped_non_grouping_role=dropped_non_grouping_role,
-        pruned_empty_groupings=pruned_count,
-        total_canonical_nodes=len(ctx.nodes_by_id) - 1,  # exclude root
+        pruned_empty_groupings=len(academic_standards.pruned_node_ids),
+        total_canonical_nodes=len(ctx.nodes_by_id) - 1,
         total_emitted_sfis=len(academic_standards.items),
-        # Aux reparenting.
+        # Aux reparenting
         aux_reparented_count=reparent_stats.get("aux_reparented_count", 0),
         orphan_aux_count=reparent_stats.get("orphan_aux_count", 0),
-        # LC stats.
+        # LC stats
         lc_max_splits_observed=int(lc_stats.get("max_splits_observed", 0)),
         lc_split_policy=str(lc_stats.get("split_policy", "")),
         lc_splits_distribution=lc_stats.get("splits_distribution", {}),
         total_expectations=int(lc_stats.get("total_expectations", 0)),
         total_lcs=int(lc_stats.get("total_lcs", 0)),
-        # Progression stats.
+        # Progression stats
         progression_candidate_edges=int(
             p_stats.get("candidate_edges_total_after_dedupe", 0)
         ),
@@ -716,11 +738,9 @@ def build_policy_coverage_report(
         ),
         progression_kept_builds_towards=int(p_stats.get("builds_kept", 0)),
         progression_kept_relates_to=int(p_stats.get("relates_kept_after_cap", 0)),
-        # Drop details.
+        # Drop details
         drop_details=drop_details,
     )
-
-    return report
 
 
 def log_console_summary(
@@ -856,6 +876,29 @@ def validate_graph(
     lc_ids = {str(lc.identifier) for lc in learning_components.learning_components}
 
     all_entity_ids = {fw_id} | sfi_ids | lc_ids
+
+    # Verify no UUID collisions across entity types. UUIDv5 generation uses
+    # type-specific prefixes so collisions should be impossible, but a namespace bug
+    # could silently break referential integrity checks downstream.
+    expected_count = 1 + len(sfi_ids) + len(lc_ids)
+
+    if len(all_entity_ids) != expected_count:
+        overlap_count = expected_count - len(all_entity_ids)
+        report.error(
+            code="ENTITY_ID_COLLISION",
+            message=(
+                f"{overlap_count} UUID collision(s) detected across entity types "
+                f"(framework/SFI/LC). This indicates a namespace or ID generation bug."
+            ),
+        )
+    else:
+        report.info(
+            code="ENTITY_IDS_DISJOINT",
+            message=(
+                f"All {expected_count} entity IDs are unique across types "
+                f"(1 framework, {len(sfi_ids)} SFIs, {len(lc_ids)} LCs)."
+            ),
+        )
 
     # Collect all relationships across exports.
     all_rels = list(academic_standards.relationships)
