@@ -1611,6 +1611,20 @@
 												"match_target": "caption"
 											},
 											{
+												"id": "geo-ap-ce1-palier-2-suite",
+												"canonical_name": {
+													"primary": "Palier 2 (suite) — Le rectangle",
+													"translations": {
+														"wo": "Palier 2 (topp) — Le rectangle"
+													}
+												},
+												"emit": "ignore",
+												"match_phrases": [
+													"palier 2 (suite)"
+												],
+												"doc_note": "Consumes the continuation sub-heading between Tableau 17 and Tableau 18. Without this node, the heading text contains \"palier 2\" which collides with mes-palier-2-def in the mesure strand."
+											},
+											{
 												"id": "tableau-18",
 												"canonical_name": {
 													"primary": "Tableau 18 — Apprentissages ponctuels: Palier 2 (suite), Géométrie CE1",
@@ -1723,6 +1737,20 @@
 													"tableau 19"
 												],
 												"match_target": "caption"
+											},
+											{
+												"id": "geo-ap-ce2-palier-3-suite",
+												"canonical_name": {
+													"primary": "Palier 3 (suite) — Le triangle",
+													"translations": {
+														"wo": "Palier 3 (topp) — Le triangle"
+													}
+												},
+												"emit": "ignore",
+												"match_phrases": [
+													"palier 3 (suite)"
+												],
+												"doc_note": "Consumes the continuation sub-heading between Tableau 19 and Tableau 20. Without this node, the heading text contains \"palier 3\" which collides with mes-palier-3-def in the mesure strand."
 											},
 											{
 												"id": "tableau-20",
