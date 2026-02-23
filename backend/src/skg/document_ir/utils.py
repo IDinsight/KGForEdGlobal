@@ -441,7 +441,7 @@ def _classify_code_kind(code: str) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        ``"table"``, ``"figure"``, or ``None``.
+        `"table"`, `"figure"`, or `None`.
     """
 
     s = (code or "").strip()
@@ -705,7 +705,7 @@ def _extract_raw_table_or_figure_code(text: str) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        The extracted code in its original form, or ``None`` if not found.
+        The extracted code in its original form, or `None` if not found.
     """
 
     s = (text or "").strip()
@@ -1988,8 +1988,8 @@ def _try_assign_immediate(
     Figure code -> Figure item).
 
     NB: The `code` written to the target item is the **raw** form from the caption
-    (e.g., ``"Tableau 4"``), not a canonicalized English form. Canonical comparison
-    (for conflict detection) uses `_extract_table_or_figure_local_code` internally.
+    (e.g., `"Tableau 4"`), not a canonicalized English form. Canonical comparison (for
+    conflict detection) uses `_extract_table_or_figure_local_code` internally.
 
     Parameters
     ----------

@@ -119,7 +119,7 @@ def _allow_within_grade_inference(
 
 def _best_map(
     resp: ProgressionEdgesResponse,
-) -> dict[tuple[UUID, UUID], tuple[float, str]]:
+) -> dict[tuple[str, str], tuple[float, str]]:
     """Extract the best confidence and rationale for each canonicalized pair of UUIDs
     regardless of edge direction, to facilitate bidirectional confirmation of relatesTo
     edges between the two levels.
@@ -132,21 +132,17 @@ def _best_map(
 
     Returns
     -------
-    dict[tuple[UUID, UUID], tuple[float, str]]
-        A dictionary mapping canonicalized pairs of UUIDs (as tuples) to their best
-        confidence score and corresponding rationale found in the response edges,
-        regardless of the direction of the edge (source -> target or target -> source).
-        This allows for easy comparison of confidence scores for the same pair of SFIs
-        across the lo -> hi and hi -> lo runs to confirm bidirectional relatesTo
-        relationships.
+    dict[tuple[str, str], tuple[float, str]]
+        A dictionary mapping canonicalized UUID-string pairs to their best confidence
+        score and rationale, regardless of edge direction. Canonicalization uses
+        `canon_str_pair` (lexicographic ordering)--the single source of truth for
+        undirected pair ordering throughout the pipeline.
     """
 
-    best: dict[tuple[UUID, UUID], tuple[float, str]] = {}
+    best: dict[tuple[str, str], tuple[float, str]] = {}
 
     for ee in resp.edges:
-        u1 = _uuid(ee.source_sfi_uuid)
-        u2 = _uuid(ee.target_sfi_uuid)
-        a, b = _canon_uuid_pair(u1, u2)
+        a, b = canon_str_pair(ee.source_sfi_uuid.strip(), ee.target_sfi_uuid.strip())
         c = float(ee.confidence)
         r = str(ee.rationale or "")
 
@@ -370,11 +366,11 @@ def _build_item_payload(
     item
         A bucket item dictionary containing SFI fields.
     include_order_index
-        Whether to include ``order_index_within_parent`` in the payload. Used by
+        Whether to include `order_index_within_parent` in the payload. Used by
         buildsTowards phases where sequence ordering matters.
     thread_key_field
-        If provided, the item key to read for an additional ``thread_key`` field in the
-        payload (e.g., ``"_thread_key"``). Used by Phase 4 cross-grade relatesTo.
+        If provided, the item key to read for an additional `thread_key` field in the
+        payload (e.g., `"_thread_key"`). Used by Phase 4 cross-grade relatesTo.
 
     Returns
     -------
@@ -501,8 +497,8 @@ def _canon_disposition_key(
 
     For directed relationship types (buildsTowards) the key preserves the original
     (source, target) order. For undirected types (relatesTo) the two UUID strings are
-    sorted so that keys match regardless of which direction the edge was originally
-    emitted in.
+    canonicalized via `canon_str_pair` so that keys match regardless of which direction
+    the edge was originally emitted in.
 
     Parameters
     ----------
@@ -521,32 +517,10 @@ def _canon_disposition_key(
     """
 
     if rel_type == "relatesTo":
-        a, b = sorted([source, target])
+        a, b = canon_str_pair(source, target)
         return rel_type, a, b
 
     return rel_type, source, target
-
-
-def _canon_uuid_pair(a: UUID, b: UUID) -> tuple[UUID, UUID]:
-    """Return (min_uuid, max_uuid) using UUID.int ordering.
-
-    Parameters
-    ----------
-    a
-        The first UUID to compare and order.
-    b
-        The second UUID to compare and order.
-
-    Returns
-    -------
-    tuple[UUID, UUID]
-        A tuple containing the two UUIDs ordered by their integer value, with the
-        smaller (earlier) UUID first and the larger (later) UUID second. This is used
-        for canonicalizing pairs of UUIDs in undirected relationships like relatesTo,
-        where the order of source and target does not matter.
-    """
-
-    return (a, b) if a.int <= b.int else (b, a)
 
 
 def _collect_builds_towards_work_items(
@@ -693,15 +667,18 @@ def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
         edge with the highest confidence score.
     """
 
-    best: dict[tuple[str, UUID, UUID], CandidateEdge] = {}
+    best: dict[tuple[str, str, str], CandidateEdge] = {}
 
     for e in edges:
         s, t = e.source_sfi_uuid, e.target_sfi_uuid
 
-        if e.rel_type == "relatesTo" and s.int > t.int:
-            s, t = t, s
+        if e.rel_type == "relatesTo":
+            cs, _ = canon_str_pair(str(s), str(t))
 
-        k = (e.rel_type, s, t)
+            if cs != str(s):  # Canonical order differs from original; swap UUIDs
+                s, t = t, s
+
+        k = (e.rel_type, str(s), str(t))
 
         # If the endpoints were swapped, create a new edge object; otherwise reuse
         # existing.
@@ -1402,10 +1379,7 @@ def _infer_within_grade_relates_to(
         )
 
         m_ab, m_ba = _best_map(resp_ab), _best_map(resp_ba)
-        common_pairs = sorted(
-            (set(m_ab.keys()) & set(m_ba.keys())),
-            key=lambda p: (p[0].int, p[1].int),
-        )
+        common_pairs = sorted(set(m_ab.keys()) & set(m_ba.keys()))
 
         for u_a, u_b in common_pairs:
             conf_ab, rat_ab = m_ab[(u_a, u_b)]
@@ -1432,8 +1406,8 @@ def _infer_within_grade_relates_to(
                     "bidirectional_confirmed": True,
                 },
                 rel_type="relatesTo",
-                source_sfi_uuid=u_a,
-                target_sfi_uuid=u_b,
+                source_sfi_uuid=_uuid(u_a),
+                target_sfi_uuid=_uuid(u_b),
             )
             candidates.append(ce)
             provenance_rows.append(
@@ -2430,10 +2404,7 @@ def _process_relates_to_work_item(
 
     m_lo_hi = _best_map(resp_lo_hi)
     m_hi_lo = _best_map(resp_hi_lo)
-    common_pairs = sorted(
-        (set(m_lo_hi.keys()) & set(m_hi_lo.keys())),
-        key=lambda p: (p[0].int, p[1].int),
-    )
+    common_pairs = sorted(set(m_lo_hi.keys()) & set(m_hi_lo.keys()))
 
     for a, b in common_pairs:
         conf_lo_hi, rat_lo_hi = m_lo_hi[(a, b)]
@@ -2464,8 +2435,8 @@ def _process_relates_to_work_item(
                 "upper_level_high": hi_high,
             },
             rel_type="relatesTo",
-            source_sfi_uuid=a,
-            target_sfi_uuid=b,
+            source_sfi_uuid=_uuid(a),
+            target_sfi_uuid=_uuid(b),
         )
         candidates.append(ce)
         provenance_rows.append(

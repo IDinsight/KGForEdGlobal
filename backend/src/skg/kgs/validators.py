@@ -25,7 +25,7 @@ def canon_str_pair(a: str, b: str) -> tuple[str, str]:
     Returns
     -------
     tuple[str, str]
-        A tuple ``(lo, hi)`` where ``lo <= hi`` lexicographically.
+        A tuple `(lo, hi)` where `lo <= hi` lexicographically.
     """
 
     return (a, b) if a <= b else (b, a)

@@ -776,8 +776,8 @@ def _emit_has_child(
     relationship_metadata
         Optional metadata to attach to the relationship.
     source_entity
-        The entity type of the parent. Pass ``"StandardsFramework"`` for root-level
-        edges and ``"StandardsFrameworkItem"`` (default) for SFI-to-SFI edges.
+        The entity type of the parent. Pass `"StandardsFramework"` for root-level edges
+        and `"StandardsFrameworkItem"` (default) for SFI-to-SFI edges.
 
     Returns
     -------
@@ -1245,7 +1245,7 @@ def _normalize_thread_key(topic_path_key: str | None) -> str | None:
     embedded in the keyified label itself (e.g., `topic=1_1_exploring_my_world`).
 
     This normalization strips leading numeric-underscore prefixes from each segment's
-    value (e.g., ``1_1_``), producing a more stable thread key across levels.
+    value (e.g., `1_1_`), producing a more stable thread key across levels.
 
     NB:
 
@@ -1539,7 +1539,7 @@ def _reattach_children_of_dropped_nodes(
     This function detects such orphaned subtrees and hoists their children up to the
     nearest surviving ancestor (or the root), preserving tree connectivity.
 
-    This **must** run after all ``emit_flag`` mutations  and **before** empty-grouping
+    This **must** run after all `emit_flag` mutations  and **before** empty-grouping
     pruning, so that pruning operates on the corrected tree structure.
 
     Parameters
