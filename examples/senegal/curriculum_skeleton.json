@@ -1,18 +1,36 @@
 {
 	"metadata": {
+		"academic_subject": "Mathématiques",
+		"context_groupings_role_order": [
+			"stage",
+			"grade_level",
+			"learning_area",
+			"subject",
+			"strand",
+			"substrand",
+			"theme",
+			"subtheme",
+			"term",
+			"unit",
+			"substage",
+			"section",
+			"week",
+			"topic",
+			"subtopic"
+		],
 		"country": "Sénégal",
-		"ministry": "Ministère de l'Éducation nationale",
+		"grades": [
+			"CE1",
+			"CE2"
+		],
 		"languages": [
 			"fr",
 			"wo"
 		],
+		"ministry": "Ministère de l'Éducation nationale",
 		"primary_language": "fr",
-		"academic_subject": "Mathématiques",
 		"stage": "Étape 2",
-		"grades": [
-			"CE1",
-			"CE2"
-		]
+		"year": 2024
 	},
 	"root": {
 		"id": "root",

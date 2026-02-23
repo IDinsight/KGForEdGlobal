@@ -348,8 +348,7 @@ class CurriculumSkeletonNode(BaseSchema):
         description="If True, multiple consecutive segments can match this node. Used for bilingual pairs (Jéego + PALIER) that map to one unit.",
     )
     grade: Optional[str] = Field(
-        default=None,
-        description="Grade level (e.g., 'CE1'). Inherited by children.",
+        default=None, description="Grade level (e.g., 'CE1'). Inherited by children."
     )
     implicit: bool = Field(
         default=False,
@@ -526,6 +525,10 @@ class CurriculumSkeleton(BaseSchema):
     """
 
     metadata: CurriculumSkeletonMetadata
+    root: CurriculumSkeletonNode = Field(
+        ...,
+        description="Root of the curriculum tree. Must have grouping_role=FRAMEWORK.",
+    )
     schema_version: str = Field(
         default="1.0", description="Schema version for forward compatibility."
     )
@@ -536,10 +539,6 @@ class CurriculumSkeleton(BaseSchema):
             "Convention: '{country}-{subject}-{stage}-{language}', "
             "e.g., 'senegal-math-etape2-wolof-fr'."
         ),
-    )
-    root: CurriculumSkeletonNode = Field(
-        ...,
-        description="Root of the curriculum tree. Must have grouping_role=FRAMEWORK.",
     )
 
     @model_validator(mode="after")
