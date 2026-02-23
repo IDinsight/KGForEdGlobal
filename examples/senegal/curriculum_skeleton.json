@@ -2012,10 +2012,8 @@
 								"wo": "Manoore mi lalu — Yëngute xam-xamu natt"
 							}
 						},
-						"emit": "emit_leaf",
-						"leaf_role": "expectation",
-						"doc_note": "Stage-level competency covering all measurement topics. Appears BEFORE any grade/palier content. Must NOT be assigned to CE1 or CE2 specifically.",
-						"allow_multiple_segments": true,
+						"emit": "ignore",
+						"doc_note": "Stage-level competency paragraph for mesure. Changed from emit_leaf to ignore because Tableau 1 (under cadre-competences) already captures the identical base competency text for all four strands. Emitting this as a leaf created an orphan strand node directly under root (no grade_level ancestor in the context chain) that duplicated content.",
 						"match_phrases": [
 							"boole mooñ jëfandikoo",
 							"intégrer les notions de longueur"
