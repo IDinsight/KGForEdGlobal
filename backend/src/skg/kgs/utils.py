@@ -964,7 +964,7 @@ def persist_kg_run(
         started_at=datetime.now(timezone.utc),
     )
     write_to_json(fp=output_dir / "kg_run.json", json_info=kg_run)
-    logger.info(f"Saving KG creation results to: {kg_dirs}")
+    logger.info(f"Saving KG creation results to: {kg_dirs.root}")
 
     return kg_dirs, kg_run
 
