@@ -343,28 +343,21 @@ def _cell_to_text(cell: TextUnit | dict[str, Any]) -> str:
     if cell is None:
         return ""
 
-    # TextUnit object.
-    if isinstance(cell, TextUnit):
-        return (cell.text or "").strip()
-
+    # TextUnit (or any object with .text).
     if hasattr(cell, "text"):
-        inner = cell.text
+        raw = cell.text
+    elif isinstance(cell, dict):
+        raw = cell.get("text", "")
+    else:
+        return str(cell).strip()
 
-        if isinstance(inner, TextUnit):
-            return (inner.text or "").strip()
+    # Raw may itself be a TextUnit or dict (nested wrapper).
+    if hasattr(raw, "text"):
+        raw = raw.text
+    elif isinstance(raw, dict):
+        raw = raw.get("text", "")
 
-        return inner.strip() if isinstance(inner, str) else str(inner or "")
-
-    # Dict fallback.
-    if isinstance(cell, dict):
-        t = cell.get("text", "")
-        return (
-            (t.get("text", "") or "").strip()
-            if isinstance(t, dict)
-            else str(t or "").strip()
-        )
-
-    return str(cell or "").strip()
+    return str(raw or "").strip()
 
 
 def _classify_caption_kind(text: str) -> CaptionKind:
@@ -1038,6 +1031,174 @@ def build_ancestry_map(
     return result
 
 
+def build_caption_bindings(
+    *,
+    bind_unknown_caption: bool = True,
+    creation_dirs: CanonicalIRDirs,
+    document_ir: DocumentIR,
+    max_gap_segments: int,
+    max_page_distance: int,
+) -> dict[str, CaptionBinding]:
+    """Build deterministic caption-to-table bindings *before* curriculum skeleton
+    engine.
+
+    Many curriculum PDFs place a short caption/label block immediately before a table.
+    That caption is usually not curriculum content itself, but it often contains
+    critical context (grade, subject, theme/unit, table meaning) needed to interpret
+    the table.
+
+    This function:
+
+    1. Scans DocumentIR.segments[] in order and one-shot binds each CAPTION block to
+        the *next* table segment (within configured gap/page limits).
+    2. Produces a stable mapping: table_segment_id -> CaptionBinding(...).
+    3. Emits warnings for captions that cannot be bound (e.g., dangling captions).
+
+    We call this function before calling the curriculum skeleton engine so that we can:
+
+    1. Improve the engine accuracy by injecting caption context into table payloads,
+        helping it choose correct context_groupings[] and statement roles.
+    2. Avoid having to infer cross-segment relationships, keeping behavior
+        deterministic and replayable.
+    3. Enforce the policy that captions are provenance-only: captions provide evidence
+        but never become canonical nodes.
+    4. Stabilize chunked-table processing by ensuring all chunks of a table receive the
+        same caption metadata.
+
+    The resulting bindings are applied when constructing inputs for table segments and
+    are stored as provenance/audit context (or attached to unresolved items).
+
+    Parameters
+    ----------
+    bind_unknown_caption
+        Whether to bind captions of unknown kind.
+    creation_dirs
+        The canonical IR creation directories.
+    document_ir
+        The DocumentIR to process.
+    max_gap_segments
+        The maximum number of non-table segments allowed between caption and table.
+    max_page_distance
+        The maximum page distance allowed between caption and table.
+
+    Returns
+    -------
+    dict[str, CaptionBinding]
+        The computed caption bindings, keyed by table segment ID.
+    """
+
+    caption_bindings: dict[str, CaptionBinding] = {}
+    caption_bindings_fp = creation_dirs.caption_binding / "caption_bindings.json"
+    warnings: list[str] = []
+    warnings_fp = creation_dirs.caption_binding / "caption_binding_warnings.json"
+
+    # (caption_segment, caption_text, caption_kind, caption_page, caption_index)
+    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
+
+    for index, segment in enumerate(document_ir.segments):
+        assert (
+            segment.slices
+        ), f"Segment {segment.segment_id} has no slices; cannot determine page index."
+        page_index = segment.slices[0].page_index
+        assert isinstance(page_index, int) and page_index >= 0
+
+        # Explicit caption candidate.
+        if segment.kind == "block":
+            caption_text = extract_block_segment_text(segment)
+
+            # Only explicit captions bind to tables; headings provide context via
+            # section_path/heading_levels instead.
+            if segment.block_type == BlockType.CAPTION and caption_text:
+                kind = _classify_caption_kind(caption_text)
+
+                # Don't bind figure captions to tables.
+                if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
+                    continue
+
+                # Warn if a previous caption is being overwritten before it could bind
+                # to a table. This can happen when two captions appear in sequence
+                # (e.g. multi-caption annotations), and means the earlier caption's
+                # context is silently lost.
+                if pending_caption is not None:
+                    prev_seg, _, _, _, _ = pending_caption
+                    msg = (
+                        f"Pending caption overwritten before binding:\n"
+                        f"  overwritten_caption={prev_seg.segment_id}\n"
+                        f"  replaced_by={segment.segment_id}\n"
+                        f"  page_index={page_index}\n"
+                        f"  segment_index={index}"
+                    )
+                    logger.warning(msg)
+                    warnings.append(msg)
+
+                pending_caption = (segment, caption_text, kind, page_index, index)
+                continue
+
+        # Bind to next table if eligible.
+        if segment.kind == "table" and pending_caption is not None:
+            cap_seg, cap_text, cap_kind, cap_page, cap_index = pending_caption
+            gap = max(0, index - cap_index - 1)
+            page_dist = abs(page_index - cap_page)
+
+            if gap <= max_gap_segments and page_dist <= max_page_distance:
+                caption_bindings[segment.segment_id] = CaptionBinding(
+                    caption_kind=cap_kind,
+                    caption_page_index=cap_page,
+                    caption_segment_id=cap_seg.segment_id,
+                    caption_text=cap_text,
+                    gap_segments=gap,
+                    table_page_index=page_index,
+                    table_segment_id=segment.segment_id,
+                )
+            else:
+                msg = (
+                    f"Dangling caption dropped:\n"
+                    f"caption={cap_seg.segment_id}\n"
+                    f"gap={gap}\n"
+                    f"page_index={page_index}\n"
+                    f"segment_index={index}"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+
+            pending_caption = None
+
+            continue
+
+        # Expire pending caption if too far. NB: pending_caption[4] is cap_index.
+        if (
+            pending_caption is not None
+            and max(0, index - pending_caption[4] - 1) > max_gap_segments
+        ):
+            cap_seg, _, _, _, cap_index = pending_caption
+            msg = (
+                f"Dangling caption dropped:\n"
+                f"caption={cap_seg.segment_id} gap_exceeded={max(0, index - cap_index - 1)}\n"
+                f"page_index={page_index}\n"
+                f"segment_index={index}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+            pending_caption = None
+
+    if pending_caption is not None:
+        cap_seg, *_ = pending_caption
+        msg = f"Dangling caption dropped: caption={cap_seg.segment_id} end_of_document"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    write_to_json(
+        fp=caption_bindings_fp,
+        json_info={k: v.model_dump() for k, v in caption_bindings.items()},
+    )
+    write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
+
+    logger.success(f"Saved caption bindings to: {caption_bindings_fp}")
+    logger.success(f"Saved caption binding warnings to: {warnings_fp}")
+
+    return caption_bindings
+
+
 def build_context_groupings(
     *,
     ancestry: list[CurriculumSkeletonNode],
@@ -1284,174 +1445,6 @@ def load_curriculum_skeleton(curriculum_skeleton_fp: Path) -> CurriculumSkeleton
     )
 
     return curriculum_skeleton
-
-
-def load_or_build_caption_bindings(
-    *,
-    bind_unknown_caption: bool = True,
-    creation_dirs: CanonicalIRDirs,
-    document_ir: DocumentIR,
-    max_gap_segments: int = 2,
-    max_page_distance: int = 1,
-) -> dict[str, CaptionBinding]:
-    """Load existing caption-to-table bindings or build deterministic caption-to-table
-    bindings *before* LLM interpretation.
-
-    Many curriculum PDFs place a short caption/label block immediately before a table.
-    That caption is usually not curriculum content itself, but it often contains
-    critical context (grade, subject, theme/unit, table meaning) needed to interpret
-    the table.
-
-    This function:
-
-    1. Scans DocumentIR.segments[] in order and one-shot binds each CAPTION block to
-        the *next* table segment (within configured gap/page limits).
-    2. Produces a stable mapping: table_segment_id -> CaptionBinding(...).
-    3. Emits warnings for captions that cannot be bound (e.g., dangling captions).
-
-    We call this function before calling the LLM so that we can:
-
-    1. Improve the LLM accuracy by injecting caption context into table payloads,
-        helping it choose correct context_groupings[] and statement roles.
-    2. Avoid asking the LLM to infer cross-segment relationships, keeping behavior
-        deterministic and replayable.
-    3. Enforce the policy that captions are provenance-only: captions provide evidence
-        but never become canonical nodes.
-    4. Stabilize chunked-table processing by ensuring all chunks of a table receive the
-        same caption metadata.
-
-    The resulting bindings are applied when constructing LLM inputs for table segments
-    and are stored as provenance/audit context (or attached to unresolved items).
-
-    Parameters
-    ----------
-    bind_unknown_caption
-        Whether to bind captions of unknown kind.
-    creation_dirs
-        The canonical IR creation directories.
-    document_ir
-        The DocumentIR to process.
-    max_gap_segments
-        The maximum number of non-table segments allowed between caption and table.
-    max_page_distance
-        The maximum page distance allowed between caption and table.
-
-    Returns
-    -------
-    dict[str, CaptionBinding]
-        The computed caption bindings, keyed by table segment ID.
-    """
-
-    caption_bindings: dict[str, CaptionBinding] = {}
-    caption_bindings_fp = creation_dirs.caption_binding / "caption_bindings.json"
-    warnings: list[str] = []
-    warnings_fp = creation_dirs.caption_binding / "caption_binding_warnings.json"
-
-    # (caption_segment, caption_text, caption_kind, caption_page, caption_index)
-    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
-
-    for index, segment in enumerate(document_ir.segments):
-        assert (
-            segment.slices
-        ), f"Segment {segment.segment_id} has no slices; cannot determine page index."
-        page_index = segment.slices[0].page_index
-        assert isinstance(page_index, int) and page_index >= 0
-
-        # Explicit caption candidate.
-        if segment.kind == "block":
-            caption_text = extract_block_segment_text(segment)
-
-            # Only explicit captions bind to tables; headings provide context via
-            # section_path/heading_levels instead.
-            if segment.block_type == BlockType.CAPTION and caption_text:
-                kind = _classify_caption_kind(caption_text)
-
-                # Don't bind figure captions to tables.
-                if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
-                    continue
-
-                # Warn if a previous caption is being overwritten before it could bind
-                # to a table. This can happen when two captions appear in sequence
-                # (e.g. multi-caption annotations), and means the earlier caption's
-                # context is silently lost.
-                if pending_caption is not None:
-                    prev_seg, _, _, _, _ = pending_caption
-                    msg = (
-                        f"Pending caption overwritten before binding:\n"
-                        f"  overwritten_caption={prev_seg.segment_id}\n"
-                        f"  replaced_by={segment.segment_id}\n"
-                        f"  page_index={page_index}\n"
-                        f"  segment_index={index}"
-                    )
-                    logger.warning(msg)
-                    warnings.append(msg)
-
-                pending_caption = (segment, caption_text, kind, page_index, index)
-                continue
-
-        # Bind to next table if eligible.
-        if segment.kind == "table" and pending_caption is not None:
-            cap_seg, cap_text, cap_kind, cap_page, cap_index = pending_caption
-            gap = max(0, index - cap_index - 1)
-            page_dist = abs(page_index - cap_page)
-
-            if gap <= max_gap_segments and page_dist <= max_page_distance:
-                caption_bindings[segment.segment_id] = CaptionBinding(
-                    caption_kind=cap_kind,
-                    caption_page_index=cap_page,
-                    caption_segment_id=cap_seg.segment_id,
-                    caption_text=cap_text,
-                    gap_segments=gap,
-                    table_page_index=page_index,
-                    table_segment_id=segment.segment_id,
-                )
-            else:
-                msg = (
-                    f"Dangling caption dropped:\n"
-                    f"caption={cap_seg.segment_id}\n"
-                    f"gap={gap}\n"
-                    f"page_index={page_index}\n"
-                    f"segment_index={index}"
-                )
-                logger.warning(msg)
-                warnings.append(msg)
-
-            pending_caption = None
-
-            continue
-
-        # Expire pending caption if too far. NB: pending_caption[4] is cap_index.
-        if (
-            pending_caption is not None
-            and max(0, index - pending_caption[4] - 1) > max_gap_segments
-        ):
-            cap_seg, _, _, _, cap_index = pending_caption
-            msg = (
-                f"Dangling caption dropped:\n"
-                f"caption={cap_seg.segment_id} gap_exceeded={max(0, index - cap_index - 1)}\n"
-                f"page_index={page_index}\n"
-                f"segment_index={index}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-            pending_caption = None
-
-    if pending_caption is not None:
-        cap_seg, *_ = pending_caption
-        msg = f"Dangling caption dropped: caption={cap_seg.segment_id} end_of_document"
-        logger.warning(msg)
-        warnings.append(msg)
-
-    write_to_json(
-        fp=caption_bindings_fp,
-        json_info={k: v.model_dump() for k, v in caption_bindings.items()},
-    )
-    write_to_json(fp=warnings_fp, json_info={"warnings": warnings})
-
-    logger.success(f"Saved caption bindings to: {caption_bindings_fp}")
-    logger.success(f"Saved caption binding warnings to: {warnings_fp}")
-
-    return caption_bindings
 
 
 def match_curriculum(

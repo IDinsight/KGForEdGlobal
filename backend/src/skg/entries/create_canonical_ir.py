@@ -40,9 +40,9 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.canonical_ir.curriculum_skeleton import (
+    build_caption_bindings,
     generate_curriculum_match_report,
     load_curriculum_skeleton,
-    load_or_build_caption_bindings,
     match_curriculum,
     prepare_matchable_segments,
     translate_segments,
@@ -114,7 +114,7 @@ def create_canonical_ir(
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
     # 2.
-    caption_bindings = load_or_build_caption_bindings(
+    caption_bindings = build_caption_bindings(
         bind_unknown_caption=config.bind_unknown_caption,
         creation_dirs=creation_dirs,
         document_ir=document_ir,

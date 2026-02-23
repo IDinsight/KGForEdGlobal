@@ -224,7 +224,7 @@ def _check_structural_warnings(
     """
 
     # Audit-only warning: segment.section_path suggests strong curriculum structure,
-    # but the LLM provided an empty context_groupings snapshot. This does NOT
+    # but we were provided an empty context_groupings snapshot. This does NOT
     # materialize any hierarchy; it only flags likely missed context.
     leaf_count = _count_decision_leaves(decision)
 
@@ -1080,8 +1080,9 @@ def _materialize_table_leaves(
     warnings: list[str],
 ) -> None:
     """Materialize table-level leaves (SegmentDecision.leaves) under the current
-    parent. This is used for TABLE segments where the LLM emits leaves directly
-    (fallback mode) instead of emitting RowDecision entries in SegmentDecision.rows[].
+    parent. This is used for TABLE segments where the curriculum skeleton engine emits
+    leaves directly (fallback mode) instead of emitting RowDecision entries in
+    SegmentDecision.rows[].
 
     Parameters
     ----------
@@ -2180,15 +2181,15 @@ def compile_canonical_ir(
         The DocumentIR to process.
     segment_decision_conf_threshold
         The low confidence threshold for segment decisions. Decisions with confidence
-        below this are demoted to unresolved. Defaults to 0.8. NB: skeleton-generated
-        decisions always have confidence=1.0, so this only applies to LLM-generated
-        decision sets.
+        below this are demoted to unresolved. Defaults to 0.8. NB: curriculum skeleton
+        generated decisions always have confidence=1.0, so this only applies to
+        LLM-generated decision sets.
     segment_decisions
         The SegmentDecisionSet to apply.
     structural_leaf_warn_threshold
         The confidence threshold below which structural leaves will emit warnings.
-        Defaults to 0.8. NB: skeleton-generated decisions always have confidence=1.0,
-        so this only applies to LLM-generated decision sets.
+        Defaults to 0.8. NB: curriculum skeleton generated decisions always have
+        confidence=1.0, so this only applies to LLM-generated decision sets.
     """
 
     logger.info("Compiling CanonicalIR from SegmentDecisions...")
