@@ -40,7 +40,7 @@
 		"caption_max_gap_segments": 2,
 		"caption_max_page_distance": 1,
 		"curriculum_skeleton_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/senegal/curriculum_skeleton.json",
-		"max_skip_distance": 20,
+		"max_skip_distance": 5,
 		"overwrite": false
 	},
 	"kgs": {
