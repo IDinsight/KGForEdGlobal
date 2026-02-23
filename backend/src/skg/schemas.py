@@ -330,14 +330,42 @@ class CreateKGConfig(BaseSchema):
         default="urn:lc:case:",
         description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
     )
-    description_text_policy: Literal["source", "prefer_text_en"] = "source"
+    description_text_policy: Literal["source", "prefer_text_en"] = Field(
+        default="source",
+        description=(
+            "How to populate the 'description' text on exported SFIs. "
+            "'source' uses the original-language body text; "
+            "'prefer_text_en' uses the English translation when available."
+        ),
+    )
     descriptor_handling: AuxStatementHandling = Field(
         default="export_as_sfi_other",
         description="How to handle descriptor statements during KG export.",
     )
-    export_dialect: ExportDialect = "global_relaxed"
-    export_in_language_policy: Literal["default", "source"] = "source"
-    generate_progressions: bool = True
+    export_dialect: ExportDialect = Field(
+        default="global_relaxed",
+        description=(
+            "Export schema dialect. 'lc_public_strict' enforces LC KG public schema "
+            "constraints (US-centric CASE conventions); 'global_relaxed' permits "
+            "non-US metadata shapes and free-form fields for international curricula."
+        ),
+    )
+    export_in_language_policy: Literal["default", "source"] = Field(
+        default="source",
+        description=(
+            "Controls the 'inLanguage' value on exported SFIs. "
+            "'source' uses the language detected on each statement's body text; "
+            "'default' always uses `language_default`."
+        ),
+    )
+    generate_progressions: bool = Field(
+        default=True,
+        description=(
+            "Whether to run LLM-based progression inference (buildsTowards / relatesTo) "
+            "after exporting the standards hierarchy. Disable to skip progression "
+            "generation entirely (useful for quick re-exports or debugging)."
+        ),
+    )
     grouping_role_policy: Literal["loose", "whitelist"] = Field(
         default="loose",
         description=(
@@ -365,8 +393,21 @@ class CreateKGConfig(BaseSchema):
             "Used when canonical IR does not provide jurisdiction."
         ),
     )
-    language_default: LanguageField
-    learning_component_policy: Literal["1_to_1", "split_bullets"] = "1_to_1"
+    language_default: LanguageField = Field(
+        description=(
+            "Default BCP-47 language code for the framework (e.g., 'en', 'fr', 'sw'). "
+            "Used as the fallback inLanguage when per-statement language detection is "
+            "unavailable or when export_in_language_policy='default'."
+        ),
+    )
+    learning_component_policy: Literal["1_to_1", "split_bullets"] = Field(
+        default="1_to_1",
+        description=(
+            "LearningComponent creation strategy. "
+            "'1_to_1' creates exactly one LC per expectation SFI; "
+            "'split_bullets' splits multi-bullet expectation bodies into separate LCs."
+        ),
+    )
     lc_max_splits_per_standard: int = Field(
         default=25,
         description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
@@ -611,21 +652,45 @@ class CreateKGConfig(BaseSchema):
 class RunConfig(BaseSchema):
     """Pydantic model for run configuration."""
 
-    page_ir_extraction: ExtractionConfig
-    page_ir_verification: VerificationConfig
-    document_ir: StitchingConfig
-    canonical_ir: Optional[CreateCanonicalConfig] = None
-    kgs: Optional[CreateKGConfig] = None
+    page_ir_extraction: ExtractionConfig = Field(
+        description="Configuration for page-level IR extraction from the source PDF."
+    )
+    page_ir_verification: VerificationConfig = Field(
+        description="Configuration for page-boundary verification between adjacent pages."
+    )
+    document_ir: StitchingConfig = Field(
+        description="Configuration for stitching verified page IRs into a single document IR."
+    )
+    canonical_ir: Optional[CreateCanonicalConfig] = Field(
+        default=None,
+        description="Configuration for canonical IR creation. If None, the canonical IR step is skipped.",
+    )
+    kgs: Optional[CreateKGConfig] = Field(
+        default=None,
+        description="Configuration for knowledge graph creation. If None, the KG step is skipped.",
+    )
 
 
 class RunCtx(BaseSchema):
     """Pydantic model for run metadata."""
 
-    completed_at: Optional[datetime] = None
-    extra: dict[str, Any] = Field(default_factory=dict)
-    models: list[str] = Field(default_factory=list)
-    run_id: str
-    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when the run completed."
+    )
+    extra: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Arbitrary key-value metadata attached to the run (e.g., status, error details, doc_key).",
+    )
+    models: list[str] = Field(
+        default_factory=list,
+        description="Ordered list of model identifiers used during the run.",
+    )
+    run_id: str = Field(
+        description="Unique identifier for this run (typically a UUID or slug)."
+    )
+    started_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when the run started."
+    )
 
 
 # Global schemas.
@@ -640,6 +705,15 @@ class Limits(BaseSchema):
 class ValidatorCall(BaseSchema):
     """Pydantic model for API response validation."""
 
-    num_retries: int = 3
-    validator_module: Callable[..., Any]
-    validator_kwargs: dict[str, Any] = Field(default_factory=dict)
+    num_retries: int = Field(
+        default=3,
+        description="Number of retry attempts when the validator rejects an API response.",
+        ge=1,
+    )
+    validator_module: Callable[..., Any] = Field(
+        description="Callable that validates/transforms raw API response data."
+    )
+    validator_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional keyword arguments forwarded to the validator callable.",
+    )
