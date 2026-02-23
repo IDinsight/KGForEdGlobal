@@ -519,7 +519,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -575,7 +575,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -630,7 +630,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -701,7 +701,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -756,7 +756,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -811,7 +811,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1067,7 +1067,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1122,7 +1122,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1177,7 +1177,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1248,7 +1248,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1303,7 +1303,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1358,7 +1358,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1593,7 +1593,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1654,7 +1654,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1713,7 +1713,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1792,7 +1792,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1849,7 +1849,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -1910,7 +1910,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -2202,7 +2202,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -2261,7 +2261,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -2320,7 +2320,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -2395,7 +2395,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -2454,7 +2454,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
@@ -2513,7 +2513,7 @@
 													},
 													{
 														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
-														"role": "leaf:expectation",
+														"role": "skip",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
