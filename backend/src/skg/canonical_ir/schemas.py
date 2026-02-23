@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Literal, Optional, Self
 
 # Third Party Library
+from loguru import logger
 from pydantic import Field, model_validator
 
 # Package Library
@@ -1035,8 +1036,18 @@ class SegmentDecision(BaseSchema):
         # UNRESOLVED), coerce to the most specific compatible emit type.
         if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES:
             if has_any_groupings and not has_any_leaves:
+                logger.warning(
+                    f"SegmentDecision '{self.decision_id}': declared "
+                    f"'emit_groupings_and_leaves' but contains no leaves; "
+                    f"coerced to 'emit_groupings_only'.",
+                )
                 self.decision_type = SegmentDecisionType.EMIT_GROUPINGS_ONLY
             elif has_any_leaves and not has_any_groupings:
+                logger.warning(
+                    f"SegmentDecision '{self.decision_id}': declared "
+                    f"'emit_groupings_and_leaves' but contains no groupings; "
+                    f"coerced to 'emit_leaves_only'.",
+                )
                 self.decision_type = SegmentDecisionType.EMIT_LEAVES_ONLY
             elif not has_any_groupings and not has_any_leaves:
                 raise ValueError(

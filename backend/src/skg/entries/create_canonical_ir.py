@@ -8,10 +8,10 @@ Step 4 does the following:
 3. Loads and validates the CurriculumSkeleton JSON.
 4. Runs the curriculum skeleton matching engine (deterministic segment -> skeleton-node
     matching).
-5. Translates matches into a SegmentDecisionSet (one decision per segment, no chunking).
-6. Compiles a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
-7. Exports the CanonicalIR JSON and a skeleton MatchReport to the canonical IR creation
-   results directory.
+5. Translates matches into a list of SegmentDecisions (one per segment, no chunking).
+6. Wraps SegmentDecisions into a SegmentDecisionSet and persists to disk.
+7. Compiles a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
+8. Generates a curriculum skeleton match report for diagnostics.
 
 Invoke from the backend directory via:
 
@@ -78,11 +78,11 @@ def create_canonical_ir(
     3. Load and validate the CurriculumSkeleton.
     4. Adapt DocumentIR segments into CurriculumMatchableSegment.
     5. Run the forward-only curriculum skeleton matching engine.
-    6. Translate curriculum matches into a SegmentDecisionSet (one decision per
-        segment).
-    7. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
-    8. Export the CanonicalIR JSON and a skeleton MatchReport to the canonical IR
-        creation results directory.
+    6. Translate curriculum matches into a list of SegmentDecisions (one decision
+        per segment).
+    7. Wrap SegmentDecisions into a SegmentDecisionSet and persist to disk.
+    8. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the
+        compiler.
     9. Generate a curriculum skeleton match report for diagnostics.
 
     Parameters
@@ -120,7 +120,6 @@ def create_canonical_ir(
         document_ir=document_ir,
         max_gap_segments=config.caption_max_gap_segments,
         max_page_distance=config.caption_max_page_distance,
-        overwrite=config.overwrite,
     )
 
     # 3.
