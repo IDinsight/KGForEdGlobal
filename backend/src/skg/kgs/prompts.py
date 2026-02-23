@@ -24,7 +24,7 @@ def _builds_towards_confidence_guidance(min_confidence: float) -> str:
         A formatted confidence calibration block for inclusion in the system prompt.
     """
 
-    high = max(min_confidence + 0.15, 0.85)
+    high = min(max(min_confidence + 0.15, 0.85), 1.0)
     return (
         f"CONFIDENCE CALIBRATION:\n"
         f"- >={high:.2f} only if the dependency is very clear.\n"
@@ -47,7 +47,7 @@ def _relates_to_confidence_guidance(min_confidence: float) -> str:
         A formatted confidence calibration block for inclusion in the system prompt.
     """
 
-    high = max(min_confidence + 0.05, 0.90)
+    high = min(max(min_confidence + 0.05, 0.90), 1.0)
     return (
         f"CONFIDENCE:\n"
         f"- >={high:.2f} only for very strong, teacher-usable connections\n"

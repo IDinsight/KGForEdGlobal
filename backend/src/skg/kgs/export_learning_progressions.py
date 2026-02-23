@@ -754,8 +754,8 @@ def _extract_code_tuple(
     # Process all list types (pure int, pure str, or mixed) in a single pass.
     if isinstance(raw_code_tuple, list):
         for item in raw_code_tuple:
-            if isinstance(item, int):
-                nums.append(item)
+            if isinstance(item, (int, float)):
+                nums.append(int(item))
             elif isinstance(item, str):
                 # re.findall(r"\d+") guarantees digits, making int() conversion safe.
                 nums.extend(int(match) for match in re.findall(r"\d+", item))
