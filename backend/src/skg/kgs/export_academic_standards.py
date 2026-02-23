@@ -1102,7 +1102,12 @@ def _handle_empty_grouping_pruning(
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
 ) -> set[str]:
-    """Prune empty groupings strictly, without reattachment.
+    """Prune empty groupings strictly.
+
+    This step assumes that `_reattach_children_of_dropped_nodes` has already been
+    called, so children of dropped mid-hierarchy nodes have been hoisted to their
+    nearest surviving ancestor. Pruning then only removes grouping nodes that are
+    genuinely empty (no emitted children after reattachment).
 
     Parameters
     ----------
@@ -1516,6 +1521,136 @@ def _prune_empty_groupings(
     return all_pruned
 
 
+def _reattach_children_of_dropped_nodes(
+    *,
+    ctx: ExportContext,
+    emit_flag: dict[str, bool],
+    export_children: dict[str, list[str]],
+) -> dict[str, int]:
+    """Re-attach children of dropped (non-emitted) nodes to their nearest emitted
+    ancestor in the export hierarchy.
+
+    When a mid-hierarchy grouping node is dropped (e.g., a `section` role not in the
+    grouping whitelist), `_compute_export_children` still creates an entry for it as a
+    parent in `export_children` (with its emitted children as values). However,
+    `_build_relationships_and_order` skips dropped parents (`pid not in sfi_by_node`),
+    leaving those children unreachable from the framework root.
+
+    This function detects such orphaned subtrees and hoists their children up to the
+    nearest surviving ancestor (or the root), preserving tree connectivity.
+
+    This **must** run after all ``emit_flag`` mutations  and **before** empty-grouping
+    pruning, so that pruning operates on the corrected tree structure.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext for the CanonicalIR, providing access to canonical
+        parent-child mappings.
+    emit_flag
+        Node-level emit flags (True if the node will be emitted as an SFI).
+    export_children
+        Parent-to-children mapping (mutated in place). Entries for dropped parents are
+        removed, and their children are appended to the nearest surviving ancestor's
+        children list.
+
+    Returns
+    -------
+    dict[str, int]
+        Statistics: `reattached_children_count` (number of children moved) and
+        `dropped_parents_resolved` (number of dropped parents whose children were
+        re-attached).
+    """
+
+    # Identify non-root parents in export_children that are NOT emitted.
+    dropped_parents = [
+        pid
+        for pid in list(export_children)
+        if pid != ctx.root_id and not emit_flag.get(pid)
+    ]
+
+    if not dropped_parents:
+        return {"reattached_children_count": 0, "dropped_parents_resolved": 0}
+
+    def _depth(nid: str) -> int:
+        """Calculate depth of a node in the original hierarchy for sorting purposes.
+
+        Parameters
+        ----------
+        nid
+            The node ID for which to calculate depth.
+
+        Returns
+        -------
+        int
+            The depth of the node in the original hierarchy, where root-level nodes
+            have depth 0, their children have depth 1, and so on. Nodes that are not
+            reachable from the root (due to cycles or missing parents) are treated as
+            depth 0.
+        """
+
+        d = 0
+        cur: str | None = nid
+        seen: set[str] = set()
+
+        while cur and cur != ctx.root_id and cur not in seen:
+            seen.add(cur)
+            d += 1
+            cur = ctx.parent_by_child.get(cur)
+
+        return d
+
+    dropped_parents.sort(key=_depth, reverse=True)
+
+    reattached_count = 0
+    resolved_count = 0
+
+    for dropped_pid in dropped_parents:
+        orphaned_children = export_children.pop(dropped_pid, [])
+
+        if not orphaned_children:
+            continue
+
+        cur: str | None = ctx.parent_by_child.get(dropped_pid)
+        seen: set[str] = set()
+
+        while cur and cur != ctx.root_id and not emit_flag.get(cur) and cur not in seen:
+            seen.add(cur)
+            cur = ctx.parent_by_child.get(cur)
+
+        surviving: str = cur if cur and cur not in seen else ctx.root_id
+        target_kids = export_children.setdefault(surviving, [])
+        target_set = set(target_kids)
+        canonical_order = ctx.edge_order_index.get((surviving, dropped_pid))
+        insert_at: int | None = None
+
+        if canonical_order is not None:
+            insert_at = next(
+                (
+                    i
+                    for i, cid in enumerate(target_kids)
+                    if (so := ctx.edge_order_index.get((surviving, cid))) is not None
+                    and so > canonical_order
+                ),
+                None,
+            )
+
+        new_children = [c for c in orphaned_children if c not in target_set]
+
+        if insert_at is not None:
+            target_kids[insert_at:insert_at] = new_children
+        else:
+            target_kids.extend(new_children)
+
+        reattached_count += len(new_children)
+        resolved_count += 1
+
+    return {
+        "reattached_children_count": reattached_count,
+        "dropped_parents_resolved": resolved_count,
+    }
+
+
 def _reparent_aux_under_expectations(
     *,
     aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
@@ -1526,8 +1661,8 @@ def _reparent_aux_under_expectations(
 ) -> list[str]:
     """Re-parent aux statements under their preceding expectation sibling.
 
-    Walks the ordered children of a grouping node, attaching aux nodes either
-    to expectation metadata or as export-time children of the last expectation.
+    Walks the ordered children of a grouping node, attaching aux nodes either to
+    expectation metadata or as export-time children of the last expectation.
 
     Parameters
     ----------
@@ -1834,12 +1969,14 @@ def export_academic_standards(
     3. Compute export-time aux parenting based on preceding expectation siblings.
     4. Handle attach-to-expectation rules for guidance/descriptors, modifying emit
         flags accordingly.
-    5. Prune empty groupings iteratively, modifying emit flags accordingly.
-    6. Emit StandardsFrameworkItems for all nodes still flagged for emission.
-    7. Build hasChild relationships and hierarchy order mappings.
-    8. Sort items and relationships for stable output.
-    9. Package everything into an AcademicStandardsExport dataclass.
-    10. Write JSON artifacts to disk.
+    5. Re-attach children of dropped mid-hierarchy nodes to their nearest surviving
+        ancestor, ensuring tree connectivity before pruning.
+    6. Prune empty groupings iteratively, modifying emit flags accordingly.
+    7. Emit StandardsFrameworkItems for all nodes still flagged for emission.
+    8. Build hasChild relationships and hierarchy order mappings.
+    9. Sort items and relationships for stable output.
+    10. Package everything into an AcademicStandardsExport dataclass.
+    11. Write JSON artifacts to disk.
 
     Parameters
     ----------
@@ -1892,6 +2029,14 @@ def export_academic_standards(
     )
 
     # 5.
+    reattach_stats = _reattach_children_of_dropped_nodes(
+        ctx=ctx,
+        emit_flag=emit_flag,
+        export_children=export_children,
+    )
+    reparent_stats.update(reattach_stats)
+
+    # 6.
     pruned_node_ids = _handle_empty_grouping_pruning(
         config=config,
         ctx=ctx,
@@ -1900,7 +2045,7 @@ def export_academic_standards(
         export_children=export_children,
     )
 
-    # 6.
+    # 7.
     sfi_by_node = _emit_sfis(
         aux_attach_to_expectation=aux_attach_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
@@ -1910,7 +2055,7 @@ def export_academic_standards(
         orphan_aux_node_ids=reparent_stats.get("orphan_aux_node_ids"),
     )
 
-    # 7.
+    # 8.
     relationships, order_map = _build_relationships_and_order(
         config=config,
         ctx=ctx,
@@ -1925,7 +2070,7 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
-    # 8.
+    # 9.
     items_sorted = sorted(
         sfi_by_node.values(), key=lambda sfi: str(sfi.case_identifier_uuid)
     )
@@ -1942,7 +2087,7 @@ def export_academic_standards(
         framework_uuid=framework_uuid, order_map=order_map
     )
 
-    # 9.
+    # 10.
     academic_standards = AcademicStandardsExport(
         drop_reasons=drop_reasons,
         framework=framework,
@@ -1953,7 +2098,7 @@ def export_academic_standards(
         reparent_stats=reparent_stats,
     )
 
-    # 10.
+    # 11.
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_framework.json",
         json_info=academic_standards.framework.model_dump(mode="json"),
