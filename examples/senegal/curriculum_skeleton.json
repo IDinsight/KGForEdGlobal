@@ -389,7 +389,7 @@
 											"translations": {}
 										},
 										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
+										"leaf_role": "guidance",
 										"column_mappings": [
 											{
 												"header_pattern": "(?i)semaine|palier",
@@ -397,12 +397,12 @@
 											},
 											{
 												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-												"role": "leaf:expectation",
+												"role": "leaf:guidance",
 												"source_label_override": "Activités numériques"
 											},
 											{
 												"header_pattern": "(?i)r[ée]solution",
-												"role": "leaf:expectation",
+												"role": "leaf:guidance",
 												"source_label_override": "Résolution de problèmes"
 											}
 										],
@@ -445,7 +445,7 @@
 											"translations": {}
 										},
 										"emit": "emit_table_rows",
-										"leaf_role": "expectation",
+										"leaf_role": "guidance",
 										"column_mappings": [
 											{
 												"header_pattern": "(?i)semaine|palier",
@@ -453,12 +453,12 @@
 											},
 											{
 												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-												"role": "leaf:expectation",
+												"role": "leaf:guidance",
 												"source_label_override": "Activités numériques"
 											},
 											{
 												"header_pattern": "(?i)r[ée]solution",
-												"role": "leaf:expectation",
+												"role": "leaf:guidance",
 												"source_label_override": "Résolution de problèmes"
 											}
 										],
@@ -514,12 +514,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -566,12 +570,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -617,12 +625,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -684,12 +696,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -735,12 +751,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -786,12 +806,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1038,12 +1062,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1089,12 +1117,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1140,12 +1172,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1207,12 +1243,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1258,12 +1298,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1309,12 +1353,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1540,12 +1588,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1597,12 +1649,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1652,12 +1708,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1727,12 +1787,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1780,12 +1844,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -1837,12 +1905,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -2125,12 +2197,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -2180,12 +2256,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -2235,12 +2315,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -2306,12 +2390,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -2361,12 +2449,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},
@@ -2416,12 +2508,16 @@
 												"leaf_role": "expectation",
 												"column_mappings": [
 													{
-														"header_pattern": "(?i)objectif d.apprentissage",
+														"header_pattern": "(?i)\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b",
+														"role": "skip"
+													},
+													{
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif d.?apprentissage",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif d'apprentissage"
 													},
 													{
-														"header_pattern": "(?i)objectif sp[ée]cifique",
+														"header_pattern": "(?i)(?!.*\\b(n\\s*(?:o|°)|no\\.?|num[ée]ro|numero|#)\\b).*objectif sp[ée]cifique",
 														"role": "leaf:expectation",
 														"source_label_override": "Objectif spécifique"
 													},

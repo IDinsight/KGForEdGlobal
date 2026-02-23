@@ -1378,15 +1378,14 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
 
     # Otherwise try roman numerals anywhere in the string.
     romans = [ROMAN_MAP.get(m.group(1).upper()) for m in ROMAN_RE.finditer(s_norm)]
-    romans = [r for r in romans if r is not None]
+    romans_int: list[int] = [r for r in romans if r is not None]
 
-    if romans:
-        valid_romans: list[int] = [r for r in romans if r is not None]
-
-        if len(valid_romans) >= 2:
-            return min(valid_romans), max(valid_romans)
-        if valid_romans:
-            return valid_romans[0], valid_romans[0]
+    if romans_int:
+        return (
+            (min(romans_int), max(romans_int))
+            if len(romans_int) >= 2
+            else (romans_int[0], romans_int[0])
+        )
 
     return None, None
 
