@@ -8,7 +8,6 @@ from __future__ import annotations
 # Standard Library
 import hashlib
 import json
-import re
 
 from collections import Counter
 from datetime import datetime, timezone
@@ -24,7 +23,6 @@ from skg.utils.constants import (
     BlockType,
     CaptionKind,
     CurriculumEmitPolicy,
-    CurriculumMatchTarget,
     NodeRole,
     SegmentDecisionType,
     StatementRole,
@@ -230,35 +228,6 @@ class CurriculumColumnMapping(BaseSchema):
         return self
 
 
-class CurriculumMatchRule(BaseSchema):
-    """A single matching rule that binds document segments to skeleton nodes.
-
-    Multiple rules on a node are OR'd--any match suffices. Within a rule, all specified
-    conditions must hold (AND logic): `pattern` must match AND `require_segment_kind`
-    (if set) AND `require_block_type` (if set).
-    """
-
-    pattern: str = Field(
-        ...,
-        description=(
-            "Regex pattern. Compiled with re.IGNORECASE | re.UNICODE by the engine. "
-            'In JSON, escape backslashes once: e.g., "tableau\\\\s+4".'
-        ),
-    )
-    require_block_type: Optional[str] = Field(
-        default=None,
-        description="If set, block segment must also have this block_type (e.g., 'heading').",
-    )
-    require_segment_kind: Optional[str] = Field(
-        default=None,
-        description="If set, segment must also have this kind ('block' or 'table').",
-    )
-    target: CurriculumMatchTarget = Field(
-        default=CurriculumMatchTarget.TEXT,
-        description="What part of the segment to test.",
-    )
-
-
 class CurriculumMultilingualLabel(BaseSchema):
     """Canonical name in one or more languages.
 
@@ -332,7 +301,22 @@ class CurriculumSkeletonNode(BaseSchema):
             "Convention: '{strand}-{role}-{index}', e.g., 'num-palier-1-def'."
         ),
     )
-    match_rules: list[CurriculumMatchRule] = Field(default_factory=list)
+    match_phrases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Plain-text phrases to match against document segments. Matching is done "
+            "via case-insensitive, unicode-normalized substring containment. "
+            "Multiple phrases are OR'd — any match suffices."
+        ),
+    )
+    match_target: Literal["text", "caption"] = Field(
+        default="text",
+        description=(
+            "What to match against. 'text' matches against the segment's combined text "
+            "(blocks: heading/paragraph text; tables: not matched). "
+            "'caption' matches against the caption text bound to a table segment."
+        ),
+    )
 
     # Roles.
     grouping_role: Optional[NodeRole] = Field(
@@ -389,7 +373,7 @@ class CurriculumSkeletonNode(BaseSchema):
 
     @model_validator(mode="after")
     def validate_emit_match_consistency(self) -> CurriculumSkeletonNode:
-        """CONTAINER_ONLY nodes must have no match rules; others should have at least 1.
+        """CONTAINER_ONLY nodes must have no match phrases; others should have at least 1.
 
         Returns
         -------
@@ -399,22 +383,22 @@ class CurriculumSkeletonNode(BaseSchema):
         Raises
         ------
         ValueError
-            If a CONTAINER_ONLY node has match rules, or if a non-CONTAINER_ONLY node
-            has no match rules (unless it's a FRAMEWORK node).
+            If a CONTAINER_ONLY node has match phrases, or if a non-CONTAINER_ONLY node
+            has no match phrases (unless it's a FRAMEWORK node).
         """
 
-        if self.emit == CurriculumEmitPolicy.CONTAINER_ONLY and self.match_rules:
+        if self.emit == CurriculumEmitPolicy.CONTAINER_ONLY and self.match_phrases:
             raise ValueError(
-                f"Node '{self.id}': CONTAINER_ONLY must not have match_rules."
+                f"Node '{self.id}': CONTAINER_ONLY must not have match_phrases."
             )
 
         if (
             self.emit != CurriculumEmitPolicy.CONTAINER_ONLY
-            and not self.match_rules
+            and not self.match_phrases
             and self.grouping_role != NodeRole.FRAMEWORK
         ):
             raise ValueError(
-                f"Node '{self.id}': non-CONTAINER_ONLY nodes must have >= 1 match_rule."
+                f"Node '{self.id}': non-CONTAINER_ONLY nodes must have >= 1 match phrase."
             )
 
         return self
@@ -494,38 +478,9 @@ class CurriculumSkeletonNode(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_match_rule_patterns(self) -> CurriculumSkeletonNode:
-        """Ensure all match_rule regex patterns are compilable.
-
-        Returns
-        -------
-        CurriculumSkeletonNode
-            The validated CurriculumSkeletonNode object.
-
-        Raises
-        ------
-        ValueError
-            If any match_rule pattern is not a valid regex.
-        """
-
-        for rule in self.match_rules:
-            try:
-                re.compile(rule.pattern, re.IGNORECASE | re.UNICODE)
-            except re.error as exc:
-                raise ValueError(
-                    f"Node '{self.id}': invalid regex pattern {rule.pattern!r}: {exc}"
-                ) from exc
-
-        return self
-
-    @model_validator(mode="after")
     def validate_table_rows_target_tables(self) -> CurriculumSkeletonNode:
-        """EMIT_TABLE_ROWS match rules must target table segments.
-
-        1. Rules with `target=TEXT` must set `require_segment_kind='table'`.
-        2. Rules with `target=CAPTION` implicitly target tables (via caption bindings).
-        3. Rules with `target=HEADING` are invalid for EMIT_TABLE_ROWS since headings
-            are block segments.
+        """EMIT_TABLE_ROWS nodes should use match_target='caption' to match tables
+        via their bound caption text.
 
         Returns
         -------
@@ -535,27 +490,18 @@ class CurriculumSkeletonNode(BaseSchema):
         Raises
         ------
         ValueError
-            If any match_rule for an EMIT_TABLE_ROWS node targets non-table segments.
+            If an EMIT_TABLE_ROWS node uses match_target='text' (which only matches
+            block segments, not tables).
         """
 
         if self.emit != CurriculumEmitPolicy.EMIT_TABLE_ROWS:
             return self
 
-        for rule in self.match_rules:
-            if rule.target == CurriculumMatchTarget.HEADING:
-                raise ValueError(
-                    f"Node '{self.id}': EMIT_TABLE_ROWS cannot use target=HEADING "
-                    f"(headings are block segments, not tables)."
-                )
-
-            if (
-                rule.target == CurriculumMatchTarget.TEXT
-                and rule.require_segment_kind != "table"
-            ):
-                raise ValueError(
-                    f"Node '{self.id}': EMIT_TABLE_ROWS with target=TEXT must set "
-                    f"require_segment_kind='table'."
-                )
+        if self.match_target != "caption":
+            raise ValueError(
+                f"Node '{self.id}': EMIT_TABLE_ROWS should use match_target='caption' "
+                f"to match tables via their bound caption text."
+            )
 
         return self
 
