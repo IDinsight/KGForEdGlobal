@@ -426,13 +426,19 @@ class CreateKGConfig(BaseSchema):
         ge=0.0,
         le=1.0,
     )
-    progressions_cross_grade_builds_towards: bool = True
+    progressions_cross_grade_builds_towards: bool = Field(
+        default=True,
+        description="Enable cross-grade buildsTowards progression inference between adjacent single-level grade buckets.",
+    )
     progressions_cross_grade_relates_to_max_items_per_subject: int = Field(
         default=10,
         description="Cross-grade relatesTo: max sampled Standards per subject per grade.",
         ge=1,
     )
-    progressions_cross_grade_relates_to: bool = True
+    progressions_cross_grade_relates_to: bool = Field(
+        default=True,
+        description="Enable cross-grade relatesTo progression inference between adjacent single-level grade buckets.",
+    )
     progressions_cross_stage_builds_towards: bool = Field(
         default=False,
         description=(
@@ -469,7 +475,10 @@ class CreateKGConfig(BaseSchema):
             "(low != high), e.g., 'Std I–II'."
         ),
     )
-    progressions_within_grade_builds_towards: bool = True
+    progressions_within_grade_builds_towards: bool = Field(
+        default=True,
+        description="Enable within-grade buildsTowards progression inference (sequential standards within the same grade/subject thread).",
+    )
     progressions_within_grade_relates_to: bool = Field(
         default=True,
         description=(

@@ -276,6 +276,13 @@ class CurriculumSkeletonMetadata(BaseSchema):
         default=None,
         description="Stage/cycle name (e.g., 'Etape 2', 'Upper Primary').",
     )
+    year: Optional[int] = Field(
+        default=None,
+        description=(
+            "Publication/adoption year of the curriculum document (e.g., 2024). "
+            "Used for provenance and filtering in downstream KG export."
+        ),
+    )
 
 
 class CurriculumSkeletonNode(BaseSchema):

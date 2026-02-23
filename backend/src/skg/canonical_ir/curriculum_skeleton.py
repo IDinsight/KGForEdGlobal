@@ -1125,14 +1125,23 @@ def load_or_build_caption_bindings(
                 if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
                     continue
 
-                pending_caption = (
-                    segment,
-                    caption_text,
-                    kind,
-                    page_index,
-                    index,
-                )
+                # Warn if a previous caption is being overwritten before it could bind
+                # to a table. This can happen when two captions appear in sequence
+                # (e.g. multi-caption annotations), and means the earlier caption's
+                # context is silently lost.
+                if pending_caption is not None:
+                    prev_seg, _, _, _, _ = pending_caption
+                    msg = (
+                        f"Pending caption overwritten before binding:\n"
+                        f"  overwritten_caption={prev_seg.segment_id}\n"
+                        f"  replaced_by={segment.segment_id}\n"
+                        f"  page_index={page_index}\n"
+                        f"  segment_index={index}"
+                    )
+                    logger.warning(msg)
+                    warnings.append(msg)
 
+                pending_caption = (segment, caption_text, kind, page_index, index)
                 continue
 
         # Bind to next table if eligible.
@@ -1234,6 +1243,10 @@ def match_curriculum(
     matchable_nodes = dfs_matchable(curriculum_skeleton.root)
     ancestry_map = build_ancestry_map(curriculum_skeleton.root)
 
+    # Pre-build node_id -> index lookup for O(1) cursor release (avoids O(N) scan each
+    # time a pinned allow_multiple_segments node is released).
+    node_id_to_index: dict[str, int] = {n.id: i for i, n in enumerate(matchable_nodes)}
+
     cursor = 0
     cursor_jumps: list[CurriculumCursorJump] = []
     results: list[CurriculumMatchedSegment] = []
@@ -1293,10 +1306,7 @@ def match_curriculum(
         if not matched and results and results[-1].node.allow_multiple_segments:
             # Find the index of the pinned node and advance past it.
             pinned_node = results[-1].node
-            pinned_idx = next(
-                (i for i, n in enumerate(matchable_nodes) if n.id == pinned_node.id),
-                cursor,
-            )
+            pinned_idx = node_id_to_index.get(pinned_node.id, cursor)
             released_cursor = pinned_idx + 1
             release_end = min(released_cursor + max_skip_distance, len(matchable_nodes))
 
