@@ -39,11 +39,18 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.utils import (
-    CanonicalIRDirs,
-    create_canonical_ir_from_curriculum_skeleton,
+from skg.canonical_ir.curriculum_skeleton import (
+    generate_curriculum_match_report,
     load_curriculum_skeleton,
     load_or_build_caption_bindings,
+    match_curriculum,
+    prepare_matchable_segments,
+    translate_segments,
+)
+from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
+from skg.canonical_ir.utils import (
+    CanonicalIRDirs,
+    compile_canonical_ir,
     persist_canonical_run,
 )
 from skg.document_ir.schemas import DocumentIR
@@ -69,11 +76,14 @@ def create_canonical_ir(
     1. Load and validate the DocumentIR.
     2. Build or load deterministic caption -> table bindings.
     3. Load and validate the CurriculumSkeleton.
-    4. Adapt DocumentIR segments into MatchableSegments.
-    5. Run the forward-only skeleton matching engine.
-    6. Translate matches into a SegmentDecisionSet (one decision per segment).
-    7. Compile CanonicalIR from DocumentIR + SegmentDecisionSet.
-    8. Export CanonicalIR JSON and MatchReport diagnostics.
+    4. Adapt DocumentIR segments into CurriculumMatchableSegment.
+    5. Run the forward-only curriculum skeleton matching engine.
+    6. Translate curriculum matches into a SegmentDecisionSet (one decision per
+        segment).
+    7. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
+    8. Export the CanonicalIR JSON and a skeleton MatchReport to the canonical IR
+        creation results directory.
+    9. Generate a curriculum skeleton match report for diagnostics.
 
     Parameters
     ----------
@@ -100,10 +110,10 @@ def create_canonical_ir(
         )
         return
 
-    # 1. Load DocumentIR.
+    # 1.
     document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
 
-    # 2. Build caption bindings.
+    # 2.
     caption_bindings = load_or_build_caption_bindings(
         bind_unknown_caption=config.bind_unknown_caption,
         creation_dirs=creation_dirs,
@@ -113,31 +123,58 @@ def create_canonical_ir(
         overwrite=config.overwrite,
     )
 
-    # 3. Load CurriculumSkeleton.
-    logger.info(
-        f"Using skeleton pipeline with skeleton: {config.curriculum_skeleton_fp}"
-    )
-
+    # 3.
     curriculum_skeleton = load_curriculum_skeleton(config.curriculum_skeleton_fp)
 
-    # 4 - 8.
-    report = create_canonical_ir_from_curriculum_skeleton(
-        canonical_ir_fp=canonical_ir_fp,
-        caption_bindings=caption_bindings,
-        curriculum_match_report_fp=curriculum_match_report_fp,
-        curriculum_skeleton=curriculum_skeleton,
-        doc_key=doc_key,
-        document_ir=document_ir,
-        segment_decisions_fp=segment_decisions_fp,
+    # 4.
+    matchable_segments = prepare_matchable_segments(
+        caption_bindings=caption_bindings, document_ir=document_ir
     )
 
-    if not report.is_healthy:
-        logger.warning(
-            f"Curriculum skeleton match is NOT healthy "
-            f"(node coverage={report.node_coverage:.1%}, "
-            f"jumps={len(report.cursor_jumps)}). "
-            f"Review the curriculum match report at: {curriculum_match_report_fp}"
-        )
+    # 5.
+    curriculum_match_results = match_curriculum(
+        curriculum_skeleton=curriculum_skeleton,
+        max_skip_distance=config.max_skip_distance,
+        segments=matchable_segments,
+    )
+
+    # 6.
+    segment_decisions = translate_segments(
+        curriculum_match_results=curriculum_match_results,
+        doc_key=doc_key,
+        matchable_segments=matchable_segments,
+        role_order=curriculum_skeleton.metadata.context_groupings_role_order,
+    )
+
+    # 7.
+    decision_set = SegmentDecisionSet.model_validate(
+        {
+            "decision_set_id": compute_decision_set_id(decisions=segment_decisions),
+            "decisions": [d.model_dump(mode="json") for d in segment_decisions],
+            "doc_key": doc_key,
+            "generator": f"curriculum_skeleton:{curriculum_skeleton.skeleton_id}",
+            "pdf_name": document_ir.pdf_name,
+        }
+    )
+    write_to_json(fp=segment_decisions_fp, json_info=decision_set)
+
+    logger.success(f"Saved segment decisions to: {segment_decisions_fp}")
+
+    # 8.
+    compile_canonical_ir(
+        canonical_ir_fp=canonical_ir_fp,
+        doc_key=doc_key,
+        document_ir=document_ir,
+        segment_decisions=decision_set,
+    )
+
+    # 9.
+    generate_curriculum_match_report(
+        curriculum_match_report_fp=curriculum_match_report_fp,
+        curriculum_match_results=curriculum_match_results,
+        curriculum_skeleton=curriculum_skeleton,
+        total_segments=len(matchable_segments),
+    )
 
 
 @cli.command()

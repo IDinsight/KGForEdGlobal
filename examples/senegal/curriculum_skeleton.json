@@ -32,109 +32,19 @@
 					"translations": {}
 				},
 				"emit": "ignore",
-				"match_rules": [
-					{
-						"pattern": "r[ée]publique du s[ée]n[ée]gal",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "r[ée]publique du s[ée]n[ée]gal",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "minist[èe]re",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "minist[èe]re",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "r[ée]f[ée]rentiel bilingue",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "r[ée]f[ée]rentiel bilingue",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "math[ée]matiques",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "math[ée]matiques",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "deuxi[èe]me",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "deuxi[èe]me",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "\\b[ée]tape\\b",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "\\b[ée]tape\\b",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "\\btolluwaay\\b",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "\\btolluwaay\\b",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "\\bxayma\\b",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "\\bxayma\\b",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "c[ëe]slaayu",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "c[ëe]slaayu",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
 				"doc_note": "Cover page: Republic, ministry, document title block. No curricular content.",
-				"allow_multiple_segments": true
+				"allow_multiple_segments": true,
+				"match_phrases": [
+					"république du sénégal",
+					"ministère",
+					"référentiel bilingue",
+					"mathématiques",
+					"deuxième",
+					"étape",
+					"tolluwaay",
+					"xayma",
+					"cëslaayu"
+				]
 			},
 			{
 				"id": "cadre-competences",
@@ -146,30 +56,6 @@
 				},
 				"emit": "emit_grouping",
 				"grouping_role": "section",
-				"match_rules": [
-					{
-						"pattern": "cadre de comp[ée]tences",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "cadre de comp[ée]tences",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "c[ëe]slaayu manoore",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "c[ëe]slaayu manoore",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
 				"children": [
 					{
 						"id": "competence-cycle",
@@ -181,22 +67,14 @@
 						},
 						"emit": "emit_leaf",
 						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "comp[ée]tence de cycle"
-							},
-							{
-								"pattern": "manoore diirub"
-							},
-							{
-								"pattern": "ca\\s+njeextel\\s+diirub"
-							},
-							{
-								"pattern": "a\\s+la\\s+fin\\s+du\\s+cycle"
-							}
-						],
 						"doc_note": "Cycle competency appears as a bilingual heading followed by two consecutive paragraphs (Wolof then French). Match the heading and both paragraphs.",
-						"allow_multiple_segments": true
+						"allow_multiple_segments": true,
+						"match_phrases": [
+							"compétence de cycle",
+							"manoore diirub",
+							"ca njeextel diirub",
+							"a la fin du cycle"
+						]
 					},
 					{
 						"id": "competence-etape",
@@ -208,22 +86,14 @@
 						},
 						"emit": "emit_leaf",
 						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "comp[ée]tence de l'[ée]tape"
-							},
-							{
-								"pattern": "manoore tolluwaay"
-							},
-							{
-								"pattern": "ca\\s+njeextel\\s+tolluwaay"
-							},
-							{
-								"pattern": "a\\s+la\\s+fin\\s+de\\s+la\\s+deuxi[èe]me\\s+[ée]tape"
-							}
-						],
 						"doc_note": "Stage (Étape 2) competency appears as a bilingual heading followed by two consecutive paragraphs (Wolof then French). Match the heading and both paragraphs.",
-						"allow_multiple_segments": true
+						"allow_multiple_segments": true,
+						"match_phrases": [
+							"compétence de l'étape",
+							"manoore tolluwaay",
+							"ca njeextel tolluwaay",
+							"a la fin de la deuxième étape"
+						]
 					},
 					{
 						"id": "competences-base-heading",
@@ -232,20 +102,10 @@
 							"translations": {}
 						},
 						"emit": "ignore",
-						"match_rules": [
-							{
-								"pattern": "les\\s+comp[ée]tences\\s+de\\s+base\\s+des\\s+activit[ée]s",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "les\\s+comp[ée]tences\\s+de\\s+base\\s+des\\s+activit[ée]s",
-								"target": "text",
-								"require_segment_kind": "block"
-							}
-						],
-						"doc_note": "Auto-added to consume structural text and avoid unresolved segments."
+						"doc_note": "Auto-added to consume structural text and avoid unresolved segments.",
+						"match_phrases": [
+							"les compétences de base des activités"
+						]
 					},
 					{
 						"id": "tableau-1",
@@ -255,12 +115,6 @@
 						},
 						"emit": "emit_table_rows",
 						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "tableau\\s+1",
-								"target": "caption"
-							}
-						],
 						"column_mappings": [
 							{
 								"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques|kenug\\s+xayma",
@@ -283,8 +137,16 @@
 								"source_label_override": "Compétence de base — Résolution de problèmes"
 							}
 						],
-						"doc_note": "4-column overview table: base competencies for each of the 4 strands."
+						"doc_note": "4-column overview table: base competencies for each of the 4 strands.",
+						"match_phrases": [
+							"tableau 1"
+						],
+						"match_target": "caption"
 					}
+				],
+				"match_phrases": [
+					"cadre de compétences",
+					"cëslaayu manoore"
 				]
 			},
 			{
@@ -294,20 +156,10 @@
 					"translations": {}
 				},
 				"emit": "ignore",
-				"match_rules": [
-					{
-						"pattern": "planification\\s+des\\s+apprentissages",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "planification\\s+des\\s+apprentissages",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
-				"doc_note": "Separator heading between sections; consumed to avoid unresolved."
+				"doc_note": "Separator heading between sections; consumed to avoid unresolved.",
+				"match_phrases": [
+					"planification des apprentissages"
+				]
 			},
 			{
 				"id": "strand-numeriques",
@@ -319,30 +171,6 @@
 				},
 				"emit": "emit_grouping",
 				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s num[ée]riques",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "activit[ée]s num[ée]riques",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "kenug xayma",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "kenug xayma",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
 				"children": [
 					{
 						"id": "num-palier-defs",
@@ -375,18 +203,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 1,
-										"doc_note": "Jéego 1 (Wolof) + PALIER 1 (French): integers 0–5000, arithmetic operations."
+										"doc_note": "Jéego 1 (Wolof) + PALIER 1 (French): integers 0–5000, arithmetic operations.",
+										"match_phrases": [
+											"jéego 1",
+											"palier 1"
+										]
 									},
 									{
 										"id": "num-palier-2-def",
@@ -399,18 +222,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 2,
-										"doc_note": "Jéego 2 + PALIER 2: integers 0–8000."
+										"doc_note": "Jéego 2 + PALIER 2: integers 0–8000.",
+										"match_phrases": [
+											"jéego 2",
+											"palier 2"
+										]
 									},
 									{
 										"id": "num-palier-3-def",
@@ -423,32 +241,17 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 3,
-										"doc_note": "Jéego 3 + PALIER 3: integers 0–10000."
+										"doc_note": "Jéego 3 + PALIER 3: integers 0–10000.",
+										"match_phrases": [
+											"jéego 3",
+											"palier 3"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -473,18 +276,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 4,
-										"doc_note": "Jéego 4 + PALIER 4: integers 0–50000."
+										"doc_note": "Jéego 4 + PALIER 4: integers 0–50000.",
+										"match_phrases": [
+											"jéego 4",
+											"palier 4"
+										]
 									},
 									{
 										"id": "num-palier-5-def",
@@ -497,18 +295,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+5"
-											},
-											{
-												"pattern": "palier\\s+5",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 5,
-										"doc_note": "Jéego 5 + PALIER 5: integers 0–80000."
+										"doc_note": "Jéego 5 + PALIER 5: integers 0–80000.",
+										"match_phrases": [
+											"jéego 5",
+											"palier 5"
+										]
 									},
 									{
 										"id": "num-palier-6-def",
@@ -521,35 +314,21 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+6"
-											},
-											{
-												"pattern": "palier\\s+6",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 6,
-										"doc_note": "Jéego 6 + PALIER 6: integers 0–100000."
+										"doc_note": "Jéego 6 + PALIER 6: integers 0–100000.",
+										"match_phrases": [
+											"jéego 6",
+											"palier 6"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
-						]
+						],
+						"match_phrases": []
 					},
 					{
 						"id": "num-planification",
@@ -580,20 +359,10 @@
 											"translations": {}
 										},
 										"emit": "ignore",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages\\s*\\(niveau\\s+1:\\s*ce1\\)",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages\\s*\\(niveau\\s+1:\\s*ce1\\)",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
-										"doc_note": "Consumes the planification intro line preceding the planification table."
+										"doc_note": "Consumes the planification intro line preceding the planification table.",
+										"match_phrases": [
+											"tableau de planification des apprentissages (niveau 1: ce1)"
+										]
 									},
 									{
 										"id": "tableau-2",
@@ -603,12 +372,6 @@
 										},
 										"emit": "emit_table_rows",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+2",
-												"target": "caption"
-											}
-										],
 										"column_mappings": [
 											{
 												"header_pattern": "(?i)semaine|palier",
@@ -625,9 +388,14 @@
 												"source_label_override": "Résolution de problèmes"
 											}
 										],
-										"doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French)."
+										"doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French).",
+										"match_phrases": [
+											"tableau 2"
+										],
+										"match_target": "caption"
 									}
-								]
+								],
+								"match_phrases": []
 							},
 							{
 								"id": "num-plan-ce2",
@@ -647,20 +415,10 @@
 											"translations": {}
 										},
 										"emit": "ignore",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages\\s*\\(niveau\\s+2:\\s*ce2\\)",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "tableau\\s+de\\s+planification\\s+des\\s+apprentissages\\s*\\(niveau\\s+2:\\s*ce2\\)",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
-										"doc_note": "Consumes the planification intro line preceding the planification table."
+										"doc_note": "Consumes the planification intro line preceding the planification table.",
+										"match_phrases": [
+											"tableau de planification des apprentissages (niveau 2: ce2)"
+										]
 									},
 									{
 										"id": "tableau-3",
@@ -670,12 +428,6 @@
 										},
 										"emit": "emit_table_rows",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "tableau\\s+3",
-												"target": "caption"
-											}
-										],
 										"column_mappings": [
 											{
 												"header_pattern": "(?i)semaine|palier",
@@ -692,11 +444,17 @@
 												"source_label_override": "Résolution de problèmes"
 											}
 										],
-										"doc_note": "Same structure as Tableau 2, for CE2."
+										"doc_note": "Same structure as Tableau 2, for CE2.",
+										"match_phrases": [
+											"tableau 3"
+										],
+										"match_target": "caption"
 									}
-								]
+								],
+								"match_phrases": []
 							}
-						]
+						],
+						"match_phrases": []
 					},
 					{
 						"id": "num-apprentissages",
@@ -706,30 +464,6 @@
 						},
 						"emit": "emit_grouping",
 						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages\\s+ponctuels.*num[ée]riques",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "apprentissages\\s+ponctuels.*num[ée]riques",
-								"target": "text",
-								"require_segment_kind": "block"
-							},
-							{
-								"pattern": "activit[ée]s\\s+num[ée]riques",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "activit[ée]s\\s+num[ée]riques",
-								"target": "text",
-								"require_segment_kind": "block"
-							}
-						],
 						"children": [
 							{
 								"id": "num-ap-ce1",
@@ -751,19 +485,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 1,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-4",
@@ -773,12 +494,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+4",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -801,10 +516,17 @@
 													}
 												],
 												"substage_index": 1,
-												"doc_note": "Detailed OA table: Objectif d'apprentissage, Objectif spécifique, Contenus, Durée. Bilingual rows."
+												"doc_note": "Detailed OA table: Objectif d'apprentissage, Objectif spécifique, Contenus, Durée. Bilingual rows.",
+												"match_phrases": [
+													"tableau 4"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 1"
+										]
 									},
 									{
 										"id": "num-ap-ce1-palier-2",
@@ -815,19 +537,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 2,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-5",
@@ -837,12 +546,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+5",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -864,10 +567,17 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 2
+												"substage_index": 2,
+												"match_phrases": [
+													"tableau 5"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 2"
+										]
 									},
 									{
 										"id": "num-ap-ce1-palier-3",
@@ -878,19 +588,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 3,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-6",
@@ -900,12 +597,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+6",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -927,24 +618,21 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 3
+												"substage_index": 3,
+												"match_phrases": [
+													"tableau 6"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 3"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -967,19 +655,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 4,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-7",
@@ -989,12 +664,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+7",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1016,10 +685,17 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 4
+												"substage_index": 4,
+												"match_phrases": [
+													"tableau 7"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 4"
+										]
 									},
 									{
 										"id": "num-ap-ce2-palier-5",
@@ -1030,19 +706,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 5,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+5\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+5\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-8",
@@ -1052,12 +715,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+8",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1079,10 +736,17 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 5
+												"substage_index": 5,
+												"match_phrases": [
+													"tableau 8"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 5"
+										]
 									},
 									{
 										"id": "num-ap-ce2-palier-6",
@@ -1093,19 +757,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 6,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+6\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+6\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-9",
@@ -1115,12 +766,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+9",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1142,28 +787,34 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 6
+												"substage_index": 6,
+												"match_phrases": [
+													"tableau 9"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 6"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
+						],
+						"match_phrases": [
+							"apprentissages ponctuels",
+							"numériques",
+							"activités numériques"
 						]
 					}
+				],
+				"match_phrases": [
+					"activités numériques",
+					"kenug xayma"
 				]
 			},
 			{
@@ -1176,41 +827,6 @@
 				},
 				"emit": "emit_grouping",
 				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s de r[ée]solution",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "activit[ée]s de r[ée]solution",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "r[ée]solution de probl[èe]mes",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "r[ée]solution de probl[èe]mes",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "tekkim caxu xayma",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "tekkim caxu xayma",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
 				"children": [
 					{
 						"id": "res-palier-defs",
@@ -1242,18 +858,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 1,
-										"doc_note": "Data categories in problem analysis."
+										"doc_note": "Data categories in problem analysis.",
+										"match_phrases": [
+											"jéego 1",
+											"palier 1"
+										]
 									},
 									{
 										"id": "res-palier-2-def",
@@ -1266,17 +877,12 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 2
+										"substage_index": 2,
+										"match_phrases": [
+											"jéego 2",
+											"palier 2"
+										]
 									},
 									{
 										"id": "res-palier-3-def",
@@ -1289,31 +895,16 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 3
+										"substage_index": 3,
+										"match_phrases": [
+											"jéego 3",
+											"palier 3"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -1338,17 +929,12 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 4
+										"substage_index": 4,
+										"match_phrases": [
+											"jéego 4",
+											"palier 4"
+										]
 									},
 									{
 										"id": "res-palier-5-def",
@@ -1361,17 +947,12 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+5"
-											},
-											{
-												"pattern": "palier\\s+5",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 5
+										"substage_index": 5,
+										"match_phrases": [
+											"jéego 5",
+											"palier 5"
+										]
 									},
 									{
 										"id": "res-palier-6-def",
@@ -1384,34 +965,20 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+6"
-											},
-											{
-												"pattern": "palier\\s+6",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 6
+										"substage_index": 6,
+										"match_phrases": [
+											"jéego 6",
+											"palier 6"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
-						]
+						],
+						"match_phrases": []
 					},
 					{
 						"id": "res-apprentissages",
@@ -1421,30 +988,6 @@
 						},
 						"emit": "emit_grouping",
 						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages\\s+ponctuels.*r[ée]solution",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "apprentissages\\s+ponctuels.*r[ée]solution",
-								"target": "text",
-								"require_segment_kind": "block"
-							},
-							{
-								"pattern": "r[ée]solution\\s+de\\s+probl[èe]mes",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "r[ée]solution\\s+de\\s+probl[èe]mes",
-								"target": "text",
-								"require_segment_kind": "block"
-							}
-						],
 						"children": [
 							{
 								"id": "res-ap-ce1",
@@ -1466,19 +1009,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 1,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-10",
@@ -1488,12 +1018,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+10",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1515,10 +1039,17 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 1
+												"substage_index": 1,
+												"match_phrases": [
+													"tableau 10"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 1"
+										]
 									},
 									{
 										"id": "res-ap-ce1-palier-2",
@@ -1529,19 +1060,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 2,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-11",
@@ -1551,12 +1069,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+11",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1578,10 +1090,17 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 2
+												"substage_index": 2,
+												"match_phrases": [
+													"tableau 11"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 2"
+										]
 									},
 									{
 										"id": "res-ap-ce1-palier-3",
@@ -1592,19 +1111,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 3,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-12",
@@ -1614,12 +1120,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+12",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1641,24 +1141,21 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 3
+												"substage_index": 3,
+												"match_phrases": [
+													"tableau 12"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 3"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -1681,19 +1178,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 4,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-13",
@@ -1703,12 +1187,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+13",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1730,10 +1208,17 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 4
+												"substage_index": 4,
+												"match_phrases": [
+													"tableau 13"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 4"
+										]
 									},
 									{
 										"id": "res-ap-ce2-palier-5",
@@ -1744,19 +1229,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 5,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+5\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+5\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-14",
@@ -1766,12 +1238,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+14",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1793,10 +1259,17 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 5
+												"substage_index": 5,
+												"match_phrases": [
+													"tableau 14"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 5"
+										]
 									},
 									{
 										"id": "res-ap-ce2-palier-6",
@@ -1807,19 +1280,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 6,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+6\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+6\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-15",
@@ -1829,12 +1289,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+15",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -1856,28 +1310,35 @@
 														"role": "skip"
 													}
 												],
-												"substage_index": 6
+												"substage_index": 6,
+												"match_phrases": [
+													"tableau 15"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 6"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
+						],
+						"match_phrases": [
+							"apprentissages ponctuels",
+							"résolution",
+							"résolution de problèmes"
 						]
 					}
+				],
+				"match_phrases": [
+					"activités de résolution",
+					"résolution de problèmes",
+					"tekkim caxu xayma"
 				]
 			},
 			{
@@ -1887,20 +1348,10 @@
 					"translations": {}
 				},
 				"emit": "ignore",
-				"match_rules": [
-					{
-						"pattern": "planification\\s+des\\s+apprentissages",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "planification\\s+des\\s+apprentissages",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
-				"doc_note": "Separator heading between sections; consumed to avoid unresolved."
+				"doc_note": "Separator heading between sections; consumed to avoid unresolved.",
+				"match_phrases": [
+					"planification des apprentissages"
+				]
 			},
 			{
 				"id": "strand-geometrie",
@@ -1912,30 +1363,6 @@
 				},
 				"emit": "emit_grouping",
 				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s g[ée]om[ée]triques",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "activit[ée]s g[ée]om[ée]triques",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "xam-xamu d[ée]nd",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "xam-xamu d[ée]nd",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
 				"doc_note": "UNIQUE: Only 4 paliers (2 per grade, not 3). Paliers 2 and 3 each split across 2 tables via '(suite)' continuation.",
 				"children": [
 					{
@@ -1968,18 +1395,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 1,
-										"doc_note": "Lines, special/relative positions of lines, plane figures, instruments."
+										"doc_note": "Lines, special/relative positions of lines, plane figures, instruments.",
+										"match_phrases": [
+											"jéego 1",
+											"palier 1"
+										]
 									},
 									{
 										"id": "geo-palier-2-def",
@@ -1992,32 +1414,17 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 2,
-										"doc_note": "Lines, special/relative positions, plane figure properties, solids, instruments."
+										"doc_note": "Lines, special/relative positions, plane figure properties, solids, instruments.",
+										"match_phrases": [
+											"jéego 2",
+											"palier 2"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -2042,17 +1449,12 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 3
+										"substage_index": 3,
+										"match_phrases": [
+											"jéego 3",
+											"palier 3"
+										]
 									},
 									{
 										"id": "geo-palier-4-def",
@@ -2065,34 +1467,20 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 4
+										"substage_index": 4,
+										"match_phrases": [
+											"jéego 4",
+											"palier 4"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
-						]
+						],
+						"match_phrases": []
 					},
 					{
 						"id": "geo-apprentissages",
@@ -2102,30 +1490,6 @@
 						},
 						"emit": "emit_grouping",
 						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages\\s+ponctuels.*g[ée]om[ée]tr",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "apprentissages\\s+ponctuels.*g[ée]om[ée]tr",
-								"target": "text",
-								"require_segment_kind": "block"
-							},
-							{
-								"pattern": "activit[ée]s\\s+g[ée]om[ée]tr",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "activit[ée]s\\s+g[ée]om[ée]tr",
-								"target": "text",
-								"require_segment_kind": "block"
-							}
-						],
 						"children": [
 							{
 								"id": "geo-ap-ce1",
@@ -2147,19 +1511,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 1,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-16",
@@ -2169,12 +1520,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+16",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -2202,10 +1547,17 @@
 													"translations": {
 														"wo": "Rëdd yi ak seen taxawaay"
 													}
-												}
+												},
+												"match_phrases": [
+													"tableau 16"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 1"
+										]
 									},
 									{
 										"id": "geo-ap-ce1-palier-2",
@@ -2216,19 +1568,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 2,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-17",
@@ -2238,12 +1577,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+17",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -2271,7 +1604,11 @@
 													"translations": {
 														"wo": "Kaare"
 													}
-												}
+												},
+												"match_phrases": [
+													"tableau 17"
+												],
+												"match_target": "caption"
 											},
 											{
 												"id": "tableau-18",
@@ -2281,12 +1618,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+18",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -2316,24 +1647,21 @@
 														"wo": "Rektàngal"
 													}
 												},
-												"doc_note": "Continuation of Palier 2 — separate topic (rectangle vs carré) but same palier."
+												"doc_note": "Continuation of Palier 2 — separate topic (rectangle vs carré) but same palier.",
+												"match_phrases": [
+													"tableau 18"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 2"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -2356,19 +1684,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 3,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-19",
@@ -2378,12 +1693,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+19",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -2409,7 +1718,11 @@
 												"topic": {
 													"primary": "Lignes, angles, carré et rectangle",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 19"
+												],
+												"match_target": "caption"
 											},
 											{
 												"id": "tableau-20",
@@ -2419,12 +1732,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+20",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -2452,10 +1759,17 @@
 													"primary": "Le triangle",
 													"translations": {}
 												},
-												"doc_note": "Continuation of Palier 3 — triangle is a separate topic within same palier."
+												"doc_note": "Continuation of Palier 3 — triangle is a separate topic within same palier.",
+												"match_phrases": [
+													"tableau 20"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 3"
+										]
 									},
 									{
 										"id": "geo-ap-ce2-palier-4",
@@ -2466,19 +1780,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 4,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-21",
@@ -2488,12 +1789,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+21",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -2519,28 +1814,34 @@
 												"topic": {
 													"primary": "Cercle, symétrie et solides",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 21"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 4"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
+						],
+						"match_phrases": [
+							"apprentissages ponctuels",
+							"géométr",
+							"activités géométr"
 						]
 					}
+				],
+				"match_phrases": [
+					"activités géométriques",
+					"xam-xamu dénd"
 				]
 			},
 			{
@@ -2550,20 +1851,10 @@
 					"translations": {}
 				},
 				"emit": "ignore",
-				"match_rules": [
-					{
-						"pattern": "planification\\s+des\\s+apprentissages",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "planification\\s+des\\s+apprentissages",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
-				"doc_note": "Separator heading between sections; consumed to avoid unresolved."
+				"doc_note": "Separator heading between sections; consumed to avoid unresolved.",
+				"match_phrases": [
+					"planification des apprentissages"
+				]
 			},
 			{
 				"id": "strand-mesure",
@@ -2575,30 +1866,6 @@
 				},
 				"emit": "emit_grouping",
 				"grouping_role": "strand",
-				"match_rules": [
-					{
-						"pattern": "activit[ée]s de mesure",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "activit[ée]s de mesure",
-						"target": "text",
-						"require_segment_kind": "block"
-					},
-					{
-						"pattern": "xam-xamu natt",
-						"target": "heading",
-						"require_segment_kind": "block",
-						"require_block_type": "heading"
-					},
-					{
-						"pattern": "xam-xamu natt",
-						"target": "text",
-						"require_segment_kind": "block"
-					}
-				],
 				"doc_note": "UNIQUE: Has a strand-level competency statement (Wolof+French) BEFORE the palier definitions. This is NOT grade-specific — it covers the entire stage (CE1-CE2).",
 				"children": [
 					{
@@ -2611,20 +1878,12 @@
 						},
 						"emit": "emit_leaf",
 						"leaf_role": "expectation",
-						"match_rules": [
-							{
-								"pattern": "boole\\s+mooñ\\s+jëfandikoo",
-								"target": "text",
-								"require_segment_kind": "block"
-							},
-							{
-								"pattern": "int[ée]grer\\s+les\\s+notions\\s+de\\s+longueur",
-								"target": "text",
-								"require_segment_kind": "block"
-							}
-						],
 						"doc_note": "Stage-level competency covering all measurement topics. Appears BEFORE any grade/palier content. Must NOT be assigned to CE1 or CE2 specifically.",
-						"allow_multiple_segments": true
+						"allow_multiple_segments": true,
+						"match_phrases": [
+							"boole mooñ jëfandikoo",
+							"intégrer les notions de longueur"
+						]
 					},
 					{
 						"id": "mes-palier-defs",
@@ -2656,18 +1915,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+1"
-											},
-											{
-												"pattern": "palier\\s+1",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 1,
-										"doc_note": "Length and capacity, conventional instruments."
+										"doc_note": "Length and capacity, conventional instruments.",
+										"match_phrases": [
+											"jéego 1",
+											"palier 1"
+										]
 									},
 									{
 										"id": "mes-palier-2-def",
@@ -2680,18 +1934,13 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+2"
-											},
-											{
-												"pattern": "palier\\s+2",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 2,
-										"doc_note": "Length, capacity, mass and duration."
+										"doc_note": "Length, capacity, mass and duration.",
+										"match_phrases": [
+											"jéego 2",
+											"palier 2"
+										]
 									},
 									{
 										"id": "mes-palier-3-def",
@@ -2704,32 +1953,17 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+3"
-											},
-											{
-												"pattern": "palier\\s+3",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
 										"substage_index": 3,
-										"doc_note": "Length, money, perimeters and prices."
+										"doc_note": "Length, money, perimeters and prices.",
+										"match_phrases": [
+											"jéego 3",
+											"palier 3"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -2754,17 +1988,12 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+4"
-											},
-											{
-												"pattern": "palier\\s+4",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 4
+										"substage_index": 4,
+										"match_phrases": [
+											"jéego 4",
+											"palier 4"
+										]
 									},
 									{
 										"id": "mes-palier-5-def",
@@ -2777,17 +2006,12 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+5"
-											},
-											{
-												"pattern": "palier\\s+5",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 5
+										"substage_index": 5,
+										"match_phrases": [
+											"jéego 5",
+											"palier 5"
+										]
 									},
 									{
 										"id": "mes-palier-6-def",
@@ -2800,34 +2024,20 @@
 										"emit": "emit_grouping_and_leaf",
 										"grouping_role": "substage",
 										"leaf_role": "expectation",
-										"match_rules": [
-											{
-												"pattern": "j[ée]ego\\s+6"
-											},
-											{
-												"pattern": "palier\\s+6",
-												"require_block_type": "paragraph"
-											}
-										],
 										"allow_multiple_segments": true,
-										"substage_index": 6
+										"substage_index": 6,
+										"match_phrases": [
+											"jéego 6",
+											"palier 6"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
-						]
+						],
+						"match_phrases": []
 					},
 					{
 						"id": "mes-apprentissages",
@@ -2837,30 +2047,6 @@
 						},
 						"emit": "emit_grouping",
 						"grouping_role": "section",
-						"match_rules": [
-							{
-								"pattern": "apprentissages\\s+ponctuels.*mesure",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "apprentissages\\s+ponctuels.*mesure",
-								"target": "text",
-								"require_segment_kind": "block"
-							},
-							{
-								"pattern": "activit[ée]s\\s+de\\s+mesure",
-								"target": "heading",
-								"require_segment_kind": "block",
-								"require_block_type": "heading"
-							},
-							{
-								"pattern": "activit[ée]s\\s+de\\s+mesure",
-								"target": "text",
-								"require_segment_kind": "block"
-							}
-						],
 						"children": [
 							{
 								"id": "mes-ap-ce1",
@@ -2882,19 +2068,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 1,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+1\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-22",
@@ -2904,12 +2077,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+22",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -2935,10 +2102,17 @@
 												"topic": {
 													"primary": "Longueur et capacité",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 22"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 1"
+										]
 									},
 									{
 										"id": "mes-ap-ce1-palier-2",
@@ -2949,19 +2123,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 2,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+2\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-23",
@@ -2971,12 +2132,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+23",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -3002,10 +2157,17 @@
 												"topic": {
 													"primary": "Masse et durée",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 23"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 2"
+										]
 									},
 									{
 										"id": "mes-ap-ce1-palier-3",
@@ -3016,19 +2178,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 3,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+3\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-24",
@@ -3038,12 +2187,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+24",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -3069,24 +2212,21 @@
 												"topic": {
 													"primary": "Périmètre et monnaie",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 24"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 3"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce1",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce1"
 								]
 							},
 							{
@@ -3109,19 +2249,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 4,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+4\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-25",
@@ -3131,12 +2258,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+25",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -3162,10 +2283,17 @@
 												"topic": {
 													"primary": "Longueur, masse et capacité",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 25"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 4"
+										]
 									},
 									{
 										"id": "mes-ap-ce2-palier-5",
@@ -3176,19 +2304,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 5,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+5\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+5\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-26",
@@ -3198,12 +2313,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+26",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -3229,10 +2338,17 @@
 												"topic": {
 													"primary": "Masse, durée et monnaie",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 26"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 5"
+										]
 									},
 									{
 										"id": "mes-ap-ce2-palier-6",
@@ -3243,19 +2359,6 @@
 										"emit": "emit_grouping",
 										"grouping_role": "substage",
 										"substage_index": 6,
-										"match_rules": [
-											{
-												"pattern": "palier\\s+6\\b",
-												"target": "heading",
-												"require_segment_kind": "block",
-												"require_block_type": "heading"
-											},
-											{
-												"pattern": "palier\\s+6\\b",
-												"target": "text",
-												"require_segment_kind": "block"
-											}
-										],
 										"children": [
 											{
 												"id": "tableau-27",
@@ -3265,12 +2368,6 @@
 												},
 												"emit": "emit_table_rows",
 												"leaf_role": "expectation",
-												"match_rules": [
-													{
-														"pattern": "tableau\\s+27",
-														"target": "caption"
-													}
-												],
 												"column_mappings": [
 													{
 														"header_pattern": "(?i)objectif d.apprentissage",
@@ -3296,32 +2393,39 @@
 												"topic": {
 													"primary": "Périmètre et aire",
 													"translations": {}
-												}
+												},
+												"match_phrases": [
+													"tableau 27"
+												],
+												"match_target": "caption"
 											}
 										],
-										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s)."
+										"doc_note": "Added to match 'Palier N — ...' headings and wrap the corresponding table(s).",
+										"match_phrases": [
+											"palier 6"
+										]
 									}
 								],
-								"match_rules": [
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "heading",
-										"require_segment_kind": "block",
-										"require_block_type": "heading"
-									},
-									{
-										"pattern": "paliers\\s+du\\s+niveau\\s+ce2",
-										"target": "text",
-										"require_segment_kind": "block"
-									}
+								"match_phrases": [
+									"paliers du niveau ce2"
 								]
 							}
+						],
+						"match_phrases": [
+							"apprentissages ponctuels",
+							"mesure",
+							"activités de mesure"
 						]
 					}
+				],
+				"match_phrases": [
+					"activités de mesure",
+					"xam-xamu natt"
 				]
 			}
 		],
-		"doc_note": "Framework root. CONTAINER_ONLY because the compiler creates the framework root node independently. The first matchable segment should be 'front-matter' or 'cadre-competences'."
+		"doc_note": "Framework root. CONTAINER_ONLY because the compiler creates the framework root node independently. The first matchable segment should be 'front-matter' or 'cadre-competences'.",
+		"match_phrases": []
 	},
 	"schema_version": "1.0",
 	"skeleton_id": "senegal-math-etape2-wolof-fr"

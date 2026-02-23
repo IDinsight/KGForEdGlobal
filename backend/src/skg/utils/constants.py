@@ -48,16 +48,6 @@ class CurriculumEmitPolicy(str, Enum):
     IGNORE = "ignore"
 
 
-class CurriculumMatchTarget(str, Enum):
-    """The specific content to extract from a matched segment for curriculum skeleton
-    matching.
-    """
-
-    CAPTION = "caption"  # Caption text bound to a table (from caption_bindings)
-    HEADING = "heading"  # Heading text only (requires block_type == HEADING)
-    TEXT = "text"  # Block segment text content (combined_text or text.text)
-
-
 class FigureKind(str, Enum):
     """Classification of figure/diagram type (non-semantic)."""
 
