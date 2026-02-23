@@ -129,9 +129,31 @@ class CurriculumMatchReport:
     unmatched_segments: int = 0
 
     @property
+    def has_ordering_warnings(self) -> bool:
+        """True when cursor jumps were recorded, indicating the document and skeleton
+        ordering diverged at one or more points.
+
+        Ordering warnings are informational--they often indicate cross-strand phrase
+        collisions in the skeleton (ambiguous match phrases that match nodes in a
+        different strand) rather than algorithm failures. Review the `cursor_jumps`
+        list for details.
+
+        Returns
+        -------
+        bool
+            True if any cursor jumps were recorded.
+        """
+
+        return len(self.cursor_jumps) > 0
+
+    @property
     def is_healthy(self) -> bool:
-        """A match is healthy when > 90% of matchable nodes matched and there are no
-        large cursor jumps (which indicate ordering misalignment).
+        """A match is healthy when > 90% of matchable nodes received at least one
+        segment match AND no matchable (non-IGNORE) nodes were unexpectedly skipped.
+
+        Cursor jumps are tracked separately via `has_ordering_warnings` and do NOT
+        affect the health signal. Jumps typically indicate cross-strand phrase
+        ambiguity in the skeleton rather than a fundamental matching failure.
 
         Returns
         -------
@@ -139,7 +161,7 @@ class CurriculumMatchReport:
             True if the match is healthy, False otherwise.
         """
 
-        return self.node_coverage > 0.9 and len(self.cursor_jumps) == 0
+        return self.node_coverage > 0.9 and len(self.unexpected_skipped_node_ids) == 0
 
     @property
     def node_coverage(self) -> float:
@@ -194,6 +216,7 @@ class CurriculumMatchReport:
             f"  Captions:  {self.caption_blocks_ignored} (bound -> IGNORE)",
             f"  Jumps:     {len(self.cursor_jumps)}",
             f"  Healthy:   {'YES' if self.is_healthy else 'NO'}",
+            f"  Ordering:  {'WARNINGS' if self.has_ordering_warnings else 'OK'}",
         ]
 
         if self.unmatched_segment_ids:
@@ -254,6 +277,7 @@ class CurriculumMatchReport:
             "segment_coverage": round(self.segment_coverage, 4),
             "node_coverage": round(self.node_coverage, 4),
             "is_healthy": self.is_healthy,
+            "has_ordering_warnings": self.has_ordering_warnings,
             "cursor_jumps": [
                 {
                     "from_node_id": j.from_node_id,
@@ -371,6 +395,37 @@ def _classify_caption_kind(text: str) -> CaptionKind:
     return "unknown"
 
 
+def _count_skipped_between(
+    *,
+    consumed_node_ids: set[str],
+    end: int,
+    matchable_nodes: list[CurriculumSkeletonNode],
+    start: int,
+) -> int:
+    """Count un-consumed nodes in [start, end) for jump detection.
+
+    Parameters
+    ----------
+    consumed_node_ids
+        Set of node IDs that have already been matched and consumed.
+    end
+        The end index (exclusive) for the count window.
+    matchable_nodes
+        The full list of matchable skeleton nodes in DFS order.
+    start
+        The start index (inclusive) for the count window.
+
+    Returns
+    -------
+    int
+        The number of skipped (un-consumed) nodes within the specified window.
+    """
+
+    return sum(
+        1 for i in range(start, end) if matchable_nodes[i].id not in consumed_node_ids
+    )
+
+
 def _create_decision_from_role(
     *, cell_text: str, col_role: CurriculumResolvedColumnRole
 ) -> GroupingDecision | LeafDecision | None:
@@ -409,6 +464,46 @@ def _create_decision_from_role(
         )
 
     return None
+
+
+def _drain_cursor(
+    *,
+    consumed_node_ids: set[str],
+    cursor: int,
+    matchable_nodes: list[CurriculumSkeletonNode],
+    pinned_node_id: str | None,
+) -> int:
+    """Advance the cursor past consecutive consumed nodes at the head of the list.
+
+    A pinned node blocks draining so that it stays within the probe window for
+    subsequent multi-segment matches.
+
+    Parameters
+    ----------
+    consumed_node_ids
+        Set of node IDs that have already been matched.
+    cursor
+        The current cursor position index.
+    matchable_nodes
+        The full list of matchable skeleton nodes in DFS order.
+    pinned_node_id
+        The ID of the node currently pinned, or None if no node is pinned.
+
+    Returns
+    -------
+    int
+        The updated cursor position after draining.
+    """
+
+    while cursor < len(matchable_nodes):
+        nid = matchable_nodes[cursor].id
+
+        if nid in consumed_node_ids and nid != pinned_node_id:
+            cursor += 1
+        else:
+            break
+
+    return cursor
 
 
 def _extract_fallback_content(
@@ -505,8 +600,8 @@ def _normalize_match_text(text: str) -> str:
 
     Applies: NFKD unicode decomposition, accent/diacritical mark stripping,
     casefolding, and whitespace collapsing. This ensures matching is robust to
-    vision-model extraction errors that drop or alter accents (e.g., ``é`` extracted
-    as ``e``).
+    vision-model extraction errors that drop or alter accents (e.g., `é` extracted as
+    `e`).
 
     Parameters
     ----------
@@ -529,6 +624,147 @@ def _normalize_match_text(text: str) -> str:
     text = _WS_RE.sub(" ", text).strip()
 
     return text
+
+
+def _probe_nodes(
+    *,
+    consumed_node_ids: set[str],
+    end: int,
+    matchable_nodes: list[CurriculumSkeletonNode],
+    pinned_node_id: str | None,
+    segment: CurriculumMatchableSegment,
+    start: int,
+) -> tuple[int, CurriculumSkeletonNode] | None:
+    """Find the first matching un-consumed node in [start, end).
+
+    Already-consumed nodes are skipped except the currently pinned node, which must
+    remain matchable for multi-segment continuations.
+
+    Parameters
+    ----------
+    consumed_node_ids
+        Set of node IDs that have already been matched.
+    end
+        The end index (exclusive) for the probe window.
+    matchable_nodes
+        The full list of matchable skeleton nodes in DFS order.
+    pinned_node_id
+        The ID of the node currently pinned, or None if no node is pinned.
+    segment
+        The document segment being matched.
+    start
+        The start index (inclusive) for the probe window.
+
+    Returns
+    -------
+    tuple[int, CurriculumSkeletonNode] | None
+        A tuple of (matched_index, matched_node) if a match is found, else None.
+    """
+
+    for idx in range(start, min(end, len(matchable_nodes))):
+        node = matchable_nodes[idx]
+
+        if node.id in consumed_node_ids and node.id != pinned_node_id:
+            continue
+
+        if segment_matches_node(node=node, segment=segment):
+            return idx, node
+
+    return None
+
+
+def _record_match(
+    *,
+    ancestry_map: dict[str, Any],
+    consumed_node_ids: set[str],
+    cursor: int,
+    cursor_jumps: list[CurriculumCursorJump],
+    matchable_nodes: list[CurriculumSkeletonNode],
+    node: CurriculumSkeletonNode,
+    pinned_node_id: str | None,
+    probe_idx: int,
+    results: list[CurriculumMatchedSegment],
+    segment: CurriculumMatchableSegment,
+) -> tuple[int, str | None]:
+    """Handle a successful match: record the result, manage the pin, and drain the
+    cursor.
+
+    Parameters
+    ----------
+    ancestry_map
+        Mapping of node IDs to their ancestry.
+    consumed_node_ids
+        Set of node IDs that have already been matched (modified in place).
+    cursor
+        The current cursor position index.
+    cursor_jumps
+        List tracking node jumps (modified in place).
+    matchable_nodes
+        The full list of matchable skeleton nodes in DFS order.
+    node
+        The successfully matched curriculum skeleton node.
+    pinned_node_id
+        The ID of the node currently pinned.
+    probe_idx
+        The index where the match was found.
+    results
+        List tracking successfully matched segments (modified in place).
+    segment
+        The document segment that matched the node.
+
+    Returns
+    -------
+    tuple[int, str | None]
+        The updated cursor position and the newly pinned node ID (or None).
+    """
+
+    ancestry = ancestry_map[node.id]
+
+    # Multi-segment continuation: same node as the last result.
+    if node.allow_multiple_segments and results and results[-1].node.id == node.id:
+        results[-1].additional_segments.append(segment)
+
+        # Pin stays; consumed_node_ids unchanged; cursor stays.
+        return cursor, pinned_node_id
+
+    # Record a cursor jump when > 1 un-consumed node was skipped.
+    skipped_count = _count_skipped_between(
+        consumed_node_ids=consumed_node_ids,
+        end=probe_idx,
+        matchable_nodes=matchable_nodes,
+        start=cursor,
+    )
+
+    if skipped_count > 1 and cursor < len(matchable_nodes):
+        cursor_jumps.append(
+            CurriculumCursorJump(
+                from_node_id=matchable_nodes[cursor].id,
+                segment_id=segment.segment_id,
+                skipped_count=skipped_count,
+                to_node_id=node.id,
+            )
+        )
+
+    results.append(
+        CurriculumMatchedSegment(ancestry=ancestry, node=node, segment=segment)
+    )
+    consumed_node_ids.add(node.id)
+
+    # Update pin.
+    if node.allow_multiple_segments:
+        pinned_node_id = node.id
+    else:
+        # Release any previous pin.
+        pinned_node_id = None
+
+    cursor = _drain_cursor(
+        consumed_node_ids=consumed_node_ids,
+        cursor=cursor,
+        matchable_nodes=matchable_nodes,
+        pinned_node_id=pinned_node_id,
+    )
+
+    return cursor, pinned_node_id
 
 
 def _resolve_column_mappings(
@@ -1006,8 +1242,17 @@ def generate_curriculum_match_report(
         logger.warning(
             f"Curriculum skeleton match is NOT healthy "
             f"(node coverage={report.node_coverage:.1%}, "
-            f"jumps={len(report.cursor_jumps)}). "
+            f"unexpected skipped nodes={len(report.unexpected_skipped_node_ids)}). "
             f"Review the curriculum match report at: {curriculum_match_report_fp}"
+        )
+
+    if report.has_ordering_warnings:
+        logger.warning(
+            f"Curriculum skeleton match has ordering warnings: "
+            f"{len(report.cursor_jumps)} cursor jump(s) detected. "
+            f"This often indicates cross-strand phrase collisions in the skeleton "
+            f"(ambiguous match_phrases that match nodes in a different strand). "
+            f"Review cursor_jumps in: {curriculum_match_report_fp}"
         )
 
 
@@ -1212,23 +1457,32 @@ def load_or_build_caption_bindings(
 def match_curriculum(
     *,
     curriculum_skeleton: CurriculumSkeleton,
-    max_skip_distance: int = 20,
+    max_skip_distance: int,
     segments: list[CurriculumMatchableSegment],
 ) -> CurriculumMatchResult:
     """Deterministic forward-only matching of document segments to skeleton nodes.
 
-    The cursor starts at the first matchable node and only moves forward within a
-    bounded lookahead window of `max_skip_distance` nodes. For
-    `allow_multiple_segments` nodes, the cursor is pinned until a different node
-    matches; then it releases and resumes bounded probing.
+    The engine walks document segments in order and probes up to `max_skip_distance`
+    skeleton nodes ahead of the cursor for each segment. When a match is found the node
+    is marked as consumed, but the cursor only advances past *consecutive* consumed
+    nodes at the head of the remaining list (the cursor "drains" rather than "jumps").
+
+    This design decouples the **lookahead distance** (how far ahead to search) from the
+    **cursor advancement** (which nodes are permanently passed over). A distant match
+    consumes the matched node but does NOT permanently skip the intermediate unmatched
+    nodes--they remain available for later segments.
+
+    For `allow_multiple_segments` nodes the cursor is pinned (the consumed node is not
+    drained) until a different node matches or no match is found, at which point the
+    pin is released and the cursor drains normally.
 
     Parameters
     ----------
     curriculum_skeleton
         A validated CurriculumSkeleton.
     max_skip_distance
-        Maximum nodes to probe ahead from the current cursor position. The engine
-        will NOT scan beyond this window (bounded probe).
+        Maximum skeleton nodes to probe ahead from the current cursor position. The
+        engine will NOT scan beyond this window (bounded probe).
     segments
         CurriculumMatchableSegment in document order.
 
@@ -1243,113 +1497,80 @@ def match_curriculum(
     matchable_nodes = dfs_matchable(curriculum_skeleton.root)
     ancestry_map = build_ancestry_map(curriculum_skeleton.root)
 
-    # Pre-build node_id -> index lookup for O(1) cursor release (avoids O(N) scan each
-    # time a pinned allow_multiple_segments node is released).
-    node_id_to_index: dict[str, int] = {n.id: i for i, n in enumerate(matchable_nodes)}
+    cursor: int = 0
+    consumed_node_ids: set[str] = set()
+    pinned_node_id: str | None = None
 
-    cursor = 0
     cursor_jumps: list[CurriculumCursorJump] = []
     results: list[CurriculumMatchedSegment] = []
     unmatched: list[CurriculumMatchableSegment] = []
 
     for segment in segments:
-        matched = False
-
-        # Bounded lookahead probe from cursor.
         probe_end = min(cursor + max_skip_distance, len(matchable_nodes))
 
-        for probe in range(cursor, probe_end):
-            node = matchable_nodes[probe]
+        hit = _probe_nodes(
+            consumed_node_ids=consumed_node_ids,
+            end=probe_end,
+            matchable_nodes=matchable_nodes,
+            pinned_node_id=pinned_node_id,
+            segment=segment,
+            start=cursor,
+        )
 
-            if not segment_matches_node(node=node, segment=segment):
+        if hit is not None:
+            cursor, pinned_node_id = _record_match(
+                ancestry_map=ancestry_map,
+                consumed_node_ids=consumed_node_ids,
+                cursor=cursor,
+                cursor_jumps=cursor_jumps,
+                matchable_nodes=matchable_nodes,
+                node=hit[1],
+                pinned_node_id=pinned_node_id,
+                probe_idx=hit[0],
+                results=results,
+                segment=segment,
+            )
+            continue
+
+        # No match in the primary window. If pinned, unpin and retry.
+        if pinned_node_id is not None:
+            pinned_node_id = None
+            cursor = _drain_cursor(
+                consumed_node_ids=consumed_node_ids,
+                cursor=cursor,
+                matchable_nodes=matchable_nodes,
+                pinned_node_id=pinned_node_id,
+            )
+
+            retry_end = min(cursor + max_skip_distance, len(matchable_nodes))
+            hit = _probe_nodes(
+                consumed_node_ids=consumed_node_ids,
+                end=retry_end,
+                matchable_nodes=matchable_nodes,
+                pinned_node_id=pinned_node_id,
+                segment=segment,
+                start=cursor,
+            )
+
+            if hit is not None:
+                cursor, pinned_node_id = _record_match(
+                    ancestry_map=ancestry_map,
+                    consumed_node_ids=consumed_node_ids,
+                    cursor=cursor,
+                    cursor_jumps=cursor_jumps,
+                    matchable_nodes=matchable_nodes,
+                    node=hit[1],
+                    pinned_node_id=pinned_node_id,
+                    probe_idx=hit[0],
+                    results=results,
+                    segment=segment,
+                )
                 continue
 
-            ancestry = ancestry_map[node.id]
+        unmatched.append(segment)
 
-            # Multi-match: append to previous match if same node.
-            if (
-                node.allow_multiple_segments
-                and results
-                and results[-1].node.id == node.id
-            ):
-                results[-1].additional_segments.append(segment)
-            else:
-                # Record a cursor jump when > 1 node was skipped. A single node skip
-                # (probe == cursor + 1) is normal forward progression; larger gaps
-                # indicate potential ordering misalignment between the document and the
-                # skeleton.
-                skipped_count = probe - cursor
-
-                if skipped_count > 1:
-                    cursor_jumps.append(
-                        CurriculumCursorJump(
-                            from_node_id=matchable_nodes[cursor].id,
-                            segment_id=segment.segment_id,
-                            skipped_count=skipped_count,
-                            to_node_id=node.id,
-                        )
-                    )
-
-                results.append(
-                    CurriculumMatchedSegment(
-                        ancestry=ancestry, node=node, segment=segment
-                    )
-                )
-
-            # Advance cursor (pinned for allow_multiple_segments).
-            cursor = probe if node.allow_multiple_segments else probe + 1
-            matched = True
-            break
-
-        # Cursor release: if we didn't match and the cursor was pinned on a
-        # multi-segment node, release it and retry with a fresh bounded probe.
-        if not matched and results and results[-1].node.allow_multiple_segments:
-            # Find the index of the pinned node and advance past it.
-            pinned_node = results[-1].node
-            pinned_idx = node_id_to_index.get(pinned_node.id, cursor)
-            released_cursor = pinned_idx + 1
-            release_end = min(released_cursor + max_skip_distance, len(matchable_nodes))
-
-            for probe in range(released_cursor, release_end):
-                node = matchable_nodes[probe]
-
-                if not segment_matches_node(node=node, segment=segment):
-                    continue
-
-                # Record a cursor jump when > 1 node was skipped from the release point.
-                skipped_count = probe - released_cursor
-
-                if skipped_count > 1:
-                    cursor_jumps.append(
-                        CurriculumCursorJump(
-                            from_node_id=matchable_nodes[released_cursor].id,
-                            segment_id=segment.segment_id,
-                            skipped_count=skipped_count,
-                            to_node_id=node.id,
-                        )
-                    )
-
-                ancestry = ancestry_map[node.id]
-                results.append(
-                    CurriculumMatchedSegment(
-                        ancestry=ancestry, node=node, segment=segment
-                    )
-                )
-                cursor = probe if node.allow_multiple_segments else probe + 1
-                matched = True
-                break
-
-            # Even if no match found after release, advance cursor past pinned node.
-            if not matched:
-                cursor = released_cursor
-
-        if not matched:
-            unmatched.append(segment)
-
-    # Compute skipped nodes.
-    matched_node_ids = {r.node.id for r in results}
     all_ids: set[str] = {n.id for n in dfs_all(curriculum_skeleton.root)}
-    skipped = all_ids - matched_node_ids
+    skipped = all_ids - consumed_node_ids
 
     curriculum_matches = CurriculumMatchResult(
         cursor_jumps=cursor_jumps,
