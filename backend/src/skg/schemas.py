@@ -237,7 +237,7 @@ class StitchingConfig(BaseSchema):
         True, description="Whether to enable table filldown during stitching."
     )
     table_filldown_group_cols_max: int = Field(
-        2, description="Maximum number of group columns for table filldown.", ge=0
+        1, description="Maximum number of group columns for table filldown.", ge=0
     )
     verification_auto_stitch_confidence: float = Field(
         0.75,
@@ -267,7 +267,7 @@ class CreateCanonicalConfig(BaseSchema):
         description="Filesystem path to the CurriculumSkeleton JSON used for deterministic segment decisions.",
     )
     max_skip_distance: int = Field(
-        20,
+        2,
         description="Maximum number of curriculum skeleton nodes to probe ahead during forward-only matching.",
         ge=1,
     )

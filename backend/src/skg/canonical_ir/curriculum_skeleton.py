@@ -10,7 +10,6 @@ from typing import Any, Optional
 
 # Third Party Library
 from loguru import logger
-from pydantic import TypeAdapter
 
 # Package Library
 from skg.canonical_ir.schemas import (
@@ -38,10 +37,6 @@ from skg.utils.constants import (
     StatementRole,
 )
 from skg.utils.general import open_json_type, write_to_json
-
-# Separator used to join multi-row header cells into a single column signature for
-# deterministic column-mapping resolution.
-HEADER_SIGNATURE_SEPARATOR: str = " / "
 
 
 @dataclass
@@ -574,9 +569,7 @@ def _resolve_column_mappings(
 
     # Build per-column header signature by joining all header rows.
     col_headers = [
-        HEADER_SIGNATURE_SEPARATOR.join(
-            row[i] for row in header_rows_canonical if i < len(row) and row[i]
-        )
+        " / ".join(row[i] for row in header_rows_canonical if i < len(row) and row[i])
         for i in range(n_cols)
     ]
 
@@ -730,9 +723,14 @@ def _translate_table_rows(
         logger.warning(
             f"Table {seg.segment_id}: no groupings or leaves produced from "
             f"{len(rows_source) - header_n} data rows "
-            f"(bad column mapping or empty table body)."
+            f"(bad column mapping or empty table body). "
+            f"Marking as UNRESOLVED (skeleton node '{node.id}' matched but "
+            f"extraction failed)."
         )
-        dt = SegmentDecisionType.IGNORE
+        dt = SegmentDecisionType.UNRESOLVED
+
+    # UNRESOLVED decisions must have all output arrays empty (schema invariant).
+    is_noop = dt == SegmentDecisionType.UNRESOLVED
 
     return SegmentDecision(
         block_type=None,
@@ -743,13 +741,21 @@ def _translate_table_rows(
         caption_text=seg.caption_text,
         columns_signature=seg.columns_signature,
         confidence=1.0,
-        context_groupings=context if dt != SegmentDecisionType.IGNORE else [],
+        context_groupings=context if not is_noop else [],
         decision_id=decision_id,
         decision_type=dt,
-        groupings=segment_groupings if dt != SegmentDecisionType.IGNORE else [],
+        groupings=segment_groupings if not is_noop else [],
         leaves=[],
-        rationale=f"Skeleton TABLE: '{node.id}' → {len(row_decisions)} data rows.",
-        rows=row_decisions if dt != SegmentDecisionType.IGNORE else [],
+        rationale=(
+            f"Skeleton TABLE: '{node.id}' → {len(row_decisions)} data rows."
+            if not is_noop
+            else (
+                f"Skeleton TABLE UNRESOLVED: '{node.id}' matched but column "
+                f"extraction produced 0 groupings and 0 leaves from "
+                f"{len(rows_source) - header_n} data rows."
+            )
+        ),
+        rows=row_decisions if not is_noop else [],
         segment_id=seg.segment_id,
         segment_kind="table",
     )
@@ -1042,7 +1048,6 @@ def load_or_build_caption_bindings(
     document_ir: DocumentIR,
     max_gap_segments: int = 2,
     max_page_distance: int = 1,
-    overwrite: bool,
 ) -> dict[str, CaptionBinding]:
     """Load existing caption-to-table bindings or build deterministic caption-to-table
     bindings *before* LLM interpretation.
@@ -1085,8 +1090,6 @@ def load_or_build_caption_bindings(
         The maximum number of non-table segments allowed between caption and table.
     max_page_distance
         The maximum page distance allowed between caption and table.
-    overwrite
-        Whether to overwrite existing caption bindings.
 
     Returns
     -------
@@ -1094,20 +1097,10 @@ def load_or_build_caption_bindings(
         The computed caption bindings, keyed by table segment ID.
     """
 
-    caption_bindings_fp = creation_dirs.caption_binding / "caption_bindings.json"
-    warnings_fp = creation_dirs.caption_binding / "caption_binding_warnings.json"
-
-    if not overwrite and caption_bindings_fp.exists() and warnings_fp.exists():
-        logger.warning(
-            f"Caption bindings already exists at: {caption_bindings_fp}. "
-            f"If you wish to overwrite, pass the --overwrite flag."
-        )
-        adapter = TypeAdapter(dict[str, CaptionBinding])
-        caption_bindings_json = open_json_type(caption_bindings_fp)
-        return adapter.validate_python(caption_bindings_json)
-
     caption_bindings: dict[str, CaptionBinding] = {}
+    caption_bindings_fp = creation_dirs.caption_binding / "caption_bindings.json"
     warnings: list[str] = []
+    warnings_fp = creation_dirs.caption_binding / "caption_binding_warnings.json"
 
     # (caption_segment, caption_text, caption_kind, caption_page, caption_index)
     pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
@@ -1268,6 +1261,22 @@ def match_curriculum(
             ):
                 results[-1].additional_segments.append(segment)
             else:
+                # Record a cursor jump when > 1 node was skipped. A single node skip
+                # (probe == cursor + 1) is normal forward progression; larger gaps
+                # indicate potential ordering misalignment between the document and the
+                # skeleton.
+                skipped_count = probe - cursor
+
+                if skipped_count > 1:
+                    cursor_jumps.append(
+                        CurriculumCursorJump(
+                            from_node_id=matchable_nodes[cursor].id,
+                            segment_id=segment.segment_id,
+                            skipped_count=skipped_count,
+                            to_node_id=node.id,
+                        )
+                    )
+
                 results.append(
                     CurriculumMatchedSegment(
                         ancestry=ancestry, node=node, segment=segment
@@ -1296,6 +1305,19 @@ def match_curriculum(
 
                 if not segment_matches_node(node=node, segment=segment):
                     continue
+
+                # Record a cursor jump when > 1 node was skipped from the release point.
+                skipped_count = probe - released_cursor
+
+                if skipped_count > 1:
+                    cursor_jumps.append(
+                        CurriculumCursorJump(
+                            from_node_id=matchable_nodes[released_cursor].id,
+                            segment_id=segment.segment_id,
+                            skipped_count=skipped_count,
+                            to_node_id=node.id,
+                        )
+                    )
 
                 ancestry = ancestry_map[node.id]
                 results.append(
