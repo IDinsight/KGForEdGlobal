@@ -785,7 +785,7 @@ def _make_unresolved_sample(
     return s[:max_len]
 
 
-def _materialize_block_leaves(
+def _materialize_leaves(
     *,
     ancestor_keys: list[str],
     child_to_parent: dict[str, str],
@@ -800,9 +800,13 @@ def _materialize_block_leaves(
     section_path_text: list[str],
     segment_bbox: Optional[BBox],
     segment_id: str,
+    source_type: str,
     warnings: list[str],
 ) -> None:
-    """Materialize leaf nodes for a block segment.
+    """Materialize leaf nodes from decision.leaves[] under the current parent.
+
+    Used for both block and table segments (segment-level leaves). The `source_type`
+    parameter preserves the correct provenance origin.
 
     Parameters
     ----------
@@ -832,6 +836,8 @@ def _materialize_block_leaves(
         The segment bounding box.
     segment_id
         The segment ID.
+    source_type
+        The provenance source type (`"block"` or `"table"`).
     warnings
         The list of warnings to append to.
     """
@@ -854,7 +860,7 @@ def _materialize_block_leaves(
             source_decision_ids=[decision.decision_id],
             source_label=leaf.source_label,
             source_segment_ids=[segment_id],
-            source_type="block",
+            source_type=source_type,
             title=None,
         )
 
@@ -992,7 +998,7 @@ def _materialize_decision_structure(
 
     # Dispatch based on segment kind.
     if segment.kind == "block":
-        _materialize_block_leaves(
+        _materialize_leaves(
             ancestor_keys=ancestor_keys,
             child_to_parent=child_to_parent,
             decision=decision,
@@ -1006,6 +1012,7 @@ def _materialize_decision_structure(
             section_path_text=section_path_text,
             segment_bbox=_segment_first_bbox(segment),
             segment_id=segment.segment_id,
+            source_type="block",
             warnings=warnings,
         )
     elif segment.kind == "table":
@@ -1019,7 +1026,7 @@ def _materialize_decision_structure(
 
         # Table decisions may emit leaves directly.
         if decision.leaves:
-            _materialize_table_leaves(
+            _materialize_leaves(
                 ancestor_keys=ancestor_keys,
                 child_to_parent=child_to_parent,
                 decision=decision,
@@ -1033,6 +1040,7 @@ def _materialize_decision_structure(
                 section_path_text=section_path_text,
                 segment_bbox=_segment_first_bbox(segment),
                 segment_id=segment.segment_id,
+                source_type="table",
                 warnings=warnings,
             )
 
@@ -1060,98 +1068,6 @@ def _materialize_decision_structure(
         warnings.append(msg)
 
     return active_context_stack
-
-
-def _materialize_table_leaves(
-    *,
-    ancestor_keys: list[str],
-    child_to_parent: dict[str, str],
-    decision: SegmentDecision,
-    doc_key: str,
-    edges: list[CanonicalEdge],
-    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
-    next_order_index: dict[str, int],
-    nodes_by_id: dict[str, CanonicalNode],
-    page_indices: list[int],
-    parent_id: str,
-    section_path_text: list[str],
-    segment_bbox: Optional[BBox],
-    segment_id: str,
-    warnings: list[str],
-) -> None:
-    """Materialize table-level leaves (SegmentDecision.leaves) under the current
-    parent. This is used for TABLE segments where the curriculum skeleton engine emits
-    leaves directly (fallback mode) instead of emitting RowDecision entries in
-    SegmentDecision.rows[].
-
-    Parameters
-    ----------
-    ancestor_keys
-        The list of ancestor grouping keys.
-    child_to_parent
-        The mapping of child_id to parent_id.
-    decision
-        The SegmentDecision to materialize.
-    doc_key
-        The document key.
-    edges
-        The list of CanonicalEdges to append to.
-    edges_by_key
-        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
-    next_order_index
-        The mapping of parent_id to next order_index.
-    nodes_by_id
-        The mapping of node_id to CanonicalNode.
-    page_indices
-        The list of page indices for the segment.
-    parent_id
-        The parent node ID.
-    section_path_text
-        The section path text for the segment.
-    segment_bbox
-        The segment bounding box.
-    segment_id
-        The segment ID.
-    warnings
-        The list of warnings to append to.
-    """
-
-    for leaf in decision.leaves:
-        leaf_id = canonical_leaf_node_id(
-            ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, leaf=leaf
-        )
-
-        node = CanonicalNode(
-            bbox=segment_bbox,
-            body=TextUnit(language="und", text=canonical_storage_text(leaf.body)),
-            list_marker=leaf.list_marker,
-            local_code=leaf.local_code,
-            node_id=leaf_id,
-            normalized_text=_normalize_text(text=leaf.body),
-            page_indices=page_indices,
-            role=leaf.role,
-            section_path_text=section_path_text,
-            source_decision_ids=[decision.decision_id],
-            source_label=leaf.source_label,
-            source_segment_ids=[segment_id],
-            source_type="table",  # IMPORTANT: keep provenance correct
-            title=None,
-        )
-
-        effective_leaf_id = ensure_node(
-            node=node, nodes_by_id=nodes_by_id, warnings=warnings
-        )
-        _emit_edge(
-            child_id=effective_leaf_id,
-            child_to_parent=child_to_parent,
-            decision_id=decision.decision_id,
-            edges=edges,
-            edges_by_key=edges_by_key,
-            next_order_index=next_order_index,
-            parent_id=parent_id,
-            segment_id=segment_id,
-            warnings=warnings,
-        )
 
 
 def _materialize_table_rows(
@@ -1483,7 +1399,8 @@ def _table_first_body_row_preview(
     if not rows:
         return None
 
-    start_idx = segment.header_row_count if segment.header_row_count < len(rows) else 0
+    hrc = segment.header_row_count or 0
+    start_idx = hrc if hrc < len(rows) else 0
     row = rows[start_idx]
 
     cells_out: list[str] = []
@@ -2468,6 +2385,10 @@ def ensure_node(
 
     node = node.model_copy(deep=True)
 
+    # NB: Callers already wrap text in canonical_storage_text() when constructing the
+    # node. This second pass is intentionally redundant (idempotent) as a defensive
+    # guarantee: ensure_node is the single chokepoint for all node insertion, so it
+    # must normalize even if a future caller forgets to.
     if node.title is not None:
         node.title.text = canonical_storage_text(node.title.text)
 
@@ -2832,7 +2753,7 @@ def prune_empty_groupings(
         out_degree: dict[str, int] = {nid: 0 for nid in nodes_by_id.keys()}
 
         for e in edges:
-            # CanonicalEdge.rel is always "hasChild", but keep this chec, just in case.
+            # CanonicalEdge.rel is always "hasChild", but keep this check just in case.
             if e.rel == "hasChild" and e.parent_id in out_degree:
                 out_degree[e.parent_id] += 1
 
