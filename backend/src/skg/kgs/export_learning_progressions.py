@@ -47,9 +47,8 @@ from skg.kgs.schemas import (
     Relationship,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs
+from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair
 from skg.kgs.validators import (
-    canon_str_pair,
     validate_cross_grade_builds_towards,
     validate_cross_grade_relates_to,
     validate_within_grade_builds_towards,
