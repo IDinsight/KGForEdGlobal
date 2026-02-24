@@ -178,7 +178,7 @@ def _check_has_child_reachability(
 def _check_lc_supports(
     *, lc_ids: set[str], learning_components: Any, report: GraphValidationReport
 ) -> None:
-    """Check that every Learning Component has at least one supports relationship.
+    """Check that every Learning Component has exactly one supports relationship.
 
     Parameters
     ----------
@@ -190,12 +190,21 @@ def _check_lc_supports(
         The GraphValidationReport to append findings to.
     """
 
-    lc_with_supports: set[str] = {
-        r.source_entity_value
-        for r in learning_components.supports_relationships
-        if r.relationship_type == "supports"
+    supports_count_per_lc: dict[str, int] = {lc_id: 0 for lc_id in lc_ids}
+
+    for r in learning_components.supports_relationships:
+        if r.relationship_type == "supports":
+            src = r.source_entity_value
+
+            if src in supports_count_per_lc:
+                supports_count_per_lc[src] += 1
+
+    lc_without_supports = {
+        lc_id for lc_id, count in supports_count_per_lc.items() if count == 0
     }
-    lc_without_supports = lc_ids - lc_with_supports
+    lc_multi_supports = {
+        lc_id: count for lc_id, count in supports_count_per_lc.items() if count > 1
+    }
 
     if lc_without_supports:
         report.error(
@@ -205,10 +214,24 @@ def _check_lc_supports(
                 f"relationship. Examples: {sorted(lc_without_supports)[:5]}"
             ),
         )
-    else:
+
+    if lc_multi_supports:
+        report.error(
+            code="LC_MULTIPLE_SUPPORTS",
+            message=(
+                f"{len(lc_multi_supports)} LearningComponent(s) have more than one "
+                f"supports relationship. "
+                f"Examples: {dict(sorted(lc_multi_supports.items())[:5])}"
+            ),
+        )
+
+    if not lc_without_supports and not lc_multi_supports:
         report.info(
             code="LC_SUPPORTS_OK",
-            message=f"All {len(lc_ids)} LearningComponents have supports relationships.",
+            message=(
+                f"All {len(lc_ids)} LearningComponents have exactly one "
+                f"supports relationship."
+            ),
         )
 
 
@@ -275,7 +298,7 @@ def _check_progression_invariants(
                 f"(identical directed edges)."
             ),
         )
-    elif duplicate_builds_ids:
+    if duplicate_builds_ids:
         report.error(
             code="BUILDS_TOWARDS_DUPLICATE_IDS",
             message=(
@@ -283,7 +306,7 @@ def _check_progression_invariants(
                 f"detected (different pairs sharing the same relationship UUID)."
             ),
         )
-    else:
+    if not duplicate_builds_pairs and not duplicate_builds_ids:
         report.info(
             code="BUILDS_TOWARDS_NO_DUPLICATES",
             message="No duplicate buildsTowards pairs.",
@@ -308,7 +331,7 @@ def _check_progression_invariants(
                 f"(same endpoints in different directions)."
             ),
         )
-    elif duplicate_relates_ids:
+    if duplicate_relates_ids:
         report.error(
             code="RELATES_TO_DUPLICATE_IDS",
             message=(
@@ -316,7 +339,7 @@ def _check_progression_invariants(
                 f"detected (different pairs sharing the same relationship UUID)."
             ),
         )
-    else:
+    if not duplicate_relates_pairs and not duplicate_relates_ids:
         report.info(
             code="RELATES_TO_NO_DUPLICATES", message="No duplicate relatesTo pairs."
         )
@@ -821,14 +844,11 @@ def log_console_summary(
 
     # Validation.
     errors = validation_report.errors()
-    warnings = validation_report.warnings()
 
     if not errors:
-        logger.info(f"Validation: PASSED ({len(warnings)} warning(s))")
+        logger.info("Validation: PASSED")
     else:
-        logger.error(
-            f"Validation: FAILED ({len(errors)} error(s), {len(warnings)} warning(s))"
-        )
+        logger.error(f"Validation: FAILED ({len(errors)} error(s))")
         for issue in errors[:10]:
             logger.error(f"  [{issue.code}] {issue.message}")
 
@@ -865,7 +885,7 @@ def validate_graph(
     Returns
     -------
     GraphValidationReport
-        The validation report with errors, warnings, and check results.
+        The validation report with errors and check results.
     """
 
     report = GraphValidationReport(doc_key=ctx.doc_key)
@@ -973,7 +993,6 @@ def validate_graph(
             else 0
         ),
         "errors": len(report.errors()),
-        "warnings": len(report.warnings()),
     }
 
     if report.has_errors():
