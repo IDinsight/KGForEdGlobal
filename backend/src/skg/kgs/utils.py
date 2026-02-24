@@ -861,9 +861,11 @@ def merge_graph_bundles(
                 nodes_by_id[nid] = {
                     "id": nid,
                     "labels": merged_labels,
-                    "properties": existing.get("properties")
-                    or n.get("properties")
-                    or {},
+                    "properties": (
+                        existing.get("properties")
+                        if existing.get("properties") is not None
+                        else n.get("properties") or {}
+                    ),
                 }
             else:
                 nodes_by_id[nid] = n

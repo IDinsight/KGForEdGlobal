@@ -237,6 +237,7 @@ def _build_learning_progressions_graph_bundle(
 def _build_relationship(
     *,
     config: CreateKGConfig,
+    doc_key: str,
     metadata: dict[str, Any],
     rel_type: str,
     source: UUID,
@@ -254,6 +255,9 @@ def _build_relationship(
     config
         The knowledge graph run configuration, containing attribution and namespace
         information.
+    doc_key
+        The document key for this export, included in the ID namespace string for
+        consistency with the rest of the pipeline.
     metadata
         A dictionary of metadata to include in the Relationship, typically derived from
         the CandidateEdge.
@@ -272,7 +276,10 @@ def _build_relationship(
         identifier.
     """
 
-    rid = uuid5(config.namespace_uuid, f"lp:{rel_type}:{source}:{target}")
+    rid = uuid5(
+        config.namespace_uuid,
+        f"lc:curriculum:{doc_key}:rel:{rel_type}:{source}:{target}",
+    )
 
     return Relationship(
         attribution_statement=config.attribution_statement,
@@ -464,12 +471,8 @@ def _build_thread_map(
             ),
         )
 
-    if skipped_no_bounds > 0:
-        logger.warning(
-            f"Skipped {skipped_no_bounds} buckets without integer grade bounds "
-            f"(missing grade/stage ordinal data)."
-        )
-
+    # Check the error condition first (missing thread_key) since it is fatal and should
+    # not be masked by the non-fatal warning about skipped bounds.
     if missing_thread_key > 0:
         # The check is deferred until after full iteration so we can collect all
         # examples for a more actionable error message. Clear the partial thread_map
@@ -481,6 +484,12 @@ def _build_thread_map(
             f"{missing_thread_key} bucket(s). Re-export Academic Standards so each "
             f"SFI has metadata.progression_context.thread_key. "
             f"Examples: {missing_thread_key_examples}"
+        )
+
+    if skipped_no_bounds > 0:
+        logger.warning(
+            f"Skipped {skipped_no_bounds} buckets without integer grade bounds "
+            f"(missing grade/stage ordinal data)."
         )
 
     return thread_map
@@ -747,6 +756,7 @@ def _emit_relationship(
     *,
     candidate: CandidateEdge,
     config: CreateKGConfig,
+    doc_key: str,
     sfi_index: Optional[dict[str, dict[str, Any]]] = None,
 ) -> Relationship:
     """Convert a CandidateEdge to a Relationship, enriching metadata as needed.
@@ -760,6 +770,9 @@ def _emit_relationship(
         containing any additional information from the inference process.
     config
         The knowledge graph run configuration.
+    doc_key
+        The document key for this export, included in the relationship ID namespace
+        string for consistency with the rest of the pipeline.
     sfi_index
         An optional index mapping SFI UUIDs to their corresponding data, which can be
         used to enrich the metadata of the final relationships if needed.
@@ -789,6 +802,7 @@ def _emit_relationship(
 
     return _build_relationship(
         config=config,
+        doc_key=doc_key,
         metadata=metadata,
         rel_type=candidate.rel_type,
         source=candidate.source_sfi_uuid,
@@ -1850,6 +1864,7 @@ def _process_and_filter_candidates(
     *,
     candidates: list[CandidateEdge],
     config: CreateKGConfig,
+    doc_key: str,
     sfi_index: Optional[dict[str, dict[str, Any]]] = None,
 ) -> tuple[
     list[Relationship],
@@ -1865,6 +1880,9 @@ def _process_and_filter_candidates(
         The complete list of raw candidate edges from all inference phases.
     config
         The knowledge graph run configuration.
+    doc_key
+        The document key for this export, included in relationship ID namespace
+        strings for consistency with the rest of the pipeline.
     sfi_index
         An optional index mapping SFI UUIDs to their corresponding data, which can be
         used to enrich the metadata of the final relationships if needed. The structure
@@ -1916,12 +1934,16 @@ def _process_and_filter_candidates(
     )
 
     builds_relationships: list[Relationship] = [
-        _emit_relationship(candidate=e, config=config, sfi_index=sfi_index)
+        _emit_relationship(
+            candidate=e, config=config, doc_key=doc_key, sfi_index=sfi_index
+        )
         for e in builds_kept
     ]
 
     relates_relationships: list[Relationship] = [
-        _emit_relationship(candidate=e, config=config, sfi_index=sfi_index)
+        _emit_relationship(
+            candidate=e, config=config, doc_key=doc_key, sfi_index=sfi_index
+        )
         for e in relates_kept
     ]
 
@@ -1990,6 +2012,19 @@ def _process_single_standard(
     3. **Thread key** is computed via `config.progressions_cross_grade_match_roles`.
         Items with no matching roles become "unthreaded" and receive per-grade sentinel
         thread keys to prevent false cross-grade matching.
+
+    NB: Banded/stage-level curricula (e.g., Tanzania "Standard I–II",
+        "Standard III–VI"): Each SFI carries a single `grade_key` (from
+        `progression_context`), which maps to a single integer ordinal via
+        `progressions_grade_label_map`. This means the bucket stores
+        `grade_ordinal_low == grade_ordinal_high == mapped`. To represent a true banded
+        stage (low != high), the `progressions_grade_label_map` must map the stage
+        label to a *representative* ordinal (e.g., the low end), and then configure
+        cross-stage inference flags (`progressions_cross_stage_builds_towards`,
+        `progressions_cross_stage_relates_to`) to handle the banded adjacency. If a
+        curriculum contains SFIs at individual grade levels *and* banded stages, the
+        map must assign distinct ordinals so that `_levels_adjacent` can detect correct
+        adjacency.
 
     Parameters
     ----------
@@ -2332,13 +2367,13 @@ def _process_relates_to_work_item(
     # Call 1: lower -> upper.
     prompt_lo_hi = prompt_builder(
         forbidden_pairs=forbidden_pairs,
-        lower_grade_label=str(lower["level_label"]),
-        lower_items=lower_items,
+        list_a_grade_label=str(lower["level_label"]),
+        list_a_items=lower_items,
+        list_b_grade_label=str(upper["level_label"]),
+        list_b_items=upper_items,
         max_edges_per_sfi=max_edges_per_sfi,
         min_confidence=config.progressions_relates_to_min_confidence,
         subject_label=subject_label,
-        upper_grade_label=str(upper["level_label"]),
-        upper_items=upper_items,
     )
 
     call_idx_1 = current_call_base + 1
@@ -2362,20 +2397,18 @@ def _process_relates_to_work_item(
     )
 
     # Call 2: upper -> lower (reverse presentation order for bidirectional
-    # confirmation). We keep the TRUE lower/upper grade labels so that the LLM is not
-    # told that Grade 5 is "lower" and Grade 4 is "upper". Instead we swap which items
-    # appear under which positional key. The validator's allowed_lo/allowed_hi sets are
-    # aligned to the *positional* keys (not the grade semantics) so the cross-grade
-    # constraint still holds.
+    # confirmation). We swap BOTH items and labels so the LLM sees a self-consistent
+    # view. The neutral "List A"/"List B" names in the prompt avoid the semantic
+    # confusion of calling upper-grade items "lower".
     prompt_hi_lo = prompt_builder(
         forbidden_pairs=forbidden_pairs,
-        lower_grade_label=str(lower["level_label"]),
-        lower_items=upper_items,
+        list_a_grade_label=str(upper["level_label"]),
+        list_a_items=upper_items,
+        list_b_grade_label=str(lower["level_label"]),
+        list_b_items=lower_items,
         max_edges_per_sfi=max_edges_per_sfi,
         min_confidence=config.progressions_relates_to_min_confidence,
         subject_label=subject_label,
-        upper_grade_label=str(upper["level_label"]),
-        upper_items=lower_items,
     )
 
     call_idx_2 = current_call_base + 2
@@ -2762,7 +2795,7 @@ def export_learning_progressions(
 
     # Dedupe, filter, limit, and emit final relationships, and gather stats for the report.
     builds_rels, relates_rels, stats, disposition_map = _process_and_filter_candidates(
-        candidates=candidates, config=config, sfi_index=sfi_index
+        candidates=candidates, config=config, doc_key=ctx.doc_key, sfi_index=sfi_index
     )
 
     # Enrich provenance rows with post-filtering disposition.

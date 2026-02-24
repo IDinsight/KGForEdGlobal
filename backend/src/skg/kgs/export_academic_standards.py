@@ -654,7 +654,7 @@ def _emit_has_child(
 def _emit_sfi(
     *,
     aux_attachments: Optional[list[dict[str, Any]]] = None,
-    canonical_ir_created_at: Any,
+    canonical_ir_created_at: Optional[str],
     config: CreateKGConfig,
     ctx: ExportContext,
     fw_metadata: dict[str, Any],
