@@ -2807,12 +2807,20 @@ def export_learning_progressions(
         json_info=report,
     )
 
-    return LearningProgressionsExport(
+    learning_progressions = LearningProgressionsExport(
         builds_towards_relationships=builds_rels,
         graph_bundle=graph_bundle,
         relates_to_relationships=relates_rels,
         report=report,
     )
+
+    logger.info(
+        f"Exported Learning Progressions KG: "
+        f"{len(learning_progressions.builds_towards_relationships)} `buildsTowards` relationships, "
+        f"{len(learning_progressions.relates_to_relationships)} `relatesTo` relationships"
+    )
+
+    return learning_progressions
 
 
 def group_standards_for_learning_progressions(
