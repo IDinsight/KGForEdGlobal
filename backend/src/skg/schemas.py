@@ -471,6 +471,19 @@ class CreateKGConfig(BaseSchema):
         default=True,
         description="Enable cross-grade buildsTowards progression inference between adjacent single-level grade buckets.",
     )
+    progressions_cross_grade_match_roles: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Ordered list of canonical IR node roles whose labels form the "
+            "cross-grade thread identity for LP Phases 2 and 4. Only entries in "
+            "progression_context.topic_path_parts with a role in this list are "
+            "included in the LP thread key. Example: ['strand'] matches "
+            "'Activités numériques' across CE1 and CE2. Also used for Phase 1 "
+            "within-grade grouping (collapses week/substage fragmentation). "
+            "When None, uses thread_key from progression_context (current behavior)."
+        ),
+        min_length=1,
+    )
     progressions_cross_grade_relates_to_max_items_per_subject: int = Field(
         default=10,
         description="Cross-grade relatesTo: max sampled Standards per subject per grade.",
@@ -496,6 +509,29 @@ class CreateKGConfig(BaseSchema):
             "(e.g., I–II <-> III–VI)."
         ),
     )
+    progressions_excluded_subject_labels: list[str] = Field(
+        default=["UNSPECIFIED_SUBJECT"],
+        description=(
+            "Subject labels to exclude from Phase 3 (within-grade cross-subject "
+            "relatesTo) and Phase 4 (cross-grade same-subject relatesTo) "
+            "sampling. Default excludes 'UNSPECIFIED_SUBJECT' since including "
+            "unmapped items in cross-subject pairing adds noise without value."
+        ),
+    )
+    progressions_grade_label_map: Optional[dict[str, int]] = Field(
+        default=None,
+        description=(
+            "Explicit mapping from grade_key labels (as they appear in "
+            "progression_context.grade_key, normalized to lowercase + strip) to "
+            "integer ordinals for LP inference. Ordinals represent each level's "
+            "position in the sequence (not necessarily the grade number); "
+            "adjacency is determined by ordinals differing by exactly 1. "
+            "Multiple grade_keys may map to the same ordinal to merge subtrees "
+            "(e.g., 'paliers du niveau ce1' and 'planification ce1' both → 1). "
+            "Config keys must be lowercase + stripped. When None, falls back to "
+            "_parse_ordinal heuristics on grade_ordinal_low/high."
+        ),
+    )
     progressions_relates_to_max_edges_per_sfi: int = Field(
         default=3,
         ge=1,
@@ -506,6 +542,18 @@ class CreateKGConfig(BaseSchema):
         ge=0.0,
         le=1.0,
         description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
+    )
+    progressions_subject_role: Optional[str] = Field(
+        default=None,
+        description=(
+            "Canonical IR node role to use as the 'subject' for Phase 3 "
+            "(within-grade cross-subject relatesTo) and Phase 4 "
+            "(cross-grade same-subject relatesTo). When set, the LP bucketing "
+            "code looks for this role in each expectation's "
+            "progression_context.topic_path_parts and uses the first matching "
+            "label as subject_label. When None, defaults to searching for "
+            "'subject' then 'learning_area' roles."
+        ),
     )
     progressions_within_grade_allow_banded_levels: bool = Field(
         default=False,
@@ -542,6 +590,75 @@ class CreateKGConfig(BaseSchema):
         default=True,
         description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering, repeating to a fixpoint. No reattachment is performed.",
     )
+
+    @field_validator("progressions_grade_label_map")
+    @classmethod
+    def _validate_grade_label_map_keys(
+        cls, v: Optional[dict[str, int]]
+    ) -> Optional[dict[str, int]]:
+        """Enforce that all keys are lowercase + stripped, and values are non-negative.
+
+        Parameters
+        ----------
+        v
+            The grade label map to validate.
+
+        Returns
+        -------
+        Optional[dict[str, int]]
+            The validated grade label map.
+
+        Raises
+        ------
+        ValueError
+            If any key is not lowercase + stripped, or any value is negative.
+        """
+
+        if v is None:
+            return v
+
+        for key, val in v.items():
+            normalized = key.strip().lower()
+
+            if key != normalized:
+                raise ValueError(
+                    f"progressions_grade_label_map key must be lowercase + stripped: "
+                    f"got {key!r}, expected {normalized!r}"
+                )
+
+            if not isinstance(val, int) or val < 0:
+                raise ValueError(
+                    f"progressions_grade_label_map values must be non-negative integers: "
+                    f"got {val!r} for key {key!r}"
+                )
+
+        return v
+
+    @field_validator("progressions_subject_role")
+    @classmethod
+    def _validate_subject_role_non_empty(cls, v: Optional[str]) -> Optional[str]:
+        """Ensure progressions_subject_role is non-empty when provided.
+
+        Parameters
+        ----------
+        v
+            The subject role string to validate.
+
+        Returns
+        -------
+        Optional[str]
+            The validated subject role string.
+
+        Raises
+        ------
+        ValueError
+            If the value is an empty string.
+        """
+
+        if v is not None and not v.strip():
+            raise ValueError("progressions_subject_role must be non-empty when set")
+
+        return v
 
     @model_validator(mode="after")
     def _validate_grouping_role_policy(self) -> CreateKGConfig:
