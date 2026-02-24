@@ -930,10 +930,6 @@ def _materialize_decision_structure(
     )
 
     # Apply decision.groupings[] under the context stack tip.
-    #
-    # NB: decision.groupings[] are segment-local (parented under context tip, NOT
-    # pushed onto active_context_stack). Persistence across decisions is managed
-    # exclusively through context_groupings[].
     for g in decision.groupings:
         g_title = canonical_grouping_title(role=g.role, title=g.title)
         node_id = canonical_grouping_node_id(
@@ -1233,12 +1229,26 @@ def _materialize_table_rows(
             expectation_anchor_key = f"expectation_anchor:{anchored_leaf_id}"
 
         elif len(expectation_leaves) > 1:
-            msg = (
-                "table_row_multiple_expectations_falling_back_to_legacy:"
-                f"segment={segment_id} row={row.row_index}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
+            # Only warn when aux leaves (guidance/descriptor) are present--those are
+            # the leaves that lose their anchored parent relationship when we cannot
+            # pick a single expectation anchor. When every leaf is an expectation (no
+            # aux leaves), per-row disambiguation produces the same flat-sibling
+            # structure the anchoring path would, so the fallback is a no-op.
+            aux_leaves = [
+                leaf
+                for leaf in row.leaves
+                if _role_value(role=leaf.role) in {"descriptor", "guidance"}
+            ]
+
+            if aux_leaves:
+                msg = (
+                    f"table_row_multiple_expectations_unanchored_aux:"
+                    f"segment={segment_id} row={row.row_index} "
+                    f"expectations={len(expectation_leaves)} "
+                    f"aux_leaves={len(aux_leaves)}"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
 
         # Emit leaves.
         for leaf in row.leaves:
