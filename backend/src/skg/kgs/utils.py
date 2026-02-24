@@ -3,6 +3,7 @@
 # Standard Library
 import hashlib
 import re
+import unicodedata
 import uuid
 
 from collections import defaultdict
@@ -759,6 +760,47 @@ def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
         )
 
     return dims
+
+
+def keyify(label: str) -> str:
+    """Deterministically normalize a label into a compact key token.
+
+    This is the canonical implementation used by both the Academic Standards export
+    (for topic_path_key construction) and the Learning Progressions export (for
+    lp_thread_key construction). Keeping a single implementation ensures thread-key
+    consistency across the pipeline.
+
+    Parameters
+    ----------
+    label
+        The input label string to normalize.
+
+    Returns
+    -------
+    str
+        A normalized, URL-safe string consisting of lowercase alphanumeric characters
+        and underscores. If the resulting string is empty after normalization, a
+        12-character hex hash prefixed with 'h' is returned to ensure a non-empty
+        deterministic key. The output is capped at 80 characters.
+    """
+
+    raw = " ".join(str(label or "").strip().split())
+
+    if not raw:
+        return ""
+
+    # Normalize unicode and strip diacritics to ASCII where possible.
+    norm = unicodedata.normalize("NFKD", raw)
+    ascii_s = norm.encode("ascii", "ignore").decode("ascii")
+
+    s = " ".join(ascii_s.strip().split()).lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+
+    if not s:
+        h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+        return f"h{h}"
+
+    return s[:80] if len(s) > 80 else s
 
 
 def merge_graph_bundles(

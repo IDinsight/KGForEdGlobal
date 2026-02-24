@@ -8,9 +8,7 @@ policies.
 from __future__ import annotations
 
 # Standard Library
-import hashlib
 import re
-import unicodedata
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -28,7 +26,7 @@ from skg.kgs.schemas import (
     StandardsFramework,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs, node_display_text
+from skg.kgs.utils import ExportContext, KGDirs, keyify, node_display_text
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import write_to_json
@@ -526,7 +524,7 @@ def _compute_topic_path_key(
         if not label:
             continue
 
-        parts.append(f"{r}={_keyify(label)}")
+        parts.append(f"{r}={keyify(label)}")
         debug.append({"role": r, "label": label, "canonical_node_id": aid})
 
     if not parts:
@@ -1014,42 +1012,6 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     allowed = {r.value for r in config.grouping_roles_whitelist}
 
     return role in allowed
-
-
-def _keyify(label: str) -> str:
-    """Deterministically normalize a label into a compact key token.
-
-    Parameters
-    ----------
-    label
-        The input label string to normalize.
-
-    Returns
-    -------
-    str
-        A normalized, URL-safe string consisting of lowercase alphanumeric characters
-        and underscores. If the resulting string is empty after normalization, a
-        12-character hex hash prefixed with 'h' is returned to ensure a non-empty
-        deterministic key. The output is capped at 80 characters.
-    """
-
-    raw = " ".join(str(label or "").strip().split())
-
-    if not raw:
-        return ""
-
-    # Normalize unicode and strip diacritics to ASCII where possible.
-    norm = unicodedata.normalize("NFKD", raw)
-    ascii_s = norm.encode("ascii", "ignore").decode("ascii")
-
-    s = " ".join(ascii_s.strip().split()).lower()
-    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
-
-    if not s:
-        h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-        return f"h{h}"
-
-    return s[:80] if len(s) > 80 else s
 
 
 def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:

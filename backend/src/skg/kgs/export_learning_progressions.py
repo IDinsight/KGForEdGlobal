@@ -47,7 +47,7 @@ from skg.kgs.schemas import (
     Relationship,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair
+from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair, keyify
 from skg.kgs.validators import (
     validate_cross_grade_builds_towards,
     validate_cross_grade_relates_to,
@@ -56,9 +56,6 @@ from skg.kgs.validators import (
 )
 from skg.schemas import CreateKGConfig
 from skg.utils.general import write_to_json
-
-# Compiled regexes.
-GRADE_INT_RE = re.compile(r"\b(\d+)\b")
 
 
 @dataclass(frozen=True)
@@ -649,6 +646,49 @@ def _collect_relates_to_work_items(
     return work_items
 
 
+def _compute_lp_thread_key(
+    topic_path_parts: list[dict[str, Any]], roles: list[str]
+) -> str | None:
+    """Compute an LP thread key from topic_path_parts filtered to the given roles.
+
+    Only entries in `topic_path_parts` whose `role` is in `roles` contribute to the
+    key. Segments are emitted in the order specified by `roles` (not the order they
+    appear in `topic_path_parts`), which makes the key stable across curricula with
+    differing hierarchy depth.
+
+    Parameters
+    ----------
+    topic_path_parts
+        The topic_path_parts from progression_context (list of dicts with
+        "role" and "label" keys).
+    roles
+        Ordered list of roles to include in the thread key.
+
+    Returns
+    -------
+    str | None
+        The computed thread key (e.g., "strand=activites_numeriques"), or None
+        if no matching roles are found in topic_path_parts.
+    """
+
+    parts_by_role: dict[str, list[str]] = {}
+
+    for entry in topic_path_parts:
+        r = entry.get("role", "")
+        label = entry.get("label", "")
+
+        if r and label and r in set(roles):
+            parts_by_role.setdefault(r, []).append(keyify(label))
+
+    segments: list[str] = []
+
+    for role in roles:  # Iterate in user-specified order
+        for val in parts_by_role.get(role, []):
+            segments.append(f"{role}={val}")
+
+    return "|".join(segments) if segments else None
+
+
 def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
     """Deduplicate by (rel_type, canonical endpoints). Keep highest confidence.
 
@@ -827,7 +867,17 @@ def _format_learning_progressions_dict(
         grade_buckets: list[dict[str, Any]] = []
 
         for tkey, b in per_thread.items():
-            b["items"] = sorted(b["items"], key=_sort_key_for_bucket_sfi)
+            # Sort items by canon_order_path (document position) to preserve the
+            # intended pedagogical sequence across all weeks/substages within a strand,
+            # with _sort_key_for_bucket_sfi as a tiebreaker.
+            b["items"] = sorted(
+                b["items"],
+                key=lambda s: (
+                    s.get("canon_order_path") or [],
+                    _sort_key_for_bucket_sfi(s),
+                ),
+            )
+
             grade_buckets.append(b)
             by_thread[tkey][grade_label] = b
 
@@ -837,69 +887,6 @@ def _format_learning_progressions_dict(
         )
 
     return {"by_grade": by_grade, "by_thread": dict(by_thread), "drops": drops}
-
-
-def _grade_label_and_ordinal(sfi: StandardsFrameworkItem) -> tuple[str, int | None]:
-    """Prefer progression_context grade ordinals when present; fall back to grade_level
-    tags.
-
-    Parameters
-    ----------
-    sfi
-        The StandardsFrameworkItem to extract grade information from.
-
-    Returns
-    -------
-    tuple[str, int | None]
-        A tuple containing the grade label and its corresponding ordinal (if available).
-    """
-
-    metadata = sfi.metadata or {}
-    progression_context = metadata.get("progression_context") or {}
-    grade_ordinal_low = progression_context.get("grade_ordinal_low")
-    grade_ordinal_high = progression_context.get("grade_ordinal_high")
-
-    # If this SFI belongs to a banded level (low != high), label it as a band/stage.
-    if (
-        isinstance(grade_ordinal_low, int)
-        and isinstance(grade_ordinal_high, int)
-        and grade_ordinal_high != grade_ordinal_low
-    ):
-        # Prefer explicit stage_key from progression_context. Note: "stage" is not
-        # guaranteed to exist in topic_path_parts (it is commonly excluded upstream).
-        stage_label = str(progression_context.get("stage_key") or "").strip()
-
-        if not stage_label:
-            parts = progression_context.get("topic_path_parts") or []
-
-            if isinstance(parts, list):
-                stage_label = next(
-                    (
-                        str(p.get("label") or "").strip()
-                        for p in parts
-                        if p.get("role") == "stage" and p.get("label")
-                    ),
-                    "",
-                )
-
-        label = stage_label or f"GRADES {grade_ordinal_low}–{grade_ordinal_high}"
-
-        # Return grade_ordinal_low as the representative ordinal; callers should prefer
-        # grade_ordinal_low/grade_ordinal_high from progression_context for accurate
-        # bounds.
-        return label, grade_ordinal_low
-
-    if isinstance(grade_ordinal_low, int):
-        return f"GRADE {grade_ordinal_low}", grade_ordinal_low
-
-    grade_level = sfi.grade_level or []
-
-    if grade_level:
-        label = str(grade_level[0]).strip().upper()
-        m = GRADE_INT_RE.search(label)
-        return label, int(m.group(1)) if m else None
-
-    return "UNSPECIFIED_GRADE", None
 
 
 def _group_threads_by_grade_and_subject(
@@ -981,6 +968,17 @@ def _infer_cross_grade_builds_towards(
         return candidates, provenance_rows, cross_level_build_pairs
 
     thread_map = _build_thread_map(by_grade)
+
+    # Debug: count unthreaded sentinel buckets that will be excluded from cross-grade
+    # matching because their grade-specific sentinels prevent cross-grade pairing.
+    unthreaded_count = sum(1 for tk in thread_map if tk.startswith("__unthreaded__::"))
+
+    if unthreaded_count > 0:
+        logger.info(
+            f"Cross-grade matching: {unthreaded_count} unthreaded thread(s) "
+            f"excluded (grade-specific sentinel prevents cross-grade pairing)"
+        )
+
     work_items = _collect_builds_towards_work_items(
         config=config, thread_map=thread_map
     )
@@ -1069,7 +1067,9 @@ def _infer_cross_grade_relates_to(
     max_edges_per_sfi = int(config.progressions_relates_to_max_edges_per_sfi)
 
     subject_level_samples = _prepare_subject_grade_samples(
-        by_grade=by_grade, max_items=max_items
+        by_grade=by_grade,
+        excluded_subject_labels=set(config.progressions_excluded_subject_labels or []),
+        max_items=max_items,
     )
 
     work_items = _collect_relates_to_work_items(
@@ -1261,39 +1261,16 @@ def _infer_within_grade_relates_to(
         by_grade=by_grade, config=config
     )
 
-    # Collect eligible subject pairs so total_calls is exact. Each pair will produce 2
-    # LLM calls (bidirectional confirmation: A -> B and B -> A).
-    def _thread_sort_key(b: dict[str, Any]) -> tuple[str, str]:
-        """Sort threads by topic_path (with fallback to topic_path_key) to ensure
-        deterministic ordering for sampling and pairing across runs, even if the input
-        order changes.
-
-        Parameters
-        ----------
-        b
-            The bucket dictionary representing a thread, which may contain "topic_path"
-            and/or "topic_path_key" for sorting.
-
-        Returns
-        -------
-        tuple[str, str]
-            A tuple used for sorting threads, where the first element is the
-            "topic_path" (or an empty string if not present) and the second element is
-            the "topic_path_key" (or an empty string if not present). This ensures
-            consistent ordering of threads based on their topic paths, with a fallback
-            to topic path keys when topic paths are missing.
-        """
-
-        return str(b.get("topic_path") or ""), str(b.get("topic_path_key") or "")
-
     work_items: list[dict[str, Any]] = []
+    excluded = set(config.progressions_excluded_subject_labels or []) | {
+        "UNKNOWN",
+        "",
+    }
+    phase3_excluded_count = 0
 
     for grade_label, by_subject in grade_subject_threads.items():
-        subject_keys = [
-            s
-            for s in sorted(by_subject.keys())
-            if s not in {"UNSPECIFIED_SUBJECT", "UNKNOWN", ""}
-        ]
+        subject_keys = [s for s in sorted(by_subject.keys()) if s not in excluded]
+        phase3_excluded_count += sum(1 for s in by_subject if s in excluded)
 
         if len(subject_keys) < 2:
             continue
@@ -1340,6 +1317,12 @@ def _infer_within_grade_relates_to(
     total_pairs = len(work_items)
     total_calls = total_pairs * 2  # Bidirectional confirmation
 
+    if phase3_excluded_count > 0:
+        logger.info(
+            f"Phase 3: excluded {phase3_excluded_count} subject bucket(s) with "
+            f"subject_label in {sorted(excluded)}"
+        )
+
     logger.info(
         f"{total_pairs} within-grade cross-subject pairs for relatesTo inference "
         f"(bidirectional confirmation => {total_calls} LLM calls)."
@@ -1349,23 +1332,22 @@ def _infer_within_grade_relates_to(
 
     for wi in work_items:
         grade_label = wi["grade_label"]
-        subject_a = wi["subject_a"]
-        subject_b = wi["subject_b"]
-        sampled_a = wi["sampled_a"]
-        sampled_b = wi["sampled_b"]
-        thread_a_path = wi["thread_a_path"]
-        thread_b_path = wi["thread_b_path"]
+        subject_a, subject_b = wi["subject_a"], wi["subject_b"]
+        sampled_a, sampled_b = wi["sampled_a"], wi["sampled_b"]
+        thread_a_path, thread_b_path = wi["thread_a_path"], wi["thread_b_path"]
 
         logger.info(f"Phase 3 Pair: ({grade_label}: {subject_a} × {subject_b})")
 
-        items_a = [_build_item_payload(item=it) for it in sampled_a]
-        items_b = [_build_item_payload(item=it) for it in sampled_b]
+        items_a, items_b = [_build_item_payload(item=it) for it in sampled_a], [
+            _build_item_payload(item=it) for it in sampled_b
+        ]
 
-        allowed_a = {str(it["sfi_uuid"]) for it in items_a}
-        allowed_b = {str(it["sfi_uuid"]) for it in items_b}
+        allowed_a, allowed_b = {str(it["sfi_uuid"]) for it in items_a}, {
+            str(it["sfi_uuid"]) for it in items_b
+        }
 
-        # Bidirectional confirmation: run A×B and B×A, then keep only edges
-        # that appear in both runs (canonicalized by UUID order).
+        # Bidirectional confirmation: run A x B and B x A, then keep only edges that
+        # appear in both runs (canonicalized by UUID order).
         prompt_ab = within_grade_relates_to(
             grade_label=str(grade_label),
             items_a=items_a,
@@ -1738,7 +1720,10 @@ def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
 
 
 def _prepare_subject_grade_samples(
-    *, by_grade: dict[str, list[dict[str, Any]]], max_items: int
+    *,
+    by_grade: dict[str, list[dict[str, Any]]],
+    excluded_subject_labels: set[str] | None = None,
+    max_items: int,
 ) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
     """Group and sample items by subject and level range for Phase 4.
 
@@ -1751,6 +1736,10 @@ def _prepare_subject_grade_samples(
         Dictionary mapping grade labels to lists of bucket dictionaries, where each
         bucket dictionary contains information about the subject, grade ordinal, topic
         path, and items (standards) within that bucket.
+    excluded_subject_labels
+        Optional set of subject labels to skip during sampling. Buckets whose
+        `subject_label` is in this set are excluded from the returned samples.
+        Typically `{"UNSPECIFIED_SUBJECT"}` to avoid noise from unmapped items.
     max_items
         The maximum number of items to sample across threads for each subject and grade
         combination. If the total number of items across threads exceeds this limit, a
@@ -1814,7 +1803,13 @@ def _prepare_subject_grade_samples(
             }
         )
 
+        excluded_count = 0
+
         for subject_label, thread_buckets in buckets_by_subject.items():
+            if excluded_subject_labels and subject_label in excluded_subject_labels:
+                excluded_count += 1
+                continue
+
             thread_buckets_sorted = sorted(
                 thread_buckets,
                 key=lambda b: (
@@ -1840,6 +1835,13 @@ def _prepare_subject_grade_samples(
                 "level_high": level_high,
                 "items": prompt_items,
             }
+
+        if excluded_count > 0:
+            logger.info(
+                f"Phase 4 subject sampling: excluded {excluded_count} subject buckets "
+                f"in grade '{grade_label}' with subject_label in "
+                f"{sorted(excluded_subject_labels or [])}"
+            )
 
     return subject_level_samples
 
@@ -1971,41 +1973,46 @@ def _process_and_filter_candidates(
 def _process_single_standard(
     *,
     buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
+    config: CreateKGConfig,
     drops: dict[str, list[dict[str, Any]]],
     include_provenance: bool,
     sfi: StandardsFrameworkItem,
-    strict_single_grade: bool,
 ) -> None:
     """Process a single standard item and sort it into buckets or drops.
+
+    The bucketing logic computes three independent axes—grade ordinal, subject label,
+    and thread key—using config-driven mappings:
+
+    1. **Grade ordinal** is resolved via `config.progressions_grade_label_map`. Items
+        whose `grade_key` is absent from the map are dropped.
+    2. **Subject label** is resolved via `config.progressions_subject_role`. Items
+        without a matching role get `UNSPECIFIED_SUBJECT`.
+    3. **Thread key** is computed via `config.progressions_cross_grade_match_roles`.
+        Items with no matching roles become "unthreaded" and receive per-grade sentinel
+        thread keys to prevent false cross-grade matching.
 
     Parameters
     ----------
     buckets
         A nested dictionary for organizing standards into buckets based on grade and
-        topic path.
+        effective bucket key.
+    config
+        The KG creation config with LP-specific fields.
     drops
-        A dictionary for collecting standards that are dropped due to validation issues,
-        categorized by the reason for dropping.
+        A dictionary for collecting standards that are dropped due to validation
+        issues, categorized by the reason for dropping.
     include_provenance
         Whether to include provenance information (e.g., page index) in the payload for
         LLM inference.
     sfi
-        The standard item to process, which is expected to have attributes such as
-        description, normalized_statement_type, grade_level, and metadata containing
-        progression context.
-    strict_single_grade
-        Whether to enforce that each standard item must be associated with exactly one
-        grade level. If True, items with multiple grade levels will be dropped; if
-        False, items with multiple grade levels will be processed but may be
-        categorized under a special "UNSPECIFIED_GRADE" label if their grade levels
-        cannot be clearly determined.
+        The standard item to process.
     """
 
     metadata = sfi.metadata or {}
     progression_context = metadata.get("progression_context") or {}
     sfi_uuid = str(sfi.case_identifier_uuid or sfi.identifier)
 
-    # 1. Validation: We only want endpoints for buildsTowards (Standard).
+    # Statement type validation.
     if sfi.normalized_statement_type != "Standard":
         drops["non_standard_item"].append(
             {
@@ -2017,101 +2024,100 @@ def _process_single_standard(
         )
         return
 
-    # 2. Validation: grade placement.
-    grade_label, grade_ord = _grade_label_and_ordinal(sfi)
+    # Grade validation.
+    grade_key = progression_context.get("grade_key")
+    normalized_grade_key = str(grade_key or "").strip().lower()
 
-    if grade_label == "UNSPECIFIED_GRADE":
-        drops["unassigned_grade"].append(
+    if not normalized_grade_key:
+        drops.setdefault("missing_grade_key", []).append(
             {"description": sfi.description, "sfi_uuid": sfi_uuid}
         )
+        return
 
-        if strict_single_grade:
-            return
+    mapped = (config.progressions_grade_label_map or {}).get(normalized_grade_key)
 
-    grade_level = sfi.grade_level or []
-
-    if strict_single_grade and len(grade_level) != 1:
-        drops["multi_grade_item"].append(
+    if mapped is None:
+        logger.warning(
+            f"progressions_grade_label_map: grade_key {grade_key!r} "
+            f"(normalized: {normalized_grade_key!r}) not found in map. "
+            f"Excluding SFI {sfi_uuid} from LP inference."
+        )
+        drops.setdefault("unmapped_grade_key", []).append(
             {
                 "description": sfi.description,
-                "grade_level": grade_level,
+                "grade_key": grade_key,
                 "sfi_uuid": sfi_uuid,
             }
         )
         return
 
-    # 3. Validation: topic path key.
-    topic_path_key = progression_context.get("topic_path_key") or ""
+    grade_label = f"LEVEL {mapped}"
 
-    if not isinstance(topic_path_key, str) or not topic_path_key.strip():
+    # Topic path validation.
+    topic_key = progression_context.get("topic_path_key", "")
+
+    if not (isinstance(topic_key, str) and topic_key.strip()):
         drops["missing_topic_path_key"].append(
-            {
-                "description": sfi.description,
-                "grade": grade_label,
-                "sfi_uuid": sfi_uuid,
-            }
+            {"description": sfi.description, "grade": grade_label, "sfi_uuid": sfi_uuid}
         )
         return
 
-    # 4. Bucket management: get or create bucket.
-    topic_path_parts = progression_context.get("topic_path_parts") or []
-
-    if not isinstance(topic_path_parts, list):
-        topic_path_parts = []
-
-    b = buckets[grade_label].get(topic_path_key)
-
-    if not b:
-        # Prefer explicit subject over broader learning_area when both exist.
-        subject_label = next(
+    # Subject label and topic parts setup.
+    raw_parts = progression_context.get("topic_path_parts")
+    topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
+    subject_role = config.progressions_subject_role
+    subject_label = (
+        next(
             (
-                str(p.get("label") or "")
+                str(p["label"])
                 for p in topic_path_parts
-                if p.get("role") == "subject" and p.get("label")
-            ),
-            None,
-        ) or next(
-            (
-                str(p.get("label") or "")
-                for p in topic_path_parts
-                if p.get("role") == "learning_area" and p.get("label")
+                if p.get("role") == subject_role and p.get("label")
             ),
             "UNSPECIFIED_SUBJECT",
         )
+        if subject_role
+        else "UNSPECIFIED_SUBJECT"
+    )
 
-        # Resolve grade_ordinal_low once; grade_ordinal_high falls back to it when the
-        # explicit high bound is absent (single-grade bucket).
-        _raw_low = progression_context.get("grade_ordinal_low")
-        resolved_low = _raw_low if isinstance(_raw_low, int) else grade_ord
+    # Threading and bucket keys.
+    cross_roles = config.progressions_cross_grade_match_roles
+    lp_thread_key = (
+        _compute_lp_thread_key(topic_path_parts, cross_roles) if cross_roles else None
+    )
+    effective_bucket_key = (
+        lp_thread_key if lp_thread_key is not None else "__unthreaded__"
+    )
+    thread_key = (
+        lp_thread_key
+        if lp_thread_key is not None
+        else f"__unthreaded__::{normalized_grade_key}"
+    )
 
-        _raw_high = progression_context.get("grade_ordinal_high")
-        resolved_high = _raw_high if isinstance(_raw_high, int) else resolved_low
+    # Bucket management.
+    b = buckets[grade_label].get(effective_bucket_key)
 
-        b = {
-            "bucket_key": f"{grade_label}::{topic_path_key}",
+    if not b:
+        stage_key = progression_context.get("stage_key")
+        b = buckets[grade_label][effective_bucket_key] = {
+            "bucket_key": f"{grade_label}::{effective_bucket_key}",
+            "effective_bucket_key": effective_bucket_key,
             "grade_level": grade_label,
-            "grade_ordinal": grade_ord,
-            "grade_ordinal_low": resolved_low,
-            "grade_ordinal_high": resolved_high,
-            "stage_key": (
-                progression_context.get("stage_key")
-                if isinstance(progression_context.get("stage_key"), str)
-                else None
-            ),
+            "grade_ordinal": mapped,
+            "grade_ordinal_low": mapped,
+            "grade_ordinal_high": mapped,
+            "stage_key": stage_key if isinstance(stage_key, str) else None,
             "subject_label": subject_label,
-            "thread_key": progression_context.get("thread_key"),
-            "normalized_topic_path_key": (
-                progression_context.get("normalized_topic_path_key") or ""
+            "thread_key": thread_key,
+            "normalized_topic_path_key": progression_context.get(
+                "normalized_topic_path_key", ""
             ),
-            "topic_path_key": topic_path_key,
+            "topic_path_key": effective_bucket_key,
             "topic_path": _path_string(topic_path_parts),
             "topic_path_parts": topic_path_parts,
             "items": [],
         }
-        buckets[grade_label][topic_path_key] = b
 
-    # 5. Build payload.
-    payload = {
+    payload: dict[str, Any] = {
         "description": sfi.description,
         "notes": sfi.notes,
         "order_index_within_parent": progression_context.get(
@@ -2121,15 +2127,13 @@ def _process_single_standard(
         "sfi_uuid": sfi_uuid,
         "statement_code": sfi.statement_code,
         "statement_type": sfi.statement_type,
+        "canon_order_path": progression_context.get("canon_order_path", []),
     }
 
     if include_provenance:
-        page_indices = (
-            metadata.get("page_indices")
-            if isinstance(metadata.get("page_indices"), list)
-            else []
-        )
-        payload["page_index"] = min(page_indices) if page_indices else None
+        indices = metadata.get("page_indices")
+        valid_indices = indices if isinstance(indices, list) else []
+        payload["page_index"] = min(valid_indices) if valid_indices else None
 
     b["items"].append(payload)
 
@@ -2643,6 +2647,30 @@ def _sort_key_for_bucket_sfi(
     return order_index, missing_code_tuple, code_tuple_key, code, uuid_key
 
 
+def _thread_sort_key(b: dict[str, Any]) -> tuple[str, str]:
+    """Sort threads by topic_path (with fallback to topic_path_key) to ensure
+    deterministic ordering for sampling and pairing across runs, even if the input
+    order changes.
+
+    Parameters
+    ----------
+    b
+        The bucket dictionary representing a thread, which may contain "topic_path"
+        and/or "topic_path_key" for sorting.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple used for sorting threads, where the first element is the
+        "topic_path" (or an empty string if not present) and the second element is
+        the "topic_path_key" (or an empty string if not present). This ensures
+        consistent ordering of threads based on their topic paths, with a fallback
+        to topic path keys when topic paths are missing.
+    """
+
+    return str(b.get("topic_path") or ""), str(b.get("topic_path_key") or "")
+
+
 def _uuid(x: str) -> UUID:
     """Convert a string to a UUID, stripping whitespace. This is a helper function to
     ensure that any SFI UUIDs or case identifier UUIDs are properly formatted as UUID
@@ -2690,7 +2718,7 @@ def export_learning_progressions(
     """
 
     buckets_info = group_standards_for_learning_progressions(
-        academic_standards=academic_standards, include_provenance=True
+        academic_standards=academic_standards, config=config, include_provenance=True
     )
 
     # Write the buckets artifact for debugging.
@@ -2826,74 +2854,54 @@ def export_learning_progressions(
 def group_standards_for_learning_progressions(
     *,
     academic_standards: AcademicStandardsExport,
+    config: CreateKGConfig,
     include_provenance: bool = True,
-    strict_single_grade: bool = False,
 ) -> dict[str, Any]:
     """Build learning progression buckets for the LLM.
 
-    NB: When `strict_single_grade=False` (the default), items whose grade cannot be
-    resolved are bucketed under the synthetic label `"UNSPECIFIED_GRADE"`. These
-    buckets have `grade_ordinal_low=None` and `grade_ordinal_high=None`, which means:
+    Uses config-driven three-axis bucketing:
 
-    1. **Phase 1 (within-grade buildsTowards):** These buckets *are* eligible when
-      `progressions_within_grade_allow_banded_levels=True` (since
-      `_is_single_grade_bucket` returns `False` and the allow-banded gate applies).
-      With the default (`allow_banded_levels=False`), they are skipped.
-    2. **Phases 2–4 (cross-grade/cross-stage):** These buckets are always skipped
-      because `_build_thread_map` and `_prepare_subject_grade_samples` require integer
-      grade bounds (via `_level_bounds`), which returns `(None, None)` for unresolved
-      grades.
-
-    Items routed to `UNSPECIFIED_GRADE` are also recorded in
-    `drops["unassigned_grade"]` for audit purposes, regardless of whether they end up
-    in a bucket.
+    1. **Grade ordinal** resolved via `config.progressions_grade_label_map`. Items
+        whose `grade_key` is absent from the map are dropped.
+    2. **Subject label** resolved via `config.progressions_subject_role`.
+    3. **Thread key** computed via `config.progressions_cross_grade_match_roles`.
 
     Parameters
     ----------
     academic_standards
         The exported Academic Standards KG artifacts.
+    config
+        The KG creation config with LP-specific fields that drive the three-axis
+        bucketing logic in `_process_single_standard`.
     include_provenance
         Whether to include provenance metadata in the payload for each standard item,
         which the LLM can use as signals when deciding buildsTowards relationships.
-        This will make the payload larger and may not be necessary if the standards
-        export is already well-structured and clean.
-    strict_single_grade
-        Whether to enforce that each standard item has exactly one grade_level tag. If
-        True, items with multiple grade_level tags will be dropped and recorded in the
-        report. This can help catch data issues in exports that are expected to have a
-        single grade tag per item, but may need to be relaxed for more complex or
-        non-US curricula.
 
     Returns
     -------
     dict[str, Any]
         A dictionary containing grouped standards by grade and thread, as well as any
         dropped items due to missing or non-standard data.
-
-    Raises
-    ------
-    ValueError
-        If strict_single_grade is True and an item has multiple grade_level tags.
     """
 
-    # grade -> topic_path_key -> bucket.
+    # grade -> effective_bucket_key -> bucket.
     buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]] = defaultdict(
         lambda: defaultdict(dict)
     )
     drops: dict[str, list[dict[str, Any]]] = {
+        "missing_grade_key": [],
         "missing_topic_path_key": [],
-        "multi_grade_item": [],
         "non_standard_item": [],
-        "unassigned_grade": [],
+        "unmapped_grade_key": [],
     }
 
     for sfi in academic_standards.items:
         _process_single_standard(
             buckets=buckets,
+            config=config,
             drops=drops,
             include_provenance=include_provenance,
             sfi=sfi,
-            strict_single_grade=strict_single_grade,
         )
 
     return _format_learning_progressions_dict(buckets=buckets, drops=drops)
