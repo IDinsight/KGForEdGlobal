@@ -1401,7 +1401,7 @@ def _process_attach_to_expectation(
     ctx: ExportContext,
     drop_reasons: dict[str, str],
     emit_flag: dict[str, bool],
-    reparent_stats: dict[str, int],
+    reparent_stats: dict[str, Any],
 ) -> None:
     """Modify emit flags and track stats for attach-to-expectation handling.
 
