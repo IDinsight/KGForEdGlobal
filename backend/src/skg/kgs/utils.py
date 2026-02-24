@@ -93,7 +93,11 @@ class ExportContext:
 
         if (parent_id, child_id) in self._needs_order_disambiguator:
             oi = self.edge_order_index.get((parent_id, child_id), 0)
-            piece = f"{piece}~{oi}"
+
+            # Add a stable disambiguator so sibling collisions cannot produce identical
+            # path keys even when order_index values are duplicated or missing.
+            suffix = stable_text_hash(s=child_id, n=8)
+            piece = f"{piece}~{oi}~{suffix}"
 
         return piece
 

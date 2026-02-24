@@ -29,7 +29,7 @@ AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"
 AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 MetadataT = dict[str, Any]
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
-ValidationLevel = Literal["error", "warning", "info"]
+ValidationLevel = Literal["error", "info"]
 
 
 def _strip_and_require_non_empty_str(v: str) -> str:
@@ -1893,34 +1893,6 @@ class GraphValidationReport(BaseSchema):
             lines.append(f"- ... plus {len(self.errors()) - 15} more errors")
 
         raise ValueError("\n".join(lines))
-
-    def warn(
-        self, *, code: str, context: Optional[dict[str, Any]] = None, message: str
-    ) -> None:
-        """Add a warning issue.
-
-        Parameters
-        ----------
-        code
-            Short machine-readable code for the issue.
-        context
-            Optional additional context for debugging.
-        message
-            Human-readable description of the issue.
-        """
-
-        self.add(code=code, context=context, level="warning", message=message)
-
-    def warnings(self) -> list[GraphValidationIssue]:
-        """Get all warning-level issues.
-
-        Returns
-        -------
-        list[GraphValidationIssue]
-            List of warning-level issues.
-        """
-
-        return [i for i in self.issues if i.level == "warning"]
 
 
 class PolicyCoverageReport(BaseSchema):
