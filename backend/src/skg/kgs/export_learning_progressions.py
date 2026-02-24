@@ -1804,9 +1804,17 @@ def _prepare_subject_grade_samples(
         level_key = (level_low, level_high)
 
         if any((lo, hi) != level_key for lo, hi in bounds):
-            logger.warning(
-                f"Inconsistent grade bounds within '{grade_label}'. Using aggregated {level_key}."
+            distinct_bounds = sorted(set(bounds))
+            logger.error(
+                f"Phase 4 subject sampling: SKIPPING grade '{grade_label}' due to "
+                f"inconsistent grade bounds across its {len(bounds)} bucket(s). "
+                f"Distinct (low, high) values found: {distinct_bounds}. "
+                f"Aggregated level_key would be {level_key}, which could create "
+                f"invalid adjacency relationships. Fix the upstream Academic "
+                f"Standards export so all buckets within a grade_label share "
+                f"identical ordinal bounds."
             )
+            continue
 
         level_label = _level_label(
             exemplar_bucket
@@ -2112,14 +2120,15 @@ def _process_single_standard(
         return
 
     # Bucket label (used as the top-level key for grouping buckets).
+    #
+    # Always use ordinal-based labels as the canonical grouping key. This prevents
+    # fragmentation from inconsistent stage_key strings across SFIs that represent the
+    # same level range (e.g., different dash characters: "Standard I-II" vs
+    # "Standard I–II", or minor whitespace/casing differences). The original stage_key
+    # is preserved on the bucket dict as metadata and is used by _level_label() for
+    # human-readable display in prompts and logs.
     grade_label = (
-        (
-            stage_key.strip()
-            if isinstance(stage_key, str) and stage_key.strip()
-            else f"LEVEL {level_lo}-{level_hi}"
-        )
-        if level_hi != level_lo
-        else f"LEVEL {level_lo}"
+        f"LEVEL {level_lo}-{level_hi}" if level_hi != level_lo else f"LEVEL {level_lo}"
     )
 
     # Topic path validation.
