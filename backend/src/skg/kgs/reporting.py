@@ -728,15 +728,15 @@ def build_policy_coverage_report(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         pdf_name=str((ctx.get_framework_metadata() or {}).get("pdf_name") or ""),
         # Node-level drop accounting
-        dropped_attach_to_expectation=reparent_stats.get(
-            "attach_to_expectation_count", 0
+        dropped_attach_to_expectation=reason_counter.get(
+            "dropped:attach_to_expectation_metadata", 0
         ),
         dropped_by_columns_signature=dropped_by_columns_signature,
         dropped_by_decision_type=dropped_by_decision_type,
         dropped_descriptor=dropped_descriptor,
         dropped_guidance=dropped_guidance,
         dropped_non_grouping_role=dropped_non_grouping_role,
-        pruned_empty_groupings=len(academic_standards.pruned_node_ids),
+        pruned_empty_groupings=reason_counter.get("dropped:pruned_empty_grouping", 0),
         total_canonical_nodes=len(ctx.nodes_by_id) - 1,
         total_emitted_sfis=len(academic_standards.items),
         # Aux reparenting
@@ -994,12 +994,6 @@ def validate_graph(
         ),
         "errors": len(report.errors()),
     }
-
-    if report.has_errors():
-        raise ValueError(
-            f"Graph validation failed with {len(report.errors())} error(s). "
-            f"See graph_validation_report.json for details."
-        )
 
     return report
 

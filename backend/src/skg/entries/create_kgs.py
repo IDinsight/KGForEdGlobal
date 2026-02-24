@@ -196,6 +196,12 @@ def create_kgs(
         policy_report=policy_report, validation_report=validation_report
     )
 
+    if validation_report.has_errors():
+        raise ValueError(
+            f"Graph validation failed with {len(validation_report.errors())} error(s). "
+            f"See graph_validation_report.json for details."
+        )
+
 
 @cli.command()
 def create(
