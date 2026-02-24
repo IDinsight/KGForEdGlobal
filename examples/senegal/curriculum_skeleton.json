@@ -180,7 +180,7 @@
 				]
 			},
 			{
-				"id": "strand-numeriques",
+				"id": "strand-numeriques-defs",
 				"canonical_name": {
 					"primary": "Activités numériques",
 					"translations": {
@@ -189,6 +189,11 @@
 				},
 				"emit": "emit_grouping",
 				"grouping_role": "strand",
+				"match_phrases": [
+					"activités numériques",
+					"kenug xayma"
+				],
+				"doc_note": "Split from strand-numeriques: covers palier definition blocks only. Matches the 'Activités numériques' heading in the document. Canonical ID will merge with strand-numeriques-ap since both share the same role, title, and ancestor path.",
 				"children": [
 					{
 						"id": "num-palier-defs",
@@ -347,133 +352,161 @@
 							}
 						],
 						"match_phrases": []
-					},
+					}
+				]
+			},
+			{
+				"id": "planification",
+				"canonical_name": {
+					"primary": "Planification des apprentissages",
+					"translations": {
+						"wo": "Planifikasiyoŋ bu njàng mi"
+					}
+				},
+				"emit": "container_only",
+				"doc_note": "Top-level container for planification tables. Deliberately NOT nested under any strand so that context_groupings do not include a strand — the planification tables cover BOTH Activités numériques and Résolution de problèmes in their columns. Each leaf's source_label identifies its subject strand.",
+				"children": [
 					{
-						"id": "num-planification",
+						"id": "num-plan-ce1",
 						"canonical_name": {
-							"primary": "Planification des apprentissages — Activités numériques et Résolution de problèmes",
-							"translations": {
-								"wo": "Planifikasiyoŋ bu njàng mi"
-							}
+							"primary": "Planification CE1",
+							"translations": {}
 						},
+						"implicit": true,
 						"emit": "container_only",
-						"doc_note": "Planification tables are presented under the 'Activités numériques' heading, but each planification row includes BOTH an 'Activités numériques' column and an 'Activités résolution de problèmes' column (cross-strand scope-and-sequence).",
+						"grouping_role": "grade_level",
+						"grade": "CE1",
 						"children": [
 							{
-								"id": "num-plan-ce1",
+								"id": "num-plan-ce1-label",
 								"canonical_name": {
-									"primary": "Planification CE1",
+									"primary": "Tableau de planification des apprentissages (CE1)",
 									"translations": {}
 								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE1",
-								"children": [
-									{
-										"id": "num-plan-ce1-label",
-										"canonical_name": {
-											"primary": "Tableau de planification des apprentissages (CE1)",
-											"translations": {}
-										},
-										"emit": "ignore",
-										"doc_note": "Consumes the planification intro line preceding the planification table.",
-										"match_phrases": [
-											"tableau de planification des apprentissages (niveau 1: ce1)"
-										]
-									},
-									{
-										"id": "tableau-2",
-										"canonical_name": {
-											"primary": "Tableau 2 — Planification CE1: Activités numériques et Résolution de problèmes (Semaines 1–25)",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "guidance",
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)semaine|palier",
-												"role": "grouping:week"
-											},
-											{
-												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-												"role": "leaf:guidance",
-												"source_label_override": "Activités numériques"
-											},
-											{
-												"header_pattern": "(?i)r[ée]solution",
-												"role": "leaf:guidance",
-												"source_label_override": "Résolution de problèmes"
-											}
-										],
-										"doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French).",
-										"match_phrases": [
-											"tableau 2"
-										],
-										"match_target": "caption"
-									}
-								],
-								"match_phrases": []
+								"emit": "ignore",
+								"doc_note": "Consumes the planification intro line preceding the planification table.",
+								"match_phrases": [
+									"tableau de planification des apprentissages (niveau 1: ce1)"
+								]
 							},
 							{
-								"id": "num-plan-ce2",
+								"id": "tableau-2",
 								"canonical_name": {
-									"primary": "Planification CE2",
+									"primary": "Tableau 2 — Planification CE1: Activités numériques et Résolution de problèmes (Semaines 1–25)",
 									"translations": {}
 								},
-								"implicit": true,
-								"emit": "container_only",
-								"grouping_role": "grade_level",
-								"grade": "CE2",
-								"children": [
+								"emit": "emit_table_rows",
+								"leaf_role": "expectation",
+								"column_mappings": [
 									{
-										"id": "num-plan-ce2-label",
-										"canonical_name": {
-											"primary": "Tableau de planification des apprentissages (CE2)",
-											"translations": {}
-										},
-										"emit": "ignore",
-										"doc_note": "Consumes the planification intro line preceding the planification table.",
-										"match_phrases": [
-											"tableau de planification des apprentissages (niveau 2: ce2)"
+										"header_pattern": "(?i)semaine|palier",
+										"role": "grouping:week",
+										"grouping_role_overrides": [
+											{
+												"cell_pattern": "(?i)^\\s*palier",
+												"role": "grouping:substage"
+											}
 										]
 									},
 									{
-										"id": "tableau-3",
-										"canonical_name": {
-											"primary": "Tableau 3 — Planification CE2: Activités numériques et Résolution de problèmes (Semaines 1–25)",
-											"translations": {}
-										},
-										"emit": "emit_table_rows",
-										"leaf_role": "guidance",
-										"column_mappings": [
-											{
-												"header_pattern": "(?i)semaine|palier",
-												"role": "grouping:week"
-											},
-											{
-												"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
-												"role": "leaf:guidance",
-												"source_label_override": "Activités numériques"
-											},
-											{
-												"header_pattern": "(?i)r[ée]solution",
-												"role": "leaf:guidance",
-												"source_label_override": "Résolution de problèmes"
-											}
-										],
-										"doc_note": "Same structure as Tableau 2, for CE2.",
-										"match_phrases": [
-											"tableau 3"
-										],
-										"match_target": "caption"
+										"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
+										"role": "leaf:expectation",
+										"source_label_override": "Activités numériques"
+									},
+									{
+										"header_pattern": "(?i)r[ée]solution",
+										"role": "leaf:expectation",
+										"source_label_override": "Résolution de problèmes"
 									}
 								],
-								"match_phrases": []
+								"doc_note": "25-week planning grid. 3 columns: Semaine/Palier, Activités numériques, Résolution de problèmes. Each cell bilingual (Wolof then French).",
+								"match_phrases": [
+									"tableau 2"
+								],
+								"match_target": "caption"
 							}
 						],
 						"match_phrases": []
 					},
+					{
+						"id": "num-plan-ce2",
+						"canonical_name": {
+							"primary": "Planification CE2",
+							"translations": {}
+						},
+						"implicit": true,
+						"emit": "container_only",
+						"grouping_role": "grade_level",
+						"grade": "CE2",
+						"children": [
+							{
+								"id": "num-plan-ce2-label",
+								"canonical_name": {
+									"primary": "Tableau de planification des apprentissages (CE2)",
+									"translations": {}
+								},
+								"emit": "ignore",
+								"doc_note": "Consumes the planification intro line preceding the planification table.",
+								"match_phrases": [
+									"tableau de planification des apprentissages (niveau 2: ce2)"
+								]
+							},
+							{
+								"id": "tableau-3",
+								"canonical_name": {
+									"primary": "Tableau 3 — Planification CE2: Activités numériques et Résolution de problèmes (Semaines 1–25)",
+									"translations": {}
+								},
+								"emit": "emit_table_rows",
+								"leaf_role": "expectation",
+								"column_mappings": [
+									{
+										"header_pattern": "(?i)semaine|palier",
+										"role": "grouping:week",
+										"grouping_role_overrides": [
+											{
+												"cell_pattern": "(?i)^\\s*palier",
+												"role": "grouping:substage"
+											}
+										]
+									},
+									{
+										"header_pattern": "(?i)activit[ée]s\\s+num[ée]riques",
+										"role": "leaf:expectation",
+										"source_label_override": "Activités numériques"
+									},
+									{
+										"header_pattern": "(?i)r[ée]solution",
+										"role": "leaf:expectation",
+										"source_label_override": "Résolution de problèmes"
+									}
+								],
+								"doc_note": "Same structure as Tableau 2, for CE2.",
+								"match_phrases": [
+									"tableau 3"
+								],
+								"match_target": "caption"
+							}
+						],
+						"match_phrases": []
+					}
+				],
+				"match_phrases": []
+			},
+			{
+				"id": "strand-numeriques-ap",
+				"canonical_name": {
+					"primary": "Activités numériques",
+					"translations": {
+						"wo": "Kenug xayma"
+					}
+				},
+				"emit": "container_only",
+				"implicit": true,
+				"grouping_role": "strand",
+				"doc_note": "Split from strand-numeriques: covers apprentissages ponctuels tables. Implicit container (no document heading to match — the heading was consumed by strand-numeriques-defs). Canonical ID merges with strand-numeriques-defs since both share the same role, title, and ancestor path.",
+				"match_phrases": [],
+				"children": [
 					{
 						"id": "num-apprentissages",
 						"canonical_name": {
@@ -859,10 +892,6 @@
 							"activités numériques"
 						]
 					}
-				],
-				"match_phrases": [
-					"activités numériques",
-					"kenug xayma"
 				]
 			},
 			{

@@ -168,6 +168,15 @@ class CurriculumColumnMapping(BaseSchema):
     header_pattern: str = Field(
         ..., description="Regex matched against header_rows_canonical cell text."
     )
+    grouping_role_overrides: list[CurriculumGroupingRoleOverride] = Field(
+        default_factory=list,
+        description=(
+            "Optional per-cell overrides for grouping columns. When a grouping column's "
+            "cell text matches an override's cell_pattern, the override role is used "
+            "instead of the column default. Evaluated in order; first match wins. "
+            "Only meaningful when the column's base role is 'grouping:*'."
+        ),
+    )
     role: str = Field(
         ...,
         description=(
@@ -223,6 +232,81 @@ class CurriculumColumnMapping(BaseSchema):
             except ValueError:
                 raise ValueError(
                     f"Unknown StatementRole in ColumnMapping.role: {value!r}. "
+                    f"Valid values: {[r.value for r in StatementRole]}"
+                ) from None
+
+        return self
+
+
+class CurriculumGroupingRoleOverride(BaseSchema):
+    """Cell-content-based override for a grouping column's role.
+
+    When a grouping column normally maps to one role (e.g., `grouping:week`), but
+    certain cell values indicate a different semantic role (e.g., "Palier 1" should be
+    `grouping:substage` rather than `grouping:week`), this override lets the skeleton
+    express that per-cell variation without splitting into separate column mappings.
+    """
+
+    cell_pattern: str = Field(
+        ...,
+        description=(
+            "Regex matched against the cell text (after stripping). "
+            "If it matches, the override `role` is used instead of the column default."
+        ),
+    )
+    role: str = Field(
+        ...,
+        description=(
+            "Override semantic role: 'grouping:{NodeRole.value}' or "
+            "'leaf:{StatementRole.value}'. Must NOT be 'skip'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_override_role_format(self) -> CurriculumGroupingRoleOverride:
+        """Ensure the override `role` is a valid 'kind:value' string (not 'skip').
+
+        Returns
+        -------
+        CurriculumGroupingRoleOverride
+            The validated override object.
+
+        Raises
+        ------
+        ValueError
+            If `role` is 'skip' or not in the correct 'kind:value' format.
+        """
+
+        if self.role == "skip":
+            raise ValueError(
+                "CurriculumGroupingRoleOverride.role must not be 'skip'. "
+                "Use column-level 'skip' instead."
+            )
+
+        parts = self.role.split(":", 1)
+
+        if len(parts) != 2 or parts[0] not in ("grouping", "leaf"):
+            raise ValueError(
+                f"CurriculumGroupingRoleOverride.role must be "
+                f"'grouping:{{role}}' or 'leaf:{{role}}'. Got: {self.role!r}"
+            )
+
+        kind, value = parts
+
+        if kind == "grouping":
+            try:
+                NodeRole(value)
+            except ValueError:
+                raise ValueError(
+                    f"Unknown NodeRole in override role: {value!r}. "
+                    f"Valid values: {[r.value for r in NodeRole]}"
+                ) from None
+        elif kind == "leaf":
+            try:
+                StatementRole(value)
+            except ValueError:
+                raise ValueError(
+                    f"Unknown StatementRole in override role: {value!r}. "
                     f"Valid values: {[r.value for r in StatementRole]}"
                 ) from None
 

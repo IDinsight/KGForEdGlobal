@@ -570,10 +570,11 @@ def _compute_export_children(
                 if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
             )
 
-            new_kids = _reparent_aux_under_expectations(
+            new_kids, child_aux_consumed = _reparent_aux_under_expectations(
                 aux_attach_to_expectation=aux_attach_to_expectation,
                 config=config,
                 ctx=ctx,
+                emit_flag=emit_flag,
                 export_children=export_children,
                 ordered_kids=ordered_emitted_kids,
             )
@@ -586,6 +587,7 @@ def _compute_export_children(
                 if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
             }
             reparented_count += aux_before - len(orphan_ids_in_batch)
+            reparented_count += child_aux_consumed
             orphan_aux_count += len(orphan_ids_in_batch)
             orphan_aux_node_ids.update(orphan_ids_in_batch)
         else:
@@ -1656,13 +1658,26 @@ def _reparent_aux_under_expectations(
     aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
+    emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
     ordered_kids: list[str],
-) -> list[str]:
-    """Re-parent aux statements under their preceding expectation sibling.
+) -> tuple[list[str], int]:
+    """Re-parent aux statements under their owning expectation.
 
     Walks the ordered children of a grouping node, attaching aux nodes either to
-    expectation metadata or as export-time children of the last expectation.
+    expectation metadata or as export-time children of the owning expectation.
+
+    Supports two canonical IR layouts:
+
+    1. **Sibling layout**: guidance/descriptor nodes are siblings of expectation nodes
+        under a shared grouping parent. Aux nodes are matched to the immediately
+        preceding expectation in sibling order.
+    2. **Child layout**: guidance/descriptor nodes are direct children of their owning
+        expectation in the canonical IR tree.  These are discovered by inspecting
+        `ctx.children_by_parent` for each expectation encountered.
+
+    Both layouts may coexist within the same IR; the function handles them in a single
+    pass.
 
     Parameters
     ----------
@@ -1672,6 +1687,9 @@ def _reparent_aux_under_expectations(
         The CreateKGConfig for export.
     ctx
         The ExportContext for the CanonicalIR.
+    emit_flag
+        Node-level emit flags. Used to filter canonical-IR children of expectations so
+        that only currently-emittable aux nodes are harvested.
     export_children
         Mutable mapping of parent -> children being built up during export.
     ordered_kids
@@ -1679,13 +1697,60 @@ def _reparent_aux_under_expectations(
 
     Returns
     -------
-    list[str]
-        The new ordered children for the parent (non-aux and un-reparented nodes).
+    tuple[list[str], int]
+        A 2-tuple of (new_kids, child_aux_consumed_count). *new_kids* is the filtered
+        ordered children for the parent (non-aux and un-reparented nodes).
+        *child_aux_consumed_count* is the number of aux nodes that were harvested from
+        the canonical-IR children of expectations (child layout).
     """
 
     last_expectation: Optional[str] = None
     new_kids: list[str] = []
     prefer_en = config.description_text_policy == "prefer_text_en"
+    child_aux_consumed: int = 0
+
+    def _attach_aux(aux_node_id: str, target_expectation_id: str) -> None:
+        """Process a single aux node: attach as metadata or as an export child.
+
+        Parameters
+        ----------
+        aux_node_id
+            The canonical node ID of the aux statement to attach.
+        target_expectation_id
+            The canonical node ID of the expectation to which the aux statement should
+            be attached.
+        """
+
+        node = ctx.nodes_by_id[aux_node_id]
+        role = str(node.get("role") or "")
+
+        attach_to_metadata = (
+            role == StatementRole.GUIDANCE.value
+            and config.guidance_handling == "attach_to_expectation_metadata"
+        ) or (
+            role == StatementRole.DESCRIPTOR.value
+            and config.descriptor_handling == "attach_to_expectation_metadata"
+        )
+
+        if attach_to_metadata:
+            bbox = node.get("bbox")
+            aux_payload: dict[str, Any] = {
+                "role": role,
+                "text": node_display_text(node=node, prefer_text_en=prefer_en),
+                "canonical_node_id": aux_node_id,
+                "page_indices": node.get("page_indices", []),
+                "source_decision_ids": node.get("source_decision_ids", []),
+                "source_segment_ids": node.get("source_segment_ids", []),
+                "bbox": bbox,
+            }
+
+            if bbox is not None:
+                aux_payload["bbox_ref"] = "framework.metadata.provenance_context.bbox"
+
+            aux_attach_to_expectation[target_expectation_id].append(aux_payload)
+        else:
+            export_children.setdefault(target_expectation_id, [])
+            export_children[target_expectation_id].append(aux_node_id)
 
     for cid in ordered_kids:
         node = ctx.nodes_by_id[cid]
@@ -1694,44 +1759,29 @@ def _reparent_aux_under_expectations(
         if role == StatementRole.EXPECTATION.value:
             last_expectation = cid
             new_kids.append(cid)
+
+            # Child layout: harvest aux nodes that are direct children of this
+            # expectation in the canonical IR.
+            for child_id in ctx.children_by_parent.get(cid, []):
+                if not emit_flag.get(child_id, False):
+                    continue
+
+                child_role = str(ctx.nodes_by_id[child_id].get("role") or "")
+
+                if child_role in AUX_ROLES:
+                    _attach_aux(child_id, cid)
+                    child_aux_consumed += 1
+
             continue
 
+        # Sibling layout: aux following an expectation in sibling order.
         if role in AUX_ROLES and last_expectation:
-            attach_to_metadata = (
-                role == StatementRole.GUIDANCE.value
-                and config.guidance_handling == "attach_to_expectation_metadata"
-            ) or (
-                role == StatementRole.DESCRIPTOR.value
-                and config.descriptor_handling == "attach_to_expectation_metadata"
-            )
-
-            if attach_to_metadata:
-                bbox = node.get("bbox")
-                aux_payload = {
-                    "role": role,
-                    "text": node_display_text(node=node, prefer_text_en=prefer_en),
-                    "canonical_node_id": cid,
-                    "page_indices": node.get("page_indices", []),
-                    "source_decision_ids": node.get("source_decision_ids", []),
-                    "source_segment_ids": node.get("source_segment_ids", []),
-                    "bbox": bbox,
-                }
-
-                if bbox is not None:
-                    aux_payload["bbox_ref"] = (
-                        "framework.metadata.provenance_context.bbox"
-                    )
-
-                aux_attach_to_expectation[last_expectation].append(aux_payload)
-                continue
-
-            export_children.setdefault(last_expectation, [])
-            export_children[last_expectation].append(cid)
+            _attach_aux(cid, last_expectation)
             continue
 
         new_kids.append(cid)
 
-    return new_kids
+    return new_kids, child_aux_consumed
 
 
 def _sort_order_map(
