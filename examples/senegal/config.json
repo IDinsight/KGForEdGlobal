@@ -53,7 +53,7 @@
 		"case_uri_base": "urn:lc:case:",
 		"descriptor_handling": "attach_to_expectation_metadata",
 		"export_dialect": "global_relaxed",
-		"generate_progressions": true,
+		"generate_progressions": false,
 		"grouping_role_policy": "whitelist",
 		"grouping_roles_whitelist": [
 			"stage",
