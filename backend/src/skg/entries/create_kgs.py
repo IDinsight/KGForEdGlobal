@@ -118,11 +118,6 @@ def create_kgs(
         kg_dirs=kg_dirs,
         provenance_context=provenance_context,
     )
-    logger.info(
-        f"Exported Academic Standards KG: "
-        f"{len(academic_standards.items)} items, "
-        f"{len(academic_standards.relationships)} `hasChild` relationships"
-    )
 
     # 4.
     learning_components = export_learning_components(
@@ -130,12 +125,6 @@ def create_kgs(
         config=config,
         ctx=kg_export_ctx,
         kg_dirs=kg_dirs,
-    )
-
-    logger.info(
-        f"Exported Learning Components KG: "
-        f"{len(learning_components.learning_components)} components, "
-        f"{len(learning_components.supports_relationships)} `supports` relationships"
     )
 
     academic_bundle = open_json_type(
@@ -163,12 +152,6 @@ def create_kgs(
             config=config,
             ctx=kg_export_ctx,
             kg_dirs=kg_dirs,
-        )
-
-        logger.info(
-            f"Exported Learning Progressions KG: "
-            f"{len(learning_progressions.builds_towards_relationships)} `buildsTowards` relationships, "
-            f"{len(learning_progressions.relates_to_relationships)} `relatesTo` relationships"
         )
 
         lp_bundle = open_json_type(
@@ -210,15 +193,8 @@ def create_kgs(
         validation_report=validation_report,
     )
     log_console_summary(
-        policy_report=policy_report,
-        validation_report=validation_report,
+        policy_report=policy_report, validation_report=validation_report
     )
-
-    if validation_report.has_errors():
-        raise ValueError(
-            f"Graph validation failed with {len(validation_report.errors())} error(s). "
-            f"See graph_validation_report.json for details."
-        )
 
 
 @cli.command()

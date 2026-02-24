@@ -976,6 +976,12 @@ def validate_graph(
         "warnings": len(report.warnings()),
     }
 
+    if report.has_errors():
+        raise ValueError(
+            f"Graph validation failed with {len(report.errors())} error(s). "
+            f"See graph_validation_report.json for details."
+        )
+
     return report
 
 

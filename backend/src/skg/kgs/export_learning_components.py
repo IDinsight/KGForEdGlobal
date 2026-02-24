@@ -547,6 +547,14 @@ def export_learning_components(
         "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
     }
 
-    return LearningComponentsExport(
+    learning_components = LearningComponentsExport(
         learning_components=lcs, supports_relationships=rels, lc_stats=lc_stats
     )
+
+    logger.info(
+        f"Exported Learning Components KG: "
+        f"{len(learning_components.learning_components)} components, "
+        f"{len(learning_components.supports_relationships)} `supports` relationships"
+    )
+
+    return learning_components

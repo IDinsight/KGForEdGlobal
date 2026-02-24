@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from typing import Any, DefaultDict, Optional
 from uuid import UUID, uuid5
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
 from skg.kgs.schemas import (
     HierarchyOrderExport,
@@ -2011,6 +2014,12 @@ def export_academic_standards(
         json_info=_build_academic_standards_graph_bundle(
             academic_standards=academic_standards, config=config, ctx=ctx
         ),
+    )
+
+    logger.info(
+        f"Exported Academic Standards KG: "
+        f"{len(academic_standards.items)} items, "
+        f"{len(academic_standards.relationships)} `hasChild` relationships"
     )
 
     return academic_standards
