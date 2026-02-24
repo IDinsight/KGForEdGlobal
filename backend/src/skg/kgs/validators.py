@@ -213,9 +213,23 @@ def validate_within_grade_relates_to(
 
     _check_common_edge_invariants(directed=False, response=response)
 
+    all_allowed = allowed_uuids_a | allowed_uuids_b
+
     for e in response.edges:
         if e.source_sfi_uuid == e.target_sfi_uuid:
             raise QualityError("Self-edge is not allowed.")
+
+        # Reject hallucinated UUIDs before checking the bridge constraint so that the
+        # error message is specific rather than the generic "must connect one item from
+        # each thread" which obscures the real problem.
+        if e.source_sfi_uuid not in all_allowed:
+            raise QualityError(
+                f"Source UUID {e.source_sfi_uuid} not found in either thread."
+            )
+        if e.target_sfi_uuid not in all_allowed:
+            raise QualityError(
+                f"Target UUID {e.target_sfi_uuid} not found in either thread."
+            )
 
         # Check membership.
         src_in_a = e.source_sfi_uuid in allowed_uuids_a

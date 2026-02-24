@@ -141,7 +141,7 @@ def _best_map(
     best: dict[tuple[str, str], tuple[float, str]] = {}
 
     for ee in resp.edges:
-        a, b = canon_str_pair(ee.source_sfi_uuid.strip(), ee.target_sfi_uuid.strip())
+        a, b = canon_str_pair(ee.source_sfi_uuid, ee.target_sfi_uuid)
         c = float(ee.confidence)
         r = str(ee.rationale or "")
 
@@ -701,6 +701,59 @@ def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
             best[k] = e2
 
     return list(best.values())
+
+
+def _emit_relationship(
+    *,
+    candidate: CandidateEdge,
+    config: CreateKGConfig,
+    sfi_index: Optional[dict[str, dict[str, Any]]] = None,
+) -> Relationship:
+    """Convert a CandidateEdge to a Relationship, enriching metadata as needed.
+
+    Parameters
+    ----------
+    candidate
+        The CandidateEdge instance to convert into a Relationship. This edge is
+        expected to have attributes such as confidence, evidence, inference_source,
+        inference_type, rel_type, source_sfi_uuid, target_sfi_uuid, and metadata
+        containing any additional information from the inference process.
+    config
+        The knowledge graph run configuration.
+    sfi_index
+        An optional index mapping SFI UUIDs to their corresponding data, which can be
+        used to enrich the metadata of the final relationships if needed.
+
+    Returns
+    -------
+    Relationship
+        A Relationship instance constructed from the CandidateEdge, with enriched
+        metadata that includes the original metadata from the edge as well as
+        additional fields such as confidence, evidence, inference source/type, and
+        optionally source/target SFI context if an sfi_index is provided.
+    """
+
+    metadata = dict(candidate.metadata)
+    metadata.update(
+        {
+            "confidence": candidate.confidence,
+            "evidence": candidate.evidence,
+            "inference_source": candidate.inference_source,
+            "inference_type": candidate.inference_type,
+        }
+    )
+
+    if sfi_index:
+        metadata["source_sfi_context"] = sfi_index.get(str(candidate.source_sfi_uuid))
+        metadata["target_sfi_context"] = sfi_index.get(str(candidate.target_sfi_uuid))
+
+    return _build_relationship(
+        config=config,
+        metadata=metadata,
+        rel_type=candidate.rel_type,
+        source=candidate.source_sfi_uuid,
+        target=candidate.target_sfi_uuid,
+    )
 
 
 def _extract_code_tuple(
@@ -1860,56 +1913,15 @@ def _process_and_filter_candidates(
         max_edges_per_sfi=int(config.progressions_relates_to_max_edges_per_sfi),
     )
 
-    builds_relationships: list[Relationship] = []
-    relates_relationships: list[Relationship] = []
+    builds_relationships: list[Relationship] = [
+        _emit_relationship(candidate=e, config=config, sfi_index=sfi_index)
+        for e in builds_kept
+    ]
 
-    def _emit(e: CandidateEdge) -> Relationship:
-        """Convert a CandidateEdge to a Relationship, enriching metadata as needed.
-
-        Parameters
-        ----------
-        e
-            The CandidateEdge instance to convert into a Relationship. This edge is
-            expected to have attributes such as confidence, evidence, inference_source,
-            inference_type, rel_type, source_sfi_uuid, target_sfi_uuid, and metadata
-            containing any additional information from the inference process.
-
-        Returns
-        -------
-        Relationship
-            A Relationship instance constructed from the CandidateEdge, with enriched
-            metadata that includes the original metadata from the edge as well as
-            additional fields such as confidence, evidence, inference source/type, and
-            optionally source/target SFI context if an sfi_index is provided.
-        """
-
-        metadata = dict(e.metadata)
-        metadata.update(
-            {
-                "confidence": e.confidence,
-                "evidence": e.evidence,
-                "inference_source": e.inference_source,
-                "inference_type": e.inference_type,
-            }
-        )
-
-        if sfi_index:
-            metadata["source_sfi_context"] = sfi_index.get(str(e.source_sfi_uuid))
-            metadata["target_sfi_context"] = sfi_index.get(str(e.target_sfi_uuid))
-
-        return _build_relationship(
-            config=config,
-            metadata=metadata,
-            rel_type=e.rel_type,
-            source=e.source_sfi_uuid,
-            target=e.target_sfi_uuid,
-        )
-
-    for e in builds_kept:
-        builds_relationships.append(_emit(e))
-
-    for e in relates_kept:
-        relates_relationships.append(_emit(e))
+    relates_relationships: list[Relationship] = [
+        _emit_relationship(candidate=e, config=config, sfi_index=sfi_index)
+        for e in relates_kept
+    ]
 
     stats = {
         "candidate_edges_total_after_dedupe": len(candidates),
@@ -1933,49 +1945,25 @@ def _process_and_filter_candidates(
     disposition_map: dict[tuple[str, str, str], str] = {}
 
     for e in builds_kept:
-        disposition_map[
-            _canon_disposition_key(
-                rel_type=e.rel_type,
-                source=str(e.source_sfi_uuid),
-                target=str(e.target_sfi_uuid),
-            )
-        ] = "kept"
+        _set_disposition(candidate=e, disposition_map=disposition_map, value="kept")
 
     for e in builds_dropped_low:
-        disposition_map[
-            _canon_disposition_key(
-                rel_type=e.rel_type,
-                source=str(e.source_sfi_uuid),
-                target=str(e.target_sfi_uuid),
-            )
-        ] = "dropped_low_conf"
+        _set_disposition(
+            candidate=e, disposition_map=disposition_map, value="dropped_low_conf"
+        )
 
     for e in relates_kept:
-        disposition_map[
-            _canon_disposition_key(
-                rel_type=e.rel_type,
-                source=str(e.source_sfi_uuid),
-                target=str(e.target_sfi_uuid),
-            )
-        ] = "kept"
+        _set_disposition(candidate=e, disposition_map=disposition_map, value="kept")
 
     for e in relates_dropped_low:
-        disposition_map[
-            _canon_disposition_key(
-                rel_type=e.rel_type,
-                source=str(e.source_sfi_uuid),
-                target=str(e.target_sfi_uuid),
-            )
-        ] = "dropped_low_conf"
+        _set_disposition(
+            candidate=e, disposition_map=disposition_map, value="dropped_low_conf"
+        )
 
     for e in relates_dropped_cap:
-        disposition_map[
-            _canon_disposition_key(
-                rel_type=e.rel_type,
-                source=str(e.source_sfi_uuid),
-                target=str(e.target_sfi_uuid),
-            )
-        ] = "dropped_cap"
+        _set_disposition(
+            candidate=e, disposition_map=disposition_map, value="dropped_cap"
+        )
 
     return builds_relationships, relates_relationships, stats, disposition_map
 
@@ -2369,15 +2357,20 @@ def _process_relates_to_work_item(
         ),
     )
 
-    # Call 2: upper -> lower.
+    # Call 2: upper -> lower (reverse presentation order for bidirectional
+    # confirmation). We keep the TRUE lower/upper grade labels so that the LLM is not
+    # told that Grade 5 is "lower" and Grade 4 is "upper". Instead we swap which items
+    # appear under which positional key. The validator's allowed_lo/allowed_hi sets are
+    # aligned to the *positional* keys (not the grade semantics) so the cross-grade
+    # constraint still holds.
     prompt_hi_lo = prompt_builder(
         forbidden_pairs=forbidden_pairs,
-        lower_grade_label=str(upper["level_label"]),
+        lower_grade_label=str(lower["level_label"]),
         lower_items=upper_items,
         max_edges_per_sfi=max_edges_per_sfi,
         min_confidence=config.progressions_relates_to_min_confidence,
         subject_label=subject_label,
-        upper_grade_label=str(lower["level_label"]),
+        upper_grade_label=str(upper["level_label"]),
         upper_items=lower_items,
     )
 
@@ -2568,6 +2561,42 @@ def _sample_items_across_threads(
             break
 
     return sampled
+
+
+def _set_disposition(
+    *,
+    candidate: CandidateEdge,
+    disposition_map: dict[tuple[str, str, str], str],
+    value: str,
+) -> None:
+    """Set disposition with logging on overwrite.
+
+    Parameters
+    ----------
+    candidate
+        The CandidateEdge for which to set the disposition. This edge is expected to
+        have attributes such as rel_type, source_sfi_uuid, and target_sfi_uuid, which
+        are used to construct the key for the disposition map.
+    disposition_map
+        The dictionary tracking edge dispositions, to be updated in-place.
+    value
+        The disposition value to set for this edge, which should be one of the
+        following strings: "kept", "dropped_low_conf", "dropped_cap", or
+        "dropped_dedupe". This value indicates the final disposition of the edge after
+        processing and filtering.
+    """
+
+    key = _canon_disposition_key(
+        rel_type=candidate.rel_type,
+        source=str(candidate.source_sfi_uuid),
+        target=str(candidate.target_sfi_uuid),
+    )
+    prev = disposition_map.get(key)
+
+    if prev is not None and prev != value:
+        logger.warning(f"Disposition overwrite: {key} was '{prev}', now '{value}'.")
+
+    disposition_map[key] = value
 
 
 def _sort_key_for_bucket_sfi(

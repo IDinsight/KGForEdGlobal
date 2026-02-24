@@ -222,13 +222,12 @@ def cross_stage_builds_towards(
     upper_grade_label: str,
     upper_items: list[dict[str, Any]],
 ) -> PromptPair:
-    """Cross-stage buildsTowards between non-adjacent grades within a normalized
+    """Cross-stage buildsTowards between adjacent *level ranges* within a normalized
     thread.
 
-    This is a more exploratory prompt to identify potential "long-range" dependencies
-    that might be missed in the adjacent-grade prompt. The model should be encouraged
-    to identify strong dependencies even if they skip intermediate grades, but should
-    not be forced to invent edges if the progression is more linear.
+    Used when at least one side is a banded/stage bucket (e.g., I–II, III–VI). Despite
+    the name "stage", this function is called only for adjacent level ranges in the
+    pipeline; it must NOT encourage skipping intermediate levels.
 
     Parameters
     ----------
@@ -265,11 +264,23 @@ def cross_stage_builds_towards(
         upper_items=upper_items,
     )
 
-    # Add one strong sentence so the model does not assume these are single grades.
+    # Rewrite the copied cross-grade prompt so it matches "adjacent level ranges"
+    # semantics.
+    sm = p.system_message
+    sm = sm.replace(
+        "TASK (Cross-Grade buildsTowards):",
+        "TASK (Cross-Stage buildsTowards):",
+    )
+    sm = sm.replace(
+        "You will receive standards from two ADJACENT grades that belong to the SAME conceptual thread.",
+        "You will receive standards from two ADJACENT level ranges (each may be a single grade or a banded stage) that belong to the SAME conceptual thread.",
+    )
+
     return PromptPair(
         system_message=(
-            p.system_message
-            + "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), not single grades. Treat this as adjacent level *ranges*; do not invent per-grade steps."
+            sm
+            + "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), not single grades. "
+            "Treat this as adjacent level *ranges*; do not invent per-grade steps and do not assume missing intermediate grades beyond what is provided."
         ),
         user_message=p.user_message,
     )
@@ -286,13 +297,11 @@ def cross_stage_relates_to(
     upper_grade_label: str,
     upper_items: list[dict[str, Any]],
 ) -> PromptPair:
-    """Cross-stage relatesTo between non-adjacent grades within a subject, excluding
-    buildsTowards pairs.
+    """Cross-stage relatesTo between adjacent *level ranges* within a subject,
+    excluding buildsTowards pairs.
 
-    This is a more exploratory prompt to identify potential "long-range" connections
-    that might be missed in the adjacent-grade prompt. The model should be encouraged
-    to identify strong connections even if they skip intermediate grades, but should
-    not be forced to invent edges if the connections are weak or superficial.
+    Used when at least one side is a banded/stage bucket. Called only for adjacent
+    level ranges in the pipeline; must not encourage skipping levels.
 
     Parameters
     ----------
@@ -332,10 +341,21 @@ def cross_stage_relates_to(
         upper_items=upper_items,
     )
 
-    # Add one strong sentence so the model does not assume these are single grades.
+    # Rewrite the copied cross-grade prompt so it matches "adjacent level ranges"
+    # semantics.
+    sm = p.system_message
+    sm = sm.replace(
+        "TASK (Cross-Grade relatesTo):",
+        "TASK (Cross-Stage relatesTo):",
+    )
+    sm = sm.replace(
+        "You will receive standards from two ADJACENT grades in the SAME subject.",
+        "You will receive standards from two ADJACENT level ranges (each may be a single grade or a banded stage) in the SAME subject.",
+    )
+
     return PromptPair(
         system_message=(
-            p.system_message
+            sm
             + "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), not single grades. "
             "Only emit relatesTo when the overlap is genuinely useful for teaching across these adjacent levels."
         ),
