@@ -1168,9 +1168,22 @@ def _materialize_table_rows(
             row_ancestor_keys.append(_grouping_key(g))
 
         # Row leaves.
+        #
+        # NB: Include a row-level disambiguator in the ancestor key chain so that
+        # leaves with identical normalized text across different table rows receive
+        # distinct canonical node IDs. Without this, ensure_node merges them into a
+        # single node and _emit_edge deduplicates the edge, causing the leaf to appear
+        # only after the *first* row's expectation.
+        row_leaf_ancestor_keys = list(row_ancestor_keys)
+        row_leaf_ancestor_keys.append(
+            f"table_row:{segment_id}:{row.row_index}:{row.col_index if row.col_index is not None else '-'}"
+        )
+
         for leaf in row.leaves:
             leaf_id = canonical_leaf_node_id(
-                ancestor_grouping_keys=row_ancestor_keys, doc_key=doc_key, leaf=leaf
+                ancestor_grouping_keys=row_leaf_ancestor_keys,
+                doc_key=doc_key,
+                leaf=leaf,
             )
 
             node = CanonicalNode(
