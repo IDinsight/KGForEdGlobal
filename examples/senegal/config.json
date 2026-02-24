@@ -69,7 +69,7 @@
 		],
 		"guidance_handling": "attach_to_expectation_metadata",
 		"jurisdiction_default": "Senegal",
-		"language_default": "fr",
+		"language_default": "mul",
 		"lc_max_splits_per_standard": 25,
 		"learning_component_policy": "1_to_1",
 		"license": "All rights reserved (source PDF)",

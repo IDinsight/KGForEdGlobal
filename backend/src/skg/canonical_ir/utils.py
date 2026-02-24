@@ -30,7 +30,6 @@ from skg.canonical_ir.schemas import (
 from skg.config import Settings
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import NodeRole, SegmentDecisionType, UnresolvedReason
 from skg.utils.general import QUOTES_TRANSLATION, make_dir, write_to_json
@@ -1570,235 +1569,6 @@ def _validate_and_handle_unresolved(
     return True
 
 
-def _validate_chunk_sequence(
-    *,
-    expected_end: int,
-    expected_start: int,
-    intervals: list[tuple[int, int]],
-    segment: Segment,
-) -> None:
-    """Helper to validate that sorted intervals cover the range
-    [expected_start, expected_end) contiguously without overlaps or gaps.
-
-    Parameters
-    ----------
-    expected_end
-        The expected exclusive end of the covered range.
-    expected_start
-        The expected inclusive start of the covered range.
-    intervals
-        The list of (start, end) intervals to validate.
-    segment
-        The Segment being validated.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    cursor = expected_start
-
-    for start, end in intervals:
-        if start >= end:
-            msg = (
-                f"Invalid chunk interval (start must be < end).\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  interval: [{start}, {end})"
-            )
-            logger.error(msg)
-            raise QualityError(msg)
-
-        if start < expected_start:
-            msg = (
-                f"Chunk interval begins before the table body rows (likely includes header rows).\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  header_row_count: {segment.header_row_count}\n"
-                f"  body_row_range: [{expected_start}, {expected_end})\n"
-                f"  interval: [{start}, {end})"
-            )
-            logger.error(msg)
-            raise QualityError(msg)
-
-        if end > expected_end:
-            msg = (
-                f"Chunk interval ends past the end of the table rows.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  table_row_count: {expected_end}\n"
-                f"  interval: [{start}, {end})"
-            )
-            logger.error(msg)
-            raise QualityError(msg)
-
-        if start < cursor:
-            msg = (
-                f"Overlapping chunk intervals detected.\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  overlap_at: row_index={start}\n"
-                f"  previous_end: {cursor}\n"
-                f"  interval: [{start}, {end})"
-            )
-            logger.error(msg)
-            raise QualityError(msg)
-
-        if start > cursor:
-            msg = (
-                f"Gap between chunk intervals detected (missing coverage).\n"
-                f"  segment_id: {segment.segment_id}\n"
-                f"  missing_row_range: [{cursor}, {start})\n"
-                f"  next_interval: [{start}, {end})"
-            )
-            logger.error(msg)
-            raise QualityError(msg)
-
-        cursor = end
-
-    if cursor != expected_end:
-        msg = (
-            f"Chunk intervals do not fully cover the table body rows.\n"
-            f"  segment_id: {segment.segment_id}\n"
-            f"  covered_end: {cursor}\n"
-            f"  expected_end: {expected_end}\n"
-            f"  body_row_range: [{expected_start}, {expected_end})"
-        )
-        logger.error(msg)
-        raise QualityError(msg)
-
-
-def _validate_decision_types(
-    *, all_decisions: list[Any], has_chunks: bool, segment_id: str
-) -> None:
-    """Ensure no mixing of chunked/unchunked decisions and no malformed ranges.
-
-    Parameters
-    ----------
-    all_decisions
-        The list of all SegmentDecisions for the segment.
-    has_chunks
-        Whether any of the decisions are chunked (have non-None row_range_start/end).
-    segment_id
-        The ID of the segment being validated (used for error messages).
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    # If we have chunks, we cannot have any "unchunked" (both None) decisions.
-    has_unchunked = any(
-        (d.row_range_start is None and d.row_range_end is None) for d in all_decisions
-    )
-
-    if has_chunks and has_unchunked:
-        chunk_count = sum(
-            1
-            for d in all_decisions
-            if d.row_range_start is not None and d.row_range_end is not None
-        )
-        msg = (
-            f"Chunked + unchunked SegmentDecisions detected for the same table segment. "
-            f"This can happen if you generated chunked decisions with one config and later "
-            f"generated an unchunked decision (or vice-versa).\n"
-            f"  segment_id: {segment_id}\n"
-            f"  chunk_decision_count: {chunk_count}"
-        )
-        logger.error(msg)
-        raise QualityError(msg)
-
-    # Half-Chunked (one none, one not none).
-    has_half_chunked = any(
-        (d.row_range_start is None) != (d.row_range_end is None) for d in all_decisions
-    )
-
-    if has_half_chunked:
-        msg = (
-            f"Half-chunked SegmentDecision detected "
-            f"(one of row_range_start/end is None, the other is not).\n"
-            f"  segment_id: {segment_id}"
-        )
-        logger.error(msg)
-        raise QualityError(msg)
-
-
-def _validate_interval_uniqueness(
-    *, chunk_decisions: list[Any], segment_id: str
-) -> None:
-    """Ensure no two decisions claim the exact same row interval.
-
-    Parameters
-    ----------
-    chunk_decisions
-        The list of chunked SegmentDecisions for the segment.
-    segment_id
-        The ID of the segment being validated.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    interval_to_ids: dict[tuple[int, int], list[str]] = {}
-
-    for d in chunk_decisions:
-        interval = (int(d.row_range_start), int(d.row_range_end))
-        interval_to_ids.setdefault(interval, []).append(d.decision_id)
-
-    duplicate_intervals = {k: v for k, v in interval_to_ids.items() if len(v) > 1}
-
-    if duplicate_intervals:
-        interval_sample = list(duplicate_intervals.items())[:5]
-        msg = (
-            f"Duplicate chunk intervals detected for the same table segment.\n"
-            f"  segment_id: {segment_id}\n"
-            f"  duplicates(sample): {interval_sample}"
-        )
-        logger.error(msg)
-        raise QualityError(msg)
-
-
-def _validate_single_table_segment(*, decisions: list[Any], segment: Any) -> None:
-    """Perform comprehensive validation of SegmentDecisions for a single TABLE segment,
-    ensuring consistent chunking, valid intervals, and contiguous coverage of the table
-    body rows.
-
-    Parameters
-    ----------
-    decisions
-        The list of SegmentDecisions for the segment.
-    segment
-        The Segment being validated.
-    """
-
-    # Filter for explicit chunk decisions.
-    chunk_decisions = [
-        d
-        for d in decisions
-        if d.row_range_start is not None and d.row_range_end is not None
-    ]
-
-    # If the table is not chunked (no chunk decisions found), we skip validation.
-    if not chunk_decisions:
-        return
-
-    _validate_decision_types(
-        all_decisions=decisions, has_chunks=True, segment_id=segment.segment_id
-    )
-    _validate_interval_uniqueness(
-        chunk_decisions=chunk_decisions, segment_id=segment.segment_id
-    )
-    _validate_chunk_sequence(
-        expected_end=len(segment.rows),
-        expected_start=segment.header_row_count,
-        intervals=sorted(
-            ((int(d.row_range_start), int(d.row_range_end)) for d in chunk_decisions),
-            key=lambda t: t,
-        ),
-        segment=segment,
-    )
-
-
 def apply_table_signatures(
     *, decisions: list[SegmentDecision], document_ir: Any
 ) -> list[SegmentDecision]:
@@ -2420,6 +2190,9 @@ def ensure_node(
         # Update existing in-place.
         setattr(existing, field_, _stable_extend_unique(base=base, extra=extra))
 
+    # page_indices must stay sorted (other list fields preserve first-seen order).
+    existing.page_indices = sorted(set(existing.page_indices))
+
     # Keep-first semantics, fill missing values if present.
     scalar_fields = (
         "normalized_text",
@@ -2517,8 +2290,8 @@ def merge_nodes_postpass(
             warnings.append(msg)
 
         # Merge provenance deterministically.
-        m.page_indices = _stable_extend_unique(
-            base=m.page_indices, extra=n.page_indices
+        m.page_indices = sorted(
+            set(_stable_extend_unique(base=m.page_indices, extra=n.page_indices))
         )
         m.source_segment_ids = _stable_extend_unique(
             base=m.source_segment_ids, extra=n.source_segment_ids
