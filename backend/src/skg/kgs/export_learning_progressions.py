@@ -2005,26 +2005,22 @@ def _process_single_standard(
     The bucketing logic computes three independent axes—grade ordinal, subject label,
     and thread key—using config-driven mappings:
 
-    1. **Grade ordinal** is resolved via `config.progressions_grade_label_map`. Items
-        whose `grade_key` is absent from the map are dropped.
+    1. **Level bounds** are resolved primarily from ordinals in `progression_context`
+        (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
+        we fall back to `config.progressions_grade_label_map` using `grade_key` or
+        `stage_key`.
     2. **Subject label** is resolved via `config.progressions_subject_role`. Items
         without a matching role get `UNSPECIFIED_SUBJECT`.
     3. **Thread key** is computed via `config.progressions_cross_grade_match_roles`.
-        Items with no matching roles become "unthreaded" and receive per-grade sentinel
-        thread keys to prevent false cross-grade matching.
+        Items with no matching roles become "unthreaded" and receive per-level sentinel
+        thread keys to prevent false cross-level matching.
 
     NB: Banded/stage-level curricula (e.g., Tanzania "Standard I–II",
-        "Standard III–VI"): Each SFI carries a single `grade_key` (from
-        `progression_context`), which maps to a single integer ordinal via
-        `progressions_grade_label_map`. This means the bucket stores
-        `grade_ordinal_low == grade_ordinal_high == mapped`. To represent a true banded
-        stage (low != high), the `progressions_grade_label_map` must map the stage
-        label to a *representative* ordinal (e.g., the low end), and then configure
-        cross-stage inference flags (`progressions_cross_stage_builds_towards`,
-        `progressions_cross_stage_relates_to`) to handle the banded adjacency. If a
-        curriculum contains SFIs at individual grade levels *and* banded stages, the
-        map must assign distinct ordinals so that `_levels_adjacent` can detect correct
-        adjacency.
+        "Standard III–VI"): When `progression_context` includes a true range
+        (low != high), the bucket stores `grade_ordinal_low != grade_ordinal_high`,
+        enabling cross-stage inference phases. If ordinals are unavailable and we rely
+        on the config map, the bucket is treated as a single representative level
+        (low == high).
 
     Parameters
     ----------
@@ -2059,34 +2055,72 @@ def _process_single_standard(
         )
         return
 
-    # Grade validation.
+    # Level validation (grade or stage).
     grade_key = progression_context.get("grade_key")
+    stage_key = progression_context.get("stage_key")
     normalized_grade_key = str(grade_key or "").strip().lower()
+    normalized_stage_key = str(stage_key or "").strip().lower()
+    normalized_level_key = normalized_grade_key or normalized_stage_key
 
-    if not normalized_grade_key:
+    # Prefer ordinals computed upstream in Academic Standards export.
+    g_lo = progression_context.get("grade_ordinal_low")
+    g_hi = progression_context.get("grade_ordinal_high")
+    s_lo = progression_context.get("stage_ordinal_low")
+    s_hi = progression_context.get("stage_ordinal_high")
+
+    if isinstance(g_lo, int) and isinstance(g_hi, int):
+        level_lo, level_hi = (min(g_lo, g_hi), max(g_lo, g_hi))
+    elif isinstance(s_lo, int) and isinstance(s_hi, int):
+        level_lo, level_hi = (min(s_lo, s_hi), max(s_lo, s_hi))
+    else:
+        # Fall back to config-driven mapping when ordinals are unavailable.
+        if not normalized_level_key:
+            drops.setdefault("missing_grade_key", []).append(
+                {"description": sfi.description, "sfi_uuid": sfi_uuid}
+            )
+            return
+
+        mapped = (config.progressions_grade_label_map or {}).get(normalized_level_key)
+
+        if mapped is None:
+            logger.warning(
+                f"progressions_grade_label_map: level key {normalized_level_key!r} "
+                f"(grade_key={grade_key!r}, stage_key={stage_key!r}) not found in map. "
+                f"Excluding SFI {sfi_uuid} from LP inference."
+            )
+            drops.setdefault("unmapped_grade_key", []).append(
+                {
+                    "description": sfi.description,
+                    "grade_key": grade_key,
+                    "stage_key": stage_key,
+                    "sfi_uuid": sfi_uuid,
+                }
+            )
+            return
+
+        level_lo = level_hi = int(mapped)
+
+    if not (isinstance(level_lo, int) and isinstance(level_hi, int)):
         drops.setdefault("missing_grade_key", []).append(
-            {"description": sfi.description, "sfi_uuid": sfi_uuid}
-        )
-        return
-
-    mapped = (config.progressions_grade_label_map or {}).get(normalized_grade_key)
-
-    if mapped is None:
-        logger.warning(
-            f"progressions_grade_label_map: grade_key {grade_key!r} "
-            f"(normalized: {normalized_grade_key!r}) not found in map. "
-            f"Excluding SFI {sfi_uuid} from LP inference."
-        )
-        drops.setdefault("unmapped_grade_key", []).append(
             {
                 "description": sfi.description,
                 "grade_key": grade_key,
+                "stage_key": stage_key,
                 "sfi_uuid": sfi_uuid,
             }
         )
         return
 
-    grade_label = f"LEVEL {mapped}"
+    # Bucket label (used as the top-level key for grouping buckets).
+    grade_label = (
+        (
+            stage_key.strip()
+            if isinstance(stage_key, str) and stage_key.strip()
+            else f"LEVEL {level_lo}-{level_hi}"
+        )
+        if level_hi != level_lo
+        else f"LEVEL {level_lo}"
+    )
 
     # Topic path validation.
     topic_key = progression_context.get("topic_path_key", "")
@@ -2125,26 +2159,29 @@ def _process_single_standard(
     thread_key = (
         lp_thread_key
         if lp_thread_key is not None
-        else f"__unthreaded__::{normalized_grade_key}"
+        else f"__unthreaded__::{normalized_level_key}"
     )
 
     # Bucket management.
     b = buckets[grade_label].get(effective_bucket_key)
 
     if not b:
-        stage_key = progression_context.get("stage_key")
         b = buckets[grade_label][effective_bucket_key] = {
             "bucket_key": f"{grade_label}::{effective_bucket_key}",
             "effective_bucket_key": effective_bucket_key,
             "grade_level": grade_label,
-            "grade_ordinal": mapped,
-            "grade_ordinal_low": mapped,
-            "grade_ordinal_high": mapped,
-            "stage_key": stage_key if isinstance(stage_key, str) else None,
+            "grade_ordinal": level_lo,
+            "grade_ordinal_low": level_lo,
+            "grade_ordinal_high": level_hi,
+            "stage_key": (
+                stage_key.strip()
+                if isinstance(stage_key, str) and stage_key.strip()
+                else None
+            ),
             "subject_label": subject_label,
             "thread_key": thread_key,
-            "normalized_topic_path_key": progression_context.get(
-                "normalized_topic_path_key", ""
+            "normalized_topic_path_key": str(
+                progression_context.get("thread_key") or ""
             ),
             "topic_path_key": effective_bucket_key,
             "topic_path": _path_string(topic_path_parts),
@@ -2894,8 +2931,8 @@ def group_standards_for_learning_progressions(
 
     Uses config-driven three-axis bucketing:
 
-    1. **Grade ordinal** resolved via `config.progressions_grade_label_map`. Items
-        whose `grade_key` is absent from the map are dropped.
+    1. **Level bounds** resolved from `progression_context` ordinals when present, with
+        a fallback to `config.progressions_grade_label_map`.
     2. **Subject label** resolved via `config.progressions_subject_role`.
     3. **Thread key** computed via `config.progressions_cross_grade_match_roles`.
 
