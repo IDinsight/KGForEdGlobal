@@ -376,35 +376,10 @@ def _detect_semantic_collision(
         warnings.append(msg)
         return True
 
-    def _semantic_norm_text(n: CanonicalNode) -> str:
-        """Return the normalized semantic text that should define this node.
-
-        Parameters
-        ----------
-        n
-            The CanonicalNode to extract normalized semantic text from.
-
-        Returns
-        -------
-        str
-            The normalized semantic text.
-        """
-
-        # Prefer stored normalized_text (debug snapshot).
-        if n.normalized_text:
-            return n.normalized_text
-
-        # Otherwise derive it deterministically from the available text.
-        if n.title is not None and n.title.text:
-            return _normalize_text(n.title.text)
-
-        if n.body is not None and n.body.text:
-            return _normalize_text(n.body.text)
-
-        return ""
-
-    existing_norm = _semantic_norm_text(existing)
-    new_norm = _semantic_norm_text(node)
+    # compile_canonical_ir() always populates normalized_text on every node it creates,
+    # so we can rely on it directly without a fallback derivation path.
+    existing_norm = existing.normalized_text or ""
+    new_norm = node.normalized_text or ""
 
     # True semantic mismatch (same deterministic ID but different normalized meaning).
     if existing_norm and new_norm and existing_norm != new_norm:
@@ -948,12 +923,17 @@ def _materialize_decision_structure(
         edges=edges,
         next_order_index=next_order_index,
         nodes_by_id=nodes_by_id,
+        page_indices=page_indices,
         root_id=root_id,
         segment=segment,
         warnings=warnings,
     )
 
     # Apply decision.groupings[] under the context stack tip.
+    #
+    # NB: decision.groupings[] are segment-local (parented under context tip, NOT
+    # pushed onto active_context_stack). Persistence across decisions is managed
+    # exclusively through context_groupings[].
     for g in decision.groupings:
         g_title = canonical_grouping_title(role=g.role, title=g.title)
         node_id = canonical_grouping_node_id(
@@ -1024,6 +1004,9 @@ def _materialize_decision_structure(
             warnings.append(msg)
 
         # Table decisions may emit leaves directly.
+        #
+        # NB: decision.leaves and decision.rows are mutually exclusive (enforced by
+        # SegmentDecision._check_table_rows_vs_leaves).
         if decision.leaves:
             _materialize_leaves(
                 ancestor_keys=ancestor_keys,
@@ -1044,7 +1027,7 @@ def _materialize_decision_structure(
             )
 
         # Preferred: row-level decisions.
-        if decision.rows:
+        elif decision.rows:
             _materialize_table_rows(
                 ancestor_keys=ancestor_keys,
                 child_to_parent=child_to_parent,
@@ -1169,19 +1152,125 @@ def _materialize_table_rows(
 
         # Row leaves.
         #
-        # NB: Include a row-level disambiguator in the ancestor key chain so that
-        # leaves with identical normalized text across different table rows receive
-        # distinct canonical node IDs. Without this, ensure_node merges them into a
-        # single node and _emit_edge deduplicates the edge, causing the leaf to appear
-        # only after the *first* row's expectation.
-        row_leaf_ancestor_keys = list(row_ancestor_keys)
-        row_leaf_ancestor_keys.append(
-            f"table_row:{segment_id}:{row.row_index}:{row.col_index if row.col_index is not None else '-'}"
+        # Tables sometimes repeat the *same* expectation text across multiple
+        # consecutive rows while varying supporting fields. In that case, we want
+        # exactly one expectation node per (section path + grouping context + field
+        # text), and we want *all* row-specific guidance/descriptor leaves to attach
+        # under that shared expectation.
+        #
+        # Strategy:
+        #
+        # 1. If a row contains exactly one expectation leaf, treat it as the row anchor.
+        #    - Expectation IDs are computed WITHOUT the row-level disambiguator so
+        #       repeated OA text merges into a single node.
+        #    - Guidance/descriptor IDs keep a row-level disambiguator so each row
+        #       produces distinct aux nodes (even if the text repeats).
+        # 2. Otherwise (0 or > 1 expectation leaves), fall back to:
+        #    - Emit all leaves as children of the row parent, with the row-level
+        #       disambiguator applied to all leaves.
+        row_disambiguator = (
+            f"table_row:{segment_id}:{row.row_index}:"
+            f"{row.col_index if row.col_index is not None else '-'}"
         )
 
+        expectation_leaves = [
+            leaf for leaf in row.leaves if _role_value(role=leaf.role) == "expectation"
+        ]
+
+        # Precompute the "legacy" ancestor key chain for leaves that must remain unique
+        # per row (or when we cannot confidently anchor to a single expectation).
+        legacy_leaf_ancestor_keys = list(row_ancestor_keys)
+        legacy_leaf_ancestor_keys.append(row_disambiguator)
+
+        anchored_expectation_id: Optional[str] = None
+        expectation_anchor_key: Optional[str] = None
+
+        if len(expectation_leaves) == 1:
+            # Emit (or re-use) the anchored expectation node without row disambiguation.
+            expectation = expectation_leaves[0]
+            anchored_leaf_id = canonical_leaf_node_id(
+                ancestor_grouping_keys=row_ancestor_keys,
+                doc_key=doc_key,
+                leaf=expectation,
+            )
+
+            expectation_node = CanonicalNode(
+                bbox=row_bbox,
+                body=TextUnit(
+                    language="und", text=canonical_storage_text(expectation.body)
+                ),
+                list_marker=expectation.list_marker,
+                local_code=expectation.local_code,
+                node_id=anchored_leaf_id,
+                normalized_text=_normalize_text(text=expectation.body),
+                page_indices=page_indices,
+                role=expectation.role,
+                section_path_text=section_path_text,
+                source_decision_ids=[decision.decision_id],
+                source_label=expectation.source_label,
+                source_segment_ids=[segment_id],
+                source_type="table",
+                title=None,
+            )
+
+            anchored_expectation_id = ensure_node(
+                node=expectation_node, nodes_by_id=nodes_by_id, warnings=warnings
+            )
+            _emit_edge(
+                child_id=anchored_expectation_id,
+                child_to_parent=child_to_parent,
+                decision_id=decision.decision_id,
+                edges=edges,
+                edges_by_key=edges_by_key,
+                next_order_index=next_order_index,
+                parent_id=row_parent_id,
+                segment_id=segment_id,
+                warnings=warnings,
+            )
+
+            # Aux leaves will be scoped under the expectation via an anchor key that is
+            # stable across reruns and does not depend on child insertion order.
+            expectation_anchor_key = f"expectation_anchor:{anchored_leaf_id}"
+
+        elif len(expectation_leaves) > 1:
+            msg = (
+                "table_row_multiple_expectations_falling_back_to_legacy:"
+                f"segment={segment_id} row={row.row_index}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # Emit leaves.
         for leaf in row.leaves:
+            role_value = _role_value(role=leaf.role)
+
+            # Skip: expectation leaf already emitted as the anchor node (if applicable).
+            if anchored_expectation_id is not None and role_value == "expectation":
+                continue
+
+            is_aux = role_value in {"descriptor", "guidance"}
+            parent_for_leaf = (
+                anchored_expectation_id
+                if anchored_expectation_id is not None and is_aux
+                else row_parent_id
+            )
+
+            # Ancestor key chain:
+            # 1. Anchored aux leaves: row context + expectation anchor + row
+            #   disambiguator.
+            # 2. Everything else: row context + row disambiguator
+            if (
+                parent_for_leaf == anchored_expectation_id
+                and expectation_anchor_key is not None
+            ):
+                leaf_ancestor_keys = list(row_ancestor_keys)
+                leaf_ancestor_keys.append(expectation_anchor_key)
+                leaf_ancestor_keys.append(row_disambiguator)
+            else:
+                leaf_ancestor_keys = legacy_leaf_ancestor_keys
+
             leaf_id = canonical_leaf_node_id(
-                ancestor_grouping_keys=row_leaf_ancestor_keys,
+                ancestor_grouping_keys=leaf_ancestor_keys,
                 doc_key=doc_key,
                 leaf=leaf,
             )
@@ -1213,7 +1302,7 @@ def _materialize_table_rows(
                 edges=edges,
                 edges_by_key=edges_by_key,
                 next_order_index=next_order_index,
-                parent_id=row_parent_id,
+                parent_id=parent_for_leaf,
                 segment_id=segment_id,
                 warnings=warnings,
             )
@@ -1328,6 +1417,25 @@ def _resolve_collision(
     nodes_by_id[new_id] = node
 
     return new_id
+
+
+def _role_value(role: Any) -> str:
+    """Return a normalized (case-folded) string value for a role.
+
+    Parameters
+    ----------
+    role
+        The role value (enum or string).
+
+    Returns
+    -------
+    str
+        The normalized role string.
+    """
+
+    value = getattr(role, "value", role)
+
+    return str(value).casefold()
 
 
 def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
@@ -2669,6 +2777,7 @@ def reconcile_context_stack(
     edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
     root_id: str,
     segment: Segment,
     warnings: list[str],
@@ -2697,6 +2806,9 @@ def reconcile_context_stack(
         The mapping of parent_id to next order index for child edges.
     nodes_by_id
         The mapping of node_id to CanonicalNode.
+    page_indices
+        The sorted, deduplicated page indices for the current segment (precomputed by
+        the caller to avoid redundant derivation from segment.segment_provenance).
     root_id
         The root node ID.
     segment
@@ -2711,7 +2823,6 @@ def reconcile_context_stack(
     """
 
     desired_keys = [_grouping_key(g) for g in desired_context]
-    page_indices = sorted({p.page_index for p in segment.segment_provenance})
     section_path_text = [h.text for h in (segment.section_path or [])]
     seg_id = segment.segment_id
     seg_kind = segment.kind

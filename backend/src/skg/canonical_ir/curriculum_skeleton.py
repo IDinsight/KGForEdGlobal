@@ -15,6 +15,7 @@ from loguru import logger
 from skg.canonical_ir.schemas import (
     CaptionBinding,
     CurriculumColumnMapping,
+    CurriculumGroupingRoleOverride,
     CurriculumSkeleton,
     CurriculumSkeletonNode,
     GroupingDecision,
@@ -323,6 +324,10 @@ class CurriculumResolvedColumnRole:
     role_value: str  # e.g., "strand", "expectation"
     source_label: str  # Column header text (for source_label)
 
+    grouping_role_overrides: list[CurriculumGroupingRoleOverride] = field(
+        default_factory=list
+    )
+
 
 def _cell_to_text(cell: TextUnit | dict[str, Any]) -> str:
     """Extract plain text from a table cell.
@@ -576,8 +581,23 @@ def _extract_row_content(
         if not cell_text or not (cell_text_stripped := cell_text.strip()):
             continue
 
+        # Apply per-cell grouping role overrides (first match wins).
+        effective_col_role = col_role
+
+        if col_role.kind == "grouping" and col_role.grouping_role_overrides:
+            for override in col_role.grouping_role_overrides:
+                if re.search(override.cell_pattern, cell_text_stripped, re.UNICODE):
+                    override_kind, override_value = override.role.split(":", 1)
+                    effective_col_role = CurriculumResolvedColumnRole(
+                        col_index=col_role.col_index,
+                        kind=override_kind,
+                        role_value=override_value,
+                        source_label=col_role.source_label,
+                    )
+                    break
+
         decision = _create_decision_from_role(
-            cell_text=cell_text_stripped, col_role=col_role
+            cell_text=cell_text_stripped, col_role=effective_col_role
         )
 
         if isinstance(decision, GroupingDecision):
@@ -834,6 +854,7 @@ def _resolve_column_mappings(
             resolved.append(
                 CurriculumResolvedColumnRole(
                     col_index=col_idx,
+                    grouping_role_overrides=matched_mapping.grouping_role_overrides,
                     kind=kind,
                     role_value=role_value,
                     source_label=(matched_mapping.source_label_override or header_text),
@@ -1941,7 +1962,14 @@ def translate_segments(
 def translate_unmatched(
     *, doc_key: str, seg: CurriculumMatchableSegment
 ) -> SegmentDecision:
-    """Convert an unmatched segment into an IGNORE SegmentDecision.
+    """Convert an unmatched segment into a SegmentDecision.
+
+    Bound caption blocks (whose text was transferred to a table's caption_text field)
+    are marked IGNORE--they were intentionally neutralized and are not missing content.
+
+    All other unmatched segments are marked UNRESOLVED so they surface in the canonical
+    IR's `unresolved` list for human review. This prevents genuine urriculum content
+    that the skeleton failed to match from being silently dropped.
 
     Parameters
     ----------
@@ -1953,18 +1981,37 @@ def translate_unmatched(
     Returns
     -------
     SegmentDecision
-        An IGNORE decision.
+        An IGNORE decision for bound captions, or an UNRESOLVED decision for genuinely
+        unmatched segments.
     """
 
+    # Bound captions are intentionally neutralized; they are not missing content and
+    # should be silently ignored.
+    if seg.is_bound_caption:
+        return SegmentDecision(
+            block_type=BlockType(seg.block_type) if seg.block_type else None,
+            confidence=1.0,
+            context_groupings=[],
+            decision_id=f"skeleton:{doc_key}:{seg.segment_id}:bound_caption",
+            decision_type=SegmentDecisionType.IGNORE,
+            groupings=[],
+            leaves=[],
+            rationale="Bound caption block; text transferred to table caption_text.",
+            rows=[],
+            segment_id=seg.segment_id,
+            segment_kind=seg.segment_kind,
+        )
+
+    # Genuinely unmatched segment--flag for human review.
     return SegmentDecision(
         block_type=BlockType(seg.block_type) if seg.block_type else None,
         confidence=1.0,
         context_groupings=[],
         decision_id=f"skeleton:{doc_key}:{seg.segment_id}:unmatched",
-        decision_type=SegmentDecisionType.IGNORE,
+        decision_type=SegmentDecisionType.UNRESOLVED,
         groupings=[],
         leaves=[],
-        rationale="No skeleton node matched this segment.",
+        rationale="No skeleton node matched this segment; flagged for human review.",
         rows=[],
         segment_id=seg.segment_id,
         segment_kind=seg.segment_kind,
