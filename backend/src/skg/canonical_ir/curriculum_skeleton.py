@@ -311,7 +311,6 @@ class CurriculumMatchResult:
 
     cursor_jumps: list[CurriculumCursorJump]
     matched: list[CurriculumMatchedSegment]
-    skipped_node_ids: set[str]
     unmatched: list[CurriculumMatchableSegment]
 
 
@@ -644,6 +643,7 @@ def _probe_nodes(
     consumed_node_ids: set[str],
     end: int,
     matchable_nodes: list[CurriculumSkeletonNode],
+    normalized_phrases_cache: dict[str, list[str]] | None = None,
     pinned_node_id: str | None,
     segment: CurriculumMatchableSegment,
     start: int,
@@ -661,6 +661,8 @@ def _probe_nodes(
         The end index (exclusive) for the probe window.
     matchable_nodes
         The full list of matchable skeleton nodes in DFS order.
+    normalized_phrases_cache
+        Optional pre-computed mapping from node.id to normalized match phrases.
     pinned_node_id
         The ID of the node currently pinned, or None if no node is pinned.
     segment
@@ -680,7 +682,11 @@ def _probe_nodes(
         if node.id in consumed_node_ids and node.id != pinned_node_id:
             continue
 
-        if segment_matches_node(node=node, segment=segment):
+        if segment_matches_node(
+            node=node,
+            normalized_phrases_cache=normalized_phrases_cache,
+            segment=segment,
+        ):
             return idx, node
 
     return None
@@ -1511,6 +1517,15 @@ def match_curriculum(
     matchable_nodes = dfs_matchable(curriculum_skeleton.root)
     ancestry_map = build_ancestry_map(curriculum_skeleton.root)
 
+    # Pre-compute normalized match phrases for all matchable nodes once, avoiding
+    # redundant _normalize_match_text() calls during the O(segments × window) probe
+    # loop.
+    normalized_phrases_cache: dict[str, list[str]] = {
+        node.id: [_normalize_match_text(phrase) for phrase in node.match_phrases]
+        for node in matchable_nodes
+        if node.match_phrases
+    }
+
     cursor: int = 0
     consumed_node_ids: set[str] = set()
     pinned_node_id: str | None = None
@@ -1526,6 +1541,7 @@ def match_curriculum(
             consumed_node_ids=consumed_node_ids,
             end=probe_end,
             matchable_nodes=matchable_nodes,
+            normalized_phrases_cache=normalized_phrases_cache,
             pinned_node_id=pinned_node_id,
             segment=segment,
             start=cursor,
@@ -1561,6 +1577,7 @@ def match_curriculum(
                 consumed_node_ids=consumed_node_ids,
                 end=retry_end,
                 matchable_nodes=matchable_nodes,
+                normalized_phrases_cache=normalized_phrases_cache,
                 pinned_node_id=pinned_node_id,
                 segment=segment,
                 start=cursor,
@@ -1583,14 +1600,8 @@ def match_curriculum(
 
         unmatched.append(segment)
 
-    all_ids: set[str] = {n.id for n in dfs_all(curriculum_skeleton.root)}
-    skipped = all_ids - consumed_node_ids
-
     curriculum_matches = CurriculumMatchResult(
-        cursor_jumps=cursor_jumps,
-        matched=results,
-        skipped_node_ids=skipped,
-        unmatched=unmatched,
+        cursor_jumps=cursor_jumps, matched=results, unmatched=unmatched
     )
 
     logger.info(
@@ -1720,7 +1731,10 @@ def prepare_matchable_segments(
 
 
 def segment_matches_node(
-    *, node: CurriculumSkeletonNode, segment: CurriculumMatchableSegment
+    *,
+    node: CurriculumSkeletonNode,
+    normalized_phrases_cache: dict[str, list[str]] | None = None,
+    segment: CurriculumMatchableSegment,
 ) -> bool:
     """Test whether a document segment matches a skeleton node using normalized
     phrase containment. Any match_phrase matching is sufficient (OR logic).
@@ -1729,6 +1743,9 @@ def segment_matches_node(
     ----------
     node
         The SkeletonNode to test against.
+    normalized_phrases_cache
+        Optional pre-computed mapping from node.id to normalized match phrases. When
+        provided, avoids redundant re-normalization of static skeleton phrases.
     segment
         The MatchableSegment to test.
 
@@ -1754,6 +1771,13 @@ def segment_matches_node(
         return False
 
     normalized_target = _normalize_match_text(target_text)
+
+    # Use pre-computed normalized phrases when available; fall back to on-the-fly
+    # normalization for callers that don't supply the cache.
+    if normalized_phrases_cache is not None and node.id in normalized_phrases_cache:
+        return any(
+            phrase in normalized_target for phrase in normalized_phrases_cache[node.id]
+        )
 
     return any(
         _normalize_match_text(phrase) in normalized_target
@@ -1968,7 +1992,7 @@ def translate_unmatched(
     are marked IGNORE--they were intentionally neutralized and are not missing content.
 
     All other unmatched segments are marked UNRESOLVED so they surface in the canonical
-    IR's `unresolved` list for human review. This prevents genuine urriculum content
+    IR's `unresolved` list for human review. This prevents genuine curriculum content
     that the skeleton failed to match from being silently dropped.
 
     Parameters
