@@ -25,6 +25,7 @@ from skg.kgs.schemas import (
     EntityProvenanceExport,
     GraphValidationReport,
     PolicyCoverageReport,
+    Relationship,
 )
 from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair
 from skg.utils.general import write_to_json
@@ -51,6 +52,75 @@ def _build_has_child_adjacency(all_rels: list[Any]) -> dict[str, list[str]]:
             adj.setdefault(r.source_entity_value, []).append(r.target_entity_value)
 
     return adj
+
+
+def _check_has_child_single_parent(
+    *, all_rels: list[Any], fw_id: str, report: GraphValidationReport, sfi_ids: set[str]
+) -> None:
+    """Validate that hasChild relationships form a single-parent hierarchy.
+
+    In a shape-preserving LC KG export, the hasChild graph should be a rooted tree:
+
+    1. The framework root has no parent.
+    2. Every StandardsFrameworkItem has exactly one parent (either the framework or
+        another SFI).
+
+    Parameters
+    ----------
+    all_rels
+        List of all relationships across exports.
+    fw_id
+        Framework case identifier UUID (string).
+    report
+        GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs (strings).
+    """
+
+    indegree: Counter[str] = Counter()
+
+    for r in all_rels:
+        if r.relationship_type != "hasChild":
+            continue
+
+        tgt = str(r.target_entity_value)
+        indegree[tgt] += 1
+
+        # The framework should never be the target of hasChild.
+        if tgt == fw_id:
+            report.error(
+                code="FRAMEWORK_HAS_PARENT",
+                message="Framework node has an incoming hasChild edge, which is invalid.",
+            )
+
+    missing_parent = sorted([nid for nid in sfi_ids if indegree.get(nid, 0) == 0])
+    multiple_parents = sorted([nid for nid in sfi_ids if indegree.get(nid, 0) > 1])
+
+    if missing_parent:
+        sample = ", ".join(missing_parent[:5])
+        report.error(
+            code="SFI_MISSING_PARENT",
+            message=(
+                f"{len(missing_parent)} SFI(s) have no incoming hasChild edge (missing parent). "
+                f"Sample: {sample}"
+            ),
+        )
+
+    if multiple_parents:
+        sample = ", ".join(multiple_parents[:5])
+        report.error(
+            code="SFI_MULTIPLE_PARENTS",
+            message=(
+                f"{len(multiple_parents)} SFI(s) have more than one incoming hasChild edge "
+                f"(multiple parents). Sample: {sample}"
+            ),
+        )
+
+    if not missing_parent and not multiple_parents and indegree.get(fw_id, 0) == 0:
+        report.info(
+            code="HAS_CHILD_SINGLE_PARENT_OK",
+            message="All SFIs have exactly one parent in hasChild; framework has no parent.",
+        )
 
 
 def _check_has_child_cycles(
@@ -397,6 +467,65 @@ def _check_referential_integrity(
         )
 
 
+def _check_relationship_endpoint_types(
+    *,
+    all_rels: list[Relationship],
+    fw_id: str,
+    lc_ids: set[str],
+    report: GraphValidationReport,
+    sfi_ids: set[str],
+) -> None:
+    """Validate relationship endpoint entity types for each relationship_type.
+
+    This is stricter than referential integrity: it ensures the *kinds* of nodes
+    connected by each relationship match the LC KG ontology shape.
+
+    Parameters
+    ----------
+    all_rels
+        List of all relationships across exports.
+    fw_id
+        Framework case identifier UUID (string).
+    lc_ids
+        Set of all LC identifiers (string UUIDs).
+    report
+        GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs (strings).
+    """
+
+    overall_ok = True
+
+    for r in all_rels:
+        rt = r.relationship_type
+
+        if rt == "hasChild":
+            rel_ok = _validate_has_child(
+                fw_id=fw_id, r=r, report=report, sfi_ids=sfi_ids
+            )
+        elif rt == "supports":
+            rel_ok = _validate_supports(
+                lc_ids=lc_ids, r=r, report=report, sfi_ids=sfi_ids
+            )
+        elif rt in {"buildsTowards", "relatesTo"}:
+            rel_ok = _validate_sfi_to_sfi(r=r, report=report, sfi_ids=sfi_ids)
+        else:
+            rel_ok = False
+            report.error(
+                code="UNKNOWN_RELATIONSHIP_TYPE",
+                message=f"Unknown relationship_type encountered in exports: {rt}",
+            )
+
+        if not rel_ok:
+            overall_ok = False
+
+    if overall_ok:
+        report.info(
+            code="REL_ENDPOINT_TYPES_OK",
+            message="All relationship endpoint types match expected ontology shapes.",
+        )
+
+
 def _check_self_loops(*, all_rels: list[Any], report: GraphValidationReport) -> None:
     """Check for self-loop relationships in the graph.
 
@@ -539,6 +668,178 @@ def _collect_columns_signatures(
                 sigs.add(sig.strip())
 
     return sorted(sigs)
+
+
+def _validate_has_child(
+    *, fw_id: str, r: Relationship, report: GraphValidationReport, sfi_ids: set[str]
+) -> bool:
+    """Validate endpoint types and values for a 'hasChild' relationship.
+
+    Parameters
+    ----------
+    fw_id
+        Framework case identifier UUID (string).
+    r
+        The relationship object to validate.
+    report
+        GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs (strings).
+
+    Returns
+    -------
+    bool
+        True if the relationship is valid, False otherwise.
+    """
+
+    ok = True
+    src_t = r.source_entity
+    tgt_t = r.target_entity
+    src = str(r.source_entity_value)
+    tgt = str(r.target_entity_value)
+
+    if src_t not in {"StandardsFramework", "StandardsFrameworkItem"}:
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_TYPE_MISMATCH",
+            message=f"hasChild source_entity must be StandardsFramework or StandardsFrameworkItem (got {src_t}).",
+        )
+
+    if tgt_t != "StandardsFrameworkItem":
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_TYPE_MISMATCH",
+            message=f"hasChild target_entity must be StandardsFrameworkItem (got {tgt_t}).",
+        )
+
+    if src_t == "StandardsFramework" and src != fw_id:
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_VALUE_MISMATCH",
+            message="hasChild source_entity is StandardsFramework but source_entity_value is not the framework ID.",
+        )
+
+    if src_t == "StandardsFrameworkItem" and src not in sfi_ids:
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_VALUE_MISMATCH",
+            message="hasChild source_entity is StandardsFrameworkItem but source_entity_value is not an exported SFI ID.",
+        )
+
+    if tgt not in sfi_ids:
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_VALUE_MISMATCH",
+            message="hasChild target_entity_value is not an exported SFI ID.",
+        )
+
+    return ok
+
+
+def _validate_sfi_to_sfi(
+    *, r: Relationship, report: GraphValidationReport, sfi_ids: set[str]
+) -> bool:
+    """Validate endpoint types and values for SFI-to-SFI relationships.
+
+    Parameters
+    ----------
+    r
+        The relationship object to validate (buildsTowards or relatesTo).
+    report
+        GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs (strings).
+
+    Returns
+    -------
+    bool
+        True if the relationship is valid, False otherwise.
+    """
+
+    ok = True
+    rt = r.relationship_type
+    src_t = r.source_entity
+    tgt_t = r.target_entity
+    src = str(r.source_entity_value)
+    tgt = str(r.target_entity_value)
+
+    if src_t != "StandardsFrameworkItem" or tgt_t != "StandardsFrameworkItem":
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_TYPE_MISMATCH",
+            message=(
+                f"{rt} must connect StandardsFrameworkItem -> StandardsFrameworkItem "
+                f"(got {src_t} -> {tgt_t})."
+            ),
+        )
+
+    if src not in sfi_ids or tgt not in sfi_ids:
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_VALUE_MISMATCH",
+            message=f"{rt} endpoints must be exported SFI IDs.",
+        )
+
+    return ok
+
+
+def _validate_supports(
+    *,
+    lc_ids: set[str],
+    r: Relationship,
+    report: GraphValidationReport,
+    sfi_ids: set[str],
+) -> bool:
+    """Validate endpoint types and values for a 'supports' relationship.
+
+    Parameters
+    ----------
+    lc_ids
+        Set of all LC identifiers (string UUIDs).
+    r
+        The relationship object to validate.
+    report
+        GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs (strings).
+
+    Returns
+    -------
+    bool
+        True if the relationship is valid, False otherwise.
+    """
+
+    ok = True
+    src_t = r.source_entity
+    tgt_t = r.target_entity
+    src = str(r.source_entity_value)
+    tgt = str(r.target_entity_value)
+
+    if src_t != "LearningComponent" or tgt_t != "StandardsFrameworkItem":
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_TYPE_MISMATCH",
+            message=(
+                "supports must connect LearningComponent -> StandardsFrameworkItem "
+                f"(got {src_t} -> {tgt_t})."
+            ),
+        )
+
+    if src not in lc_ids:
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_VALUE_MISMATCH",
+            message="supports source_entity_value is not an exported LearningComponent ID.",
+        )
+
+    if tgt not in sfi_ids:
+        ok = False
+        report.error(
+            code="REL_ENDPOINT_VALUE_MISMATCH",
+            message="supports target_entity_value is not an exported SFI ID.",
+        )
+
+    return ok
 
 
 def build_entity_provenance_export(
@@ -931,6 +1232,12 @@ def validate_graph(
     # Execute isolated validation checks.
     _check_referential_integrity(
         all_entity_ids=all_entity_ids, all_rels=all_rels, report=report
+    )
+    _check_relationship_endpoint_types(
+        all_rels=all_rels, fw_id=fw_id, lc_ids=lc_ids, report=report, sfi_ids=sfi_ids
+    )
+    _check_has_child_single_parent(
+        all_rels=all_rels, fw_id=fw_id, report=report, sfi_ids=sfi_ids
     )
     _check_lc_supports(
         lc_ids=lc_ids, learning_components=learning_components, report=report
