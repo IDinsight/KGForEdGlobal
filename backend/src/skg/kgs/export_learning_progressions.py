@@ -312,7 +312,7 @@ def _build_sfi_index(
     NB: Buckets may intentionally mix multiple topic paths (e.g. "__unthreaded__"
     buckets when `progressions_cross_grade_match_roles` does not match any roles for an
     item). Therefore, this index MUST prefer *item-level* topic fields when present,
-    rather than relying on bucket-level `topic_path` / `topic_path_key` values.
+    rather than relying on bucket-level `topic_path`/`lp_bucket_key` values.
     """
 
     index: dict[str, dict[str, Any]] = {}
@@ -331,12 +331,13 @@ def _build_sfi_index(
                     # Prefer item-level topic context (accurate even when a bucket
                     # mixes multiple topic paths, e.g., "__unthreaded__" buckets).
                     "topic_path_key": it.get("topic_path_key")
-                    or b.get("topic_path_key"),
+                    or b.get("canonical_topic_path_key")
+                    or b.get("lp_bucket_key"),
                     "normalized_topic_path_key": it.get("normalized_topic_path_key")
                     or b.get("normalized_topic_path_key"),
                     # Bucket/thread grouping key (may include sentinels for unthreaded
                     # cases).
-                    "thread_key": b.get("thread_key"),
+                    "thread_key": b.get("lp_thread_key"),
                     "topic_path": it.get("topic_path") or b.get("topic_path"),
                     "statement_code": it.get("statement_code"),
                     "page_index": it.get("page_index"),
@@ -348,9 +349,8 @@ def _build_sfi_index(
                 if (
                     existing is None
                     or (
-                        existing.get("topic_path_key") in (None, "", "__unthreaded__")
-                        and candidate.get("topic_path_key")
-                        not in (None, "", "__unthreaded__")
+                        existing.get("topic_path_key") in (None, "")
+                        and candidate.get("topic_path_key") not in (None, "")
                     )
                     or (not existing.get("topic_path") and candidate.get("topic_path"))
                     or (
@@ -455,14 +455,14 @@ def _build_thread_map(
                 skipped_no_bounds += 1
                 continue
 
-            thread_key = b.get("thread_key")
+            thread_key = b.get("lp_thread_key")
 
             if not isinstance(thread_key, str) or not thread_key.strip():
                 missing_thread_key += 1
 
                 if len(missing_thread_key_examples) < 3:
                     missing_thread_key_examples.append(
-                        str(b.get("bucket_key") or b.get("topic_path_key") or "")
+                        str(b.get("bucket_key") or b.get("lp_bucket_key") or "")
                     )
 
                 continue
@@ -477,7 +477,7 @@ def _build_thread_map(
                 int(_level_bounds(b)[0] or 10**9),
                 int(_level_bounds(b)[1] or 10**9),
                 str(b.get("topic_path") or ""),
-                str(b.get("topic_path_key") or ""),
+                str(b.get("lp_bucket_key") or ""),
             ),
         )
 
@@ -907,7 +907,7 @@ def _format_learning_progressions_dict(
 
         by_grade[grade_label] = sorted(
             grade_buckets,
-            key=lambda x: (x.get("topic_path") or "", x["topic_path_key"]),
+            key=lambda x: (x.get("topic_path") or "", x.get("lp_bucket_key") or ""),
         )
 
     return {"by_grade": by_grade, "by_thread": dict(by_thread), "drops": drops}
@@ -1186,7 +1186,7 @@ def _infer_within_grade_builds_towards(
 
         logger.info(
             f"Phase 1 Progress: {current_call}/{total_calls} "
-            f"({grade_label} - {bucket.get('topic_path_key')})"
+            f"({grade_label} - {bucket.get('lp_bucket_key')})"
         )
 
         ordered_items = [
@@ -1197,7 +1197,11 @@ def _infer_within_grade_builds_towards(
             grade_label=str(grade_label),
             items=ordered_items,
             min_confidence=config.progressions_builds_towards_min_confidence,
-            thread_path=str(bucket.get("topic_path") or bucket.get("topic_path_key")),
+            thread_path=str(
+                bucket.get("topic_path")
+                or bucket.get("canonical_topic_path_key")
+                or bucket.get("lp_bucket_key")
+            ),
         )
 
         pos = {str(it["sfi_uuid"]): idx for idx, it in enumerate(ordered_items)}
@@ -1227,7 +1231,9 @@ def _infer_within_grade_builds_towards(
                     "grade_label": grade_label,
                     "subject_label": bucket.get("subject_label"),
                     "topic_path": bucket.get("topic_path"),
-                    "topic_path_key": bucket.get("topic_path_key"),
+                    "canonical_topic_path_key": bucket.get("canonical_topic_path_key"),
+                    "lp_bucket_key": bucket.get("lp_bucket_key"),
+                    "lp_thread_key": bucket.get("lp_thread_key"),
                 },
                 rel_type="buildsTowards",
                 source_sfi_uuid=_uuid(edge.source_sfi_uuid),
@@ -1323,17 +1329,31 @@ def _infer_within_grade_relates_to(
                         "sampled_b": sampled_b,
                         "thread_a_path": " | ".join(
                             str(
-                                b.get("topic_path") or b.get("topic_path_key") or ""
+                                b.get("topic_path")
+                                or b.get("canonical_topic_path_key")
+                                or b.get("lp_bucket_key")
+                                or ""
                             ).strip()
                             for b in threads_a[:3]
-                            if (b.get("topic_path") or b.get("topic_path_key"))
+                            if (
+                                b.get("topic_path")
+                                or b.get("canonical_topic_path_key")
+                                or b.get("lp_bucket_key")
+                            )
                         ),
                         "thread_b_path": " | ".join(
                             str(
-                                b.get("topic_path") or b.get("topic_path_key") or ""
+                                b.get("topic_path")
+                                or b.get("canonical_topic_path_key")
+                                or b.get("lp_bucket_key")
+                                or ""
                             ).strip()
                             for b in threads_b[:3]
-                            if (b.get("topic_path") or b.get("topic_path_key"))
+                            if (
+                                b.get("topic_path")
+                                or b.get("canonical_topic_path_key")
+                                or b.get("lp_bucket_key")
+                            )
                         ),
                     }
                 )
@@ -1846,7 +1866,7 @@ def _prepare_subject_grade_samples(
                 thread_buckets,
                 key=lambda b: (
                     str(b.get("topic_path") or ""),
-                    str(b.get("topic_path_key") or ""),
+                    str(b.get("lp_thread_key") or b.get("lp_bucket_key") or ""),
                 ),
             )
             sampled = _sample_items_across_threads(
@@ -2198,11 +2218,12 @@ def _process_single_standard(
                 else None
             ),
             "subject_label": subject_label,
-            "thread_key": thread_key,
+            "lp_thread_key": thread_key,
+            "lp_bucket_key": effective_bucket_key,
+            "canonical_topic_path_key": topic_key,
             "normalized_topic_path_key": str(
                 progression_context.get("thread_key") or ""
             ),
-            "topic_path_key": effective_bucket_key,
             "topic_path": _path_string(topic_path_parts),
             "topic_path_parts": topic_path_parts,
             "items": [],
@@ -2225,6 +2246,9 @@ def _process_single_standard(
         "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
         "topic_path": _path_string(topic_path_parts),
         # Bucket/thread context kept separately for debugging.
+        "bucket_lp_bucket_key": effective_bucket_key,
+        "bucket_lp_thread_key": thread_key,
+        # Back-compat/debug aliases.
         "bucket_topic_path_key": effective_bucket_key,
         "bucket_thread_key": thread_key,
     }
@@ -2296,7 +2320,11 @@ def _process_builds_towards_work_item(
         lower_grade_label=lo_label,
         min_confidence=config.progressions_builds_towards_min_confidence,
         thread_key=thread_key,
-        thread_path=str(b_hi.get("topic_path") or b_hi.get("topic_path_key")),
+        thread_path=str(
+            b_hi.get("topic_path")
+            or b_hi.get("canonical_topic_path_key")
+            or b_hi.get("lp_bucket_key")
+        ),
         upper_grade_label=hi_label,
         upper_items=upper_payload,
     )
@@ -2332,7 +2360,9 @@ def _process_builds_towards_work_item(
                 "upper_level_low": hi_lo,
                 "upper_level_high": hi_hi,
                 "thread_key": thread_key,
-                "topic_path_key_upper": b_hi.get("topic_path_key"),
+                "canonical_topic_path_key_upper": b_hi.get("canonical_topic_path_key"),
+                "lp_bucket_key_upper": b_hi.get("lp_bucket_key"),
+                "lp_thread_key": b_hi.get("lp_thread_key"),
                 "topic_path": b_hi.get("topic_path"),
                 "subject_label": b_hi.get("subject_label"),
             },
@@ -2622,8 +2652,9 @@ def _sample_items_across_threads(
     max_items
         The maximum number of items to sample across all threads.
     thread_buckets
-        A list of thread buckets, where each bucket is a dictionary containing a
-        "topic_path_key" and a list of "items" (standards) belonging to that thread.
+        A list of thread buckets, where each bucket is a dictionary containing an
+        "lp_thread_key" (and optionally an "lp_bucket_key") and a list of "items"
+        (standards) belonging to that thread.
 
     Returns
     -------
@@ -2634,8 +2665,16 @@ def _sample_items_across_threads(
     """
 
     # Thread buckets should already be stable-sorted by caller.
-    per_thread = [(b["topic_path_key"], list(b["items"])) for b in thread_buckets]
-    path_by_key = {b["topic_path_key"]: b.get("topic_path", "") for b in thread_buckets}
+    per_thread = [
+        ((b.get("lp_thread_key") or b.get("lp_bucket_key") or ""), list(b["items"]))
+        for b in thread_buckets
+    ]
+    path_by_key = {
+        (b.get("lp_thread_key") or b.get("lp_bucket_key") or ""): b.get(
+            "topic_path", ""
+        )
+        for b in thread_buckets
+    }
 
     # Track per-thread index.
     idxs = {t: 0 for t, _ in per_thread}
@@ -2745,7 +2784,7 @@ def _sort_key_for_bucket_sfi(
 
 
 def _thread_sort_key(b: dict[str, Any]) -> tuple[str, str]:
-    """Sort threads by topic_path (with fallback to topic_path_key) to ensure
+    """Sort threads by topic_path (with fallback to lp_thread_key) to ensure
     deterministic ordering for sampling and pairing across runs, even if the input
     order changes.
 
@@ -2753,19 +2792,21 @@ def _thread_sort_key(b: dict[str, Any]) -> tuple[str, str]:
     ----------
     b
         The bucket dictionary representing a thread, which may contain "topic_path"
-        and/or "topic_path_key" for sorting.
+        and/or "lp_thread_key" (and optionally "lp_bucket_key") for sorting.
 
     Returns
     -------
     tuple[str, str]
-        A tuple used for sorting threads, where the first element is the
-        "topic_path" (or an empty string if not present) and the second element is
-        the "topic_path_key" (or an empty string if not present). This ensures
-        consistent ordering of threads based on their topic paths, with a fallback
-        to topic path keys when topic paths are missing.
+        A tuple used for sorting threads, where the first element is the "topic_path"
+        (or an empty string if not present) and the second element is the
+        "lp_thread_key" (or an empty string if not present). This ensures consistent
+        ordering of threads based on their topic paths, with a fallback to
+        lp_thread_key (or lp_bucket_key) when topic paths are missing.
     """
 
-    return str(b.get("topic_path") or ""), str(b.get("topic_path_key") or "")
+    return str(b.get("topic_path") or ""), str(
+        b.get("lp_thread_key") or b.get("lp_bucket_key") or ""
+    )
 
 
 def _uuid(x: str) -> UUID:
