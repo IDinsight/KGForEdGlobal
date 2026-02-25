@@ -991,6 +991,11 @@ def _materialize_decision_structure(
             warnings=warnings,
         )
     elif segment.kind == "table":
+        assert isinstance(segment, TableSegment), (
+            f"Segment {segment.segment_id} has kind='table' but is not a "
+            f"TableSegment instance ({type(segment).__name__})."
+        )
+
         # NB: decision.groupings (segment-level grouping containers) have already been
         # materialized above; only warn when there are truly no leaves, rows, OR
         # groupings to emit.
@@ -1530,8 +1535,11 @@ def _table_first_body_row_preview(
         return None
 
     hrc = segment.header_row_count or 0
-    start_idx = hrc if hrc < len(rows) else 0
-    row = rows[start_idx]
+
+    if hrc >= len(rows):
+        return None
+
+    row = rows[hrc]
 
     cells_out: list[str] = []
     any_non_empty = False
@@ -2901,7 +2909,7 @@ def reconcile_context_stack(
         parent_id = effective_node_id
         ancestor_keys.append(gk)
 
-    # After reconciliation, new_stack should EXACTLY matches desired_context snapshot.
+    # After reconciliation, new_stack should EXACTLY match desired_context snapshot.
     return parent_id, ancestor_keys, new_stack
 
 
