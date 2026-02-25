@@ -47,7 +47,7 @@
 		"academic_subject_default": "Mathématiques",
 		"adoption_status": "Adopted",
 		"always_double_check_first_attempt": false,
-		"attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-francais), Mathematiques, 2eme etape (CE1 - CE2).",
+		"attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Mathematiques, 2eme etape (CE1 - CE2).",
 		"author": "Ministère de l’Éducation nationale",
 		"aux_statement_parenting": "under_expectation",
 		"case_uri_base": "urn:lc:case:",
@@ -56,16 +56,13 @@
 		"generate_progressions": true,
 		"grouping_role_policy": "whitelist",
 		"grouping_roles_whitelist": [
-			"stage",
 			"grade_level",
 			"subject",
 			"section",
 			"strand",
 			"substage",
 			"unit",
-			"week",
-			"topic",
-			"subtopic"
+			"week"
 		],
 		"guidance_handling": "attach_to_expectation_metadata",
 		"jurisdiction_default": "Senegal",

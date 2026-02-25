@@ -309,23 +309,10 @@ def _build_sfi_index(
     This is used to enrich emitted Relationship.metadata so downstream consumers can
     reason about edges without having to join back to the source node payloads.
 
-    Parameters
-    ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that grade, and
-        each thread contains items that represent individual StandardsFrameworkItems
-        with their UUIDs and other contextual information.
-
-    Returns
-    -------
-    dict[str, dict[str, Any]]
-        A dictionary mapping SFI UUIDs (as strings) to dictionaries of context and
-        provenance hints, such as grade label, subject label, topic path, statement
-        code, and page index. This index allows for quick lookup of relevant
-        information about an SFI when processing inferred relationships, enabling the
-        enrichment of Relationship.metadata with details about the source and target
-        SFIs without needing to reference the full node payloads.
+    NB: Buckets may intentionally mix multiple topic paths (e.g. "__unthreaded__"
+    buckets when `progressions_cross_grade_match_roles` does not match any roles for an
+    item). Therefore, this index MUST prefer *item-level* topic fields when present,
+    rather than relying on bucket-level `topic_path` / `topic_path_key` values.
     """
 
     index: dict[str, dict[str, Any]] = {}
@@ -335,20 +322,43 @@ def _build_sfi_index(
             for it in b.get("items") or []:
                 u = str(it.get("sfi_uuid") or "").strip()
 
-                if not u or u in index:
+                if not u:
                     continue
 
-                index[u] = {
+                candidate = {
                     "grade_label": grade_label,
                     "subject_label": b.get("subject_label"),
-                    "topic_path_key": b.get("topic_path_key"),
-                    "normalized_topic_path_key": b.get("normalized_topic_path_key"),
+                    # Prefer item-level topic context (accurate even when a bucket
+                    # mixes multiple topic paths, e.g., "__unthreaded__" buckets).
+                    "topic_path_key": it.get("topic_path_key")
+                    or b.get("topic_path_key"),
+                    "normalized_topic_path_key": it.get("normalized_topic_path_key")
+                    or b.get("normalized_topic_path_key"),
+                    # Bucket/thread grouping key (may include sentinels for unthreaded
+                    # cases).
                     "thread_key": b.get("thread_key"),
-                    "topic_path": b.get("topic_path"),
+                    "topic_path": it.get("topic_path") or b.get("topic_path"),
                     "statement_code": it.get("statement_code"),
                     "page_index": it.get("page_index"),
                     "order_index_within_parent": it.get("order_index_within_parent"),
                 }
+
+                existing = index.get(u)
+
+                if (
+                    existing is None
+                    or (
+                        existing.get("topic_path_key") in (None, "", "__unthreaded__")
+                        and candidate.get("topic_path_key")
+                        not in (None, "", "__unthreaded__")
+                    )
+                    or (not existing.get("topic_path") and candidate.get("topic_path"))
+                    or (
+                        existing.get("page_index") is None
+                        and candidate.get("page_index") is not None
+                    )
+                ):
+                    index[u] = candidate
 
     return index
 
@@ -2209,6 +2219,14 @@ def _process_single_standard(
         "statement_code": sfi.statement_code,
         "statement_type": sfi.statement_type,
         "canon_order_path": progression_context.get("canon_order_path", []),
+        # Item-level topic context (do NOT rely on bucket-level topic_path for
+        # provenance).
+        "topic_path_key": topic_key,
+        "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
+        "topic_path": _path_string(topic_path_parts),
+        # Bucket/thread context kept separately for debugging.
+        "bucket_topic_path_key": effective_bucket_key,
+        "bucket_thread_key": thread_key,
     }
 
     if include_provenance:
