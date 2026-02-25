@@ -596,6 +596,37 @@ class CurriculumSkeletonNode(BaseSchema):
 
         return self
 
+    @model_validator(mode="after")
+    def validate_table_rows_no_multi_segment(self) -> CurriculumSkeletonNode:
+        """EMIT_TABLE_ROWS nodes must not use allow_multiple_segments.
+
+        Table row translation only processes the primary matched segment; any
+        additional_segments from multi-segment matching would be silently dropped.
+
+        Returns
+        -------
+        CurriculumSkeletonNode
+            The validated CurriculumSkeletonNode object.
+
+        Raises
+        ------
+        ValueError
+            If an EMIT_TABLE_ROWS node has allow_multiple_segments=True.
+        """
+
+        if (
+            self.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS
+            and self.allow_multiple_segments
+        ):
+            raise ValueError(
+                f"Node '{self.id}': EMIT_TABLE_ROWS is incompatible with "
+                f"allow_multiple_segments=True. Table row translation only "
+                f"processes the primary matched segment; additional segments "
+                f"would be silently dropped."
+            )
+
+        return self
+
 
 class CurriculumSkeleton(BaseSchema):
     """Root model for a curriculum skeleton file.
