@@ -622,6 +622,33 @@ class CreateKGConfig(BaseSchema):
         description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering, repeating to a fixpoint. No reattachment is performed.",
     )
 
+    @model_validator(mode="after")
+    def _validate_atomic_skills_bounds(self) -> CreateKGConfig:
+        """Validate that lc_atomic_skills_min_per_sfi is less than or equal to
+        lc_max_splits_per_standard when using llm_atomic_skills.
+
+        Returns
+        -------
+        CreateKGConfig
+            The validated CreateKGConfig object.
+
+        Raises
+        ------
+        ValueError
+            If lc_atomic_skills_min_per_sfi is greater than lc_max_splits_per_standard.
+        """
+
+        if (
+            self.learning_component_policy == "llm_atomic_skills"
+            and self.lc_atomic_skills_min_per_sfi > self.lc_max_splits_per_standard
+        ):
+            raise ValueError(
+                f"lc_atomic_skills_min_per_sfi ({self.lc_atomic_skills_min_per_sfi}) "
+                f"must be <= lc_max_splits_per_standard ({self.lc_max_splits_per_standard})."
+            )
+
+        return self
+
     @field_validator("progressions_grade_label_map")
     @classmethod
     def _validate_grade_label_map_keys(
