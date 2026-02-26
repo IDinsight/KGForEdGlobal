@@ -1173,6 +1173,9 @@ def _trim_text(*, max_chars: int, s: str) -> str:
     if len(s2) <= max_chars:
         return s2
 
+    if max_chars < 4:
+        return s2[:max_chars]
+
     return s2[: max_chars - 3].rstrip() + "..."
 
 
