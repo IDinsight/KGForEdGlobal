@@ -121,6 +121,14 @@ def _call_openai_api_for_atomic_skills(
     except QualityError as e:
         # Attach the raw output so the correction attempt can see what it wrote.
         raise QualityError(str(e), failed_content=output_text) from e
+    except Exception as e:
+        # Wrap unexpected verification errors (e.g. AttributeError, TypeError) so the
+        # retry loop in infer_atomic_skills always receives failed_content for the
+        # correction prompt, rather than losing the assistant's output context.
+        raise QualityError(
+            f"Unexpected verification error: {e.__class__.__name__}: {e}",
+            failed_content=output_text,
+        ) from e
 
     return parsed
 

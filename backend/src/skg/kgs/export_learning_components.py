@@ -75,16 +75,16 @@ def _build_atomic_skills_prompt_items(
     items: list[dict[str, Any]] = []
 
     for sfi in sfis:
-        md = getattr(sfi, "metadata", {}) or {}
-        display_text = normalize_ws(getattr(sfi, "description", "") or "")
+        md = sfi.metadata or {}
+        display_text = normalize_ws(sfi.description or "")
         id_source_text = (
             normalize_ws(str(md.get("normalized_text") or "")) or display_text
         )
 
         payload: dict[str, Any] = {
             "sfi_uuid": str(sfi.case_identifier_uuid),
-            "statement_code": getattr(sfi, "statement_code", None),
-            "grade_level": list(getattr(sfi, "grade_level", []) or []),
+            "statement_code": sfi.statement_code,
+            "grade_level": list(sfi.grade_level or []),
             "id_source_text": _trim_text(max_chars=2000, s=id_source_text),
             "display_text": _trim_text(
                 max_chars=2000, s=display_text or id_source_text
@@ -228,8 +228,8 @@ def _create_fallback_lc_1_to_1(
         fallback with the 1_to_1 policy.
     """
 
-    md = getattr(sfi, "metadata", {}) or {}
-    display_text = normalize_ws(getattr(sfi, "description", "") or "")
+    md = sfi.metadata or {}
+    display_text = normalize_ws(sfi.description or "")
     id_source_text = normalize_ws(str(md.get("normalized_text") or "")) or display_text
 
     if not (id_source_text or display_text):
@@ -241,8 +241,7 @@ def _create_fallback_lc_1_to_1(
     return [
         LearningComponent(
             academic_subject=str(
-                getattr(sfi, "academic_subject", None)
-                or fw_metadata["academic_subject_default"]
+                sfi.academic_subject or fw_metadata["academic_subject_default"]
             ),
             attribution_statement=str(fw_metadata["attribution_statement"]),
             author=str(fw_metadata["author"]),
@@ -251,9 +250,7 @@ def _create_fallback_lc_1_to_1(
                 ns,
                 f"lc:curriculum:{doc_key}:lc:1_to_1:{sfi.case_identifier_uuid}:0:{split_hash}",
             ),
-            in_language=str(
-                getattr(sfi, "in_language", None) or fw_metadata["in_language"]
-            ),
+            in_language=str(sfi.in_language or fw_metadata["in_language"]),
             license=str(fw_metadata["license"]),
             metadata={
                 "id_source_kind": "fallback_1_to_1",
@@ -313,11 +310,11 @@ def _create_lcs_for_expectation(
 
     # Display text (human-facing): use SFI.description as exported by academic
     # standards.
-    display_text = normalize_ws(getattr(sfi, "description", "") or "")
+    display_text = normalize_ws(sfi.description or "")
 
     # Canonical ID text: ALWAYS prefer stable normalized_text from SFI.metadata so IDs
     # don't change when description display policy/translations change.
-    metadata = getattr(sfi, "metadata", {}) or {}
+    metadata = sfi.metadata or {}
 
     id_source_text = normalize_ws(str(metadata.get("normalized_text") or ""))
     id_source_kind = "metadata.normalized_text"
@@ -393,8 +390,7 @@ def _create_lcs_for_expectation(
         lcs.append(
             LearningComponent(
                 academic_subject=str(
-                    getattr(sfi, "academic_subject", None)
-                    or fw_metadata["academic_subject_default"]
+                    sfi.academic_subject or fw_metadata["academic_subject_default"]
                 ),
                 attribution_statement=str(fw_metadata["attribution_statement"]),
                 author=str(fw_metadata["author"]),
@@ -403,9 +399,7 @@ def _create_lcs_for_expectation(
                     ns,
                     f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{i}:{split_hash}",
                 ),
-                in_language=str(
-                    getattr(sfi, "in_language", None) or fw_metadata["in_language"]
-                ),
+                in_language=str(sfi.in_language or fw_metadata["in_language"]),
                 license=str(fw_metadata["license"]),
                 metadata={
                     "id_source_kind": id_source_kind,
@@ -482,7 +476,7 @@ def _create_lcs_from_atomic_skills(
 
     policy = "llm_atomic_skills"
     ns: UUID = config.namespace_uuid
-    md = getattr(sfi, "metadata", {}) or {}
+    md = sfi.metadata or {}
     prov = {
         "page_indices": md.get("page_indices", []),
         "bbox": md.get("bbox"),
@@ -549,8 +543,7 @@ def _create_lcs_from_atomic_skills(
         lcs.append(
             LearningComponent(
                 academic_subject=str(
-                    getattr(sfi, "academic_subject", None)
-                    or fw_metadata["academic_subject_default"]
+                    sfi.academic_subject or fw_metadata["academic_subject_default"]
                 ),
                 attribution_statement=str(fw_metadata["attribution_statement"]),
                 author=str(fw_metadata["author"]),
@@ -559,9 +552,7 @@ def _create_lcs_from_atomic_skills(
                     ns,
                     f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{i}:{split_hash}",
                 ),
-                in_language=str(
-                    getattr(sfi, "in_language", None) or fw_metadata["in_language"]
-                ),
+                in_language=str(sfi.in_language or fw_metadata["in_language"]),
                 license=str(fw_metadata["license"]),
                 metadata={
                     "id_source_kind": "llm_atomic_skills.description",
@@ -776,24 +767,22 @@ def _export_lcs_via_llm_atomic_skills(
             sfi_uuid_str = str(sfi.case_identifier_uuid)
             skills = skills_by_sfi.get(sfi_uuid_str, [])
 
-            if skills:
-                created = _create_lcs_from_atomic_skills(
-                    config=config,
-                    doc_key=ctx.doc_key,
-                    fw_metadata=fw_metadata,
-                    sfi=sfi,
-                    skills=skills,
-                )
-            else:
-                # After successful validation, _validate_batch_coverage guarantees
-                # every batch SFI appears in the response, so this branch should be
-                # unreachable. Keep it as defensive fallback in case the
-                # parsed_dict -> skills_by_sfi mapping silently drops an entry.
-                created = _create_fallback_lc_1_to_1(
-                    config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
-                )
-                batch_debug["fallback_sfi_uuids"].append(sfi_uuid_str)
-                fallback_sfis_total.append(sfi_uuid_str)
+            # _validate_batch_coverage guarantees every batch SFI appears in the
+            # validated response, and _validate_sfi_skills enforces min_per_sfi >= 1,
+            # so `skills` is always non-empty after successful validation.
+            assert skills, (
+                f"BUG: SFI {sfi_uuid_str} passed validation but has no skills in "
+                f"skills_by_sfi. This indicates a mapping error between parsed_dict "
+                f"and skills_by_sfi."
+            )
+
+            created = _create_lcs_from_atomic_skills(
+                config=config,
+                doc_key=ctx.doc_key,
+                fw_metadata=fw_metadata,
+                sfi=sfi,
+                skills=skills,
+            )
 
             splits_per_sfi[len(created)] += 1
 
