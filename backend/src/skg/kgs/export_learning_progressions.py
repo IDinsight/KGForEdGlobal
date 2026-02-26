@@ -708,7 +708,9 @@ def _compute_lp_thread_key(
     return "|".join(segments) if segments else None
 
 
-def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
+def _dedupe_edges(
+    edges: list[CandidateEdge],
+) -> tuple[list[CandidateEdge], dict[tuple[str, str, str], CandidateEdge], int]:
     """Deduplicate by (rel_type, canonical endpoints). Keep highest confidence.
 
     Parameters
@@ -719,10 +721,12 @@ def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
 
     Returns
     -------
-    list[CandidateEdge]
-        A deduplicated list of CandidateEdge instances, where duplicates (edges with
-        the same relationship type and canonical endpoints) are resolved by keeping the
-        edge with the highest confidence score.
+    tuple
+        A tuple containing:
+        1. A deduplicated list of CandidateEdge instances.
+        2. A mapping from canonical key `(rel_type, source_uuid, target_uuid)` to the
+           winning CandidateEdge.
+        3. The number of edges dropped during deduplication.
     """
 
     best: dict[tuple[str, str, str], CandidateEdge] = {}
@@ -759,7 +763,9 @@ def _dedupe_edges(edges: list[CandidateEdge]) -> list[CandidateEdge]:
         if k not in best or e2.confidence > best[k].confidence:
             best[k] = e2
 
-    return list(best.values())
+    deduped = list(best.values())
+    dropped = len(edges) - len(deduped)
+    return deduped, best, dropped
 
 
 def _emit_relationship(
@@ -1293,6 +1299,7 @@ def _infer_within_grade_relates_to(
 
     work_items: list[dict[str, Any]] = []
     excluded = set(config.progressions_excluded_subject_labels or []) | {
+        "UNSPECIFIED_SUBJECT",
         "UNKNOWN",
         "",
     }
@@ -1909,6 +1916,7 @@ def _process_and_filter_candidates(
     list[Relationship],
     dict[str, int],
     dict[tuple[str, str, str], str],
+    dict[tuple[str, str, str], CandidateEdge],
 ]:
     """Process candidates: dedupe, filter by confidence, limit, and convert.
 
@@ -1934,10 +1942,12 @@ def _process_and_filter_candidates(
         2. List of final relatesTo relationships.
         3. A dictionary of counts/statistics for the report.
         4. A disposition map keyed by (rel_type, source_uuid, target_uuid) ->
-            disposition string (kept, dropped_low_conf, dropped_cap, dropped_dedupe).
+            disposition string (kept, dropped_low_conf, dropped_cap).
+        5. A mapping of dedupe winners keyed by (rel_type, source_uuid, target_uuid).
     """
 
-    candidates = _dedupe_edges(candidates)
+    candidate_edges_total_pre_dedupe = len(candidates)
+    candidates, dedupe_winners, dedupe_dropped = _dedupe_edges(candidates)
 
     builds_candidates = [e for e in candidates if e.rel_type == "buildsTowards"]
     relates_candidates = [e for e in candidates if e.rel_type == "relatesTo"]
@@ -1986,7 +1996,9 @@ def _process_and_filter_candidates(
     ]
 
     stats = {
+        "candidate_edges_total_pre_dedupe": candidate_edges_total_pre_dedupe,
         "candidate_edges_total_after_dedupe": len(candidates),
+        "candidate_edges_dropped_dedupe": int(dedupe_dropped),
         "candidate_builds_towards": len(builds_candidates),
         "candidate_relates_to": len(relates_candidates),
         "builds_kept": len(builds_kept),
@@ -2000,8 +2012,8 @@ def _process_and_filter_candidates(
     # Build disposition map keyed by (rel_type, source_uuid, target_uuid) for enriching
     # provenance rows downstream.
     #
-    # NB: relatesTo edges are canonicalized during dedup (source < target by UUID.int),
-    # so keys here are already canonical for relatesTo. The *lookup* side (in
+    # NB: relatesTo edges are canonicalized during dedup (lexicographic UUID string
+    # order), so keys here are already canonical for relatesTo. The *lookup* side (in
     # export_learning_progressions) must canonicalize provenance row keys the same way
     # (see _canon_disposition_key).
     disposition_map: dict[tuple[str, str, str], str] = {}
@@ -2027,7 +2039,13 @@ def _process_and_filter_candidates(
             candidate=e, disposition_map=disposition_map, value="dropped_cap"
         )
 
-    return builds_relationships, relates_relationships, stats, disposition_map
+    return (
+        builds_relationships,
+        relates_relationships,
+        stats,
+        disposition_map,
+        dedupe_winners,
+    )
 
 
 def _process_single_standard(
@@ -2193,12 +2211,14 @@ def _process_single_standard(
         _compute_lp_thread_key(topic_path_parts, cross_roles) if cross_roles else None
     )
     effective_bucket_key = (
-        lp_thread_key if lp_thread_key is not None else "__unthreaded__"
+        lp_thread_key
+        if lp_thread_key is not None
+        else f"__unthreaded__::{subject_label}"
     )
     thread_key = (
         lp_thread_key
         if lp_thread_key is not None
-        else f"__unthreaded__::{normalized_level_key}"
+        else f"__unthreaded__::{subject_label}::{normalized_level_key}"
     )
 
     # Bucket management.
@@ -2899,24 +2919,61 @@ def export_learning_progressions(
     provenance_rows.extend(p4_prov)
 
     # Dedupe, filter, limit, and emit final relationships, and gather stats for the report.
-    builds_rels, relates_rels, stats, disposition_map = _process_and_filter_candidates(
-        candidates=candidates, config=config, doc_key=ctx.doc_key, sfi_index=sfi_index
+    builds_rels, relates_rels, stats, disposition_map, dedupe_winners = (
+        _process_and_filter_candidates(
+            candidates=candidates,
+            config=config,
+            doc_key=ctx.doc_key,
+            sfi_index=sfi_index,
+        )
     )
 
     # Enrich provenance rows with post-filtering disposition.
     #
-    # NB: relatesTo edges are canonicalized during dedup (source < target by UUID.int),
-    # so the disposition map keys for relatesTo are already canonical. Provenance rows,
-    # however, carry the *original* (pre-dedup) source/target which may be in either
-    # order. _canon_disposition_key normalises the lookup key so that the match
-    # succeeds regardless of the original edge direction.
+    # NB: relatesTo edges are canonicalized during dedup (lexicographic UUID string
+    # order), so the disposition map keys for relatesTo are already canonical.
+    # Provenance rows, however, carry the *original* (pre-dedup) source/target which
+    # may be in either order. _canon_disposition_key normalises the lookup key so that
+    # the match succeeds regardless of the original edge direction.
     for row in provenance_rows:
         key = _canon_disposition_key(
             rel_type=row.get("rel_type", ""),
             source=row.get("source", ""),
             target=row.get("target", ""),
         )
-        row["disposition"] = disposition_map.get(key, "dropped_dedupe")
+
+        # Provenance rows include *all* raw candidates, including those dropped during
+        # deduplication. The disposition_map only records the final outcome for the
+        # single dedupe winner per canonical edge key. To avoid mislabeling duplicates
+        # as "kept"/"dropped_low_conf"/etc., mark non-winners explicitly as
+        # dropped_dedupe.
+        winner = dedupe_winners.get(key)
+        is_winner = False
+
+        if winner is not None:
+            try:
+                same_phase = int(row.get("phase") or -1) == int(
+                    (winner.metadata or {}).get("phase") or -2
+                )
+            except Exception:  # pylint: disable=broad-except
+                same_phase = False
+
+            same_type = row.get("inference_type") == winner.inference_type
+
+            try:
+                same_conf = (
+                    abs(float(row.get("confidence", 0.0)) - float(winner.confidence))
+                    < 1e-9
+                )
+            except Exception:  # pylint: disable=broad-except
+                same_conf = False
+
+            is_winner = bool(same_phase and same_type and same_conf)
+
+        if winner is not None and not is_winner:
+            row["disposition"] = "dropped_dedupe"
+        else:
+            row["disposition"] = disposition_map.get(key, "dropped_dedupe")
 
     # Write artifacts.
     write_to_json(
