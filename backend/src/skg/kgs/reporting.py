@@ -246,7 +246,10 @@ def _check_has_child_reachability(
 
 
 def _check_lc_supports(
-    *, lc_ids: set[str], learning_components: Any, report: GraphValidationReport
+    *,
+    lc_ids: set[str],
+    learning_components: LearningComponentsExport,
+    report: GraphValidationReport,
 ) -> None:
     """Check that every Learning Component has exactly one supports relationship.
 
