@@ -55,7 +55,7 @@ from skg.kgs.validators import (
     validate_within_grade_relates_to,
 )
 from skg.schemas import CreateKGConfig
-from skg.utils.general import write_to_json
+from skg.utils.general import open_json_type, write_to_json
 
 
 @dataclass(frozen=True)
@@ -3100,3 +3100,100 @@ def group_standards_for_learning_progressions(
         )
 
     return _format_learning_progressions_dict(buckets=buckets, drops=drops)
+
+
+def load_learning_progressions_export(kg_dirs: KGDirs) -> LearningProgressionsExport:
+    """Reconstruct a LearningProgressionsExport from previously written disk artifacts.
+
+    Parameters
+    ----------
+    kg_dirs
+        The KG output directories containing the prior run's artifacts.
+
+    Returns
+    -------
+    LearningProgressionsExport
+        The reconstructed export object.
+    """
+
+    d = kg_dirs.learning_progressions
+
+    builds_towards = [
+        Relationship.model_validate(raw)
+        for raw in open_json_type(
+            d / "learning_progressions_builds_towards_relationships.json"
+        )
+    ]
+    relates_to = [
+        Relationship.model_validate(raw)
+        for raw in open_json_type(
+            d / "learning_progressions_relates_to_relationships.json"
+        )
+    ]
+    graph_bundle = open_json_type(d / "learning_progressions_kg.json")
+    report = open_json_type(d / "learning_progressions_report.json")
+
+    return LearningProgressionsExport(
+        builds_towards_relationships=builds_towards,
+        graph_bundle=graph_bundle,
+        relates_to_relationships=relates_to,
+        report=report,
+    )
+
+
+def load_or_export_learning_progressions(
+    *,
+    academic_standards: AcademicStandardsExport,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    kg_dirs: KGDirs,
+) -> tuple[LearningProgressionsExport, bool]:
+    """Load an existing Learning Progressions KG from disk or export a new one.
+
+    Checks whether the learning progressions sentinel bundle file already exists on
+    disk. If it exists and `config.overwrite` is False, the prior export is loaded from
+    disk. Otherwise, a new export is generated.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported academic standards artifacts.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    kg_dirs
+        The KG output directories.
+
+    Returns
+    -------
+    tuple[LearningProgressionsExport, bool]
+        A tuple containing the Learning Progressions export artifacts and a boolean
+        indicating whether the export was reused from disk (`True`) or newly generated
+        (`False`).
+    """
+
+    lp_sentinel = kg_dirs.learning_progressions / "learning_progressions_kg.json"
+    lp_reused = False
+
+    if lp_sentinel.exists() and not config.overwrite:
+        logger.info(
+            "Learning Progressions KG already exists and overwrite=False---loading from disk."
+        )
+        learning_progressions = load_learning_progressions_export(kg_dirs)
+        lp_reused = True
+    else:
+        if lp_sentinel.exists():
+            logger.warning(
+                "config.overwrite=True: re-exporting Learning Progressions KG "
+                "(existing artifacts will be overwritten)."
+            )
+
+        learning_progressions = export_learning_progressions(
+            academic_standards=academic_standards,
+            config=config,
+            ctx=ctx,
+            kg_dirs=kg_dirs,
+        )
+
+    return learning_progressions, lp_reused

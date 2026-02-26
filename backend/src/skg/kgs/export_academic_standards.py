@@ -29,7 +29,7 @@ from skg.kgs.schemas import (
 from skg.kgs.utils import ExportContext, KGDirs, keyify, node_display_text
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
-from skg.utils.general import write_to_json
+from skg.utils.general import open_json_type, write_to_json
 
 AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
 ROMAN_MAP = {
@@ -1977,6 +1977,14 @@ def export_academic_standards(
             academic_standards=academic_standards, config=config, ctx=ctx
         ),
     )
+    write_to_json(
+        fp=kg_dirs.academic_standards / "academic_standards_drop_reasons.json",
+        json_info=academic_standards.drop_reasons,
+    )
+    write_to_json(
+        fp=kg_dirs.academic_standards / "academic_standards_reparent_stats.json",
+        json_info=academic_standards.reparent_stats,
+    )
 
     logger.info(
         f"Exported Academic Standards KG: "
@@ -1985,6 +1993,132 @@ def export_academic_standards(
     )
 
     return academic_standards
+
+
+def load_academic_standards_export(kg_dirs: KGDirs) -> AcademicStandardsExport:
+    """Reconstruct an AcademicStandardsExport from previously written disk artifacts.
+
+    This enables progressive re-use: if the academic standards KG already exists and
+    `overwrite=False`, we load the prior export rather than re-running the LLM-driven
+    export pipeline.
+
+    Parameters
+    ----------
+    kg_dirs
+        The KG output directories containing the prior run's artifacts.
+
+    Returns
+    -------
+    AcademicStandardsExport
+        The reconstructed export object, suitable for passing to downstream steps
+        (Learning Components, Learning Progressions, reporting).
+    """
+
+    d = kg_dirs.academic_standards
+
+    framework = StandardsFramework.model_validate(
+        open_json_type(d / "academic_standards_framework.json")
+    )
+    items = [
+        StandardsFrameworkItem.model_validate(raw)
+        for raw in open_json_type(d / "academic_standards_framework_items.json")
+    ]
+    relationships = [
+        Relationship.model_validate(raw)
+        for raw in open_json_type(d / "academic_standards_has_child_relationships.json")
+    ]
+    order = HierarchyOrderExport.model_validate(
+        open_json_type(d / "academic_standards_hierarchy_order.json")
+    )
+
+    # drop_reasons and reparent_stats are persisted alongside the core artifacts so the
+    # policy coverage report can be fully regenerated even when the export is reused.
+    drop_reasons_fp = d / "academic_standards_drop_reasons.json"
+    reparent_stats_fp = d / "academic_standards_reparent_stats.json"
+
+    drop_reasons: dict[str, str] = (
+        open_json_type(drop_reasons_fp) if drop_reasons_fp.exists() else {}
+    )
+    reparent_stats: dict[str, int] = (
+        open_json_type(reparent_stats_fp) if reparent_stats_fp.exists() else {}
+    )
+
+    return AcademicStandardsExport(
+        drop_reasons=drop_reasons,
+        framework=framework,
+        items=items,
+        order=order,
+        pruned_node_ids=set(),  # Only needed during export; safe to default
+        relationships=relationships,
+        reparent_stats=reparent_stats,
+    )
+
+
+def load_or_export_academic_standards(
+    *,
+    canonical_ir_created_at: Any = None,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    decision_set_id: Optional[str] = None,
+    kg_dirs: KGDirs,
+    provenance_context: Optional[dict[str, Any]] = None,
+) -> tuple[AcademicStandardsExport, bool]:
+    """Load an existing Academic Standards KG from disk or export a new one.
+
+    Checks whether the academic standards sentinel bundle file already exists on disk.
+    If it exists and `config.overwrite` is False, the prior export is loaded from
+    disk. Otherwise, a new export is generated.
+
+    Parameters
+    ----------
+    canonical_ir_created_at
+        The creation datetime for the CanonicalIR.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    decision_set_id
+        Optional decision set ID to include in metadata.
+    kg_dirs
+        The KG output directories.
+    provenance_context
+        Optional provenance context to include in metadata.
+
+    Returns
+    -------
+    tuple[AcademicStandardsExport, bool]
+        A tuple containing the Academic Standards export artifacts and a boolean
+        indicating whether the export was reused from disk (`True`) or newly generated
+        (`False`).
+    """
+
+    as_sentinel = kg_dirs.academic_standards / "academic_standards_kg.json"
+    as_reused = False
+
+    if as_sentinel.exists() and not config.overwrite:
+        logger.info(
+            "Academic Standards KG already exists and overwrite=False — loading from "
+            "disk."
+        )
+        academic_standards = load_academic_standards_export(kg_dirs)
+        as_reused = True
+    else:
+        if as_sentinel.exists():
+            logger.warning(
+                "config.overwrite=True: re-exporting Academic Standards KG (existing "
+                "artifacts will be overwritten)."
+            )
+
+        academic_standards = export_academic_standards(
+            canonical_ir_created_at=canonical_ir_created_at,
+            config=config,
+            ctx=ctx,
+            decision_set_id=decision_set_id,
+            kg_dirs=kg_dirs,
+            provenance_context=provenance_context,
+        )
+
+    return academic_standards, as_reused
 
 
 def should_emit_node(
