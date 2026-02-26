@@ -159,7 +159,6 @@ def create_kgs(
 
     # 5.
     learning_progressions = None
-    lp_reused = False
 
     if config.generate_progressions is True:
         learning_progressions, lp_reused = load_or_export_learning_progressions(

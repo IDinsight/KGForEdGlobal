@@ -3177,7 +3177,7 @@ def load_or_export_learning_progressions(
     lp_reused = False
 
     if lp_sentinel.exists() and not config.overwrite:
-        logger.info(
+        logger.warning(
             "Learning Progressions KG already exists and overwrite=False---loading from disk."
         )
         learning_progressions = load_learning_progressions_export(kg_dirs)

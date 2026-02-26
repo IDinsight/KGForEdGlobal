@@ -2096,7 +2096,7 @@ def load_or_export_academic_standards(
     as_reused = False
 
     if as_sentinel.exists() and not config.overwrite:
-        logger.info(
+        logger.warning(
             "Academic Standards KG already exists and overwrite=False — loading from "
             "disk."
         )
