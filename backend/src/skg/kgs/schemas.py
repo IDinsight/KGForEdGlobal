@@ -236,6 +236,44 @@ class _DateValidationMixin:
 
 
 # Schemas for LLM responses.
+class AtomicSkill(BaseSchema):
+    """An atomic skill extracted from a single expectation statement.
+
+    NB:
+
+    1. `skill_label` is intended to be a short English-only stable key (snake_case).
+    2. `description` is the atomic skill statement (display-language policy).
+    3. `rationale` is optional guidance explaining the decomposition decision.
+    """
+
+    description: str = Field(
+        description="Atomic skill statement (not an activity/resource).", min_length=1
+    )
+    rationale: Optional[str] = Field(
+        default=None,
+        description="Optional brief rationale explaining the decomposition.",
+    )
+    skill_label: str = Field(
+        description="Short English-only stable key for the skill (snake_case).",
+        min_length=1,
+    )
+
+
+class SFIAtomicSkills(BaseSchema):
+    """Atomic skills for a single StandardsFrameworkItem (expectation)."""
+
+    sfi_uuid: UUID = Field(
+        description="CASE UUID of the supporting StandardsFrameworkItem."
+    )
+    skills: list[AtomicSkill] = Field(default_factory=list)
+
+
+class AtomicSkillsResponse(BaseSchema):
+    """Top-level structured response for atomic skills inference."""
+
+    items: list[SFIAtomicSkills] = Field(default_factory=list)
+
+
 class ProgressionEdge(BaseSchema):
     """A single suggested edge between two StandardsFrameworkItems."""
 

@@ -400,12 +400,43 @@ class CreateKGConfig(BaseSchema):
             "unavailable or when export_in_language_policy='default'."
         ),
     )
-    learning_component_policy: Literal["1_to_1", "split_bullets"] = Field(
+    lc_atomic_skills_batch_size: int = Field(
+        default=5,
+        description="Number of expectation SFIs to send per LLM call when learning_component_policy='llm_atomic_skills'.",
+        ge=1,
+        le=50,
+    )
+    lc_atomic_skills_include_aux_statements: bool = Field(
+        default=True,
+        description="If True, include SFI.metadata['aux_statements'] as additional context for atomic skills decomposition.",
+    )
+    lc_atomic_skills_include_topic_context: bool = Field(
+        default=True,
+        description="If True, include SFI.metadata['progression_context'] topic/grade hints in the atomic skills prompt.",
+    )
+    lc_atomic_skills_min_per_sfi: int = Field(
+        default=1,
+        description=(
+            "Minimum number of atomic skills required per SFI in the LLM response. "
+            "If unmet, the batch will be corrected/retried; if still failing, the "
+            "export falls back to a 1-to-1 LC for affected SFIs."
+        ),
+        ge=1,
+        le=25,
+    )
+    lc_atomic_skills_require_rationale: bool = Field(
+        default=True,
+        description="If True, require a short rationale for each atomic skill in the LLM response.",
+    )
+    learning_component_policy: Literal[
+        "1_to_1", "split_bullets", "llm_atomic_skills"
+    ] = Field(
         default="1_to_1",
         description=(
             "LearningComponent creation strategy. "
             "'1_to_1' creates exactly one LC per expectation SFI; "
-            "'split_bullets' splits multi-bullet expectation bodies into separate LCs."
+            "'split_bullets' splits multi-bullet expectation bodies into separate LCs; "
+            "'llm_atomic_skills' uses an LLM to decompose each expectation into 1–N atomic skill LCs."
         ),
     )
     lc_max_splits_per_standard: int = Field(
