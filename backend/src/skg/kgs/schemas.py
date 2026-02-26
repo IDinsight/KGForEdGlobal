@@ -241,9 +241,8 @@ class AtomicSkill(BaseSchema):
 
     NB:
 
-    1. `skill_label` is intended to be a short English-only stable key (snake_case).
-    2. `description` is the atomic skill statement (display-language policy).
-    3. `rationale` is optional guidance explaining the decomposition decision.
+    1. `description` is the atomic skill statement (display-language policy).
+    2. `rationale` is optional guidance explaining the decomposition decision.
     """
 
     description: str = Field(
@@ -252,10 +251,6 @@ class AtomicSkill(BaseSchema):
     rationale: Optional[str] = Field(
         default=None,
         description="Optional brief rationale explaining the decomposition.",
-    )
-    skill_label: str = Field(
-        description="Short English-only stable key for the skill (snake_case).",
-        min_length=1,
     )
 
 

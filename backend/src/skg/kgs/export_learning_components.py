@@ -445,8 +445,8 @@ def _create_lcs_from_atomic_skills(
 
     NB:
 
-    1. Skill ordering is based primarily on stable_text_hash(description), not label.
-    2. LC UUID seed uses split_hash derived from description, not label.
+    1. Skill ordering is based on stable_text_hash (description).
+    2. LC UUID seed uses split_hash derived from description.
 
     Parameters
     ----------
@@ -461,13 +461,13 @@ def _create_lcs_from_atomic_skills(
         The StandardsFrameworkItem representing the expectation for which to create LCs.
     skills
         The list of validated atomic skills dictionaries for this SFI, each containing
-        at least a "description" field, and optionally "skill_label" and "rationale".
-        These are the outputs from the LLM-based atomic skills decomposition and
-        validation process, and are assumed to be pre-validated according to the
-        specified criteria (e.g., allowed SFI UUIDs, min/max skills per SFI, presence
-        of rationale if required). Each skill will be transformed into a
-        LearningComponent entity, with deterministic UUID generation based on the skill
-        description and its position in the list.
+        at least a "description" field, and optionally "rationale". These are the
+        outputs from the LLM-based atomic skills decomposition and validation process,
+        and are assumed to be pre-validated according to the specified criteria (e.g.,
+        allowed SFI UUIDs, min/max skills per SFI, presence of rationale if required).
+        Each skill will be transformed into a LearningComponent entity, with
+        deterministic UUID generation based on the skill description and its position
+        in the list.
 
     Returns
     -------
@@ -475,10 +475,7 @@ def _create_lcs_from_atomic_skills(
         A list of LearningComponent entities created from the provided atomic skills
         for the given expectation SFI. Each LC will have a deterministic UUID based on
         the doc_key, SFI UUID, skill index, and a hash of the skill description to
-        ensure stable IDs across runs. The LC description will be derived from the
-        skill description, and metadata will include the skill label and rationale if
-        provided.
-
+        ensure stable IDs across runs.
     """
 
     policy = "llm_atomic_skills"
@@ -492,11 +489,10 @@ def _create_lcs_from_atomic_skills(
         "source_segment_ids": md.get("source_segment_ids", []),
     }
     max_splits = int(config.lc_max_splits_per_standard)
-    norm_skills: list[tuple[str, str, str]] = []
+    norm_skills: list[tuple[str, str]] = []
 
     for sk in skills:
         desc = normalize_ws(str(sk.get("description") or ""))
-        label = normalize_ws(str(sk.get("skill_label") or ""))
         rat = (
             normalize_ws(str(sk.get("rationale") or ""))
             if sk.get("rationale") is not None
@@ -504,32 +500,32 @@ def _create_lcs_from_atomic_skills(
         )
 
         if desc:
-            norm_skills.append((desc, label, rat))
+            norm_skills.append((desc, rat))
 
     if not norm_skills:
         return []
 
-    keyed: list[tuple[str, str, str, str]] = []
+    keyed: list[tuple[str, str, str]] = []
 
-    for desc, label, rat in norm_skills:
+    for desc, rat in norm_skills:
         h = stable_text_hash(s=desc)
-        keyed.append((h, (label or "").strip().lower(), desc, rat))
+        keyed.append((h, desc, rat))
 
-    keyed.sort(key=lambda t: (t[0], t[1]))
+    keyed.sort(key=lambda t: t[0])
 
     # Deduplicate by normalized description BEFORE truncation so that duplicates don't
     # consume slots that could be used by unique skills beyond the cutoff.
     seen_desc: set[str] = set()
-    deduped: list[tuple[str, str, str, str]] = []
+    deduped: list[tuple[str, str, str]] = []
 
-    for h, label_norm, desc, rat in keyed:
+    for h, desc, rat in keyed:
         nd = " ".join(desc.split()).lower()
 
         if nd in seen_desc:
             continue
 
         seen_desc.add(nd)
-        deduped.append((h, label_norm, desc, rat))
+        deduped.append((h, desc, rat))
 
     truncated = False
 
@@ -537,15 +533,12 @@ def _create_lcs_from_atomic_skills(
         deduped = deduped[:max_splits]
         truncated = True
 
-    final: list[tuple[str, str, str]] = [
-        (desc, label_norm, rat) for _, label_norm, desc, rat in deduped
-    ]
+    final: list[tuple[str, str]] = [(desc, rat) for _, desc, rat in deduped]
 
     lcs: list[LearningComponent] = []
 
-    for i, (desc, label_norm, rat) in enumerate(final):
+    for i, (desc, rat) in enumerate(final):
         split_hash = stable_text_hash(s=desc)
-        skill_label = label_norm
 
         lcs.append(
             LearningComponent(
@@ -568,7 +561,6 @@ def _create_lcs_from_atomic_skills(
                     "split_policy": policy,
                     "split_id_text": desc,
                     "split_display_text": desc,
-                    "skill_label": skill_label,
                     "llm_rationale": rat or None,
                     "llm_model": str(config.model),
                     "split_index": i,

@@ -522,7 +522,7 @@ def decompose_atomic_skills(
 
 OUTPUT FORMAT:
 - Return ONLY valid JSON matching the AtomicSkillsResponse schema:
-  {{ "items": [ {{ "sfi_uuid": <uuid>, "skills": [ {{ "skill_label": "...", "description": "...", "rationale": "..." }} ] }} ] }}
+  {{ "items": [ {{ "sfi_uuid": <uuid>, "skills": [ {{ "description": "...", "rationale": "..." }} ] }} ] }}
 
 INPUT FIELDS (per SFI):
 - `display_text`: the human-readable expectation statement — base your decomposition on THIS field.
@@ -535,10 +535,9 @@ HARD RULES:
 3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
 4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
 5. Do NOT invent prerequisites or unrelated skills.
-6. `skill_label` MUST be English-only snake_case (short and stable).
-7. `description` MUST be written in language: {display_language}.
-8. No duplicate skills within an SFI (dedupe by description meaning).
-9. Keep rationales brief (1–2 sentences max). {rationale_req}
+6. `description` MUST be written in language: {display_language}.
+7. No duplicate skills within an SFI (dedupe by description meaning).
+8. Keep rationales brief (1–2 sentences max). {rationale_req}
 """
     )
 
@@ -576,9 +575,8 @@ Carefully review your last output against the instructions and double-check:
 1. Output is valid JSON and matches AtomicSkillsResponse exactly.
 2. Every input `sfi_uuid` appears exactly once in `items`.
 3. Each SFI has 1..N skills within the specified bounds.
-4. `skill_label` is snake_case English and short/stable.
-5. `description` is an atomic skill (not an activity/resource) in the required language.
-6. No duplicates within an SFI.
+4. `description` is an atomic skill (not an activity/resource) in the required language.
+5. No duplicates within an SFI.
 
 Return a complete corrected AtomicSkillsResponse object."""
     )
