@@ -35,7 +35,7 @@ from skg.kgs.utils import (
 )
 from skg.kgs.validators import validate_atomic_skills
 from skg.schemas import CreateKGConfig
-from skg.utils.general import write_to_json
+from skg.utils.general import open_json_type, write_to_json
 
 # Inline bullets: exclude hyphen/dash so we never split hyphenated words.
 _INLINE_BULLET_CHARS = r"[\u2022\u00b7•·\*]"
@@ -1335,6 +1335,10 @@ def export_learning_components(
         "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
         "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
     }
+    write_to_json(
+        fp=kg_dirs.learning_components / "learning_components_stats.json",
+        json_info=lc_stats,
+    )
 
     learning_components = LearningComponentsExport(
         learning_components=lcs, supports_relationships=rels, lc_stats=lc_stats
@@ -1347,3 +1351,98 @@ def export_learning_components(
     )
 
     return learning_components
+
+
+def load_learning_components_export(kg_dirs: KGDirs) -> LearningComponentsExport:
+    """Reconstruct a LearningComponentsExport from previously written disk artifacts.
+
+    Parameters
+    ----------
+    kg_dirs
+        The KG output directories containing the prior run's artifacts.
+
+    Returns
+    -------
+    LearningComponentsExport
+        The reconstructed export object.
+    """
+
+    d = kg_dirs.learning_components
+
+    learning_components = [
+        LearningComponent.model_validate(raw)
+        for raw in open_json_type(d / "learning_components.json")
+    ]
+    supports_relationships = [
+        Relationship.model_validate(raw)
+        for raw in open_json_type(d / "learning_components_supports_relationships.json")
+    ]
+
+    # lc_stats is persisted so the policy coverage report can be fully regenerated.
+    lc_stats_fp = d / "learning_components_stats.json"
+    lc_stats: dict = open_json_type(lc_stats_fp) if lc_stats_fp.exists() else {}
+
+    return LearningComponentsExport(
+        lc_stats=lc_stats,
+        learning_components=learning_components,
+        supports_relationships=supports_relationships,
+    )
+
+
+def load_or_export_learning_components(
+    *,
+    academic_standards: AcademicStandardsExport,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    kg_dirs: KGDirs,
+) -> tuple[LearningComponentsExport, bool]:
+    """Load an existing Learning Components KG from disk or export a new one.
+
+    Checks whether the learning components sentinel bundle file already exists on disk.
+    If it exists and `config.overwrite` is False, the prior export is loaded from disk.
+    Otherwise, a new export is generated.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported academic standards artifacts.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    kg_dirs
+        The KG output directories.
+
+    Returns
+    -------
+    tuple[LearningComponentsExport, bool]
+        A tuple containing the Learning Components export artifacts and a boolean
+        indicating whether the export was reused from disk (`True`) or newly generated
+        (`False`).
+    """
+
+    lc_sentinel = kg_dirs.learning_components / "learning_components_kg.json"
+    lc_reused = False
+
+    if lc_sentinel.exists() and not config.overwrite:
+        logger.info(
+            "Learning Components KG already exists and overwrite=False — loading "
+            "from disk."
+        )
+        learning_components = load_learning_components_export(kg_dirs)
+        lc_reused = True
+    else:
+        if lc_sentinel.exists():
+            logger.warning(
+                "config.overwrite=True: re-exporting Learning Components KG (existing "
+                "artifacts will be overwritten)."
+            )
+
+        learning_components = export_learning_components(
+            academic_standards=academic_standards,
+            config=config,
+            ctx=ctx,
+            kg_dirs=kg_dirs,
+        )
+
+    return learning_components, lc_reused

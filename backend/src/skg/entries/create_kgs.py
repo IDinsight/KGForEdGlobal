@@ -39,9 +39,9 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR
-from skg.kgs.export_academic_standards import export_academic_standards
-from skg.kgs.export_learning_components import export_learning_components
-from skg.kgs.export_learning_progressions import export_learning_progressions
+from skg.kgs.export_academic_standards import load_or_export_academic_standards
+from skg.kgs.export_learning_components import load_or_export_learning_components
+from skg.kgs.export_learning_progressions import load_or_export_learning_progressions
 from skg.kgs.reporting import (
     build_entity_provenance_export,
     build_policy_coverage_report,
@@ -73,15 +73,21 @@ def create_kgs(
 ) -> None:
     """Create Learning Commons knowledge graphs from a single CanonicalIR JSON.
 
+    Each export phase checks whether its sentinel bundle file already exists on disk.
+    When `config.overwrite` is `False` and the sentinel exists, the prior export is
+    loaded from disk instead of being re-generated. This enables cheap incremental
+    re-runs: for example, re-running only Learning Progressions after tuning thresholds
+    while reusing the (expensive) Academic Standards and Learning Components exports.
+
     The process is as follows:
 
     1. Load the CanonicalIR JSON and validate it.
     2. Build the knowledge graph export context.
-    3. Export academic standards to the knowledge graphs.
-    4. Export Learning Components KG and write combined Standards + Learning Components
-        graph bundle.
-    5. Optionally export Learning Progressions KG and write combined Standards +
-        Learning Components + Learning Progressions graph bundle.
+    3. Export (or load) academic standards.
+    4. Export (or load) Learning Components KG and write combined Standards + Learning
+        Components graph bundle.
+    5. Optionally export (or load) Learning Progressions KG and write combined
+        Standards + Learning Components + Learning Progressions graph bundle.
     6. Build reporting and validation artifacts, write to disk, and log console summary.
 
     Parameters
@@ -110,7 +116,7 @@ def create_kgs(
     kg_export_ctx = build_kg_export_context(canonical_ir=canonical_ir, config=config)
 
     # 3.
-    academic_standards = export_academic_standards(
+    academic_standards, as_reused = load_or_export_academic_standards(
         canonical_ir_created_at=canonical_ir.created_at,
         config=config,
         ctx=kg_export_ctx,
@@ -120,53 +126,72 @@ def create_kgs(
     )
 
     # 4.
-    learning_components = export_learning_components(
+    learning_components, lc_reused = load_or_export_learning_components(
         academic_standards=academic_standards,
         config=config,
         ctx=kg_export_ctx,
         kg_dirs=kg_dirs,
     )
 
-    academic_bundle = open_json_type(
-        kg_dirs.academic_standards / "academic_standards_kg.json"
+    # Sentinels needed for combined bundles.
+    as_sentinel = kg_dirs.academic_standards / "academic_standards_kg.json"
+    lc_sentinel = kg_dirs.learning_components / "learning_components_kg.json"
+
+    # Combined Academic Standards + Learning Components bundle.
+    combined_as_lc_fp = (
+        kg_dirs.combined / "academic_standards_plus_learning_components_kg.json"
     )
-    lc_bundle = open_json_type(
-        kg_dirs.learning_components / "learning_components_kg.json"
-    )
-    combined_bundle = merge_graph_bundles(
-        bundles=[academic_bundle, lc_bundle],
-        doc_key=kg_export_ctx.doc_key,
-        export_dialect=str(config.export_dialect),
-    )
-    write_to_json(
-        fp=kg_dirs.combined / "academic_standards_plus_learning_components_kg.json",
-        json_info=combined_bundle,
-    )
+
+    if combined_as_lc_fp.exists() and as_reused and lc_reused:
+        logger.info(
+            "Combined Academic Standards and Learning Components bundle already exists "
+            "(both components reused)---skipping."
+        )
+    else:
+        academic_bundle = open_json_type(as_sentinel)
+        lc_bundle = open_json_type(lc_sentinel)
+        combined_bundle = merge_graph_bundles(
+            bundles=[academic_bundle, lc_bundle],
+            doc_key=kg_export_ctx.doc_key,
+            export_dialect=str(config.export_dialect),
+        )
+        write_to_json(fp=combined_as_lc_fp, json_info=combined_bundle)
 
     # 5.
     learning_progressions = None
+    lp_reused = False
 
     if config.generate_progressions is True:
-        learning_progressions = export_learning_progressions(
+        learning_progressions, lp_reused = load_or_export_learning_progressions(
             academic_standards=academic_standards,
             config=config,
             ctx=kg_export_ctx,
             kg_dirs=kg_dirs,
         )
 
-        lp_bundle = open_json_type(
-            kg_dirs.learning_progressions / "learning_progressions_kg.json"
+        # Combined Academic Standards + Learning Components + Learning Progressions
+        # bundle.
+        combined_all_fp = (
+            kg_dirs.combined
+            / "academic_standards_plus_learning_components_plus_learning_progressions_kg.json"
         )
-        combined_bundle = merge_graph_bundles(
-            bundles=[academic_bundle, lc_bundle, lp_bundle],
-            doc_key=kg_export_ctx.doc_key,
-            export_dialect=str(config.export_dialect),
-        )
-        write_to_json(
-            fp=kg_dirs.combined
-            / "academic_standards_plus_learning_components_plus_learning_progressions_kg.json",
-            json_info=combined_bundle,
-        )
+
+        if combined_all_fp.exists() and as_reused and lc_reused and lp_reused:
+            logger.info(
+                "Combined AS+LC+LP bundle already exists (all components reused)---skipping."
+            )
+        else:
+            academic_bundle = open_json_type(as_sentinel)
+            lc_bundle = open_json_type(lc_sentinel)
+            lp_bundle = open_json_type(
+                kg_dirs.learning_progressions / "learning_progressions_kg.json"
+            )
+            combined_bundle = merge_graph_bundles(
+                bundles=[academic_bundle, lc_bundle, lp_bundle],
+                doc_key=kg_export_ctx.doc_key,
+                export_dialect=str(config.export_dialect),
+            )
+            write_to_json(fp=combined_all_fp, json_info=combined_bundle)
 
     # 6.
     policy_report = build_policy_coverage_report(
