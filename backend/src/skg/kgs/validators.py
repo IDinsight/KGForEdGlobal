@@ -3,8 +3,6 @@ information.
 """
 
 # Standard Library
-import re
-
 from typing import Any
 from uuid import UUID
 
@@ -12,8 +10,6 @@ from uuid import UUID
 from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
 from skg.kgs.utils import canon_str_pair
 from skg.page_ir_extraction.validators import QualityError
-
-_SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 
 
 def _check_common_edge_invariants(
@@ -130,13 +126,11 @@ def _validate_sfi_skills(
             f"sfi_uuid {sfi_uuid} must have between {min_per_sfi} and {max_per_sfi} skills; got {len(skills)}."
         )
 
-    labels_seen: set[str] = set()
     desc_seen: set[str] = set()
 
     for sk in skills:
         _validate_single_skill(
             desc_seen=desc_seen,
-            labels_seen=labels_seen,
             require_rationale=require_rationale,
             sfi_uuid=sfi_uuid,
             sk=sk,
@@ -146,7 +140,6 @@ def _validate_sfi_skills(
 def _validate_single_skill(
     *,
     desc_seen: set[str],
-    labels_seen: set[str],
     require_rationale: bool,
     sfi_uuid: UUID,
     sk: Any,
@@ -157,8 +150,6 @@ def _validate_single_skill(
     ----------
     desc_seen
         A set of normalized descriptions already seen for this SFI.
-    labels_seen
-        A set of lowercased skill labels already seen for this SFI.
     require_rationale
         Whether a non-empty rationale is required.
     sfi_uuid
@@ -169,25 +160,11 @@ def _validate_single_skill(
     Raises
     ------
     QualityError
-        If the skill label, description, or rationale violates quality rules.
+        If the skill description or rationale violates quality rules.
     """
 
-    label = (sk.skill_label or "").strip()
     desc = (sk.description or "").strip()
     rat = (sk.rationale or "").strip() if sk.rationale is not None else ""
-
-    if not label:
-        raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty skill_label.")
-
-    if not _SNAKE_CASE_RE.match(label):
-        raise QualityError(
-            f"sfi_uuid {sfi_uuid} has invalid skill_label '{label}'. skill_label must be snake_case (e.g., add_within_20)."
-        )
-
-    if label.lower() in labels_seen:
-        raise QualityError(f"sfi_uuid {sfi_uuid} has duplicate skill_label '{label}'.")
-
-    labels_seen.add(label.lower())
 
     if not desc:
         raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty description.")
