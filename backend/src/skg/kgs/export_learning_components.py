@@ -784,6 +784,21 @@ def _export_lcs_via_llm_atomic_skills(
                 skills=skills,
             )
 
+            # If all skill descriptions normalized to empty (extremely unlikely after
+            # validation, but possible via whitespace-only edge cases in normalize_ws),
+            # fall back to 1_to_1 so the SFI is never silently dropped without a
+            # supports edge.
+            if not created:
+                logger.warning(
+                    f"Atomic skills for SFI {sfi_uuid_str} produced 0 LCs "
+                    f"after normalization/dedup; falling back to 1_to_1."
+                )
+                created = _create_fallback_lc_1_to_1(
+                    config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
+                )
+                batch_debug.setdefault("fallback_sfi_uuids", []).append(sfi_uuid_str)
+                fallback_sfis_total.append(sfi_uuid_str)
+
             splits_per_sfi[len(created)] += 1
 
             for lc_item in created:
