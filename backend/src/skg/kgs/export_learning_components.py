@@ -1425,7 +1425,7 @@ def load_or_export_learning_components(
     lc_reused = False
 
     if lc_sentinel.exists() and not config.overwrite:
-        logger.info(
+        logger.warning(
             "Learning Components KG already exists and overwrite=False — loading "
             "from disk."
         )
