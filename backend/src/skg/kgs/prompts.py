@@ -524,6 +524,11 @@ OUTPUT FORMAT:
 - Return ONLY valid JSON matching the AtomicSkillsResponse schema:
   {{ "items": [ {{ "sfi_uuid": <uuid>, "skills": [ {{ "skill_label": "...", "description": "...", "rationale": "..." }} ] }} ] }}
 
+INPUT FIELDS (per SFI):
+- `display_text`: the human-readable expectation statement — base your decomposition on THIS field.
+- `id_source_text`: the stable canonical text used for ID generation (often identical to display_text; ignore unless display_text is missing).
+- `topic_context` / `aux_statements`: optional contextual hints — use them to inform decomposition but do NOT decompose them directly.
+
 HARD RULES:
 1. Use ONLY the provided `sfi_uuid` values. Do not invent UUIDs.
 2. For each input SFI, return between {min_per_sfi} and {max_per_sfi} skills.
