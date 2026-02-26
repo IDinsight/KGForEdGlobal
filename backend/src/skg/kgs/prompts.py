@@ -492,8 +492,8 @@ def decompose_atomic_skills(
     Parameters
     ----------
     display_language
-        The language in which the skill descriptions should be written (e.g.,
-        "English").
+        The language name in which the skill descriptions should be written (e.g.,
+        "English" or "French").
     items
         The list of StandardsFrameworkItems to decompose, each with 'sfi_uuid' and
         'statement' fields.

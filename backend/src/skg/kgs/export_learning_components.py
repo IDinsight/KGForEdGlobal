@@ -8,6 +8,7 @@ This module implements a shape-preserving Learning Commons Learning Components e
 """
 
 # Standard Library
+import math
 import re
 
 from collections import defaultdict
@@ -25,7 +26,13 @@ from skg.kgs.export_academic_standards import AcademicStandardsExport
 from skg.kgs.llm import infer_atomic_skills
 from skg.kgs.prompts import decompose_atomic_skills
 from skg.kgs.schemas import LearningComponent, Relationship, StandardsFrameworkItem
-from skg.kgs.utils import ExportContext, KGDirs, normalize_ws, stable_text_hash
+from skg.kgs.utils import (
+    ExportContext,
+    KGDirs,
+    format_language_for_prompt,
+    normalize_ws,
+    stable_text_hash,
+)
 from skg.kgs.validators import validate_atomic_skills
 from skg.schemas import CreateKGConfig
 from skg.utils.general import write_to_json
@@ -676,7 +683,9 @@ def _export_lcs_via_llm_atomic_skills(
         expectation_sfis, key=lambda x: str(x.case_identifier_uuid)
     )
 
+    total_sfis = len(expectation_sfis_sorted)
     batch_size = int(config.lc_atomic_skills_batch_size)
+    total_batches = math.ceil(total_sfis / batch_size)
     max_splits = int(config.lc_max_splits_per_standard)
 
     lcs: list[LearningComponent] = []
@@ -686,140 +695,42 @@ def _export_lcs_via_llm_atomic_skills(
     debug_batches: list[dict[str, Any]] = []
     fallback_sfis_total: list[str] = []
 
-    for batch_index in range(0, len(expectation_sfis_sorted), batch_size):
-        batch = expectation_sfis_sorted[batch_index : batch_index + batch_size]
-        allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
+    logger.info(
+        f"Starting LLM atomic skills export for {total_sfis} SFIs "
+        f"across {total_batches} batches (Batch size: {batch_size})."
+    )
 
-        prompt_items = _build_atomic_skills_prompt_items(config=config, sfis=batch)
-        prompt = decompose_atomic_skills(
-            display_language=str(fw_metadata["in_language"]),
-            items=prompt_items,
-            max_per_sfi=max_splits,
-            min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
-            require_rationale=bool(config.lc_atomic_skills_require_rationale),
+    for batch_index in range(0, total_sfis, batch_size):
+        current_batch_num = (batch_index // batch_size) + 1
+        batch = expectation_sfis_sorted[batch_index : batch_index + batch_size]
+
+        batch_lcs, batch_rels, batch_splits, batch_debug, batch_fallbacks = (
+            _process_atomic_skills_batch(
+                batch=batch,
+                batch_index=batch_index // batch_size,
+                config=config,
+                ctx=ctx,
+                current_batch_num=current_batch_num,
+                fw_metadata=fw_metadata,
+                max_splits=max_splits,
+                total_batches=total_batches,
+            )
         )
 
-        batch_debug: dict[str, Any] = {
-            "batch_index": batch_index // batch_size,
-            "input_items": prompt_items,
-            "response": None,
-            "fallback_sfi_uuids": [],
-            "error": None,
-        }
-
-        skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
-
-        try:
-            parsed = infer_atomic_skills(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                instructions=prompt.system_message,
-                model=config.model,
-                user_message=prompt.user_message,
-                validator=partial(
-                    validate_atomic_skills,
-                    allowed_sfi_uuids=allowed,
-                    min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
-                    max_per_sfi=max_splits,
-                    require_rationale=bool(config.lc_atomic_skills_require_rationale),
-                ),
-            )
-
-            parsed_dict = parsed.model_dump(mode="json")
-            batch_debug["response"] = parsed_dict
-
-            for it in parsed_dict.get("items", []):
-                sfi_uuid = str(it.get("sfi_uuid"))
-                skills_by_sfi[sfi_uuid] = list(it.get("skills") or [])
-        except Exception as e:  # pylint: disable=broad-except
-            batch_debug["error"] = f"{e.__class__.__name__}: {e}"
-            batch_debug["fallback_sfi_uuids"] = [
-                str(s.case_identifier_uuid) for s in batch
-            ]
-            fallback_sfis_total.extend(batch_debug["fallback_sfi_uuids"])
-            debug_batches.append(batch_debug)
-
-            logger.warning(
-                f"Atomic skills batch {batch_index // batch_size} failed "
-                f"({e.__class__.__name__}); all {len(batch)} SFI(s) in this batch "
-                f"fall back to 1_to_1. SFI UUIDs: "
-                f"{[str(s.case_identifier_uuid) for s in batch]}"
-            )
-
-            for sfi in batch:
-                created = _create_fallback_lc_1_to_1(
-                    config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
-                )
-                splits_per_sfi[len(created)] += 1
-                for lc_item in created:
-                    lcs.append(lc_item)
-                    rels.append(
-                        _emit_supports(
-                            config=config,
-                            doc_key=ctx.doc_key,
-                            fw_metadata=fw_metadata,
-                            lc=lc_item,
-                            sfi=sfi,
-                        )
-                    )
-            continue
-
-        for sfi in batch:
-            sfi_uuid_str = str(sfi.case_identifier_uuid)
-            skills = skills_by_sfi.get(sfi_uuid_str, [])
-
-            # _validate_batch_coverage guarantees every batch SFI appears in the
-            # validated response, and _validate_sfi_skills enforces min_per_sfi >= 1,
-            # so `skills` is always non-empty after successful validation.
-            assert skills, (
-                f"BUG: SFI {sfi_uuid_str} passed validation but has no skills in "
-                f"skills_by_sfi. This indicates a mapping error between parsed_dict "
-                f"and skills_by_sfi."
-            )
-
-            created = _create_lcs_from_atomic_skills(
-                config=config,
-                doc_key=ctx.doc_key,
-                fw_metadata=fw_metadata,
-                sfi=sfi,
-                skills=skills,
-            )
-
-            # If all skill descriptions normalized to empty (extremely unlikely after
-            # validation, but possible via whitespace-only edge cases in normalize_ws),
-            # fall back to 1_to_1 so the SFI is never silently dropped without a
-            # supports edge.
-            if not created:
-                logger.warning(
-                    f"Atomic skills for SFI {sfi_uuid_str} produced 0 LCs "
-                    f"after normalization/dedup; falling back to 1_to_1."
-                )
-                created = _create_fallback_lc_1_to_1(
-                    config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
-                )
-                batch_debug["fallback_sfi_uuids"].append(sfi_uuid_str)
-                fallback_sfis_total.append(sfi_uuid_str)
-
-            splits_per_sfi[len(created)] += 1
-
-            for lc_item in created:
-                lcs.append(lc_item)
-                rels.append(
-                    _emit_supports(
-                        config=config,
-                        doc_key=ctx.doc_key,
-                        fw_metadata=fw_metadata,
-                        lc=lc_item,
-                        sfi=sfi,
-                    )
-                )
+        lcs.extend(batch_lcs)
+        rels.extend(batch_rels)
+        for splits_count, occurrences in batch_splits.items():
+            splits_per_sfi[splits_count] += occurrences
 
         debug_batches.append(batch_debug)
+        fallback_sfis_total.extend(batch_fallbacks)
 
-    write_to_json(
-        fp=kg_dirs.learning_components
-        / "learning_components_llm_atomic_skills_debug.json",
-        json_info=debug_batches,
+    save_fp = (
+        kg_dirs.learning_components / "learning_components_llm_atomic_skills_debug.json"
     )
+    write_to_json(fp=save_fp, json_info=debug_batches)
+
+    logger.success(f"Saved LLM atomic skills debug info to: {save_fp}")
 
     lc_stats = {
         "split_policy": "llm_atomic_skills",
@@ -832,6 +743,158 @@ def _export_lcs_via_llm_atomic_skills(
     }
 
     return lcs, rels, lc_stats
+
+
+def _handle_atomic_skills_fallback(
+    *,
+    batch: list[Any],
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    current_batch_num: int,
+    fw_metadata: dict[str, Any],
+) -> tuple[list[LearningComponent], list[Relationship], dict[int, int]]:
+    """Handle fallback logic by creating 1-to-1 LCs for a failed batch.
+
+    Parameters
+    ----------
+    batch
+        The list of SFI items in the current batch.
+    config
+        The KG export configuration.
+    ctx
+        The ExportContext for the current export.
+    current_batch_num
+        The index (1-based) of the current batch being processed.
+    fw_metadata
+        The framework metadata dict.
+
+    Returns
+    -------
+    tuple[list[LearningComponent], list[Relationship], dict[int, int]]
+        A tuple containing the fallback LCs, supports relationships, and split
+        statistics.
+    """
+
+    lcs: list[LearningComponent] = []
+    rels: list[Relationship] = []
+    splits: defaultdict[int, int] = defaultdict(int)
+
+    for sfi_idx, sfi in enumerate(batch, start=1):
+        logger.debug(
+            f"Batch {current_batch_num} Fallback: Processing SFI "
+            f"{sfi.case_identifier_uuid} ({sfi_idx}/{len(batch)})..."
+        )
+        created = _create_fallback_lc_1_to_1(
+            config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
+        )
+        splits[len(created)] += 1
+
+        for lc_item in created:
+            lcs.append(lc_item)
+            rels.append(
+                _emit_supports(
+                    config=config,
+                    doc_key=ctx.doc_key,
+                    fw_metadata=fw_metadata,
+                    lc=lc_item,
+                    sfi=sfi,
+                )
+            )
+
+    return lcs, rels, dict(splits)
+
+
+def _handle_atomic_skills_success(
+    *,
+    batch: list[Any],
+    batch_debug: dict[str, Any],
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    current_batch_num: int,
+    fw_metadata: dict[str, Any],
+    skills_by_sfi: dict[str, list[dict[str, Any]]],
+) -> tuple[list[LearningComponent], list[Relationship], dict[int, int], list[str]]:
+    """Process successfully inferred atomic skills to create LCs.
+
+    Parameters
+    ----------
+    batch
+        The list of SFI items in the current batch.
+    batch_debug
+        The debug dictionary for the current batch.
+    config
+        The KG export configuration.
+    ctx
+        The ExportContext for the current export.
+    current_batch_num
+        The index (1-based) of the current batch being processed.
+    fw_metadata
+        The framework metadata dict.
+    skills_by_sfi
+        A dictionary mapping SFI UUIDs to their generated atomic skills.
+
+    Returns
+    -------
+    tuple[list[LearningComponent], list[Relationship], dict[int, int], list[str]]
+        A tuple containing the generated LCs, supports relationships, split statistics,
+        and any fallback SFI UUIDs triggered during empty/invalid creation.
+
+    """
+    lcs: list[LearningComponent] = []
+    rels: list[Relationship] = []
+    splits: defaultdict[int, int] = defaultdict(int)
+    fallback_uuids: list[str] = []
+
+    for sfi_idx, sfi in enumerate(batch, start=1):
+        sfi_uuid_str = str(sfi.case_identifier_uuid)
+
+        logger.debug(
+            f"Batch {current_batch_num}: Processing SFI "
+            f"{sfi_uuid_str} ({sfi_idx}/{len(batch)})..."
+        )
+
+        skills = skills_by_sfi.get(sfi_uuid_str, [])
+
+        assert skills, (
+            f"BUG: SFI {sfi_uuid_str} passed validation but has no skills in "
+            f"skills_by_sfi. This indicates a mapping error between parsed_dict "
+            f"and skills_by_sfi."
+        )
+
+        created = _create_lcs_from_atomic_skills(
+            config=config,
+            doc_key=ctx.doc_key,
+            fw_metadata=fw_metadata,
+            sfi=sfi,
+            skills=skills,
+        )
+
+        if not created:
+            logger.warning(
+                f"Atomic skills for SFI {sfi_uuid_str} produced 0 LCs "
+                f"after normalization/dedup; falling back to 1_to_1."
+            )
+            created = _create_fallback_lc_1_to_1(
+                config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
+            )
+            batch_debug["fallback_sfi_uuids"].append(sfi_uuid_str)
+            fallback_uuids.append(sfi_uuid_str)
+
+        splits[len(created)] += 1
+
+        for lc_item in created:
+            lcs.append(lc_item)
+            rels.append(
+                _emit_supports(
+                    config=config,
+                    doc_key=ctx.doc_key,
+                    fw_metadata=fw_metadata,
+                    lc=lc_item,
+                    sfi=sfi,
+                )
+            )
+
+    return lcs, rels, dict(splits), fallback_uuids
 
 
 def _iter_expectation_sfis(
@@ -863,6 +926,134 @@ def _iter_expectation_sfis(
             output.append(sfi)
 
     return output
+
+
+def _process_atomic_skills_batch(
+    *,
+    batch: list[Any],
+    batch_index: int,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    current_batch_num: int,
+    fw_metadata: dict[str, Any],
+    max_splits: int,
+    total_batches: int,
+) -> tuple[
+    list[LearningComponent],
+    list[Relationship],
+    dict[int, int],
+    dict[str, Any],
+    list[str],
+]:
+    """Process a single batch of SFIs via LLM inference to create LCs.
+
+    Parameters
+    ----------
+    batch
+        The list of SFI items in the current batch.
+    batch_index
+        The normalized batch index (0-based) for debugging.
+    config
+        The KG export configuration.
+    ctx
+        The ExportContext for the current export.
+    current_batch_num
+        The current human-readable batch number (1-based).
+    fw_metadata
+        The framework metadata dict.
+    max_splits
+        The maximum number of splits allowed per standard.
+    total_batches
+        The total number of batches to process.
+
+    Returns
+    -------
+    tuple[list[LearningComponent], list[Relationship], dict[int, int], dict[str, Any], list[str]]
+        A tuple containing the LCs, relationships, splits distribution, debug information,
+        and fallback UUIDs for this batch.
+    """
+
+    logger.info(
+        f"Processing batch {current_batch_num}/{total_batches} ({len(batch)} SFIs)..."
+    )
+
+    allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
+    prompt_items = _build_atomic_skills_prompt_items(config=config, sfis=batch)
+    prompt = decompose_atomic_skills(
+        display_language=format_language_for_prompt(
+            tag=str(fw_metadata["in_language"])
+        ),
+        items=prompt_items,
+        max_per_sfi=max_splits,
+        min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
+        require_rationale=bool(config.lc_atomic_skills_require_rationale),
+    )
+
+    batch_debug: dict[str, Any] = {
+        "batch_index": batch_index,
+        "input_items": prompt_items,
+        "response": None,
+        "fallback_sfi_uuids": [],
+        "error": None,
+    }
+
+    skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
+    fallback_sfis_total: list[str] = []
+
+    try:
+        parsed = infer_atomic_skills(
+            always_double_check_first_attempt=config.always_double_check_first_attempt,
+            instructions=prompt.system_message,
+            model=config.model,
+            user_message=prompt.user_message,
+            validator=partial(
+                validate_atomic_skills,
+                allowed_sfi_uuids=allowed,
+                min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
+                max_per_sfi=max_splits,
+                require_rationale=bool(config.lc_atomic_skills_require_rationale),
+            ),
+        )
+
+        parsed_dict = parsed.model_dump(mode="json")
+        batch_debug["response"] = parsed_dict
+
+        for it in parsed_dict.get("items", []):
+            sfi_uuid = str(it.get("sfi_uuid"))
+            skills_by_sfi[sfi_uuid] = list(it.get("skills") or [])
+    except Exception as e:  # pylint: disable=broad-except
+        batch_debug["error"] = f"{e.__class__.__name__}: {e}"
+        batch_debug["fallback_sfi_uuids"] = [str(s.case_identifier_uuid) for s in batch]
+        fallback_sfis_total.extend(batch_debug["fallback_sfi_uuids"])
+
+        logger.warning(
+            f"Atomic skills batch {current_batch_num} failed "
+            f"({e.__class__.__name__}); all {len(batch)} SFI(s) in this batch "
+            f"fall back to 1_to_1. SFI UUIDs: "
+            f"{batch_debug['fallback_sfi_uuids']}"
+        )
+
+        lcs, rels, splits = _handle_atomic_skills_fallback(
+            batch=batch,
+            config=config,
+            ctx=ctx,
+            current_batch_num=current_batch_num,
+            fw_metadata=fw_metadata,
+        )
+        return lcs, rels, splits, batch_debug, fallback_sfis_total
+
+    lcs, rels, splits, fallback_uuids = _handle_atomic_skills_success(
+        batch=batch,
+        batch_debug=batch_debug,
+        config=config,
+        ctx=ctx,
+        current_batch_num=current_batch_num,
+        fw_metadata=fw_metadata,
+        skills_by_sfi=skills_by_sfi,
+    )
+    fallback_sfis_total.extend(fallback_uuids)
+
+    return lcs, rels, splits, batch_debug, fallback_sfis_total
 
 
 def _split_bullets_deterministic(*, text: str) -> list[str]:

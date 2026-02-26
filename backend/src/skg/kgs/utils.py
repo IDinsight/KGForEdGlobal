@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 # Third Party Library
+import pycountry
+
 from loguru import logger
 from PIL import Image
 
@@ -21,6 +23,19 @@ from skg.canonical_ir.schemas import CanonicalIR, SegmentDecision
 from skg.schemas import CreateKGConfig, RunCtx
 from skg.utils.constants import StatementRole
 from skg.utils.general import make_dir, write_to_json
+
+# Minimal primary-language map for common BCP-47 tags seen in primary-school curricula.
+# We still attempt to resolve unknown codes via `pycountry`.
+_LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
+    "en": "English",
+    "fr": "French",
+    "sw": "Swahili",
+    "wo": "Wolof",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "ar": "Arabic",
+    "und": "Undetermined",
+}
 
 
 @dataclass
@@ -705,6 +720,50 @@ def build_kg_export_context(
     _verify_columns_signature(ctx=ctx, segment_decisions=canonical_ir.segment_decisions)
 
     return ctx
+
+
+def format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
+    """Format a BCP-47 language tag as a human-friendly language name for prompts.
+
+    Parameters
+    ----------
+    include_tag
+        If True, include the original tag in parentheses, e.g. "English (en)".
+    tag
+        A BCP-47 language tag like "en", "fr", "sw", or "en-US". May be None.
+
+    Returns
+    -------
+    str
+        A human-readable language name (optionally with the tag).
+    """
+
+    raw = normalize_ws(str(tag or "")).strip()
+
+    if not raw:
+        return "English"
+
+    # Normalize tag formatting but preserve the original for display.
+    tag_norm = raw.replace("_", "-")
+    primary = tag_norm.split("-")[0].lower().strip()
+    name = _LANG_PRIMARY_CODE_TO_NAME.get(primary)
+
+    if not name:
+        lang = (
+            pycountry.languages.get(alpha_2=primary)
+            or pycountry.languages.get(alpha_3=primary)
+            or pycountry.languages.get(bibliographic=primary)
+            or pycountry.languages.get(terminology=primary)
+        )
+
+        if lang and getattr(lang, "name", None):
+            name = str(lang.name)
+
+    # Final fallback: return the tag itself.
+    if not name:
+        return tag_norm
+
+    return f"{name} ({tag_norm})" if include_tag else name
 
 
 def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
