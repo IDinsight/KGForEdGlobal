@@ -1246,6 +1246,10 @@ def export_learning_components(
                 supports_relationships=rels,
             ),
         )
+        write_to_json(
+            fp=kg_dirs.learning_components / "learning_components_stats.json",
+            json_info=lc_stats,
+        )
 
         learning_components = LearningComponentsExport(
             lc_stats=lc_stats, learning_components=lcs, supports_relationships=rels
