@@ -22,13 +22,107 @@ from tenacity import (
 )
 
 # Package Library
-from skg.kgs.prompts import double_check_learning_progressions
-from skg.kgs.schemas import ProgressionEdgesResponse
+from skg.kgs.prompts import (
+    double_check_atomic_skills,
+    double_check_learning_progressions,
+)
+from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import Limits
 
 limits = Limits(max_retry_attempts=10)
 openai_client = OpenAI()
+
+
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(
+        (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+    ),
+    stop=stop_after_attempt(limits.max_retry_attempts),
+    wait=wait_random_exponential(min=1, max=60),
+)
+def _call_openai_api_for_atomic_skills(
+    *,
+    always_double_check_first_attempt: bool,
+    attempt: int,
+    input_items: list[Any],
+    instructions: str,
+    model: str,
+    validator: Optional[Callable[[AtomicSkillsResponse], None]] = None,
+) -> AtomicSkillsResponse:
+    """Wrapper for atomic skills inference calls with structured parse + validation.
+
+    Parameters
+    ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for messy data where the
+        first attempt often fails but retries succeed.
+    attempt
+        The current attempt number (0-based).
+    input_items
+        The list of messages to send to the OpenAI API.
+    instructions
+        The atomic skills instructions to include.
+    model
+        The OpenAI model to use.
+    validator
+        Optional post-parse validator; raise QualityError to trigger correction.
+
+    Returns
+    -------
+    AtomicSkillsResponse
+        The parsed response containing the list of atomic skills.
+    """
+
+    if attempt == 0 or not always_double_check_first_attempt:
+        response = openai_client.responses.parse(
+            input=input_items,
+            instructions=instructions,
+            model=model,
+            reasoning={"effort": "high"},
+            # temperature=0,
+            text_format=AtomicSkillsResponse,
+            # top_p=1,
+        )
+    else:
+        response = openai_client.responses.parse(
+            input=input_items,
+            instructions=instructions,
+            model=model,
+            reasoning={"effort": "high"},
+            text_format=AtomicSkillsResponse,
+        )
+
+    parsed = getattr(response, "output_parsed", None)
+    output_text = getattr(response, "output_text", None)
+
+    if parsed is None:
+        raise QualityError(
+            "Atomic skills inference returned no parsed output.",
+            failed_content=output_text,
+        )
+
+    try:
+        verify_atomic_skills(
+            always_double_check_first_attempt=always_double_check_first_attempt,
+            attempt=attempt,
+            parsed=parsed,
+            validator=validator,
+        )
+    except QualityError as e:
+        # Attach the raw output so the correction attempt can see what it wrote.
+        raise QualityError(str(e), failed_content=output_text) from e
+
+    return parsed
 
 
 @retry(
@@ -125,6 +219,137 @@ def _call_openai_api_for_learning_progressions(
         raise QualityError(str(e), failed_content=output_text) from e
 
     return parsed
+
+
+def infer_atomic_skills(
+    *,
+    always_double_check_first_attempt: bool,
+    instructions: str,
+    max_retries: int = 3,
+    model: str,
+    user_message: str,
+    validator: Optional[Callable[[AtomicSkillsResponse], None]] = None,
+) -> AtomicSkillsResponse:
+    """Call the LLM and return parsed/validated atomic skills.
+
+    Parameters
+    ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
+    instructions
+        The system instructions to include in the prompt for the LLM.
+    max_retries
+        Maximum number of retries for quality errors.
+    model
+        The OpenAI model to use.
+    user_message
+        The primary user payload as a string.
+    validator
+        Optional post-parse validator; raise QualityError to trigger correction.
+
+    Returns
+    -------
+    AtomicSkillsResponse
+        Structured atomic skills list.
+    """
+
+    input_items: list[Any] = [
+        {"role": "user", "content": [{"type": "input_text", "text": user_message}]}
+    ]
+
+    for attempt in range(max_retries + 1):
+        try:
+            return _call_openai_api_for_atomic_skills(
+                always_double_check_first_attempt=always_double_check_first_attempt,
+                attempt=attempt,
+                input_items=input_items,
+                instructions=instructions,
+                model=model,
+                validator=validator,
+            )
+        except QualityError as e:
+            if attempt == max_retries:
+                logger.error("Atomic skills inference failed after exhausting retries.")
+                raise
+
+            if e.failed_content:
+                logger.error(f"Atomic skills failed content: {e.failed_content}")
+                input_items.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": e.failed_content}],
+                    }
+                )
+
+            if always_double_check_first_attempt and attempt == 0:
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": double_check_atomic_skills().user_message,
+                            }
+                        ],
+                    }
+                )
+            else:
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    "Your previous output had issues and must be corrected.\n"
+                                    f"ERROR: {str(e)}\n\n"
+                                    "Return a complete AtomicSkillsResponse object that matches the schema and fixes the issue."
+                                ),
+                            }
+                        ],
+                    }
+                )
+            continue
+        except Exception as e:  # pylint: disable=broad-except
+            if isinstance(
+                e,
+                (
+                    TimeoutError,
+                    ConnectionError,
+                    OSError,
+                    APIConnectionError,
+                    APITimeoutError,
+                    RateLimitError,
+                    InternalServerError,
+                ),
+            ):
+                raise
+
+            last_error = QualityError(f"Structured parse/validation failed: {e}")
+
+            if attempt >= max_retries:
+                raise last_error from e
+
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "The previous response failed structured parsing/validation.\n"
+                                f"ERROR: {e.__class__.__name__}: {e}\n\n"
+                                "Return a complete AtomicSkillsResponse that matches the schema exactly."
+                            ),
+                        }
+                    ],
+                }
+            )
+            continue
+
+    raise QualityError(
+        f"Atomic skills inference failed after {max_retries + 1} attempts."
+    )
 
 
 def infer_progression_edges(
@@ -272,6 +497,39 @@ def infer_progression_edges(
     raise QualityError(
         f"Learning progressions inference failed after {max_retries + 1} attempts."
     )
+
+
+def verify_atomic_skills(
+    *,
+    always_double_check_first_attempt: bool,
+    attempt: int,
+    parsed: AtomicSkillsResponse,
+    validator: Optional[Callable[[AtomicSkillsResponse], None]] = None,
+) -> None:
+    """Validate semantic consistency of an AtomicSkillsResponse.
+
+    Parameters
+    ----------
+    always_double_check_first_attempt
+        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
+    attempt
+        The current attempt number (0-based).
+    parsed
+        The parsed AtomicSkillsResponse to validate.
+    validator
+        Optional post-parse validator; raise QualityError to trigger correction.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    if always_double_check_first_attempt and attempt == 0:
+        raise QualityError("Reason does not matter and is overwritten in caller.")
+
+    if validator is not None:
+        validator(parsed)
 
 
 def verify_learning_progressions(

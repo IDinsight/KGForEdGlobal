@@ -2,10 +2,18 @@
 information.
 """
 
+# Standard Library
+import re
+
+from typing import Any
+from uuid import UUID
+
 # Package Library
-from skg.kgs.schemas import ProgressionEdgesResponse
+from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
 from skg.kgs.utils import canon_str_pair
 from skg.page_ir_extraction.validators import QualityError
+
+_SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 
 
 def _check_common_edge_invariants(
@@ -54,6 +62,214 @@ def _check_common_edge_invariants(
             )
 
         seen.add(pair)
+
+
+def _validate_batch_coverage(
+    *, allowed_sfi_uuids: set[UUID], returned_sfi_uuids: set[UUID]
+) -> None:
+    """Validate that exactly the expected SFIs were returned in the batch.
+
+    Parameters
+    ----------
+    allowed_sfi_uuids
+        The set of SFI UUIDs expected in the output.
+    returned_sfi_uuids
+        The set of SFI UUIDs actually processed.
+
+    Raises
+    ------
+    QualityError
+        If there are unexpected or missing SFI UUIDs.
+    """
+
+    missing = allowed_sfi_uuids - returned_sfi_uuids
+    extra = returned_sfi_uuids - allowed_sfi_uuids
+
+    if extra:
+        raise QualityError(
+            f"Atomic skills output contains unexpected SFIs: {sorted(map(str, extra))}"
+        )
+
+    if missing:
+        raise QualityError(
+            f"Atomic skills output is missing {len(missing)} SFI(s): {sorted(map(str, missing))}"
+        )
+
+
+def _validate_sfi_skills(
+    *,
+    max_per_sfi: int,
+    min_per_sfi: int,
+    require_rationale: bool,
+    sfi_uuid: UUID,
+    skills: list[Any],
+) -> None:
+    """Validate the list of skills for a given SFI.
+
+    Parameters
+    ----------
+    max_per_sfi
+        The maximum number of skills allowed per SFI.
+    min_per_sfi
+        The minimum number of skills required per SFI.
+    require_rationale
+        If True, each skill must have a non-empty rationale.
+    sfi_uuid
+        The UUID of the SFI being validated.
+    skills
+        The list of skills to validate.
+
+    Raises
+    ------
+    QualityError
+        If the skills list length is out of bounds or if any individual skill is invalid.
+    """
+
+    if len(skills) < int(min_per_sfi) or len(skills) > int(max_per_sfi):
+        raise QualityError(
+            f"sfi_uuid {sfi_uuid} must have between {min_per_sfi} and {max_per_sfi} skills; got {len(skills)}."
+        )
+
+    labels_seen: set[str] = set()
+    desc_seen: set[str] = set()
+
+    for sk in skills:
+        _validate_single_skill(
+            desc_seen=desc_seen,
+            labels_seen=labels_seen,
+            require_rationale=require_rationale,
+            sfi_uuid=sfi_uuid,
+            sk=sk,
+        )
+
+
+def _validate_single_skill(
+    *,
+    desc_seen: set[str],
+    labels_seen: set[str],
+    require_rationale: bool,
+    sfi_uuid: UUID,
+    sk: Any,
+) -> None:
+    """Validate a single skill's properties and check for duplicates.
+
+    Parameters
+    ----------
+    desc_seen
+        A set of normalized descriptions already seen for this SFI.
+    labels_seen
+        A set of lowercased skill labels already seen for this SFI.
+    require_rationale
+        Whether a non-empty rationale is required.
+    sfi_uuid
+        The UUID of the SFI this skill belongs to.
+    sk
+        The skill object to validate.
+
+    Raises
+    ------
+    QualityError
+        If the skill label, description, or rationale violates quality rules.
+    """
+
+    label = (sk.skill_label or "").strip()
+    desc = (sk.description or "").strip()
+    rat = (sk.rationale or "").strip() if sk.rationale is not None else ""
+
+    if not label:
+        raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty skill_label.")
+
+    if not _SNAKE_CASE_RE.match(label):
+        raise QualityError(
+            f"sfi_uuid {sfi_uuid} has invalid skill_label '{label}'. skill_label must be snake_case (e.g., add_within_20)."
+        )
+
+    if label.lower() in labels_seen:
+        raise QualityError(f"sfi_uuid {sfi_uuid} has duplicate skill_label '{label}'.")
+
+    labels_seen.add(label.lower())
+
+    if not desc:
+        raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty description.")
+
+    norm_desc = " ".join(desc.split()).lower()
+
+    if norm_desc in desc_seen:
+        raise QualityError(
+            f"sfi_uuid {sfi_uuid} has duplicate skill descriptions (normalized)."
+        )
+
+    desc_seen.add(norm_desc)
+
+    if require_rationale and not rat:
+        raise QualityError(
+            f"sfi_uuid {sfi_uuid} has a skill missing required rationale."
+        )
+
+
+def validate_atomic_skills(
+    parsed: AtomicSkillsResponse,
+    *,
+    allowed_sfi_uuids: set[UUID],
+    min_per_sfi: int,
+    max_per_sfi: int,
+    require_rationale: bool,
+) -> None:
+    """Validate AtomicSkillsResponse for a given batch of SFIs.
+
+    Parameters
+    ----------
+    parsed
+        The parsed AtomicSkillsResponse to validate.
+    allowed_sfi_uuids
+        The set of SFI UUIDs that are allowed to appear in the response (must match
+        the batch provided to the model).
+    min_per_sfi
+        The minimum number of skills required per SFI.
+    max_per_sfi
+        The maximum number of skills allowed per SFI.
+    require_rationale
+        If True, each skill must have a non-empty rationale. If False, rationales are
+        optional and can be empty.
+
+    Raises
+    ------
+    QualityError
+        If any validation rule is violated, such as unknown SFI UUIDs, duplicate skill
+        labels, missing descriptions, or rationale requirements.
+    """
+
+    if not parsed.items:
+        raise QualityError("AtomicSkillsResponse.items is empty.")
+
+    seen: set[UUID] = set()
+    returned: set[UUID] = set()
+
+    for item in parsed.items:
+        sfi_uuid = item.sfi_uuid
+        returned.add(sfi_uuid)
+
+        if sfi_uuid not in allowed_sfi_uuids:
+            raise QualityError(
+                f"Unknown sfi_uuid in atomic skills output: {sfi_uuid}. Use only provided UUIDs."
+            )
+
+        if sfi_uuid in seen:
+            raise QualityError(f"Duplicate sfi_uuid in output: {sfi_uuid}.")
+
+        seen.add(sfi_uuid)
+
+        _validate_sfi_skills(
+            max_per_sfi=max_per_sfi,
+            min_per_sfi=min_per_sfi,
+            require_rationale=require_rationale,
+            sfi_uuid=sfi_uuid,
+            skills=item.skills or [],
+        )
+
+    _validate_batch_coverage(
+        allowed_sfi_uuids=allowed_sfi_uuids, returned_sfi_uuids=returned
+    )
 
 
 def validate_cross_grade_builds_towards(

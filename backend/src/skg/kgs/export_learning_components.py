@@ -13,6 +13,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any, Iterable
 from uuid import UUID, uuid5
 
@@ -21,8 +22,11 @@ from loguru import logger
 
 # Package Library
 from skg.kgs.export_academic_standards import AcademicStandardsExport
+from skg.kgs.llm import infer_atomic_skills
+from skg.kgs.prompts import decompose_atomic_skills
 from skg.kgs.schemas import LearningComponent, Relationship, StandardsFrameworkItem
 from skg.kgs.utils import ExportContext, KGDirs, normalize_ws, stable_text_hash
+from skg.kgs.validators import validate_atomic_skills
 from skg.schemas import CreateKGConfig
 from skg.utils.general import write_to_json
 
@@ -40,6 +44,92 @@ class LearningComponentsExport:
     lc_stats: dict[str, Any]  # split_policy, splits_distribution, max_splits_observed
     learning_components: list[LearningComponent]
     supports_relationships: list[Relationship]
+
+
+def _build_atomic_skills_prompt_items(
+    *, config: CreateKGConfig, sfis: list[StandardsFrameworkItem]
+) -> list[dict[str, Any]]:
+    """Build prompt payload objects for a batch of expectation SFIs.
+
+    Parameters
+    ----------
+    config
+        The KG export configuration, used to determine which metadata fields to include
+        in the prompt for each SFI.
+    sfis
+        The list of StandardsFrameworkItems representing expectations for which to
+        generate prompt items. Each item will be transformed into a dictionary
+        containing the relevant text and metadata fields needed for the atomic skills
+        decomposition prompt. The transformation will include normalization of
+        whitespace and trimming of text to ensure that the prompt stays within
+        reasonable length limits for LLM input.
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of dictionaries, each representing an SFI with the necessary fields for
+        the atomic skills decomposition prompt. Each dictionary will contain the SFI
+        UUID, statement code, grade level, display text, and ID source text, as well as
+        optional topic context and auxiliary statements if configured to include them.
+    """
+
+    items: list[dict[str, Any]] = []
+
+    for sfi in sfis:
+        md = getattr(sfi, "metadata", {}) or {}
+        display_text = normalize_ws(getattr(sfi, "description", "") or "")
+        id_source_text = (
+            normalize_ws(str(md.get("normalized_text") or "")) or display_text
+        )
+
+        payload: dict[str, Any] = {
+            "sfi_uuid": str(sfi.case_identifier_uuid),
+            "statement_code": getattr(sfi, "statement_code", None),
+            "grade_level": list(getattr(sfi, "grade_level", []) or []),
+            "id_source_text": _trim_text(max_chars=2000, s=id_source_text),
+            "display_text": _trim_text(
+                max_chars=2000, s=display_text or id_source_text
+            ),
+        }
+
+        if config.lc_atomic_skills_include_topic_context:
+            pc = (md.get("progression_context") or {}) if isinstance(md, dict) else {}
+            topic_ctx = {
+                "grade_key": pc.get("grade_key"),
+                "stage_key": pc.get("stage_key"),
+                "thread_key": pc.get("thread_key"),
+                "topic_path_key": pc.get("topic_path_key"),
+                "topic_path_parts": pc.get("topic_path_parts"),
+            }
+
+            # Only include topic_context when at least one value is non-None; an
+            # all-None dict adds prompt tokens for no benefit.
+            if any(v is not None for v in topic_ctx.values()):
+                payload["topic_context"] = topic_ctx
+
+        if config.lc_atomic_skills_include_aux_statements:
+            aux = md.get("aux_statements") if isinstance(md, dict) else None
+            aux_items: list[dict[str, Any]] = []
+
+            if isinstance(aux, list):
+                for a in aux[:10]:
+                    if not isinstance(a, dict):
+                        continue
+
+                    aux_items.append(
+                        {
+                            "role": a.get("role"),
+                            "text": _trim_text(
+                                max_chars=400, s=str(a.get("text") or "")
+                            ),
+                        }
+                    )
+
+            if aux_items:
+                payload["aux_statements"] = aux_items
+
+        items.append(payload)
+
+    return items
 
 
 def _build_learning_components_graph_bundle(
@@ -102,6 +192,90 @@ def _build_learning_components_graph_bundle(
         "nodes": nodes,
         "relationships": relationships,
     }
+
+
+def _create_fallback_lc_1_to_1(
+    *,
+    config: CreateKGConfig,
+    doc_key: str,
+    fw_metadata: dict[str, Any],
+    sfi: StandardsFrameworkItem,
+) -> list[LearningComponent]:
+    """Create a single LC for the expectation SFI (1_to_1).
+
+    Parameters
+    ----------
+    config
+        The KG export configuration, used to determine ID namespace.
+    doc_key
+        The document key for this export, used in ID generation.
+    fw_metadata
+        The standards framework metadata, used for populating LC provenance and
+        attribution.
+    sfi
+        The StandardsFrameworkItem representing the expectation for which to create the
+        fallback LC. The LC will be created with a description derived from the SFI
+        description or normalized_text, and an ID generated based on the SFI UUID and
+        the text hash to ensure stability.
+
+    Returns
+    -------
+    list[LearningComponent]
+        A list containing a single LearningComponent entity created for the given
+        expectation SFI, with a deterministic UUID based on the doc_key, SFI UUID, and
+        text hash. The LC description will be derived from the SFI description or
+        normalized_text, and metadata will indicate that this LC was created as a
+        fallback with the 1_to_1 policy.
+    """
+
+    md = getattr(sfi, "metadata", {}) or {}
+    display_text = normalize_ws(getattr(sfi, "description", "") or "")
+    id_source_text = normalize_ws(str(md.get("normalized_text") or "")) or display_text
+
+    if not (id_source_text or display_text):
+        return []
+
+    ns: UUID = config.namespace_uuid
+    split_hash = stable_text_hash(s=id_source_text or display_text)
+
+    return [
+        LearningComponent(
+            academic_subject=str(
+                getattr(sfi, "academic_subject", None)
+                or fw_metadata["academic_subject_default"]
+            ),
+            attribution_statement=str(fw_metadata["attribution_statement"]),
+            author=str(fw_metadata["author"]),
+            description=display_text or id_source_text,
+            identifier=uuid5(
+                ns,
+                f"lc:curriculum:{doc_key}:lc:1_to_1:{sfi.case_identifier_uuid}:0:{split_hash}",
+            ),
+            in_language=str(
+                getattr(sfi, "in_language", None) or fw_metadata["in_language"]
+            ),
+            license=str(fw_metadata["license"]),
+            metadata={
+                "id_source_kind": "fallback_1_to_1",
+                "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
+                "canonical_node_id": md.get("canonical_node_id"),
+                "split_policy": "1_to_1",
+                "split_id_text": id_source_text or display_text,
+                "split_display_text": display_text or id_source_text,
+                "split_index": 0,
+                "split_hash": split_hash,
+                "split_truncated": False,
+                "provenance": {
+                    "page_indices": md.get("page_indices", []),
+                    "bbox": md.get("bbox"),
+                    "bbox_ref": md.get("bbox_ref"),
+                    "source_decision_ids": md.get("source_decision_ids", []),
+                    "source_segment_ids": md.get("source_segment_ids", []),
+                },
+            },
+            provider=str(fw_metadata["provider"]),
+        )
+    ]
 
 
 def _create_lcs_for_expectation(
@@ -258,6 +432,159 @@ def _create_lcs_for_expectation(
     return lcs
 
 
+def _create_lcs_from_atomic_skills(
+    *,
+    config: CreateKGConfig,
+    doc_key: str,
+    fw_metadata: dict[str, Any],
+    sfi: StandardsFrameworkItem,
+    skills: list[dict[str, Any]],
+) -> list[LearningComponent]:
+    """Create LearningComponents from validated atomic skills for one SFI.
+
+    NB:
+
+    1. Skill ordering is based primarily on stable_text_hash(description), not label.
+    2. LC UUID seed uses split_hash derived from description, not label.
+
+    Parameters
+    ----------
+    config
+        The KG export configuration, used to determine ID namespace and max splits.
+    doc_key
+        The document key for this export, used in ID generation.
+    fw_metadata
+        The standards framework metadata, used for populating LC provenance and
+        attribution.
+    sfi
+        The StandardsFrameworkItem representing the expectation for which to create LCs.
+    skills
+        The list of validated atomic skills dictionaries for this SFI, each containing
+        at least a "description" field, and optionally "skill_label" and "rationale".
+        These are the outputs from the LLM-based atomic skills decomposition and
+        validation process, and are assumed to be pre-validated according to the
+        specified criteria (e.g., allowed SFI UUIDs, min/max skills per SFI, presence
+        of rationale if required). Each skill will be transformed into a
+        LearningComponent entity, with deterministic UUID generation based on the skill
+        description and its position in the list.
+
+    Returns
+    -------
+    list[LearningComponent]
+        A list of LearningComponent entities created from the provided atomic skills
+        for the given expectation SFI. Each LC will have a deterministic UUID based on
+        the doc_key, SFI UUID, skill index, and a hash of the skill description to
+        ensure stable IDs across runs. The LC description will be derived from the
+        skill description, and metadata will include the skill label and rationale if
+        provided.
+
+    """
+
+    policy = "llm_atomic_skills"
+    ns: UUID = config.namespace_uuid
+    md = getattr(sfi, "metadata", {}) or {}
+    prov = {
+        "page_indices": md.get("page_indices", []),
+        "bbox": md.get("bbox"),
+        "bbox_ref": md.get("bbox_ref"),
+        "source_decision_ids": md.get("source_decision_ids", []),
+        "source_segment_ids": md.get("source_segment_ids", []),
+    }
+    max_splits = int(config.lc_max_splits_per_standard)
+    norm_skills: list[tuple[str, str, str]] = []
+
+    for sk in skills:
+        desc = normalize_ws(str(sk.get("description") or ""))
+        label = normalize_ws(str(sk.get("skill_label") or ""))
+        rat = (
+            normalize_ws(str(sk.get("rationale") or ""))
+            if sk.get("rationale") is not None
+            else ""
+        )
+
+        if desc:
+            norm_skills.append((desc, label, rat))
+
+    if not norm_skills:
+        return []
+
+    keyed: list[tuple[str, str, str, str]] = []
+
+    for desc, label, rat in norm_skills:
+        h = stable_text_hash(s=desc)
+        keyed.append((h, (label or "").strip().lower(), desc, rat))
+
+    keyed.sort(key=lambda t: (t[0], t[1]))
+
+    # Deduplicate by normalized description BEFORE truncation so that duplicates don't
+    # consume slots that could be used by unique skills beyond the cutoff.
+    seen_desc: set[str] = set()
+    deduped: list[tuple[str, str, str, str]] = []
+
+    for h, label_norm, desc, rat in keyed:
+        nd = " ".join(desc.split()).lower()
+
+        if nd in seen_desc:
+            continue
+
+        seen_desc.add(nd)
+        deduped.append((h, label_norm, desc, rat))
+
+    truncated = False
+
+    if len(deduped) > max_splits:
+        deduped = deduped[:max_splits]
+        truncated = True
+
+    final: list[tuple[str, str, str]] = [
+        (desc, label_norm, rat) for _, label_norm, desc, rat in deduped
+    ]
+
+    lcs: list[LearningComponent] = []
+
+    for i, (desc, label_norm, rat) in enumerate(final):
+        split_hash = stable_text_hash(s=desc)
+        skill_label = label_norm
+
+        lcs.append(
+            LearningComponent(
+                academic_subject=str(
+                    getattr(sfi, "academic_subject", None)
+                    or fw_metadata["academic_subject_default"]
+                ),
+                attribution_statement=str(fw_metadata["attribution_statement"]),
+                author=str(fw_metadata["author"]),
+                description=desc,
+                identifier=uuid5(
+                    ns,
+                    f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{i}:{split_hash}",
+                ),
+                in_language=str(
+                    getattr(sfi, "in_language", None) or fw_metadata["in_language"]
+                ),
+                license=str(fw_metadata["license"]),
+                metadata={
+                    "id_source_kind": "llm_atomic_skills.description",
+                    "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
+                    "canonical_node_id": md.get("canonical_node_id"),
+                    "split_policy": policy,
+                    "split_id_text": desc,
+                    "split_display_text": desc,
+                    "skill_label": skill_label,
+                    "llm_rationale": rat or None,
+                    "llm_model": str(config.model),
+                    "split_index": i,
+                    "split_hash": split_hash,
+                    "split_truncated": truncated,
+                    "provenance": prov,
+                },
+                provider=str(fw_metadata["provider"]),
+            )
+        )
+
+    return lcs
+
+
 def _emit_supports(
     *,
     config: CreateKGConfig,
@@ -315,6 +642,192 @@ def _emit_supports(
         target_entity_key="case_identifier_uuid",
         target_entity_value=str(sfi.case_identifier_uuid),
     )
+
+
+def _export_lcs_via_llm_atomic_skills(
+    *,
+    academic_standards: AcademicStandardsExport,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    kg_dirs: KGDirs,
+) -> tuple[list[LearningComponent], list[Relationship], dict[str, Any]]:
+    """Export LearningComponents using LLM-based atomic skills decomposition.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported academic standards artifacts, containing the
+        StandardsFrameworkItems that represent normative expectations. These SFIs will
+        be the targets of the supports relationships emitted by the LearningComponents
+        created in this function.
+    config
+        The KG export configuration, which includes settings for the LLM-based atomic
+        skills decomposition.
+    ctx
+        The ExportContext, which provides access to the document key and framework
+        metadata needed for ID generation and provenance.
+    kg_dirs
+        The KGDirs for output, used for writing debug information.
+
+    Returns
+    -------
+    tuple[list[LearningComponent], list[Relationship], dict[str, Any]]
+        A tuple containing the list of LearningComponent entities created, the list of
+        supports Relationships emitted, and a dictionary of statistics about the LC
+        creation process (e.g., split distribution, fallback counts) for analysis and
+        debugging.
+    """
+
+    expectation_sfis = _iter_expectation_sfis(academic_standards.items)
+    fw_metadata = ctx.get_framework_metadata()
+
+    expectation_sfis_sorted = sorted(
+        expectation_sfis, key=lambda x: str(x.case_identifier_uuid)
+    )
+
+    batch_size = int(config.lc_atomic_skills_batch_size)
+    max_splits = int(config.lc_max_splits_per_standard)
+
+    lcs: list[LearningComponent] = []
+    rels: list[Relationship] = []
+    splits_per_sfi: defaultdict[int, int] = defaultdict(int)
+
+    debug_batches: list[dict[str, Any]] = []
+    fallback_sfis_total: list[str] = []
+
+    for batch_index in range(0, len(expectation_sfis_sorted), batch_size):
+        batch = expectation_sfis_sorted[batch_index : batch_index + batch_size]
+        allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
+
+        prompt_items = _build_atomic_skills_prompt_items(config=config, sfis=batch)
+        prompt = decompose_atomic_skills(
+            display_language=str(fw_metadata["in_language"]),
+            items=prompt_items,
+            max_per_sfi=max_splits,
+            min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
+            require_rationale=bool(config.lc_atomic_skills_require_rationale),
+        )
+
+        batch_debug: dict[str, Any] = {
+            "batch_index": batch_index // batch_size,
+            "input_items": prompt_items,
+            "response": None,
+            "fallback_sfi_uuids": [],
+            "error": None,
+        }
+
+        skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
+
+        try:
+            parsed = infer_atomic_skills(
+                always_double_check_first_attempt=config.always_double_check_first_attempt,
+                instructions=prompt.system_message,
+                model=config.model,
+                user_message=prompt.user_message,
+                validator=partial(
+                    validate_atomic_skills,
+                    allowed_sfi_uuids=allowed,
+                    min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
+                    max_per_sfi=max_splits,
+                    require_rationale=bool(config.lc_atomic_skills_require_rationale),
+                ),
+            )
+
+            parsed_dict = parsed.model_dump(mode="json")
+            batch_debug["response"] = parsed_dict
+
+            for it in parsed_dict.get("items", []):
+                sfi_uuid = str(it.get("sfi_uuid"))
+                skills_by_sfi[sfi_uuid] = list(it.get("skills") or [])
+        except Exception as e:  # pylint: disable=broad-except
+            batch_debug["error"] = f"{e.__class__.__name__}: {e}"
+            batch_debug["fallback_sfi_uuids"] = [
+                str(s.case_identifier_uuid) for s in batch
+            ]
+            fallback_sfis_total.extend(batch_debug["fallback_sfi_uuids"])
+            debug_batches.append(batch_debug)
+
+            logger.warning(
+                f"Atomic skills batch {batch_index // batch_size} failed "
+                f"({e.__class__.__name__}); all {len(batch)} SFI(s) in this batch "
+                f"fall back to 1_to_1. SFI UUIDs: "
+                f"{[str(s.case_identifier_uuid) for s in batch]}"
+            )
+
+            for sfi in batch:
+                created = _create_fallback_lc_1_to_1(
+                    config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
+                )
+                splits_per_sfi[len(created)] += 1
+                for lc_item in created:
+                    lcs.append(lc_item)
+                    rels.append(
+                        _emit_supports(
+                            config=config,
+                            doc_key=ctx.doc_key,
+                            fw_metadata=fw_metadata,
+                            lc=lc_item,
+                            sfi=sfi,
+                        )
+                    )
+            continue
+
+        for sfi in batch:
+            sfi_uuid_str = str(sfi.case_identifier_uuid)
+            skills = skills_by_sfi.get(sfi_uuid_str, [])
+
+            if skills:
+                created = _create_lcs_from_atomic_skills(
+                    config=config,
+                    doc_key=ctx.doc_key,
+                    fw_metadata=fw_metadata,
+                    sfi=sfi,
+                    skills=skills,
+                )
+            else:
+                # After successful validation, _validate_batch_coverage guarantees
+                # every batch SFI appears in the response, so this branch should be
+                # unreachable. Keep it as defensive fallback in case the
+                # parsed_dict -> skills_by_sfi mapping silently drops an entry.
+                created = _create_fallback_lc_1_to_1(
+                    config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
+                )
+                batch_debug["fallback_sfi_uuids"].append(sfi_uuid_str)
+                fallback_sfis_total.append(sfi_uuid_str)
+
+            splits_per_sfi[len(created)] += 1
+
+            for lc_item in created:
+                lcs.append(lc_item)
+                rels.append(
+                    _emit_supports(
+                        config=config,
+                        doc_key=ctx.doc_key,
+                        fw_metadata=fw_metadata,
+                        lc=lc_item,
+                        sfi=sfi,
+                    )
+                )
+
+        debug_batches.append(batch_debug)
+
+    write_to_json(
+        fp=kg_dirs.learning_components
+        / "learning_components_llm_atomic_skills_debug.json",
+        json_info=debug_batches,
+    )
+
+    lc_stats = {
+        "split_policy": "llm_atomic_skills",
+        "total_expectations": len(expectation_sfis_sorted),
+        "total_lcs": len(lcs),
+        "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
+        "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
+        "llm_batches": len(debug_batches),
+        "fallback_sfis_count": len(set(fallback_sfis_total)),
+    }
+
+    return lcs, rels, lc_stats
 
 
 def _iter_expectation_sfis(
@@ -436,6 +949,38 @@ def _split_bullets_deterministic(*, text: str) -> list[str]:
     return deduped
 
 
+def _trim_text(*, max_chars: int, s: str) -> str:
+    """Trim text to a maximum number of characters, adding ellipsis if truncated.
+
+    Parameters
+    ----------
+    max_chars
+        The maximum number of characters to allow in the output string. If the input
+        string exceeds this length, it will be truncated and an ellipsis character
+        (...) will be appended, ensuring that the total length does not exceed
+        max_chars.
+    s
+        The input string to trim. This is typically the text used for ID generation or
+        display in the LearningComponent. It will be normalized for whitespace before
+        trimming, to ensure consistent length counting.
+
+    Returns
+    -------
+    str
+        The trimmed string, with normalized whitespace and an ellipsis if truncation
+        occurred. If the input string is within the max_chars limit, it will be
+        returned unchanged (except for whitespace normalization). If it exceeds the
+        limit, it will be truncated to fit within max_chars when the ellipsis is added.
+    """
+
+    s2 = normalize_ws(s or "")
+
+    if len(s2) <= max_chars:
+        return s2
+
+    return s2[: max_chars - 1].rstrip() + "..."
+
+
 def export_learning_components(
     *,
     academic_standards: AcademicStandardsExport,
@@ -470,13 +1015,62 @@ def export_learning_components(
         mismatched counts of LCs and relationships.
     """
 
+    if config.learning_component_policy == "llm_atomic_skills":
+        lcs, rels, lc_stats = _export_lcs_via_llm_atomic_skills(
+            academic_standards=academic_standards,
+            config=config,
+            ctx=ctx,
+            kg_dirs=kg_dirs,
+        )
+
+        if any(r.relationship_type != "supports" for r in rels):
+            raise ValueError(
+                "Non-supports relationship found in Learning Components export."
+            )
+
+        if len(rels) != len(lcs):
+            raise ValueError(
+                f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
+            )
+
+        write_to_json(
+            fp=kg_dirs.learning_components / "learning_components.json",
+            json_info=[lc.model_dump(mode="json") for lc in lcs],
+        )
+        write_to_json(
+            fp=kg_dirs.learning_components
+            / "learning_components_supports_relationships.json",
+            json_info=[r.model_dump(mode="json") for r in rels],
+        )
+        write_to_json(
+            fp=kg_dirs.learning_components / "learning_components_kg.json",
+            json_info=_build_learning_components_graph_bundle(
+                doc_key=ctx.doc_key,
+                export_dialect=str(config.export_dialect),
+                learning_components=lcs,
+                supports_relationships=rels,
+            ),
+        )
+
+        learning_components = LearningComponentsExport(
+            lc_stats=lc_stats, learning_components=lcs, supports_relationships=rels
+        )
+
+        logger.info(
+            f"Exported Learning Components KG (llm_atomic_skills): "
+            f"{len(learning_components.learning_components)} components, "
+            f"{len(learning_components.supports_relationships)} `supports` relationships"
+        )
+
+        return learning_components
+
     expectation_sfis = _iter_expectation_sfis(academic_standards.items)
 
     logger.info(f"Learning Components: found {len(expectation_sfis)} expectation SFIs")
 
     fw_metadata = ctx.get_framework_metadata()
-    lcs: list[LearningComponent] = []
-    rels: list[Relationship] = []
+    lcs = []
+    rels = []
     splits_per_sfi: defaultdict[int, int] = defaultdict(int)
 
     # Deterministic order for determinism: sort by SFI UUID string.

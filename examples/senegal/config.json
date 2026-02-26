@@ -67,8 +67,13 @@
 		"guidance_handling": "attach_to_expectation_metadata",
 		"jurisdiction_default": "Senegal",
 		"language_default": "mul",
+    "lc_atomic_skills_batch_size": 5,
+		"lc_atomic_skills_include_aux_statements": true,
+		"lc_atomic_skills_include_topic_context": true,
+		"lc_atomic_skills_min_per_sfi": 1,
+		"lc_atomic_skills_require_rationale": true,
 		"lc_max_splits_per_standard": 25,
-		"learning_component_policy": "1_to_1",
+		"learning_component_policy": "llm_atomic_skills",
 		"license": "All rights reserved (source PDF)",
 		"model": "gpt-5.2-2025-12-11",
 		"non_grouping_role_handling": "drop",
@@ -83,12 +88,16 @@
 		"overwrite": false,
 		"progressions_builds_towards_min_confidence": 0.7,
 		"progressions_cross_grade_builds_towards": true,
-		"progressions_cross_grade_match_roles": ["strand"],
+		"progressions_cross_grade_match_roles": [
+			"strand"
+		],
 		"progressions_cross_grade_relates_to": true,
 		"progressions_cross_grade_relates_to_max_items_per_subject": 10,
 		"progressions_cross_stage_builds_towards": false,
 		"progressions_cross_stage_relates_to": false,
-		"progressions_excluded_subject_labels": ["UNSPECIFIED_SUBJECT"],
+		"progressions_excluded_subject_labels": [
+			"UNSPECIFIED_SUBJECT"
+		],
 		"progressions_grade_label_map": {
 			"paliers du niveau ce1": 1,
 			"paliers du niveau ce2": 2,

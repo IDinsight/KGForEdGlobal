@@ -479,6 +479,108 @@ def cross_stage_relates_to(
     )
 
 
+def decompose_atomic_skills(
+    *,
+    display_language: str,
+    items: list[dict[str, Any]],
+    max_per_sfi: int,
+    min_per_sfi: int,
+    require_rationale: bool,
+) -> PromptPair:
+    """Decompose expectation statements into atomic skills (Learning Components).
+
+    Parameters
+    ----------
+    display_language
+        The language in which the skill descriptions should be written (e.g.,
+        "English").
+    items
+        The list of StandardsFrameworkItems to decompose, each with 'sfi_uuid' and
+        'statement' fields.
+    max_per_sfi
+        The maximum number of skills to return per SFI to keep the graph manageable.
+    min_per_sfi
+        The minimum number of skills to return per SFI to ensure sufficient granularity.
+    require_rationale
+        Whether to require a non-empty rationale for each skill, which can improve
+        quality but may reduce recall.
+
+    Returns
+    -------
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
+    """
+
+    rationale_req = (
+        "Each AtomicSkill MUST include a non-empty `rationale`."
+        if require_rationale
+        else "`rationale` may be null or omitted."
+    )
+
+    system_message = dedent(
+        f"""You are decomposing curriculum expectation statements into ATOMIC SKILLS.
+
+OUTPUT FORMAT:
+- Return ONLY valid JSON matching the AtomicSkillsResponse schema:
+  {{ "items": [ {{ "sfi_uuid": <uuid>, "skills": [ {{ "skill_label": "...", "description": "...", "rationale": "..." }} ] }} ] }}
+
+HARD RULES:
+1. Use ONLY the provided `sfi_uuid` values. Do not invent UUIDs.
+2. For each input SFI, return between {min_per_sfi} and {max_per_sfi} skills.
+3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
+4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
+5. Do NOT invent prerequisites or unrelated skills.
+6. `skill_label` MUST be English-only snake_case (short and stable).
+7. `description` MUST be written in language: {display_language}.
+8. No duplicate skills within an SFI (dedupe by description meaning).
+9. Keep rationales brief (1–2 sentences max). {rationale_req}
+"""
+    )
+
+    user_message = (
+        dedent(
+            """Decompose the following expectation SFIs into atomic skills.
+
+INPUT SFIs (JSON):
+"""
+        )
+        + json.dumps(
+            {"items": items},
+            ensure_ascii=False,
+            separators=(",", ":"),  # Remove spaces after commas/colons
+        )
+    )
+
+    return PromptPair(system_message=system_message, user_message=user_message)
+
+
+def double_check_atomic_skills() -> PromptPair:
+    """Extra user message to trigger a careful second pass for atomic skills.
+
+    Returns
+    -------
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
+    """
+
+    user_message = dedent(
+        """**Hmmmm, are you absolutely sure of your results?**
+
+Carefully review your last output against the instructions and double-check:
+
+1. Output is valid JSON and matches AtomicSkillsResponse exactly.
+2. Every input `sfi_uuid` appears exactly once in `items`.
+3. Each SFI has 1..N skills within the specified bounds.
+4. `skill_label` is snake_case English and short/stable.
+5. `description` is an atomic skill (not an activity/resource) in the required language.
+6. No duplicates within an SFI.
+
+Return a complete corrected AtomicSkillsResponse object."""
+    )
+
+    return PromptPair(system_message="", user_message=user_message)
+
+
 def double_check_learning_progressions() -> PromptPair:
     """Extra user message to trigger a careful second pass.
 
