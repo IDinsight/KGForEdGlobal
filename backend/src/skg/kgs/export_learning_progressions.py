@@ -21,7 +21,7 @@ Phases (toggleable via CreateKGConfig):
 # Standard Library
 import re
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
@@ -211,13 +211,10 @@ def _build_learning_progressions_graph_bundle(
     for r in relationships:
         start_id = r.source_entity_value
         end_id = r.target_entity_value
-        rel_type = (
-            "BUILDS_TOWARDS" if r.relationship_type == "buildsTowards" else "RELATES_TO"
-        )
         rels.append(
             {
                 "id": str(r.identifier),
-                "type": rel_type,
+                "type": r.relationship_type,
                 "start": start_id,
                 "end": end_id,
                 "properties": r.model_dump(mode="json"),
@@ -561,7 +558,9 @@ def _collect_builds_towards_work_items(
             5. The prompt building function.
     """
 
-    work_items: list[tuple[str, dict[str, Any], dict[str, Any], str, Any]] = []
+    work_items: list[
+        tuple[str, dict[str, Any], dict[str, Any], str, Callable[..., Any]]
+    ] = []
 
     for thread_key, buckets in thread_map.items():
         for b_lo, b_hi in zip(buckets, buckets[1:]):
@@ -712,6 +711,11 @@ def _dedupe_edges(
     edges: list[CandidateEdge],
 ) -> tuple[list[CandidateEdge], dict[tuple[str, str, str], CandidateEdge], int]:
     """Deduplicate by (rel_type, canonical endpoints). Keep highest confidence.
+
+    Canonicalization is direction-aware: for directed `buildsTowards` edges the
+    original (source, target) order is preserved, while for undirected `relatesTo`
+    edges the endpoints are lexicographically ordered via `canon_str_pair` so that
+    (A, B) and (B, A) are treated as the same edge.
 
     Parameters
     ----------
@@ -1437,7 +1441,7 @@ def _infer_within_grade_relates_to(
             items_b=items_a,
             max_edges_per_sfi=max_edges_per_sfi,
             min_confidence=config.progressions_relates_to_min_confidence,
-            subject_label=f"{subject_a} × {subject_b}",
+            subject_label=f"{subject_b} × {subject_a}",
             thread_a_key=f"subject:{subject_b}",
             thread_b_key=f"subject:{subject_a}",
             thread_a_path=thread_b_path or subject_b,
@@ -1842,7 +1846,7 @@ def _prepare_subject_grade_samples(
 
         if any((lo, hi) != level_key for lo, hi in bounds):
             distinct_bounds = sorted(set(bounds))
-            logger.error(
+            logger.warning(
                 f"Phase 4 subject sampling: SKIPPING grade '{grade_label}' due to "
                 f"inconsistent grade bounds across its {len(bounds)} bucket(s). "
                 f"Distinct (low, high) values found: {distinct_bounds}. "
@@ -2873,6 +2877,13 @@ def export_learning_progressions(
     LearningProgressionsExport
         Emitted buildsTowards and relatesTo relationships and a report of the export
         process.
+
+    Raises
+    ------
+    ValueError
+        If duplicate relationship identifiers are found in the final emitted
+        relationships, which should be unique. This check guards against regressions in
+        the UUID generation logic that could lead to non-unique identifiers.
     """
 
     buckets_info = group_standards_for_learning_progressions(
@@ -2928,6 +2939,19 @@ def export_learning_progressions(
         )
     )
 
+    # Verify that all emitted relationship IDs are unique. The UUIDv5 derivation from
+    # (source, target, rel_type) combined with dedup guarantees this, but an explicit
+    # check guards against future regressions.
+    all_rels = builds_rels + relates_rels
+    all_ids = [r.identifier for r in all_rels]
+
+    if len(set(all_ids)) != len(all_ids):
+        dupes = {uid: c for uid, c in Counter(all_ids).items() if c > 1}
+        raise ValueError(
+            f"Duplicate relationship identifiers in Learning Progressions export: "
+            f"{dupes}"
+        )
+
     # Enrich provenance rows with post-filtering disposition.
     #
     # NB: relatesTo edges are canonicalized during dedup (lexicographic UUID string
@@ -2947,15 +2971,14 @@ def export_learning_progressions(
         # single dedupe winner per canonical edge key. To avoid mislabeling duplicates
         # as "kept"/"dropped_low_conf"/etc., mark non-winners explicitly as
         # dropped_dedupe.
-        winner = dedupe_winners.get(key)
-        is_winner = False
+        winner, is_winner = dedupe_winners.get(key), False
 
         if winner is not None:
             try:
                 same_phase = int(row.get("phase") or -1) == int(
                     (winner.metadata or {}).get("phase") or -2
                 )
-            except Exception:  # pylint: disable=broad-except
+            except (TypeError, ValueError):
                 same_phase = False
 
             same_type = row.get("inference_type") == winner.inference_type
@@ -2965,15 +2988,16 @@ def export_learning_progressions(
                     abs(float(row.get("confidence", 0.0)) - float(winner.confidence))
                     < 1e-9
                 )
-            except Exception:  # pylint: disable=broad-except
+            except (TypeError, ValueError):
                 same_conf = False
 
             is_winner = bool(same_phase and same_type and same_conf)
 
-        if winner is not None and not is_winner:
-            row["disposition"] = "dropped_dedupe"
-        else:
-            row["disposition"] = disposition_map.get(key, "dropped_dedupe")
+        row["disposition"] = (
+            "dropped_dedupe"
+            if winner is not None and not is_winner
+            else disposition_map.get(key, "dropped_dedupe")
+        )
 
     # Write artifacts.
     write_to_json(
