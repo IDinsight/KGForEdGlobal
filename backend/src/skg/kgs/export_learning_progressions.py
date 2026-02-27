@@ -3227,12 +3227,19 @@ def _resolve_subject_label(
 ) -> str:
     """Resolve the subject label from the topic path parts.
 
+    When `subject_role` is explicitly set, the function searches for that role in
+    `topic_path_parts`. When `subject_role` is None, the function falls back to
+    searching for "subject" then "learning_area" roles in order. If no match is found
+    in any case, "UNSPECIFIED_SUBJECT" is returned.
+
     Parameters
     ----------
     subject_role
-        The role string used to identify the subject in topic path parts.
+        The role string used to identify the subject in topic path parts. When None,
+        the function searches for "subject" then "learning_area" as fallback roles.
     topic_path_parts
-        A list of topic path part dictionaries.
+        A list of topic path part dictionaries, each expected to contain "role" and
+        "label" keys.
 
     Returns
     -------
@@ -3240,17 +3247,27 @@ def _resolve_subject_label(
         The resolved subject label or "UNSPECIFIED_SUBJECT" if not found.
     """
 
-    if not subject_role:
-        return "UNSPECIFIED_SUBJECT"
-
-    return next(
-        (
-            str(p["label"])
-            for p in topic_path_parts
-            if p.get("role") == subject_role and p.get("label")
-        ),
-        "UNSPECIFIED_SUBJECT",
+    # Build the ordered list of roles to search. When the caller provides an explicit
+    # role, only that role is tried. Otherwise, fall back to the two most common
+    # curriculum-document roles for subject/learning-area groupings.
+    roles_to_try: list[str] = (
+        [subject_role] if subject_role else ["subject", "learning_area"]
     )
+
+    for role in roles_to_try:
+        label = next(
+            (
+                str(p["label"])
+                for p in topic_path_parts
+                if p.get("role") == role and p.get("label")
+            ),
+            None,
+        )
+
+        if label is not None:
+            return label
+
+    return "UNSPECIFIED_SUBJECT"
 
 
 def _sample_items_across_threads(
