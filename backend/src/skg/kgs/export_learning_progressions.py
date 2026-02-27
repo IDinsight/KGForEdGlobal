@@ -148,6 +148,51 @@ def _best_map(
     return best
 
 
+def _build_item_payload(
+    *,
+    include_order_index: bool = False,
+    item: dict[str, Any],
+    thread_key_field: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a compact item payload for the LLM prompt from a bucket item.
+
+    This is the single source of truth for which fields are sent to the LLM for each
+    StandardsFrameworkItem in the learning progressions inference prompts.
+
+    Parameters
+    ----------
+    item
+        A bucket item dictionary containing SFI fields.
+    include_order_index
+        Whether to include `order_index_within_parent` in the payload. Used by
+        buildsTowards phases where sequence ordering matters.
+    thread_key_field
+        If provided, the item key to read for an additional `thread_key` field in the
+        payload (e.g., `"_thread_key"`). Used by Phase 4 cross-grade relatesTo.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the SFI fields to include in the LLM prompt payload.
+    """
+
+    payload: dict[str, Any] = {
+        "sfi_uuid": item["sfi_uuid"],
+        "statement_code": item.get("statement_code"),
+        "description": item.get("description"),
+        "notes": item.get("notes"),
+        "page_index": item.get("page_index"),
+    }
+
+    if include_order_index:
+        payload["order_index_within_parent"] = item.get("order_index_within_parent")
+
+    if thread_key_field:
+        payload["thread_key"] = item.get(thread_key_field)
+
+    return payload
+
+
 def _build_learning_progressions_graph_bundle(
     *,
     academic_standards: AcademicStandardsExport,
@@ -229,6 +274,57 @@ def _build_learning_progressions_graph_bundle(
         "nodes": nodes,
         "relationships": rels,
     }
+
+
+def _build_order_index_lookup(
+    academic_standards: AcademicStandardsExport,
+) -> dict[str, int]:
+    """Build a lookup mapping multiple SFI identifier namespaces to order indices.
+
+    This exporter receives ordering paths (`progression_context.canon_order_path`) that
+    may refer to *canonical node IDs* rather than the SFI's external identifier
+    (`identifier`) or CASE identifier UUID (`case_identifier_uuid`).
+
+    This function keys the lookup by:
+
+    1. `str(sfi.case_identifier_uuid or sfi.identifier)`
+    2. `progression_context.canonical_node_id` (when present)
+
+    Parameters
+    ----------
+    academic_standards
+        The exported Academic Standards KG artifacts, containing the full set of
+        StandardsFrameworkItem entities (both groupings and standards).
+
+    Returns
+    -------
+    dict[str, int]
+        A dictionary mapping UUID strings to integer `order_index_within_parent`
+        values. Items without a valid integer order index are omitted.
+    """
+
+    lookup: dict[str, int] = {}
+
+    for sfi in academic_standards.items:
+        meta = sfi.metadata or {}
+        pc = meta.get("progression_context") or {}
+        oi = pc.get("order_index_within_parent")
+
+        if not isinstance(oi, int):
+            continue
+
+        legacy_uuid = str(sfi.case_identifier_uuid or sfi.identifier).strip()
+
+        if legacy_uuid:
+            lookup[legacy_uuid] = oi
+
+        canonical_node_id = pc.get("canonical_node_id")
+        canonical_uuid = str(canonical_node_id).strip() if canonical_node_id else ""
+
+        if canonical_uuid:
+            lookup[canonical_uuid] = oi
+
+    return lookup
 
 
 def _build_relationship(
@@ -339,6 +435,13 @@ def _build_sfi_index(
                     "statement_code": it.get("statement_code"),
                     "page_index": it.get("page_index"),
                     "order_index_within_parent": it.get("order_index_within_parent"),
+                    "canon_order_path": it.get("canon_order_path"),
+                    "numeric_order_path": it.get("numeric_order_path"),
+                    "numeric_order_missing_count": it.get(
+                        "numeric_order_missing_count"
+                    ),
+                    "doc_pos_page_index": it.get("doc_pos_page_index"),
+                    "doc_pos_y0": it.get("doc_pos_y0"),
                 }
 
                 existing = index.get(u)
@@ -360,84 +463,97 @@ def _build_sfi_index(
     return index
 
 
-def _build_item_payload(
+def _build_sfi_payload(
     *,
-    include_order_index: bool = False,
-    item: dict[str, Any],
-    thread_key_field: Optional[str] = None,
+    effective_bucket_key: str,
+    include_provenance: bool,
+    metadata: dict[str, Any],
+    order_index_lookup: dict[str, int],
+    progression_context: dict[str, Any],
+    sfi: StandardsFrameworkItem,
+    sfi_uuid: str,
+    thread_key: str,
+    topic_key: str,
+    topic_path_parts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build a compact item payload for the LLM prompt from a bucket item.
-
-    This is the single source of truth for which fields are sent to the LLM for each
-    StandardsFrameworkItem in the learning progressions inference prompts.
+    """Construct the payload dictionary for a standard item.
 
     Parameters
     ----------
-    item
-        A bucket item dictionary containing SFI fields.
-    include_order_index
-        Whether to include `order_index_within_parent` in the payload. Used by
-        buildsTowards phases where sequence ordering matters.
-    thread_key_field
-        If provided, the item key to read for an additional `thread_key` field in the
-        payload (e.g., `"_thread_key"`). Used by Phase 4 cross-grade relatesTo.
+    effective_bucket_key
+        The computed effective bucket key.
+    include_provenance
+        Whether to include provenance information.
+    metadata
+        The standard item's metadata dictionary.
+    order_index_lookup
+        A mapping from SFI UUIDs to their order index values.
+    progression_context
+        The progression context extracted from the standard item's metadata.
+    sfi
+        The standard item to process.
+    sfi_uuid
+        The UUID of the standard item.
+    thread_key
+        The computed thread key.
+    topic_key
+        The canonical topic path key.
+    topic_path_parts
+        A list of topic path part dictionaries.
 
     Returns
     -------
     dict[str, Any]
-        A dictionary containing the SFI fields to include in the LLM prompt payload.
+        The constructed payload dictionary ready to be appended to a bucket.
     """
+
+    canon_order_path = progression_context.get("canon_order_path", []) or []
+    numeric_order_path = _resolve_numeric_order_path(
+        canon_order_path=canon_order_path,
+        missing_default=0,
+        order_index_lookup=order_index_lookup,
+    )
+    numeric_order_missing_count = _count_unresolved_order_path(
+        canon_order_path=canon_order_path, order_index_lookup=order_index_lookup
+    )
+
+    indices = metadata.get("page_indices")
+    valid_indices = indices if isinstance(indices, list) else []
+    doc_pos_page_index = min(valid_indices) if valid_indices else None
+    doc_pos_y0 = _extract_bbox_y0(bbox=metadata.get("bbox"))
 
     payload: dict[str, Any] = {
-        "sfi_uuid": item["sfi_uuid"],
-        "statement_code": item.get("statement_code"),
-        "description": item.get("description"),
-        "notes": item.get("notes"),
-        "page_index": item.get("page_index"),
+        "description": sfi.description,
+        "notes": sfi.notes,
+        "order_index_within_parent": progression_context.get(
+            "order_index_within_parent"
+        ),
+        "code_tuple": progression_context.get("code_tuple"),
+        "sfi_uuid": sfi_uuid,
+        "statement_code": sfi.statement_code,
+        "statement_type": sfi.statement_type,
+        "canon_order_path": canon_order_path,
+        "numeric_order_path": numeric_order_path,
+        "numeric_order_missing_count": numeric_order_missing_count,
+        # Provenance-derived ordering fallback (kept even when include_provenance=False).
+        "doc_pos_page_index": doc_pos_page_index,
+        "doc_pos_y0": doc_pos_y0,
+        # Item-level topic context.
+        "topic_path_key": topic_key,
+        "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
+        "topic_path": _path_string(topic_path_parts),
+        # Bucket/thread context kept separately for debugging.
+        "bucket_lp_bucket_key": effective_bucket_key,
+        "bucket_lp_thread_key": thread_key,
+        # Back-compat/debug aliases.
+        "bucket_topic_path_key": effective_bucket_key,
+        "bucket_thread_key": thread_key,
     }
 
-    if include_order_index:
-        payload["order_index_within_parent"] = item.get("order_index_within_parent")
-
-    if thread_key_field:
-        payload["thread_key"] = item.get(thread_key_field)
+    if include_provenance:
+        payload["page_index"] = doc_pos_page_index
 
     return payload
-
-
-def _build_order_index_lookup(
-    academic_standards: AcademicStandardsExport,
-) -> dict[str, int]:
-    """Build a lookup mapping SFI UUIDs to their `order_index_within_parent`.
-
-    The lookup includes **all** SFIs (groupings *and* leaf standards) so that ancestor
-    order indices can be resolved when computing numeric order paths.
-
-    Parameters
-    ----------
-    academic_standards
-        The exported Academic Standards KG artifacts, containing the full set of
-        StandardsFrameworkItem entities (both groupings and standards).
-
-    Returns
-    -------
-    dict[str, int]
-        A dictionary mapping SFI UUID strings to their `order_index_within_parent`
-        values. UUIDs without a valid integer order index are omitted.
-    """
-
-    lookup: dict[str, int] = {}
-
-    for sfi in academic_standards.items:
-        meta = sfi.metadata or {}
-        pc = meta.get("progression_context") or {}
-        oi = pc.get("order_index_within_parent")
-        uuid_str = str(sfi.case_identifier_uuid or sfi.identifier)
-
-        if isinstance(oi, int):
-            lookup[uuid_str] = oi
-
-    return lookup
 
 
 def _build_thread_map(
@@ -702,6 +818,116 @@ def _collect_relates_to_work_items(
     return work_items
 
 
+def _compare_within_grade_order(
+    *, source_context: dict[str, Any], target_context: dict[str, Any]
+) -> Optional[int]:
+    """Compare two SFI contexts by within-grade curriculum order.
+
+    This comparison is only intended for within-grade edges where the two SFIs are in
+    the same comparable ordering domain (same grade and same topic/thread key). It uses
+    the most reliable ordering signal available:
+
+    1, `numeric_order_path` when both contexts have complete paths
+        (`numeric_order_missing_count == 0`)
+    2. provenance-based fallback `(page_index, bbox_y0)` when available.
+
+    Parameters
+    ----------
+    source_context
+        Context dictionary for the candidate edge source SFI.
+    target_context
+        Context dictionary for the candidate edge target SFI.
+
+    Returns
+    -------
+    Optional[int]
+        -1 if source is before target, 0 if equal, 1 if after target, or None if the
+        order cannot be determined.
+    """
+
+    source_grade = source_context.get("grade_label")
+    target_grade = target_context.get("grade_label")
+
+    if source_grade != target_grade:
+        return None
+
+    source_topic = source_context.get("topic_path_key")
+    target_topic = target_context.get("topic_path_key")
+
+    if source_topic and target_topic and source_topic != target_topic:
+        # Different ordering domains; avoid comparing.
+        return None
+
+    src_missing = int(source_context.get("numeric_order_missing_count") or 0)
+    tgt_missing = int(target_context.get("numeric_order_missing_count") or 0)
+    src_path = source_context.get("numeric_order_path") or []
+    tgt_path = target_context.get("numeric_order_path") or []
+
+    if src_missing == 0 and tgt_missing == 0 and src_path and tgt_path:
+        return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
+
+    # Provenance fallback: (page, y0).
+    src_page = source_context.get("doc_pos_page_index")
+    src_page = src_page or source_context.get("page_index")
+
+    tgt_page = target_context.get("doc_pos_page_index")
+    tgt_page = tgt_page or target_context.get("page_index")
+
+    if not isinstance(src_page, int) or not isinstance(tgt_page, int):
+        return None
+
+    src_y0 = source_context.get("doc_pos_y0")
+    tgt_y0 = target_context.get("doc_pos_y0")
+
+    src_key = (src_page, float(src_y0) if isinstance(src_y0, (int, float)) else 0.0)
+    tgt_key = (tgt_page, float(tgt_y0) if isinstance(tgt_y0, (int, float)) else 0.0)
+
+    return -1 if src_key < tgt_key else (1 if src_key > tgt_key else 0)
+
+
+def _compute_bucket_keys(
+    *,
+    cross_roles: list[str] | None,
+    normalized_level_key: str,
+    subject_label: str,
+    topic_path_parts: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Compute the effective bucket key and thread key for a standard item.
+
+    Parameters
+    ----------
+    cross_roles
+        A list of roles used for cross-grade matching.
+    normalized_level_key
+        The normalized string representing the grade or stage key.
+    subject_label
+        The resolved subject label.
+    topic_path_parts
+        A list of topic path part dictionaries.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple containing the effective_bucket_key and the thread_key.
+    """
+
+    lp_thread_key = (
+        _compute_lp_thread_key(topic_path_parts, cross_roles) if cross_roles else None
+    )
+    effective_bucket_key = (
+        lp_thread_key
+        if lp_thread_key is not None
+        else f"__unthreaded__::{subject_label}"
+    )
+    thread_key = (
+        lp_thread_key
+        if lp_thread_key is not None
+        else f"__unthreaded__::{subject_label}::{normalized_level_key}"
+    )
+
+    return effective_bucket_key, thread_key
+
+
 def _compute_lp_thread_key(
     topic_path_parts: list[dict[str, Any]], roles: list[str]
 ) -> str | None:
@@ -743,6 +969,34 @@ def _compute_lp_thread_key(
             segments.append(f"{role}={val}")
 
     return "|".join(segments) if segments else None
+
+
+def _count_unresolved_order_path(
+    *, canon_order_path: list[Any], order_index_lookup: dict[str, int]
+) -> int:
+    """Count how many UUIDs in `canon_order_path` cannot be resolved.
+
+    Parameters
+    ----------
+    canon_order_path
+        The UUID-like canonical order path.
+    order_index_lookup
+        The UUID -> order index lookup.
+
+    Returns
+    -------
+    int
+        The number of UUIDs in `canon_order_path` that are not present in
+        `order_index_lookup`.
+    """
+
+    unresolved = 0
+
+    for u in canon_order_path or []:
+        if str(u).strip() not in order_index_lookup:
+            unresolved += 1
+
+    return unresolved
 
 
 def _dedupe_edges(
@@ -868,6 +1122,31 @@ def _emit_relationship(
     )
 
 
+def _extract_bbox_y0(bbox: Any) -> Optional[float]:
+    """Extract the top-y coordinate from a bbox if it looks like [x0,y0,x1,y1].
+
+    Parameters
+    ----------
+    bbox
+        The raw bbox value from the SFI context metadata, which may be in various
+        formats.
+
+    Returns
+    -------
+    Optional[float]
+        The extracted y0 coordinate as a float if the input is a list or tuple of
+        length 4 and the second element can be converted to a float; otherwise, None.
+    """
+
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        try:
+            return float(bbox[1])
+        except (TypeError, ValueError):
+            return None
+
+    return None
+
+
 def _extract_code_tuple(
     *, code_string: str, raw_code_tuple: Any
 ) -> tuple[int, ...] | None:
@@ -906,6 +1185,51 @@ def _extract_code_tuple(
         nums = [int(match) for match in re.findall(r"\d+", code_string)]
 
     return tuple(nums) if nums else None
+
+
+def _filter_builds_towards_within_grade_order(
+    *, edges: list[CandidateEdge], sfi_index: dict[str, dict[str, Any]]
+) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
+    """Drop Phase-1 buildsTowards edges that contradict within-grade document order.
+
+    Parameters
+    ----------
+    edges
+        Candidate edges (expected to be Phase 1 within-grade buildsTowards).
+    sfi_index
+        SFI UUID -> context index from `_build_sfi_index`.
+
+    Returns
+    -------
+    tuple[list[CandidateEdge], list[CandidateEdge]]
+        (kept_edges, dropped_edges)
+    """
+
+    kept: list[CandidateEdge] = []
+    dropped: list[CandidateEdge] = []
+
+    for e in edges:
+        src = sfi_index.get(str(e.source_sfi_uuid))
+        tgt = sfi_index.get(str(e.target_sfi_uuid))
+
+        if not src or not tgt:
+            kept.append(e)
+            continue
+
+        cmp = _compare_within_grade_order(source_context=src, target_context=tgt)
+
+        # If we can't compare, keep (do not over-prune).
+        if cmp is None:
+            kept.append(e)
+            continue
+
+        # For buildsTowards, source must precede target.
+        if cmp >= 0:
+            dropped.append(e)
+        else:
+            kept.append(e)
+
+    return kept, dropped
 
 
 def _format_learning_progressions_dict(
@@ -950,11 +1274,12 @@ def _format_learning_progressions_dict(
             b["items"] = sorted(
                 b["items"],
                 key=lambda s: (
+                    int(s.get("numeric_order_missing_count") or 0),
                     s.get("numeric_order_path") or [],
+                    _item_doc_position_key(item=s),
                     _sort_key_for_bucket_sfi(s),
                 ),
             )
-
             grade_buckets.append(b)
             by_thread[tkey][grade_label] = b
 
@@ -964,6 +1289,83 @@ def _format_learning_progressions_dict(
         )
 
     return {"by_grade": by_grade, "by_thread": dict(by_thread), "drops": drops}
+
+
+def _get_or_create_bucket(
+    *,
+    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
+    effective_bucket_key: str,
+    grade_label: str,
+    level_hi: int,
+    level_lo: int,
+    progression_context: dict[str, Any],
+    stage_key: str | None,
+    subject_label: str,
+    thread_key: str,
+    topic_key: str,
+    topic_path_parts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Retrieve an existing bucket or create and initialize a new one.
+
+    Parameters
+    ----------
+    buckets
+        A nested dictionary for organizing standards into buckets.
+    effective_bucket_key
+        The computed effective bucket key.
+    grade_label
+        The formatted grade label (e.g., "LEVEL 1-2").
+    level_hi
+        The highest grade/stage ordinal for the bucket.
+    level_lo
+        The lowest grade/stage ordinal for the bucket.
+    progression_context
+        The progression context extracted from the standard item's metadata.
+    stage_key
+        The original stage key string, if available.
+    subject_label
+        The resolved subject label.
+    thread_key
+        The computed thread key.
+    topic_key
+        The canonical topic path key.
+    topic_path_parts
+        A list of topic path part dictionaries.
+
+    Returns
+    -------
+    dict[str, Any]
+        The initialized or retrieved bucket dictionary.
+    """
+
+    b = buckets[grade_label].get(effective_bucket_key)
+
+    if not b:
+        b = buckets[grade_label][effective_bucket_key] = {
+            "bucket_key": f"{grade_label}::{effective_bucket_key}",
+            "effective_bucket_key": effective_bucket_key,
+            "grade_level": grade_label,
+            "grade_ordinal": level_lo,
+            "grade_ordinal_low": level_lo,
+            "grade_ordinal_high": level_hi,
+            "stage_key": (
+                stage_key.strip()
+                if isinstance(stage_key, str) and stage_key.strip()
+                else None
+            ),
+            "subject_label": subject_label,
+            "lp_thread_key": thread_key,
+            "lp_bucket_key": effective_bucket_key,
+            "canonical_topic_path_key": topic_key,
+            "normalized_topic_path_key": str(
+                progression_context.get("thread_key") or ""
+            ),
+            "topic_path": _path_string(topic_path_parts),
+            "topic_path_parts": topic_path_parts,
+            "items": [],
+        }
+
+    return b
 
 
 def _group_threads_by_grade_and_subject(
@@ -1589,6 +1991,39 @@ def _is_single_grade_bucket(b: dict[str, Any]) -> bool:
     return isinstance(lo, int) and isinstance(hi, int) and lo == hi
 
 
+def _item_doc_position_key(item: dict[str, Any]) -> tuple[int, float]:
+    """Build a stable, comparable document-position key for a bucket item.
+
+    Ordering fallback uses:
+
+    1. page index (min page if multi-page provenance exists).
+    2. bbox y0 (top coordinate) as an intra-page tie-breaker
+
+    Missing values are sent to the end of the ordering.
+
+    Parameters
+    ----------
+    item
+        A bucket item dictionary.
+
+    Returns
+    -------
+    tuple[int, float]
+        (page_index, bbox_y0) ordering key.
+    """
+
+    page = item.get("doc_pos_page_index")
+
+    if page is None:
+        page = item.get("page_index")
+
+    page_i = int(page) if isinstance(page, int) else 10**9
+
+    y0 = item.get("doc_pos_y0")
+    y0_f = float(y0) if isinstance(y0, (int, float)) else float(10**9)
+    return (page_i, y0_f)
+
+
 def _level_bounds(b: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
     """Return (low, high) ordinals for a bucket when available.
 
@@ -2019,6 +2454,27 @@ def _process_and_filter_candidates(
         if e.confidence < config.progressions_builds_towards_min_confidence
     ]
 
+    # Enforce within-grade directionality using the exporter-derived document order.
+    # The LLM is prompted with items in (supposed) curriculum order and validators
+    # enforce directionality relative to the presented list. If the list is misordered,
+    # directionality can be inverted even when the model follows instructions. This
+    # post-filter provides a hard safety net for Phase 1 within-grade buildsTowards
+    # edges.
+    builds_dropped_doc_order: list[CandidateEdge] = []
+    builds_kept_before_doc_order = len(builds_kept)
+
+    if sfi_index:
+        phase_1 = [e for e in builds_kept if int(e.metadata.get("phase") or 0) == 1]
+        non_phase_1 = [e for e in builds_kept if int(e.metadata.get("phase") or 0) != 1]
+
+        phase_1_kept, builds_dropped_doc_order = (
+            _filter_builds_towards_within_grade_order(
+                edges=phase_1,
+                sfi_index=sfi_index,
+            )
+        )
+        builds_kept = [*phase_1_kept, *non_phase_1]
+
     relates_kept_thr = [
         e
         for e in relates_candidates
@@ -2057,6 +2513,8 @@ def _process_and_filter_candidates(
         "candidate_builds_towards": len(builds_candidates),
         "candidate_relates_to": len(relates_candidates),
         "builds_kept": len(builds_kept),
+        "builds_kept_before_doc_order": int(builds_kept_before_doc_order),
+        "builds_dropped_doc_order": len(builds_dropped_doc_order),
         "builds_dropped_low_conf": len(builds_dropped_low),
         "relates_kept_after_threshold": len(relates_kept_thr),
         "relates_dropped_low_conf": len(relates_dropped_low),
@@ -2075,6 +2533,11 @@ def _process_and_filter_candidates(
 
     for e in builds_kept:
         _set_disposition(candidate=e, disposition_map=disposition_map, value="kept")
+
+    for e in builds_dropped_doc_order:
+        _set_disposition(
+            candidate=e, disposition_map=disposition_map, value="dropped_doc_order"
+        )
 
     for e in builds_dropped_low:
         _set_disposition(
@@ -2161,7 +2624,7 @@ def _process_single_standard(
 
     # Statement type validation.
     if sfi.normalized_statement_type != "Standard":
-        drops["non_standard_item"].append(
+        drops.setdefault("non_standard_item", []).append(
             {
                 "description": sfi.description,
                 "normalized_statement_type": sfi.normalized_statement_type,
@@ -2172,69 +2635,20 @@ def _process_single_standard(
         return
 
     # Level validation (grade or stage).
-    grade_key = progression_context.get("grade_key")
-    stage_key = progression_context.get("stage_key")
-    normalized_grade_key = str(grade_key or "").strip().lower()
-    normalized_stage_key = str(stage_key or "").strip().lower()
-    normalized_level_key = normalized_grade_key or normalized_stage_key
+    level_data = _resolve_level_ordinals(
+        config=config,
+        drops=drops,
+        progression_context=progression_context,
+        sfi_description=sfi.description,
+        sfi_uuid=sfi_uuid,
+    )
 
-    # Prefer ordinals computed upstream in Academic Standards export.
-    g_lo = progression_context.get("grade_ordinal_low")
-    g_hi = progression_context.get("grade_ordinal_high")
-    s_lo = progression_context.get("stage_ordinal_low")
-    s_hi = progression_context.get("stage_ordinal_high")
-
-    if isinstance(g_lo, int) and isinstance(g_hi, int):
-        level_lo, level_hi = (min(g_lo, g_hi), max(g_lo, g_hi))
-    elif isinstance(s_lo, int) and isinstance(s_hi, int):
-        level_lo, level_hi = (min(s_lo, s_hi), max(s_lo, s_hi))
-    else:
-        # Fall back to config-driven mapping when ordinals are unavailable.
-        if not normalized_level_key:
-            drops.setdefault("missing_grade_key", []).append(
-                {"description": sfi.description, "sfi_uuid": sfi_uuid}
-            )
-            return
-
-        mapped = (config.progressions_grade_label_map or {}).get(normalized_level_key)
-
-        if mapped is None:
-            logger.warning(
-                f"progressions_grade_label_map: level key {normalized_level_key!r} "
-                f"(grade_key={grade_key!r}, stage_key={stage_key!r}) not found in map. "
-                f"Excluding SFI {sfi_uuid} from LP inference."
-            )
-            drops.setdefault("unmapped_grade_key", []).append(
-                {
-                    "description": sfi.description,
-                    "grade_key": grade_key,
-                    "stage_key": stage_key,
-                    "sfi_uuid": sfi_uuid,
-                }
-            )
-            return
-
-        level_lo = level_hi = int(mapped)
-
-    if not (isinstance(level_lo, int) and isinstance(level_hi, int)):
-        drops.setdefault("missing_grade_key", []).append(
-            {
-                "description": sfi.description,
-                "grade_key": grade_key,
-                "stage_key": stage_key,
-                "sfi_uuid": sfi_uuid,
-            }
-        )
+    if not level_data:
         return
 
+    level_lo, level_hi, stage_key, normalized_level_key = level_data
+
     # Bucket label (used as the top-level key for grouping buckets).
-    #
-    # Always use ordinal-based labels as the canonical grouping key. This prevents
-    # fragmentation from inconsistent stage_key strings across SFIs that represent the
-    # same level range (e.g., different dash characters: "Standard I-II" vs
-    # "Standard I–II", or minor whitespace/casing differences). The original stage_key
-    # is preserved on the bucket dict as metadata and is used by _level_label() for
-    # human-readable display in prompts and logs.
     grade_label = (
         f"LEVEL {level_lo}-{level_hi}" if level_hi != level_lo else f"LEVEL {level_lo}"
     )
@@ -2243,7 +2657,7 @@ def _process_single_standard(
     topic_key = progression_context.get("topic_path_key", "")
 
     if not (isinstance(topic_key, str) and topic_key.strip()):
-        drops["missing_topic_path_key"].append(
+        drops.setdefault("missing_topic_path_key", []).append(
             {"description": sfi.description, "grade": grade_label, "sfi_uuid": sfi_uuid}
         )
         return
@@ -2251,101 +2665,49 @@ def _process_single_standard(
     # Subject label and topic parts setup.
     raw_parts = progression_context.get("topic_path_parts")
     topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
-    subject_role = config.progressions_subject_role
-    subject_label = (
-        next(
-            (
-                str(p["label"])
-                for p in topic_path_parts
-                if p.get("role") == subject_role and p.get("label")
-            ),
-            "UNSPECIFIED_SUBJECT",
-        )
-        if subject_role
-        else "UNSPECIFIED_SUBJECT"
+
+    subject_label = _resolve_subject_label(
+        subject_role=config.progressions_subject_role, topic_path_parts=topic_path_parts
     )
 
     # Threading and bucket keys.
-    cross_roles = config.progressions_cross_grade_match_roles
-    lp_thread_key = (
-        _compute_lp_thread_key(topic_path_parts, cross_roles) if cross_roles else None
-    )
-    effective_bucket_key = (
-        lp_thread_key
-        if lp_thread_key is not None
-        else f"__unthreaded__::{subject_label}"
-    )
-    thread_key = (
-        lp_thread_key
-        if lp_thread_key is not None
-        else f"__unthreaded__::{subject_label}::{normalized_level_key}"
+    effective_bucket_key, thread_key = _compute_bucket_keys(
+        cross_roles=config.progressions_cross_grade_match_roles,
+        normalized_level_key=normalized_level_key,
+        subject_label=subject_label,
+        topic_path_parts=topic_path_parts,
     )
 
     # Bucket management.
-    b = buckets[grade_label].get(effective_bucket_key)
+    bucket = _get_or_create_bucket(
+        buckets=buckets,
+        effective_bucket_key=effective_bucket_key,
+        grade_label=grade_label,
+        level_hi=level_hi,
+        level_lo=level_lo,
+        progression_context=progression_context,
+        stage_key=stage_key,
+        subject_label=subject_label,
+        thread_key=thread_key,
+        topic_key=topic_key,
+        topic_path_parts=topic_path_parts,
+    )
 
-    if not b:
-        b = buckets[grade_label][effective_bucket_key] = {
-            "bucket_key": f"{grade_label}::{effective_bucket_key}",
-            "effective_bucket_key": effective_bucket_key,
-            "grade_level": grade_label,
-            "grade_ordinal": level_lo,
-            "grade_ordinal_low": level_lo,
-            "grade_ordinal_high": level_hi,
-            "stage_key": (
-                stage_key.strip()
-                if isinstance(stage_key, str) and stage_key.strip()
-                else None
-            ),
-            "subject_label": subject_label,
-            "lp_thread_key": thread_key,
-            "lp_bucket_key": effective_bucket_key,
-            "canonical_topic_path_key": topic_key,
-            "normalized_topic_path_key": str(
-                progression_context.get("thread_key") or ""
-            ),
-            "topic_path": _path_string(topic_path_parts),
-            "topic_path_parts": topic_path_parts,
-            "items": [],
-        }
+    # Payload generation and append.
+    payload = _build_sfi_payload(
+        effective_bucket_key=effective_bucket_key,
+        include_provenance=include_provenance,
+        metadata=metadata,
+        order_index_lookup=order_index_lookup,
+        progression_context=progression_context,
+        sfi=sfi,
+        sfi_uuid=sfi_uuid,
+        thread_key=thread_key,
+        topic_key=topic_key,
+        topic_path_parts=topic_path_parts,
+    )
 
-    payload: dict[str, Any] = {
-        "description": sfi.description,
-        "notes": sfi.notes,
-        "order_index_within_parent": progression_context.get(
-            "order_index_within_parent"
-        ),
-        "code_tuple": progression_context.get("code_tuple"),
-        "sfi_uuid": sfi_uuid,
-        "statement_code": sfi.statement_code,
-        "statement_type": sfi.statement_type,
-        "canon_order_path": progression_context.get("canon_order_path", []),
-        # Numeric order path: resolves each UUID in canon_order_path to its
-        # order_index_within_parent, giving a list of ints that sorts siblings by true
-        # document position rather than by UUID string.
-        "numeric_order_path": _resolve_numeric_order_path(
-            canon_order_path=progression_context.get("canon_order_path", []),
-            order_index_lookup=order_index_lookup,
-        ),
-        # Item-level topic context (do NOT rely on bucket-level topic_path for
-        # provenance).
-        "topic_path_key": topic_key,
-        "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
-        "topic_path": _path_string(topic_path_parts),
-        # Bucket/thread context kept separately for debugging.
-        "bucket_lp_bucket_key": effective_bucket_key,
-        "bucket_lp_thread_key": thread_key,
-        # Back-compat/debug aliases.
-        "bucket_topic_path_key": effective_bucket_key,
-        "bucket_thread_key": thread_key,
-    }
-
-    if include_provenance:
-        indices = metadata.get("page_indices")
-        valid_indices = indices if isinstance(indices, list) else []
-        payload["page_index"] = min(valid_indices) if valid_indices else None
-
-    b["items"].append(payload)
+    bucket["items"].append(payload)
 
 
 def _process_builds_towards_work_item(
@@ -2735,33 +3097,165 @@ def _resolve_forbidden_pairs(
     return forbidden_pairs_set, forbidden_pairs_list
 
 
+def _resolve_level_ordinals(
+    *,
+    config: CreateKGConfig,
+    drops: dict[str, list[dict[str, Any]]],
+    progression_context: dict[str, Any],
+    sfi_description: str | None,
+    sfi_uuid: str,
+) -> tuple[int, int, str | None, str] | None:
+    """Resolve grade or stage ordinals from progression context or config mapping.
+
+    Parameters
+    ----------
+    config
+        The KG creation config with LP-specific fields.
+    drops
+        A dictionary for collecting standards that are dropped due to validation issues.
+    progression_context
+        The progression context extracted from the standard item's metadata.
+    sfi_description
+        The description of the standard item.
+    sfi_uuid
+        The UUID of the standard item.
+
+    Returns
+    -------
+    tuple[int, int, str | None, str] | None
+        A tuple containing level_lo, level_hi, stage_key, and normalized_level_key, or
+        None if ordinals cannot be resolved and the item is dropped.
+    """
+
+    grade_key = progression_context.get("grade_key")
+    stage_key = progression_context.get("stage_key")
+    normalized_grade_key = str(grade_key or "").strip().lower()
+    normalized_stage_key = str(stage_key or "").strip().lower()
+    normalized_level_key = normalized_grade_key or normalized_stage_key
+
+    g_lo = progression_context.get("grade_ordinal_low")
+    g_hi = progression_context.get("grade_ordinal_high")
+    s_lo = progression_context.get("stage_ordinal_low")
+    s_hi = progression_context.get("stage_ordinal_high")
+
+    if isinstance(g_lo, int) and isinstance(g_hi, int):
+        level_lo, level_hi = min(g_lo, g_hi), max(g_lo, g_hi)
+    elif isinstance(s_lo, int) and isinstance(s_hi, int):
+        level_lo, level_hi = min(s_lo, s_hi), max(s_lo, s_hi)
+    else:
+        # Fall back to config-driven mapping when ordinals are unavailable.
+        if not normalized_level_key:
+            drops.setdefault("missing_grade_key", []).append(
+                {"description": sfi_description, "sfi_uuid": sfi_uuid}
+            )
+            return None
+
+        mapped = (config.progressions_grade_label_map or {}).get(normalized_level_key)
+
+        if mapped is None:
+            logger.warning(
+                f"progressions_grade_label_map: level key {normalized_level_key!r} "
+                f"(grade_key={grade_key!r}, stage_key={stage_key!r}) not found in map. "
+                f"Excluding SFI {sfi_uuid} from LP inference."
+            )
+            drops.setdefault("unmapped_grade_key", []).append(
+                {
+                    "description": sfi_description,
+                    "grade_key": grade_key,
+                    "stage_key": stage_key,
+                    "sfi_uuid": sfi_uuid,
+                }
+            )
+            return None
+
+        level_lo = level_hi = int(mapped)
+
+    if not (isinstance(level_lo, int) and isinstance(level_hi, int)):
+        drops.setdefault("missing_grade_key", []).append(
+            {
+                "description": sfi_description,
+                "grade_key": grade_key,
+                "stage_key": stage_key,
+                "sfi_uuid": sfi_uuid,
+            }
+        )
+        return None
+
+    return level_lo, level_hi, stage_key, normalized_level_key
+
+
 def _resolve_numeric_order_path(
-    *, canon_order_path: list[Any], order_index_lookup: dict[str, int]
+    *,
+    canon_order_path: list[Any],
+    missing_default: int = 0,
+    order_index_lookup: dict[str, int],
 ) -> list[int]:
-    """Convert a UUID-based `canon_order_path` into a numeric order path.
+    """Convert a UUID-based canonical order path into a numeric order path.
 
-    Each UUID in the path is resolved to its `order_index_within_parent` via the
-    lookup. UUIDs not found in the lookup (e.g., the framework root node) default to 0.
+    The Academic Standards export stores a `progression_context.canon_order_path` for
+    each leaf SFI: a list of UUID-like values representing the hierarchy path down to
+    the leaf. This function converts that list into a list of integers by resolving
+    each UUID to its `order_index_within_parent` via `order_index_lookup`.
 
-    The resulting list preserves tree depth ordering: two sibling items under the same
-    parent will share the full prefix and differ only at the last element (their own
-    `order_index_within_parent`), giving correct document-order sorting.
+    NB:
+
+    1. A missing UUID (not found in the lookup) is resolved to `missing_default`. This
+        exporter tracks missing-ness separately via `_count_unresolved_order_path` and
+        uses provenance-based fallbacks for ordering when needed.
+    2. The resulting list preserves tree-depth ordering. Two siblings share the full
+        prefix and differ at the last element, which enables correct lexicographic
+        sorting by document sequence.
 
     Parameters
     ----------
     canon_order_path
-        A list of UUID strings representing the path from the hierarchy root (or
-        near-root) to the leaf node.
+        A list of UUID-like values representing the path from the hierarchy root to the
+        leaf node.
+    missing_default
+        The integer value to use for UUIDs that are not present in `order_index_lookup`.
     order_index_lookup
-        A mapping from UUID strings to integer order indices.
+        A mapping from UUID strings (in any supported namespace) to integer order
+        indices.
 
     Returns
     -------
     list[int]
-        A list of integer order indices, one per UUID in `canon_order_path`.
+        A list of integer order indices corresponding to `canon_order_path`.
     """
 
-    return [order_index_lookup.get(str(u).strip(), 0) for u in (canon_order_path or [])]
+    path = canon_order_path or []
+    return [order_index_lookup.get(str(u).strip(), missing_default) for u in path]
+
+
+def _resolve_subject_label(
+    *, subject_role: str | None, topic_path_parts: list[dict[str, Any]]
+) -> str:
+    """Resolve the subject label from the topic path parts.
+
+    Parameters
+    ----------
+    subject_role
+        The role string used to identify the subject in topic path parts.
+    topic_path_parts
+        A list of topic path part dictionaries.
+
+    Returns
+    -------
+    str
+        The resolved subject label or "UNSPECIFIED_SUBJECT" if not found.
+    """
+
+    if not subject_role:
+        return "UNSPECIFIED_SUBJECT"
+
+    return next(
+        (
+            str(p["label"])
+            for p in topic_path_parts
+            if p.get("role") == subject_role and p.get("label")
+        ),
+        "UNSPECIFIED_SUBJECT",
+    )
 
 
 def _sample_items_across_threads(
