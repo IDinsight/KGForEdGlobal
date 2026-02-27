@@ -1372,31 +1372,6 @@ class Relationship(_DateValidationMixin, BaseSchema):
             self._validate_progression()
 
     @model_validator(mode="after")
-    def _fill_missing_description(self) -> Relationship:
-        """Deterministically fill description if missing/blank (LC expects it to be
-        present).
-
-        Returns
-        -------
-        Relationship
-            The Relationship object with a filled description if it was missing.
-        """
-
-        if not self.description:
-            default_map = {
-                "hasChild": "A hasChild relationship links a parent framework/item to a child standards item.",
-                "supports": "A supports relationship links a learning component to a standards item it supports.",
-                "buildsTowards": "A buildsTowards relationship indicates prerequisite progression from one standards item to another.",
-                "relatesTo": "A relatesTo relationship indicates an associative connection between two standards items.",
-            }
-            self.description = default_map.get(
-                self.relationship_type,
-                f"A {self.relationship_type} relationship between {self.source_entity} and {self.target_entity}.",
-            )
-
-        return self
-
-    @model_validator(mode="after")
     def _prevent_self_loops(self) -> Relationship:
         """Prevent self-loop relationships (especially harmful for progressions/tree
         edges).
@@ -1428,6 +1403,31 @@ class Relationship(_DateValidationMixin, BaseSchema):
         self._validate_common_schema()
         self._validate_data_integrity()
         self._validate_type_specific_logic()
+
+        return self
+
+    @model_validator(mode="after")
+    def _fill_missing_description(self) -> Relationship:
+        """Deterministically fill description if missing/blank (LC expects it to be
+        present).
+
+        Returns
+        -------
+        Relationship
+            The Relationship object with a filled description if it was missing.
+        """
+
+        if not self.description:
+            default_map = {
+                "hasChild": "A hasChild relationship links a parent framework/item to a child standards item.",
+                "supports": "A supports relationship links a learning component to a standards item it supports.",
+                "buildsTowards": "A buildsTowards relationship indicates prerequisite progression from one standards item to another.",
+                "relatesTo": "A relatesTo relationship indicates an associative connection between two standards items.",
+            }
+            self.description = default_map.get(
+                self.relationship_type,
+                f"A {self.relationship_type} relationship between {self.source_entity} and {self.target_entity}.",
+            )
 
         return self
 
