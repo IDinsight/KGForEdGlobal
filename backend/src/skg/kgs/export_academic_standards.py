@@ -65,7 +65,7 @@ class AcademicStandardsExport:
     order: HierarchyOrderExport
     pruned_node_ids: set[str]  # Node IDs pruned as empty groupings
     relationships: list[Relationship]
-    reparent_stats: dict[str, int]  # aux_reparented_count, orphan_aux_count
+    reparent_stats: dict[str, Any]  # aux_reparented_count, orphan_aux_count, etc.
 
 
 def _build_academic_standards_graph_bundle(
@@ -139,7 +139,7 @@ def _build_academic_standards_graph_bundle(
         relationships.append(
             {
                 "id": str(r.identifier),
-                "type": "HAS_CHILD",
+                "type": "hasChild",
                 "start": start_id,
                 "end": end_id,
                 "properties": props,
@@ -451,7 +451,7 @@ def _compute_export_children(
         {
             "aux_reparented_count": reparented_count,
             "orphan_aux_count": orphan_aux_count,
-            "orphan_aux_node_ids": orphan_aux_node_ids,
+            "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
         },
     )
 
@@ -1680,7 +1680,7 @@ def _to_iso8601_or_none(v: Any) -> Optional[str]:
     if callable(iso):
         try:
             return str(iso())
-        except Exception:  # pylint: disable=broad-except
+        except (TypeError, ValueError, AttributeError):
             return None
 
     return None
@@ -1907,7 +1907,7 @@ def export_academic_standards(
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
-        orphan_aux_node_ids=reparent_stats.get("orphan_aux_node_ids"),
+        orphan_aux_node_ids=set(reparent_stats.get("orphan_aux_node_ids") or []),
     )
 
     # 8.
@@ -2039,7 +2039,7 @@ def load_academic_standards_export(kg_dirs: KGDirs) -> AcademicStandardsExport:
     drop_reasons: dict[str, str] = (
         open_json_type(drop_reasons_fp) if drop_reasons_fp.exists() else {}
     )
-    reparent_stats: dict[str, int] = (
+    reparent_stats: dict[str, Any] = (
         open_json_type(reparent_stats_fp) if reparent_stats_fp.exists() else {}
     )
 
