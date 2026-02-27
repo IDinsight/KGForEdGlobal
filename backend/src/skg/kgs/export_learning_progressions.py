@@ -25,7 +25,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Callable, DefaultDict, Optional
+from typing import Any, Callable, DefaultDict, Iterator, Optional
 from uuid import UUID, uuid5
 
 # Third Party Library
@@ -408,57 +408,60 @@ def _build_sfi_index(
     rather than relying on bucket-level `topic_path`/`lp_bucket_key` values.
     """
 
+    def _iter_items() -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:
+        """Iterate all items across all buckets and yield (grade_label, bucket, item)
+        tuples.
+
+        Returns
+        -------
+        Iterator[tuple[str, dict[str, Any], dict[str, Any]]]
+            An iterator yielding tuples of (grade_label, bucket_dict, item_dict) for
+            each item found in the buckets organized by grade.
+        """
+
+        for grade_label, grade_buckets in (by_grade or {}).items():
+            for bucket in grade_buckets or []:
+                for item in bucket.get("items") or []:
+                    yield grade_label, bucket, item
+
     index: dict[str, dict[str, Any]] = {}
 
-    for grade_label, grade_buckets in (by_grade or {}).items():
-        for b in grade_buckets or []:
-            for it in b.get("items") or []:
-                u = str(it.get("sfi_uuid") or "").strip()
+    for grade_label, b, it in _iter_items():
+        u = str(it.get("sfi_uuid") or "").strip()
 
-                if not u:
-                    continue
+        if not u:
+            continue
 
-                candidate = {
-                    "grade_label": grade_label,
-                    "subject_label": b.get("subject_label"),
-                    # Prefer item-level topic context (accurate even when a bucket
-                    # mixes multiple topic paths, e.g., "__unthreaded__" buckets).
-                    "topic_path_key": it.get("topic_path_key")
-                    or b.get("canonical_topic_path_key")
-                    or b.get("lp_bucket_key"),
-                    "normalized_topic_path_key": it.get("normalized_topic_path_key")
-                    or b.get("normalized_topic_path_key"),
-                    # Bucket/thread grouping key (may include sentinels for unthreaded
-                    # cases).
-                    "thread_key": b.get("lp_thread_key"),
-                    "topic_path": it.get("topic_path") or b.get("topic_path"),
-                    "statement_code": it.get("statement_code"),
-                    "page_index": it.get("page_index"),
-                    "order_index_within_parent": it.get("order_index_within_parent"),
-                    "canon_order_path": it.get("canon_order_path"),
-                    "numeric_order_path": it.get("numeric_order_path"),
-                    "numeric_order_missing_count": it.get(
-                        "numeric_order_missing_count"
-                    ),
-                    "doc_pos_page_index": it.get("doc_pos_page_index"),
-                    "doc_pos_y0": it.get("doc_pos_y0"),
-                }
+        candidate = {
+            "grade_label": grade_label,
+            "subject_label": b.get("subject_label"),
+            "topic_path_key": it.get("topic_path_key")
+            or b.get("canonical_topic_path_key")
+            or b.get("lp_bucket_key"),
+            "normalized_topic_path_key": it.get("normalized_topic_path_key")
+            or b.get("normalized_topic_path_key"),
+            "thread_key": b.get("lp_thread_key"),
+            "topic_path": it.get("topic_path") or b.get("topic_path"),
+            "statement_code": it.get("statement_code"),
+            "page_index": it.get("page_index"),
+            "order_index_within_parent": it.get("order_index_within_parent"),
+            "canon_order_path": it.get("canon_order_path"),
+            "numeric_order_path": it.get("numeric_order_path"),
+            "numeric_order_missing_count": it.get("numeric_order_missing_count"),
+            "doc_pos_page_index": it.get("doc_pos_page_index"),
+            "doc_pos_y0": it.get("doc_pos_y0"),
+        }
 
-                existing = index.get(u)
+        existing = index.setdefault(u, candidate)
 
-                if (
-                    existing is None
-                    or (
-                        existing.get("topic_path_key") in (None, "")
-                        and candidate.get("topic_path_key") not in (None, "")
-                    )
-                    or (not existing.get("topic_path") and candidate.get("topic_path"))
-                    or (
-                        existing.get("page_index") is None
-                        and candidate.get("page_index") is not None
-                    )
-                ):
-                    index[u] = candidate
+        # If 'existing' is the exact same object as 'candidate', it was just inserted.
+        # If it's different, the key already existed, and we need to merge.
+        if existing is not candidate:
+            _empty = (None, "")
+
+            for k, v in candidate.items():
+                if existing.get(k) in _empty and v not in _empty:
+                    existing[k] = v
 
     return index
 
@@ -854,8 +857,10 @@ def _compare_within_grade_order(
     source_topic = source_context.get("topic_path_key")
     target_topic = target_context.get("topic_path_key")
 
-    if source_topic and target_topic and source_topic != target_topic:
-        # Different ordering domains; avoid comparing.
+    if source_topic != target_topic:
+        # Different ordering domains (includes the case where only one side has a
+        # topic_path_key). Comparing items from different domains—or one known domain
+        # against an unknown one—can produce incorrect ordering conclusions, so bail.
         return None
 
     src_missing = int(source_context.get("numeric_order_missing_count") or 0)
@@ -954,12 +959,13 @@ def _compute_lp_thread_key(
     """
 
     parts_by_role: dict[str, list[str]] = {}
+    roles_set = set(roles)
 
     for entry in topic_path_parts:
         r = entry.get("role", "")
         label = entry.get("label", "")
 
-        if r and label and r in set(roles):
+        if r and label and r in roles_set:
             parts_by_role.setdefault(r, []).append(keyify(label))
 
     segments: list[str] = []
@@ -3169,17 +3175,6 @@ def _resolve_level_ordinals(
             return None
 
         level_lo = level_hi = int(mapped)
-
-    if not (isinstance(level_lo, int) and isinstance(level_hi, int)):
-        drops.setdefault("missing_grade_key", []).append(
-            {
-                "description": sfi_description,
-                "grade_key": grade_key,
-                "stage_key": stage_key,
-                "sfi_uuid": sfi_uuid,
-            }
-        )
-        return None
 
     return level_lo, level_hi, stage_key, normalized_level_key
 
