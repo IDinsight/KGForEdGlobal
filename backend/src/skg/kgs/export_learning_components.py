@@ -184,7 +184,7 @@ def _build_learning_components_graph_bundle(
         relationships.append(
             {
                 "id": str(r.identifier),
-                "type": "SUPPORTS",
+                "type": "supports",
                 "start": r.source_entity_value,
                 "end": r.target_entity_value,
                 "properties": r.model_dump(mode="json"),
@@ -739,7 +739,7 @@ def _export_lcs_via_llm_atomic_skills(
 
 def _handle_atomic_skills_fallback(
     *,
-    batch: list[Any],
+    batch: list[StandardsFrameworkItem],
     config: CreateKGConfig,
     ctx: ExportContext,
     current_batch_num: int,
@@ -798,7 +798,7 @@ def _handle_atomic_skills_fallback(
 
 def _handle_atomic_skills_success(
     *,
-    batch: list[Any],
+    batch: list[StandardsFrameworkItem],
     batch_debug: dict[str, Any],
     config: CreateKGConfig,
     ctx: ExportContext,
@@ -922,7 +922,7 @@ def _iter_expectation_sfis(
 
 def _process_atomic_skills_batch(
     *,
-    batch: list[Any],
+    batch: list[StandardsFrameworkItem],
     batch_index: int,
     config: CreateKGConfig,
     ctx: ExportContext,
@@ -1171,6 +1171,36 @@ def _trim_text(*, max_chars: int, s: str) -> str:
     return s2[: max_chars - 3].rstrip() + "..."
 
 
+def _verify_lc_export(
+    *, lcs: list[LearningComponent], rels: list[Relationship]
+) -> None:
+    """Verify integrity invariants for a Learning Components export.
+
+    Parameters
+    ----------
+    lcs
+        The list of LearningComponent entities produced by the export.
+    rels
+        The list of supports Relationship entities produced by the export.
+
+    Raises
+    ------
+    ValueError
+        If any relationship is not of type 'supports', or if the number of
+        relationships does not match the number of LearningComponents (1:1).
+    """
+
+    if any(r.relationship_type != "supports" for r in rels):
+        raise ValueError(
+            "Non-supports relationship found in Learning Components export."
+        )
+
+    if len(rels) != len(lcs):
+        raise ValueError(
+            f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
+        )
+
+
 def export_learning_components(
     *,
     academic_standards: AcademicStandardsExport,
@@ -1213,15 +1243,7 @@ def export_learning_components(
             kg_dirs=kg_dirs,
         )
 
-        if any(r.relationship_type != "supports" for r in rels):
-            raise ValueError(
-                "Non-supports relationship found in Learning Components export."
-            )
-
-        if len(rels) != len(lcs):
-            raise ValueError(
-                f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
-            )
+        _verify_lc_export(lcs=lcs, rels=rels)
 
         write_to_json(
             fp=kg_dirs.learning_components / "learning_components.json",
@@ -1299,14 +1321,7 @@ def export_learning_components(
             f"LearningComponents (empty text). These SFIs have no `supports` edges."
         )
 
-    if any(r.relationship_type != "supports" for r in rels):
-        raise ValueError(
-            "Non-supports relationship found in Learning Components export."
-        )
-    if len(rels) != len(lcs):
-        raise ValueError(
-            f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
-        )
+    _verify_lc_export(lcs=lcs, rels=rels)
 
     write_to_json(
         fp=kg_dirs.learning_components / "learning_components.json",
