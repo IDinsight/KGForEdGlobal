@@ -11,7 +11,7 @@ Phases:
 # Standard Library
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 # Third Party Library
 from loguru import logger
@@ -31,7 +31,7 @@ from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair
 from skg.utils.general import write_to_json
 
 
-def _build_has_child_adjacency(all_rels: list[Any]) -> dict[str, list[str]]:
+def _build_has_child_adjacency(all_rels: list[Relationship]) -> dict[str, list[str]]:
     """Build an adjacency list for hasChild relationships.
 
     Parameters
@@ -54,8 +54,88 @@ def _build_has_child_adjacency(all_rels: list[Any]) -> dict[str, list[str]]:
     return adj
 
 
+def _check_has_child_cycles(
+    *,
+    adj: dict[str, list[str]],
+    fw_id: str,
+    report: GraphValidationReport,
+    sfi_ids: set[str],
+) -> None:
+    """Check for cycles in the hasChild relationship graph using iterative DFS.
+
+    Uses the standard three-colour (WHITE/GRAY/BLACK) algorithm but with an explicit
+    stack instead of recursion, so it is safe for arbitrarily deep hierarchies that
+    would otherwise exceed Python's default recursion limit.
+
+    Parameters
+    ----------
+    adj
+        Adjacency list mapping source IDs to target IDs.
+    fw_id
+        The framework case identifier UUID.
+    report
+        The GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs.
+    """
+
+    white, gray, black = 0, 1, 2
+    color: dict[str, int] = {nid: white for nid in (sfi_ids | {fw_id})}
+    has_cycle = False
+
+    for start in [fw_id] + sorted(sfi_ids):
+        if color.get(start) != white:
+            continue
+
+        # Each stack frame is (node_id, child_iterator). When we first visit a node we
+        # colour it gray and push it with an iterator over its children. When the
+        # iterator is exhausted we colour it black (fully explored).
+        stack: list[tuple[str, int]] = [(start, 0)]
+        color[start] = gray
+
+        while stack:
+            nid, idx = stack[-1]
+            children = adj.get(nid, [])
+
+            if idx < len(children):
+                # Advance the child pointer for the current frame.
+                stack[-1] = (nid, idx + 1)
+                child = children[idx]
+
+                if child not in color:
+                    continue
+
+                if color[child] == gray:
+                    has_cycle = True
+                    break
+
+                if color[child] == white:
+                    color[child] = gray
+                    stack.append((child, 0))
+            else:
+                # All children explored--mark finished.
+                color[nid] = black
+                stack.pop()
+
+        if has_cycle:
+            break
+
+    if has_cycle:
+        report.error(
+            code="HAS_CHILD_CYCLE", message="Cycle detected in exported hasChild graph."
+        )
+    else:
+        report.info(
+            code="HAS_CHILD_NO_CYCLES", message="No cycles in exported hasChild graph."
+        )
+
+
 def _check_has_child_single_parent(
-    *, all_rels: list[Any], fw_id: str, report: GraphValidationReport, sfi_ids: set[str]
+    *,
+    all_rels: list[Relationship],
+    fw_id: str,
+    report: GraphValidationReport,
+    sfi_ids: set[str],
 ) -> None:
     """Validate that hasChild relationships form a single-parent hierarchy.
 
@@ -120,79 +200,6 @@ def _check_has_child_single_parent(
         report.info(
             code="HAS_CHILD_SINGLE_PARENT_OK",
             message="All SFIs have exactly one parent in hasChild; framework has no parent.",
-        )
-
-
-def _check_has_child_cycles(
-    *,
-    adj: dict[str, list[str]],
-    fw_id: str,
-    report: GraphValidationReport,
-    sfi_ids: set[str],
-) -> None:
-    """Check for cycles in the hasChild relationship graph using DFS.
-
-    Parameters
-    ----------
-    adj
-        Adjacency list mapping source IDs to target IDs.
-    fw_id
-        The framework case identifier UUID.
-    report
-        The GraphValidationReport to append findings to.
-    sfi_ids
-        Set of all SFI case identifier UUIDs.
-    """
-
-    WHITE, GRAY, BLACK = 0, 1, 2
-    color: dict[str, int] = {nid: WHITE for nid in (sfi_ids | {fw_id})}
-    has_cycle = False
-
-    def _dfs(nid: str) -> bool:
-        """Return True if a cycle is detected starting from nid.
-
-        Parameters
-        ----------
-        nid
-            The node ID to start DFS from.
-
-        Returns
-        -------
-        bool
-            True if a cycle is detected, False otherwise.
-        """
-
-        nonlocal has_cycle
-        color[nid] = GRAY
-
-        for child in adj.get(nid, []):
-            if child not in color:
-                continue
-
-            if color[child] == GRAY:
-                has_cycle = True
-                return True
-
-            if color[child] == WHITE and _dfs(child):
-                return True
-
-        color[nid] = BLACK
-        return False
-
-    for start in [fw_id] + sorted(sfi_ids):
-        if color.get(start) == WHITE:
-            if _dfs(start):
-                break  # Early exit if cycle is found
-
-    if has_cycle:
-        report.error(
-            code="HAS_CHILD_CYCLE",
-            message="Cycle detected in exported hasChild graph.",
-        )
-    else:
-        report.info(
-            code="HAS_CHILD_NO_CYCLES",
-            message="No cycles in exported hasChild graph.",
         )
 
 
@@ -419,7 +426,10 @@ def _check_progression_invariants(
 
 
 def _check_referential_integrity(
-    *, all_entity_ids: set[str], all_rels: list[Any], report: GraphValidationReport
+    *,
+    all_entity_ids: set[str],
+    all_rels: list[Relationship],
+    report: GraphValidationReport,
 ) -> None:
     """Check for referential integrity across all relationships.
 
@@ -529,7 +539,9 @@ def _check_relationship_endpoint_types(
         )
 
 
-def _check_self_loops(*, all_rels: list[Any], report: GraphValidationReport) -> None:
+def _check_self_loops(
+    *, all_rels: list[Relationship], report: GraphValidationReport
+) -> None:
     """Check for self-loop relationships in the graph.
 
     Parameters
@@ -561,7 +573,7 @@ def _check_self_loops(*, all_rels: list[Any], report: GraphValidationReport) -> 
 
 
 def _check_standards_presence(
-    *, academic_standards: Any, report: GraphValidationReport
+    *, academic_standards: AcademicStandardsExport, report: GraphValidationReport
 ) -> None:
     """Check that at least one expectation SFI exists in the standards.
 
@@ -589,7 +601,10 @@ def _check_standards_presence(
 
 
 def _check_supports_targets_are_standards(
-    *, academic_standards: Any, learning_components: Any, report: GraphValidationReport
+    *,
+    academic_standards: AcademicStandardsExport,
+    learning_components: LearningComponentsExport,
+    report: GraphValidationReport,
 ) -> None:
     """Check that every supports relationship targets a Standard-type SFI.
 
@@ -1031,7 +1046,7 @@ def build_policy_coverage_report(
         doc_key=ctx.doc_key,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         pdf_name=str((ctx.get_framework_metadata() or {}).get("pdf_name") or ""),
-        # Node-level drop accounting
+        # Node-level drop accounting.
         dropped_attach_to_expectation=reason_counter.get(
             "dropped:attach_to_expectation_metadata", 0
         ),
@@ -1041,18 +1056,21 @@ def build_policy_coverage_report(
         dropped_guidance=dropped_guidance,
         dropped_non_grouping_role=dropped_non_grouping_role,
         pruned_empty_groupings=reason_counter.get("dropped:pruned_empty_grouping", 0),
+        # Subtract 1 for the canonical root node, which becomes a StandardsFramework
+        # entity rather than an SFI. This assumes a single root per canonical IR
+        # (framework_scope == "per_pdf").
         total_canonical_nodes=len(ctx.nodes_by_id) - 1,
         total_emitted_sfis=len(academic_standards.items),
-        # Aux reparenting
+        # Aux reparenting.
         aux_reparented_count=reparent_stats.get("aux_reparented_count", 0),
         orphan_aux_count=reparent_stats.get("orphan_aux_count", 0),
-        # LC stats
+        # LC stats.
         lc_max_splits_observed=int(lc_stats.get("max_splits_observed", 0)),
         lc_split_policy=str(lc_stats.get("split_policy", "")),
         lc_splits_distribution=lc_stats.get("splits_distribution", {}),
         total_expectations=int(lc_stats.get("total_expectations", 0)),
         total_lcs=int(lc_stats.get("total_lcs", 0)),
-        # Progression stats
+        # Progression stats.
         progression_candidate_edges=int(
             p_stats.get("candidate_edges_total_after_dedupe", 0)
         ),
@@ -1065,7 +1083,7 @@ def build_policy_coverage_report(
         ),
         progression_kept_builds_towards=int(p_stats.get("builds_kept", 0)),
         progression_kept_relates_to=int(p_stats.get("relates_kept_after_cap", 0)),
-        # Drop details
+        # Drop details.
         drop_details=drop_details,
     )
 
