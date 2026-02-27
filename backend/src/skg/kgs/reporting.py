@@ -83,15 +83,11 @@ def _check_has_child_cycles(
 
     white, gray, black = 0, 1, 2
     color: dict[str, int] = {nid: white for nid in (sfi_ids | {fw_id})}
-    has_cycle = False
 
     for start in [fw_id] + sorted(sfi_ids):
         if color.get(start) != white:
             continue
 
-        # Each stack frame is (node_id, child_iterator). When we first visit a node we
-        # colour it gray and push it with an iterator over its children. When the
-        # iterator is exhausted we colour it black (fully explored).
         stack: list[tuple[str, int]] = [(start, 0)]
         color[start] = gray
 
@@ -99,37 +95,43 @@ def _check_has_child_cycles(
             nid, idx = stack[-1]
             children = adj.get(nid, [])
 
-            if idx < len(children):
-                # Advance the child pointer for the current frame.
-                stack[-1] = (nid, idx + 1)
-                child = children[idx]
-
-                if child not in color:
-                    continue
-
-                if color[child] == gray:
-                    has_cycle = True
-                    break
-
-                if color[child] == white:
-                    color[child] = gray
-                    stack.append((child, 0))
-            else:
-                # All children explored--mark finished.
+            # Flatten logic by handling the exhausted iterator first.
+            if idx >= len(children):
                 color[nid] = black
                 stack.pop()
+                continue
 
-        if has_cycle:
-            break
+            # Advance the child pointer for the current frame.
+            stack[-1] = (nid, idx + 1)
+            child = children[idx]
 
-    if has_cycle:
-        report.error(
-            code="HAS_CHILD_CYCLE", message="Cycle detected in exported hasChild graph."
-        )
-    else:
-        report.info(
-            code="HAS_CHILD_NO_CYCLES", message="No cycles in exported hasChild graph."
-        )
+            # Single lookup handles both 'not in' and value retrieval.
+            child_color = color.get(child)
+
+            if child_color is None:
+                continue
+
+            if child_color == gray:
+                # Cycle detected: Every node currently in the stack is gray by
+                # definition of DFS. Because child is gray, it is guaranteed to be in
+                # the stack.
+                path_nodes = [n for n, _ in stack]
+                cycle_path = path_nodes[path_nodes.index(child) :] + [child]
+
+                report.error(
+                    code="HAS_CHILD_CYCLE",
+                    message=f"Cycle detected in exported hasChild graph: {' -> '.join(cycle_path)}",
+                )
+                return  # Early exit entirely
+
+            if child_color == white:
+                color[child] = gray
+                stack.append((child, 0))
+
+    # If the loops finish naturally, no cycles exist.
+    report.info(
+        code="HAS_CHILD_NO_CYCLES", message="No cycles in exported hasChild graph."
+    )
 
 
 def _check_has_child_single_parent(
@@ -340,13 +342,12 @@ def _check_progression_invariants(
     )
 
     # All progression endpoints must be SFIs.
-    non_sfi_endpoints = 0
-
-    for r in all_prog_rels:
-        src = _rel_src_id(r)
-        tgt = _rel_tgt_id(r)
-        if src not in sfi_ids or tgt not in sfi_ids:
-            non_sfi_endpoints += 1
+    non_sfi_endpoints = sum(
+        map(
+            lambda r: _rel_src_id(r) not in sfi_ids or _rel_tgt_id(r) not in sfi_ids,
+            all_prog_rels,
+        )
+    )
 
     if non_sfi_endpoints:
         report.error(
@@ -426,6 +427,31 @@ def _check_progression_invariants(
     if not duplicate_relates_pairs and not duplicate_relates_ids:
         report.info(
             code="RELATES_TO_NO_DUPLICATES", message="No duplicate relatesTo pairs."
+        )
+
+    # No overlap between buildsTowards and relatesTo pairs. Phase 4 uses
+    # forbidden_builds_pairs to prevent this, but an exclusion bug could silently
+    # produce both relationship types for the same SFI pair. Canonicalize buildsTowards
+    # pairs to undirected form for a fair comparison.
+    builds_pairs_canonical = {canon_str_pair(src, tgt) for src, tgt in builds_pairs}
+    relates_pairs_canonical = set(relates_pairs)
+    overlap = builds_pairs_canonical & relates_pairs_canonical
+
+    if overlap:
+        sample = sorted(overlap)[:5]
+        report.error(
+            code="BUILDS_RELATES_OVERLAP",
+            message=(
+                f"{len(overlap)} SFI pair(s) have both a buildsTowards and a "
+                f"relatesTo relationship. This should not happen — Phase 4 "
+                f"excludes buildsTowards pairs from relatesTo inference. "
+                f"Examples: {sample}"
+            ),
+        )
+    else:
+        report.info(
+            code="BUILDS_RELATES_DISJOINT",
+            message="buildsTowards and relatesTo pairs are fully disjoint.",
         )
 
 
@@ -973,6 +999,14 @@ def build_entity_provenance_export(
 ) -> EntityProvenanceExport:
     """Build a flat entity provenance lookup from all exported entities.
 
+    This export covers *entity* provenance only: StandardsFramework, SFI, and LC nodes.
+    Relationship provenance (e.g., buildsTowards/relatesTo confidence, rationale,
+    phase metadata) is intentionally excluded since it lives on each Relationship's
+    `metadata` dict and in the per-phase provenance artifacts
+    (`learning_progressions_candidate_edges_provenance.json`). Downstream consumers
+    needing relationship-level provenance should consult those artifacts or the graph
+    bundle directly.
+
     Parameters
     ----------
     academic_standards
@@ -1223,6 +1257,7 @@ def log_console_summary(
     total_dropped = (
         policy_report.total_canonical_nodes - policy_report.total_emitted_sfis
     )
+
     if total_dropped > 0:
         logger.info(f"Total dropped (approx): {total_dropped}")
 
@@ -1231,6 +1266,7 @@ def log_console_summary(
             ("segment decision", policy_report.dropped_by_decision_type),
             ("columns_signature", policy_report.dropped_by_columns_signature),
         ]
+
         for label, drop_dict in dict_stats:
             for key, count in sorted(drop_dict.items()):
                 logger.info(f"  - {label} ({key}): {count}")
@@ -1246,15 +1282,16 @@ def log_console_summary(
             ),
             ("pruned empty groupings", policy_report.pruned_empty_groupings),
         ]
-        for label, count in scalar_stats:
-            if count > 0:
-                logger.info(f"  - {label}: {count}")
+
+        for label, count in filter(lambda stat: stat[1] > 0, scalar_stats):
+            logger.info(f"  - {label}: {count}")
 
     # LC stats.
     logger.info(
         f"LCs: {policy_report.total_lcs} from {policy_report.total_expectations} "
         f"expectations (policy: {policy_report.lc_split_policy})"
     )
+
     if policy_report.lc_max_splits_observed > 1:
         logger.info(
             f"  Max splits observed: {policy_report.lc_max_splits_observed} | "
@@ -1269,6 +1306,22 @@ def log_console_summary(
             f"{policy_report.progression_kept_relates_to} relatesTo kept"
         )
 
+        total_dropped = (
+            policy_report.progression_dropped_low_conf_builds
+            + policy_report.progression_dropped_low_conf_relates
+            + policy_report.progression_dropped_cap_relates
+        )
+
+        if total_dropped > 0:
+            logger.info(
+                f"  Dropped: {policy_report.progression_dropped_low_conf_builds} "
+                f"buildsTowards (low conf) + "
+                f"{policy_report.progression_dropped_low_conf_relates} "
+                f"relatesTo (low conf) + "
+                f"{policy_report.progression_dropped_cap_relates} "
+                f"relatesTo (per-SFI cap)"
+            )
+
     # Validation.
     errors = validation_report.errors()
 
@@ -1276,6 +1329,7 @@ def log_console_summary(
         logger.info("Validation: PASSED")
     else:
         logger.error(f"Validation: FAILED ({len(errors)} error(s))")
+
         for issue in errors[:10]:
             logger.error(f"  [{issue.code}] {issue.message}")
 
