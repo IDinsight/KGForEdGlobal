@@ -1299,6 +1299,14 @@ def _infer_within_grade_relates_to(
     max_items = int(config.progressions_within_grade_relates_to_max_items_per_subject)
     max_edges_per_sfi = int(config.progressions_relates_to_max_edges_per_sfi)
 
+    # NB: Phase 3 does NOT exclude forbidden buildsTowards pairs (unlike Phase 4). This
+    # is safe because Phase 1 (within-grade buildsTowards) operates within a single
+    # thread, while Phase 3 operates strictly *cross-subject*. Since threads are
+    # partitioned by subject, the two item sets can never overlap, so a pair that has a
+    # Phase 1 buildsTowards edge cannot appear in a Phase 3 relatesTo prompt. If the
+    # bucketing invariant (threads are subject-disjoint) ever changes, this assumption
+    # should be revisited and a forbidden_builds_pairs parameter added.
+
     # Group threads by grade -> subject.
     grade_subject_threads = _group_threads_by_grade_and_subject(
         by_grade=by_grade, config=config
@@ -2398,7 +2406,14 @@ def _process_builds_towards_work_item(
             target_sfi_uuid=_uuid(e.target_sfi_uuid),
         )
         candidates.append(ce)
-        cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
+
+        # Only record as a forbidden pair for Phase 4 relatesTo exclusion when the edge
+        # meets the confidence threshold. Sub-threshold edges will be dropped during
+        # post-processing, so forbidding their relatesTo counterparts would
+        # unnecessarily suppress valid cross-grade associations.
+        if ce.confidence >= config.progressions_builds_towards_min_confidence:
+            cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
+
         provenance_rows.append(
             _make_provenance_row(
                 candidate=ce,
