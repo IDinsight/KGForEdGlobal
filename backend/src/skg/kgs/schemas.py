@@ -1786,22 +1786,6 @@ class KnowledgeGraphExport(BaseSchema):
         return self
 
 
-class LearningProgressionProvenanceExport(BaseSchema):
-    """Schema for progression provenance export."""
-
-    learning_progressions: list[LearningProgressionProvenance] = Field(
-        default_factory=list, description="List of learning progressions."
-    )
-
-
-class RelationshipProvenanceExport(BaseSchema):
-    """Schema for relationship provenance export."""
-
-    relationships: list[RelationshipProvenance] = Field(
-        default_factory=list, description="List of relationships."
-    )
-
-
 # Schemas for graph validation reporting.
 class GraphValidationIssue(BaseSchema):
     """A single validation finding."""
