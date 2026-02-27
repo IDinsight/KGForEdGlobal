@@ -11,7 +11,7 @@ Phases:
 # Standard Library
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 # Third Party Library
 from loguru import logger
@@ -49,7 +49,9 @@ def _build_has_child_adjacency(all_rels: list[Relationship]) -> dict[str, list[s
 
     for r in all_rels:
         if r.relationship_type == "hasChild":
-            adj.setdefault(r.source_entity_value, []).append(r.target_entity_value)
+            src = _rel_src_id(r)
+            tgt = _rel_tgt_id(r)
+            adj.setdefault(src, []).append(tgt)
 
     return adj
 
@@ -274,7 +276,7 @@ def _check_lc_supports(
 
     for r in learning_components.supports_relationships:
         if r.relationship_type == "supports":
-            src = r.source_entity_value
+            src = _rel_src_id(r)
 
             if src in supports_count_per_lc:
                 supports_count_per_lc[src] += 1
@@ -341,7 +343,9 @@ def _check_progression_invariants(
     non_sfi_endpoints = 0
 
     for r in all_prog_rels:
-        if r.source_entity_value not in sfi_ids or r.target_entity_value not in sfi_ids:
+        src = _rel_src_id(r)
+        tgt = _rel_tgt_id(r)
+        if src not in sfi_ids or tgt not in sfi_ids:
             non_sfi_endpoints += 1
 
     if non_sfi_endpoints:
@@ -361,7 +365,7 @@ def _check_progression_invariants(
     # No duplicate directed buildsTowards pairs (exact (source, target) repeats) and no
     # duplicate relationship identifiers within type.
     builds_pairs = [
-        (r.source_entity_value, r.target_entity_value)
+        (_rel_src_id(r), _rel_tgt_id(r))
         for r in learning_progressions.builds_towards_relationships
     ]
     builds_ids = [
@@ -394,7 +398,7 @@ def _check_progression_invariants(
 
     # No duplicate relatesTo pairs (A, B) and (B, A) after canonicalization.
     relates_pairs = [
-        canon_str_pair(r.source_entity_value, r.target_entity_value)
+        canon_str_pair(_rel_src_id(r), _rel_tgt_id(r))
         for r in learning_progressions.relates_to_relationships
     ]
     relates_ids = [
@@ -446,8 +450,10 @@ def _check_referential_integrity(
     dangling_count = 0
 
     for r in all_rels:
-        source_ok = r.source_entity_value in all_entity_ids
-        target_ok = r.target_entity_value in all_entity_ids
+        src = _rel_src_id(r)
+        tgt = _rel_tgt_id(r)
+        source_ok = src in all_entity_ids
+        target_ok = tgt in all_entity_ids
 
         if not source_ok or not target_ok:
             dangling_count += 1
@@ -457,14 +463,14 @@ def _check_referential_integrity(
                     code="DANGLING_ENDPOINT",
                     context={
                         "relationship_type": r.relationship_type,
-                        "source": r.source_entity_value,
-                        "target": r.target_entity_value,
+                        "source": src,
+                        "target": tgt,
                         "source_ok": source_ok,
                         "target_ok": target_ok,
                     },
                     message=(
                         f"{r.relationship_type} references missing entity: "
-                        f"{r.source_entity_value} -> {r.target_entity_value}"
+                        f"{src} -> {tgt}"
                     ),
                 )
 
@@ -557,7 +563,7 @@ def _check_self_loops(
         for r in all_rels
         if r.source_entity == r.target_entity
         and r.source_entity_key == r.target_entity_key
-        and r.source_entity_value == r.target_entity_value
+        and _rel_src_id(r) == _rel_tgt_id(r)
     ]
 
     if self_loops:
@@ -633,13 +639,12 @@ def _check_supports_targets_are_standards(
 
     for r in learning_components.supports_relationships:
         if r.relationship_type == "supports":
-            if r.target_entity_value not in standard_sfi_ids:
+            tgt = _rel_tgt_id(r)
+            if tgt not in standard_sfi_ids:
                 non_standard_targets += 1
 
                 if len(examples) < 5:
-                    examples.append(
-                        f"{r.source_entity_value} -> {r.target_entity_value}"
-                    )
+                    examples.append(f"{_rel_src_id(r)} -> {tgt}")
 
     if non_standard_targets:
         report.error(
@@ -686,6 +691,106 @@ def _collect_columns_signatures(
                 sigs.add(sig.strip())
 
     return sorted(sigs)
+
+
+def _ensure_int_list(value: Any) -> list[int]:
+    """Coerce a possibly-missing/ill-typed field into a list[int].
+
+    Parameters
+    ----------
+    value
+        The value to coerce, which may be None, a scalar, or a list/tuple/set.
+
+    Returns
+    -------
+    list[int]
+        A list of integers parsed from the input, with non-coercible values ignored.
+    """
+
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        values = value
+    elif isinstance(value, (tuple, set)):
+        values = list(value)
+    else:
+        values = [value]
+
+    out: list[int] = []
+
+    for x in values:
+        if x is None:
+            continue
+        try:
+            out.append(int(x))
+        except Exception:  # pylint: disable=broad-except
+            # Ignore non-coercible values rather than failing reporting.
+            continue
+
+    return out
+
+
+def _ensure_str_list(value: Any) -> list[str]:
+    """Coerce a possibly-missing/ill-typed field into a list[str].
+
+    Parameters
+    ----------
+    value
+        The value to coerce, which may be None, a scalar, or a list/tuple/set.
+
+    Returns
+    -------
+    list[str]
+        A list of strings parsed from the input, with non-string values coerced to
+        strings and None values ignored.
+    """
+
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return [str(x) for x in value if x is not None]
+
+    if isinstance(value, (tuple, set)):
+        return [str(x) for x in value if x is not None]
+
+    # A single scalar (including str).
+    return [str(value)]
+
+
+def _rel_src_id(r: Relationship) -> str:
+    """Return a normalized string ID for the relationship source endpoint.
+
+    Parameters
+    ----------
+    r
+        The relationship whose source ID to extract.
+
+    Returns
+    -------
+    str
+        The source endpoint ID as a string.
+    """
+
+    return str(r.source_entity_value)
+
+
+def _rel_tgt_id(r: Relationship) -> str:
+    """Return a normalized string ID for the relationship target endpoint.
+
+    Parameters
+    ----------
+    r
+        The relationship whose target ID to extract.
+
+    Returns
+    -------
+    str
+        The target endpoint ID as a string.
+    """
+
+    return str(r.target_entity_value)
 
 
 def _validate_has_child(
@@ -894,7 +999,7 @@ def build_entity_provenance_export(
             bbox=None,
             canonical_node_id=str(fw_meta.get("canonical_node_id") or ctx.root_id),
             columns_signatures=[],
-            entity_identifier=fw.case_identifier_uuid,
+            entity_identifier=str(fw.case_identifier_uuid),
             entity_type="StandardsFramework",
             local_code=None,
             page_indices=[],
@@ -907,7 +1012,7 @@ def build_entity_provenance_export(
     # SFIs.
     for sfi in academic_standards.items:
         meta = sfi.metadata or {}
-        decision_ids = meta.get("source_decision_ids", [])
+        decision_ids = _ensure_str_list(meta.get("source_decision_ids"))
 
         # Collect columns_signatures from all source decisions for this node.
         col_sigs = _collect_columns_signatures(ctx=ctx, decision_ids=decision_ids)
@@ -917,13 +1022,13 @@ def build_entity_provenance_export(
                 bbox=meta.get("bbox"),
                 canonical_node_id=str(meta.get("canonical_node_id") or ""),
                 columns_signatures=col_sigs,
-                entity_identifier=sfi.case_identifier_uuid,
+                entity_identifier=str(sfi.case_identifier_uuid),
                 entity_type="StandardsFrameworkItem",
                 local_code=meta.get("local_code"),
-                page_indices=meta.get("page_indices", []),
+                page_indices=_ensure_int_list(meta.get("page_indices")),
                 role=meta.get("role") or "unknown",
                 source_decision_ids=decision_ids,
-                source_segment_ids=meta.get("source_segment_ids", []),
+                source_segment_ids=_ensure_str_list(meta.get("source_segment_ids")),
             )
         )
 
@@ -937,13 +1042,13 @@ def build_entity_provenance_export(
                 bbox=prov.get("bbox"),
                 canonical_node_id=str(meta.get("canonical_node_id") or ""),
                 columns_signatures=[],
-                entity_identifier=lc.identifier,
+                entity_identifier=str(lc.identifier),
                 entity_type="LearningComponent",
                 local_code=None,
-                page_indices=prov.get("page_indices", []),
+                page_indices=_ensure_int_list(prov.get("page_indices")),
                 role="learning_component",
-                source_decision_ids=prov.get("source_decision_ids", []),
-                source_segment_ids=prov.get("source_segment_ids", []),
+                source_decision_ids=_ensure_str_list(prov.get("source_decision_ids")),
+                source_segment_ids=_ensure_str_list(prov.get("source_segment_ids")),
             )
         )
 
@@ -1309,7 +1414,7 @@ def validate_graph(
         "total_lcs": len(lc_ids),
         "total_relationships": len(all_rels),
         "has_child_count": has_child_rels_count,
-        "supports_count": len(learning_components.supports_relationships),
+        "supports_count": sum(1 for r in all_rels if r.relationship_type == "supports"),
         "builds_towards_count": (
             len(learning_progressions.builds_towards_relationships)
             if learning_progressions
