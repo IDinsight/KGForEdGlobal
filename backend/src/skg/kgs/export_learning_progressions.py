@@ -434,9 +434,9 @@ def _build_thread_map(
     Raises
     ------
     ValueError
-        If any bucket is missing a valid thread key, which is required for grouping and
-        inference. The error message includes examples of bucket keys that are missing
-        thread keys to aid in debugging the Academic Standards export data.
+        If any bucket is missing a valid `lp_thread_key`, which is required for
+        grouping buckets for cross-level inference. The error message includes examples
+        of bucket keys that are missing the thread key to aid in debugging.
     """
 
     thread_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
