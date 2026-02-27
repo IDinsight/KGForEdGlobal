@@ -487,9 +487,12 @@ def _build_thread_map(
         # incomplete data.
         thread_map.clear()
         raise ValueError(
-            f"Missing progression_context.thread_key in "
-            f"{missing_thread_key} bucket(s). Re-export Academic Standards so each "
-            f"SFI has metadata.progression_context.thread_key. "
+            f"Missing or empty lp_thread_key in {missing_thread_key} bucket(s). "
+            f"lp_thread_key is required to group buckets for cross-level inference and is "
+            f"computed during bucketing (see _process_single_standard / "
+            f"group_standards_for_learning_progressions). "
+            f"If you're seeing this, the bucket objects were likely constructed without that "
+            f"bucketing step or were mutated. "
             f"Examples: {missing_thread_key_examples}"
         )
 
