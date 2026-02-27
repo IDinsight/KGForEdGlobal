@@ -405,6 +405,41 @@ def _build_item_payload(
     return payload
 
 
+def _build_order_index_lookup(
+    academic_standards: AcademicStandardsExport,
+) -> dict[str, int]:
+    """Build a lookup mapping SFI UUIDs to their `order_index_within_parent`.
+
+    The lookup includes **all** SFIs (groupings *and* leaf standards) so that ancestor
+    order indices can be resolved when computing numeric order paths.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported Academic Standards KG artifacts, containing the full set of
+        StandardsFrameworkItem entities (both groupings and standards).
+
+    Returns
+    -------
+    dict[str, int]
+        A dictionary mapping SFI UUID strings to their `order_index_within_parent`
+        values. UUIDs without a valid integer order index are omitted.
+    """
+
+    lookup: dict[str, int] = {}
+
+    for sfi in academic_standards.items:
+        meta = sfi.metadata or {}
+        pc = meta.get("progression_context") or {}
+        oi = pc.get("order_index_within_parent")
+        uuid_str = str(sfi.case_identifier_uuid or sfi.identifier)
+
+        if isinstance(oi, int):
+            lookup[uuid_str] = oi
+
+    return lookup
+
+
 def _build_thread_map(
     by_grade: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -904,13 +939,18 @@ def _format_learning_progressions_dict(
         grade_buckets: list[dict[str, Any]] = []
 
         for tkey, b in per_thread.items():
-            # Sort items by canon_order_path (document position) to preserve the
-            # intended pedagogical sequence across all weeks/substages within a strand,
-            # with _sort_key_for_bucket_sfi as a tiebreaker.
+            # Sort items by numeric_order_path (document position resolved to integer
+            # order indices) to preserve the intended pedagogical sequence across all
+            # weeks/substages within a strand, with _sort_key_for_bucket_sfi as a
+            # tiebreaker.
+            #
+            # The numeric_order_path resolves each UUID to its
+            # order_index_within_parent, so siblings are correctly ordered by their
+            # position within their parent.
             b["items"] = sorted(
                 b["items"],
                 key=lambda s: (
-                    s.get("canon_order_path") or [],
+                    s.get("numeric_order_path") or [],
                     _sort_key_for_bucket_sfi(s),
                 ),
             )
@@ -2069,6 +2109,7 @@ def _process_single_standard(
     config: CreateKGConfig,
     drops: dict[str, list[dict[str, Any]]],
     include_provenance: bool,
+    order_index_lookup: dict[str, int],
     sfi: StandardsFrameworkItem,
 ) -> None:
     """Process a single standard item and sort it into buckets or drops.
@@ -2106,6 +2147,10 @@ def _process_single_standard(
     include_provenance
         Whether to include provenance information (e.g., page index) in the payload for
         LLM inference.
+    order_index_lookup
+        A mapping from SFI UUID strings to their `order_index_within_parent` values,
+        used to convert UUID-based `canon_order_path` into a numeric order path for
+        correct document-order sorting.
     sfi
         The standard item to process.
     """
@@ -2275,6 +2320,13 @@ def _process_single_standard(
         "statement_code": sfi.statement_code,
         "statement_type": sfi.statement_type,
         "canon_order_path": progression_context.get("canon_order_path", []),
+        # Numeric order path: resolves each UUID in canon_order_path to its
+        # order_index_within_parent, giving a list of ints that sorts siblings by true
+        # document position rather than by UUID string.
+        "numeric_order_path": _resolve_numeric_order_path(
+            canon_order_path=progression_context.get("canon_order_path", []),
+            order_index_lookup=order_index_lookup,
+        ),
         # Item-level topic context (do NOT rely on bucket-level topic_path for
         # provenance).
         "topic_path_key": topic_key,
@@ -2681,6 +2733,35 @@ def _resolve_forbidden_pairs(
     ]
 
     return forbidden_pairs_set, forbidden_pairs_list
+
+
+def _resolve_numeric_order_path(
+    *, canon_order_path: list[Any], order_index_lookup: dict[str, int]
+) -> list[int]:
+    """Convert a UUID-based `canon_order_path` into a numeric order path.
+
+    Each UUID in the path is resolved to its `order_index_within_parent` via the
+    lookup. UUIDs not found in the lookup (e.g., the framework root node) default to 0.
+
+    The resulting list preserves tree depth ordering: two sibling items under the same
+    parent will share the full prefix and differ only at the last element (their own
+    `order_index_within_parent`), giving correct document-order sorting.
+
+    Parameters
+    ----------
+    canon_order_path
+        A list of UUID strings representing the path from the hierarchy root (or
+        near-root) to the leaf node.
+    order_index_lookup
+        A mapping from UUID strings to integer order indices.
+
+    Returns
+    -------
+    list[int]
+        A list of integer order indices, one per UUID in `canon_order_path`.
+    """
+
+    return [order_index_lookup.get(str(u).strip(), 0) for u in (canon_order_path or [])]
 
 
 def _sample_items_across_threads(
@@ -3132,12 +3213,18 @@ def group_standards_for_learning_progressions(
         "unmapped_grade_key": [],
     }
 
+    # Build a lookup from UUID -> order_index_within_parent for *all* SFIs (including
+    # groupings). This is needed to convert UUID-based canon_order_path values into
+    # numeric order paths for correct document-order sorting within buckets.
+    order_index_lookup = _build_order_index_lookup(academic_standards)
+
     for sfi in academic_standards.items:
         _process_single_standard(
             buckets=buckets,
             config=config,
             drops=drops,
             include_provenance=include_provenance,
+            order_index_lookup=order_index_lookup,
             sfi=sfi,
         )
 
