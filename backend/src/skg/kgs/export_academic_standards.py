@@ -68,6 +68,224 @@ class AcademicStandardsExport:
     reparent_stats: dict[str, Any]  # aux_reparented_count, orphan_aux_count, etc.
 
 
+def _attach_aux_statements_in_export_tree(
+    *,
+    attached_aux_node_ids: set[str],
+    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    emit_flag: dict[str, bool],
+    export_children: dict[str, list[str]],
+    orphan_aux_node_ids: set[str],
+) -> dict[str, Any]:
+    """Attach aux statements to expectation metadata without reparenting.
+
+    This is an "attach-only" discovery pass used when the canonical IR keeps
+    descriptors/guidance as siblings (or children) of expectations, but the export
+    config requests attaching those aux statements into the owning expectation's
+    metadata via `attach_to_expectation_metadata`.
+
+    The pass:
+
+    1. **Child layout**: For every emitted expectation node, attach any emitted
+        guidance/descriptor children found under that expectation in `export_children`.
+    2. **Sibling layout**: For every non-statement parent node, walk its ordered
+        children and attach any aux siblings to the most recent preceding expectation
+        sibling.
+
+    The hierarchy (`export_children`) is not modified. Which aux nodes are ultimately
+    emitted as SFIs is controlled by `_process_attach_to_expectation` (based on which
+    aux nodes were successfully attached).
+
+    Parameters
+    ----------
+    aux_attach_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
+    attached_aux_node_ids
+        Mutable set collecting canonical node IDs that were successfully attached to an
+        expectation's metadata.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    emit_flag
+        Node-level emit flags (used to ignore already-dropped nodes).
+    export_children
+        Parent-to-children mapping for export.
+    orphan_aux_node_ids
+        Mutable set collecting aux nodes that had no owning expectation in sibling
+        order.
+
+    Returns
+    -------
+    dict[str, Any]
+        Stats about attachments performed in this pass.
+    """
+
+    child_attached = _attach_child_layout_aux_nodes(
+        attached_aux_node_ids=attached_aux_node_ids,
+        aux_attach_to_expectation=aux_attach_to_expectation,
+        config=config,
+        ctx=ctx,
+        emit_flag=emit_flag,
+        export_children=export_children,
+    )
+
+    sibling_attached, sibling_orphans = _attach_sibling_layout_aux_nodes(
+        attached_aux_node_ids=attached_aux_node_ids,
+        aux_attach_to_expectation=aux_attach_to_expectation,
+        config=config,
+        ctx=ctx,
+        emit_flag=emit_flag,
+        export_children=export_children,
+        orphan_aux_node_ids=orphan_aux_node_ids,
+    )
+
+    return {
+        "attach_only_attached_count": child_attached + sibling_attached,
+        "attach_only_orphan_aux_count": sibling_orphans,
+    }
+
+
+def _attach_child_layout_aux_nodes(
+    *,
+    attached_aux_node_ids: set[str],
+    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    emit_flag: dict[str, bool],
+    export_children: dict[str, list[str]],
+) -> int:
+    """Processes child layout, attaching emitted guidance/descriptors to their parent
+    expectation.
+
+    Parameters
+    ----------
+    attached_aux_node_ids
+        Mutable set collecting canonical node IDs successfully attached.
+    aux_attach_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    emit_flag
+        Node-level emit flags (used to ignore already-dropped nodes).
+    export_children
+        Parent-to-children mapping for export.
+
+    Returns
+    -------
+    int
+        The number of auxiliary nodes successfully attached in this pass.
+    """
+
+    prefer_en = config.description_text_policy == "prefer_text_en"
+    attached_count = 0
+
+    for exp_id, node in ctx.nodes_by_id.items():
+        if not emit_flag.get(exp_id, False):
+            continue
+
+        if str(node.get("role") or "") != StatementRole.EXPECTATION.value:
+            continue
+
+        for child_id in export_children.get(exp_id, []):
+            if not emit_flag.get(child_id, False):
+                continue
+
+            child_role = str(ctx.nodes_by_id.get(child_id, {}).get("role") or "")
+
+            if child_role not in AUX_ROLES or not _is_attachable(
+                config=config, role=child_role
+            ):
+                continue
+
+            if child_id not in attached_aux_node_ids:
+                attached_aux_node_ids.add(child_id)
+
+            if _is_already_attached(
+                aux_attach_to_expectation=aux_attach_to_expectation,
+                aux_node_id=child_id,
+                expectation_id=exp_id,
+            ):
+                continue
+
+            aux_attach_to_expectation[exp_id].append(
+                _build_aux_payload(aux_node_id=child_id, ctx=ctx, prefer_en=prefer_en)
+            )
+            attached_count += 1
+
+    return attached_count
+
+
+def _attach_sibling_layout_aux_nodes(
+    *,
+    attached_aux_node_ids: set[str],
+    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    emit_flag: dict[str, bool],
+    export_children: dict[str, list[str]],
+    orphan_aux_node_ids: set[str],
+) -> tuple[int, int]:
+    """Processes sibling layout, attaching auxiliary nodes to the most recent preceding
+    expectation.
+
+    Parameters
+    ----------
+    attached_aux_node_ids
+        Mutable set collecting canonical node IDs successfully attached.
+    aux_attach_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    emit_flag
+        Node-level emit flags (used to ignore already-dropped nodes).
+    export_children
+        Parent-to-children mapping for export.
+    orphan_aux_node_ids
+        Mutable set collecting aux nodes that had no owning expectation in sibling
+        order.
+
+    Returns
+    -------
+    tuple[int, int]
+        A tuple of (attached_count, sibling_orphans_count) recorded during this pass.
+    """
+
+    prefer_en = config.description_text_policy == "prefer_text_en"
+    total_attached = 0
+    total_orphans = 0
+
+    for parent_id, kids in export_children.items():
+        if parent_id == ctx.root_id:
+            parent_role = NodeRole.FRAMEWORK.value
+        else:
+            parent_role = str((ctx.nodes_by_id.get(parent_id) or {}).get("role") or "")
+
+        if parent_role in STATEMENT_ROLE_VALUES:
+            continue
+
+        attached, orphans = _process_sibling_group(
+            attached_aux_node_ids=attached_aux_node_ids,
+            aux_attach_to_expectation=aux_attach_to_expectation,
+            config=config,
+            ctx=ctx,
+            emit_flag=emit_flag,
+            kids=kids,
+            orphan_aux_node_ids=orphan_aux_node_ids,
+            prefer_en=prefer_en,
+        )
+
+        total_attached += attached
+        total_orphans += orphans
+
+    return total_attached, total_orphans
+
+
 def _build_academic_standards_graph_bundle(
     *,
     academic_standards: AcademicStandardsExport,
@@ -139,7 +357,7 @@ def _build_academic_standards_graph_bundle(
         relationships.append(
             {
                 "id": str(r.identifier),
-                "type": "hasChild",
+                "type": r.relationship_type,
                 "start": start_id,
                 "end": end_id,
                 "properties": props,
@@ -154,6 +372,46 @@ def _build_academic_standards_graph_bundle(
         "nodes": nodes,
         "relationships": relationships,
     }
+
+
+def _build_aux_payload(
+    *, aux_node_id: str, ctx: ExportContext, prefer_en: bool
+) -> dict[str, Any]:
+    """Builds the metadata payload dictionary for an auxiliary node.
+
+    Parameters
+    ----------
+    aux_node_id
+        The ID of the auxiliary node.
+    ctx
+        The ExportContext containing the nodes.
+    prefer_en
+        Whether to prefer English text.
+
+    Returns
+    -------
+    dict[str, Any]
+        The payload representing the auxiliary node metadata.
+    """
+
+    node = ctx.nodes_by_id[aux_node_id]
+    role = str(node.get("role") or "")
+    bbox = node.get("bbox")
+
+    payload: dict[str, Any] = {
+        "role": role,
+        "text": node_display_text(node=node, prefer_text_en=prefer_en),
+        "canonical_node_id": aux_node_id,
+        "page_indices": node.get("page_indices", []),
+        "source_decision_ids": node.get("source_decision_ids", []),
+        "source_segment_ids": node.get("source_segment_ids", []),
+        "bbox": bbox,
+    }
+
+    if bbox is not None:
+        payload["bbox_ref"] = "framework.metadata.provenance_context.bbox"
+
+    return payload
 
 
 def _build_initial_emit_flags(
@@ -392,6 +650,7 @@ def _compute_export_children(
     reparented_count = 0
     orphan_aux_count = 0
     orphan_aux_node_ids: set[str] = set()
+    attached_aux_node_ids: set[str] = set()
 
     for parent_id, kids in ctx.children_by_parent.items():
         if parent_id == ctx.root_id:
@@ -413,6 +672,7 @@ def _compute_export_children(
 
             new_kids, child_aux_consumed = _reparent_aux_under_expectations(
                 aux_attach_to_expectation=aux_attach_to_expectation,
+                attached_aux_node_ids=attached_aux_node_ids,
                 config=config,
                 ctx=ctx,
                 emit_flag=emit_flag,
@@ -452,6 +712,7 @@ def _compute_export_children(
             "aux_reparented_count": reparented_count,
             "orphan_aux_count": orphan_aux_count,
             "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
+            "attached_aux_node_ids": sorted(attached_aux_node_ids),
         },
     )
 
@@ -984,6 +1245,60 @@ def _handle_empty_grouping_pruning(
     return pruned_node_ids
 
 
+def _is_already_attached(
+    *,
+    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_node_id: str,
+    expectation_id: str,
+) -> bool:
+    """Checks if an auxiliary node is already attached to an expectation.
+
+    Parameters
+    ----------
+    aux_attach_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
+    aux_node_id
+        The canonical node ID of the auxiliary node.
+    expectation_id
+        The ID of the expectation node.
+
+    Returns
+    -------
+    bool
+        True if the auxiliary node is already attached, False otherwise.
+    """
+
+    return any(
+        p.get("canonical_node_id") == aux_node_id
+        for p in aux_attach_to_expectation.get(expectation_id, [])
+    )
+
+
+def _is_attachable(*, config: CreateKGConfig, role: str) -> bool:
+    """Determines whether a statement role is configured to be attached.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig containing handling policies.
+    role
+        The statement role to check.
+
+    Returns
+    -------
+    bool
+        True if the role should be attached to metadata, False otherwise.
+    """
+
+    return (
+        role == StatementRole.GUIDANCE.value
+        and config.guidance_handling == "attach_to_expectation_metadata"
+    ) or (
+        role == StatementRole.DESCRIPTOR.value
+        and config.descriptor_handling == "attach_to_expectation_metadata"
+    )
+
+
 def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     """Determine if a role is a grouping role (not expectation/aux).
 
@@ -1215,6 +1530,9 @@ def _process_attach_to_expectation(
     If aux statements are "attach_to_expectation_metadata", they should NOT be counted
     as emitted nodes for pruning.
 
+    Only aux statements that were successfully attached to an owning expectation are
+    suppressed; orphan aux statements remain emitted (and are tagged as orphan_aux).
+
     Parameters
     ----------
     config
@@ -1231,12 +1549,19 @@ def _process_attach_to_expectation(
 
     attach_to_exp_count = 0
 
+    # Only suppress aux nodes that were actually attached to an expectation's metadata.
+    # This avoids silently deleting "orphan" aux statements that had no owning
+    # expectation (those remain as SFIs and are tagged via orphan_aux metadata).
+    attached_aux_node_ids: set[str] = set(
+        reparent_stats.get("attached_aux_node_ids") or []
+    )
+
     if (
         config.guidance_handling == "attach_to_expectation_metadata"
         or config.descriptor_handling == "attach_to_expectation_metadata"
     ):
-        for nid, ok in list(emit_flag.items()):
-            if not ok:
+        for nid in attached_aux_node_ids:
+            if not emit_flag.get(nid, False):
                 continue
 
             role = str(ctx.nodes_by_id[nid].get("role") or "")
@@ -1257,6 +1582,93 @@ def _process_attach_to_expectation(
                 attach_to_exp_count += 1
 
     reparent_stats["attach_to_expectation_count"] = attach_to_exp_count
+
+
+def _process_sibling_group(
+    *,
+    attached_aux_node_ids: set[str],
+    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    emit_flag: dict[str, bool],
+    kids: list[str],
+    orphan_aux_node_ids: set[str],
+    prefer_en: bool,
+) -> tuple[int, int]:
+    """Processes a single group of sibling nodes, attaching aux nodes to expectations.
+
+    Parameters
+    ----------
+    attached_aux_node_ids
+        Mutable set collecting canonical node IDs successfully attached.
+    aux_attach_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    emit_flag
+        Node-level emit flags.
+    kids
+        The list of child node IDs to process in sibling order.
+    orphan_aux_node_ids
+        Mutable set collecting aux nodes that had no owning expectation.
+    prefer_en
+        Whether to prefer English text for payloads.
+
+    Returns
+    -------
+    tuple[int, int]
+        A tuple of (attached_count, orphan_count) for this specific group.
+    """
+
+    attached_count = 0
+    orphan_count = 0
+    last_expectation: Optional[str] = None
+
+    for cid in kids:
+        if not emit_flag.get(cid, False):
+            continue
+
+        role = str((ctx.nodes_by_id.get(cid) or {}).get("role") or "")
+
+        if role == StatementRole.EXPECTATION.value:
+            last_expectation = cid
+            continue
+
+        if role not in AUX_ROLES:
+            continue
+
+        # Guard: If no expectation precedes this aux node, it is an orphan.
+        if not last_expectation:
+            if cid not in orphan_aux_node_ids:
+                orphan_aux_node_ids.add(cid)
+                orphan_count += 1
+
+            continue
+
+        # Guard: Check if the role is configured to be attachable.
+        if not _is_attachable(config=config, role=role):
+            continue
+
+        if cid not in attached_aux_node_ids:
+            attached_aux_node_ids.add(cid)
+
+        # Guard: Skip if it's already attached to prevent duplicates.
+        if _is_already_attached(
+            aux_attach_to_expectation=aux_attach_to_expectation,
+            aux_node_id=cid,
+            expectation_id=last_expectation,
+        ):
+            continue
+
+        # If all guards pass, attach the payload.
+        aux_attach_to_expectation[last_expectation].append(
+            _build_aux_payload(aux_node_id=cid, ctx=ctx, prefer_en=prefer_en)
+        )
+        attached_count += 1
+
+    return attached_count, orphan_count
 
 
 def _prune_empty_groupings(
@@ -1461,6 +1873,7 @@ def _reattach_children_of_dropped_nodes(
 def _reparent_aux_under_expectations(
     *,
     aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    attached_aux_node_ids: set[str],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -1553,6 +1966,7 @@ def _reparent_aux_under_expectations(
                 aux_payload["bbox_ref"] = "framework.metadata.provenance_context.bbox"
 
             aux_attach_to_expectation[target_expectation_id].append(aux_payload)
+            attached_aux_node_ids.add(aux_node_id)
         else:
             export_children.setdefault(target_expectation_id, [])
             export_children[target_expectation_id].append(aux_node_id)
@@ -1822,16 +2236,19 @@ def export_academic_standards(
     1. Emit the framework node.
     2. Precompute node-level emit flags based on drop policies.
     3. Compute export-time aux parenting based on preceding expectation siblings.
-    4. Handle attach-to-expectation rules for guidance/descriptors, modifying emit
+    4. Attach-only discovery pass: when aux nodes remain as siblings (or children) but
+        export config requests attaching them to expectation metadata, discover and
+        attach without modifying hierarchy.
+    5. Handle attach-to-expectation rules for guidance/descriptors, modifying emit
         flags accordingly.
-    5. Re-attach children of dropped mid-hierarchy nodes to their nearest surviving
+    6. Re-attach children of dropped mid-hierarchy nodes to their nearest surviving
         ancestor, ensuring tree connectivity before pruning.
-    6. Prune empty groupings iteratively, modifying emit flags accordingly.
-    7. Emit StandardsFrameworkItems for all nodes still flagged for emission.
-    8. Build hasChild relationships and hierarchy order mappings.
-    9. Sort items and relationships for stable output.
-    10. Package everything into an AcademicStandardsExport dataclass.
-    11. Write JSON artifacts to disk.
+    7. Prune empty groupings iteratively, modifying emit flags accordingly.
+    8. Emit StandardsFrameworkItems for all nodes still flagged for emission.
+    9. Build hasChild relationships and hierarchy order mappings.
+    10. Sort items and relationships for stable output.
+    11. Package everything into an AcademicStandardsExport dataclass.
+    12. Write JSON artifacts to disk.
 
     Parameters
     ----------
@@ -1875,6 +2292,29 @@ def export_academic_standards(
     )
 
     # 4.
+    if (
+        config.guidance_handling == "attach_to_expectation_metadata"
+        or config.descriptor_handling == "attach_to_expectation_metadata"
+    ):
+        attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids") or [])
+        orphan_aux_node_ids = set(reparent_stats.get("orphan_aux_node_ids") or [])
+
+        attach_only_stats = _attach_aux_statements_in_export_tree(
+            attached_aux_node_ids=attached_aux_node_ids,
+            aux_attach_to_expectation=aux_attach_to_expectation,
+            config=config,
+            ctx=ctx,
+            emit_flag=emit_flag,
+            export_children=export_children,
+            orphan_aux_node_ids=orphan_aux_node_ids,
+        )
+
+        reparent_stats.update(attach_only_stats)
+        reparent_stats["attached_aux_node_ids"] = sorted(attached_aux_node_ids)
+        reparent_stats["orphan_aux_node_ids"] = sorted(orphan_aux_node_ids)
+        reparent_stats["orphan_aux_count"] = len(orphan_aux_node_ids)
+
+    # 5.
     _process_attach_to_expectation(
         config=config,
         ctx=ctx,
@@ -1883,7 +2323,7 @@ def export_academic_standards(
         reparent_stats=reparent_stats,
     )
 
-    # 5.
+    # 6.
     reattach_stats = _reattach_children_of_dropped_nodes(
         ctx=ctx,
         emit_flag=emit_flag,
@@ -1891,7 +2331,7 @@ def export_academic_standards(
     )
     reparent_stats.update(reattach_stats)
 
-    # 6.
+    # 7.
     pruned_node_ids = _handle_empty_grouping_pruning(
         config=config,
         ctx=ctx,
@@ -1900,7 +2340,7 @@ def export_academic_standards(
         export_children=export_children,
     )
 
-    # 7.
+    # 8.
     sfi_by_node = _emit_sfis(
         aux_attach_to_expectation=aux_attach_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
@@ -1910,7 +2350,7 @@ def export_academic_standards(
         orphan_aux_node_ids=set(reparent_stats.get("orphan_aux_node_ids") or []),
     )
 
-    # 8.
+    # 9.
     relationships, order_map = _build_relationships_and_order(
         config=config,
         ctx=ctx,
@@ -1925,7 +2365,7 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
-    # 9.
+    # 10.
     items_sorted = sorted(
         sfi_by_node.values(), key=lambda sfi: str(sfi.case_identifier_uuid)
     )
@@ -1942,7 +2382,7 @@ def export_academic_standards(
         framework_uuid=framework_uuid, order_map=order_map
     )
 
-    # 10.
+    # 11.
     academic_standards = AcademicStandardsExport(
         drop_reasons=drop_reasons,
         framework=framework,
@@ -1953,7 +2393,7 @@ def export_academic_standards(
         reparent_stats=reparent_stats,
     )
 
-    # 11.
+    # 12.
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_framework.json",
         json_info=academic_standards.framework.model_dump(mode="json"),
