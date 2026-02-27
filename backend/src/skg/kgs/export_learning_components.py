@@ -204,85 +204,125 @@ def _build_learning_components_graph_bundle(
     }
 
 
-def _create_fallback_lc_1_to_1(
+def _build_provenance_from_sfi(md: dict[str, Any]) -> dict[str, Any]:
+    """Extract the standard provenance dict from SFI metadata.
+
+    Parameters
+    ----------
+    md
+        The SFI metadata dictionary (`sfi.metadata or {}`).
+
+    Returns
+    -------
+    dict[str, Any]
+        A provenance dictionary with page_indices, bbox, bbox_ref, source_decision_ids,
+        and source_segment_ids.
+    """
+
+    return {
+        "page_indices": md.get("page_indices", []),
+        "bbox": md.get("bbox"),
+        "bbox_ref": md.get("bbox_ref"),
+        "source_decision_ids": md.get("source_decision_ids", []),
+        "source_segment_ids": md.get("source_segment_ids", []),
+    }
+
+
+def _build_single_lc(
     *,
     config: CreateKGConfig,
+    description: str,
     doc_key: str,
+    extra_metadata: dict[str, Any] | None = None,
     fw_metadata: dict[str, Any],
+    id_source_kind: str,
+    policy: str,
+    provenance: dict[str, Any],
     sfi: StandardsFrameworkItem,
-) -> list[LearningComponent]:
-    """Create a single LC for the expectation SFI (1_to_1).
+    split_display_text: str,
+    split_hash: str,
+    split_id_text: str,
+    split_index: int,
+    truncated: bool,
+) -> LearningComponent:
+    """Construct a single LearningComponent with deterministic ID.
+
+    This is the single source of truth for LC entity construction. All policy paths
+    (`1_to_1`, `split_bullets`, `llm_atomic_skills`) delegate here so that the metadata
+    contract and UUID-seed format are maintained in one place.
 
     Parameters
     ----------
     config
-        The KG export configuration, used to determine ID namespace.
+        KG export configuration (namespace_uuid).
+    description
+        Human-facing LC description text.
     doc_key
-        The document key for this export, used in ID generation.
+        Document key for UUID-seed construction.
+    extra_metadata
+        Optional additional metadata entries (e.g. `llm_rationale`, `llm_model`) merged
+        into the LC metadata dict.
     fw_metadata
-        The standards framework metadata, used for populating LC provenance and
-        attribution.
+        Standards framework metadata for attribution fields.
+    id_source_kind
+        Label describing the provenance of the text used for ID generation.
+    policy
+        The split policy label embedded in the UUID seed and metadata.
+    provenance
+        Provenance dict.
     sfi
-        The StandardsFrameworkItem representing the expectation for which to create the
-        fallback LC. The LC will be created with a description derived from the SFI
-        description or normalized_text, and an ID generated based on the SFI UUID and
-        the text hash to ensure stability.
+        The parent StandardsFrameworkItem.
+    split_display_text
+        The display-oriented text stored in metadata for traceability.
+    split_hash
+        Stable text hash of the canonical ID text for this split.
+    split_id_text
+        The canonical text used for ID generation.
+    split_index
+        Zero-based index of this split within the parent SFI.
+    truncated
+        Whether the split list was truncated to `lc_max_splits_per_standard`.
 
     Returns
     -------
-    list[LearningComponent]
-        A list containing a single LearningComponent entity created for the given
-        expectation SFI, with a deterministic UUID based on the doc_key, SFI UUID, and
-        text hash. The LC description will be derived from the SFI description or
-        normalized_text, and metadata will indicate that this LC was created as a
-        fallback with the 1_to_1 policy.
+    LearningComponent
+        A fully constructed LearningComponent entity.
     """
 
-    md = sfi.metadata or {}
-    display_text = normalize_ws(sfi.description or "")
-    id_source_text = normalize_ws(str(md.get("normalized_text") or "")) or display_text
-
-    if not (id_source_text or display_text):
-        return []
-
     ns: UUID = config.namespace_uuid
-    split_hash = stable_text_hash(s=id_source_text or display_text)
 
-    return [
-        LearningComponent(
-            academic_subject=str(
-                sfi.academic_subject or fw_metadata["academic_subject_default"]
-            ),
-            attribution_statement=str(fw_metadata["attribution_statement"]),
-            author=str(fw_metadata["author"]),
-            description=display_text or id_source_text,
-            identifier=uuid5(
-                ns,
-                f"lc:curriculum:{doc_key}:lc:1_to_1:{sfi.case_identifier_uuid}:0:{split_hash}",
-            ),
-            in_language=str(sfi.in_language or fw_metadata["in_language"]),
-            license=str(fw_metadata["license"]),
-            metadata={
-                "id_source_kind": "fallback_1_to_1",
-                "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
-                "canonical_node_id": md.get("canonical_node_id"),
-                "split_policy": "1_to_1",
-                "split_id_text": id_source_text or display_text,
-                "split_display_text": display_text or id_source_text,
-                "split_index": 0,
-                "split_hash": split_hash,
-                "split_truncated": False,
-                "provenance": {
-                    "page_indices": md.get("page_indices", []),
-                    "bbox": md.get("bbox"),
-                    "bbox_ref": md.get("bbox_ref"),
-                    "source_decision_ids": md.get("source_decision_ids", []),
-                    "source_segment_ids": md.get("source_segment_ids", []),
-                },
-            },
-            provider=str(fw_metadata["provider"]),
-        )
-    ]
+    md: dict[str, Any] = {
+        "id_source_kind": id_source_kind,
+        "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
+        "canonical_node_id": (sfi.metadata or {}).get("canonical_node_id"),
+        "split_policy": policy,
+        "split_id_text": split_id_text,
+        "split_display_text": split_display_text,
+        "split_index": split_index,
+        "split_hash": split_hash,
+        "split_truncated": truncated,
+        "provenance": provenance,
+    }
+
+    if extra_metadata:
+        md.update(extra_metadata)
+
+    return LearningComponent(
+        academic_subject=str(
+            sfi.academic_subject or fw_metadata["academic_subject_default"]
+        ),
+        attribution_statement=str(fw_metadata["attribution_statement"]),
+        author=str(fw_metadata["author"]),
+        description=description,
+        identifier=uuid5(
+            ns,
+            f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{split_index}:{split_hash}",
+        ),
+        in_language=str(sfi.in_language or fw_metadata["in_language"]),
+        license=str(fw_metadata["license"]),
+        metadata=md,
+        provider=str(fw_metadata["provider"]),
+    )
 
 
 def _create_lcs_for_expectation(
@@ -290,6 +330,8 @@ def _create_lcs_for_expectation(
     config: CreateKGConfig,
     doc_key: str,
     fw_metadata: dict[str, Any],
+    id_source_kind_override: str | None = None,
+    policy_override: str | None = None,
     sfi: StandardsFrameworkItem,
 ) -> list[LearningComponent]:
     """Create LearningComponents for a single expectation SFI according to policy.
@@ -304,6 +346,11 @@ def _create_lcs_for_expectation(
     fw_metadata
         The standards framework metadata, used for populating LC provenance and
         attribution.
+    id_source_kind_override
+        If provided, overrides the auto-detected `id_source_kind` label.
+    policy_override
+        If provided, overrides `config.learning_component_policy` for both the UUID
+        seed and the metadata label.
     sfi
         The StandardsFrameworkItem representing the expectation for which to create LCs.
 
@@ -316,7 +363,7 @@ def _create_lcs_for_expectation(
         across runs.
     """
 
-    policy = config.learning_component_policy
+    policy = policy_override or config.learning_component_policy
 
     # Display text (human-facing): use SFI.description as exported by academic
     # standards.
@@ -333,14 +380,15 @@ def _create_lcs_for_expectation(
         id_source_text = display_text
         id_source_kind = "sfi.description_fallback"
 
+    if id_source_kind_override:
+        id_source_kind = id_source_kind_override
+
     # Build ID parts (used for hashing + UUIDv5 name strings).
     id_parts: list[str]
 
     if policy == "split_bullets":
         id_parts = _split_bullets_deterministic(text=id_source_text)
-
-        if not id_parts:
-            id_parts = [id_source_text]
+        id_parts = id_parts or [id_source_text]
     else:
         id_parts = [id_source_text]
 
@@ -391,45 +439,26 @@ def _create_lcs_for_expectation(
         else [(p, p) for p in id_parts]
     )
 
+    provenance = _build_provenance_from_sfi(metadata)
     lcs: list[LearningComponent] = []
-    ns: UUID = config.namespace_uuid
 
     for i, (id_part, display_part) in enumerate(paired_parts):
-        # NB: split_hash (and thus lc_id) must be derived from canonical ID text.
         split_hash = stable_text_hash(s=id_part)
         lcs.append(
-            LearningComponent(
-                academic_subject=str(
-                    sfi.academic_subject or fw_metadata["academic_subject_default"]
-                ),
-                attribution_statement=str(fw_metadata["attribution_statement"]),
-                author=str(fw_metadata["author"]),
-                description=display_part,  # Human-facing description can be display-derived, but IDs are not
-                identifier=uuid5(
-                    ns,
-                    f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{i}:{split_hash}",
-                ),
-                in_language=str(sfi.in_language or fw_metadata["in_language"]),
-                license=str(fw_metadata["license"]),
-                metadata={
-                    "id_source_kind": id_source_kind,
-                    "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
-                    "canonical_node_id": metadata.get("canonical_node_id"),
-                    "split_policy": policy,
-                    "split_id_text": id_part,
-                    "split_display_text": display_part,
-                    "split_index": i,
-                    "split_hash": split_hash,
-                    "split_truncated": truncated,
-                    "provenance": {
-                        "page_indices": metadata.get("page_indices", []),
-                        "bbox": metadata.get("bbox"),
-                        "bbox_ref": metadata.get("bbox_ref"),
-                        "source_decision_ids": metadata.get("source_decision_ids", []),
-                        "source_segment_ids": metadata.get("source_segment_ids", []),
-                    },
-                },
-                provider=str(fw_metadata["provider"]),
+            _build_single_lc(
+                config=config,
+                description=display_part,
+                doc_key=doc_key,
+                fw_metadata=fw_metadata,
+                id_source_kind=id_source_kind,
+                policy=policy,
+                provenance=provenance,
+                sfi=sfi,
+                split_display_text=display_part,
+                split_hash=split_hash,
+                split_id_text=id_part,
+                split_index=i,
+                truncated=truncated,
             )
         )
 
@@ -482,15 +511,8 @@ def _create_lcs_from_atomic_skills(
     """
 
     policy = "llm_atomic_skills"
-    ns: UUID = config.namespace_uuid
     md = sfi.metadata or {}
-    prov = {
-        "page_indices": md.get("page_indices", []),
-        "bbox": md.get("bbox"),
-        "bbox_ref": md.get("bbox_ref"),
-        "source_decision_ids": md.get("source_decision_ids", []),
-        "source_segment_ids": md.get("source_segment_ids", []),
-    }
+    provenance = _build_provenance_from_sfi(md)
     max_splits = int(config.lc_max_splits_per_standard)
     norm_skills: list[tuple[str, str]] = []
 
@@ -544,34 +566,24 @@ def _create_lcs_from_atomic_skills(
         split_hash = stable_text_hash(s=desc)
 
         lcs.append(
-            LearningComponent(
-                academic_subject=str(
-                    sfi.academic_subject or fw_metadata["academic_subject_default"]
-                ),
-                attribution_statement=str(fw_metadata["attribution_statement"]),
-                author=str(fw_metadata["author"]),
+            _build_single_lc(
+                config=config,
                 description=desc,
-                identifier=uuid5(
-                    ns,
-                    f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{i}:{split_hash}",
-                ),
-                in_language=str(sfi.in_language or fw_metadata["in_language"]),
-                license=str(fw_metadata["license"]),
-                metadata={
-                    "id_source_kind": "llm_atomic_skills.description",
-                    "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
-                    "canonical_node_id": md.get("canonical_node_id"),
-                    "split_policy": policy,
-                    "split_id_text": desc,
-                    "split_display_text": desc,
+                doc_key=doc_key,
+                extra_metadata={
                     "llm_rationale": rat or None,
                     "llm_model": str(config.model),
-                    "split_index": i,
-                    "split_hash": split_hash,
-                    "split_truncated": truncated,
-                    "provenance": prov,
                 },
-                provider=str(fw_metadata["provider"]),
+                fw_metadata=fw_metadata,
+                id_source_kind="llm_atomic_skills.description",
+                policy=policy,
+                provenance=provenance,
+                sfi=sfi,
+                split_display_text=desc,
+                split_hash=split_hash,
+                split_id_text=desc,
+                split_index=i,
+                truncated=truncated,
             )
         )
 
@@ -740,6 +752,81 @@ def _export_lcs_via_llm_atomic_skills(
     return lcs, rels, lc_stats
 
 
+def _finalize_lc_export(
+    *,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    kg_dirs: KGDirs,
+    lc_stats: dict[str, Any],
+    lcs: list[LearningComponent],
+    rels: list[Relationship],
+) -> LearningComponentsExport:
+    """Verify, persist, and wrap LC export artifacts.
+
+    Parameters
+    ----------
+    config
+        KG export configuration (export_dialect).
+    ctx
+        ExportContext (doc_key).
+    kg_dirs
+        Output directories.
+    lc_stats
+        Statistics dictionary for this export run.
+    lcs
+        The LearningComponent entities to persist.
+    rels
+        The supports Relationship entities to persist.
+
+    Returns
+    -------
+    LearningComponentsExport
+        The wrapped export object.
+
+    Raises
+    ------
+    ValueError
+        If integrity checks fail.
+    """
+
+    _verify_lc_export(lcs=lcs, rels=rels)
+
+    write_to_json(
+        fp=kg_dirs.learning_components / "learning_components.json",
+        json_info=[lc.model_dump(mode="json") for lc in lcs],
+    )
+    write_to_json(
+        fp=kg_dirs.learning_components
+        / "learning_components_supports_relationships.json",
+        json_info=[r.model_dump(mode="json") for r in rels],
+    )
+    write_to_json(
+        fp=kg_dirs.learning_components / "learning_components_kg.json",
+        json_info=_build_learning_components_graph_bundle(
+            doc_key=ctx.doc_key,
+            export_dialect=str(config.export_dialect),
+            learning_components=lcs,
+            supports_relationships=rels,
+        ),
+    )
+    write_to_json(
+        fp=kg_dirs.learning_components / "learning_components_stats.json",
+        json_info=lc_stats,
+    )
+
+    export = LearningComponentsExport(
+        lc_stats=lc_stats, learning_components=lcs, supports_relationships=rels
+    )
+
+    logger.info(
+        f"Exported Learning Components KG ({lc_stats.get('split_policy', '?')}): "
+        f"{len(export.learning_components)} components, "
+        f"{len(export.supports_relationships)} `supports` relationships"
+    )
+
+    return export
+
+
 def _handle_atomic_skills_fallback(
     *,
     batch: list[StandardsFrameworkItem],
@@ -779,8 +866,14 @@ def _handle_atomic_skills_fallback(
             f"Batch {current_batch_num} Fallback: Processing SFI "
             f"{sfi.case_identifier_uuid} ({sfi_idx}/{len(batch)})..."
         )
-        created = _create_fallback_lc_1_to_1(
-            config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
+
+        created = _create_lcs_for_expectation(
+            config=config,
+            doc_key=ctx.doc_key,
+            fw_metadata=fw_metadata,
+            id_source_kind_override="fallback_1_to_1",
+            policy_override="1_to_1",
+            sfi=sfi,
         )
         splits[len(created)] += 1
 
@@ -834,7 +927,15 @@ def _handle_atomic_skills_success(
         A tuple containing the generated LCs, supports relationships, split statistics,
         and any fallback SFI UUIDs triggered during empty/invalid creation.
 
+    Raises
+    ------
+    ValueError
+        If an SFI UUID from the batch is missing in the skills_by_sfi mapping,
+        indicating a mismatch between the parsed LLM response and the expected SFIs.
+        This should not occur if the validation step passed, and would suggest a
+        critical bug in the data handling logic.
     """
+
     lcs: list[LearningComponent] = []
     rels: list[Relationship] = []
     splits: defaultdict[int, int] = defaultdict(int)
@@ -850,11 +951,12 @@ def _handle_atomic_skills_success(
 
         skills = skills_by_sfi.get(sfi_uuid_str, [])
 
-        assert skills, (
-            f"BUG: SFI {sfi_uuid_str} passed validation but has no skills in "
-            f"skills_by_sfi. This indicates a mapping error between parsed_dict "
-            f"and skills_by_sfi."
-        )
+        if not skills:
+            raise ValueError(
+                f"BUG: SFI {sfi_uuid_str} passed validation but has no skills in "
+                f"skills_by_sfi. This indicates a mapping error between parsed_dict "
+                f"and skills_by_sfi."
+            )
 
         created = _create_lcs_from_atomic_skills(
             config=config,
@@ -869,8 +971,13 @@ def _handle_atomic_skills_success(
                 f"Atomic skills for SFI {sfi_uuid_str} produced 0 LCs "
                 f"after normalization/dedup; falling back to 1_to_1."
             )
-            created = _create_fallback_lc_1_to_1(
-                config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
+            created = _create_lcs_for_expectation(
+                config=config,
+                doc_key=ctx.doc_key,
+                fw_metadata=fw_metadata,
+                id_source_kind_override="fallback_1_to_1",
+                policy_override="1_to_1",
+                sfi=sfi,
             )
             batch_debug["fallback_sfi_uuids"].append(sfi_uuid_str)
             fallback_uuids.append(sfi_uuid_str)
@@ -1246,42 +1353,14 @@ def export_learning_components(
             kg_dirs=kg_dirs,
         )
 
-        _verify_lc_export(lcs=lcs, rels=rels)
-
-        write_to_json(
-            fp=kg_dirs.learning_components / "learning_components.json",
-            json_info=[lc.model_dump(mode="json") for lc in lcs],
+        return _finalize_lc_export(
+            config=config,
+            ctx=ctx,
+            kg_dirs=kg_dirs,
+            lc_stats=lc_stats,
+            lcs=lcs,
+            rels=rels,
         )
-        write_to_json(
-            fp=kg_dirs.learning_components
-            / "learning_components_supports_relationships.json",
-            json_info=[r.model_dump(mode="json") for r in rels],
-        )
-        write_to_json(
-            fp=kg_dirs.learning_components / "learning_components_kg.json",
-            json_info=_build_learning_components_graph_bundle(
-                doc_key=ctx.doc_key,
-                export_dialect=str(config.export_dialect),
-                learning_components=lcs,
-                supports_relationships=rels,
-            ),
-        )
-        write_to_json(
-            fp=kg_dirs.learning_components / "learning_components_stats.json",
-            json_info=lc_stats,
-        )
-
-        learning_components = LearningComponentsExport(
-            lc_stats=lc_stats, learning_components=lcs, supports_relationships=rels
-        )
-
-        logger.info(
-            f"Exported Learning Components KG (llm_atomic_skills): "
-            f"{len(learning_components.learning_components)} components, "
-            f"{len(learning_components.supports_relationships)} `supports` relationships"
-        )
-
-        return learning_components
 
     expectation_sfis = _iter_expectation_sfis(academic_standards.items)
 
@@ -1324,27 +1403,6 @@ def export_learning_components(
             f"LearningComponents (empty text). These SFIs have no `supports` edges."
         )
 
-    _verify_lc_export(lcs=lcs, rels=rels)
-
-    write_to_json(
-        fp=kg_dirs.learning_components / "learning_components.json",
-        json_info=[lc.model_dump(mode="json") for lc in lcs],
-    )
-    write_to_json(
-        fp=kg_dirs.learning_components
-        / "learning_components_supports_relationships.json",
-        json_info=[r.model_dump(mode="json") for r in rels],
-    )
-    write_to_json(
-        fp=kg_dirs.learning_components / "learning_components_kg.json",
-        json_info=_build_learning_components_graph_bundle(
-            doc_key=ctx.doc_key,
-            export_dialect=str(config.export_dialect),
-            learning_components=lcs,
-            supports_relationships=rels,
-        ),
-    )
-
     lc_stats = {
         "split_policy": str(config.learning_component_policy),
         "total_expectations": len(expectation_sfis_sorted),
@@ -1352,22 +1410,15 @@ def export_learning_components(
         "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
         "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
     }
-    write_to_json(
-        fp=kg_dirs.learning_components / "learning_components_stats.json",
-        json_info=lc_stats,
-    )
 
-    learning_components = LearningComponentsExport(
-        learning_components=lcs, supports_relationships=rels, lc_stats=lc_stats
+    return _finalize_lc_export(
+        config=config,
+        ctx=ctx,
+        kg_dirs=kg_dirs,
+        lc_stats=lc_stats,
+        lcs=lcs,
+        rels=rels,
     )
-
-    logger.info(
-        f"Exported Learning Components KG: "
-        f"{len(learning_components.learning_components)} components, "
-        f"{len(learning_components.supports_relationships)} `supports` relationships"
-    )
-
-    return learning_components
 
 
 def load_learning_components_export(kg_dirs: KGDirs) -> LearningComponentsExport:
