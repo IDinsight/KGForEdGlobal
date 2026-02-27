@@ -181,10 +181,13 @@ def _build_learning_components_graph_bundle(
     relationships: list[dict[str, Any]] = []
 
     for r in supports_relationships:
+        assert (
+            r.relationship_type == "supports"
+        ), f"{r.relationship_type} is not 'supports'"
         relationships.append(
             {
                 "id": str(r.identifier),
-                "type": "supports",
+                "type": r.relationship_type,
                 "start": r.source_entity_value,
                 "end": r.target_entity_value,
                 "properties": r.model_dump(mode="json"),

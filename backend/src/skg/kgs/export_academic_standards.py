@@ -354,6 +354,11 @@ def _build_academic_standards_graph_bundle(
         props = r.model_dump(mode="json")
         props["order_index"] = order_index_by_edge.get((start_id, end_id))
 
+        assert r.relationship_type == "hasChild", (
+            f"Unexpected relationship type '{r.relationship_type}' "
+            f"in Academic Standards export bundle."
+        )
+
         relationships.append(
             {
                 "id": str(r.identifier),
