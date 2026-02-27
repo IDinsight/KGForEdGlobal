@@ -619,7 +619,7 @@ class CreateKGConfig(BaseSchema):
     )
     prune_empty_groupings: bool = Field(
         default=True,
-        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering, repeating to a fixpoint. No reattachment is performed.",
+        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering and after reattachment hoists children of dropped nodes to their nearest surviving ancestor, repeating to a fixpoint.",
     )
 
     @model_validator(mode="after")
