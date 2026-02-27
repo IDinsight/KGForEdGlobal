@@ -690,14 +690,44 @@ def _export_lcs_via_llm_atomic_skills(
         expectation_sfis, key=lambda x: str(x.case_identifier_uuid)
     )
 
-    total_sfis = len(expectation_sfis_sorted)
+    # Pre-filter: remove SFIs whose text is entirely empty so they never reach the LLM.
+    # These would produce 0 LCs anyway (same outcome as the _create_lcs_for_expectation
+    # empty-text guard), but sending them to the LLM wastes tokens and risks the model
+    # hallucinating content for a blank input.
+    batchable_sfis: list[StandardsFrameworkItem] = []
+    empty_text_sfis: list[StandardsFrameworkItem] = []
+
+    for sfi in expectation_sfis_sorted:
+        if _has_usable_text(sfi):
+            batchable_sfis.append(sfi)
+        else:
+            empty_text_sfis.append(sfi)
+
+    if empty_text_sfis:
+        logger.warning(
+            f"LLM atomic skills: skipping {len(empty_text_sfis)} expectation SFI(s) "
+            f"with empty text (no normalized_text or description). These SFIs will "
+            f"have no LearningComponents or `supports` edges. UUIDs: "
+            f"{[str(s.case_identifier_uuid) for s in empty_text_sfis[:20]]}"
+            + (
+                f" ... (+{len(empty_text_sfis) - 20} more)"
+                if len(empty_text_sfis) > 20
+                else ""
+            )
+        )
+
+    total_sfis = len(batchable_sfis)
     batch_size = int(config.lc_atomic_skills_batch_size)
-    total_batches = math.ceil(total_sfis / batch_size)
+    total_batches = math.ceil(total_sfis / batch_size) if total_sfis else 0
     max_splits = int(config.lc_max_splits_per_standard)
 
     lcs: list[LearningComponent] = []
     rels: list[Relationship] = []
     splits_per_sfi: defaultdict[int, int] = defaultdict(int)
+
+    # Account for empty-text SFIs in the split distribution (0 LCs each).
+    if empty_text_sfis:
+        splits_per_sfi[0] += len(empty_text_sfis)
 
     debug_batches: list[dict[str, Any]] = []
     fallback_sfis_total: list[str] = []
@@ -705,11 +735,16 @@ def _export_lcs_via_llm_atomic_skills(
     logger.info(
         f"Starting LLM atomic skills export for {total_sfis} SFIs "
         f"across {total_batches} batches (Batch size: {batch_size})."
+        + (
+            f" ({len(empty_text_sfis)} empty-text SFI(s) excluded.)"
+            if empty_text_sfis
+            else ""
+        )
     )
 
     for batch_index in range(0, total_sfis, batch_size):
         current_batch_num = (batch_index // batch_size) + 1
-        batch = expectation_sfis_sorted[batch_index : batch_index + batch_size]
+        batch = batchable_sfis[batch_index : batch_index + batch_size]
 
         batch_lcs, batch_rels, batch_splits, batch_debug, batch_fallbacks = (
             _process_atomic_skills_batch(
@@ -741,7 +776,9 @@ def _export_lcs_via_llm_atomic_skills(
 
     lc_stats = {
         "split_policy": "llm_atomic_skills",
-        "total_expectations": len(expectation_sfis_sorted),
+        "total_expectations": len(batchable_sfis) + len(empty_text_sfis),
+        "total_expectations_batchable": len(batchable_sfis),
+        "total_expectations_empty_text": len(empty_text_sfis),
         "total_lcs": len(lcs),
         "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
         "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
@@ -997,6 +1034,31 @@ def _handle_atomic_skills_success(
             )
 
     return lcs, rels, dict(splits), fallback_uuids
+
+
+def _has_usable_text(sfi: StandardsFrameworkItem) -> bool:
+    """Check whether an SFI has enough text to be worth sending to the LLM.
+
+    Returns False when both the canonical normalized_text and the exported description
+    are empty/whitespace-only, which is the same condition that causes
+    `_create_lcs_for_expectation` to return an empty list.
+
+    Parameters
+    ----------
+    sfi
+        The StandardsFrameworkItem to check.
+
+    Returns
+    -------
+    bool
+        True if the SFI has at least one non-empty text source.
+    """
+
+    md = sfi.metadata or {}
+    id_source = normalize_ws(str(md.get("normalized_text") or ""))
+    display = normalize_ws(sfi.description or "")
+
+    return bool(id_source or display)
 
 
 def _iter_expectation_sfis(
