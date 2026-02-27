@@ -1956,21 +1956,11 @@ def _reparent_aux_under_expectations(
         )
 
         if attach_to_metadata:
-            bbox = node.get("bbox")
-            aux_payload: dict[str, Any] = {
-                "role": role,
-                "text": node_display_text(node=node, prefer_text_en=prefer_en),
-                "canonical_node_id": aux_node_id,
-                "page_indices": node.get("page_indices", []),
-                "source_decision_ids": node.get("source_decision_ids", []),
-                "source_segment_ids": node.get("source_segment_ids", []),
-                "bbox": bbox,
-            }
-
-            if bbox is not None:
-                aux_payload["bbox_ref"] = "framework.metadata.provenance_context.bbox"
-
-            aux_attach_to_expectation[target_expectation_id].append(aux_payload)
+            aux_attach_to_expectation[target_expectation_id].append(
+                _build_aux_payload(
+                    aux_node_id=aux_node_id, ctx=ctx, prefer_en=prefer_en
+                )
+            )
             attached_aux_node_ids.add(aux_node_id)
         else:
             export_children.setdefault(target_expectation_id, [])
