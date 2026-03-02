@@ -63,7 +63,7 @@ def crop_image_to_ymax(
 
 def validate_page_count(
     *, doc: pymupdf.Document, end_page: Optional[int], start_page: Optional[int]
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Validate the start and end pages against document page count.
 
     Parameters
@@ -77,8 +77,8 @@ def validate_page_count(
 
     Returns
     -------
-    tuple[int, int]
-        The document page count and resolved end page.
+    tuple[int, int, int]
+        The document page count and resolved start and end pages.
 
     Raises
     ------
@@ -95,4 +95,4 @@ def validate_page_count(
             f"Invalid pages. start_page: {start_page} end_page: {end_page} page_count: {page_count}"
         )
 
-    return page_count, end_page
+    return page_count, start_page, end_page

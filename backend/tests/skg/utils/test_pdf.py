@@ -138,7 +138,7 @@ def test_validate_page_count_valid(
     doc = MagicMock(spec=pymupdf.Document)
     doc.page_count = 10
 
-    page_count, resolved_end = pdf.validate_page_count(
+    page_count, _, resolved_end = pdf.validate_page_count(
         doc=doc, start_page=start_page, end_page=end_page
     )
 
@@ -190,7 +190,7 @@ def test_validate_page_count_with_fixture(
 
     actual_count = fixture_pdf_doc.page_count
 
-    page_count, resolved_end = pdf.validate_page_count(
+    page_count, _, resolved_end = pdf.validate_page_count(
         doc=fixture_pdf_doc, start_page=None, end_page=None
     )
 
