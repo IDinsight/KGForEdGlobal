@@ -80,7 +80,7 @@ def extract_page_by_page(
         if not config.overwrite and page_ir_fp.exists() and png_fp.exists():
             logger.info(
                 f"Page IR JSON and PNG already exist for page {page_index}. "
-                f"Skipping page extraction and PNG rendering. "
+                f"Skipping page IR extraction AND PNG rendering. "
                 f"If you wish to overwrite, pass the --overwrite flag."
             )
 
@@ -98,7 +98,7 @@ def extract_page_by_page(
         if page_ir_fp.exists() and not config.overwrite:
             logger.warning(
                 f"Extracted page IR JSON already exists for page {page_index}. "
-                f"Skipping extraction. "
+                f"Skipping page IR extraction. "
                 f"If you wish to overwrite, pass the --overwrite flag."
             )
 
