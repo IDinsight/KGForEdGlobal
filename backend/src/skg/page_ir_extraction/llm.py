@@ -248,6 +248,7 @@ def _persist_page_ir_attempt_artifacts(
         "page_index": page_index,
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
     }
+
     (raw_page_irs_dir / f"{stem}.meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -412,11 +413,7 @@ def extract_page_ir(
 
 
 def verify_page_ir_extraction_quality(
-    *,
-    attempt: int,
-    image_height: int,
-    image_width: int,
-    page_ir: PageIR,
+    *, attempt: int, image_height: int, image_width: int, page_ir: PageIR
 ) -> None:
     """Validate *quality* (not schema) of a parsed PageIR.
 
