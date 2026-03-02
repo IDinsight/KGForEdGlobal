@@ -117,7 +117,7 @@ def persist_page_ir_attempt_artifacts(
 
 
 def read_png_dimensions(png_fp: Path) -> tuple[int, int]:
-    """Read PNG width/height without external dependencies.
+    """Read PNG width/height.
 
     Parameters
     ----------
