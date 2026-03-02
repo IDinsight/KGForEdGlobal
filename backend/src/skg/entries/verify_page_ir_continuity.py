@@ -36,7 +36,6 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR
-from skg.page_ir_extraction.utils import load_page_irs_from_extraction
 from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
     PageIRVerificationDirs,
@@ -215,9 +214,10 @@ def verify(
         try:
             # 5.
             start = max(config.start_page, page_indices[0])
-            page_irs = load_page_irs_from_extraction(
-                end_page=end_page, page_irs_dir=page_irs_dir, start_page=start
-            )
+            page_irs = {
+                i: PageIR.model_validate(open_json_type(page_irs_dir / f"{i:04}.json"))
+                for i in range(start, end_page)
+            }
 
             # 6.
             logger.info(

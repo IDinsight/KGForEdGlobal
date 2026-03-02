@@ -61,7 +61,7 @@ class Table(BaseSchema):
             f"Semantic continuity of this table across page boundaries: "
             f"'{ItemBoundary.RESUMED.value}' if this table is a continuation from the previous page; "
             f"'{ItemBoundary.TRUNCATED.value}' if it continues onto the next page; "
-            f"'{ItemBoundary.BOTH.value}' if it continues from prev and to next; "
+            f"'{ItemBoundary.BOTH.value}' if it continues from prev page and to next page; "
             f"'{ItemBoundary.COMPLETE.value}' if fully contained on this page. "
             f"DO NOT rely on whether table borders are drawn. Many PDFs repeat gridlines and headers on continuation pages."
         ),
@@ -135,7 +135,7 @@ class Table(BaseSchema):
         }:
             raise ValueError(
                 f"repeats_header is only allowed when boundary is "
-                f"{ItemBoundary.RESUMED.value}/{ItemBoundary.BOTH.value}."
+                f"{ItemBoundary.RESUMED.value} or {ItemBoundary.BOTH.value}."
             )
 
         return self
@@ -202,6 +202,7 @@ class FigureUnit(BaseSchema):
             raise ValueError(
                 "figure.contains_text=true requires figure.embedded_text (best-effort transcription)."
             )
+
         if self.contains_text is False and self.embedded_text is not None:
             raise ValueError(
                 "figure.contains_text=false requires figure.embedded_text=null."
@@ -369,10 +370,7 @@ class Block(BaseSchema):
 class PageIR(BaseSchema):
     """Intermediate Representation of a single PDF page."""
 
-    boundary_state: PageBoundaryState = Field(
-        default=PageBoundaryState.STANDALONE,
-        description="Overall continuity of the page. Derived from item boundaries in Python.",
-    )
+    # Filled in deterministically.
     coord_space: Literal["px"] = Field(
         "px",
         description="Coordinate space used for all bounding boxes. 'px' indicates pixel coordinates in the rendered page image with origin at the top-left.",
@@ -393,10 +391,6 @@ class PageIR(BaseSchema):
         None,
         description="Width of the source image in pixels. This should be populated by the Python pipeline; it may be null during extraction.",
     )
-    items: list[Block | Table] = Field(
-        ...,
-        description="Ordered list of content items found on the page, sorted by visual reading order (e.g., multi-column left-to-right, then down)",
-    )
     page_index: Optional[int] = Field(
         None,
         description="0-based index of the page in the PDF. This should be populated by the Python pipeline; it may be null during extraction.",
@@ -404,4 +398,14 @@ class PageIR(BaseSchema):
     pdf_name: Optional[str] = Field(
         None,
         description="Source PDF filename (no path). This should be populated by the Python pipeline; it may be null during extraction.",
+    )
+
+    # Filled in by vision model.
+    boundary_state: PageBoundaryState = Field(
+        default=PageBoundaryState.STANDALONE,
+        description="Overall continuity of the page. Derived from item boundaries in Python.",
+    )
+    items: list[Block | Table] = Field(
+        ...,
+        description="Ordered list of content items found on the page, sorted by visual reading order (e.g., multi-column left-to-right, then down)",
     )
