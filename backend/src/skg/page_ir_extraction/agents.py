@@ -37,7 +37,7 @@ def create_page_ir_extraction_agent(
     page_index: int,
     raw_page_irs_dir: Path,
     verify_quality_fn: Callable,
-) -> tuple[Agent, dict[str, int]]:
+) -> Agent:
     """Create an Agent configured for page IR extraction.
 
     The returned agent has an output validator that runs quality checks and raises
@@ -66,10 +66,9 @@ def create_page_ir_extraction_agent(
 
     Returns
     -------
-    tuple[Agent, dict[str, int]]
-        The configured Agent and a mutable attempt counter dict (key `"value"`). The
-        counter is shared with the output validator closure so the caller can inspect
-        how many attempts were made.
+    Agent
+        The configured Agent. An internal attempt counter is used by the output
+        validator closure for artifact persistence; callers do not need access to it.
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
@@ -103,7 +102,10 @@ def create_page_ir_extraction_agent(
 
         attempt = attempt_counter["value"]
 
-        # Populate fields that Python fills post-extraction.
+        # Side-effect: populate Python-filled provenance fields before quality checks
+        # run. This is intentional since these fields are not set by the LLM and must
+        # be present for validators that inspect page_index or image dimensions. On
+        # retry, the next output object will be similarly mutated.
         output.image_width = image_width
         output.image_height = image_height
         output.page_index = page_index
@@ -154,7 +156,7 @@ def create_page_ir_extraction_agent(
 
         return output
 
-    return agent, attempt_counter
+    return agent
 
 
 def create_page_ir_validation_agent(
@@ -194,10 +196,12 @@ def create_page_ir_validation_agent(
     def validate_verdict_consistency(output: ValidationVerdict) -> ValidationVerdict:
         """Validate structural consistency of the validation verdict.
 
-        Enforces that failing verdicts include actionable error-severity issues and
-        that the rationale is substantive. These checks complement the Pydantic
-        model validators on ValidationVerdict by providing LLM-friendly correction
-        messages via ModelRetry.
+        NB: Basic structural checks (rationale non-empty, failing verdicts require
+        error-severity issues) are already enforced by Pydantic model validators on
+        ValidationVerdict. This output validator only checks properties that benefit
+        from LLM-friendly ModelRetry correction messages. This function is currently a
+        no-op beyond Pydantic, but kept as an extension point for future checks that
+        require cross-field heuristics not expressible in the schema.
 
         Parameters
         ----------
@@ -208,36 +212,7 @@ def create_page_ir_validation_agent(
         -------
         ValidationVerdict
             The validated verdict (same as input if checks pass).
-
-        Raises
-        ------
-        ModelRetry
-            If the verdict fails consistency checks, with a message guiding the model
-            to correct the output. This triggers a retry with the error appended to the
-            conversation history.
         """
-
-        if not output.rationale or not output.rationale.strip():
-            raise ModelRetry(
-                "Rationale must be non-empty. Provide a brief explanation of your "
-                "assessment."
-            )
-
-        if not output.passed:
-            if not output.issues:
-                raise ModelRetry(
-                    "A failing verdict (passed=false) must include at least one "
-                    "issue. Either set passed=true or describe the issues found."
-                )
-
-            has_errors = any(issue.severity == "error" for issue in output.issues)
-
-            if not has_errors:
-                raise ModelRetry(
-                    "A failing verdict (passed=false) must include at least one "
-                    "issue with severity='error'. If all issues are only warnings, "
-                    "set passed=true instead."
-                )
 
         return output
 

@@ -775,8 +775,12 @@ def validate_no_duplicate_item_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
     )
 
 
-def validate_no_whitespace_or_empty_blocks(ctx: PageIRExtractionQualityCtx) -> None:
+def validate_extraction_text_constraints(ctx: PageIRExtractionQualityCtx) -> None:
     """Validate extraction-specific text constraints on blocks.
+
+    Checks that text_en is null on all text-bearing fields (extraction produces source
+    text only; translation happens in a later pass) and that figure captions also have
+    text_en=null.
 
     Parameters
     ----------

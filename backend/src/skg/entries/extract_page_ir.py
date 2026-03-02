@@ -77,29 +77,21 @@ def extract_page_by_page(
         page_ir_fp = extraction_dirs.page_irs / f"{page_index:04d}.json"
         png_fp = extraction_dirs.page_images / f"{page_index:04d}.png"
 
-        if not config.overwrite and page_ir_fp.exists() and png_fp.exists():
-            logger.info(
-                f"Page IR JSON and PNG already exist for page {page_index}. "
-                f"Skipping page IR extraction AND PNG rendering. "
-                f"If you wish to overwrite, pass the --overwrite flag."
-            )
-
-            continue
-
         # Always ensure the PNG exists first. We render if the file is missing OR if we
         # are overwriting (e.g. changed DPI).
-        if config.overwrite or not png_fp.exists():
+        png_exists = png_fp.exists()
+        ir_exists = page_ir_fp.exists()
+
+        if config.overwrite or not png_exists:
             render_and_save_page_to_png(
                 doc=doc, dpi=config.dpi, output_png_fp=png_fp, page_index=page_index
             )
 
-        # Check cache: if not overwriting and extracted Page IR JSON exists, skip
-        # entirely.
-        if page_ir_fp.exists() and not config.overwrite:
-            logger.warning(
-                f"Extracted page IR JSON already exists for page {page_index}. "
-                f"Skipping page IR extraction. "
-                f"If you wish to overwrite, pass the --overwrite flag."
+        # Skip extraction if the page IR JSON already exists and we're not overwriting.
+        if ir_exists and not config.overwrite:
+            logger.info(
+                f"Page IR JSON already exists for page {page_index}. "
+                f"Skipping extraction. Pass --overwrite to regenerate."
             )
 
             continue
