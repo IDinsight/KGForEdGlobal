@@ -71,7 +71,7 @@ class ExtractionConfig(BaseSchema):
         min_length=1,
     )
     model: str = Field(
-        "gpt-5.2-2025-12-11", description="Model for page IR extraction."
+        "openai:gpt-5.2-2025-12-11", description="Model for page IR extraction."
     )
     output_dir: Path = Field(..., description="Output directory root.")
     overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
