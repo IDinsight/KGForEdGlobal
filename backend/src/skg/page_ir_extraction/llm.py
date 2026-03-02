@@ -5,7 +5,7 @@ import json
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # Third Party Library
 from loguru import logger
@@ -24,10 +24,7 @@ from tenacity import (
 )
 
 # Package Library
-from skg.page_ir_extraction.prompts import (
-    double_check_page_ir_extraction,
-    extract_page_ir_from_pdf_page,
-)
+from skg.page_ir_extraction.prompts import extract_page_ir_from_pdf_page
 from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,

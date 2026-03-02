@@ -1,8 +1,5 @@
 """This module contains top-level Pydantic models."""
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
 from datetime import datetime
 from pathlib import Path
@@ -619,13 +616,13 @@ class CreateKGConfig(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def _validate_atomic_skills_bounds(self) -> CreateKGConfig:
+    def _validate_atomic_skills_bounds(self) -> Self:
         """Validate that lc_atomic_skills_min_per_sfi is less than or equal to
         lc_max_splits_per_standard when using llm_atomic_skills.
 
         Returns
         -------
-        CreateKGConfig
+        Self
             The validated CreateKGConfig object.
 
         Raises
@@ -715,14 +712,14 @@ class CreateKGConfig(BaseSchema):
         return v
 
     @model_validator(mode="after")
-    def _validate_grouping_role_policy(self) -> CreateKGConfig:
+    def _validate_grouping_role_policy(self) -> Self:
         """Validate that if grouping_role_policy is 'whitelist', then
         grouping_roles_whitelist is non-empty and does not include
         FRAMEWORK/UNRESOLVED.
 
         Returns
         -------
-        CreateKGConfig
+        Self
             The validated CreateKGConfig object.
 
         Raises
@@ -750,13 +747,13 @@ class CreateKGConfig(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def _validate_parenting_relevance(self) -> CreateKGConfig:
+    def _validate_parenting_relevance(self) -> Self:
         """Validate that aux_statement_parenting is compatible with guidance/descriptor
         handling.
 
         Returns
         -------
-        CreateKGConfig
+        Self
             The validated CreateKGConfig object.
 
         Raises
@@ -800,12 +797,12 @@ class CreateKGConfig(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def _validate_stable_bases(self) -> CreateKGConfig:
+    def _validate_stable_bases(self) -> Self:
         """Validate that case_uri_base is non-empty and stable.
 
         Returns
         -------
-        CreateKGConfig
+        Self
             The validated CreateKGConfig object.
 
         Raises

@@ -2,11 +2,8 @@
 Representations (IRs).
 """
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
-from typing import Literal, Optional
+from typing import Literal, Optional, Self
 
 # Third Party Library
 from pydantic import Field, model_validator
@@ -94,12 +91,12 @@ class Table(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def validate_header_row_count(self) -> Table:
+    def validate_header_row_count(self) -> Self:
         """Validate that header_row_count does not exceed number of rows.
 
         Returns
         -------
-        Table
+        Self
             The passed in Table.
 
         Raises
@@ -117,12 +114,12 @@ class Table(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_repeats_header_consistency(self) -> Table:
+    def validate_repeats_header_consistency(self) -> Self:
         """Validate that repeats_header is only set when boundary is resumed/both.
 
         Returns
         -------
-        Table
+        Self
             The passed in Table.
 
         Raises
@@ -143,7 +140,7 @@ class Table(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_row_and_col_spans(self) -> Table:
+    def validate_row_and_col_spans(self) -> Self:
         """Validate row/col span consistency across the table grid.
 
         Checks enforced:
@@ -159,7 +156,7 @@ class Table(BaseSchema):
 
         Returns
         -------
-        Table
+        Self
             The passed in Table.
 
         Raises
@@ -228,12 +225,12 @@ class ListItem(BaseSchema):
     text: TextUnit = Field(..., description="The text content of the list item.")
 
     @model_validator(mode="after")
-    def validate_marker_not_whitespace_only(self) -> ListItem:
+    def validate_marker_not_whitespace_only(self) -> Self:
         """Validate that marker, when present, is not whitespace-only.
 
         Returns
         -------
-        ListItem
+        Self
             The passed in ListItem.
 
         Raises
@@ -250,12 +247,12 @@ class ListItem(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_text_not_whitespace_only(self) -> ListItem:
+    def validate_text_not_whitespace_only(self) -> Self:
         """Validate that list item text is not whitespace-only.
 
         Returns
         -------
-        ListItem
+        Self
             The passed in ListItem.
 
         Raises
@@ -303,12 +300,12 @@ class FigureUnit(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def validate_alt_text_required_and_non_empty(self) -> FigureUnit:
+    def validate_alt_text_required_and_non_empty(self) -> Self:
         """Validate that alt_text is present and non-empty.
 
         Returns
         -------
-        FigureUnit
+        Self
             The passed in FigureUnit.
 
         Raises
@@ -327,12 +324,12 @@ class FigureUnit(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_caption_not_whitespace_only(self) -> FigureUnit:
+    def validate_caption_not_whitespace_only(self) -> Self:
         """Validate that caption text, when present, is not whitespace-only.
 
         Returns
         -------
-        FigureUnit
+        Self
             The passed in FigureUnit.
 
         Raises
@@ -350,12 +347,12 @@ class FigureUnit(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_contains_text_requires_embedded_text(self) -> FigureUnit:
+    def validate_contains_text_requires_embedded_text(self) -> Self:
         """Validate consistency between contains_text and embedded_text.
 
         Returns
         -------
-        FigureUnit
+        Self
             The passed in FigureUnit.
 
         Raises
@@ -385,12 +382,12 @@ class FigureUnit(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_equation_requires_text(self) -> FigureUnit:
+    def validate_equation_requires_text(self) -> Self:
         """Validate that equation figures contain text.
 
         Returns
         -------
-        FigureUnit
+        Self
             The passed in FigureUnit.
         """
 
@@ -438,12 +435,12 @@ class Block(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def validate_block_type_figure(self) -> Block:
+    def validate_block_type_figure(self) -> Self:
         """Validate figure block types.
 
         Returns
         -------
-        Block
+        Self
             The passed in Block.
 
         Raises
@@ -466,12 +463,12 @@ class Block(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_block_type_list(self) -> Block:
+    def validate_block_type_list(self) -> Self:
         """Validate list block types.
 
         Returns
         -------
-        Block
+        Self
             The passed in Block.
 
         Raises
@@ -496,12 +493,12 @@ class Block(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_block_type_other(self) -> Block:
+    def validate_block_type_other(self) -> Self:
         """Validate other block types.
 
         Returns
         -------
-        Block
+        Self
             The passed in Block.
 
         Raises
