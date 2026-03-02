@@ -111,6 +111,8 @@ def extract_page_by_page(
             png_fp=png_fp,
             raw_page_irs_dir=extraction_dirs.page_irs_raw,
         )
+
+        # Add metadata to the PageIR.
         page_ir.coord_space = "px"
         page_ir.doc_key = doc_key
         page_ir.dpi = config.dpi
