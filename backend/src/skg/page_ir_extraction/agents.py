@@ -16,7 +16,7 @@ from typing import Callable
 # Third Party Library
 from loguru import logger
 from pydantic_ai import Agent, ModelRetry, ModelSettings
-from pydantic_ai.models.openai import OpenAIChatModelSettings
+from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
@@ -24,8 +24,8 @@ from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import QualityError
 
 DEFAULT_EXTRACTION_MODEL_SETTINGS = ModelSettings(temperature=0, top_p=1)
-DEFAULT_VALIDATION_MODEL_SETTINGS = OpenAIChatModelSettings(
-    openai_reasoning_effort="high", temperature=0.25, top_p=0.9
+DEFAULT_VALIDATION_MODEL_SETTINGS = OpenAIResponsesModelSettings(
+    openai_reasoning_effort="high", openai_reasoning_summary="detailed"
 )
 DEFAULT_OUTPUT_RETRIES = 3
 DEFAULT_VALIDATION_RETRIES = 1
@@ -191,7 +191,7 @@ def create_page_ir_validation_agent(
     agent = Agent(
         model,
         instructions=instructions,
-        model_settings=DEFAULT_EXTRACTION_MODEL_SETTINGS,
+        model_settings=DEFAULT_VALIDATION_MODEL_SETTINGS,
         output_retries=max_retries,
         output_type=ValidationVerdict,
     )
