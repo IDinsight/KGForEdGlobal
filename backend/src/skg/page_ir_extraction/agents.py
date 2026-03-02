@@ -16,13 +16,17 @@ from typing import Callable
 # Third Party Library
 from loguru import logger
 from pydantic_ai import Agent, ModelRetry, ModelSettings
+from pydantic_ai.models.openai import OpenAIChatModelSettings
 
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
 from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import QualityError
 
-DEFAULT_MODEL_SETTINGS = ModelSettings(temperature=0, top_p=1)
+DEFAULT_EXTRACTION_MODEL_SETTINGS = ModelSettings(temperature=0, top_p=1)
+DEFAULT_VALIDATION_MODEL_SETTINGS = OpenAIChatModelSettings(
+    openai_reasoning_effort="high", temperature=0.25, top_p=0.9
+)
 DEFAULT_OUTPUT_RETRIES = 3
 DEFAULT_VALIDATION_RETRIES = 1
 
@@ -76,7 +80,7 @@ def create_page_ir_extraction_agent(
     agent = Agent(
         model,
         instructions=instructions,
-        model_settings=DEFAULT_MODEL_SETTINGS,
+        model_settings=DEFAULT_EXTRACTION_MODEL_SETTINGS,
         output_retries=max_retries,
         output_type=PageIR,
     )
@@ -187,7 +191,7 @@ def create_page_ir_validation_agent(
     agent = Agent(
         model,
         instructions=instructions,
-        model_settings=DEFAULT_MODEL_SETTINGS,
+        model_settings=DEFAULT_EXTRACTION_MODEL_SETTINGS,
         output_retries=max_retries,
         output_type=ValidationVerdict,
     )
@@ -199,9 +203,9 @@ def create_page_ir_validation_agent(
         NB: Basic structural checks (rationale non-empty, failing verdicts require
         error-severity issues) are already enforced by Pydantic model validators on
         ValidationVerdict. This output validator only checks properties that benefit
-        from LLM-friendly ModelRetry correction messages. This function is currently a
-        no-op beyond Pydantic, but kept as an extension point for future checks that
-        require cross-field heuristics not expressible in the schema.
+        from LLM-friendly ModelRetry correction messages — currently a no-op beyond
+        Pydantic, but kept as an extension point for future checks that require
+        cross-field heuristics not expressible in the schema.
 
         Parameters
         ----------

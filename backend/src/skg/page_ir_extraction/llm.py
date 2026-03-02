@@ -28,8 +28,9 @@ from pydantic_ai import BinaryContent
 
 # Package Library
 from skg.page_ir_extraction.agents import (
-    DEFAULT_MODEL_SETTINGS,
+    DEFAULT_EXTRACTION_MODEL_SETTINGS,
     DEFAULT_OUTPUT_RETRIES,
+    DEFAULT_VALIDATION_MODEL_SETTINGS,
     create_page_ir_extraction_agent,
     create_page_ir_validation_agent,
 )
@@ -155,7 +156,9 @@ def _run_validation_agent(
         prompts.user_message,
         BinaryContent(data=png_bytes, media_type="image/png"),
     ]
-    result = agent.run_sync(user_prompt, model_settings=DEFAULT_MODEL_SETTINGS)
+    result = agent.run_sync(
+        user_prompt, model_settings=DEFAULT_VALIDATION_MODEL_SETTINGS
+    )
 
     return result.output
 
@@ -246,7 +249,9 @@ def extract_page_ir(
             user_message_text,
             BinaryContent(data=png_bytes, media_type="image/png"),
         ]
-        result = agent.run_sync(user_prompt, model_settings=DEFAULT_MODEL_SETTINGS)
+        result = agent.run_sync(
+            user_prompt, model_settings=DEFAULT_EXTRACTION_MODEL_SETTINGS
+        )
         page_ir = result.output
 
         # Run the validation agent.
