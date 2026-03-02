@@ -300,7 +300,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
     """
 
     # Derive expected boundary state from items to validate item-level consistency.
-    expected = compute_boundary_state_from_items(ctx.non_artifact_items)
+    expected = compute_boundary_state_from_items(ctx.page_ir)
 
     states_requiring_prev = {
         PageBoundaryState.CONTINUES_FROM_PREV.value,

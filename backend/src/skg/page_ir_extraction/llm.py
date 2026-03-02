@@ -140,7 +140,7 @@ def _run_validation_agent(
         image_height=image_height,
         image_width=image_width,
         page_index=page_index,
-        page_ir_json=page_ir.model_dump_json(indent=2),
+        page_ir_json=page_ir.model_dump_json(),
     )
 
     agent = create_page_ir_validation_agent(
