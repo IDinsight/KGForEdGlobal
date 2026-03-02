@@ -1,5 +1,5 @@
-"""This module contains prompt templates for **extracting** Intermediate Representation
-(IR) information from PDF pages.
+"""This module contains prompt templates for **extracting** and **validating**
+Intermediate Representation (IR) information from PDF pages.
 """
 
 # Standard Library
@@ -12,49 +12,8 @@ from skg.utils.constants import BlockType, FigureKind, ItemBoundary
 from skg.utils.general import PromptPair
 
 
-def double_check_page_ir_extraction() -> PromptPair:
-    """Generate the prompts for double-checking page IR extraction results.
-
-    Returns
-    -------
-    PromptPair
-        A PromptPair containing 'system_message' and 'user_message'.
-    """
-
-    system_message = None
-    user_message = dedent(
-        """**Double-check your last PageIR against the image.** Fix anything that's off, then return a COMPLETE corrected PageIR JSON (and nothing else).
-
-Checklist:
-1. **Missing content**: Did you miss anything near the very top or bottom margins?
-2. **Reading order**: Items are in correct visual reading order.
-3. **Misclassification**:
-   - Ruled grid/cells → TABLE (not FIGURE).
-   - Section titles → HEADING (not ARTIFACT).
-   - Running headers/footers/page numbers → ARTIFACT.
-4. **Tables**:
-   - Rows/cells captured faithfully; blank cells are `text:null`.
-   - `header_row_count` reasonable; `n_cols` set only if clearly inferable.
-   - row_span/col_span only for clearly visible merges.
-   - `repeats_header` true/false only when clear; otherwise null.
-5. **BBoxes**: Tight to content; inside page bounds; unique per item.
-6. **Text fidelity**: Verbatim text; `text` field contains the complete visible text even
-   when `local_code` is set.
-7. **Figures** (if any): alt_text present; embedded_text present when contains_text=true.
-
-Return the corrected PageIR JSON only.
-        """
-    )
-
-    return PromptPair(system_message=system_message, user_message=user_message.strip())
-
-
 def extract_page_ir_from_pdf_page(
-    *,
-    image_height: int,
-    image_width: int,
-    languages: list[str],
-    page_index: int,
+    *, image_height: int, image_width: int, languages: list[str], page_index: int
 ) -> PromptPair:
     """Generate the prompts for extracting page IRs from a page image.
 
@@ -166,6 +125,94 @@ Before returning, scan the bottom ~10% of the page for any missed content.
 
 Return the PageIR JSON only.
         """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def validate_page_ir_extraction(
+    *, image_height: int, image_width: int, page_index: int, page_ir_json: str
+) -> PromptPair:
+    """Generate the prompts for validating an extracted PageIR against a source image.
+
+    The validation agent runs in a separate conversation from the extraction agent. It
+    receives the extracted PageIR JSON and the source page image, then returns a
+    structured ValidationVerdict.
+
+    Parameters
+    ----------
+    image_height
+        The height of the source image in pixels.
+    image_width
+        The width of the source image in pixels.
+    page_index
+        The 0-based page index.
+    page_ir_json
+        The serialized PageIR JSON string to validate.
+
+    Returns
+    -------
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
+    """
+
+    system_message = dedent(
+        f"""You are a quality assurance agent for document digitization. Your task is to compare an extracted PageIR JSON against the original page image and identify any discrepancies.
+
+You will receive:
+1. The original page image (rendered at {image_width}×{image_height} pixels).
+2. The extracted PageIR JSON that was produced by a separate extraction agent.
+
+Your job is to verify that the extraction faithfully represents the source image. You are NOT re-extracting the page — you are auditing someone else's work.
+
+## VALIDATION CHECKLIST
+
+Compare the extraction against the image for each of the following:
+
+1. **Missing content**: Are there any visible content blocks, tables, or figures on the page that are NOT represented in the PageIR? Pay special attention to content near the very top and bottom margins.
+2. **Spurious content**: Does the PageIR contain any items that do NOT appear on the page (hallucinated content)?
+3. **Text fidelity**: Is the extracted text faithful to what is visible? Check for missing words, added words, or significant transcription errors. Minor whitespace differences are acceptable.
+4. **Block classification**:
+   - Ruled grids/cells → TABLE (not FIGURE).
+   - Section titles → HEADING (not ARTIFACT).
+   - Running headers/footers/page numbers → ARTIFACT (not HEADING).
+   - Prose text → PARAGRAPH.
+   - Bulleted/numbered items → LIST.
+5. **Reading order**: Are items ordered top-to-bottom within each column (left column before right for multi-column layouts)?
+6. **Table structure**:
+   - Are rows and cells captured faithfully?
+   - Are blank cells represented as `text: null` (not omitted or hallucinated)?
+   - Is `header_row_count` reasonable given the visible table structure?
+   - Are row_span/col_span values only used for clearly visible merges?
+   - Has the table been collapsed (e.g., multi-column grid extracted as single-column rows)?
+7. **Bounding boxes**: Are bboxes reasonably tight to content and within page bounds ({image_width}×{image_height})? Are there obvious duplicates or placeholders?
+8. **Figures** (if any): Do figure blocks have alt_text? Is embedded_text present when the figure contains visible text?
+9. **Boundary markers**: Are continuation markers (resumed/truncated/both/complete) consistent with visible content flow at page edges?
+
+## SEVERITY GUIDE
+- **error**: The extraction is materially incorrect — missing content, hallucinated content, wrong classification that changes meaning, collapsed table structure, grossly wrong reading order.
+- **warning**: Minor quality concern — slightly loose bounding box, borderline classification choice, minor whitespace issue.
+
+## RULES
+- A verdict of passed=false MUST include at least one issue with severity="error".
+- If all issues are only warnings, set passed=true (warnings are informational).
+- Be specific in issue descriptions: reference item indices (e.g., "items[3]"), quote relevant text, and describe the discrepancy between what the image shows and what the JSON contains.
+- Do NOT flag issues that are correct per the extraction schema (e.g., text_en=null is expected during extraction; Python-filled fields like doc_key/dpi being null is expected).
+- Focus on **material correctness**, not stylistic preferences.
+"""
+    )
+
+    user_message = dedent(
+        f"""Validate the following PageIR extraction for page_index={page_index}.
+
+## Extracted PageIR JSON
+```json
+{page_ir_json}
+```
+
+Compare this JSON carefully against the attached page image and return a ValidationVerdict."""
     )
 
     return PromptPair(
