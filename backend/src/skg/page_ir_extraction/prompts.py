@@ -6,7 +6,6 @@
 import json
 
 from textwrap import dedent
-from typing import Optional
 
 # Package Library
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary

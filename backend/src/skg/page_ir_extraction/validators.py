@@ -110,8 +110,8 @@ def _derive_boundary_state_from_items(
     # Only consider non-artifact items for continuity.
     non_artifacts = [item for _, item in non_artifact_items]
 
-    any_from_prev = any(_is_resumed(item.boundary.value) for item in non_artifacts)
-    any_to_next = any(_is_truncated(item.boundary.value) for item in non_artifacts)
+    any_from_prev = any(_is_resumed(item.boundary) for item in non_artifacts)
+    any_to_next = any(_is_truncated(item.boundary) for item in non_artifacts)
 
     if any_from_prev and any_to_next:
         return PageBoundaryState.BOTH
@@ -153,13 +153,13 @@ def _is_full_page_bbox(
     )
 
 
-def _is_resumed(boundary: str) -> bool:
-    """Check if a boundary string indicates a resumed or both item.
+def _is_resumed(boundary: ItemBoundary) -> bool:
+    """Check if a boundary indicates a resumed or both item.
 
     Parameters
     ----------
     boundary
-        The boundary string to check.
+        The ItemBoundary enum value to check.
 
     Returns
     -------
@@ -167,16 +167,16 @@ def _is_resumed(boundary: str) -> bool:
         True if the boundary indicates a resumed or both item, False otherwise.
     """
 
-    return boundary in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
+    return boundary in (ItemBoundary.RESUMED, ItemBoundary.BOTH)
 
 
-def _is_truncated(boundary: str) -> bool:
-    """Check if a boundary string indicates a truncated or both item.
+def _is_truncated(boundary: ItemBoundary) -> bool:
+    """Check if a boundary indicates a truncated or both item.
 
     Parameters
     ----------
     boundary
-        The boundary string to check.
+        The ItemBoundary enum value to check.
 
     Returns
     -------
@@ -184,7 +184,7 @@ def _is_truncated(boundary: str) -> bool:
         True if the boundary indicates a truncated or both item, False otherwise.
     """
 
-    return boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
+    return boundary in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
 
 
 def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> None:
@@ -327,7 +327,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
 
         # Look in the first few non-artifact items for a resumed marker.
         if not any(
-            _is_resumed(item.boundary.value)
+            _is_resumed(item.boundary)
             for item in [item for _, item in ctx.non_artifact_items[:5]]
         ):
             raise QualityError(
@@ -345,7 +345,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
 
         # Look in the last few non-artifact items for a truncated marker.
         if not any(
-            _is_truncated(item.boundary.value)
+            _is_truncated(item.boundary)
             for item in [item for _, item in ctx.non_artifact_items[-5:]]
         ):
             raise QualityError(
@@ -355,7 +355,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
             )
 
     if boundary_state.value == PageBoundaryState.STANDALONE.value and any(
-        _is_resumed(item.boundary.value) or _is_truncated(item.boundary.value)
+        _is_resumed(item.boundary) or _is_truncated(item.boundary)
         for _, item in ctx.non_artifact_items
     ):
         raise QualityError(
