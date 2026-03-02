@@ -111,7 +111,6 @@ def extract_page_by_page(
 
         image_width, image_height = read_png_dimensions(png_fp)
         page_ir = extract_page_ir(
-            country=config.country,
             image_height=image_height,
             image_width=image_width,
             languages=config.languages,
@@ -119,7 +118,6 @@ def extract_page_by_page(
             page_index=page_index,
             png_fp=png_fp,
             raw_page_irs_dir=extraction_dirs.page_irs_raw,
-            year=config.year,
         )
         page_ir.coord_space = "px"
         page_ir.doc_key = doc_key

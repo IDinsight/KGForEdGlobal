@@ -1,5 +1,17 @@
 """This module contains functionalities related to validating the **extracted** PageIR
 information.
+
+NB: Validators here enforce extraction-specific quality constraints that CANNOT live in
+the Pydantic schemas because they either:
+
+1. Require cross-item/page-level context (image dimensions, all bboxes, item count).
+2. Are extraction-specific rules that don't apply universally (e.g., text_en must be
+   null during extraction, but is populated later during translation).
+3. Are heuristic quality checks with soft thresholds (e.g., footnote position, table
+   collapse detection, short list item check).
+
+Schema-level invariants (per-item structural rules) are enforced by Pydantic model
+validators and run at structured-output parse time.
 """
 
 # Standard Library
@@ -13,13 +25,7 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.page_ir_extraction.schemas import FigureUnit, PageIR, Table, TextUnit
-from skg.page_ir_extraction.utils import (
-    derive_boundary_state_from_items,
-    is_full_page_bbox,
-    is_resumed,
-    is_truncated,
-)
+from skg.page_ir_extraction.schemas import PageIR, TextUnit
 from skg.utils.constants import (
     BlockType,
     FigureKind,
@@ -82,97 +88,103 @@ class QualityError(Exception):
         self.failed_content = failed_content
 
 
-def _validate_figure_caption(fig: FigureUnit, index: int) -> None:
-    """Validate figure caption constraints.
+def _derive_boundary_state_from_items(
+    non_artifact_items: list[tuple[int, Any]],
+) -> PageBoundaryState:
+    """Derive the page boundary state from item boundaries.
 
     Parameters
     ----------
-    fig
-        The figure unit to validate.
-    index
-        The index of the figure in items.
+    non_artifact_items
+        The list of non-artifact items with their indices.
 
-    Raises
-    ------
-    QualityError
-        If the figure caption is invalid.
+    Returns
+    -------
+    PageBoundaryState
+        The derived page boundary state.
     """
 
-    if fig.caption is not None:
-        validate_text_en_is_none(
-            text=fig.caption, where_=f"items[{index}].figure.caption"
-        )
-        cap = (fig.caption.text or "").strip()
+    if not non_artifact_items:
+        return PageBoundaryState.STANDALONE
 
-        if not cap:
-            raise QualityError(
-                f"Whitespace-only figure.caption at items[{index}].figure.caption; "
-                f"set caption=null or extract the real caption text."
-            )
+    # Only consider non-artifact items for continuity.
+    non_artifacts = [item for _, item in non_artifact_items]
+
+    any_from_prev = any(_is_resumed(item.boundary.value) for item in non_artifacts)
+    any_to_next = any(_is_truncated(item.boundary.value) for item in non_artifacts)
+
+    if any_from_prev and any_to_next:
+        return PageBoundaryState.BOTH
+    if any_from_prev:
+        return PageBoundaryState.CONTINUES_FROM_PREV
+    if any_to_next:
+        return PageBoundaryState.CONTINUES_TO_NEXT
+
+    return PageBoundaryState.STANDALONE
 
 
-def _validate_single_table(*, index: int, table: Table) -> None:
-    """Validate rows and global properties for a single table.
+def _is_full_page_bbox(
+    *, bbox: tuple[float, ...], page_bbox: tuple[float, ...], tol: float
+) -> bool:
+    """Check if a bbox is effectively full-page within tolerance.
 
     Parameters
     ----------
-    index
-        The index of the table in items.
-    table
-        The table to validate.
+    bbox
+        The bbox to check.
+    page_bbox
+        The page bbox.
+    tol
+        The tolerance for comparison.
 
-    Raises
-    ------
-    QualityError
-        If any table property is invalid.
+    Returns
+    -------
+    bool
+        True if the bbox is full-page within tolerance, False otherwise.
     """
 
-    n_rows, row_widths = len(table.rows), []
+    x0, y0, x1, y1 = bbox
 
-    for r, row in enumerate(table.rows):
-        if not row.cells:
-            raise QualityError(f"Table row has no cells at items[{index}].rows[{r}].")
+    return (
+        abs(x0 - page_bbox[0]) <= tol
+        and abs(y0 - page_bbox[1]) <= tol
+        and abs(x1 - page_bbox[2]) <= tol
+        and abs(y1 - page_bbox[3]) <= tol
+    )
 
-        current_row_width = 0
-        for c, cell in enumerate(row.cells):
-            # Bounds: row_span can't run off the table.
-            if r + cell.row_span > n_rows:
-                raise QualityError(
-                    f"row_span exceeds table bounds at items[{index}].rows[{r}].cells[{c}]: "
-                    f"row_span={cell.row_span} but only {n_rows - r} rows remain."
-                )
 
-            # Empty merges: If a cell spans, it should carry content.
-            if (cell.row_span > 1 or cell.col_span > 1) and cell.text is None:
-                raise QualityError(
-                    f"Spanned cell must not have text=null at items[{index}].rows[{r}].cells[{c}] "
-                    f"(row_span={cell.row_span}, col_span={cell.col_span})."
-                )
+def _is_resumed(boundary: str) -> bool:
+    """Check if a boundary string indicates a resumed or both item.
 
-            # If n_cols is known, individual cell col_span can't exceed it.
-            if table.n_cols is not None and cell.col_span > table.n_cols:
-                raise QualityError(
-                    f"col_span exceeds n_cols at items[{index}].rows[{r}].cells[{c}]: "
-                    f"col_span={cell.col_span}, n_cols={table.n_cols}."
-                )
+    Parameters
+    ----------
+    boundary
+        The boundary string to check.
 
-            current_row_width += cell.col_span
+    Returns
+    -------
+    bool
+        True if the boundary indicates a resumed or both item, False otherwise.
+    """
 
-        # Validate total row width against n_cols.
-        if table.n_cols is not None and current_row_width > table.n_cols:
-            raise QualityError(
-                f"Row exceeds n_cols at items[{index}].rows[{r}]: "
-                f"sum(col_span)={current_row_width}, n_cols={table.n_cols}."
-            )
+    return boundary in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
 
-        row_widths.append(current_row_width)
 
-    # Global table check: at least one row must reach n_cols.
-    if table.n_cols is not None and all(w < table.n_cols for w in row_widths):
-        raise QualityError(
-            f"Table.n_cols={table.n_cols} but no row reaches that width at items[{index}]. "
-            f"Row widths={row_widths}. This usually indicates missing cells or wrong n_cols."
-        )
+def _is_truncated(boundary: str) -> bool:
+    """Check if a boundary string indicates a truncated or both item.
+
+    Parameters
+    ----------
+    boundary
+        The boundary string to check.
+
+    Returns
+    -------
+    bool
+        True if the boundary indicates a truncated or both item, False otherwise.
+    """
+
+    return boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
 
 
 def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> None:
@@ -215,7 +227,7 @@ def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> No
                 f"Section titles must be {BlockType.HEADING.value}."
             )
 
-        # “Section One/Two/...” should be a HEADING.
+        # "Section One/Two/..." should be a HEADING.
         if re.match(r"^\s*section\s+\w+", text):
             raise QualityError(
                 f"Item {i} is block_type={BlockType.ARTIFACT.value} but looks like a "
@@ -224,7 +236,7 @@ def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> No
 
 
 def validate_basic_block_invariants(ctx: PageIRExtractionQualityCtx) -> None:
-    """Validate basic block invariants.
+    """Validate extraction-specific block invariants not covered by Pydantic schemas.
 
     Parameters
     ----------
@@ -234,26 +246,17 @@ def validate_basic_block_invariants(ctx: PageIRExtractionQualityCtx) -> None:
     Raises
     ------
     QualityError
-        If any basic block invariant is violated.
+        If any extraction-specific block invariant is violated.
     """
 
     for i, item in enumerate(ctx.items):
         if item.kind != "block":
             continue
 
-        block_type_or_none = item.block_type
-        figure_or_none = item.figure
-        list_items = item.list_items or []
+        if item.block_type == BlockType.LIST:
+            list_items = item.list_items or []
 
-        # Non-figure blocks must not carry figure metadata.
-        if block_type_or_none != BlockType.FIGURE and figure_or_none is not None:
-            raise QualityError(
-                f"Non-figure block must have figure=null at items[{i}].figure."
-            )
-
-        if block_type_or_none == BlockType.LIST:
             for j, list_item in enumerate(list_items):
-                marker = list_item.marker
                 list_item_text_or_none = list_item.text
 
                 validate_text_en_is_none(
@@ -261,16 +264,12 @@ def validate_basic_block_invariants(ctx: PageIRExtractionQualityCtx) -> None:
                     where_=f"items[{i}].list_items[{j}].text",
                 )
 
-                # Marker must be null OR a non-whitespace string (never "" / "   ").
-                if marker is not None and not marker.strip():
-                    raise QualityError(
-                        f"List item marker must be null or a non-empty string. "
-                        f"Found whitespace/empty marker at items[{i}].list_items[{j}].marker."
-                    )
+                # Heuristic: if marker is missing AND the text is extremely short, it's
+                # probably not a list item.
+                marker_missing = (list_item.marker is None) or (
+                    not list_item.marker.strip()
+                )
 
-                # If marker is missing AND the text is extremely short, it’s probably
-                # not a list item.
-                marker_missing = (marker is None) or (not marker.strip())
                 if (
                     marker_missing
                     and list_item_text_or_none is not None
@@ -297,7 +296,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
     """
 
     boundary_state = ctx.boundary_state
-    expected_boundary_state = derive_boundary_state_from_items(ctx.non_artifact_items)
+    expected_boundary_state = _derive_boundary_state_from_items(ctx.non_artifact_items)
     page_ir = ctx.page_ir
 
     if boundary_state != expected_boundary_state:
@@ -328,7 +327,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
 
         # Look in the first few non-artifact items for a resumed marker.
         if not any(
-            is_resumed(item.boundary.value)
+            _is_resumed(item.boundary.value)
             for item in [item for _, item in ctx.non_artifact_items[:5]]
         ):
             raise QualityError(
@@ -346,7 +345,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
 
         # Look in the last few non-artifact items for a truncated marker.
         if not any(
-            is_truncated(item.boundary.value)
+            _is_truncated(item.boundary.value)
             for item in [item for _, item in ctx.non_artifact_items[-5:]]
         ):
             raise QualityError(
@@ -356,7 +355,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
             )
 
     if boundary_state.value == PageBoundaryState.STANDALONE.value and any(
-        is_resumed(item.boundary.value) or is_truncated(item.boundary.value)
+        _is_resumed(item.boundary.value) or _is_truncated(item.boundary.value)
         for _, item in ctx.non_artifact_items
     ):
         raise QualityError(
@@ -367,7 +366,7 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
 
 
 def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> None:
-    """Ensure figure blocks carry figure metadata and don't misuse text/list fields.
+    """Validate extraction-specific figure block constraints.
 
     Parameters
     ----------
@@ -377,7 +376,7 @@ def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> N
     Raises
     ------
     QualityError
-        If any figure block is malformed.
+        If any extraction-specific figure constraint is violated.
     """
 
     for i, item in enumerate(ctx.items):
@@ -385,63 +384,20 @@ def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> N
             continue
 
         if item.figure is None:
-            raise QualityError(
-                f"Figure block must have figure!=null at items[{i}].figure."
-            )
-
-        # Prompt should say figure blocks must not use block.text; embedded text goes
-        # in figure.embedded_text.
-        if item.text is not None:
-            raise QualityError(
-                f"Figure block must have text=null at items[{i}].text "
-                f"(put any visible text inside figure.embedded_text or as a separate caption block)."
-            )
-
-        if item.list_items is not None:
-            raise QualityError(
-                f"Figure block must have list_items=null at items[{i}].list_items."
-            )
+            continue
 
         fig = item.figure
 
-        # Require a non-empty alt_text for every FIGURE block. We want *some* surface
-        # description for provenance/searchability, even if generic.
-        alt = (fig.alt_text or "").strip()
-
-        if not alt:
-            raise QualityError(
-                f"Figure block must have a non-empty figure.alt_text at "
-                f"items[{i}].figure.alt_text. Provide a short surface description "
-                f"(e.g., 'bar chart', 'geometry diagram with labels', 'illustration of ...')."
+        # Extraction-specific: no translations during extraction.
+        if fig.caption is not None:
+            validate_text_en_is_none(
+                text=fig.caption, where_=f"items[{i}].figure.caption"
             )
-
-        # Enforce extraction rule: no translations during extraction (caption is
-        # already checked elsewhere, but keeping figure-related checks together is
-        # useful).
-        _validate_figure_caption(fig=fig, index=i)
 
         if fig.embedded_text is not None:
             validate_text_en_is_none(
                 text=fig.embedded_text, where_=f"items[{i}].figure.embedded_text"
             )
-
-            # If embedded_text exists, contains_text should be true (not null).
-            if fig.contains_text is not True:
-                raise QualityError(
-                    f"Figure has embedded_text but contains_text is not true at "
-                    f"items[{i}].figure.contains_text. Set contains_text=true when "
-                    f"you provide embedded_text."
-                )
-
-            emb = (fig.embedded_text.text or "").strip()
-
-            if not emb:
-                raise QualityError(
-                    f"Figure contains_text=true but embedded_text is empty/whitespace at "
-                    f"items[{i}].figure.embedded_text. If there is visible text inside "
-                    f"the figure region, populate embedded_text with best-effort verbatim text. "
-                    f"If there is no visible text, set contains_text=false and embedded_text=null."
-                )
 
 
 def validate_footnote_blocks_are_plausible(ctx: PageIRExtractionQualityCtx) -> None:
@@ -478,6 +434,7 @@ def validate_footnote_blocks_are_plausible(ctx: PageIRExtractionQualityCtx) -> N
 
         # Bbox placement: near the bottom.
         _, y0, _, y1 = map(float, item.bbox)
+
         if y0 < bottom_band_y0:
             raise QualityError(
                 f"Footnote block appears too high on the page at items[{i}].bbox={list(item.bbox)}. "
@@ -509,7 +466,7 @@ def validate_full_page_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
     full_page_bboxes = [
         i
         for i, bbox in enumerate(ctx.top_level_bboxes)
-        if is_full_page_bbox(bbox=bbox, page_bbox=ctx.page_bbox, tol=ctx.tol)
+        if _is_full_page_bbox(bbox=bbox, page_bbox=ctx.page_bbox, tol=ctx.tol)
     ]
 
     if not full_page_bboxes:
@@ -529,6 +486,7 @@ def validate_full_page_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
 
     # Check figure metadata.
     figure_or_none = ctx.items[0].figure
+
     if figure_or_none is None:
         raise QualityError("Full-page figure block must include figure metadata.")
     if figure_or_none.figure_kind in (None, FigureKind.UNKNOWN):
@@ -541,6 +499,7 @@ def validate_full_page_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
         )
 
     contains_text_or_none = figure_or_none.contains_text
+
     if contains_text_or_none is None:
         raise QualityError(
             f"Full-page bbox is only allowed when figure.contains_text is explicitly "
@@ -589,7 +548,7 @@ def validate_full_page_figure_requires_double_check(
         return
 
     # Must actually be full-page bbox.
-    if not is_full_page_bbox(
+    if not _is_full_page_bbox(
         bbox=ctx.top_level_bboxes[0], page_bbox=ctx.page_bbox, tol=ctx.tol
     ):
         return
@@ -749,7 +708,7 @@ def validate_item_bboxes_required_and_in_bounds(
         if bbox is None:
             raise QualityError(
                 f"Missing required item bbox at items[{i}].bbox. "
-                "Every block/table must have an item-level bbox."
+                f"Every block/table must have an item-level bbox."
             )
 
         x0, y0, x1, y1 = bbox
@@ -798,6 +757,7 @@ def validate_no_duplicate_item_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
         bbox_to_indices.setdefault(bbox, []).append(i)
 
     details = []
+
     for bbox in dup_bboxes:
         idxs = bbox_to_indices.get(bbox, [])
         details.append(f"bbox={list(bbox)} used by items={idxs}")
@@ -816,7 +776,7 @@ def validate_no_duplicate_item_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
 
 
 def validate_no_whitespace_or_empty_blocks(ctx: PageIRExtractionQualityCtx) -> None:
-    """Validate that there are no whitespace-only or empty blocks.
+    """Validate extraction-specific text constraints on blocks.
 
     Parameters
     ----------
@@ -826,64 +786,20 @@ def validate_no_whitespace_or_empty_blocks(ctx: PageIRExtractionQualityCtx) -> N
     Raises
     ------
     QualityError
-        If any whitespace-only or empty blocks are found.
+        If any extraction-specific text constraint is violated.
     """
 
     for i, item in enumerate(ctx.items):
         if item.kind != "block":
             continue
 
-        text_unit_or_none = item.text
-        validate_text_en_is_none(text=text_unit_or_none, where_=f"items[{i}].text")
-        text = (
-            text_unit_or_none.text if isinstance(text_unit_or_none, TextUnit) else None
-        )
+        # text_en must be null during extraction.
+        validate_text_en_is_none(text=item.text, where_=f"items[{i}].text")
 
-        block_type = item.block_type
-        figure_or_none = item.figure
-        list_items = item.list_items or []
-        local_code_or_none = item.local_code
-
-        # Check that figure captions are also TextUnits or None.
-        if figure_or_none is not None and figure_or_none.caption is not None:
+        # Check figure captions for text_en.
+        if item.figure is not None and item.figure.caption is not None:
             validate_text_en_is_none(
-                text=figure_or_none.caption, where_=f"items[{i}].figure.caption"
-            )
-
-        # Check for whitespace-only main text. We define has_text as: exists, is
-        # string, and is not empty.
-        has_text = False
-        if isinstance(text, str):
-            if not text.strip():
-                raise QualityError(
-                    f"Whitespace-only block text at items[{i}].text; remove this block."
-                )
-            has_text = True
-
-        # Check for whitespace-only list items.
-        for j, li in enumerate(list_items):
-            li_text_unit_or_none = li.text
-            li_text = (
-                li_text_unit_or_none.text
-                if isinstance(li_text_unit_or_none, TextUnit)
-                else None
-            )
-            if isinstance(li_text, str) and not li_text.strip():
-                raise QualityError(
-                    f"Whitespace-only list item text at items[{i}].list_items[{j}].text; "
-                    "remove this list item."
-                )
-
-        # Check for empty blocks (no payload at all).
-        has_code = isinstance(local_code_or_none, str) and bool(
-            local_code_or_none.strip()
-        )
-        has_figure = (block_type == BlockType.FIGURE) and (figure_or_none is not None)
-        has_list = len(list_items) > 0
-        if not (has_text or has_list or has_code or has_figure):
-            raise QualityError(
-                f"Empty block at items[{i}]: text, list_items, and local_code are all "
-                f"null/empty (and figure is null). Do not emit placeholder blocks."
+                text=item.figure.caption, where_=f"items[{i}].figure.caption"
             )
 
 
@@ -914,22 +830,22 @@ def validate_placeholder_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
 
         if frac >= 0.30 and starts_at_origin:
             raise QualityError(
-                "Too many items share the same origin-anchored bbox "
+                f"Too many items share the same origin-anchored bbox "
                 f"{list(most_common_bbox)} (count={most_common_count}, frac={frac:.2f}). "
-                "This looks like a placeholder; bboxes must be localized to each item."
+                f"This looks like a placeholder; bboxes must be localized to each item."
             )
 
         if frac >= 0.20 and area_frac >= 0.85:
             raise QualityError(
-                "Too many items share a near-full-page bbox "
+                f"Too many items share a near-full-page bbox "
                 f"{list(most_common_bbox)} (count={most_common_count}, "
                 f"frac={frac:.2f}, area_frac={area_frac:.2f}). "
-                "Do not use near-full-page bboxes as placeholders; bboxes must be localized."
+                f"Do not use near-full-page bboxes as placeholders; bboxes must be localized."
             )
 
 
-def validate_table_cells_and_spans(*, index: int, rows: list[Any]) -> None:
-    """Validate table cells and their spans.
+def validate_table_cells_text_en(*, index: int, rows: list[Any]) -> None:
+    """Validate that table cell text_en is null during extraction.
 
     Parameters
     ----------
@@ -941,21 +857,13 @@ def validate_table_cells_and_spans(*, index: int, rows: list[Any]) -> None:
     Raises
     ------
     QualityError
-        If any cell is invalid or has invalid spans.
+        If any cell has text_en populated.
     """
 
     for r, row in enumerate(rows):
-        cells = row.cells or []
-
-        if len(cells) == 0:
-            raise QualityError(
-                f"Table row with zero cells at items[{index}].rows[{r}].cells."
-            )
-
-        for c, cell in enumerate(cells):
+        for c, cell in enumerate(row.cells):
             validate_text_en_is_none(
-                text=cell.text,
-                where_=f"items[{index}].rows[{r}].cells[{c}].text",
+                text=cell.text, where_=f"items[{index}].rows[{r}].cells[{c}].text"
             )
 
 
@@ -1026,6 +934,7 @@ def validate_table_has_any_text(*, index: int, rows: list[Any]) -> None:
     for row in rows:
         for cell in row.cells or []:
             text_or_none = cell.text
+
             if isinstance(text_or_none, TextUnit) and text_or_none.text.strip():
                 return
 
@@ -1058,6 +967,7 @@ def validate_table_inconsistent_widths(
     # Catch wildly inconsistent widths overall (span-aware).
     mode_eff, _ = Counter(eff_widths).most_common(1)[0]
     frac_single_all = sum(w == 1 for w in eff_widths) / len(eff_widths)
+
     if mode_eff == 1 and frac_single_all >= 0.70:
         raise QualityError(
             f"Table at items[{index}] appears mostly single-column rows "
@@ -1068,7 +978,7 @@ def validate_table_inconsistent_widths(
 
 
 def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
-    """Validate table integrity.
+    """Validate table integrity via heuristic quality checks.
 
     Parameters
     ----------
@@ -1078,7 +988,7 @@ def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
     Raises
     ------
     QualityError
-        If any table integrity check fails.
+        If any table quality check fails.
     """
 
     for i, item in enumerate(ctx.items):
@@ -1086,8 +996,9 @@ def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
             continue
 
         rows = item.rows or []
-        validate_table_rows_nonempty(index=i, rows=rows)
-        validate_table_cells_and_spans(index=i, rows=rows)
+
+        # Extraction-specific: text_en must be null on all cells.
+        validate_table_cells_text_en(index=i, rows=rows)
 
         # Lightweight column-count sanity checks (span-aware). NB: We must account for
         # col_span when assessing whether a table has "collapsed" into single-cell
@@ -1108,7 +1019,7 @@ def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
         )
 
         if stats is not None:
-            validate_table_n_cols(index=i, max_eff=stats.max_eff, n_cols=item.n_cols)
+            validate_table_n_cols(index=i, n_cols=item.n_cols)
             validate_table_collapse_by_header_body(
                 cell_counts=stats.cell_counts,
                 eff_widths=stats.eff_widths,
@@ -1122,93 +1033,32 @@ def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
         validate_table_has_any_text(index=i, rows=rows)
 
 
-def validate_table_n_cols(*, index: int, max_eff: int, n_cols: Any) -> None:
-    """Validate that table n_cols is valid.
+def validate_table_n_cols(*, index: int, n_cols: Any) -> None:
+    """Validate that table n_cols is within a plausible range.
 
     Parameters
     ----------
     index
         The index of the table in items.
-    max_eff
-        The maximum effective width of the table (sum of col_span).
     n_cols
         The n_cols of the table.
 
     Raises
     ------
     QualityError
-        If n_cols is invalid or cannot accommodate the widest row.
+        If n_cols is outside a plausible range.
     """
 
     if n_cols is None:
         return
 
-    # If the model provided n_cols, ensure it can accommodate the widest row.
     if not isinstance(n_cols, int):
         raise QualityError(
             f"n_cols must be an int or null at items[{index}].n_cols; got {type(n_cols)}"
         )
-    if n_cols < 1 or n_cols > 50:
+    if n_cols > 50:
         raise QualityError(
             f"Suspicious n_cols={n_cols} at items[{index}].n_cols (expected 1..50 or null)."
-        )
-    if max_eff > n_cols:
-        raise QualityError(
-            f"Table at items[{index}] has a row with effective width {max_eff} "
-            f"(sum of col_span) but n_cols={n_cols}. Either increase n_cols or "
-            f"adjust/split/merge cells to match the visual grid."
-        )
-
-
-def validate_table_spans_are_sane(ctx: PageIRExtractionQualityCtx) -> None:
-    """Validate that table row/col spans are within bounds and consistent.
-
-    Rules enforced (general, should work across PDFs):
-
-    1. row_span/col_span are >= 1 (already enforced by schema, but we rely on it).
-    2. A cell's row_span cannot run past the bottom of the table.
-    3. If table.n_cols is set:
-        - No row may exceed n_cols (sum of col_spans)
-        - At least one row must reach n_cols (otherwise the grid is likely incomplete)
-        - No individual cell may have col_span > n_cols
-    4. Spanned cells should not be "empty merges" (span > 1 with text=None) because
-        it’s often hallucination.
-
-    Parameters
-    ----------
-    ctx
-        The PageIR extraction quality context.
-
-    Raises
-    ------
-    QualityError
-        If any table span check fails.
-    """
-
-    for i, item in enumerate(ctx.items):
-        if item.kind == "table":
-            _validate_single_table(index=i, table=item)
-
-
-def validate_table_rows_nonempty(*, index: int, rows: list[Any]) -> None:
-    """Validate that table rows are non-empty.
-
-    Parameters
-    ----------
-    index
-        The index of the table in items.
-    rows
-        The rows of the table.
-
-    Raises
-    ------
-    QualityError
-        If the table has no rows.
-    """
-
-    if len(rows) == 0:
-        raise QualityError(
-            f"Empty table (rows=[]) at items[{index}].rows. Do not emit empty tables."
         )
 
 

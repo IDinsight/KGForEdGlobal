@@ -46,7 +46,6 @@ from skg.page_ir_extraction.validators import (
     validate_no_whitespace_or_empty_blocks,
     validate_placeholder_bboxes,
     validate_table_integrity,
-    validate_table_spans_are_sane,
 )
 from skg.schemas import Limits
 from skg.utils.constants import BlockType
@@ -74,7 +73,6 @@ openai_client = OpenAI()
 )
 def _call_openai_api_for_page_ir_extraction(
     *,
-    always_double_check_first_attempt: bool,
     attempt: int,
     image_height: int,
     image_width: int,
@@ -88,8 +86,6 @@ def _call_openai_api_for_page_ir_extraction(
 
     Parameters
     ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The extraction attempt number (0-based).
     image_height
@@ -116,7 +112,7 @@ def _call_openai_api_for_page_ir_extraction(
         If the response could not be parsed or failed quality checks.
     """
 
-    if attempt == 0 or not always_double_check_first_attempt:
+    if attempt == 0:
         response = openai_client.responses.parse(
             input=input_items,  # User content items
             instructions=instructions,  # System message at top-level
@@ -166,7 +162,6 @@ def _call_openai_api_for_page_ir_extraction(
 
     try:
         verify_page_ir_extraction_quality(
-            always_double_check_first_attempt=always_double_check_first_attempt,
             attempt=attempt,
             image_height=image_height,
             image_width=image_width,
@@ -263,7 +258,6 @@ def _persist_page_ir_attempt_artifacts(
 
 def extract_page_ir(
     *,
-    country: str,
     image_height: int,
     image_width: int,
     languages: list[str],
@@ -272,14 +266,11 @@ def extract_page_ir(
     page_index: int,
     png_fp: Path,
     raw_page_irs_dir: Path,
-    year: Optional[int] = None,
 ) -> PageIR:
     """Extract PageIR from a page image using LLM + Vision + Structured Outputs.
 
     Parameters
     ----------
-    country
-        Country context for the prompt.
     image_height
         The image height in pixels.
     image_width
@@ -296,8 +287,6 @@ def extract_page_ir(
         The PNG file path of the page image.
     raw_page_irs_dir
         Directory to save raw page IR extraction artifacts.
-    year
-        Year context for the prompt.
 
     Returns
     -------
@@ -314,13 +303,10 @@ def extract_page_ir(
 
     image_url = encode_png_to_data_url(png_fp)
     prompts = extract_page_ir_from_pdf_page(
-        country=country,
         image_height=image_height,
         image_width=image_width,
         languages=languages,
         page_index=page_index,
-        text_layer_hints=text_layer_hints,
-        year=year,
     )
     instructions = prompts.system_message
     input_items = [
@@ -336,7 +322,6 @@ def extract_page_ir(
     for attempt in range(max_retries + 1):
         try:
             return _call_openai_api_for_page_ir_extraction(
-                always_double_check_first_attempt=always_double_check_first_attempt,
                 attempt=attempt,
                 image_height=image_height,
                 image_width=image_width,
@@ -362,34 +347,21 @@ def extract_page_ir(
                     }
                 )
 
-            if always_double_check_first_attempt and attempt == 0:
-                input_items.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": double_check_page_ir_extraction().user_message,
-                            }
-                        ],
-                    }
-                )
-            else:
-                input_items.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    f"Your previous output had issues and must be corrected.\n"
-                                    f"ERROR: {str(e)}\n\n"
-                                    f"Return a complete PageIR that matches the schema and fixes the issue."
-                                ),
-                            }
-                        ],
-                    }
-                )
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"Your previous output had issues and must be corrected.\n"
+                                f"ERROR: {str(e)}\n\n"
+                                f"Return a complete PageIR that matches the schema and fixes the issue."
+                            ),
+                        }
+                    ],
+                }
+            )
             continue
         except Exception as e:  # pylint: disable=broad-except
             # Let transient errors propagate (tenacity should cover most of these).
@@ -444,7 +416,6 @@ def extract_page_ir(
 
 def verify_page_ir_extraction_quality(
     *,
-    always_double_check_first_attempt: bool,
     attempt: int,
     image_height: int,
     image_width: int,
@@ -454,8 +425,6 @@ def verify_page_ir_extraction_quality(
 
     Parameters
     ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     attempt
         The extraction attempt number (0-based).
     image_height
@@ -471,10 +440,8 @@ def verify_page_ir_extraction_quality(
         If any quality checks fail.
     """
 
-    # Force retry on first attempt.
-    if always_double_check_first_attempt and attempt == 0:
-        raise QualityError("Reason does not matter and is overwritten in caller.")
-
+    # Create context object for validators to share information and avoid redundant
+    # computations.
     ctx = PageIRExtractionQualityCtx(
         boundary_state=page_ir.boundary_state,
         image_height=image_height,
@@ -490,6 +457,9 @@ def verify_page_ir_extraction_quality(
         tol=2.0,  # Small tolerance for rounding
         top_level_bboxes=[],
     )
+
+    # Call validators. NB: Order can matter here so don't change unless you really know
+    # what you are doing!
     validate_image_dimensions(ctx)
     validate_no_whitespace_or_empty_blocks(ctx)
     validate_item_bboxes_required_and_in_bounds(ctx)
@@ -501,7 +471,6 @@ def verify_page_ir_extraction_quality(
     validate_figure_blocks_are_well_formed(ctx)
     validate_artifacts_are_true_artifacts(ctx)
     validate_table_integrity(ctx)
-    validate_table_spans_are_sane(ctx)
     validate_placeholder_bboxes(ctx)
     validate_continuity_for_extraction(ctx)
     validate_gross_reading_order(ctx)
