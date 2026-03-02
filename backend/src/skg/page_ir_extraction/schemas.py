@@ -567,3 +567,111 @@ class PageIR(BaseSchema):
         ...,
         description="Ordered list of content items found on the page, sorted by visual reading order (e.g., multi-column left-to-right, then down)",
     )
+
+
+# Schemas for validation.
+class ValidationIssue(BaseSchema):
+    """A single issue found during validation of an extracted PageIR against the source
+    page image.
+    """
+
+    description: str = Field(
+        ...,
+        description=(
+            "Clear description of the discrepancy between the extracted PageIR "
+            "and the source image. Reference item indices and quote relevant text "
+            "where possible."
+        ),
+    )
+    item_index: Optional[int] = Field(
+        default=None,
+        description=(
+            "0-based index of the item in PageIR.items that has the issue. "
+            "Null if the issue is page-level (e.g., missing content, reading order)."
+        ),
+        ge=0,
+    )
+    severity: Literal["error", "warning"] = Field(
+        ...,
+        description=(
+            "'error' for issues that make the extraction materially incorrect "
+            "(missing content, hallucinated content, wrong classification, collapsed "
+            "tables, grossly wrong reading order). 'warning' for minor quality "
+            "concerns (slightly loose bbox, borderline classification)."
+        ),
+    )
+
+
+class ValidationVerdict(BaseSchema):
+    """Structured verdict from the validation agent comparing an extracted PageIR
+    against the source page image.
+    """
+
+    issues: list[ValidationIssue] = Field(
+        default_factory=list,
+        description="List of issues found during validation. Must be non-empty when passed=false.",
+    )
+    passed: bool = Field(
+        ...,
+        description=(
+            "True if the extraction faithfully represents the source image with no "
+            "material errors; false if corrections are needed."
+        ),
+    )
+    rationale: str = Field(
+        ..., description="Brief explanation of the overall assessment."
+    )
+
+    @model_validator(mode="after")
+    def validate_fail_requires_error_issues(self) -> Self:
+        """Validate that a failing verdict includes at least one error-severity issue.
+
+        A failing verdict must contain actionable error(s) for the extraction agent to
+        correct. If all issues are warnings, the verdict should pass.
+
+        Returns
+        -------
+        Self
+            The validated ValidationVerdict.
+
+        Raises
+        ------
+        ValueError
+            If passed=false but no error-severity issues are present.
+        """
+
+        if not self.passed:
+            if not self.issues:
+                raise ValueError(
+                    "A failing verdict (passed=false) must include at least one issue."
+                )
+
+            has_errors = any(issue.severity == "error" for issue in self.issues)
+
+            if not has_errors:
+                raise ValueError(
+                    "A failing verdict (passed=false) must include at least one issue "
+                    "with severity='error'. If all issues are warnings, set passed=true."
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_rationale_non_empty(self) -> Self:
+        """Validate that rationale is non-empty.
+
+        Returns
+        -------
+        Self
+            The validated ValidationVerdict.
+
+        Raises
+        ------
+        ValueError
+            If rationale is empty or whitespace-only.
+        """
+
+        if not self.rationale or not self.rationale.strip():
+            raise ValueError("Rationale must be non-empty.")
+
+        return self

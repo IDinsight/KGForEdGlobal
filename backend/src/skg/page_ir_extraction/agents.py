@@ -1,8 +1,12 @@
-"""This module contains Agent definitions for page IR extraction.
+"""This module contains Agent definitions for page IR extraction and validation.
 
-The Agent is constructed per-call via a factory function because the output validator
-closure captures page-specific context (image dimensions, attempt counter, artifact
-persistence directory).
+The extraction Agent is constructed per-call via a factory function because the output
+validator closure captures page-specific context (image dimensions, attempt counter,
+artifact persistence directory).
+
+The validation Agent is simpler. It receives a PageIR JSON and the source image and
+returns a structured ValidationVerdict. It is also constructed per-call to ensure a
+fresh conversation history.
 """
 
 # Standard Library
@@ -14,12 +18,13 @@ from loguru import logger
 from pydantic_ai import Agent, ModelRetry, ModelSettings
 
 # Package Library
-from skg.page_ir_extraction.schemas import PageIR
+from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
 from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import QualityError
 
 DEFAULT_MODEL_SETTINGS = ModelSettings(temperature=0, top_p=1)
 DEFAULT_OUTPUT_RETRIES = 3
+DEFAULT_VALIDATION_RETRIES = 1
 
 
 def create_page_ir_extraction_agent(
@@ -150,3 +155,90 @@ def create_page_ir_extraction_agent(
         return output
 
     return agent, attempt_counter
+
+
+def create_page_ir_validation_agent(
+    *, instructions: str, model: str, max_retries: int = DEFAULT_VALIDATION_RETRIES
+) -> Agent:
+    """Create an Agent configured for validating an extracted PageIR against a source
+    page image.
+
+    The validation agent receives a PageIR JSON and the source PNG, then returns a
+    structured ValidationVerdict indicating whether the extraction is faithful. Each
+    call creates a fresh agent with no conversation history.
+
+    Parameters
+    ----------
+    instructions
+        System-level validation instructions.
+    model
+        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
+    max_retries
+        Maximum number of retries if the verdict itself fails structural checks.
+
+    Returns
+    -------
+    Agent
+        The configured validation Agent with output type ValidationVerdict.
+    """
+
+    agent = Agent(
+        model,
+        instructions=instructions,
+        model_settings=DEFAULT_MODEL_SETTINGS,
+        output_retries=max_retries,
+        output_type=ValidationVerdict,
+    )
+
+    @agent.output_validator
+    def validate_verdict_consistency(output: ValidationVerdict) -> ValidationVerdict:
+        """Validate structural consistency of the validation verdict.
+
+        Enforces that failing verdicts include actionable error-severity issues and
+        that the rationale is substantive. These checks complement the Pydantic
+        model validators on ValidationVerdict by providing LLM-friendly correction
+        messages via ModelRetry.
+
+        Parameters
+        ----------
+        output
+            The parsed ValidationVerdict from the model.
+
+        Returns
+        -------
+        ValidationVerdict
+            The validated verdict (same as input if checks pass).
+
+        Raises
+        ------
+        ModelRetry
+            If the verdict fails consistency checks, with a message guiding the model
+            to correct the output. This triggers a retry with the error appended to the
+            conversation history.
+        """
+
+        if not output.rationale or not output.rationale.strip():
+            raise ModelRetry(
+                "Rationale must be non-empty. Provide a brief explanation of your "
+                "assessment."
+            )
+
+        if not output.passed:
+            if not output.issues:
+                raise ModelRetry(
+                    "A failing verdict (passed=false) must include at least one "
+                    "issue. Either set passed=true or describe the issues found."
+                )
+
+            has_errors = any(issue.severity == "error" for issue in output.issues)
+
+            if not has_errors:
+                raise ModelRetry(
+                    "A failing verdict (passed=false) must include at least one "
+                    "issue with severity='error'. If all issues are only warnings, "
+                    "set passed=true instead."
+                )
+
+        return output
+
+    return agent
