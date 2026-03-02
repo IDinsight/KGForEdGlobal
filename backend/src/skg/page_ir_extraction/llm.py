@@ -28,9 +28,6 @@ from pydantic_ai import BinaryContent
 
 # Package Library
 from skg.page_ir_extraction.agents import (
-    DEFAULT_EXTRACTION_MODEL_SETTINGS,
-    DEFAULT_OUTPUT_RETRIES,
-    DEFAULT_VALIDATION_MODEL_SETTINGS,
     create_page_ir_extraction_agent,
     create_page_ir_validation_agent,
 )
@@ -57,8 +54,6 @@ from skg.page_ir_extraction.validators import (
     validate_table_integrity,
 )
 from skg.utils.constants import BlockType
-
-DEFAULT_MAX_VALIDATION_ATTEMPTS = 2
 
 
 def _format_validation_feedback(verdict: ValidationVerdict) -> str:
@@ -139,13 +134,13 @@ def _run_validation_agent(
         The structured validation verdict.
     """
 
-    page_ir_json = page_ir.model_dump_json(indent=2)
+    logger.info(f"Running validation agent for page: {page_index}...")
 
     prompts = validate_page_ir_extraction(
         image_height=image_height,
         image_width=image_width,
         page_index=page_index,
-        page_ir_json=page_ir_json,
+        page_ir_json=page_ir.model_dump_json(indent=2),
     )
 
     agent = create_page_ir_validation_agent(
@@ -156,9 +151,9 @@ def _run_validation_agent(
         prompts.user_message,
         BinaryContent(data=png_bytes, media_type="image/png"),
     ]
-    result = agent.run_sync(
-        user_prompt, model_settings=DEFAULT_VALIDATION_MODEL_SETTINGS
-    )
+    result = agent.run_sync(user_prompt)
+
+    logger.success(f"Finished running validation agent for page: {page_index}.")
 
     return result.output
 
@@ -168,8 +163,7 @@ def extract_page_ir(
     image_height: int,
     image_width: int,
     languages: list[str],
-    max_retries: int = DEFAULT_OUTPUT_RETRIES,
-    max_validation_attempts: int = DEFAULT_MAX_VALIDATION_ATTEMPTS,
+    max_validation_attempts: int = 2,
     model: str,
     page_index: int,
     png_fp: Path,
@@ -190,9 +184,6 @@ def extract_page_ir(
         The image width in pixels.
     languages
         Expected languages context for the prompt.
-    max_retries
-        Maximum number of quality-error retries within each extraction attempt
-        (correction turns handled by pydantic-ai's ModelRetry).
     max_validation_attempts
         Maximum number of extraction -> validation cycles. The extraction agent is
         re-invoked with validation feedback on each failed cycle.
@@ -214,9 +205,9 @@ def extract_page_ir(
         dpi, and pdf_name).
     """
 
+    page_ir: PageIR | None = None
     png_bytes = png_fp.read_bytes()
     validation_feedback: str | None = None
-    page_ir: PageIR | None = None
 
     for validation_attempt in range(max_validation_attempts):
         # Build extraction prompts.
@@ -228,30 +219,28 @@ def extract_page_ir(
         )
 
         # Append validation feedback from a prior failed validation cycle.
-        user_message_text = prompts.user_message
+        user_message = prompts.user_message
 
         if validation_feedback is not None:
-            user_message_text = f"{user_message_text}\n\n{validation_feedback}"
+            user_message = f"{user_message}\n\n{validation_feedback}"
 
         # Create a fresh extraction agent and run it.
         agent = create_page_ir_extraction_agent(
             image_height=image_height,
             image_width=image_width,
             instructions=prompts.system_message,
-            max_retries=max_retries,
             model=model,
             page_index=page_index,
             raw_page_irs_dir=raw_page_irs_dir,
+            validation_cycle=validation_attempt,
             verify_quality_fn=verify_page_ir_extraction_quality,
         )
 
         user_prompt: list[str | BinaryContent] = [
-            user_message_text,
+            user_message,
             BinaryContent(data=png_bytes, media_type="image/png"),
         ]
-        result = agent.run_sync(
-            user_prompt, model_settings=DEFAULT_EXTRACTION_MODEL_SETTINGS
-        )
+        result = agent.run_sync(user_prompt)
         page_ir = result.output
 
         # Run the validation agent.
@@ -275,10 +264,11 @@ def extract_page_ir(
 
         # Validation failed: format feedback for the next extraction attempt.
         logger.warning(
-            f"Page {page_index}: validation failed "
+            f"Page {page_index + 1}: validation failed "
             f"(validation attempt {validation_attempt}): "
             f"{verdict.rationale[:300]}"
         )
+
         validation_feedback = _format_validation_feedback(verdict)
     else:
         logger.warning(
@@ -288,7 +278,7 @@ def extract_page_ir(
 
     assert page_ir is not None, (
         f"page_ir is None after {max_validation_attempts} validation attempt(s) for "
-        f"page {page_index}. This should never happen — the extraction agent must "
+        f"page {page_index}. This should never happen since the extraction agent must "
         f"produce at least one PageIR."
     )
 
@@ -296,11 +286,7 @@ def extract_page_ir(
 
 
 def verify_page_ir_extraction_quality(
-    *,
-    attempt: int,
-    image_height: int,
-    image_width: int,
-    page_ir: PageIR,
+    *, attempt: int, image_height: int, image_width: int, page_ir: PageIR
 ) -> None:
     """Validate *quality* (not schema) of a parsed PageIR.
 
@@ -322,7 +308,6 @@ def verify_page_ir_extraction_quality(
     """
 
     ctx = PageIRExtractionQualityCtx(
-        boundary_state=page_ir.boundary_state,
         image_height=image_height,
         image_width=image_width,
         items=page_ir.items,

@@ -23,25 +23,17 @@ from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
 from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import QualityError
 
-DEFAULT_EXTRACTION_MODEL_SETTINGS = OpenAIResponsesModelSettings(
-    openai_reasoning_effort="high", openai_reasoning_summary="detailed"
-)
-DEFAULT_VALIDATION_MODEL_SETTINGS = OpenAIResponsesModelSettings(
-    openai_reasoning_effort="high", openai_reasoning_summary="detailed"
-)
-DEFAULT_OUTPUT_RETRIES = 3
-DEFAULT_VALIDATION_RETRIES = 1
-
 
 def create_page_ir_extraction_agent(
     *,
     image_height: int,
     image_width: int,
     instructions: str,
-    max_retries: int = DEFAULT_OUTPUT_RETRIES,
+    max_retries: int = 3,
     model: str,
     page_index: int,
     raw_page_irs_dir: Path,
+    validation_cycle: int = 0,
     verify_quality_fn: Callable,
 ) -> Agent:
     """Create an Agent configured for page IR extraction.
@@ -65,6 +57,9 @@ def create_page_ir_extraction_agent(
         The 0-based page index.
     raw_page_irs_dir
         Directory to save raw page IR extraction artifacts.
+    validation_cycle
+        The 0-based validation cycle index. Forwarded to artifact persistence so
+        filenames are unique across extraction -> validation retries.
     verify_quality_fn
         Callable with signature `(*, attempt, image_height, image_width, page_ir)`
         that raises `QualityError` on failure. Injected to avoid circular imports
@@ -82,7 +77,9 @@ def create_page_ir_extraction_agent(
     agent = Agent(
         model,
         instructions=instructions,
-        model_settings=DEFAULT_EXTRACTION_MODEL_SETTINGS,
+        model_settings=OpenAIResponsesModelSettings(
+            openai_reasoning_effort="high", openai_reasoning_summary="detailed"
+        ),
         output_retries=max_retries,
         output_type=PageIR,
     )
@@ -132,6 +129,7 @@ def create_page_ir_extraction_agent(
                 page_index=page_index,
                 parsed=output,
                 raw_page_irs_dir=raw_page_irs_dir,
+                validation_cycle=validation_cycle,
             )
             truncated_msg = str(e)[:500]
 
@@ -157,6 +155,7 @@ def create_page_ir_extraction_agent(
             page_index=page_index,
             parsed=output,
             raw_page_irs_dir=raw_page_irs_dir,
+            validation_cycle=validation_cycle,
         )
         attempt_counter["value"] += 1
 
@@ -166,7 +165,7 @@ def create_page_ir_extraction_agent(
 
 
 def create_page_ir_validation_agent(
-    *, instructions: str, model: str, max_retries: int = DEFAULT_VALIDATION_RETRIES
+    *, instructions: str, model: str, max_retries: int = 1
 ) -> Agent:
     """Create an Agent configured for validating an extracted PageIR against a source
     page image.
@@ -193,7 +192,9 @@ def create_page_ir_validation_agent(
     agent = Agent(
         model,
         instructions=instructions,
-        model_settings=DEFAULT_VALIDATION_MODEL_SETTINGS,
+        model_settings=OpenAIResponsesModelSettings(
+            openai_reasoning_effort="high", openai_reasoning_summary="detailed"
+        ),
         output_retries=max_retries,
         output_type=ValidationVerdict,
     )
