@@ -1,30 +1,17 @@
 """This module contains functionalities related to LLM calls for page IR **extraction**."""
 
 # Standard Library
-import json
-
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 # Third Party Library
 from loguru import logger
-from openai import (
-    APIConnectionError,
-    InternalServerError,
-    OpenAI,
-    RateLimitError,
-)
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_random_exponential,
-)
+from pydantic_ai import Agent, BinaryContent, ModelRetry, ModelSettings
 
 # Package Library
+from skg.config import Settings
 from skg.page_ir_extraction.prompts import extract_page_ir_from_pdf_page
 from skg.page_ir_extraction.schemas import PageIR
+from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
     QualityError,
@@ -43,217 +30,10 @@ from skg.page_ir_extraction.validators import (
     validate_placeholder_bboxes,
     validate_table_integrity,
 )
-from skg.schemas import Limits
 from skg.utils.constants import BlockType
-from skg.utils.general import encode_png_to_data_url
 
-limits = Limits(max_retry_attempts=5)
-openai_client = OpenAI()
-
-
-@retry(
-    reraise=True,
-    retry=retry_if_exception_type(
-        (OSError, APIConnectionError, InternalServerError, RateLimitError)
-    ),
-    stop=stop_after_attempt(limits.max_retry_attempts),
-    wait=wait_random_exponential(min=1, max=60),
-)
-def _call_openai_api_for_page_ir_extraction(
-    *,
-    attempt: int,
-    image_height: int,
-    image_width: int,
-    input_items: list[Any],
-    instructions: str,
-    model: str,
-    page_index: int,
-    raw_page_irs_dir: Path,
-) -> PageIR:
-    """Wrapper for extraction API calls with retries.
-
-    Parameters
-    ----------
-    attempt
-        The extraction attempt number (0-based).
-    image_height
-        The image height in pixels.
-    image_width
-        The image width in pixels.
-    input_items
-        The list of messages to send to the OpenAI API.
-    instructions
-        The extraction instructions to include.
-    model
-        The OpenAI model to use.
-    raw_page_irs_dir
-        Directory to save raw page IR extraction artifacts.
-
-    Returns
-    -------
-    PageIR
-        The extracted PageIR.
-
-    Raises
-    ------
-    QualityError
-        If the response could not be parsed or failed quality checks.
-    """
-
-    try:
-        response = openai_client.responses.parse(
-            input=input_items,  # User content items
-            instructions=instructions,  # System message at top-level
-            model=model,
-            temperature=0,
-            text_format=PageIR,  # Pydantic for structured output parsing
-            top_p=1,
-        )
-    except (OSError, APIConnectionError, InternalServerError, RateLimitError):
-        raise  # Let tenacity handle transient errors
-    except Exception as e:
-        # Pydantic ValidationErrors and other parse failures land here. The raw output
-        # text is lost, so we wrap in QualityError with failed_content=None and persist
-        # what we can.
-        qe = QualityError(
-            f"Structured parse/validation failed on page {page_index}: "
-            f"{e.__class__.__name__}: {e}",
-            failed_content=None,
-        )
-        _persist_page_ir_attempt_artifacts(
-            attempt=attempt,
-            error=qe,
-            model=model,
-            output_text=None,
-            page_index=page_index,
-            parsed=None,
-            raw_page_irs_dir=raw_page_irs_dir,
-        )
-        raise qe from e
-
-    parsed = getattr(response, "output_parsed", None)
-    output_text = getattr(response, "output_text", None)
-
-    # Capture the raw text if parsing/validation fails.
-    if parsed is None:
-        qe = QualityError(
-            (
-                f"Responses.parse returned no parsed output. output_text={output_text!r}"
-                if output_text
-                else ""
-            ),
-            failed_content=output_text,  # Pass text back to caller
-        )
-        _persist_page_ir_attempt_artifacts(
-            attempt=attempt,
-            error=qe,
-            model=model,
-            output_text=output_text,
-            page_index=page_index,
-            parsed=None,
-            raw_page_irs_dir=raw_page_irs_dir,
-        )
-        raise qe
-
-    # Populate image dimensions and page index.
-    parsed.image_width = image_width
-    parsed.image_height = image_height
-    parsed.page_index = page_index
-
-    try:
-        verify_page_ir_extraction_quality(
-            attempt=attempt,
-            image_height=image_height,
-            image_width=image_width,
-            page_ir=parsed,
-        )
-    except QualityError as e:
-        _persist_page_ir_attempt_artifacts(
-            attempt=attempt,
-            error=e,
-            model=model,
-            output_text=output_text,
-            page_index=page_index,
-            parsed=parsed,
-            raw_page_irs_dir=raw_page_irs_dir,
-        )
-
-        # Attach the raw output so the correction attempt can see what it wrote.
-        raise QualityError(str(e), failed_content=output_text) from e
-
-    _persist_page_ir_attempt_artifacts(
-        attempt=attempt,
-        error=None,
-        model=model,
-        output_text=output_text,
-        page_index=page_index,
-        parsed=parsed,
-        raw_page_irs_dir=raw_page_irs_dir,
-    )
-
-    return parsed
-
-
-def _persist_page_ir_attempt_artifacts(
-    *,
-    attempt: int,
-    error: Exception | None,
-    model: str,
-    output_text: str | None,
-    page_index: int,
-    parsed: PageIR | None,
-    raw_page_irs_dir: Path,
-) -> None:
-    """Persist raw artifacts from a page IR extraction attempt.
-
-    Parameters
-    ----------
-    attempt
-        The attempt number (0-based).
-    error
-        The error encountered (if any).
-    model
-        The OpenAI model used.
-    output_text
-        The raw output text from the model (if any).
-    page_index
-        The 0-based page index.
-    parsed
-        The parsed PageIR object (if any).
-    raw_page_irs_dir
-        Directory to save raw page IR extraction artifacts.
-    """
-
-    stem = f"{page_index:04d}.attempt{attempt:02d}"
-
-    if output_text is not None:
-        (raw_page_irs_dir / f"{stem}.output.txt").write_text(
-            output_text, encoding="utf-8"
-        )
-
-    if parsed is not None:
-        parsed_dict = parsed.model_dump(mode="json")
-        (raw_page_irs_dir / f"{stem}.parsed.json").write_text(
-            json.dumps(parsed_dict, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-    if error is not None:
-        (raw_page_irs_dir / f"{stem}.error.txt").write_text(
-            f"{error.__class__.__name__}: {str(error)}", encoding="utf-8"
-        )
-
-    meta = {
-        "attempt": attempt,
-        "has_error": error is not None,
-        "has_output_text": output_text is not None,
-        "has_parsed": parsed is not None,
-        "model": model,
-        "page_index": page_index,
-        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
-    }
-    (raw_page_irs_dir / f"{stem}.meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+DEFAULT_MODEL_SETTINGS = ModelSettings(**Settings.TEXT_GENERATION_DEFAULT)
+DEFAULT_OUTPUT_RETRIES = 3
 
 
 def extract_page_ir(
@@ -261,13 +41,19 @@ def extract_page_ir(
     image_height: int,
     image_width: int,
     languages: list[str],
-    max_retries: int = 3,
+    max_retries: int = DEFAULT_OUTPUT_RETRIES,
     model: str,
     page_index: int,
     png_fp: Path,
     raw_page_irs_dir: Path,
 ) -> PageIR:
-    """Extract PageIR from a page image using LLM + Vision + Structured Outputs.
+    """Extract PageIR from a page image using pydantic-ai Agent + Vision + Structured
+    Outputs.
+
+    The Agent is constructed per-call so that the output validator closure can capture
+    page-specific context (image dimensions, attempt counter, artifact directory). The
+    Agent itself is lightweight — the expensive part is the LLM call, not Agent
+    construction.
 
     Parameters
     ----------
@@ -278,9 +64,9 @@ def extract_page_ir(
     languages
         Expected languages context for the prompt.
     max_retries
-        Maximum number of retries for quality errors.
+        Maximum number of quality-error retries (correction turns).
     model
-        The OpenAI model to use.
+        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
     page_index
         The 0-based page index.
     png_fp
@@ -295,92 +81,126 @@ def extract_page_ir(
 
     Raises
     ------
-    AssertionError
-        If the extraction loop exits without returning a PageIR or raising an error.
-    QualityError
-        If all attempts fail quality checks.
+    UnexpectedModelBehavior
+        If extraction fails after all retries.
     """
 
-    image_url = encode_png_to_data_url(png_fp)
+    # Build prompts.
     prompts = extract_page_ir_from_pdf_page(
         image_height=image_height,
         image_width=image_width,
         languages=languages,
         page_index=page_index,
     )
-    instructions = prompts.system_message
-    input_items = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": prompts.user_message},
-                {"type": "input_image", "image_url": image_url},
-            ],
-        },
-    ]
 
-    for attempt in range(max_retries + 1):
+    # Read the PNG bytes for BinaryContent input.
+    png_bytes = png_fp.read_bytes()
+
+    # Mutable attempt counter shared with the output validator closure.
+    attempt_counter = {"value": 0}
+
+    # ------------------------------------------------------------------
+    # Construct the Agent with an output validator
+    # ------------------------------------------------------------------
+    agent = Agent(
+        model,
+        instructions=prompts.system_message,
+        model_settings=DEFAULT_MODEL_SETTINGS,
+        output_retries=max_retries,
+        output_type=PageIR,
+    )
+
+    @agent.output_validator
+    def validate_page_ir_quality(output: PageIR) -> PageIR:
+        """Validate quality of the parsed PageIR.
+
+        Runs the same validators as before. On failure, persists artifacts and
+        raises ModelRetry so pydantic-ai appends the error to the conversation
+        and retries.
+        """
+
+        attempt = attempt_counter["value"]
+
+        # Populate fields that Python fills post-extraction.
+        output.image_width = image_width
+        output.image_height = image_height
+        output.page_index = page_index
+
         try:
-            return _call_openai_api_for_page_ir_extraction(
+            verify_page_ir_extraction_quality(
                 attempt=attempt,
                 image_height=image_height,
                 image_width=image_width,
-                input_items=input_items,
-                instructions=instructions,
-                model=model,
-                page_index=page_index,
-                raw_page_irs_dir=raw_page_irs_dir,
+                page_ir=output,
             )
         except QualityError as e:
-            if attempt >= max_retries:
-                logger.error("Extraction failed after exhausting retries.")
-
-                raise  # Re-raise the final quality error
-
-            # Append the assistant's failed attempt to history first. Without this, the
-            # model doesn't know what it's correcting.
-            if e.failed_content:
-                truncated = (
-                    e.failed_content[:500] + "..."
-                    if len(e.failed_content) > 500
-                    else e.failed_content
-                )
-
-                logger.error(f"Extraction failed content (truncated): {truncated}")
-
-                input_items.append(
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": e.failed_content}],
-                    }
-                )
-
-            input_items.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                f"Your previous output had issues and must be corrected.\n"
-                                f"ERROR: {str(e)}\n\n"
-                                f"Return a complete PageIR that matches the schema and fixes the issue."
-                            ),
-                        }
-                    ],
-                }
+            # Persist the failed attempt artifacts.
+            persist_page_ir_attempt_artifacts(
+                attempt=attempt,
+                error=e,
+                model=model,
+                output_text=None,  # pydantic-ai doesn't expose raw text here
+                page_index=page_index,
+                parsed=output,
+                raw_page_irs_dir=raw_page_irs_dir,
             )
-            continue
 
-    # Defensive: should be unreachable. The loop always returns on success or raises
-    # on the final attempt. If we somehow get here, fail loudly.
-    raise AssertionError(
-        f"Unreachable: extraction loop exited without return or raise for page: {page_index}."
-    )
+            truncated_msg = str(e)[:500]
+            logger.error(
+                f"Quality check failed on page {page_index}, "
+                f"attempt {attempt}: {truncated_msg}"
+            )
+
+            attempt_counter["value"] += 1
+
+            # ModelRetry tells pydantic-ai to append this error to the
+            # conversation and ask the model to correct its output.
+            raise ModelRetry(
+                f"Your output had quality issues and must be corrected.\n"
+                f"ERROR: {str(e)}\n\n"
+                f"Return a complete PageIR that matches the schema and fixes "
+                f"the issue."
+            ) from e
+
+        # Success — persist and increment.
+        persist_page_ir_attempt_artifacts(
+            attempt=attempt,
+            error=None,
+            model=model,
+            output_text=None,
+            page_index=page_index,
+            parsed=output,
+            raw_page_irs_dir=raw_page_irs_dir,
+        )
+        attempt_counter["value"] += 1
+
+        return output
+
+    user_prompt: list[str | BinaryContent] = [
+        prompts.user_message,
+        BinaryContent(data=png_bytes, media_type="image/png"),
+    ]
+
+    result = agent.run_sync(user_prompt, model_settings=DEFAULT_MODEL_SETTINGS)
+    page_ir = result.output
+
+    print(f"{page_ir = }")
+    exit()
+    # Populate remaining Python-side fields.
+    page_ir.coord_space = "px"
+    page_ir.doc_key = None  # Filled by caller
+    page_ir.dpi = None  # Filled by caller
+    page_ir.pdf_name = None  # Filled by caller
+
+    return page_ir
 
 
 def verify_page_ir_extraction_quality(
-    *, attempt: int, image_height: int, image_width: int, page_ir: PageIR
+    *,
+    attempt: int,
+    image_height: int,
+    image_width: int,
+    page_ir: PageIR,
 ) -> None:
     """Validate *quality* (not schema) of a parsed PageIR.
 
