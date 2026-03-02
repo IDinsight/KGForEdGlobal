@@ -200,7 +200,7 @@ CaptionTablePrefixes: tuple[str, ...] = (
 # 2. Only roles present in DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER participate in
 #   precedence-based checks. Roles omitted from the configured order are treated as
 #   "unranked" and do not factor into context-grouping ordering/outer-ness validators.
-# 3. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.)/
+# 3. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.).
 # 4. row-local groupings like TOPIC/SUBTOPIC should live in RowDecision.groupings[].
 # 5. Order matters here!
 DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (

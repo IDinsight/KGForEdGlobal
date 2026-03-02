@@ -202,7 +202,7 @@ def verify(
 
     with pymupdf.open(str(extraction_config.pdf_fp)) as doc:
         # 3.
-        _, end_page = validate_page_count(
+        _, _, end_page = validate_page_count(
             doc=doc, end_page=config.end_page, start_page=config.start_page
         )
 

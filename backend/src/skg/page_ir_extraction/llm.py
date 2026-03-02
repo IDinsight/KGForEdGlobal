@@ -263,7 +263,6 @@ def _persist_page_ir_attempt_artifacts(
 
 def extract_page_ir(
     *,
-    always_double_check_first_attempt: bool,
     country: str,
     image_height: int,
     image_width: int,
@@ -273,15 +272,12 @@ def extract_page_ir(
     page_index: int,
     png_fp: Path,
     raw_page_irs_dir: Path,
-    text_layer_hints: Optional[str] = None,
     year: Optional[int] = None,
 ) -> PageIR:
     """Extract PageIR from a page image using LLM + Vision + Structured Outputs.
 
     Parameters
     ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     country
         Country context for the prompt.
     image_height
@@ -300,8 +296,6 @@ def extract_page_ir(
         The PNG file path of the page image.
     raw_page_irs_dir
         Directory to save raw page IR extraction artifacts.
-    text_layer_hints
-        Optional text layer hints from the PDF.
     year
         Year context for the prompt.
 

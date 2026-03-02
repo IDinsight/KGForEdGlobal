@@ -51,6 +51,7 @@ def extract_page_by_page(
     doc_key: str,
     end_page: int,
     extraction_dirs: PipelineDirs,
+    start_page: int,
 ) -> None:
     """Perform page-by-page extraction of PageIR components from the PDF document.
 
@@ -66,18 +67,20 @@ def extract_page_by_page(
         0-based end page (exclusive).
     extraction_dirs
         The extraction directories.
+    start_page
+        0-based start page (inclusive).
     """
 
-    total_pages = end_page - config.start_page
+    total_pages = end_page - start_page
 
-    for page_index in range(config.start_page, end_page):
+    for page_index in range(start_page, end_page):
         page_ir_fp = extraction_dirs.page_irs / f"{page_index:04d}.json"
         png_fp = extraction_dirs.page_images / f"{page_index:04d}.png"
 
         if not config.overwrite and page_ir_fp.exists() and png_fp.exists():
             logger.info(
                 f"Page IR JSON and PNG already exist for page {page_index}. "
-                f"Skipping extraction. "
+                f"Skipping page extraction and PNG rendering. "
                 f"If you wish to overwrite, pass the --overwrite flag."
             )
 
@@ -102,7 +105,9 @@ def extract_page_by_page(
             continue
 
         # Extract information from the page image.
-        logger.info(f"Extracting and saving page IR: {page_index}/{total_pages}...")
+        logger.info(
+            f"Extracting and saving page IR: {page_index - start_page + 1}/{total_pages}..."
+        )
 
         image_width, image_height = read_png_dimensions(png_fp)
         page_ir = extract_page_ir(
@@ -168,7 +173,7 @@ def extract(
 
     with pymupdf.open(str(config.pdf_fp)) as doc:
         # 1.
-        _, end_page = validate_page_count(
+        _, start_page, end_page = validate_page_count(
             doc=doc, end_page=config.end_page, start_page=config.start_page
         )
 
@@ -185,6 +190,7 @@ def extract(
                 doc_key=doc_key,
                 end_page=end_page,
                 extraction_dirs=extraction_dirs,
+                start_page=start_page,
             )
             extraction_run.extra["status"] = "success"
 
