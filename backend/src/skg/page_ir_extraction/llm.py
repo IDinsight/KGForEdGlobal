@@ -107,13 +107,6 @@ def extract_page_ir(
     result = agent.run_sync(user_prompt, model_settings=DEFAULT_MODEL_SETTINGS)
     page_ir = result.output
 
-    # Populate remaining Python-side fields (caller overrides coord_space, doc_key,
-    # dpi, etc.).
-    page_ir.coord_space = None
-    page_ir.doc_key = None
-    page_ir.dpi = None
-    page_ir.pdf_name = None
-
     return page_ir
 
 

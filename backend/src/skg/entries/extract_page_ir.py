@@ -122,9 +122,6 @@ def extract_page_by_page(
         page_ir.coord_space = "px"
         page_ir.doc_key = doc_key
         page_ir.dpi = config.dpi
-        page_ir.image_height = image_height
-        page_ir.image_width = image_width
-        page_ir.page_index = page_index
         page_ir.pdf_name = config.pdf_fp.name
 
         # Re-validate after schema validators.
