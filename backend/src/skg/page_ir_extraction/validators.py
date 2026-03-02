@@ -562,8 +562,8 @@ def validate_full_page_figure_requires_double_check(
             f"item. Full-page figures are rare. Re-check the page carefully. If there "
             f"is ANY readable body text or tables (including scanned text), you MUST "
             f"extract it into heading/paragraph/list/table items with tight bboxes. "
-            "Only return a single full-page figure if the page is truly an image-only "
-            "page with no readable text."
+            f"Only return a single full-page figure if the page is truly an image-only "
+            f"page with no readable text."
         )
 
     fig = item.figure
