@@ -68,13 +68,14 @@ def persist_page_ir_attempt_artifacts(
     page_index: int,
     parsed: PageIR | None,
     raw_page_irs_dir: Path,
+    validation_cycle: int = 0,
 ) -> None:
     """Persist raw artifacts from a page IR extraction attempt.
 
     Parameters
     ----------
     attempt
-        The attempt number (0-based).
+        The attempt number (0-based) within the current validation cycle.
     error
         The error encountered (if any).
     model
@@ -87,9 +88,12 @@ def persist_page_ir_attempt_artifacts(
         The parsed PageIR object (if any).
     raw_page_irs_dir
         Directory to save raw page IR extraction artifacts.
+    validation_cycle
+        The 0-based validation cycle index. Included in the filename to prevent
+        overwriting artifacts when the outer extraction -> validation loop retries.
     """
 
-    stem = f"{page_index:04d}.attempt{attempt:02d}"
+    stem = f"{page_index:04d}.val{validation_cycle:02d}.attempt{attempt:02d}"
 
     if output_text is not None:
         (raw_page_irs_dir / f"{stem}.output.txt").write_text(
@@ -112,6 +116,7 @@ def persist_page_ir_attempt_artifacts(
         "model": model,
         "page_index": page_index,
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "validation_cycle": validation_cycle,
     }
     write_to_json(fp=raw_page_irs_dir / f"{stem}.meta.json", json_info=meta)
 

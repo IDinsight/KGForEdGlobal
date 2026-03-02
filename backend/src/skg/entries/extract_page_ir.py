@@ -36,6 +36,7 @@ from skg.page_ir_extraction.utils import (
     read_png_dimensions,
     render_and_save_page_to_png,
 )
+from skg.page_ir_extraction.validators import compute_boundary_state_from_items
 from skg.schemas import ExtractionConfig, RunConfig
 from skg.utils.general import PipelineDirs, open_json_type, write_to_json
 from skg.utils.pdf import validate_page_count
@@ -117,6 +118,10 @@ def extract_page_by_page(
         page_ir.doc_key = doc_key
         page_ir.dpi = config.dpi
         page_ir.pdf_name = config.pdf_fp.name
+
+        # Compute boundary_state deterministically from item-level boundaries. This
+        # field is Python owned; the LLM does not emit it.
+        page_ir.boundary_state = compute_boundary_state_from_items(page_ir)
 
         # Re-validate after schema validators.
         page_ir = PageIR.model_validate(page_ir.model_dump(mode="python"))

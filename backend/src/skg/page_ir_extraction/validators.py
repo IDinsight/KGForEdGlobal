@@ -21,9 +21,6 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-# Third Party Library
-from loguru import logger
-
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR, TextUnit
 from skg.utils.constants import (
@@ -39,7 +36,6 @@ from skg.utils.constants import (
 class PageIRExtractionQualityCtx:
     """Context for PageIR extraction quality checks."""
 
-    boundary_state: Any
     image_height: int
     image_width: int
     items: list[Any]
@@ -86,41 +82,6 @@ class QualityError(Exception):
         super().__init__(message)
 
         self.failed_content = failed_content
-
-
-def _derive_boundary_state_from_items(
-    non_artifact_items: list[tuple[int, Any]],
-) -> PageBoundaryState:
-    """Derive the page boundary state from item boundaries.
-
-    Parameters
-    ----------
-    non_artifact_items
-        The list of non-artifact items with their indices.
-
-    Returns
-    -------
-    PageBoundaryState
-        The derived page boundary state.
-    """
-
-    if not non_artifact_items:
-        return PageBoundaryState.STANDALONE
-
-    # Only consider non-artifact items for continuity.
-    non_artifacts = [item for _, item in non_artifact_items]
-
-    any_from_prev = any(_is_resumed(item.boundary) for item in non_artifacts)
-    any_to_next = any(_is_truncated(item.boundary) for item in non_artifacts)
-
-    if any_from_prev and any_to_next:
-        return PageBoundaryState.BOTH
-    if any_from_prev:
-        return PageBoundaryState.CONTINUES_FROM_PREV
-    if any_to_next:
-        return PageBoundaryState.CONTINUES_TO_NEXT
-
-    return PageBoundaryState.STANDALONE
 
 
 def _is_full_page_bbox(
@@ -185,6 +146,44 @@ def _is_truncated(boundary: ItemBoundary) -> bool:
     """
 
     return boundary in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
+
+
+def compute_boundary_state_from_items(page_ir: PageIR) -> PageBoundaryState:
+    """Derive the page boundary state from item boundaries.
+
+    Parameters
+    ----------
+    page_ir
+        The PageIR to analyze.
+
+    Returns
+    -------
+    PageBoundaryState
+        The derived page boundary state.
+    """
+
+    non_artifact_items = [
+        (i, item)
+        for i, item in enumerate(page_ir.items)
+        if item.kind != "block" or item.block_type != BlockType.ARTIFACT
+    ]
+
+    if not non_artifact_items:
+        return PageBoundaryState.STANDALONE
+
+    non_artifacts = [item for _, item in non_artifact_items]
+
+    any_from_prev = any(_is_resumed(item.boundary) for item in non_artifacts)
+    any_to_next = any(_is_truncated(item.boundary) for item in non_artifacts)
+
+    if any_from_prev and any_to_next:
+        return PageBoundaryState.BOTH
+    if any_from_prev:
+        return PageBoundaryState.CONTINUES_FROM_PREV
+    if any_to_next:
+        return PageBoundaryState.CONTINUES_TO_NEXT
+
+    return PageBoundaryState.STANDALONE
 
 
 def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> None:
@@ -282,7 +281,12 @@ def validate_basic_block_invariants(ctx: PageIRExtractionQualityCtx) -> None:
 
 
 def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
-    """Validate and reconcile page/item continuity signals.
+    """Validate that item-level boundary markers are internally consistent.
+
+    This validator does NOT check or mutate `boundary_state` on the PageIR---that field
+    is computed by Python after all quality checks pass. Instead, it checks that
+    item-level boundaries don't contradict each other (e.g., a standalone page
+    shouldn't have resumed/truncated items).
 
     Parameters
     ----------
@@ -295,18 +299,8 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
         If any continuity check fails.
     """
 
-    boundary_state = ctx.boundary_state
-    expected_boundary_state = _derive_boundary_state_from_items(ctx.non_artifact_items)
-    page_ir = ctx.page_ir
-
-    if boundary_state != expected_boundary_state:
-        logger.warning(
-            f"boundary_state mismatch on page {page_ir.page_index}: "
-            f"got={boundary_state} expected={expected_boundary_state}. Overwriting."
-        )
-        page_ir.boundary_state = expected_boundary_state
-        boundary_state = expected_boundary_state
-        ctx.boundary_state = boundary_state
+    # Derive expected boundary state from items to validate item-level consistency.
+    expected = compute_boundary_state_from_items(ctx.non_artifact_items)
 
     states_requiring_prev = {
         PageBoundaryState.CONTINUES_FROM_PREV.value,
@@ -317,12 +311,11 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
         PageBoundaryState.BOTH.value,
     }
 
-    if boundary_state.value in states_requiring_prev:
+    if expected.value in states_requiring_prev:
         if not ctx.non_artifact_items:
             raise QualityError(
-                f"boundary_state='{boundary_state}' implies content continues from "
-                f"a non-artifact item on the previous page, but there are no "
-                f"non-artifact items."
+                "Item boundaries imply continuation from previous page, but there are "
+                "no non-artifact items."
             )
 
         # Look in the first few non-artifact items for a resumed marker.
@@ -331,16 +324,15 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
             for item in [item for _, item in ctx.non_artifact_items[:5]]
         ):
             raise QualityError(
-                f"boundary_state='{boundary_state}' implies content continues from "
-                f"previous page, but no resumed boundary found in first few "
-                f"non-artifact items."
+                "Item boundaries imply continuation from previous page, but no "
+                "resumed boundary found in first few non-artifact items."
             )
 
-    if boundary_state.value in states_requiring_next:
+    if expected.value in states_requiring_next:
         if not ctx.non_artifact_items:
             raise QualityError(
-                f"boundary_state='{boundary_state}' implies content continues to next "
-                f"page from a non-artifact item, but there are no non-artifact items."
+                "Item boundaries imply continuation to next page, but there are "
+                "no non-artifact items."
             )
 
         # Look in the last few non-artifact items for a truncated marker.
@@ -349,20 +341,9 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
             for item in [item for _, item in ctx.non_artifact_items[-5:]]
         ):
             raise QualityError(
-                f"boundary_state='{boundary_state}' implies content continues to "
-                f"next page, but no truncated boundary found in last few non-artifact "
-                f"items."
+                "Item boundaries imply continuation to next page, but no "
+                "truncated boundary found in last few non-artifact items."
             )
-
-    if boundary_state.value == PageBoundaryState.STANDALONE.value and any(
-        _is_resumed(item.boundary) or _is_truncated(item.boundary)
-        for _, item in ctx.non_artifact_items
-    ):
-        raise QualityError(
-            f"boundary_state='{PageBoundaryState.STANDALONE.value}' but found "
-            f"{ItemBoundary.RESUMED.value}/{ItemBoundary.TRUNCATED.value} boundaries "
-            f"on non-artifact items."
-        )
 
 
 def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> None:
