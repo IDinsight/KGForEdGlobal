@@ -11,7 +11,6 @@ from typing import Any
 from loguru import logger
 from openai import (
     APIConnectionError,
-    APITimeoutError,
     InternalServerError,
     OpenAI,
     RateLimitError,
@@ -55,15 +54,7 @@ openai_client = OpenAI()
 @retry(
     reraise=True,
     retry=retry_if_exception_type(
-        (
-            TimeoutError,
-            ConnectionError,
-            OSError,
-            APIConnectionError,
-            APITimeoutError,
-            InternalServerError,
-            RateLimitError,
-        )
+        (OSError, APIConnectionError, InternalServerError, RateLimitError)
     ),
     stop=stop_after_attempt(limits.max_retry_attempts),
     wait=wait_random_exponential(min=1, max=60),
@@ -109,24 +100,36 @@ def _call_openai_api_for_page_ir_extraction(
         If the response could not be parsed or failed quality checks.
     """
 
-    if attempt == 0:
+    try:
         response = openai_client.responses.parse(
             input=input_items,  # User content items
             instructions=instructions,  # System message at top-level
             model=model,
-            reasoning={"effort": "high"},
-            # temperature=0,
+            temperature=0,
             text_format=PageIR,  # Pydantic for structured output parsing
-            # top_p=1,
+            top_p=1,
         )
-    else:
-        response = openai_client.responses.parse(
-            input=input_items,  # User content items
-            instructions=instructions,  # System message at top-level
+    except (OSError, APIConnectionError, InternalServerError, RateLimitError):
+        raise  # Let tenacity handle transient errors
+    except Exception as e:
+        # Pydantic ValidationErrors and other parse failures land here. The raw output
+        # text is lost, so we wrap in QualityError with failed_content=None and persist
+        # what we can.
+        qe = QualityError(
+            f"Structured parse/validation failed on page {page_index}: "
+            f"{e.__class__.__name__}: {e}",
+            failed_content=None,
+        )
+        _persist_page_ir_attempt_artifacts(
+            attempt=attempt,
+            error=qe,
             model=model,
-            reasoning={"effort": "high"},
-            text_format=PageIR,  # Pydantic for structured output parsing
+            output_text=None,
+            page_index=page_index,
+            parsed=None,
+            raw_page_irs_dir=raw_page_irs_dir,
         )
+        raise qe from e
 
     parsed = getattr(response, "output_parsed", None)
     output_text = getattr(response, "output_text", None)
@@ -248,7 +251,6 @@ def _persist_page_ir_attempt_artifacts(
         "page_index": page_index,
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
     }
-
     (raw_page_irs_dir / f"{stem}.meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -293,10 +295,10 @@ def extract_page_ir(
 
     Raises
     ------
-    Exception
-        For transient API errors.
+    AssertionError
+        If the extraction loop exits without returning a PageIR or raising an error.
     QualityError
-        If extraction fails after retries.
+        If all attempts fail quality checks.
     """
 
     image_url = encode_png_to_data_url(png_fp)
@@ -330,14 +332,22 @@ def extract_page_ir(
                 raw_page_irs_dir=raw_page_irs_dir,
             )
         except QualityError as e:
-            if attempt == max_retries:
+            if attempt >= max_retries:
                 logger.error("Extraction failed after exhausting retries.")
+
                 raise  # Re-raise the final quality error
 
             # Append the assistant's failed attempt to history first. Without this, the
             # model doesn't know what it's correcting.
             if e.failed_content:
-                logger.error(f"Extraction failed content: {e.failed_content}")
+                truncated = (
+                    e.failed_content[:500] + "..."
+                    if len(e.failed_content) > 500
+                    else e.failed_content
+                )
+
+                logger.error(f"Extraction failed content (truncated): {truncated}")
+
                 input_items.append(
                     {
                         "role": "assistant",
@@ -361,54 +371,11 @@ def extract_page_ir(
                 }
             )
             continue
-        except Exception as e:  # pylint: disable=broad-except
-            # Let transient errors propagate (tenacity should cover most of these).
-            if isinstance(
-                e,
-                (
-                    TimeoutError,
-                    ConnectionError,
-                    OSError,
-                    APIConnectionError,
-                    APITimeoutError,
-                    RateLimitError,
-                    InternalServerError,
-                ),
-            ):
-                raise
 
-            # Handle general exceptions (like Pydantic ValidationErrors) that bubble up
-            # from the API call but might not have attached text.
-            last_error = QualityError(
-                f"Structured parse/validation failed on page {page_index}: {e}"
-            )
-
-            if attempt >= max_retries:
-                raise last_error from e
-
-            # If possible, we should try to add the assistant's context here too, but
-            # standard Python Exceptions won't carry the model output unless we wrap
-            # them in _call_openai_api_for_page_ir_extraction. For now, we proceed with
-            # the Error feedback.
-            input_items.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                f"The previous response failed structured parsing/validation.\n"
-                                f"ERROR: {e.__class__.__name__}: {e}\n\n"
-                                f"Return a complete PageIR that matches the schema exactly."
-                            ),
-                        }
-                    ],
-                }
-            )
-            continue
-
-    raise QualityError(
-        f"Extraction failed after {max_retries + 1} attempts for page: {page_index}."
+    # Defensive: should be unreachable. The loop always returns on success or raises
+    # on the final attempt. If we somehow get here, fail loudly.
+    raise AssertionError(
+        f"Unreachable: extraction loop exited without return or raise for page: {page_index}."
     )
 
 
