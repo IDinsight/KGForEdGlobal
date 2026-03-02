@@ -23,6 +23,7 @@ from loguru import logger
 # the command line. However, it is not necessary if it is imported from a pip install.
 if __name__ == "__main__":
     PACKAGE_PATH = Path(__file__).resolve().parents[2]
+
     if PACKAGE_PATH not in sys.path:
         print(f"Appending '{PACKAGE_PATH}' to system path...")
         sys.path.append(str(PACKAGE_PATH))
@@ -30,17 +31,14 @@ if __name__ == "__main__":
 # Package Library
 from skg.page_ir_extraction.llm import extract_page_ir
 from skg.page_ir_extraction.schemas import PageIR
-from skg.page_ir_extraction.utils import PageIRExtractionDirs, persist_extraction_run
-from skg.schemas import ExtractionConfig, RunConfig
-from skg.utils.constants import PageBoundaryState
-from skg.utils.general import open_json_type, write_to_json
-from skg.utils.pdf import (
-    extract_text_layer_hints,
-    is_mostly_blank,
+from skg.page_ir_extraction.utils import (
+    persist_extraction_run,
     read_png_dimensions,
     render_and_save_page_to_png,
-    validate_page_count,
 )
+from skg.schemas import ExtractionConfig, RunConfig
+from skg.utils.general import PipelineDirs, open_json_type, write_to_json
+from skg.utils.pdf import validate_page_count
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
@@ -52,7 +50,7 @@ def extract_page_by_page(
     doc: pymupdf.Document,
     doc_key: str,
     end_page: int,
-    extraction_dirs: PageIRExtractionDirs,
+    extraction_dirs: PipelineDirs,
 ) -> None:
     """Perform page-by-page extraction of PageIR components from the PDF document.
 
@@ -61,7 +59,7 @@ def extract_page_by_page(
     config
         The extraction run configuration.
     doc
-        The PyMuPDF document.
+        The PyMuPDF document to extract from.
     doc_key
         The document key.
     end_page
@@ -82,6 +80,7 @@ def extract_page_by_page(
                 f"Skipping extraction. "
                 f"If you wish to overwrite, pass the --overwrite flag."
             )
+
             continue
 
         # Always ensure the PNG exists first. We render if the file is missing OR if we
@@ -91,71 +90,47 @@ def extract_page_by_page(
                 doc=doc, dpi=config.dpi, output_png_fp=png_fp, page_index=page_index
             )
 
-        # Check cache. If not overwriting and JSON exists, skip entirely.
+        # Check cache: if not overwriting and extracted Page IR JSON exists, skip
+        # entirely.
         if page_ir_fp.exists() and not config.overwrite:
             logger.warning(
                 f"Extracted page IR JSON already exists for page {page_index}. "
                 f"Skipping extraction. "
                 f"If you wish to overwrite, pass the --overwrite flag."
             )
+
             continue
 
         # Extract information from the page image.
-        logger.info(f"Extracting and saving page: {page_index}/{total_pages}...")
-        image_width, image_height = read_png_dimensions(png_fp=png_fp)
+        logger.info(f"Extracting and saving page IR: {page_index}/{total_pages}...")
 
-        text_layer_hints = (
-            extract_text_layer_hints(
-                doc=doc,
-                image_height=image_height,
-                image_width=image_width,
-                page_index=page_index,
-            )
-            if config.use_text_layer_hints
-            else None
+        image_width, image_height = read_png_dimensions(png_fp)
+        page_ir = extract_page_ir(
+            country=config.country,
+            image_height=image_height,
+            image_width=image_width,
+            languages=config.languages,
+            model=config.model,
+            page_index=page_index,
+            png_fp=png_fp,
+            raw_page_irs_dir=extraction_dirs.page_irs_raw,
+            year=config.year,
         )
-
-        if is_mostly_blank(png_fp=png_fp) and text_layer_hints is None:
-            logger.warning(f"Page {page_index} looks blank; skipping extraction.")
-            page_ir = PageIR(
-                boundary_state=PageBoundaryState.STANDALONE,
-                coord_space="px",
-                doc_key=doc_key,
-                dpi=config.dpi,
-                image_height=image_height,
-                image_width=image_width,
-                items=[],
-                page_index=page_index,
-                pdf_name=config.pdf_fp.name,
-            )
-        else:
-            page_ir = extract_page_ir(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
-                country=config.country,
-                image_height=image_height,
-                image_width=image_width,
-                languages=config.languages,
-                model=config.model,
-                page_index=page_index,
-                png_fp=png_fp,
-                raw_page_irs_dir=extraction_dirs.page_irs_raw,
-                text_layer_hints=text_layer_hints,
-                year=config.year,
-            )
-            page_ir.coord_space = "px"
-            page_ir.doc_key = doc_key
-            page_ir.dpi = config.dpi
-            page_ir.image_height = image_height
-            page_ir.image_width = image_width
-            page_ir.page_index = page_index
-            page_ir.pdf_name = config.pdf_fp.name
+        page_ir.coord_space = "px"
+        page_ir.doc_key = doc_key
+        page_ir.dpi = config.dpi
+        page_ir.image_height = image_height
+        page_ir.image_width = image_width
+        page_ir.page_index = page_index
+        page_ir.pdf_name = config.pdf_fp.name
 
         # Re-validate after schema validators.
         page_ir = PageIR.model_validate(page_ir.model_dump(mode="python"))
 
         # Save PageIR JSON.
         write_to_json(fp=page_ir_fp, json_info=page_ir)
-        logger.success(f"Finished extracting and saving page: {page_index}!")
+
+        logger.success(f"Finished extracting and saving page IR: {page_index}!")
 
 
 @cli.command()
@@ -212,6 +187,7 @@ def extract(
                 extraction_dirs=extraction_dirs,
             )
             extraction_run.extra["status"] = "success"
+
             logger.success("Page IR extraction completed successfully!")
         except Exception as e:  # pylint: disable=broad-except
             extraction_run.extra["status"] = "error"

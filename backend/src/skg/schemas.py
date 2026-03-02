@@ -61,16 +61,12 @@ class BaseSchema(BaseModel):
 class ExtractionConfig(BaseSchema):
     """Configuration for page IR extraction from a PDF document."""
 
-    always_double_check_first_attempt: bool = Field(
-        False,
-        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
-    )
     country: str = Field(
         ..., description="The country associated with the PDF document."
     )
     dpi: int = Field(250, description="Render DPI for page images.")
     end_page: Optional[int] = Field(
-        None, description="0-based end page (exclusive). Default: to end."
+        None, description="0-based end page (exclusive). Default None is to end."
     )
     languages: list[LanguageField] = Field(
         ...,
@@ -78,7 +74,7 @@ class ExtractionConfig(BaseSchema):
         min_length=1,
     )
     model: str = Field(
-        "gpt-5.2-2025-12-11", description="OpenAI model for page IR extraction."
+        "gpt-5.2-2025-12-11", description="Model for page IR extraction."
     )
     output_dir: Path = Field(..., description="Output directory root.")
     overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
@@ -86,10 +82,8 @@ class ExtractionConfig(BaseSchema):
         ...,
         description="The file path to the PDF document to extract curriculum data from.",
     )
-    start_page: int = Field(0, description="0-based start page (inclusive).")
-    use_text_layer_hints: bool = Field(
-        True,
-        description="Whether to extract and use text layer hints from the PDF during extraction.",
+    start_page: Optional[int] = Field(
+        None, description="0-based start page (inclusive)."
     )
     year: Optional[int] = Field(
         None, description="Document year (optional; overrides any inferred year)."
@@ -110,7 +104,11 @@ class ExtractionConfig(BaseSchema):
             If end_page is not greater than start_page.
         """
 
-        if self.end_page is not None and self.end_page <= self.start_page:
+        if (
+            self.end_page is not None
+            and self.start_page is not None
+            and self.end_page <= self.start_page
+        ):
             raise ValueError(
                 f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
             )

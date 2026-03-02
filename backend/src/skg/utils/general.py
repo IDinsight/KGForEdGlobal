@@ -6,6 +6,9 @@ multiple modules, then it is a general utility and should be defined in this mod
 instead.
 """
 
+# Future Library
+from __future__ import annotations
+
 # Standard Library
 import base64
 import hashlib
@@ -14,7 +17,7 @@ import re
 import unicodedata
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -40,6 +43,51 @@ QUOTES_TRANSLATION = str.maketrans(
         "\u00a0": " ",  # NBSP -> space
     }
 )
+
+
+@dataclass(frozen=True)
+class PipelineDirs:
+    """Manages all pipeline directories."""
+
+    root: Path
+    page_images: Path
+    page_irs: Path
+    page_irs_raw: Path
+
+    def __post_init__(self) -> None:
+        """Ensure all fields are Path objects and create the directories if they don't
+        exist.
+        """
+
+        for field in fields(self):
+            dirpath = getattr(self, field.name)
+            assert isinstance(
+                dirpath, Path
+            ), f"Expected Path for {field.name}, got {type(dirpath)}"
+            make_dir(dirpath)
+
+    @classmethod
+    def create_from_root(cls, root_path: str | Path) -> PipelineDirs:
+        """Create a PipelineDirs instance from a root path.
+
+        Parameters
+        ----------
+        root_path
+            The root directory path for the pipeline.
+
+        Returns
+        -------
+        PipelineDirs
+            The created PipelineDirs instance with subdirectories.
+        """
+
+        root = Path(root_path)
+        return cls(
+            root=root,
+            page_images=root / "page_images",
+            page_irs=root / "page_irs",
+            page_irs_raw=root / "page_irs_raw",
+        )
 
 
 @dataclass(frozen=True)
