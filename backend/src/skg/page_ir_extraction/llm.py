@@ -43,6 +43,7 @@ from skg.page_ir_extraction.validators import (
     validate_artifacts_are_true_artifacts,
     validate_basic_block_invariants,
     validate_continuity_for_extraction,
+    validate_extraction_text_constraints,
     validate_figure_blocks_are_well_formed,
     validate_footnote_blocks_are_plausible,
     validate_full_page_bboxes,
@@ -51,7 +52,6 @@ from skg.page_ir_extraction.validators import (
     validate_image_dimensions,
     validate_item_bboxes_required_and_in_bounds,
     validate_no_duplicate_item_bboxes,
-    validate_no_whitespace_or_empty_blocks,
     validate_placeholder_bboxes,
     validate_table_integrity,
 )
@@ -231,7 +231,7 @@ def extract_page_ir(
             user_message_text = f"{user_message_text}\n\n{validation_feedback}"
 
         # Create a fresh extraction agent and run it.
-        agent, _ = create_page_ir_extraction_agent(
+        agent = create_page_ir_extraction_agent(
             image_height=image_height,
             image_width=image_width,
             instructions=prompts.system_message,
@@ -281,6 +281,12 @@ def extract_page_ir(
             f"{max_validation_attempts} attempt(s). Returning last extraction."
         )
 
+    assert page_ir is not None, (
+        f"page_ir is None after {max_validation_attempts} validation attempt(s) for "
+        f"page {page_index}. This should never happen — the extraction agent must "
+        f"produce at least one PageIR."
+    )
+
     return page_ir
 
 
@@ -328,7 +334,7 @@ def verify_page_ir_extraction_quality(
 
     # NB: Order matters — don't change unless you really know what you are doing!
     validate_image_dimensions(ctx)
-    validate_no_whitespace_or_empty_blocks(ctx)
+    validate_extraction_text_constraints(ctx)
     validate_item_bboxes_required_and_in_bounds(ctx)
     validate_full_page_bboxes(ctx)
     validate_full_page_figure_requires_double_check(attempt=attempt, ctx=ctx)
