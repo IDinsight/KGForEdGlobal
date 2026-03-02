@@ -23,7 +23,7 @@
 		"start_page": 0
 	},
 	"document_ir": {
-		"keep_artifacts": false,
+		"keep_artifacts": true,
 		"max_section_path_length": 12,
 		"min_link_score": 1.0,
 		"overwrite": true,
