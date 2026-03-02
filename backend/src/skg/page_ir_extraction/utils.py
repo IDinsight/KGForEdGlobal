@@ -5,7 +5,6 @@ import uuid
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 # Third Party Library
 import pymupdf
@@ -15,107 +14,8 @@ from PIL import Image
 
 # Package Library
 from skg.schemas import ExtractionConfig, RunCtx
-from skg.utils.constants import ItemBoundary, PageBoundaryState
 from skg.utils.general import PipelineDirs, write_to_json
 from skg.utils.pdf import compute_doc_key
-
-
-def derive_boundary_state_from_items(
-    non_artifact_items: list[tuple[int, Any]],
-) -> PageBoundaryState:
-    """Derive the page boundary state from item boundaries.
-
-    Parameters
-    ----------
-    non_artifact_items
-        The list of non-artifact items with their indices.
-
-    Returns
-    -------
-    PageBoundaryState
-        The derived page boundary state.
-    """
-
-    if not non_artifact_items:
-        return PageBoundaryState.STANDALONE
-
-    # Only consider non-artifact items for continuity.
-    non_artifacts = [item for _, item in non_artifact_items]
-
-    any_from_prev = any(is_resumed(item.boundary.value) for item in non_artifacts)
-    any_to_next = any(is_truncated(item.boundary.value) for item in non_artifacts)
-
-    if any_from_prev and any_to_next:
-        return PageBoundaryState.BOTH
-    if any_from_prev:
-        return PageBoundaryState.CONTINUES_FROM_PREV
-    if any_to_next:
-        return PageBoundaryState.CONTINUES_TO_NEXT
-    return PageBoundaryState.STANDALONE
-
-
-def is_full_page_bbox(
-    *, bbox: tuple[float, ...], page_bbox: tuple[float, ...], tol: float
-) -> bool:
-    """Check if a bbox is effectively full-page within tolerance.
-
-    Parameters
-    ----------
-    bbox
-        The bbox to check.
-    page_bbox
-        The page bbox.
-    tol
-        The tolerance for comparison.
-
-    Returns
-    -------
-    bool
-        True if the bbox is full-page within tolerance, False otherwise.
-    """
-
-    x0, y0, x1, y1 = bbox
-
-    return (
-        abs(x0 - page_bbox[0]) <= tol
-        and abs(y0 - page_bbox[1]) <= tol
-        and abs(x1 - page_bbox[2]) <= tol
-        and abs(y1 - page_bbox[3]) <= tol
-    )
-
-
-def is_resumed(boundary: str) -> bool:
-    """Check if a boundary string indicates a resumed or both item.
-
-    Parameters
-    ----------
-    boundary
-        The boundary string to check.
-
-    Returns
-    -------
-    bool
-        True if the boundary indicates a resumed or both item, False otherwise.
-    """
-
-    return boundary in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
-
-
-def is_truncated(boundary: str) -> bool:
-    """Check if a boundary string indicates a truncated or both item.
-
-    Parameters
-    ----------
-    boundary
-        The boundary string to check.
-
-    Returns
-    -------
-    bool
-        True if the boundary indicates a truncated or both item, False otherwise.
-    """
-
-    return boundary in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
 
 
 def persist_extraction_run(

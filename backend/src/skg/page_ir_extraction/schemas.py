@@ -47,7 +47,9 @@ class TableRow(BaseSchema):
     """A single horizontal row in a table."""
 
     cells: list[TableCell] = Field(
-        ..., description="Ordered list of cells in this row, from left to right."
+        ...,
+        description="Ordered list of cells in this row, from left to right.",
+        min_length=1,
     )
 
 
@@ -140,6 +142,81 @@ class Table(BaseSchema):
 
         return self
 
+    @model_validator(mode="after")
+    def validate_row_and_col_spans(self) -> Table:
+        """Validate row/col span consistency across the table grid.
+
+        Checks enforced:
+
+        1. Every row has at least one cell.
+        2. A cell's row_span cannot run past the bottom of the table.
+        3. Spanned cells (row_span > 1 or col_span > 1) must carry content
+            (text != null).
+        4. If n_cols is set:
+           - No individual cell may have col_span > n_cols.
+           - No row may exceed n_cols (sum of col_spans).
+           - At least one row must reach n_cols.
+
+        Returns
+        -------
+        Table
+            The passed in Table.
+
+        Raises
+        ------
+        ValueError
+            If any span check fails.
+        """
+
+        n_rows = len(self.rows)
+        row_widths: list[int] = []
+
+        for r, row in enumerate(self.rows):
+            current_row_width = 0
+
+            for c, cell in enumerate(row.cells):
+                # Bounds: row_span can't run off the table.
+                if r + cell.row_span > n_rows:
+                    raise ValueError(
+                        f"row_span exceeds table bounds at rows[{r}].cells[{c}]: "
+                        f"row_span={cell.row_span} but only {n_rows - r} rows remain."
+                    )
+
+                # Empty merges: spanned cells should carry content.
+                if (cell.row_span > 1 or cell.col_span > 1) and cell.text is None:
+                    raise ValueError(
+                        f"Spanned cell must not have text=null at rows[{r}].cells[{c}] "
+                        f"(row_span={cell.row_span}, col_span={cell.col_span})."
+                    )
+
+                # If n_cols is known, individual cell col_span can't exceed it.
+                if self.n_cols is not None and cell.col_span > self.n_cols:
+                    raise ValueError(
+                        f"col_span exceeds n_cols at rows[{r}].cells[{c}]: "
+                        f"col_span={cell.col_span}, n_cols={self.n_cols}."
+                    )
+
+                current_row_width += cell.col_span
+
+            # Validate total row width against n_cols.
+            if self.n_cols is not None and current_row_width > self.n_cols:
+                raise ValueError(
+                    f"Row exceeds n_cols at rows[{r}]: "
+                    f"sum(col_span)={current_row_width}, n_cols={self.n_cols}."
+                )
+
+            row_widths.append(current_row_width)
+
+        # Global table check: at least one row must reach n_cols.
+        if self.n_cols is not None and all(w < self.n_cols for w in row_widths):
+            raise ValueError(
+                f"Table.n_cols={self.n_cols} but no row reaches that width. "
+                f"Row widths={row_widths}. This usually indicates missing cells "
+                f"or wrong n_cols."
+            )
+
+        return self
+
 
 class ListItem(BaseSchema):
     """A single item in a list or outline."""
@@ -149,6 +226,48 @@ class ListItem(BaseSchema):
         description="The bullet/numbering marker (e.g., '1.', '•', 'a)', '3.9.4'). Null if there is no explicit marker (e.g., TOC dot-leader entries). Extract verbatim.",
     )
     text: TextUnit = Field(..., description="The text content of the list item.")
+
+    @model_validator(mode="after")
+    def validate_marker_not_whitespace_only(self) -> ListItem:
+        """Validate that marker, when present, is not whitespace-only.
+
+        Returns
+        -------
+        ListItem
+            The passed in ListItem.
+
+        Raises
+        ------
+        ValueError
+            If marker is a whitespace-only or empty string.
+        """
+
+        if self.marker is not None and not self.marker.strip():
+            raise ValueError(
+                "List item marker must be null or a non-whitespace string."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_text_not_whitespace_only(self) -> ListItem:
+        """Validate that list item text is not whitespace-only.
+
+        Returns
+        -------
+        ListItem
+            The passed in ListItem.
+
+        Raises
+        ------
+        ValueError
+            If text is whitespace-only.
+        """
+
+        if not self.text.text.strip():
+            raise ValueError("List item text must not be whitespace-only.")
+
+        return self
 
 
 class FigureUnit(BaseSchema):
@@ -184,6 +303,49 @@ class FigureUnit(BaseSchema):
     )
 
     @model_validator(mode="after")
+    def validate_alt_text_not_whitespace_only(self) -> FigureUnit:
+        """Validate that alt_text, when present, is not whitespace-only.
+
+        Returns
+        -------
+        FigureUnit
+            The passed in FigureUnit.
+
+        Raises
+        ------
+        ValueError
+            If alt_text is a whitespace-only or empty string.
+        """
+
+        if isinstance(self.alt_text, str) and not self.alt_text.strip():
+            raise ValueError("figure.alt_text must be null or a non-whitespace string.")
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_caption_not_whitespace_only(self) -> FigureUnit:
+        """Validate that caption text, when present, is not whitespace-only.
+
+        Returns
+        -------
+        FigureUnit
+            The passed in FigureUnit.
+
+        Raises
+        ------
+        ValueError
+            If caption.text is whitespace-only.
+        """
+
+        if self.caption is not None and not self.caption.text.strip():
+            raise ValueError(
+                "figure.caption.text must not be whitespace-only. "
+                "Set caption=null or extract the real caption text."
+            )
+
+        return self
+
+    @model_validator(mode="after")
     def validate_contains_text_requires_embedded_text(self) -> FigureUnit:
         """Validate consistency between contains_text and embedded_text.
 
@@ -198,10 +360,18 @@ class FigureUnit(BaseSchema):
             If validation fails.
         """
 
-        if self.contains_text is True and self.embedded_text is None:
-            raise ValueError(
-                "figure.contains_text=true requires figure.embedded_text (best-effort transcription)."
-            )
+        if self.contains_text is True:
+            if self.embedded_text is None:
+                raise ValueError(
+                    "figure.contains_text=true requires figure.embedded_text "
+                    "(best-effort transcription)."
+                )
+            if not self.embedded_text.text.strip():
+                raise ValueError(
+                    "figure.contains_text=true but embedded_text is whitespace-only. "
+                    "Populate embedded_text with best-effort verbatim text, or set "
+                    "contains_text=false and embedded_text=null."
+                )
 
         if self.contains_text is False and self.embedded_text is not None:
             raise ValueError(
@@ -288,19 +458,6 @@ class Block(BaseSchema):
                 raise ValueError(f"Block block_type='{bt}' requires text=null.")
             if self.list_items is not None:
                 raise ValueError(f"Block block_type='{bt}' requires list_items=null.")
-            if (
-                isinstance(self.figure.alt_text, str)
-                and not self.figure.alt_text.strip()
-            ):
-                raise ValueError(
-                    f"Block block_type='{bt}' has figure.alt_text that is an "
-                    f"empty string (or whitespace only)."
-                )
-            if self.figure.caption is not None and not self.figure.caption.text.strip():
-                raise ValueError(
-                    f"Block block_type='{bt}' has figure.caption.text that "
-                    f"is an empty string (or whitespace only)."
-                )
 
         return self
 
