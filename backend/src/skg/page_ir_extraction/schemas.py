@@ -277,8 +277,8 @@ class FigureUnit(BaseSchema):
     3. Keep strong provenance via bbox.
     """
 
-    alt_text: Optional[str] = Field(
-        None,
+    alt_text: str = Field(
+        ...,
         description="Very short, non-semantic description of what the figure is (e.g., 'flowchart with arrows', 'pyramid diagram'). Do NOT interpret meaning. Null if unknown.",
         max_length=500,
     )
