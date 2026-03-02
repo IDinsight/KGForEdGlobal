@@ -303,8 +303,8 @@ class FigureUnit(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def validate_alt_text_not_whitespace_only(self) -> FigureUnit:
-        """Validate that alt_text, when present, is not whitespace-only.
+    def validate_alt_text_required_and_non_empty(self) -> FigureUnit:
+        """Validate that alt_text is present and non-empty.
 
         Returns
         -------
@@ -314,11 +314,15 @@ class FigureUnit(BaseSchema):
         Raises
         ------
         ValueError
-            If alt_text is a whitespace-only or empty string.
+            If alt_text is None, empty, or whitespace-only.
         """
 
-        if isinstance(self.alt_text, str) and not self.alt_text.strip():
-            raise ValueError("figure.alt_text must be null or a non-whitespace string.")
+        if self.alt_text is None or not self.alt_text.strip():
+            raise ValueError(
+                "figure.alt_text must be present and non-empty. "
+                "Provide a short surface description (e.g., 'bar chart', "
+                "'geometry diagram with labels')."
+            )
 
         return self
 
