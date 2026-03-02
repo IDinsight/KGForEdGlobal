@@ -13,6 +13,7 @@ from loguru import logger
 from PIL import Image
 
 # Package Library
+from skg.page_ir_extraction.schemas import PageIR
 from skg.schemas import ExtractionConfig, RunCtx
 from skg.utils.general import PipelineDirs, write_to_json
 from skg.utils.pdf import compute_doc_key
@@ -56,6 +57,63 @@ def persist_extraction_run(
     logger.success(f"Saved extraction results to: {extraction_dirs.root}")
 
     return doc_key, extraction_dirs, extraction_run
+
+
+def persist_page_ir_attempt_artifacts(
+    *,
+    attempt: int,
+    error: Exception | None,
+    model: str,
+    output_text: str | None,
+    page_index: int,
+    parsed: PageIR | None,
+    raw_page_irs_dir: Path,
+) -> None:
+    """Persist raw artifacts from a page IR extraction attempt.
+
+    Parameters
+    ----------
+    attempt
+        The attempt number (0-based).
+    error
+        The error encountered (if any).
+    model
+        The model identifier used.
+    output_text
+        The raw output text from the model (if any).
+    page_index
+        The 0-based page index.
+    parsed
+        The parsed PageIR object (if any).
+    raw_page_irs_dir
+        Directory to save raw page IR extraction artifacts.
+    """
+
+    stem = f"{page_index:04d}.attempt{attempt:02d}"
+
+    if output_text is not None:
+        (raw_page_irs_dir / f"{stem}.output.txt").write_text(
+            output_text, encoding="utf-8"
+        )
+
+    if parsed is not None:
+        write_to_json(fp=raw_page_irs_dir / f"{stem}.parsed.json", json_info=parsed)
+
+    if error is not None:
+        (raw_page_irs_dir / f"{stem}.error.txt").write_text(
+            f"{error.__class__.__name__}: {str(error)}", encoding="utf-8"
+        )
+
+    meta = {
+        "attempt": attempt,
+        "has_error": error is not None,
+        "has_output_text": output_text is not None,
+        "has_parsed": parsed is not None,
+        "model": model,
+        "page_index": page_index,
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    write_to_json(fp=raw_page_irs_dir / f"{stem}.meta.json", json_info=meta)
 
 
 def read_png_dimensions(png_fp: Path) -> tuple[int, int]:
