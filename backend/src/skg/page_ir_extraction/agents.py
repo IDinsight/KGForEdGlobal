@@ -15,7 +15,7 @@ from typing import Callable
 
 # Third Party Library
 from loguru import logger
-from pydantic_ai import Agent, ModelRetry, ModelSettings
+from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
 # Package Library
@@ -23,7 +23,9 @@ from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
 from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import QualityError
 
-DEFAULT_EXTRACTION_MODEL_SETTINGS = ModelSettings(temperature=0, top_p=1)
+DEFAULT_EXTRACTION_MODEL_SETTINGS = OpenAIResponsesModelSettings(
+    openai_reasoning_effort="high", openai_reasoning_summary="detailed"
+)
 DEFAULT_VALIDATION_MODEL_SETTINGS = OpenAIResponsesModelSettings(
     openai_reasoning_effort="high", openai_reasoning_summary="detailed"
 )
