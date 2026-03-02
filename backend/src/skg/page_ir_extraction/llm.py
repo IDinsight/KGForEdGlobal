@@ -1,20 +1,26 @@
-"""This module contains functionalities related to LLM calls for page IR **extraction**."""
+"""This module contains the orchestration logic for page IR extraction via LLM.
+
+The Agent definition and output-validation wiring live in `agents.py`. This module is
+responsible for prompt construction, image loading, running the agent, and populating
+the remaining Python-side fields on the returned PageIR.
+"""
 
 # Standard Library
 from pathlib import Path
 
 # Third Party Library
-from loguru import logger
-from pydantic_ai import Agent, BinaryContent, ModelRetry, ModelSettings
+from pydantic_ai import BinaryContent
 
 # Package Library
-from skg.config import Settings
+from skg.page_ir_extraction.agents import (
+    DEFAULT_MODEL_SETTINGS,
+    DEFAULT_OUTPUT_RETRIES,
+    create_page_ir_extraction_agent,
+)
 from skg.page_ir_extraction.prompts import extract_page_ir_from_pdf_page
 from skg.page_ir_extraction.schemas import PageIR
-from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
-    QualityError,
     validate_artifacts_are_true_artifacts,
     validate_basic_block_invariants,
     validate_continuity_for_extraction,
@@ -32,9 +38,6 @@ from skg.page_ir_extraction.validators import (
 )
 from skg.utils.constants import BlockType
 
-DEFAULT_MODEL_SETTINGS = ModelSettings(**Settings.TEXT_GENERATION_DEFAULT)
-DEFAULT_OUTPUT_RETRIES = 3
-
 
 def extract_page_ir(
     *,
@@ -47,13 +50,8 @@ def extract_page_ir(
     png_fp: Path,
     raw_page_irs_dir: Path,
 ) -> PageIR:
-    """Extract PageIR from a page image using pydantic-ai Agent + Vision + Structured
-    Outputs.
-
-    The Agent is constructed per-call so that the output validator closure can capture
-    page-specific context (image dimensions, attempt counter, artifact directory). The
-    Agent itself is lightweight — the expensive part is the LLM call, not Agent
-    construction.
+    """Extract PageIR from a page image using pydantic-ai Agent, vision model, and
+    structured outputs.
 
     Parameters
     ----------
@@ -78,11 +76,6 @@ def extract_page_ir(
     -------
     PageIR
         The extracted PageIR.
-
-    Raises
-    ------
-    UnexpectedModelBehavior
-        If extraction fails after all retries.
     """
 
     # Build prompts.
@@ -93,104 +86,33 @@ def extract_page_ir(
         page_index=page_index,
     )
 
-    # Read the PNG bytes for BinaryContent input.
-    png_bytes = png_fp.read_bytes()
-
-    # Mutable attempt counter shared with the output validator closure.
-    attempt_counter = {"value": 0}
-
-    # ------------------------------------------------------------------
-    # Construct the Agent with an output validator
-    # ------------------------------------------------------------------
-    agent = Agent(
-        model,
+    # Create the agent with quality validation function wired in.
+    agent, _ = create_page_ir_extraction_agent(
+        image_height=image_height,
+        image_width=image_width,
         instructions=prompts.system_message,
-        model_settings=DEFAULT_MODEL_SETTINGS,
-        output_retries=max_retries,
-        output_type=PageIR,
+        max_retries=max_retries,
+        model=model,
+        page_index=page_index,
+        raw_page_irs_dir=raw_page_irs_dir,
+        verify_quality_fn=verify_page_ir_extraction_quality,
     )
 
-    @agent.output_validator
-    def validate_page_ir_quality(output: PageIR) -> PageIR:
-        """Validate quality of the parsed PageIR.
-
-        Runs the same validators as before. On failure, persists artifacts and
-        raises ModelRetry so pydantic-ai appends the error to the conversation
-        and retries.
-        """
-
-        attempt = attempt_counter["value"]
-
-        # Populate fields that Python fills post-extraction.
-        output.image_width = image_width
-        output.image_height = image_height
-        output.page_index = page_index
-
-        try:
-            verify_page_ir_extraction_quality(
-                attempt=attempt,
-                image_height=image_height,
-                image_width=image_width,
-                page_ir=output,
-            )
-        except QualityError as e:
-            # Persist the failed attempt artifacts.
-            persist_page_ir_attempt_artifacts(
-                attempt=attempt,
-                error=e,
-                model=model,
-                output_text=None,  # pydantic-ai doesn't expose raw text here
-                page_index=page_index,
-                parsed=output,
-                raw_page_irs_dir=raw_page_irs_dir,
-            )
-
-            truncated_msg = str(e)[:500]
-            logger.error(
-                f"Quality check failed on page {page_index}, "
-                f"attempt {attempt}: {truncated_msg}"
-            )
-
-            attempt_counter["value"] += 1
-
-            # ModelRetry tells pydantic-ai to append this error to the
-            # conversation and ask the model to correct its output.
-            raise ModelRetry(
-                f"Your output had quality issues and must be corrected.\n"
-                f"ERROR: {str(e)}\n\n"
-                f"Return a complete PageIR that matches the schema and fixes "
-                f"the issue."
-            ) from e
-
-        # Success — persist and increment.
-        persist_page_ir_attempt_artifacts(
-            attempt=attempt,
-            error=None,
-            model=model,
-            output_text=None,
-            page_index=page_index,
-            parsed=output,
-            raw_page_irs_dir=raw_page_irs_dir,
-        )
-        attempt_counter["value"] += 1
-
-        return output
-
+    # Run the agent.
+    png_bytes = png_fp.read_bytes()
     user_prompt: list[str | BinaryContent] = [
         prompts.user_message,
         BinaryContent(data=png_bytes, media_type="image/png"),
     ]
-
     result = agent.run_sync(user_prompt, model_settings=DEFAULT_MODEL_SETTINGS)
     page_ir = result.output
 
-    print(f"{page_ir = }")
-    exit()
-    # Populate remaining Python-side fields.
-    page_ir.coord_space = "px"
-    page_ir.doc_key = None  # Filled by caller
-    page_ir.dpi = None  # Filled by caller
-    page_ir.pdf_name = None  # Filled by caller
+    # Populate remaining Python-side fields (caller overrides coord_space, doc_key,
+    # dpi, etc.).
+    page_ir.coord_space = None
+    page_ir.doc_key = None
+    page_ir.dpi = None
+    page_ir.pdf_name = None
 
     return page_ir
 
@@ -221,8 +143,6 @@ def verify_page_ir_extraction_quality(
         If any quality checks fail.
     """
 
-    # Create context object for validators to share information and avoid redundant
-    # computations.
     ctx = PageIRExtractionQualityCtx(
         boundary_state=page_ir.boundary_state,
         image_height=image_height,
@@ -235,12 +155,11 @@ def verify_page_ir_extraction_quality(
         ],
         page_bbox=(0.0, 0.0, float(image_width), float(image_height)),
         page_ir=page_ir,
-        tol=2.0,  # Small tolerance for rounding
+        tol=2.0,
         top_level_bboxes=[],
     )
 
-    # Call validators. NB: Order can matter here so don't change unless you really know
-    # what you are doing!
+    # NB: Order matters — don't change unless you really know what you are doing!
     validate_image_dimensions(ctx)
     validate_no_whitespace_or_empty_blocks(ctx)
     validate_item_bboxes_required_and_in_bounds(ctx)
