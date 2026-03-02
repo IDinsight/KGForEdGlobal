@@ -249,11 +249,6 @@ def extract_page_ir(
         result = agent.run_sync(user_prompt, model_settings=DEFAULT_MODEL_SETTINGS)
         page_ir = result.output
 
-        # Populate Python-side fields known at this point.
-        page_ir.image_height = image_height
-        page_ir.image_width = image_width
-        page_ir.page_index = page_index
-
         # Run the validation agent.
         verdict = _run_validation_agent(
             image_height=image_height,
