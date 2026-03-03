@@ -38,7 +38,10 @@ from skg.page_ir_extraction.prompts import (
     validate_page_ir_extraction,
 )
 from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
-from skg.page_ir_extraction.utils import extract_page_text_layer_hints
+from skg.page_ir_extraction.utils import (
+    ExtractionUsageTracker,
+    extract_page_text_layer_hints,
+)
 from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
     validate_artifacts_are_true_artifacts,
@@ -110,6 +113,7 @@ def _run_validation_agent(
     page_index: int,
     page_ir: PageIR,
     png_bytes: bytes,
+    usage_tracker: ExtractionUsageTracker,
 ) -> ValidationVerdict:
     """Run the validation agent to compare an extracted PageIR against the source image.
 
@@ -130,6 +134,8 @@ def _run_validation_agent(
         The extracted PageIR to validate.
     png_bytes
         The raw PNG bytes of the source page image.
+    usage_tracker
+        Tracker to accumulate validation agent usage.
 
     Returns
     -------
@@ -155,6 +161,7 @@ def _run_validation_agent(
         BinaryContent(data=png_bytes, media_type="image/png"),
     ]
     result = agent.run_sync(user_prompt)
+    usage_tracker.validation.add_run_usage(result.usage())
 
     logger.success(f"Finished running validation agent for page: {page_index + 1}.")
 
@@ -172,6 +179,7 @@ def extract_page_ir(
     pdf_page: pymupdf.Page | None = None,
     png_fp: Path,
     raw_page_irs_dir: Path,
+    usage_tracker: ExtractionUsageTracker,
 ) -> PageIR:
     """Extract PageIR from a page image using an extraction agent with validation.
 
@@ -204,6 +212,8 @@ def extract_page_ir(
         The PNG file path of the page image.
     raw_page_irs_dir
         Directory to save raw page IR extraction artifacts.
+    usage_tracker
+        Tracker to accumulate token usage from both extraction and validation agents.
 
     Returns
     -------
@@ -269,6 +279,7 @@ def extract_page_ir(
         ]
         result = agent.run_sync(user_prompt)
         page_ir = result.output
+        usage_tracker.extraction.add_run_usage(result.usage())
 
         # Run the validation agent.
         verdict = _run_validation_agent(
@@ -278,6 +289,7 @@ def extract_page_ir(
             page_index=page_index,
             page_ir=page_ir,
             png_bytes=png_bytes,
+            usage_tracker=usage_tracker,
         )
 
         # If validation passed, we're done.
