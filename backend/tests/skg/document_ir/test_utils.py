@@ -41,7 +41,7 @@ def _make_chain_entry(page: int, idx: int, code: str | None) -> tuple[int, int, 
         kind="table",
         local_code=code,
         repeats_header=None,
-        rows=[TableRow(cells=[])],
+        rows=[TableRow(cells=[TableCell(text=None)])],
     )
 
     return page, idx, table
@@ -270,6 +270,8 @@ def create_table() -> Callable[[int | None], Table]:
             The created Table instance.
         """
 
+        width = n_cols or 1
+
         return Table(
             bbox=[0, 0, 100, 100],
             boundary=ItemBoundary.COMPLETE,
@@ -278,7 +280,7 @@ def create_table() -> Callable[[int | None], Table]:
             local_code=None,
             n_cols=n_cols,
             repeats_header=None,
-            rows=[_table_row("dummy")],
+            rows=[_table_row(*(["dummy"] * width))],
         )
 
     return _create
