@@ -12,6 +12,7 @@
 		"overwrite": true,
 		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/week_1_day_3.pdf",
 		"start_page": 0,
+		"use_extracted_hints": true,
 		"year": 2024
 	},
 	"page_ir_verification": {

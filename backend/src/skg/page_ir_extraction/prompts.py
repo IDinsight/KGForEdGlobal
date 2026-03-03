@@ -13,7 +13,13 @@ from skg.utils.general import PromptPair
 
 
 def extract_page_ir_from_pdf_page(
-    *, image_height: int, image_width: int, languages: list[str], page_index: int
+    *,
+    image_height: int,
+    image_width: int,
+    languages: list[str],
+    page_index: int,
+    table_layer_hint: str | None = None,
+    text_layer_hint: str | None = None,
 ) -> PromptPair:
     """Generate the prompts for extracting page IRs from a page image.
 
@@ -27,6 +33,14 @@ def extract_page_ir_from_pdf_page(
         List of expected languages in BCP-47 format (e.g., ['en', 'sw']).
     page_index
         The 0-based page index of the image being processed.
+    table_layer_hint
+        Optional serialized table structure extracted from the PDF text layer by
+        PyMuPDF. When provided, appended to the user message as a structural reference.
+        May be None if no usable tables were found.
+    text_layer_hint
+        Optional plain-text content extracted from the PDF text layer by PyMuPDF. When
+        provided, appended to the user message as a character-level spelling reference.
+        May be None if the text layer failed quality checks.
 
     Returns
     -------
@@ -115,6 +129,13 @@ If you emit a FIGURE block:
   - figure.alt_text MUST be present (not null) and non-empty (≤ ~500 chars). Describe what is visible.
   - Set figure.figure_kind to one of {allowed_figure_kinds}; keep conservative. If figure_kind is "equation", figure.contains_text must be true.
   - If figure.contains_text=true, populate figure.embedded_text (best-effort verbatim). Otherwise set contains_text=false (or null if unknown).
+
+## PDF TEXT LAYER HINTS (when provided)
+A machine-extracted text layer and/or table structure from the PDF may be included in the user message. These are derived from the PDF's internal text encoding (NOT from OCR) and are therefore **character-accurate** for spelling, diacritics, and special characters.
+  - **TEXT LAYER**: Use as the authoritative source for character-level spelling — especially for non-Latin scripts, diacritics, accented characters, and special letters (e.g., ɓ, ɗ, Ƴ, ŋ, ñ, é, ü). If you see a character in the image that could be either a plain Latin letter or a diacritical variant, **prefer the text layer's spelling**.
+  - **TABLE LAYER**: Use as a structural reference for table cell contents and column layout. It may help confirm cell boundaries, merged cells, and column counts. However, the text layer's table detection may miss some tables or include spurious ones.
+  - **IMAGE REMAINS AUTHORITATIVE** for: visual layout, reading order, block classification (heading vs paragraph vs table vs figure), bounding boxes, and structural decisions. The text/table layers are **hints only** — do not blindly copy them. If the text layer contains content not visible in the image, ignore it. If the image shows content not in the text layer (e.g., purely visual elements), extract it from the image.
+  - **WHEN HINTS CONFLICT WITH IMAGE**: The image is ground truth for structure and content presence. The text layer is ground truth for spelling of text that IS visible in the image.
         """
     )
 
@@ -126,6 +147,35 @@ Before returning, scan the bottom ~10% of the page for any missed content.
 Return the PageIR JSON only.
         """
     )
+
+    # Append PDF-derived hints when available.
+    hint_parts: list[str] = []
+
+    if text_layer_hint is not None:
+        hint_parts.append(
+            f"## PDF TEXT LAYER REFERENCE (character-accurate — use for spelling)\n"
+            f"The following text was extracted directly from the PDF's internal text "
+            f"encoding. Use it as the authoritative source for character-level "
+            f"spelling, especially for diacritics and special characters. Do NOT "
+            f"copy its structure or reading order — use the image for that.\n"
+            f"<text_layer>\n"
+            f"{text_layer_hint}\n"
+            f"</text_layer>"
+        )
+
+    if table_layer_hint is not None:
+        hint_parts.append(
+            f"## PDF TABLE LAYER REFERENCE (structural hint for tables)\n"
+            f"The following table structures were extracted from the PDF. Use them "
+            f"to confirm cell contents, column counts, and merged cells. The image "
+            f"remains authoritative for table boundaries and classification.\n"
+            f"<table_layer>\n"
+            f"{table_layer_hint}\n"
+            f"</table_layer>"
+        )
+
+    if hint_parts:
+        user_message = user_message.strip() + "\n\n" + "\n\n".join(hint_parts)
 
     return PromptPair(
         system_message=system_message.strip(), user_message=user_message.strip()

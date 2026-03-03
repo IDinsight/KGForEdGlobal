@@ -539,7 +539,7 @@ def validate_full_page_figure_requires_double_check(
         # If we get here, it is literally "one item, full-page figure". Force one retry
         # with a strong re-check instruction.
         raise QualityError(
-            f"Page {ctx.page_ir.page_index}: You returned exactly ONE full-page FIGURE "
+            f"Page index {ctx.page_ir.page_index}: You returned exactly ONE full-page FIGURE "
             f"item. Full-page figures are rare. Re-check the page carefully. If there "
             f"is ANY readable body text or tables (including scanned text), you MUST "
             f"extract it into heading/paragraph/list/table items with tight bboxes. "
@@ -576,7 +576,7 @@ def validate_full_page_figure_requires_double_check(
     # If the model says there's visible text, embedded_text should exist.
     if fig.contains_text is True and not has_embedded:
         raise QualityError(
-            f"Page {ctx.page_ir.page_index}: figure.contains_text=true but "
+            f"Page index {ctx.page_ir.page_index}: figure.contains_text=true but "
             f"embedded_text is empty. If there is visible text in the figure region, "
             f"populate embedded_text with best-effort verbatim text."
         )
@@ -585,7 +585,7 @@ def validate_full_page_figure_requires_double_check(
     # consider this a missed scanned-text extraction.
     if fig.contains_text is False and (not has_embedded) and (not has_caption):
         raise QualityError(
-            f"Page {ctx.page_ir.page_index}: extractor returned a full-page scanned "
+            f"Page index {ctx.page_ir.page_index}: extractor returned a full-page scanned "
             f"FIGURE with contains_text=false and no embedded_text/caption. This is "
             f"likely a missed text-as-image page. Extract the page contents as "
             f"headings/paragraphs/lists/tables instead of a single full-page figure, "
@@ -596,7 +596,7 @@ def validate_full_page_figure_requires_double_check(
     # scan-like pages.
     if fig.contains_text is None and (not has_embedded) and (not has_caption):
         raise QualityError(
-            f"Page {ctx.page_ir.page_index}: extractor returned a full-page scanned "
+            f"Page index {ctx.page_ir.page_index}: extractor returned a full-page scanned "
             f"FIGURE but provided no text evidence (contains_text is null and "
             f"embedded_text/caption are empty). Extract text blocks/tables, or set "
             f"contains_text=true and populate embedded_text."

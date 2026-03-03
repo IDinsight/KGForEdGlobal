@@ -23,6 +23,8 @@ Orchestration flow
 from pathlib import Path
 
 # Third Party Library
+import pymupdf
+
 from loguru import logger
 from pydantic_ai import BinaryContent
 
@@ -36,6 +38,7 @@ from skg.page_ir_extraction.prompts import (
     validate_page_ir_extraction,
 )
 from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
+from skg.page_ir_extraction.utils import extract_page_text_layer_hints
 from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
     validate_artifacts_are_true_artifacts,
@@ -134,7 +137,7 @@ def _run_validation_agent(
         The structured validation verdict.
     """
 
-    logger.info(f"Running validation agent for page: {page_index}...")
+    logger.info(f"Running validation agent for page: {page_index + 1}...")
 
     prompts = validate_page_ir_extraction(
         image_height=image_height,
@@ -153,7 +156,7 @@ def _run_validation_agent(
     ]
     result = agent.run_sync(user_prompt)
 
-    logger.success(f"Finished running validation agent for page: {page_index}.")
+    logger.success(f"Finished running validation agent for page: {page_index + 1}.")
 
     return result.output
 
@@ -166,6 +169,7 @@ def extract_page_ir(
     max_validation_attempts: int = 2,
     model: str,
     page_index: int,
+    pdf_page: pymupdf.Page | None = None,
     png_fp: Path,
     raw_page_irs_dir: Path,
 ) -> PageIR:
@@ -191,6 +195,11 @@ def extract_page_ir(
         The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
     page_index
         The 0-based page index.
+    pdf_page
+        The PyMuPDF page object for extracting text-layer and table-layer hints. When
+        provided, hints are extracted and passed to the extraction agent as
+        supplementary context for character-level spelling accuracy. May be None if the
+        PDF is not available or hints are not desired.
     png_fp
         The PNG file path of the page image.
     raw_page_irs_dir
@@ -209,13 +218,31 @@ def extract_page_ir(
     png_bytes = png_fp.read_bytes()
     validation_feedback: str | None = None
 
+    # Extract text-layer and table-layer hints from the PDF page (if available).
+    table_layer_hint: str | None = None
+    text_layer_hint: str | None = None
+
+    if pdf_page is not None:
+        hints = extract_page_text_layer_hints(page=pdf_page, page_index=page_index)
+        table_layer_hint = hints.table_hint
+        text_layer_hint = hints.text_hint
+
+        if hints.has_hints:
+            logger.info(
+                f"Page {page_index + 1}: PDF hints available — "
+                f"text_layer={'yes' if text_layer_hint else 'no'}, "
+                f"table_layer={'yes' if table_layer_hint else 'no'}."
+            )
+
     for validation_attempt in range(max_validation_attempts):
-        # Build extraction prompts.
+        # Build extraction prompts (with optional PDF-derived hints).
         prompts = extract_page_ir_from_pdf_page(
             image_height=image_height,
             image_width=image_width,
             languages=languages,
             page_index=page_index,
+            table_layer_hint=table_layer_hint,
+            text_layer_hint=text_layer_hint,
         )
 
         # Append validation feedback from a prior failed validation cycle.
@@ -256,7 +283,7 @@ def extract_page_ir(
         # If validation passed, we're done.
         if verdict.passed:
             logger.success(
-                f"Page {page_index}: validation passed "
+                f"Page {page_index + 1}: validation passed "
                 f"(validation attempt {validation_attempt})."
             )
 
@@ -272,14 +299,14 @@ def extract_page_ir(
         validation_feedback = _format_validation_feedback(verdict)
     else:
         logger.warning(
-            f"Page {page_index}: validation did not pass after "
+            f"Page {page_index + 1}: validation did not pass after "
             f"{max_validation_attempts} attempt(s). Returning last extraction."
         )
 
     assert page_ir is not None, (
         f"page_ir is None after {max_validation_attempts} validation attempt(s) for "
-        f"page {page_index}. This should never happen since the extraction agent must "
-        f"produce at least one PageIR."
+        f"page {page_index + 1}. This should never happen since the extraction agent "
+        f"must produce at least one PageIR."
     )
 
     return page_ir

@@ -82,6 +82,14 @@ class ExtractionConfig(BaseSchema):
     start_page: Optional[int] = Field(
         None, description="0-based start page (inclusive)."
     )
+    use_extracted_hints: bool = Field(
+        False,
+        description=(
+            "Whether or not to extract text layer and table layer hints using PyMuPDF "
+            "as additional context for the extraction agent's prompt. This is helpful "
+            "for PDF with non-English text and accents."
+        ),
+    )
     year: Optional[int] = Field(
         None, description="Document year (optional; overrides any inferred year)."
     )
