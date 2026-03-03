@@ -279,7 +279,7 @@ class FigureUnit(BaseSchema):
 
     alt_text: str = Field(
         ...,
-        description="Very short, non-semantic description of what the figure is (e.g., 'flowchart with arrows', 'pyramid diagram'). Do NOT interpret meaning. Null if unknown.",
+        description="Very short, non-semantic description of what the figure is (e.g., 'flowchart with arrows', 'pyramid diagram'). Do NOT interpret meaning.",
         max_length=500,
     )
     caption: Optional[TextUnit] = Field(
