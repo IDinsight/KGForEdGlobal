@@ -2,15 +2,313 @@
 
 # Standard Library
 from pathlib import Path
+from unittest.mock import MagicMock
 
 # Third Party Library
 import pymupdf
+import pytest
 
 from PIL import Image
 
 # Package Library
 from skg.page_ir_extraction import utils
-from tests.constants import FIXTURES_DIR
+from tests.constants import FIXTURES_DIR, PARAM
+
+
+def _mock_page_get_text_text(raw_text: str) -> MagicMock:
+    """Create a minimal page mock for `_extract_text_hint`.
+
+    Parameters
+    ----------
+    raw_text
+        The value to return for `page.get_text("text")`.
+
+    Returns
+    -------
+    MagicMock
+        A mock page object.
+    """
+
+    page = MagicMock()
+    page.get_text.return_value = raw_text
+    return page
+
+
+def test__extract_text_hint_accepts_real_pymupdf_text_layer(
+    mock_loguru_logger,
+) -> None:
+    """Integration-ish check with a real `pymupdf.Page` object.
+
+    This guards against accidental divergence between our mocks and the actual
+    `page.get_text("text")` output.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    calls = mock_loguru_logger(utils)
+    doc = pymupdf.open()  # Create an in-memory PDF
+
+    try:
+        page = doc.new_page()
+
+        # Insert enough text to clear the min-length gate regardless of threshold.
+        page.insert_text((72, 72), "Hello world " * 4000)
+        out = utils._extract_text_hint(page=page, page_index=0)
+
+        assert out is not None
+        assert "Hello world" in out
+        assert calls == []
+    finally:
+        doc.close()
+
+
+def test__extract_text_hint_accepts_text_with_lots_of_newlines_tabs_and_returns_raw(
+    mock_loguru_logger,
+) -> None:
+    """Newlines/tabs are common in PDF text extraction and should count as acceptable
+    characters in the printable ratio computation.
+
+    This is a 'stress' case: a huge fraction of the extracted text is whitespace
+    control characters that we explicitly whitelist.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    min_len = int(getattr(utils, "_MIN_TEXT_LENGTH"))
+    seed = "A" * max(min_len, 1)
+
+    raw_text = seed + ("\n\t\r" * 2000) + "\n"  # Trailing newline gets stripped
+
+    calls = mock_loguru_logger(utils)
+    page = _mock_page_get_text_text(raw_text=raw_text)
+
+    out = utils._extract_text_hint(page=page, page_index=1)
+
+    assert out == raw_text
+    assert calls == []
+
+
+def test__extract_text_hint_prioritizes_printable_ratio_check_over_replacement_ratio(
+    mock_loguru_logger,
+) -> None:
+    """If both the printable ratio and replacement ratio are bad, the printable ratio
+    check should short-circuit first.
+
+    This test guards against accidental re-ordering of quality gates.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    min_len = int(getattr(utils, "_MIN_TEXT_LENGTH"))
+    min_printable = float(getattr(utils, "_MIN_PRINTABLE_RATIO"))
+    max_repl = float(getattr(utils, "_MAX_REPLACEMENT_CHAR_RATIO"))
+
+    if not 0 < min_printable <= 1 or not 0 <= max_repl < 1:
+        pytest.skip("Unexpected thresholds; cannot construct robust test")
+
+    a = max(min_len, 1)  # Normal printable characters
+    c = (1 - min_printable) / min_printable
+
+    # Find counts that satisfy:
+    #
+    # 1. printable_ratio < min_printable
+    # 2. replacement_ratio > max_repl
+    k_repl = a
+
+    for _ in range(20):
+        k_repl *= 2
+        n_nonprintable = int(c * (a + k_repl)) + 1
+        total = a + k_repl + n_nonprintable
+        printable_ratio = (a + k_repl) / total
+        replacement_ratio = k_repl / total
+
+        if printable_ratio < min_printable and replacement_ratio > max_repl:
+            break
+    else:
+        pytest.skip("Could not satisfy both gate conditions with current thresholds")
+
+    raw_text = ("A" * a) + ("\ufffd" * k_repl) + ("\x00" * n_nonprintable)
+
+    calls = mock_loguru_logger(utils)
+    page = _mock_page_get_text_text(raw_text=raw_text)
+
+    assert utils._extract_text_hint(page=page, page_index=0) is None
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "low printable ratio" in calls[0]["message"]
+    assert "replacement chars" not in calls[0]["message"]
+
+
+@PARAM(("raw_text", "expected_stripped_len"), [("", 0), (" \n\t\r  ", 0)])
+def test__extract_text_hint_rejects_empty_or_whitespace_text_layer_and_logs_debug(
+    mock_loguru_logger, raw_text: str, expected_stripped_len: int
+) -> None:
+    """Empty/whitespace-only text layers should be rejected before any ratio
+    computations.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    raw_text
+        The page text layer to return.
+    expected_stripped_len
+        Expected `len(raw_text.strip())`.
+    """
+
+    calls = mock_loguru_logger(utils)
+    page = _mock_page_get_text_text(raw_text=raw_text)
+
+    assert utils._extract_text_hint(page=page, page_index=0) is None
+
+    assert len(calls) == 1
+    assert calls[0]["level"] == "DEBUG"
+    assert "Page 1:" in calls[0]["message"]
+    assert "text layer too short" in calls[0]["message"]
+    assert f"({expected_stripped_len} chars)" in calls[0]["message"]
+    assert "Skipping hint" in calls[0]["message"]
+
+
+def test__extract_text_hint_rejects_excessive_replacement_chars_and_logs_warning(
+    mock_loguru_logger,
+) -> None:
+    """A text layer with too many replacement characters (\ufffd) should be rejected
+    even if it is otherwise printable.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    min_len = int(getattr(utils, "_MIN_TEXT_LENGTH"))
+    max_repl = float(getattr(utils, "_MAX_REPLACEMENT_CHAR_RATIO"))
+
+    if max_repl < 0 or max_repl >= 1:
+        pytest.skip(
+            "Unexpected _MAX_REPLACEMENT_CHAR_RATIO; cannot construct robust test"
+        )
+
+    printable_seed = "A" * max(min_len, 1)
+
+    # Minimal replacement count to push replacement_ratio strictly above threshold.
+    k_repl = int((max_repl * len(printable_seed)) / (1 - max_repl)) + 1
+    raw_text = printable_seed + ("\ufffd" * k_repl)
+
+    calls = mock_loguru_logger(utils)
+    page = _mock_page_get_text_text(raw_text=raw_text)
+
+    assert utils._extract_text_hint(page=page, page_index=9) is None
+
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "Page 10:" in calls[0]["message"]
+    assert "excessive replacement chars" in calls[0]["message"]
+    assert "Skipping hint" in calls[0]["message"]
+    assert "printable ratio" not in calls[0]["message"].lower()
+
+
+def test__extract_text_hint_rejects_low_printable_ratio_and_logs_warning(
+    mock_loguru_logger,
+) -> None:
+    """A text layer dominated by non-printable characters should be rejected.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    min_len = int(getattr(utils, "_MIN_TEXT_LENGTH"))
+    min_printable = float(getattr(utils, "_MIN_PRINTABLE_RATIO"))
+
+    if min_printable <= 0 or min_printable > 1:
+        pytest.skip("Unexpected _MIN_PRINTABLE_RATIO; cannot construct robust test")
+
+    # Ensure we pass the min-length check and then fail the printable ratio check.
+    printable_seed = "A" * max(min_len, 1)
+
+    # Minimal non-printable count to push printable_ratio strictly below threshold.
+    n_nonprintable = (
+        int((len(printable_seed) * (1 - min_printable)) / min_printable) + 1
+    )
+    raw_text = printable_seed + ("\x00" * n_nonprintable)
+
+    calls = mock_loguru_logger(utils)
+    page = _mock_page_get_text_text(raw_text=raw_text)
+
+    assert utils._extract_text_hint(page=page, page_index=4) is None
+
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "Page 5:" in calls[0]["message"]
+    assert "low printable ratio" in calls[0]["message"]
+    assert "Skipping hint" in calls[0]["message"]
+    assert "replacement" not in calls[0]["message"].lower()
+
+
+def test__extract_text_hint_rejects_text_layer_below_min_length_threshold(
+    mock_loguru_logger,
+) -> None:
+    """Stress the min-length gate with an input that is exactly 1 character below the
+    module threshold.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    min_len = int(getattr(utils, "_MIN_TEXT_LENGTH"))
+
+    # Build a string that is *just* under the threshold after stripping.
+    below = "A" * max(min_len - 1, 0)
+    calls = mock_loguru_logger(utils)
+    page = _mock_page_get_text_text(raw_text=below)
+
+    assert utils._extract_text_hint(page=page, page_index=6) is None
+
+    # The debug log should report the stripped length, not the raw length.
+    assert len(calls) == 1
+    assert calls[0]["level"] == "DEBUG"
+    assert "Page 7:" in calls[0]["message"]
+    assert f"({len(below.strip())} chars)" in calls[0]["message"]
+
+
+def test__extract_text_hint_returns_none_and_logs_warning_on_get_text_exception(
+    mock_loguru_logger,
+) -> None:
+    """If PyMuPDF fails to extract the text layer, we should consume the error, emit a
+    warning, and return None.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    calls = mock_loguru_logger(utils)
+
+    page = MagicMock()
+    page.get_text.side_effect = RuntimeError("boom")
+
+    assert utils._extract_text_hint(page=page, page_index=2) is None
+
+    page.get_text.assert_called_once_with("text")
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "Page 3:" in calls[0]["message"]
+    assert "failed to extract text layer" in calls[0]["message"]
+    assert "boom" in calls[0]["message"]
 
 
 def test_render_and_save_page_to_png_dpi_scaling_is_accurate(tmp_path: Path) -> None:
