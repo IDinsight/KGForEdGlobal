@@ -2,6 +2,7 @@
 
 # Standard Library
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 # Third Party Library
@@ -13,6 +14,44 @@ from PIL import Image
 # Package Library
 from skg.page_ir_extraction import utils
 from tests.constants import FIXTURES_DIR, PARAM
+
+
+def _make_table(extract_return: list[list[str | None]] | None = None) -> MagicMock:
+    """Create a minimal table mock for `_extract_table_hint`.
+
+    Parameters
+    ----------
+    extract_return
+        The value to return for `table.extract()`.
+
+    Returns
+    -------
+    MagicMock
+        A mock table object.
+    """
+
+    t = MagicMock()
+    t.extract.return_value = extract_return
+    return t
+
+
+def _mock_page_find_tables(tables: list[MagicMock] | None) -> MagicMock:
+    """Create a minimal page mock for `_extract_table_hint`.
+
+    Parameters
+    ----------
+    tables
+        The value to expose on the `finder_result.tables` attribute.
+
+    Returns
+    -------
+    MagicMock
+        A mock page object.
+    """
+
+    page = MagicMock()
+    page.find_tables.return_value = SimpleNamespace(tables=tables)
+    return page
 
 
 def _mock_page_get_text_text(raw_text: str) -> MagicMock:
@@ -32,6 +71,203 @@ def _mock_page_get_text_text(raw_text: str) -> MagicMock:
     page = MagicMock()
     page.get_text.return_value = raw_text
     return page
+
+
+def test__extract_table_hint_returns_none_if_all_tables_are_unusable(
+    mock_loguru_logger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If every table is empty, trivially small, or throws, return None.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    monkeypatch
+        Fixture that allows patching attributes on the utils module.
+    """
+
+    calls = mock_loguru_logger(utils)
+
+    serializer = MagicMock(return_value="should-not-be-called")
+    monkeypatch.setattr(utils, "_serialize_table", serializer)
+
+    t0 = _make_table(extract_return=[["ignored"]])
+    t0.extract.side_effect = RuntimeError("explode")
+
+    t1 = _make_table(extract_return=[])
+    t2 = _make_table(extract_return=[[None, "   "]])  # 0 non-empty
+    t3 = _make_table(extract_return=[["only-one"], [None]])  # 1 non-empty
+
+    page = _mock_page_find_tables(tables=[t0, t1, t2, t3])
+
+    assert utils._extract_table_hint(page=page, page_index=4) is None
+    serializer.assert_not_called()
+
+    # We should warn for the one extract explosion.
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "Page 5:" in calls[0]["message"]
+    assert "failed to extract table 0" in calls[0]["message"]
+    assert "explode" in calls[0]["message"]
+
+
+def test__extract_table_hint_returns_none_and_logs_warning_if_finder_result_missing_tables(
+    mock_loguru_logger,
+) -> None:
+    """A defensive check: if `find_tables()` returns an unexpected shape, we should
+    still fail closed (warn + return None).
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    calls = mock_loguru_logger(utils)
+
+    page = MagicMock()
+    page.find_tables.return_value = object()  # No `.tables` attr
+
+    assert utils._extract_table_hint(page=page, page_index=0) is None
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "Page 1:" in calls[0]["message"]
+    assert "failed to extract tables" in calls[0]["message"]
+    assert "tables" in calls[0]["message"].lower()
+
+
+def test__extract_table_hint_returns_none_and_logs_warning_on_find_tables_exception(
+    mock_loguru_logger,
+) -> None:
+    """If PyMuPDF fails during table detection, consume the error, log, and return None.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    calls = mock_loguru_logger(utils)
+
+    page = MagicMock()
+    page.find_tables.side_effect = RuntimeError("boom")
+
+    assert utils._extract_table_hint(page=page, page_index=0) is None
+
+    page.find_tables.assert_called_once_with()
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "Page 1:" in calls[0]["message"]
+    assert "failed to extract tables" in calls[0]["message"]
+    assert "boom" in calls[0]["message"]
+
+
+def test__extract_table_hint_returns_none_when_no_tables_found(
+    mock_loguru_logger,
+) -> None:
+    """If table detection succeeds but returns no tables, return None and do not log.
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    """
+
+    calls = mock_loguru_logger(utils)
+    page = _mock_page_find_tables(tables=[])
+
+    assert utils._extract_table_hint(page=page, page_index=7) is None
+    assert calls == []
+
+
+def test__extract_table_hint_skips_bad_tables_but_serializes_good_ones(
+    mock_loguru_logger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stress-case coverage:
+
+    1. One table raises during extract() (should warn + continue)
+    2. One table returns None/empty (should skip)
+    3. One table is 'trivially small' after stripping (should skip)
+    4. Two tables are valid (should serialize + join with a blank line)
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    monkeypatch
+        Fixture that allows patching attributes on the utils module.
+    """
+
+    calls = mock_loguru_logger(utils)
+
+    # Patch serializer so we can verify ordering + which indices are kept.
+    serialize_calls: list[tuple[int, list[list[str | None]]]] = []
+
+    def _fake_serialize_table(
+        *, table_data: list[list[str | None]], table_index: int
+    ) -> str:
+        """Capture calls to the serializer for later inspection.
+
+        Parameters
+        ----------
+        table_data
+            The raw extracted table data passed to the serializer.
+        table_index
+            The index of the table on the page, as passed to the serializer.
+
+        Returns
+        -------
+        str
+            A fake serialized string that encodes the table index and number of
+            non-empty cells, for testing purposes.
+        """
+
+        serialize_calls.append((table_index, table_data))
+        non_empty = sum(
+            1 for row in table_data for cell in row if cell is not None and cell.strip()
+        )
+        return f"tbl{table_index}-ne{non_empty}-rows{len(table_data)}"
+
+    monkeypatch.setattr(utils, "_serialize_table", _fake_serialize_table)
+
+    # Extract raises.
+    t0 = _make_table(extract_return=[["ignored"]])
+    t0.extract.side_effect = ValueError("bad table")
+
+    # Extract returns None (skip).
+    t1 = _make_table(extract_return=None)
+
+    # Trivially small after stripping (only 1 non-empty cell).
+    t2 = _make_table(extract_return=[[None, "   ", "x"], ["", None, "\t"]])
+
+    # Valid (two real cells, lots of whitespace).
+    t3 = _make_table(extract_return=[["x", "  ", None], [None, "y", "\n"]])
+
+    # Valid large table with only two non-empty cells.
+    big: list[list[str | None]] = [["   " for _ in range(20)] for _ in range(100)]
+    big[0][0] = "A"
+    big[-1][-1] = "B"
+    t4 = _make_table(extract_return=big)
+
+    page = _mock_page_find_tables(tables=[t0, t1, t2, t3, t4])
+
+    out = utils._extract_table_hint(page=page, page_index=2)
+
+    # Only tables 3 and 4 should survive, and they should retain original indices.
+    assert out is not None
+    assert out.split("\n\n", maxsplit=1)[0].startswith("tbl3-")
+    assert out.split("\n\n")[1].startswith("tbl4-")
+
+    assert [idx for idx, _ in serialize_calls] == [3, 4]
+    assert serialize_calls[0][1] == t3.extract.return_value
+    assert serialize_calls[1][1] == t4.extract.return_value
+
+    # We should have exactly one warning (from the table-0 extract failure).
+    assert len(calls) == 1
+    assert calls[0]["level"] == "WARNING"
+    assert "Page 3:" in calls[0]["message"]
+    assert "failed to extract table 0" in calls[0]["message"]
+    assert "bad table" in calls[0]["message"]
 
 
 def test__extract_text_hint_accepts_real_pymupdf_text_layer(
