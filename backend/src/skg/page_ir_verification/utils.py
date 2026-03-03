@@ -12,6 +12,7 @@ from typing import Any, NamedTuple, Optional
 
 # Third Party Library
 from loguru import logger
+from PIL import Image
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TableCell, TextUnit
@@ -26,7 +27,6 @@ from skg.utils.constants import (
     PageContinuationKind,
 )
 from skg.utils.general import make_dir, open_json_type, truncate_text, write_to_json
-from skg.utils.pdf import crop_image_to_ymax
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -1315,6 +1315,30 @@ def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationD
         page_irs_pair_reports=page_irs_pair_reports,
         page_irs_verified=page_irs_verified,
     )
+
+
+def crop_image_to_ymax(
+    *, input_png_fp: Path, output_png_fp: Path, y_max: float
+) -> None:
+    """Crop a rendered page PNG to [0, y_max] in pixel coordinates.
+
+    Parameters
+    ----------
+    input_png_fp
+        Full-page PNG path (the extraction-time rendered page image).
+    output_png_fp
+        Where to write the cropped PNG.
+    y_max
+        The maximum Y coordinate (in pixels) to crop to. Values outside the image
+        height will be clamped to the image bounds.
+    """
+
+    with Image.open(input_png_fp) as img:
+        w, h = img.size
+        y = max(1, min(int(round(y_max)), h))
+
+        make_dir(output_png_fp.parent)
+        img.crop((0, 0, w, y)).save(output_png_fp)
 
 
 def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
