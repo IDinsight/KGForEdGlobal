@@ -547,6 +547,124 @@ def test__extract_text_hint_returns_none_and_logs_warning_on_get_text_exception(
     assert "boom" in calls[0]["message"]
 
 
+def test__serialize_table_collapses_internal_newlines_and_strips_cells() -> None:
+    """Newlines inside cells must be replaced with spaces and then stripped.
+
+    This protects the downstream LLM format: each table row should stay a single line
+    in the serialized output (no embedded newlines coming from cell contents).
+    """
+
+    table_data: list[list[str | None]] = [
+        ["  a\nb  ", "x\ny\nz", None],
+    ]
+
+    out = utils._serialize_table(table_data=table_data, table_index=0)
+    lines = out.splitlines()
+
+    assert lines[0] == "### Table 0"
+    assert lines[1] == "  row 0: | a b | x y z |  |"
+    assert "\n" not in lines[1]  # Row line should be single-line
+
+
+def test__serialize_table_handles_ragged_rows_and_empty_rows() -> None:
+    """Ragged tables (varying row lengths) should serialize without special-casing.
+    Empty rows still produce a row line with an empty cell region.
+    """
+
+    table_data: list[list[str | None]] = [[], ["a"], ["a", "b", "c"]]
+
+    out = utils._serialize_table(table_data=table_data, table_index=5)
+
+    assert out.splitlines() == [
+        "### Table 5",
+        "  row 0: |  |",
+        "  row 1: | a |",
+        "  row 2: | a | b | c |",
+    ]
+
+
+def test__serialize_table_renders_header_and_rows_with_none_cells_as_empty_strings() -> (
+    None
+):
+    """Render a small table and verify the exact wire format.
+
+    This checks the core contract:
+
+    1. Header contains the table index.
+    2. Rows are numbered from 0.
+    3. Cells are pipe-delimited.
+    4. None is rendered as an empty string.
+    5. Cell strings are stripped.
+    """
+
+    table_data: list[list[str | None]] = [
+        ["a", None, "  c  "],
+        [None, "", "d"],
+    ]
+
+    out = utils._serialize_table(table_data=table_data, table_index=2)
+
+    assert out.splitlines() == [
+        "### Table 2",
+        "  row 0: | a |  | c |",
+        "  row 1: |  |  | d |",
+    ]
+
+
+def test__serialize_table_returns_header_only_for_empty_table_data() -> None:
+    """An empty `table_data` should serialize to just the header line."""
+
+    table_data: list[list[str | None]] = []
+
+    out = utils._serialize_table(table_data=table_data, table_index=9)
+
+    assert out == "### Table 9"
+
+
+def test__serialize_table_stress_large_table_preserves_row_count_and_no_embedded_newlines() -> (
+    None
+):
+    """Stress test a large table to catch formatting regressions.
+
+    Verifies:
+
+    1. Output has exactly 1 header + N row lines.
+    2. Specific cells with embedded newlines are collapsed.
+    3. Row lines themselves do not contain embedded newlines.
+    """
+
+    n_rows = 120
+    n_cols = 35
+    table_data: list[list[str | None]] = []
+
+    for r in range(n_rows):
+        row: list[str | None] = []
+
+        for c in range(n_cols):
+            if (r + c) % 11 == 0:
+                row.append(f"  r{r}\n c{c}  ")
+            elif (r + c) % 7 == 0:
+                row.append(None)
+            else:
+                row.append(f"v{r}_{c}")
+
+        table_data.append(row)
+
+    out = utils._serialize_table(table_data=table_data, table_index=3)
+    lines = out.splitlines()
+
+    assert len(lines) == 1 + n_rows
+    assert lines[0] == "### Table 3"
+    assert lines[1].startswith("  row 0: | ")
+    assert lines[-1].startswith(f"  row {n_rows - 1}: | ")
+    assert all("\n" not in line for line in lines)
+
+    # Spot-check a known newline-containing cell got collapsed properly.
+    # (0 + 0) % 11 == 0, so the first cell should be "r0  c0" after newline -> space +
+    # strip.
+    assert "r0  c0" in lines[1]
+
+
 def test_render_and_save_page_to_png_dpi_scaling_is_accurate(tmp_path: Path) -> None:
     """Test that rendering at different DPIs produces correct pixel dimensions.
 

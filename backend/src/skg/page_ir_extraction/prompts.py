@@ -81,12 +81,12 @@ Omit these fields (Python fills them after extraction): boundary_state, doc_key,
 5. **NO FULL-PAGE BBOXES** unless the page contains exactly one non-table visual (diagram/illustration) with no readable body text. Such pages are rare.
 
 ## BOUNDARIES (item.boundary only)
-1. Semantic continuity across pages (not missing borders):
+1. **Semantic** continuity across pages (not missing borders):
    - "{ItemBoundary.RESUMED.value}": continues from previous page
    - "{ItemBoundary.TRUNCATED.value}": continues onto next page
    - "{ItemBoundary.BOTH.value}": both directions
    - "{ItemBoundary.COMPLETE.value}": fully contained on this page
-2. Set boundary from visible continuation cues. Do NOT rely on whether borders are drawn.
+2. Set boundary from visible continuation cues. **Do NOT rely on whether borders are drawn.**
 
 ## BLOCK CLASSIFICATIONS
 Valid block_type values: {allowed_block_types}
