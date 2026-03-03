@@ -14,6 +14,7 @@ from PIL import Image
 # Package Library
 from skg.page_ir_extraction import utils
 from tests.constants import FIXTURES_DIR, PARAM
+from tests.types_ import InstallLoguruMock
 
 
 def _make_table(extract_return: list[list[str | None]] | None = None) -> MagicMock:
@@ -74,7 +75,7 @@ def _mock_page_get_text_text(raw_text: str) -> MagicMock:
 
 
 def test__extract_table_hint_returns_none_if_all_tables_are_unusable(
-    mock_loguru_logger, monkeypatch: pytest.MonkeyPatch
+    mock_loguru_logger: InstallLoguruMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If every table is empty, trivially small, or throws, return None.
 
@@ -112,7 +113,7 @@ def test__extract_table_hint_returns_none_if_all_tables_are_unusable(
 
 
 def test__extract_table_hint_returns_none_and_logs_warning_if_finder_result_missing_tables(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """A defensive check: if `find_tables()` returns an unexpected shape, we should
     still fail closed (warn + return None).
@@ -137,7 +138,7 @@ def test__extract_table_hint_returns_none_and_logs_warning_if_finder_result_miss
 
 
 def test__extract_table_hint_returns_none_and_logs_warning_on_find_tables_exception(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """If PyMuPDF fails during table detection, consume the error, log, and return None.
 
@@ -163,7 +164,7 @@ def test__extract_table_hint_returns_none_and_logs_warning_on_find_tables_except
 
 
 def test__extract_table_hint_returns_none_when_no_tables_found(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """If table detection succeeds but returns no tables, return None and do not log.
 
@@ -181,7 +182,7 @@ def test__extract_table_hint_returns_none_when_no_tables_found(
 
 
 def test__extract_table_hint_skips_bad_tables_but_serializes_good_ones(
-    mock_loguru_logger, monkeypatch: pytest.MonkeyPatch
+    mock_loguru_logger: InstallLoguruMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Stress-case coverage:
 
@@ -271,7 +272,7 @@ def test__extract_table_hint_skips_bad_tables_but_serializes_good_ones(
 
 
 def test__extract_text_hint_accepts_real_pymupdf_text_layer(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """Integration-ish check with a real `pymupdf.Page` object.
 
@@ -302,7 +303,7 @@ def test__extract_text_hint_accepts_real_pymupdf_text_layer(
 
 
 def test__extract_text_hint_accepts_text_with_lots_of_newlines_tabs_and_returns_raw(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """Newlines/tabs are common in PDF text extraction and should count as acceptable
     characters in the printable ratio computation.
@@ -331,7 +332,7 @@ def test__extract_text_hint_accepts_text_with_lots_of_newlines_tabs_and_returns_
 
 
 def test__extract_text_hint_prioritizes_printable_ratio_check_over_replacement_ratio(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """If both the printable ratio and replacement ratio are bad, the printable ratio
     check should short-circuit first.
@@ -386,7 +387,7 @@ def test__extract_text_hint_prioritizes_printable_ratio_check_over_replacement_r
 
 @PARAM(("raw_text", "expected_stripped_len"), [("", 0), (" \n\t\r  ", 0)])
 def test__extract_text_hint_rejects_empty_or_whitespace_text_layer_and_logs_debug(
-    mock_loguru_logger, raw_text: str, expected_stripped_len: int
+    mock_loguru_logger: InstallLoguruMock, raw_text: str, expected_stripped_len: int
 ) -> None:
     """Empty/whitespace-only text layers should be rejected before any ratio
     computations.
@@ -415,7 +416,7 @@ def test__extract_text_hint_rejects_empty_or_whitespace_text_layer_and_logs_debu
 
 
 def test__extract_text_hint_rejects_excessive_replacement_chars_and_logs_warning(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """A text layer with too many replacement characters (\ufffd) should be rejected
     even if it is otherwise printable.
@@ -454,7 +455,7 @@ def test__extract_text_hint_rejects_excessive_replacement_chars_and_logs_warning
 
 
 def test__extract_text_hint_rejects_low_printable_ratio_and_logs_warning(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """A text layer dominated by non-printable characters should be rejected.
 
@@ -493,7 +494,7 @@ def test__extract_text_hint_rejects_low_printable_ratio_and_logs_warning(
 
 
 def test__extract_text_hint_rejects_text_layer_below_min_length_threshold(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """Stress the min-length gate with an input that is exactly 1 character below the
     module threshold.
@@ -521,7 +522,7 @@ def test__extract_text_hint_rejects_text_layer_below_min_length_threshold(
 
 
 def test__extract_text_hint_returns_none_and_logs_warning_on_get_text_exception(
-    mock_loguru_logger,
+    mock_loguru_logger: InstallLoguruMock,
 ) -> None:
     """If PyMuPDF fails to extract the text layer, we should consume the error, emit a
     warning, and return None.
