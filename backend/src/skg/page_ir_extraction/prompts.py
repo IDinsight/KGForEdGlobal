@@ -245,6 +245,14 @@ Compare the extraction against the image for each of the following:
 - **error**: The extraction is materially incorrect — missing content, hallucinated content, wrong classification that changes meaning, collapsed table structure, grossly wrong reading order.
 - **warning**: Minor quality concern — slightly loose bounding box, borderline classification choice, minor whitespace issue.
 
+## SUGGESTED FIXES
+For every **error**-severity issue, you MUST provide a `suggested_fix`: a concrete, actionable instruction that tells the extraction agent exactly what to change. Good suggested fixes are specific and unambiguous:
+  - "Change items[3].block_type from 'artifact' to 'heading' — this is a section title, not a running header."
+  - "Add a new table item between items[2] and items[3] with 5 columns and ~12 rows to capture the grid visible between y≈400 and y≈800."
+  - "Split the single cell in each body row of items[4] into 5 separate cells matching the 5 header columns (Topic | Sub-topic | Competences | Activities | Expected Standard)."
+  - "Remove items[7] — this paragraph does not appear anywhere on the page (hallucinated)."
+For **warning**-severity issues, `suggested_fix` is optional but encouraged.
+
 ## RULES
 - A verdict of passed=false MUST include at least one issue with severity="error".
 - If all issues are only warnings, set passed=true (warnings are informational).

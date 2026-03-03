@@ -600,6 +600,17 @@ class ValidationIssue(BaseSchema):
             "concerns (slightly loose bbox, borderline classification)."
         ),
     )
+    suggested_fix: Optional[str] = Field(
+        default=None,
+        description=(
+            "A concrete, actionable suggested fix for the extraction agent to apply. "
+            "Should describe exactly what to change (e.g., 'Change items[3].block_type "
+            "from artifact to heading', 'Add a table item between items[2] and items[3] "
+            "with 4 columns capturing the grid visible at y=400–800', 'Split the single "
+            "cell in body rows into 5 separate cells matching the header columns'). "
+            "Required for error-severity issues; optional for warnings."
+        ),
+    )
 
 
 class ValidationVerdict(BaseSchema):
@@ -621,6 +632,36 @@ class ValidationVerdict(BaseSchema):
     rationale: str = Field(
         ..., description="Brief explanation of the overall assessment."
     )
+
+    @model_validator(mode="after")
+    def validate_error_issues_have_suggested_fix(self) -> Self:
+        """Validate that every error-severity issue includes a suggested_fix.
+
+        Error-severity issues must provide a concrete, actionable fix so the extraction
+        agent can apply targeted corrections rather than re-guessing.
+
+        Returns
+        -------
+        Self
+            The validated ValidationVerdict.
+
+        Raises
+        ------
+        ValueError
+            If any error-severity issue is missing a suggested_fix.
+        """
+
+        for i, issue in enumerate(self.issues):
+            if issue.severity == "error" and (
+                issue.suggested_fix is None or not issue.suggested_fix.strip()
+            ):
+                raise ValueError(
+                    f"Error-severity issue at issues[{i}] must include a non-empty "
+                    f"suggested_fix describing the concrete correction the extraction "
+                    f"agent should apply. Issue description: {issue.description[:200]}"
+                )
+
+        return self
 
     @model_validator(mode="after")
     def validate_fail_requires_error_issues(self) -> Self:
