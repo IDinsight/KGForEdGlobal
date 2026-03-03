@@ -96,10 +96,13 @@ def _format_validation_feedback(verdict: ValidationVerdict) -> str:
         )
         lines.append(f"{i}. [{issue.severity.upper()}]{idx_part} {issue.description}")
 
+        if issue.suggested_fix:
+            lines.append(f"   → SUGGESTED FIX: {issue.suggested_fix}")
+
     lines.append("")
     lines.append(
-        "Fix ALL error-severity issues in your new extraction. "
-        "Return a complete, corrected PageIR JSON."
+        "Fix ALL error-severity issues in your new extraction. Apply the SUGGESTED FIX "
+        "for each error where provided. Return a complete, corrected PageIR JSON."
     )
 
     return "\n".join(lines)
