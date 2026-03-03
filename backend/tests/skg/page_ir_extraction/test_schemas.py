@@ -1,8 +1,5 @@
 """This is the main module for testing page_ir_extraction/schemas.py."""
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
 from collections.abc import Callable
 
