@@ -10,7 +10,7 @@
 		"model": "openai:gpt-5.2-2025-12-11",
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
 		"overwrite": false,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/week_2_day_1.pdf",
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/week_4_day_2.pdf",
 		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2024
@@ -34,83 +34,6 @@
 		"table_filldown_group_cols_max": 1,
 		"verification_auto_stitch_confidence": 0.7
 	},
-	"canonical_ir": {
-		"bind_unknown_caption": true,
-		"caption_max_gap_segments": 2,
-		"caption_max_page_distance": 1,
-		"curriculum_skeleton_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/senegal/curriculum_skeleton.json",
-		"max_skip_distance": 5,
-		"overwrite": false
-	},
-	"kgs": {
-		"academic_subject_default": "Mathématiques",
-		"adoption_status": "Adopted",
-		"always_double_check_first_attempt": false,
-		"attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Mathematiques, 2eme etape (CE1 - CE2).",
-		"author": "Ministère de l’Éducation nationale",
-		"aux_statement_parenting": "under_expectation",
-		"case_uri_base": "urn:lc:case:",
-		"descriptor_handling": "attach_to_expectation_metadata",
-		"export_dialect": "global_relaxed",
-		"generate_progressions": true,
-		"grouping_role_policy": "whitelist",
-		"grouping_roles_whitelist": [
-			"grade_level",
-			"subject",
-			"section",
-			"strand",
-			"substage",
-			"unit",
-			"week"
-		],
-		"guidance_handling": "attach_to_expectation_metadata",
-		"jurisdiction_default": "Senegal",
-		"language_default": "mul",
-    "lc_atomic_skills_batch_size": 5,
-		"lc_atomic_skills_include_aux_statements": true,
-		"lc_atomic_skills_include_topic_context": true,
-		"lc_atomic_skills_min_per_sfi": 1,
-		"lc_atomic_skills_require_rationale": true,
-		"lc_max_splits_per_standard": 5,
-		"learning_component_policy": "llm_atomic_skills",
-		"license": "All rights reserved (source PDF)",
-		"model": "gpt-5.2-2025-12-11",
-		"non_grouping_role_handling": "drop",
-		"non_standard_columns_signature": [],
-		"non_standard_decision_types": [
-			"ignore",
-			"unresolved"
-		],
-		"non_standard_segment_drop_policy": [
-			"by_decision_type"
-		],
-		"overwrite": false,
-		"progressions_builds_towards_min_confidence": 0.7,
-		"progressions_cross_grade_builds_towards": true,
-		"progressions_cross_grade_match_roles": [
-			"strand"
-		],
-		"progressions_cross_grade_relates_to": true,
-		"progressions_cross_grade_relates_to_max_items_per_subject": 10,
-		"progressions_cross_stage_builds_towards": false,
-		"progressions_cross_stage_relates_to": false,
-		"progressions_excluded_subject_labels": [
-			"UNSPECIFIED_SUBJECT"
-		],
-		"progressions_grade_label_map": {
-			"paliers du niveau ce1": 1,
-			"paliers du niveau ce2": 2,
-			"planification ce1": 1,
-			"planification ce2": 2
-		},
-		"progressions_relates_to_max_edges_per_sfi": 3,
-		"progressions_relates_to_min_confidence": 0.85,
-		"progressions_subject_role": "strand",
-		"progressions_within_grade_allow_banded_levels": false,
-		"progressions_within_grade_builds_towards": true,
-		"progressions_within_grade_relates_to": true,
-		"progressions_within_grade_relates_to_max_items_per_subject": 5,
-		"provider": "IDinsight | Learning Commons",
-		"prune_empty_groupings": true
-	}
+	"canonical_ir": null,
+	"kgs": null
 }

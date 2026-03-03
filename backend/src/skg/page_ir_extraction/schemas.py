@@ -616,8 +616,25 @@ class ValidationIssue(BaseSchema):
 class ValidationVerdict(BaseSchema):
     """Structured verdict from the validation agent comparing an extracted PageIR
     against the source page image.
+
+    When the verdict is failing (passed=false), the validation agent must also supply a
+    corrected PageIR that fixes all error-severity issues. This corrected output is
+    used directly instead of re-invoking the extraction agent, since the validation
+    agent has the image, the original extraction, and its own error analysis all in
+    context.
     """
 
+    corrected_page_ir: Optional[PageIR] = Field(
+        default=None,
+        description=(
+            "Corrected PageIR that fixes all error-severity issues identified in "
+            "this verdict. Required when passed=false; must be null/omitted when "
+            "passed=true. The corrected PageIR must be a complete, valid PageIR "
+            "(not a partial patch). Python-filled fields (doc_key, dpi, pdf_name, "
+            "page_index, image_width, image_height, coord_space, boundary_state) "
+            "should be omitted — they are populated by the pipeline."
+        ),
+    )
     issues: list[ValidationIssue] = Field(
         default_factory=list,
         description="List of issues found during validation. Must be non-empty when passed=false.",
@@ -632,6 +649,39 @@ class ValidationVerdict(BaseSchema):
     rationale: str = Field(
         ..., description="Brief explanation of the overall assessment."
     )
+
+    @model_validator(mode="after")
+    def validate_corrected_page_ir_consistency(self) -> Self:
+        """Validate that corrected_page_ir is present iff passed=false.
+
+        A failing verdict must include a corrected PageIR so the pipeline can use it
+        directly. A passing verdict must NOT include one (unnecessary overhead).
+
+        Returns
+        -------
+        Self
+            The validated ValidationVerdict.
+
+        Raises
+        ------
+        ValueError
+            If corrected_page_ir presence is inconsistent with passed.
+        """
+
+        if not self.passed and self.corrected_page_ir is None:
+            raise ValueError(
+                "A failing verdict (passed=false) must include corrected_page_ir "
+                "with a complete, corrected PageIR that fixes all error-severity "
+                "issues. Return the full corrected PageIR, not a partial patch."
+            )
+
+        if self.passed and self.corrected_page_ir is not None:
+            raise ValueError(
+                "A passing verdict (passed=true) must not include corrected_page_ir. "
+                "Set corrected_page_ir to null when the extraction is correct."
+            )
+
+        return self
 
     @model_validator(mode="after")
     def validate_error_issues_have_suggested_fix(self) -> Self:

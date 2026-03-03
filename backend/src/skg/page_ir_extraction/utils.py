@@ -21,9 +21,9 @@ from skg.utils.general import PipelineDirs, write_to_json
 from skg.utils.pdf import compute_doc_key
 
 # Quality-gate thresholds for text-layer usability.
-_MIN_TEXT_LENGTH = 20
 _MIN_PRINTABLE_RATIO = 0.90
 _MAX_REPLACEMENT_CHAR_RATIO = 0.02
+_MIN_TEXT_LENGTH = 20
 
 
 @dataclass

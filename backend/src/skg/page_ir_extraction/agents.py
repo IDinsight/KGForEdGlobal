@@ -77,9 +77,7 @@ def create_page_ir_extraction_agent(
     agent = Agent(
         model,
         instructions=instructions,
-        model_settings=OpenAIResponsesModelSettings(
-            openai_reasoning_effort="medium", openai_reasoning_summary="detailed"
-        ),
+        model_settings=OpenAIResponsesModelSettings(temperature=0.0, top_p=0.95),
         output_retries=max_retries,
         output_type=PageIR,
     )
@@ -165,29 +163,49 @@ def create_page_ir_extraction_agent(
 
 
 def create_page_ir_validation_agent(
-    *, instructions: str, model: str, max_retries: int = 1
+    *,
+    image_height: int,
+    image_width: int,
+    instructions: str,
+    max_retries: int = 3,
+    model: str,
+    page_index: int,
+    verify_quality_fn: Callable,
 ) -> Agent:
     """Create an Agent configured for validating an extracted PageIR against a source
     page image.
 
     The validation agent receives a PageIR JSON and the source PNG, then returns a
-    structured ValidationVerdict indicating whether the extraction is faithful. Each
-    call creates a fresh agent with no conversation history.
+    structured ValidationVerdict indicating whether the extraction is faithful. When
+    the verdict is failing, it also includes a corrected PageIR. The output validator
+    runs the same Python quality checks on the corrected PageIR, raising ModelRetry if
+    the correction itself has quality issues.
 
     Parameters
     ----------
+    image_height
+        The image height in pixels.
+    image_width
+        The image width in pixels.
     instructions
         System-level validation instructions.
+    max_retries
+        Maximum number of retries if the corrected PageIR fails quality checks.
     model
         The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
-    max_retries
-        Maximum number of retries if the verdict itself fails structural checks.
+    page_index
+        The 0-based page index.
+    verify_quality_fn
+        Callable with signature `(*, attempt, image_height, image_width, page_ir)` that
+        raises `QualityError` on failure. Used to validate the corrected PageIR.
 
     Returns
     -------
     Agent
         The configured validation Agent with output type ValidationVerdict.
     """
+
+    attempt_counter: dict[str, int] = {"value": 0}
 
     agent = Agent(
         model,
@@ -200,15 +218,14 @@ def create_page_ir_validation_agent(
     )
 
     @agent.output_validator
-    def validate_verdict_consistency(output: ValidationVerdict) -> ValidationVerdict:
-        """Validate structural consistency of the validation verdict.
+    def validate_verdict_and_correction(output: ValidationVerdict) -> ValidationVerdict:
+        """Validate structural consistency of the verdict and quality of the corrected
+        PageIR (when present).
 
-        NB: Basic structural checks (rationale non-empty, failing verdicts require
-        error-severity issues) are already enforced by Pydantic model validators on
-        ValidationVerdict. This output validator only checks properties that benefit
-        from LLM-friendly ModelRetry correction messages — currently a no-op beyond
-        Pydantic, but kept as an extension point for future checks that require
-        cross-field heuristics not expressible in the schema.
+        When the verdict is failing and includes a corrected_page_ir, this validator
+        runs the same Python quality checks that the extraction agent's output
+        validator uses. If the corrected PageIR fails quality checks, ModelRetry is
+        raised so the validation agent can fix its own correction.
 
         Parameters
         ----------
@@ -220,6 +237,41 @@ def create_page_ir_validation_agent(
         ValidationVerdict
             The validated verdict (same as input if checks pass).
         """
+
+        attempt = attempt_counter["value"]
+
+        if output.corrected_page_ir is not None:
+            # Populate Python-filled provenance fields on the corrected PageIR before
+            # quality checks, mirroring what the extraction agent's validator does.
+            output.corrected_page_ir.image_width = image_width
+            output.corrected_page_ir.image_height = image_height
+            output.corrected_page_ir.page_index = page_index
+
+            try:
+                verify_quality_fn(
+                    attempt=attempt,
+                    image_height=image_height,
+                    image_width=image_width,
+                    page_ir=output.corrected_page_ir,
+                )
+            except QualityError as e:
+                truncated_msg = str(e)[:500]
+
+                logger.error(
+                    f"Validation agent's corrected PageIR failed quality checks on "
+                    f"page {page_index + 1}, attempt {attempt}: {truncated_msg}"
+                )
+
+                attempt_counter["value"] += 1
+
+                raise ModelRetry(
+                    f"Your corrected_page_ir has quality issues and must be fixed.\n"
+                    f"ERROR: {str(e)}\n\n"
+                    f"Return a complete ValidationVerdict with a corrected_page_ir "
+                    f"that fixes this issue while preserving all other corrections."
+                ) from e
+
+        attempt_counter["value"] += 1
 
         return output
 
