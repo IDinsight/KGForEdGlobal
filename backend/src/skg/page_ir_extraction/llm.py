@@ -8,15 +8,18 @@ PageIR.
 Orchestration flow
 ------------------
 
-1. Build extraction prompts (optionally including validation feedback from a prior
-   attempt).
-2. Create a fresh extraction agent and run it. The agent's internal output validator
-   handles Python quality checks (validators.py) via ModelRetry.
+1. Build extraction prompts (optionally including PDF-derived text/table hints).
+2. Create a fresh extraction agent (lower reasoning effort) and run it. The agent's
+   internal output validator handles Python quality checks (validators.py) via
+   ModelRetry.
 3. Once the extraction agent produces a PageIR that passes all Python quality checks,
-   run the validation agent with the same source image and the extracted JSON.
-4. If the validation agent returns a passing verdict, return the PageIR.
-5. If the validation agent returns a failing verdict, format the issues as feedback and
-   loop back to step 1 (up to `max_validation_attempts`).
+   run the validation agent (higher reasoning effort) with the same source image and
+   the extracted JSON.
+4. If the validation agent returns a passing verdict, return the extraction agent's
+   PageIR.
+5. If the validation agent returns a failing verdict, it also provides a corrected
+   PageIR that has passed the same Python quality checks (enforced by the validation
+   agent's own output validator with retries). Return the corrected PageIR.
 """
 
 # Standard Library
@@ -62,52 +65,6 @@ from skg.page_ir_extraction.validators import (
 from skg.utils.constants import BlockType
 
 
-def _format_validation_feedback(verdict: ValidationVerdict) -> str:
-    """Format a failing ValidationVerdict into feedback text for the extraction agent.
-
-    The formatted feedback is appended to the extraction agent's user message on the
-    next attempt so it can address the specific issues identified by the validation
-    agent.
-
-    Parameters
-    ----------
-    verdict
-        The failing ValidationVerdict.
-
-    Returns
-    -------
-    str
-        Formatted feedback string.
-    """
-
-    lines = [
-        "## VALIDATION FEEDBACK FROM PREVIOUS ATTEMPT",
-        "",
-        "Your previous extraction was reviewed by a separate validation agent and "
-        "FAILED validation.",
-        f"Rationale: {verdict.rationale}",
-        "",
-        "Issues found:",
-    ]
-
-    for i, issue in enumerate(verdict.issues, 1):
-        idx_part = (
-            f" (item index: {issue.item_index})" if issue.item_index is not None else ""
-        )
-        lines.append(f"{i}. [{issue.severity.upper()}]{idx_part} {issue.description}")
-
-        if issue.suggested_fix:
-            lines.append(f"   → SUGGESTED FIX: {issue.suggested_fix}")
-
-    lines.append("")
-    lines.append(
-        "Fix ALL error-severity issues in your new extraction. Apply the SUGGESTED FIX "
-        "for each error where provided. Return a complete, corrected PageIR JSON."
-    )
-
-    return "\n".join(lines)
-
-
 def _run_validation_agent(
     *,
     image_height: int,
@@ -121,7 +78,10 @@ def _run_validation_agent(
     """Run the validation agent to compare an extracted PageIR against the source image.
 
     Creates a fresh validation agent (no conversation history) and invokes it with the
-    serialized PageIR JSON and the source PNG.
+    serialized PageIR JSON and the source PNG. The validation agent returns a
+    structured verdict; when the verdict is failing, it also includes a corrected
+    PageIR that has passed the same Python quality checks as the extraction agent's
+    output (enforced by the validation agent's output validator).
 
     Parameters
     ----------
@@ -143,7 +103,7 @@ def _run_validation_agent(
     Returns
     -------
     ValidationVerdict
-        The structured validation verdict.
+        The structured validation verdict (with corrected_page_ir when failing).
     """
 
     logger.info(f"Running validation agent for page: {page_index + 1}...")
@@ -156,7 +116,12 @@ def _run_validation_agent(
     )
 
     agent = create_page_ir_validation_agent(
-        instructions=prompts.system_message, model=model
+        image_height=image_height,
+        image_width=image_width,
+        instructions=prompts.system_message,
+        model=model,
+        page_index=page_index,
+        verify_quality_fn=verify_page_ir_extraction_quality,
     )
 
     user_prompt: list[str | BinaryContent] = [
@@ -176,7 +141,6 @@ def extract_page_ir(
     image_height: int,
     image_width: int,
     languages: list[str],
-    max_validation_attempts: int = 2,
     model: str,
     page_index: int,
     pdf_page: pymupdf.Page | None = None,
@@ -186,10 +150,20 @@ def extract_page_ir(
 ) -> PageIR:
     """Extract PageIR from a page image using an extraction agent with validation.
 
-    The extraction agent uses a vision model and structured outputs to produce a
-    PageIR. After the extraction agent's internal quality checks pass, a separate
-    validation agent compares the result against the source image. If validation fails,
-    the extraction agent is re-invoked with the validation feedback.
+    Orchestration flow:
+
+    1. The extraction agent (lower reasoning effort) produces an initial PageIR. Its
+        internal output validator runs Python quality checks via ModelRetry.
+    2. Once the extraction agent produces a quality-passing PageIR, the validation
+        agent (higher reasoning effort) compares it against the source image.
+    3. If the validation agent finds errors, it returns a corrected PageIR alongside
+        its verdict. The corrected PageIR is also quality-checked by the validation
+        agent's own output validator (same Python checks, with retries).
+    4. If validation passes, the extraction agent's PageIR is returned directly.
+
+    This single-pass design avoids re-invoking the weaker extraction agent with
+    feedback it cannot see its own prior output for, and leverages the stronger
+    validation model's ability to edit an existing extraction.
 
     Parameters
     ----------
@@ -199,9 +173,6 @@ def extract_page_ir(
         The image width in pixels.
     languages
         Expected languages context for the prompt.
-    max_validation_attempts
-        Maximum number of extraction -> validation cycles. The extraction agent is
-        re-invoked with validation feedback on each failed cycle.
     model
         The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
     page_index
@@ -221,15 +192,13 @@ def extract_page_ir(
     Returns
     -------
     PageIR
-        The extracted PageIR. Python-side provenance fields (coord_space, doc_key, dpi,
-        image_height, image_width, page_index, pdf_name) are populated where known. The
-        caller is responsible for setting the remaining fields (coord_space, doc_key,
-        dpi, and pdf_name).
+        The extracted (or corrected) PageIR. Python-side provenance fields
+        (coord_space, doc_key, dpi, image_height, image_width, page_index, pdf_name)
+        are populated where known. The caller is responsible for setting the remaining
+        fields (coord_space, doc_key, dpi, and pdf_name).
     """
 
-    page_ir: PageIR | None = None
     png_bytes = png_fp.read_bytes()
-    validation_feedback: str | None = None
 
     # Extract text-layer and table-layer hints from the PDF page (if available).
     table_layer_hint: str | None = None
@@ -241,87 +210,76 @@ def extract_page_ir(
         text_layer_hint = hints.text_hint
 
         if hints.has_hints:
+            table_flag = "yes" if table_layer_hint else "no"
+            text_flag = "yes" if text_layer_hint else "no"
             logger.info(
                 f"Page {page_index + 1}: PDF hints available — "
-                f"text_layer={'yes' if text_layer_hint else 'no'}, "
-                f"table_layer={'yes' if table_layer_hint else 'no'}."
+                f"text_layer={text_flag}, table_layer={table_flag}."
             )
 
-    for validation_attempt in range(max_validation_attempts):
-        # Build extraction prompts (with optional PDF-derived hints).
-        prompts = extract_page_ir_from_pdf_page(
-            image_height=image_height,
-            image_width=image_width,
-            languages=languages,
-            page_index=page_index,
-            table_layer_hint=table_layer_hint,
-            text_layer_hint=text_layer_hint,
+    # Run the extraction agent (lower reasoning effort).
+    prompts = extract_page_ir_from_pdf_page(
+        image_height=image_height,
+        image_width=image_width,
+        languages=languages,
+        page_index=page_index,
+        table_layer_hint=table_layer_hint,
+        text_layer_hint=text_layer_hint,
+    )
+
+    agent = create_page_ir_extraction_agent(
+        image_height=image_height,
+        image_width=image_width,
+        instructions=prompts.system_message,
+        model=model,
+        page_index=page_index,
+        raw_page_irs_dir=raw_page_irs_dir,
+        verify_quality_fn=verify_page_ir_extraction_quality,
+    )
+
+    user_prompt: list[str | BinaryContent] = [
+        prompts.user_message,
+        BinaryContent(data=png_bytes, media_type="image/png"),
+    ]
+    result = agent.run_sync(user_prompt)
+    page_ir = result.output
+    usage_tracker.extraction.add_run_usage(result.usage())
+
+    # Run the validation agent (higher reasoning effort). If the verdict is failing,
+    # the validation agent returns a corrected PageIR that has already passed the same
+    # Python quality checks (enforced by its own output validator).
+    verdict = _run_validation_agent(
+        image_height=image_height,
+        image_width=image_width,
+        model=model,
+        page_index=page_index,
+        page_ir=page_ir,
+        png_bytes=png_bytes,
+        usage_tracker=usage_tracker,
+    )
+
+    if verdict.passed:
+        logger.success(f"Page {page_index + 1}: validation passed.")
+
+        return page_ir
+
+    # Validation failed: use the corrected PageIR from the validation agent.
+    logger.warning(
+        f"Page {page_index + 1}: validation failed: {verdict.rationale[:300]}"
+    )
+
+    if verdict.corrected_page_ir is not None:
+        logger.info(
+            f"Page {page_index + 1}: using corrected PageIR from validation agent."
         )
 
-        # Append validation feedback from a prior failed validation cycle.
-        user_message = prompts.user_message
+        return verdict.corrected_page_ir
 
-        if validation_feedback is not None:
-            user_message = f"{user_message}\n\n{validation_feedback}"
-
-        # Create a fresh extraction agent and run it.
-        agent = create_page_ir_extraction_agent(
-            image_height=image_height,
-            image_width=image_width,
-            instructions=prompts.system_message,
-            model=model,
-            page_index=page_index,
-            raw_page_irs_dir=raw_page_irs_dir,
-            validation_cycle=validation_attempt,
-            verify_quality_fn=verify_page_ir_extraction_quality,
-        )
-
-        user_prompt: list[str | BinaryContent] = [
-            user_message,
-            BinaryContent(data=png_bytes, media_type="image/png"),
-        ]
-        result = agent.run_sync(user_prompt)
-        page_ir = result.output
-        usage_tracker.extraction.add_run_usage(result.usage())
-
-        # Run the validation agent.
-        verdict = _run_validation_agent(
-            image_height=image_height,
-            image_width=image_width,
-            model=model,
-            page_index=page_index,
-            page_ir=page_ir,
-            png_bytes=png_bytes,
-            usage_tracker=usage_tracker,
-        )
-
-        # If validation passed, we're done.
-        if verdict.passed:
-            logger.success(
-                f"Page {page_index + 1}: validation passed "
-                f"(validation attempt {validation_attempt})."
-            )
-
-            break
-
-        # Validation failed: format feedback for the next extraction attempt.
-        logger.warning(
-            f"Page {page_index + 1}: validation failed "
-            f"(validation attempt {validation_attempt}): "
-            f"{verdict.rationale[:300]}"
-        )
-
-        validation_feedback = _format_validation_feedback(verdict)
-    else:
-        logger.warning(
-            f"Page {page_index + 1}: validation did not pass after "
-            f"{max_validation_attempts} attempt(s). Returning last extraction."
-        )
-
-    assert page_ir is not None, (
-        f"page_ir is None after {max_validation_attempts} validation attempt(s) for "
-        f"page {page_index + 1}. This should never happen since the extraction agent "
-        f"must produce at least one PageIR."
+    # Fallback: if the validation agent somehow failed to provide a corrected PageIR
+    # (should not happen given schema validators, but defensive). Return the original.
+    logger.warning(
+        f"Page {page_index + 1}: validation agent did not provide corrected_page_ir. "
+        f"Returning original extraction."
     )
 
     return page_ir

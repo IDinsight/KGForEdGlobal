@@ -189,7 +189,8 @@ def validate_page_ir_extraction(
 
     The validation agent runs in a separate conversation from the extraction agent. It
     receives the extracted PageIR JSON and the source page image, then returns a
-    structured ValidationVerdict.
+    structured ValidationVerdict. When the verdict is failing, the agent must also
+    output a corrected PageIR that fixes all error-severity issues.
 
     Parameters
     ----------
@@ -209,13 +210,13 @@ def validate_page_ir_extraction(
     """
 
     system_message = dedent(
-        f"""You are a quality assurance agent for document digitization. Your task is to compare an extracted PageIR JSON against the original page image and identify any discrepancies.
+        f"""You are a quality assurance agent for document digitization. Your task is to compare an extracted PageIR JSON against the original page image, identify any discrepancies, and — if the extraction has errors — produce a corrected PageIR.
 
 You will receive:
-1. The original page image (rendered at {image_width}×{image_height} pixels).
+1. The original page image (rendered at {image_width}x{image_height} pixels).
 2. The extracted PageIR JSON that was produced by a separate extraction agent.
 
-Your job is to verify that the extraction faithfully represents the source image. You are NOT re-extracting the page — you are auditing someone else's work.
+Your job is to verify that the extraction faithfully represents the source image. You are NOT re-extracting the page from scratch — you are auditing and correcting someone else's work.
 
 ## VALIDATION CHECKLIST
 
@@ -225,11 +226,11 @@ Compare the extraction against the image for each of the following:
 2. **Spurious content**: Does the PageIR contain any items that do NOT appear on the page (hallucinated content)?
 3. **Text fidelity**: Is the extracted text faithful to what is visible? Check for missing words, added words, or significant transcription errors. Minor whitespace differences are acceptable.
 4. **Block classification**:
-   - Ruled grids/cells → TABLE (not FIGURE).
-   - Section titles → HEADING (not ARTIFACT).
-   - Running headers/footers/page numbers → ARTIFACT (not HEADING).
-   - Prose text → PARAGRAPH.
-   - Bulleted/numbered items → LIST.
+   - Ruled grids/cells \u2192 TABLE (not FIGURE).
+   - Section titles \u2192 HEADING (not ARTIFACT).
+   - Running headers/footers/page numbers \u2192 ARTIFACT (not HEADING).
+   - Prose text \u2192 PARAGRAPH.
+   - Bulleted/numbered items \u2192 LIST.
 5. **Reading order**: Are items ordered top-to-bottom within each column (left column before right for multi-column layouts)?
 6. **Table structure**:
    - Are rows and cells captured faithfully?
@@ -237,29 +238,34 @@ Compare the extraction against the image for each of the following:
    - Is `header_row_count` reasonable given the visible table structure?
    - Are row_span/col_span values only used for clearly visible merges?
    - Has the table been collapsed (e.g., multi-column grid extracted as single-column rows)?
-7. **Bounding boxes**: Are bboxes reasonably tight to content and within page bounds ({image_width}×{image_height})? Are there obvious duplicates or placeholders?
+7. **Bounding boxes**: Are bboxes reasonably tight to content and within page bounds ({image_width}\u00d7{image_height})? Are there obvious duplicates or placeholders?
 8. **Figures** (if any): Do figure blocks have alt_text? Is embedded_text present when the figure contains visible text?
 9. **Boundary markers**: Are continuation markers (resumed/truncated/both/complete) consistent with visible content flow at page edges?
 
 ## SEVERITY GUIDE
-- **error**: The extraction is materially incorrect — missing content, hallucinated content, wrong classification that changes meaning, collapsed table structure, grossly wrong reading order.
-- **warning**: Minor quality concern — slightly loose bounding box, borderline classification choice, minor whitespace issue.
+- **error**: The extraction is materially incorrect \u2014 missing content, hallucinated content, wrong classification that changes meaning, collapsed table structure, grossly wrong reading order.
+- **warning**: Minor quality concern \u2014 slightly loose bounding box, borderline classification choice, minor whitespace issue.
 
 ## SUGGESTED FIXES
-For every **error**-severity issue, you MUST provide a `suggested_fix`: a concrete, actionable instruction that tells the extraction agent exactly what to change. Good suggested fixes are specific and unambiguous:
-  - "Change items[3].block_type from 'artifact' to 'heading' — this is a section title, not a running header."
-  - "Add a new table item between items[2] and items[3] with 5 columns and ~12 rows to capture the grid visible between y≈400 and y≈800."
-  - "Split the single cell in each body row of items[4] into 5 separate cells matching the 5 header columns (Topic | Sub-topic | Competences | Activities | Expected Standard)."
-  - "Remove items[7] — this paragraph does not appear anywhere on the page (hallucinated)."
-For **warning**-severity issues, `suggested_fix` is optional but encouraged.
+For every **error**-severity issue, you MUST provide a `suggested_fix`: a concrete, actionable instruction describing the correction. Good suggested fixes are specific and unambiguous.
+
+## CORRECTED PageIR (REQUIRED WHEN FAILING)
+When your verdict is passed=false, you MUST also output a `corrected_page_ir` field containing a complete, corrected PageIR JSON that fixes ALL error-severity issues you identified. This is NOT a partial patch \u2014 it is the full PageIR with corrections applied.
+
+Rules for `corrected_page_ir`:
+- Start from the original extraction and apply targeted fixes for each error.
+- Preserve all content and structure that was correct in the original extraction.
+- The corrected PageIR must follow the same schema rules as the original (valid bboxes, correct block_type constraints, etc.).
+- Omit Python-filled fields (doc_key, dpi, pdf_name, page_index, image_width, image_height, coord_space, boundary_state) \u2014 they are populated by the pipeline.
+- When passed=true, do NOT include corrected_page_ir (set it to null).
 
 ## RULES
-- A verdict of passed=false MUST include at least one issue with severity="error".
+- A verdict of passed=false MUST include at least one issue with severity="error" AND a corrected_page_ir.
 - If all issues are only warnings, set passed=true (warnings are informational).
 - Be specific in issue descriptions: reference item indices (e.g., "items[3]"), quote relevant text, and describe the discrepancy between what the image shows and what the JSON contains.
 - Do NOT flag issues that are correct per the extraction schema (e.g., text_en=null is expected during extraction; Python-filled fields like doc_key/dpi being null is expected).
 - Focus on **material correctness**, not stylistic preferences.
-"""
+        """
     )
 
     user_message = dedent(
@@ -270,7 +276,8 @@ For **warning**-severity issues, `suggested_fix` is optional but encouraged.
 {page_ir_json}
 ```
 
-Compare this JSON carefully against the attached page image and return a ValidationVerdict."""
+Compare this JSON carefully against the attached page image and return a ValidationVerdict. If you find any error-severity issues, include a corrected_page_ir with all fixes applied.
+        """
     )
 
     return PromptPair(

@@ -288,6 +288,9 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
     item-level boundaries don't contradict each other (e.g., a standalone page
     shouldn't have resumed/truncated items).
 
+    In addition, this validator enforces **positional** continuity---i.e., resumed
+    items near the top and truncated items near the bottom.
+
     Parameters
     ----------
     ctx
