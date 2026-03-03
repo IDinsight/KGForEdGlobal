@@ -266,8 +266,8 @@ def test_initialize_logger_builds_config_and_appends_file_handler(
     # Allow any level to be valid.
     monkeypatch.setattr(logging_.Valid, "is_valid_logging_level", lambda **_: True)
 
-    # Keep Settings.FASTAPI_ENV predictable.
-    monkeypatch.setattr(logging_.Settings, "FASTAPI_ENV", "test")
+    # Keep Settings.CHAT_ENV predictable.
+    monkeypatch.setattr(logging_.Settings, "CHAT_ENV", "local")
 
     # Avoid affecting the real logger configuration; just capture what would have been
     # configured.
