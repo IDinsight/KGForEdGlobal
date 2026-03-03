@@ -13,6 +13,7 @@ from skg.document_ir import utils
 from skg.document_ir.schemas import TableSegment, TableSlice
 from skg.page_ir_extraction.schemas import Table, TableCell, TableRow, TextUnit
 from skg.utils.constants import ItemBoundary
+from tests.constants import PARAM
 
 
 def _make_chain_entry(page: int, idx: int, code: str | None) -> tuple[int, int, Table]:
@@ -1873,6 +1874,42 @@ def test_fill_down_table_rows_whitespace_text_is_treated_as_empty_and_filled() -
 
     assert out[1].cells[0].text.text == "Topic A"
     assert out[1].cells[1].text.text == "Sub A"
+
+
+@PARAM(
+    "input_text, expected_output",
+    [
+        # Basic casing and spacing.
+        ("Hello World", "hello world"),
+        ("Python  Testing", "python testing"),
+        # Edge case: None and empty strings.
+        (None, ""),
+        ("", ""),
+        # Whitespace: leading/trailing/only whitespace.
+        ("   ", ""),
+        ("  leading", "leading"),
+        ("trailing  ", "trailing"),
+        # Complex whitespace: newlines and tabs.
+        ("Line\nBreak", "line break"),
+        ("Tab\tCharacter", "tab character"),
+        ("  Mixed\n\t  Whitespace  ", "mixed whitespace"),
+        # Already normalized.
+        ("perfectly clean", "perfectly clean"),
+    ],
+)
+def test_normalize_text(input_text: str, expected_output: str) -> None:
+    """Verify that normalize_text handles various whitespace, casing, and null inputs
+    correctly.
+
+    Parameters
+    ----------
+    input_text
+        The text to normalize.
+    expected_output
+        The expected output.
+    """
+
+    assert utils.normalize_text(input_text) == expected_output
 
 
 def test_row_provenance_by_stitched_index_length_mismatch_raises_error() -> None:

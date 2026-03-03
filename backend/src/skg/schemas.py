@@ -3,10 +3,12 @@
 # Standard Library
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal, Optional, Self, cast
+from typing import Annotated, Any, Literal, Optional, Self, cast
 from uuid import UUID
 
 # Third Party Library
+import langcodes
+
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -23,7 +25,81 @@ from skg.utils.constants import (
     NodeRole,
     SegmentDecisionType,
 )
-from skg.utils.general import make_dir, validate_bbox_order, validate_bcp47
+from skg.utils.general import make_dir
+
+
+def validate_bbox_order(bbox: list[float]) -> list[float]:
+    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
+
+    Parameters
+    ----------
+    bbox
+        The bounding box to validate.
+
+    Returns
+    -------
+    list[float]
+        The validated bounding box.
+
+    Raises
+    ------
+    ValueError
+        If the bounding box does not have exactly 4 numbers.
+    """
+
+    if len(bbox) != 4:
+        raise ValueError(
+            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
+        )
+
+    x0, y0, x1, y1 = bbox
+
+    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
+    if x0 >= x1:
+        if x0 > x1:
+            x0, x1 = x1, x0
+        else:
+            x1 = x0 + 1.0
+    if y0 >= y1:
+        if y0 > y1:
+            y0, y1 = y1, y0
+        else:
+            y1 = y0 + 1.0
+
+    return [x0, y0, x1, y1]
+
+
+def validate_bcp47(code: str) -> str:
+    """Validates that a string is a valid BCP-47 language tag.
+
+    Parameters
+    ----------
+    code
+        The language tag to validate.
+
+    Returns
+    -------
+    str
+        The standardized version (e.g., 'en_us' -> 'en-US').
+
+    Raises
+    ------
+    ValueError
+        If the language tag is invalid or unparseable.
+    """
+
+    code = (code or "und").strip().replace("_", "-")
+    if code in {"und", "mul"}:
+        return code
+
+    try:
+        lang = langcodes.Language.get(code)
+        if not lang.is_valid():
+            raise ValueError(f"Invalid BCP-47 language tag: '{code}'")
+        return lang.to_tag()
+    except langcodes.LanguageTagError as exc:
+        raise ValueError(f"Unparseable language tag: '{code}'") from exc
+
 
 # Common fields with descriptions.
 AuxStatementHandling = Literal[
@@ -875,21 +951,4 @@ class Limits(BaseSchema):
 
     max_retry_attempts: int = Field(
         10, ge=0, description="Must be a non-negative integer"
-    )
-
-
-class ValidatorCall(BaseSchema):
-    """Pydantic model for API response validation."""
-
-    num_retries: int = Field(
-        default=3,
-        description="Number of retry attempts when the validator rejects an API response.",
-        ge=1,
-    )
-    validator_module: Callable[..., Any] = Field(
-        description="Callable that validates/transforms raw API response data."
-    )
-    validator_kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional keyword arguments forwarded to the validator callable.",
     )

@@ -3,7 +3,9 @@
 # Standard Library
 import asyncio
 import logging
+import re
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -12,8 +14,69 @@ import pytest
 
 # Package Library
 from skg.utils import logging_
-from tests.constants import ASYNC
+from tests.constants import ASYNC, PARAM
 from tests.types_ import InstallLoguruMock
+
+_UNESCAPED_ANGLE_BRACKET_RE = re.compile(pattern=r"(?<!\\)[<>]")
+
+
+@PARAM(
+    argnames=("expected", "x"),
+    argvalues=[
+        ("plain", "plain"),
+        (r"\<tag\>", "<tag>"),
+        (r"a\<b\>c", "a<b>c"),
+        (r"\<\<\>\>", "<<>>"),
+        ("None", None),
+        ("123", 123),
+    ],
+)
+def test_escape_angle_brackets_basic_cases(*, expected: str, x: Any) -> None:
+    """Escape `<` and `>` in the string form of the input, with exact expected output.
+
+    Parameters
+    ----------
+    expected
+        The expected output string after escaping.
+    x
+        The input value to escape, which can be of any type. It will be converted to a
+        string before escaping.
+    """
+
+    result = logging_.escape_angle_brackets(x=x)
+    assert isinstance(result, str)
+    assert result == expected
+
+
+def test_escape_angle_brackets_does_not_mutate_containers() -> None:
+    """Container inputs should not be mutated because the function operates on `str(x)`."""
+
+    x: list[Any] = ["<a>", {"k": "<v>"}]
+    x_before: list[Any] = deepcopy(x=x)
+    _ = logging_.escape_angle_brackets(x=x)
+    assert x == x_before
+
+
+@PARAM(
+    argnames=("x",),
+    argvalues=[
+        ("<>",),
+        ("<<>>",),
+        ("a<b>c",),
+        ("prefix <tag> suffix",),
+    ],
+)
+def test_escape_angle_brackets_escapes_every_angle_bracket(*, x: str) -> None:
+    """All angle brackets in the output should be escaped (no raw `<` or `>`).
+
+    Parameters
+    ----------
+    x
+        The input string containing angle brackets to escape.
+    """
+
+    result = logging_.escape_angle_brackets(x=x)
+    assert _UNESCAPED_ANGLE_BRACKET_RE.search(string=result) is None
 
 
 def test_intercept_handler_forwards_stdlib_logs(
