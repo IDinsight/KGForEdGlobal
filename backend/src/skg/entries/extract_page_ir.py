@@ -91,7 +91,7 @@ def extract_page_by_page(
         # Skip extraction if the page IR JSON already exists and we're not overwriting.
         if ir_exists and not config.overwrite:
             logger.info(
-                f"Page IR JSON already exists for page {page_index}. "
+                f"Page IR JSON already exists for page {page_index + 1}. "
                 f"Skipping extraction. Pass --overwrite to regenerate."
             )
 
@@ -109,6 +109,7 @@ def extract_page_by_page(
             languages=config.languages,
             model=config.model,
             page_index=page_index,
+            pdf_page=doc.load_page(page_index) if config.use_extracted_hints else None,
             png_fp=png_fp,
             raw_page_irs_dir=extraction_dirs.page_irs_raw,
         )
@@ -129,7 +130,7 @@ def extract_page_by_page(
         # Save PageIR JSON.
         write_to_json(fp=page_ir_fp, json_info=page_ir)
 
-        logger.success(f"Finished extracting and saving page IR: {page_index}!")
+        logger.success(f"Finished extracting and saving page IR: {page_index + 1}!")
 
 
 @cli.command()

@@ -78,7 +78,7 @@ def create_page_ir_extraction_agent(
         model,
         instructions=instructions,
         model_settings=OpenAIResponsesModelSettings(
-            openai_reasoning_effort="high", openai_reasoning_summary="detailed"
+            openai_reasoning_effort="medium", openai_reasoning_summary="detailed"
         ),
         output_retries=max_retries,
         output_type=PageIR,
@@ -134,7 +134,7 @@ def create_page_ir_extraction_agent(
             truncated_msg = str(e)[:500]
 
             logger.error(
-                f"Quality check failed on page {page_index}, attempt {attempt}: {truncated_msg}"
+                f"Quality check failed on page {page_index + 1}, attempt {attempt}: {truncated_msg}"
             )
 
             attempt_counter["value"] += 1
