@@ -210,7 +210,7 @@ def initialize_logger(
             {
                 "backtrace": True,
                 "colorize": True,
-                "diagnose": Settings.FASTAPI_ENV == "local",
+                "diagnose": Settings.CHAT_ENV == "local",
                 "enqueue": True,
                 "filter": redact_tokens,
                 "format": "<g>{time:YYYY-MM-DD HH:mm:ss}</g> | <level>{level.icon} {message}</level>",
@@ -226,7 +226,7 @@ def initialize_logger(
             {
                 "backtrace": True,
                 "delay": True,
-                "diagnose": Settings.FASTAPI_ENV == "local",
+                "diagnose": Settings.CHAT_ENV == "local",
                 "encoding": "utf-8",
                 "filter": redact_tokens,
                 "level": logging_level,
