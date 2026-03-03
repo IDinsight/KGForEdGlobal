@@ -32,6 +32,7 @@ if __name__ == "__main__":
 from skg.page_ir_extraction.llm import extract_page_ir
 from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_extraction.utils import (
+    ExtractionUsageTracker,
     persist_extraction_run,
     read_png_dimensions,
     render_and_save_page_to_png,
@@ -53,6 +54,7 @@ def extract_page_by_page(
     end_page: int,
     extraction_dirs: PipelineDirs,
     start_page: int,
+    usage_tracker: ExtractionUsageTracker,
 ) -> None:
     """Perform page-by-page extraction of PageIR components from the PDF document.
 
@@ -70,6 +72,8 @@ def extract_page_by_page(
         The extraction directories.
     start_page
         0-based start page (inclusive).
+    usage_tracker
+        Tracker to accumulate token usage across all page extractions.
     """
 
     total_pages = end_page - start_page
@@ -112,6 +116,7 @@ def extract_page_by_page(
             pdf_page=doc.load_page(page_index) if config.use_extracted_hints else None,
             png_fp=png_fp,
             raw_page_irs_dir=extraction_dirs.page_irs_raw,
+            usage_tracker=usage_tracker,
         )
 
         # Add metadata to the PageIR.
@@ -151,7 +156,8 @@ def extract(
 
     1. Validate page range against PDF document.
     2. Persist extraction run metadata so we always have an extraction run record.
-    3. Extract page-by-page IR components and save to file.
+    3. Create a usage tracker to accumulate token costs across all pages.
+    4. Extract page-by-page IR components and save to file.
 
     Parameters
     ----------
@@ -175,8 +181,11 @@ def extract(
         # 2.
         doc_key, extraction_dirs, extraction_run = persist_extraction_run(config=config)
 
+        # 3.
+        usage_tracker = ExtractionUsageTracker()
+
         try:
-            # 3.
+            # 4.
             logger.info(f"Starting page IR extraction process for: {config.pdf_fp}")
 
             extract_page_by_page(
@@ -186,6 +195,7 @@ def extract(
                 end_page=end_page,
                 extraction_dirs=extraction_dirs,
                 start_page=start_page,
+                usage_tracker=usage_tracker,
             )
             extraction_run.extra["status"] = "success"
 
@@ -199,6 +209,7 @@ def extract(
             }
             raise
         finally:
+            extraction_run.extra["usage"] = usage_tracker.to_dict()
             extraction_run.completed_at = datetime.now(timezone.utc)
             write_to_json(
                 fp=extraction_dirs.root / "extraction_run.json",
