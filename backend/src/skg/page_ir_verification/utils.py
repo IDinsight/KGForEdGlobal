@@ -26,7 +26,7 @@ from skg.utils.constants import (
     PageBoundaryState,
     PageContinuationKind,
 )
-from skg.utils.general import make_dir, open_json_type, truncate_text, write_to_json
+from skg.utils.general import make_dir, open_json_type, write_to_json
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -2595,6 +2595,29 @@ def topmost_continuity_candidate_paired(
 
     # Return the first match or default to candidates[0].
     return next(valid_items, candidates[0])
+
+
+def truncate_text(*, max_chars: int, text: str) -> str:
+    """Return a single-line truncated preview string.
+
+    Parameters
+    ----------
+    max_chars
+        The maximum number of characters to return (including ellipsis).
+    text
+        The text to truncate.
+
+    Returns
+    -------
+    str
+        The truncated text.
+    """
+
+    text = (text or "").replace("\n", " ").strip()
+
+    return (
+        text if len(text) <= max_chars else text[: max(0, max_chars - 1)].rstrip() + "…"
+    )
 
 
 def verify_single_page_pair(

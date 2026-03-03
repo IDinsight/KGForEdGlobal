@@ -11,19 +11,15 @@ from __future__ import annotations
 
 # Standard Library
 import base64
-import hashlib
 import json
 import re
-import unicodedata
 
 from copy import deepcopy
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 # Third Party Library
-import langcodes
-
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
@@ -165,32 +161,6 @@ class Valid(BaseModel):
         return logging_level in cls().logging_levels
 
 
-def bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
-    """Return True if `inner` bbox is fully contained in `outer` bbox (with tolerance).
-
-    Parameters
-    ----------
-    inner
-        The inner bounding box [x0, y0, x1, y1].
-    outer
-        The outer bounding box [x0, y0, x1, y1].
-    tol
-        Tolerance in pixels.
-
-    Returns
-    -------
-    bool
-        True if `inner` is contained in `outer`, False otherwise.
-    """
-
-    ox0, oy0, ox1, oy1 = outer
-    ix0, iy0, ix1, iy1 = inner
-
-    return (
-        ix0 >= ox0 - tol and iy0 >= oy0 - tol and ix1 <= ox1 + tol and iy1 <= oy1 + tol
-    )
-
-
 def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     """Compare two directories to see if they contain the same files (ignoring file
     extensions).
@@ -241,26 +211,6 @@ def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     return False
 
 
-def compute_sha256_hex(*, n_hex: int = 16, s: str) -> str:
-    """Compute the SHA-256 hex digest of a string and return the first `n_hex`
-    characters.
-
-    Parameters
-    ----------
-    n_hex
-        Number of hex characters to return from the digest.
-    s
-        The input string to hash.
-
-    Returns
-    -------
-    str
-        The first `n_hex` characters of the SHA-256 hex digest of `s`.
-    """
-
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n_hex]
-
-
 def encode_png_to_data_url(png_fp: Path) -> str:
     """Encode a PNG file to a base64 data URL.
 
@@ -277,25 +227,6 @@ def encode_png_to_data_url(png_fp: Path) -> str:
 
     b64 = base64.b64encode(png_fp.read_bytes()).decode("utf-8")
     return f"data:image/png;base64,{b64}"
-
-
-def escape_angle_brackets(x: Any) -> str:
-    """Escape angle brackets for colorized logging. If this is not done, then
-    `loguru` will throw a `ValueError` when attempting to log objects with angle
-    brackets. See: https://github.com/Delgan/loguru/issues/140 for more details.
-
-    Parameters
-    ----------
-    x
-        Any object.
-
-    Returns
-    -------
-    str
-        The string version of `x` with escaped angle brackets.
-    """
-
-    return recurse_replace(r"\>", ">", recurse_replace(r"\<", "<", str(x)))
 
 
 def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
@@ -319,31 +250,6 @@ def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
         Path.mkdir(dir_, exist_ok=True, mode=mode, parents=True)
         if verbose:
             logger.success(f"Created directory: {dir_}")
-
-
-def normalize_text(text: Optional[str]) -> str:
-    """Normalize text for comparisons.
-
-    Parameters
-    ----------
-    text
-        The text to normalize.
-
-    Returns
-    -------
-    str
-        The normalized text.
-    """
-
-    if text is None:
-        return ""
-
-    # Normalize unicode characters (e.g., standardize accents). NFKC form is usually
-    # best for compatibility comparisons.
-    text = unicodedata.normalize("NFKC", text)
-
-    # Collapse whitespace, strip, and lowercase.
-    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def open_json_type(filepath: str | Path) -> Any:
@@ -440,102 +346,6 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
         )
 
     return record
-
-
-def truncate_text(*, max_chars: int, text: str) -> str:
-    """Return a single-line truncated preview string.
-
-    Parameters
-    ----------
-    max_chars
-        The maximum number of characters to return (including ellipsis).
-    text
-        The text to truncate.
-
-    Returns
-    -------
-    str
-        The truncated text.
-    """
-
-    text = (text or "").replace("\n", " ").strip()
-
-    return (
-        text if len(text) <= max_chars else text[: max(0, max_chars - 1)].rstrip() + "…"
-    )
-
-
-def validate_bbox_order(bbox: list[float]) -> list[float]:
-    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
-
-    Parameters
-    ----------
-    bbox
-        The bounding box to validate.
-
-    Returns
-    -------
-    list[float]
-        The validated bounding box.
-
-    Raises
-    ------
-    ValueError
-        If the bounding box does not have exactly 4 numbers.
-    """
-
-    if len(bbox) != 4:
-        raise ValueError(
-            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
-        )
-
-    x0, y0, x1, y1 = bbox
-
-    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
-    if x0 >= x1:
-        if x0 > x1:
-            x0, x1 = x1, x0
-        else:
-            x1 = x0 + 1.0
-    if y0 >= y1:
-        if y0 > y1:
-            y0, y1 = y1, y0
-        else:
-            y1 = y0 + 1.0
-
-    return [x0, y0, x1, y1]
-
-
-def validate_bcp47(code: str) -> str:
-    """Validates that a string is a valid BCP-47 language tag.
-
-    Parameters
-    ----------
-    code
-        The language tag to validate.
-
-    Returns
-    -------
-    str
-        The standardized version (e.g., 'en_us' -> 'en-US').
-
-    Raises
-    ------
-    ValueError
-        If the language tag is invalid or unparseable.
-    """
-
-    code = (code or "und").strip().replace("_", "-")
-    if code in {"und", "mul"}:
-        return code
-
-    try:
-        lang = langcodes.Language.get(code)
-        if not lang.is_valid():
-            raise ValueError(f"Invalid BCP-47 language tag: '{code}'")
-        return lang.to_tag()
-    except langcodes.LanguageTagError as exc:
-        raise ValueError(f"Unparseable language tag: '{code}'") from exc
 
 
 def write_to_json(

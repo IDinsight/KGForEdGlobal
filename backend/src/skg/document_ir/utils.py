@@ -1,7 +1,9 @@
 """This module contains utility functions for document Intermediate Representations."""
 
 # Standard Library
+import hashlib
 import re
+import unicodedata
 import uuid
 
 from collections import Counter, defaultdict
@@ -45,13 +47,7 @@ from skg.utils.constants import (
     ItemBoundary,
     PageBoundaryState,
 )
-from skg.utils.general import (
-    bbox_contains,
-    compute_sha256_hex,
-    make_dir,
-    normalize_text,
-    write_to_json,
-)
+from skg.utils.general import make_dir, write_to_json
 
 ItemKey = tuple[int, int]
 ChainItem = tuple[int, int, Block | Table]
@@ -2286,6 +2282,32 @@ def assert_page_items_consumed_exactly_once(
     )
 
 
+def bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
+    """Return True if `inner` bbox is fully contained in `outer` bbox (with tolerance).
+
+    Parameters
+    ----------
+    inner
+        The inner bounding box [x0, y0, x1, y1].
+    outer
+        The outer bounding box [x0, y0, x1, y1].
+    tol
+        Tolerance in pixels.
+
+    Returns
+    -------
+    bool
+        True if `inner` is contained in `outer`, False otherwise.
+    """
+
+    ox0, oy0, ox1, oy1 = outer
+    ix0, iy0, ix1, iy1 = inner
+
+    return (
+        ix0 >= ox0 - tol and iy0 >= oy0 - tol and ix1 <= ox1 + tol and iy1 <= oy1 + tol
+    )
+
+
 def build_continuation_chain(
     *,
     items_lookup: dict[int, dict[int, Block | Table]],
@@ -2554,6 +2576,26 @@ def compute_segment_id(
     name = f"{doc_key}:segment:{kind}:p{page_index:04d}:i{item_index:04d}"
 
     return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+
+
+def compute_sha256_hex(*, n_hex: int = 16, s: str) -> str:
+    """Compute the SHA-256 hex digest of a string and return the first `n_hex`
+    characters.
+
+    Parameters
+    ----------
+    n_hex
+        Number of hex characters to return from the digest.
+    s
+        The input string to hash.
+
+    Returns
+    -------
+    str
+        The first `n_hex` characters of the SHA-256 hex digest of `s`.
+    """
+
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n_hex]
 
 
 def create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
@@ -3341,6 +3383,31 @@ def normalize_page_items(
     )
 
     return items_mapping
+
+
+def normalize_text(text: Optional[str]) -> str:
+    """Normalize text for comparisons.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized text.
+    """
+
+    if text is None:
+        return ""
+
+    # Normalize unicode characters (e.g., standardize accents). NFKC form is usually
+    # best for compatibility comparisons.
+    text = unicodedata.normalize("NFKC", text)
+
+    # Collapse whitespace, strip, and lowercase.
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def persist_stitching_run(

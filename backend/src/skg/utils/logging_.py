@@ -19,7 +19,7 @@ from loguru import logger
 
 # Package Library
 from skg.config import Settings
-from skg.utils.general import Valid, escape_angle_brackets, redact_tokens
+from skg.utils.general import Valid, recurse_replace, redact_tokens
 
 _LOGGER_INITIALIZED = False
 LOGGING_LOG_LEVEL = Settings.LOGGING_LOG_LEVEL
@@ -63,6 +63,25 @@ class InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(
             level, record.getMessage()
         )
+
+
+def escape_angle_brackets(x: Any) -> str:
+    """Escape angle brackets for colorized logging. If this is not done, then
+    `loguru` will throw a `ValueError` when attempting to log objects with angle
+    brackets. See: https://github.com/Delgan/loguru/issues/140 for more details.
+
+    Parameters
+    ----------
+    x
+        Any object.
+
+    Returns
+    -------
+    str
+        The string version of `x` with escaped angle brackets.
+    """
+
+    return recurse_replace(r"\>", ">", recurse_replace(r"\<", "<", str(x)))
 
 
 def generate_entry_log_str(
