@@ -570,7 +570,7 @@ class PageIR(BaseSchema):
 
 
 # Schemas for validation.
-class ValidationIssue(BaseSchema):
+class ExtractionValidationIssue(BaseSchema):
     """A single issue found during validation of an extracted PageIR against the source
     page image.
     """
@@ -613,7 +613,7 @@ class ValidationIssue(BaseSchema):
     )
 
 
-class ValidationVerdict(BaseSchema):
+class ExtractionValidationVerdict(BaseSchema):
     """Structured verdict from the validation agent comparing an extracted PageIR
     against the source page image.
 
@@ -635,7 +635,7 @@ class ValidationVerdict(BaseSchema):
             "should be omitted — they are populated by the pipeline."
         ),
     )
-    issues: list[ValidationIssue] = Field(
+    issues: list[ExtractionValidationIssue] = Field(
         default_factory=list,
         description="List of issues found during validation. Must be non-empty when passed=false.",
     )
@@ -660,7 +660,7 @@ class ValidationVerdict(BaseSchema):
         Returns
         -------
         Self
-            The validated ValidationVerdict.
+            The validated ExtractionValidationVerdict.
 
         Raises
         ------
@@ -693,7 +693,7 @@ class ValidationVerdict(BaseSchema):
         Returns
         -------
         Self
-            The validated ValidationVerdict.
+            The validated ExtractionValidationVerdict.
 
         Raises
         ------
@@ -723,7 +723,7 @@ class ValidationVerdict(BaseSchema):
         Returns
         -------
         Self
-            The validated ValidationVerdict.
+            The validated ExtractionValidationVerdict.
 
         Raises
         ------
@@ -754,7 +754,7 @@ class ValidationVerdict(BaseSchema):
         Returns
         -------
         Self
-            The validated ValidationVerdict.
+            The validated ExtractionValidationVerdict.
 
         Raises
         ------

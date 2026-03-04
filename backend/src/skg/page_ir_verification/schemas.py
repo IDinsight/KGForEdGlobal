@@ -105,7 +105,7 @@ class PageIRContinuityVerdict(BaseSchema):
 
 
 # Schemas for validation.
-class ValidationIssue(BaseSchema):
+class ContinuityValidationIssue(BaseSchema):
     """A single issue found during validation of a continuity verdict against the
     source page images.
     """
@@ -144,7 +144,7 @@ class ValidationIssue(BaseSchema):
     )
 
 
-class ValidationVerdict(BaseSchema):
+class ContinuityValidationVerdict(BaseSchema):
     """Structured verdict from the validation agent comparing a continuity verification
     result against the source page images.
 
@@ -159,7 +159,7 @@ class ValidationVerdict(BaseSchema):
             "Required when passed=false; must be null when passed=true."
         ),
     )
-    issues: list[ValidationIssue] = Field(
+    issues: list[ContinuityValidationIssue] = Field(
         default_factory=list,
         description="List of issues found during validation. Must be non-empty when passed=false.",
     )
@@ -171,7 +171,7 @@ class ValidationVerdict(BaseSchema):
         ),
     )
     rationale: str = Field(
-        ..., description="Brief explanation of the overall assessment."
+        ..., description="Brief explanation of the overall assessment.", min_length=50
     )
 
     @model_validator(mode="after")
@@ -180,7 +180,7 @@ class ValidationVerdict(BaseSchema):
 
         Returns
         -------
-        ContinuityValidationVerdict
+        Self
             The validated instance.
 
         Raises
@@ -210,7 +210,7 @@ class ValidationVerdict(BaseSchema):
 
         Returns
         -------
-        ValidationVerdict
+        Self
             The validated instance.
 
         Raises
@@ -236,7 +236,7 @@ class ValidationVerdict(BaseSchema):
 
         Returns
         -------
-        ValidationVerdict
+        Self
             The validated instance.
 
         Raises
@@ -263,20 +263,24 @@ class ValidationVerdict(BaseSchema):
 
     @model_validator(mode="after")
     def validate_rationale_non_empty(self) -> Self:
-        """Validate that rationale is non-empty.
+        """Validate that rationale is not whitespace-only.
+
+        The `min_length=50` field constraint already rejects empty and short strings.
+        This validator catches the edge case of a string that is >= 50 chars but
+        consists entirely of whitespace.
 
         Returns
         -------
-        ContinuityValidationVerdict
+        Self
             The validated instance.
 
         Raises
         ------
         ValueError
-            If rationale is empty or whitespace-only.
+            If rationale is whitespace-only.
         """
 
-        if not self.rationale or not self.rationale.strip():
-            raise ValueError("Rationale must be non-empty.")
+        if not self.rationale.strip():
+            raise ValueError("Rationale must not be whitespace-only.")
 
         return self

@@ -19,7 +19,7 @@ from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
 # Package Library
-from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
+from skg.page_ir_extraction.schemas import ExtractionValidationVerdict, PageIR
 from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import QualityError
 
@@ -214,11 +214,13 @@ def create_page_ir_validation_agent(
             openai_reasoning_effort="high", openai_reasoning_summary="detailed"
         ),
         output_retries=max_retries,
-        output_type=ValidationVerdict,
+        output_type=ExtractionValidationVerdict,
     )
 
     @agent.output_validator
-    def validate_verdict_and_correction(output: ValidationVerdict) -> ValidationVerdict:
+    def validate_verdict_and_correction(
+        output: ExtractionValidationVerdict,
+    ) -> ExtractionValidationVerdict:
         """Validate structural consistency of the verdict and quality of the corrected
         PageIR (when present).
 
@@ -234,7 +236,7 @@ def create_page_ir_validation_agent(
 
         Returns
         -------
-        ValidationVerdict
+        ExtractionValidationVerdict
             The validated verdict (same as input if checks pass).
         """
 

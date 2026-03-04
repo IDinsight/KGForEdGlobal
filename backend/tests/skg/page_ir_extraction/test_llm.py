@@ -16,10 +16,10 @@ from pydantic_ai import BinaryContent
 from skg.page_ir_extraction import llm as llm_module
 from skg.page_ir_extraction.schemas import (
     Block,
+    ExtractionValidationIssue,
+    ExtractionValidationVerdict,
     PageIR,
     TextUnit,
-    ValidationIssue,
-    ValidationVerdict,
 )
 from skg.page_ir_extraction.utils import ExtractionUsageTracker
 from skg.utils.constants import BlockType, ItemBoundary
@@ -433,7 +433,7 @@ def test__run_validation_agent_invokes_agent_and_tracks_usage(
         assert isinstance(page_ir_json, str) and page_ir_json
         return prompts
 
-    verdict = ValidationVerdict(passed=True, rationale="ok")
+    verdict = ExtractionValidationVerdict(passed=True, rationale="ok")
     stub_agent = _StubAgent(
         result=_StubRunResult(
             output=verdict,
@@ -522,13 +522,13 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
         )
     )
 
-    issue = ValidationIssue(
+    issue = ExtractionValidationIssue(
         description="Wrong text",
         item_index=0,
         severity="error",
         suggested_fix="Fix the text",
     )
-    failing_verdict = ValidationVerdict(
+    failing_verdict = ExtractionValidationVerdict(
         corrected_page_ir=corrected,
         issues=[issue],
         passed=False,
@@ -544,7 +544,7 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
         page_ir: PageIR,
         png_bytes: bytes,
         usage_tracker: ExtractionUsageTracker,
-    ) -> ValidationVerdict:
+    ) -> ExtractionValidationVerdict:
         """Return a failing verdict that includes a correction.
 
         Parameters
@@ -566,7 +566,7 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
 
         Returns
         -------
-        ValidationVerdict
+        ExtractionValidationVerdict
             A failing verdict with a corrected PageIR.
         """
 
@@ -635,7 +635,7 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
             usage_obj=_StubUsage(input_tokens=1, output_tokens=2, requests=1),
         )
     )
-    passing_verdict = ValidationVerdict(passed=True, rationale="All good")
+    passing_verdict = ExtractionValidationVerdict(passed=True, rationale="All good")
 
     def fake_run_validation_agent(
         *,
@@ -646,7 +646,7 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
         page_ir: PageIR,
         png_bytes: bytes,
         usage_tracker: ExtractionUsageTracker,
-    ) -> ValidationVerdict:
+    ) -> ExtractionValidationVerdict:
         """Return a passing verdict.
 
         Parameters
@@ -668,7 +668,7 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
 
         Returns
         -------
-        ValidationVerdict
+        ExtractionValidationVerdict
             A passing verdict.
         """
 
@@ -915,7 +915,7 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
             usage_obj=_StubUsage(input_tokens=1, output_tokens=1, requests=1),
         )
     )
-    passing_verdict = ValidationVerdict(passed=True, rationale="ok")
+    passing_verdict = ExtractionValidationVerdict(passed=True, rationale="ok")
 
     def fake_run_validation_agent(
         *,
@@ -926,7 +926,7 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
         page_ir: PageIR,
         png_bytes: bytes,
         usage_tracker: ExtractionUsageTracker,
-    ) -> ValidationVerdict:
+    ) -> ExtractionValidationVerdict:
         """Return a passing verdict.
 
         Parameters
@@ -948,7 +948,7 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
 
         Returns
         -------
-        ValidationVerdict
+        ExtractionValidationVerdict
             A passing verdict.
         """
 
