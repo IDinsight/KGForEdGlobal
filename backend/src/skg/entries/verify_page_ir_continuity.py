@@ -186,7 +186,7 @@ def verify(
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")
     )
-    expected_doc_key = extraction_run_config.doc_key
+    expected_doc_key = extraction_run_config.extra["doc_key"]
 
     # 2.
     usage_tracker = VerificationUsageTracker()

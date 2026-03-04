@@ -647,7 +647,7 @@ class ExtractionValidationVerdict(BaseSchema):
         ),
     )
     rationale: str = Field(
-        ..., description="Brief explanation of the overall assessment."
+        ..., description="Brief explanation of the overall assessment.", min_length=50
     )
 
     @model_validator(mode="after")

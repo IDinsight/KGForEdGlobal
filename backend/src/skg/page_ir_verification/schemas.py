@@ -260,27 +260,3 @@ class ContinuityValidationVerdict(BaseSchema):
                 )
 
         return self
-
-    @model_validator(mode="after")
-    def validate_rationale_non_empty(self) -> Self:
-        """Validate that rationale is not whitespace-only.
-
-        The `min_length=50` field constraint already rejects empty and short strings.
-        This validator catches the edge case of a string that is >= 50 chars but
-        consists entirely of whitespace.
-
-        Returns
-        -------
-        Self
-            The validated instance.
-
-        Raises
-        ------
-        ValueError
-            If rationale is whitespace-only.
-        """
-
-        if not self.rationale.strip():
-            raise ValueError("Rationale must not be whitespace-only.")
-
-        return self
