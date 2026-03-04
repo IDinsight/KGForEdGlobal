@@ -131,7 +131,7 @@ def validate_semantic_flow(
     if (
         verdict.continuation_kind == PageContinuationKind.TEXT
         and next_item.kind == "block"
-        and next_item.block_type == BlockType.HEADING
+        and next_item.block_type in {BlockType.CAPTION, BlockType.HEADING}
     ):
         text_preview = next_item.text.text[:30] + "..." if next_item.text else "EMPTY"
         raise QualityError(

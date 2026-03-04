@@ -274,6 +274,7 @@ def verify_page_ir_pairs(
         f"Pages {prev_page_index}-{next_page_index}: validation agent did not "
         f"provide corrected_verdict. Returning original verification verdict."
     )
+
     return verdict
 
 
