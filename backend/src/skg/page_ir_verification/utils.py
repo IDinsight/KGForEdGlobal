@@ -127,7 +127,7 @@ def cross_check_extraction_run(
     Parameters
     ----------
     computed_doc_key
-        The computed document key (hex string) from the provided PDF.
+        The document key computed from the source PDF bytes by the caller.
     end_page
         The exclusive end page index for continuity verification.
     expected_doc_key
@@ -155,7 +155,12 @@ def cross_check_extraction_run(
             range.
     """
 
-    assert compare_directories(page_images_dir, page_irs_dir)
+    if not compare_directories(page_images_dir, page_irs_dir):
+        raise ValueError(
+            f"Page images and page IR directories do not have matching files:\n"
+            f"  page_images_dir: {page_images_dir}\n"
+            f"  page_irs_dir:    {page_irs_dir}"
+        )
 
     if computed_doc_key != expected_doc_key:
         raise ValueError(
@@ -170,7 +175,9 @@ def cross_check_extraction_run(
 
     json_fps = sorted(page_irs_dir.glob("*.json"))
     page_indices = sorted(int(fp.stem) for fp in json_fps if fp.stem.isdigit())
-    assert page_indices, f"No page IR JSONs found in: {page_irs_dir}"
+
+    if not page_indices:
+        raise ValueError(f"No page IR JSONs found in: {page_irs_dir}")
 
     start = max(start_page, page_indices[0])
     end = min(end_page, page_indices[-1] + 1)  # +1 because end is exclusive
@@ -218,11 +225,11 @@ def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
         return PageBoundaryState.STANDALONE
 
     from_prev = any(
-        item.boundary.value in (ItemBoundary.RESUMED.value, ItemBoundary.BOTH.value)
+        item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
         for item in candidates
     )
     to_next = any(
-        item.boundary.value in (ItemBoundary.TRUNCATED.value, ItemBoundary.BOTH.value)
+        item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
         for item in candidates
     )
 
@@ -306,7 +313,7 @@ def is_probable_header_footer_noise(
 
 
 def load_page_irs_from_verification(
-    *, doc_key: str, verified_page_irs_dir: Path
+    *, doc_key: Optional[str], verified_page_irs_dir: Path
 ) -> list[PageIR]:
     """Load and validate all verified page IR JSONs from the verification output
     directory.
