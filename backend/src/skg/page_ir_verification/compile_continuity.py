@@ -5,8 +5,11 @@ using edge verdicts.
 # Standard Library
 from typing import Any
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
-from skg.page_ir_extraction.schemas import PageIR
+from skg.page_ir_extraction.schemas import Block, PageIR, Table
 from skg.page_ir_verification.utils import EdgeVerdictRecord
 from skg.utils.constants import ItemBoundary, PageContinuationKind
 
@@ -71,10 +74,34 @@ def _apply_single_edge_verdict(
                 # later edges from overwriting an earlier propagation decision for the
                 # same key.
                 if prev_code and not next_code:
-                    effective_local_codes[next_key] = prev_code
+                    existing = effective_local_codes.get(next_key)
+
+                    if existing and existing != prev_code:
+                        logger.warning(
+                            f"local_code propagation conflict at page "
+                            f"{record.next_page_index} item "
+                            f"{record.next_candidate_index}: existing "
+                            f"'{existing}' vs incoming '{prev_code}' — "
+                            f"keeping earlier propagation."
+                        )
+                    else:
+                        effective_local_codes.setdefault(next_key, prev_code)
+
                     local_code_patch.setdefault(next_key, prev_code)
                 elif next_code and not prev_code:
-                    effective_local_codes[prev_key] = next_code
+                    existing = effective_local_codes.get(prev_key)
+
+                    if existing and existing != next_code:
+                        logger.warning(
+                            f"local_code propagation conflict at page "
+                            f"{record.prev_page_index} item "
+                            f"{record.prev_candidate_index}: existing "
+                            f"'{existing}' vs incoming '{next_code}' — "
+                            f"keeping earlier propagation."
+                        )
+                    else:
+                        effective_local_codes.setdefault(prev_key, next_code)
+
                     local_code_patch.setdefault(prev_key, next_code)
                 elif prev_code and next_code and prev_code != next_code:
                     local_code_conflicts.append(
@@ -88,7 +115,6 @@ def _apply_single_edge_verdict(
                             "continuation_kind": verdict.continuation_kind.value,
                         }
                     )
-
             if (
                 verdict.continuation_kind == PageContinuationKind.TABLE
                 and verdict.set_next_table_repeats_header is not None
@@ -185,7 +211,7 @@ def _normalize_local_code(code: str | None) -> str | None:
 
 def _reconcile_item_state(
     *,
-    item: Any,
+    item: Block | Table,
     item_index: int,
     flags: list[bool],
     page_index: int,
