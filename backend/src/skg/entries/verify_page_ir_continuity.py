@@ -45,6 +45,9 @@ from skg.page_ir_verification.utils import (
     persist_verification_run,
     postprocess_verified_page_irs,
     save_verified_page_irs,
+)
+from skg.page_ir_verification.verify_page_pairs import (
+    VerificationUsageTracker,
     verify_single_page_pair,
 )
 from skg.schemas import RunConfig, RunCtx, VerificationConfig
@@ -62,6 +65,7 @@ def verify_page_ir_continuity(
     page_irs: dict[int, PageIR],
     start: int,
     stop: int,
+    usage_tracker: VerificationUsageTracker,
     verification_dirs: PageIRVerificationDirs,
 ) -> None:
     """Perform verification of PageIR JSONs in pairs.
@@ -78,6 +82,8 @@ def verify_page_ir_continuity(
         0-based start page (inclusive).
     stop
         0-based end page (exclusive).
+    usage_tracker
+        Tracker to accumulate token usage across all page verifications.
     verification_dirs
         The verification directories.
 
@@ -87,9 +93,9 @@ def verify_page_ir_continuity(
         If continuity verification fails completely for any page pair.
     """
 
-    # Edge records will hold one record per boundary (page i -> i+1) containing:
-    #  - which candidate items were compared
-    #  - what the model decided (continuation, type, confidence, etc.)
+    # Edge records will hold one record per boundary (page i -> i + 1) containing:
+    #  1. Which candidate items were compared
+    #  2. What the model decided (continuation, type, confidence, etc.)
     edge_records: list[EdgeVerdictRecord] = []
 
     # Iterate in pairs.
@@ -99,6 +105,7 @@ def verify_page_ir_continuity(
             page_images_dir=page_images_dir,
             page_index=i,
             page_irs=page_irs,
+            usage_tracker=usage_tracker,
             verification_dirs=verification_dirs,
         )
         if record:
@@ -145,11 +152,12 @@ def verify(
     1. Load the global run config and directory paths for the extraction run results.
     2. Check that the page images and page IR directories have matching files and the
         document key matches the PDF.
-    3. Validate page range.
-    4. Persist verification run metadata.
-    5. Load all page IR JSONs so that we can apply edits and then write once.
-    6. Run pairwise continuity verification across (N, N+1) in the selected page
-        range and write verified page IR JSONs to file.
+    3. Create a usage tracker to accumulate token costs across all pages.
+    4. Validate page range.
+    5. Persist verification run metadata.
+    6. Load all page IR JSONs so that we can apply edits and then write once.
+    7. Run pairwise continuity verification across (N, N+1) in the selected page range
+        and write verified page IR JSONs to file.
 
     Parameters
     ----------
@@ -188,20 +196,23 @@ def verify(
         page_irs_dir=page_irs_dir,
     )
 
+    # 3.
+    usage_tracker = VerificationUsageTracker()
+
     with pymupdf.open(str(extraction_config.pdf_fp)) as doc:
-        # 3.
+        # 4.
         _, start_page, end_page = validate_page_count(
             doc=doc, end_page=config.end_page, start_page=config.start_page
         )
 
-        # 4.
+        # 5.
         verification_dirs, verification_run = persist_verification_run(
             config=config,
             output_dir=extraction_config.output_dir / expected_doc_key / "verification",
         )
 
         try:
-            # 5.
+            # 6.
             start = max(start_page, page_indices[0])
             end = min(end_page, page_indices[-1] + 1)  # +1 because end is exclusive
             page_irs = {
@@ -209,7 +220,7 @@ def verify(
                 for i in range(start, end)
             }
 
-            # 6.
+            # 7.
             logger.info(
                 f"Starting page IR continuity verification process using directories: "
                 f"{page_images_dir} and {page_irs_dir}"
@@ -220,7 +231,8 @@ def verify(
                 page_images_dir=page_images_dir,
                 page_irs=page_irs,
                 start=start,
-                stop=end_page,
+                stop=end,
+                usage_tracker=usage_tracker,
                 verification_dirs=verification_dirs,
             )
             verification_run.extra["status"] = "success"
@@ -235,6 +247,7 @@ def verify(
             }
             raise
         finally:
+            verification_run.extra["usage"] = usage_tracker.to_dict()
             verification_run.completed_at = datetime.now(timezone.utc)
             write_to_json(
                 fp=verification_dirs.root / "verification_run.json",

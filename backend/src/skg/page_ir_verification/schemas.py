@@ -2,11 +2,8 @@
 Representations (IRs).
 """
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
-from typing import Optional
+from typing import Optional, Self
 
 # Third Party Library
 from pydantic import Field, model_validator
@@ -49,46 +46,28 @@ class PageIRContinuityVerdict(BaseSchema):
     )
 
     @model_validator(mode="after")
-    def validate_confidence_policy(self) -> PageIRContinuityVerdict:
-        """Validate that positive decisions meet the minimum confidence threshold.
+    def validate_continuation_invariants(self) -> Self:
+        """Enforce all schema-internal consistency rules in a single pass.
+
+        Rules
+        -----
+        1. is_continuation=false -> continuation_kind MUST be NONE,
+            set_next_table_repeats_header MUST be null.
+        2. is_continuation=true -> continuation_kind MUST NOT be NONE, confidence MUST
+            be >= 0.50.
+        3. continuation_kind != TABLE -> set_next_table_repeats_header MUST be null.
 
         Returns
         -------
         PageIRContinuityVerdict
-            The passed in PageIRContinuityVerdict.
+            The validated instance.
 
         Raises
         ------
         ValueError
-            If the confidence policy is violated.
+            If any invariant is violated.
         """
 
-        # If the LLM is 'uncertain' (<= 0.49), it MUST default to False. Therefore, if
-        # it chose True, it MUST be >= 0.50.
-        if self.is_continuation and self.confidence < 0.50:
-            raise ValueError(
-                f"Violation of Uncertainty Policy: is_continuation=True requires "
-                f"confidence >= 0.50. (Got {self.confidence})"
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_repeats_header_consistency(self) -> PageIRContinuityVerdict:
-        """Validate internal consistency of the continuation verdict.
-
-        Returns
-        -------
-        PageIRContinuityVerdict
-            The passed in PageIRContinuityVerdict.
-
-        Raises
-        ------
-        ValueError
-            If any internal consistency invariant is violated.
-        """
-
-        # If no continuation, kind must be NONE and repeats_header must be null.
         if not self.is_continuation:
             if self.continuation_kind != PageContinuationKind.NONE:
                 raise ValueError(
@@ -98,15 +77,21 @@ class PageIRContinuityVerdict(BaseSchema):
                 raise ValueError(
                     "If is_continuation=false, set_next_table_repeats_header must be null."
                 )
+
             return self
 
-        # Continuation true means kind must not be NONE.
+        # is_continuation=true.
         if self.continuation_kind == PageContinuationKind.NONE:
             raise ValueError(
                 "If is_continuation=true, continuation_kind must not be 'none'."
             )
+        if self.confidence < 0.50:
+            raise ValueError(
+                f"Violation of Uncertainty Policy: is_continuation=True requires "
+                f"confidence >= 0.50. (Got {self.confidence})"
+            )
 
-        # If not a table continuation, repeats_header must be null.
+        # repeats_header only valid for table continuations.
         if (
             self.continuation_kind != PageContinuationKind.TABLE
             and self.set_next_table_repeats_header is not None
