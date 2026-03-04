@@ -782,7 +782,15 @@ def execute_verification_attempts(
 
     # If we didn't find a high confidence patch, fall back to the primary pair verdict.
     selected_verdict = selected_verdict or primary_verdict
-    assert selected_verdict, f"No high confidence patches found for: {pairs}"
+
+    if selected_verdict is None:
+        error_details = [
+            s.get("error", "unknown") for s in attempt_summaries if "error" in s
+        ]
+        raise RuntimeError(
+            f"All {len(pairs)} verification attempts failed for page pair "
+            f"{page_index}->{page_index + 1}. Errors: {error_details}"
+        )
 
     return {
         "attempt_summaries": attempt_summaries,
