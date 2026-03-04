@@ -223,62 +223,62 @@ def verify(
             doc=doc, end_page=config.end_page, start_page=config.start_page
         )
 
-        # 4.
-        start, end = cross_check_extraction_run(
-            end_page=end_page,
-            expected_doc_key=expected_doc_key,
-            extraction_config=extraction_config,
-            page_images_dir=page_images_dir,
-            page_irs_dir=page_irs_dir,
-            start_page=start_page,
+    # 4.
+    start, end = cross_check_extraction_run(
+        end_page=end_page,
+        expected_doc_key=expected_doc_key,
+        extraction_config=extraction_config,
+        page_images_dir=page_images_dir,
+        page_irs_dir=page_irs_dir,
+        start_page=start_page,
+    )
+
+    # 5.
+    verification_dirs, verification_run = persist_verification_run(
+        config=config,
+        output_dir=extraction_config.output_dir / expected_doc_key / "verification",
+    )
+
+    try:
+        # 6.
+        page_irs = {
+            i: PageIR.model_validate(open_json_type(page_irs_dir / f"{i:04}.json"))
+            for i in range(start, end)
+        }
+
+        # 7.
+        logger.info(
+            f"Starting page IR continuity verification process using directories: "
+            f"{page_images_dir} and {page_irs_dir}"
         )
 
-        # 5.
-        verification_dirs, verification_run = persist_verification_run(
+        verify_page_ir_continuity(
             config=config,
-            output_dir=extraction_config.output_dir / expected_doc_key / "verification",
+            page_images_dir=page_images_dir,
+            page_irs=page_irs,
+            start=start,
+            stop=end,
+            usage_tracker=usage_tracker,
+            verification_dirs=verification_dirs,
         )
+        verification_run.extra["status"] = "success"
 
-        try:
-            # 6.
-            page_irs = {
-                i: PageIR.model_validate(open_json_type(page_irs_dir / f"{i:04}.json"))
-                for i in range(start, end)
-            }
-
-            # 7.
-            logger.info(
-                f"Starting page IR continuity verification process using directories: "
-                f"{page_images_dir} and {page_irs_dir}"
-            )
-
-            verify_page_ir_continuity(
-                config=config,
-                page_images_dir=page_images_dir,
-                page_irs=page_irs,
-                start=start,
-                stop=end,
-                usage_tracker=usage_tracker,
-                verification_dirs=verification_dirs,
-            )
-            verification_run.extra["status"] = "success"
-
-            logger.success("Page IR continuity verification completed successfully!")
-        except Exception as e:  # pylint: disable=broad-except
-            verification_run.extra["status"] = "error"
-            verification_run.extra["error"] = {
-                "message": str(e),
-                "traceback": traceback.format_exc(limit=20),
-                "type": e.__class__.__name__,
-            }
-            raise
-        finally:
-            verification_run.extra["usage"] = usage_tracker.to_dict()
-            verification_run.completed_at = datetime.now(timezone.utc)
-            write_to_json(
-                fp=verification_dirs.root / "verification_run.json",
-                json_info=verification_run,
-            )
+        logger.success("Page IR continuity verification completed successfully!")
+    except Exception as e:  # pylint: disable=broad-except
+        verification_run.extra["status"] = "error"
+        verification_run.extra["error"] = {
+            "message": str(e),
+            "traceback": traceback.format_exc(limit=20),
+            "type": e.__class__.__name__,
+        }
+        raise
+    finally:
+        verification_run.extra["usage"] = usage_tracker.to_dict()
+        verification_run.completed_at = datetime.now(timezone.utc)
+        write_to_json(
+            fp=verification_dirs.root / "verification_run.json",
+            json_info=verification_run,
+        )
 
 
 if __name__ == "__main__":
