@@ -106,16 +106,27 @@ class Table(BaseSchema):
         """
 
         if self.header_row_count > len(self.rows):
+            meta = f" boundary={self.boundary.value}"
+
+            if self.local_code:
+                meta += f" local_code={self.local_code!r}"
+
             raise ValueError(
                 f"header_row_count ({self.header_row_count}) cannot exceed number of "
-                f"rows ({len(self.rows)})."
+                f"rows ({len(self.rows)}).{meta}"
             )
 
         return self
 
     @model_validator(mode="after")
     def validate_repeats_header_consistency(self) -> Self:
-        """Validate that repeats_header is only set when boundary is resumed/both.
+        """Validate repeats_header consistency.
+
+        Enforced checks:
+
+        1. repeats_header may only be set when boundary is RESUMED or BOTH.
+        2. If repeats_header is True, header_row_count must be >= 1.
+        3. If repeats_header is False, header_row_count must be 0.
 
         Returns
         -------
@@ -125,7 +136,7 @@ class Table(BaseSchema):
         Raises
         ------
         ValueError
-            If repeats_header is True when boundary is not resumed/both.
+            If the constraints above are violated.
         """
 
         if self.repeats_header is not None and self.boundary not in {
@@ -135,6 +146,18 @@ class Table(BaseSchema):
             raise ValueError(
                 f"repeats_header is only allowed when boundary is "
                 f"{ItemBoundary.RESUMED.value} or {ItemBoundary.BOTH.value}."
+            )
+
+        # When the extractor is confident enough to set repeats_header explicitly,
+        # enforce that header_row_count reflects what is actually present on-page.
+        if self.repeats_header is True and self.header_row_count == 0:
+            raise ValueError(
+                "repeats_header=True requires header_row_count >= 1 (header rows must be present)."
+            )
+
+        if self.repeats_header is False and self.header_row_count > 0:
+            raise ValueError(
+                "repeats_header=False requires header_row_count == 0 (no header rows should be counted)."
             )
 
         return self
