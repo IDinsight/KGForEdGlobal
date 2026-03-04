@@ -54,12 +54,12 @@ You will be given:
 
 ## TASK
 Evaluate whether the verification agent's verdict is CORRECT by cross-checking it
-against the source images and candidate excerpts. Return a `ValidationVerdict`.
+against the source images and candidate excerpts. Return a `ContinuityValidationVerdict`.
 
 ## OUTPUT FIELDS
 1. passed: true if the verdict is accurate; false if corrections are needed.
 2. issues: list of ContinuityValidationIssue objects describing any problems found.
-3. rationale: string (>= 30 chars) explaining the overall assessment.
+3. rationale: string (>= 50 chars) explaining the overall assessment.
 4. corrected_verdict: a corrected PageIRContinuityVerdict (required when passed=false; null when passed=true).
 
 ## WHAT TO CHECK

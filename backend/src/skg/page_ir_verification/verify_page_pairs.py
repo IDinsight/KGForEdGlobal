@@ -760,17 +760,10 @@ def execute_verification_attempts(
     """
 
     attempt_summaries: list[dict[str, Any]] = []
-    primary_verdict: PageIRContinuityVerdict | None = None
 
-    # Default selection is the first pair (primary).
-    selected_prev_index, selected_next_index = pairs[0][0], pairs[0][2]
-    selected_verdict: PageIRContinuityVerdict | None = None
+    # Store successful attempts as tuples: (attempt_no, confidence, pi, ni, verdict).
+    successful_attempts: list[tuple[int, float, int, int, PageIRContinuityVerdict]] = []
 
-    # For each candidate pair:
-    #  1. Strip existing boundary hints (so model isn't biased from extraction).
-    #  2. Call the model to verify continuity.
-    #  3. Record the attempt summary.
-    #  4. If a high confidence patch is found, break early.
     for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
         try:
             verdict = verify_page_ir_pairs(
@@ -812,27 +805,30 @@ def execute_verification_attempts(
             }
         )
 
-        # Capture primary verdict.
-        if attempt_no == 0:
-            primary_verdict = verdict
+        successful_attempts.append((attempt_no, verdict.confidence, pi, ni, verdict))
 
-        # Early exit on high confidence to patch.
+        # Early exit on high confidence.
         if verdict.confidence >= config.min_confidence_to_patch:
-            selected_prev_index, selected_next_index = pi, ni
-            selected_verdict = verdict
             break
 
-    # If we didn't find a high confidence patch, fall back to the primary pair verdict.
-    selected_verdict = selected_verdict or primary_verdict
-
-    if selected_verdict is None:
-        error_details = [
-            s.get("error", "unknown") for s in attempt_summaries if "error" in s
-        ]
+    if not successful_attempts:
+        errors = [s["error"] for s in attempt_summaries if "error" in s]
         raise RuntimeError(
             f"All {len(pairs)} verification attempts failed for page pair "
-            f"{page_index}->{page_index + 1}. Errors: {error_details}"
+            f"{page_index}->{page_index + 1}. Errors: {errors}"
         )
+
+    # Check if we broke early with a high confidence patch.
+    if successful_attempts[-1][1] >= config.min_confidence_to_patch:
+        selected = successful_attempts[-1]
+    # Or, prefer the primary pair verdict (attempt 0) if it succeeded.
+    elif successful_attempts[0][0] == 0:
+        selected = successful_attempts[0]
+    # Otherwise, fall back to the best successful attempt.
+    else:
+        selected = max(successful_attempts, key=lambda x: x[1])
+
+    _, _, selected_prev_index, selected_next_index, selected_verdict = selected
 
     return {
         "attempt_summaries": attempt_summaries,
