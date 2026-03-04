@@ -17,7 +17,7 @@ from pydantic_ai.result import RunUsage
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR
 from skg.schemas import ExtractionConfig, RunCtx
-from skg.utils.general import PipelineDirs, write_to_json
+from skg.utils.general import make_dir, write_to_json
 from skg.utils.pdf import compute_doc_key
 
 # Quality-gate thresholds for text-layer usability.
@@ -149,6 +149,16 @@ class ExtractionUsageTracker:
             "agents": {"extraction": extraction_d, "validation": validation_d},
             "totals": totals,
         }
+
+
+@dataclass(frozen=True)
+class PageIRExtractionDirs:
+    """Dataclass for page IR extraction directories."""
+
+    root: Path
+    page_images: Path
+    page_irs: Path
+    page_irs_raw: Path
 
 
 @dataclass(frozen=True)
@@ -333,6 +343,33 @@ def _serialize_table(*, table_data: list[list[str | None]], table_index: int) ->
     return "\n".join(lines)
 
 
+def create_page_ir_extraction_dirs(output_dir: Path) -> PageIRExtractionDirs:
+    """Create page IR extraction directories for a given extraction run.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory root.
+
+    Returns
+    -------
+    PageIRExtractionDirs
+        The created page IR extraction directories.
+    """
+
+    root = output_dir
+    page_images = root / "page_images"
+    page_irs = root / "page_irs"
+    page_irs_raw = root / "page_irs_raw"
+
+    for p in [root, page_images, page_irs, page_irs_raw]:
+        make_dir(p)
+
+    return PageIRExtractionDirs(
+        root=root, page_images=page_images, page_irs=page_irs, page_irs_raw=page_irs_raw
+    )
+
+
 def extract_page_text_layer_hints(
     *, page: pymupdf.Page, page_index: int
 ) -> PageTextLayerHints:
@@ -365,7 +402,7 @@ def extract_page_text_layer_hints(
 
 def persist_extraction_run(
     *, config: ExtractionConfig
-) -> tuple[str, PipelineDirs, RunCtx]:
+) -> tuple[str, PageIRExtractionDirs, RunCtx]:
     """Persist extraction run metadata.
 
     Parameters
@@ -375,13 +412,13 @@ def persist_extraction_run(
 
     Returns
     -------
-    tuple[str, PipelineDirs, RunCtx]
+    tuple[str, PageIRExtractionDirs, RunCtx]
         The document key, extraction directories, and extraction run record.
     """
 
     doc_key = compute_doc_key(n_hex=64, pdf_fp=config.pdf_fp)
-    extraction_dirs = PipelineDirs.create_from_root(
-        root_path=config.output_dir / doc_key / "extraction"
+    extraction_dirs = create_page_ir_extraction_dirs(
+        output_dir=config.output_dir / doc_key / "extraction"
     )
     exclude_keys = {"model", "overwrite"}
     extra = {
@@ -398,7 +435,7 @@ def persist_extraction_run(
         fp=extraction_dirs.root / "extraction_run.json", json_info=extraction_run
     )
 
-    logger.success(f"Saved extraction results to: {extraction_dirs.root}")
+    logger.info(f"Saving extraction results to: {extraction_dirs.root}")
 
     return doc_key, extraction_dirs, extraction_run
 
