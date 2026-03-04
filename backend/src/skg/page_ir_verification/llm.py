@@ -1,5 +1,23 @@
-"""This module contains functionalities related to LLM calls for page IR
-**verification**.
+"""This module contains the orchestration logic for page IR continuity verification
+via LLM.
+
+The Agent definitions and output-validation wiring live in `agents.py`. This module is
+responsible for prompt construction, image loading, running the verification and
+validation agents, and returning the final PageIRContinuityVerdict.
+
+Orchestration flow
+------------------
+
+1. Build verification prompts and create a fresh verification agent (no reasoning).
+2. Run the verification agent to produce a PageIRContinuityVerdict. The agent's
+   internal output validator handles context-dependent quality checks via ModelRetry.
+3. Once the verification agent produces a passing verdict, run the validation agent
+   (higher reasoning effort) with the same source images and the verification JSON.
+4. If the validation agent returns a passing verdict, return the verification agent's
+   PageIRContinuityVerdict.
+5. If the validation agent returns a failing verdict, it also provides a corrected
+   PageIRContinuityVerdict that has passed the same quality checks (enforced by the
+   validation agent's own output validator with retries). Return the corrected verdict.
 """
 
 # Standard Library
@@ -8,182 +26,106 @@ from typing import Any
 
 # Third Party Library
 from loguru import logger
-from openai import (
-    APIConnectionError,
-    APITimeoutError,
-    InternalServerError,
-    OpenAI,
-    RateLimitError,
-)
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_random_exponential,
-)
+from pydantic_ai import BinaryContent
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, Table
-from skg.page_ir_extraction.validators import QualityError
+from skg.page_ir_verification.agents import (
+    create_continuity_validation_agent,
+    create_continuity_verification_agent,
+)
 from skg.page_ir_verification.prompts import (
-    double_check_page_ir_verification,
+    validate_page_ir_continuity_verdict,
     verify_page_ir_pairs_from_extraction,
 )
-from skg.page_ir_verification.schemas import PageIRContinuityVerdict
+from skg.page_ir_verification.schemas import PageIRContinuityVerdict, ValidationVerdict
 from skg.page_ir_verification.validators import (
     validate_item_continuation_kind,
     validate_repeats_header_requires_table_item,
     validate_semantic_flow,
 )
-from skg.schemas import Limits
-from skg.utils.general import encode_png_to_data_url
-
-limits = Limits(max_retry_attempts=5)
-openai_client = OpenAI()
+from skg.page_ir_verification.verify_page_pairs import VerificationUsageTracker
 
 
-@retry(
-    reraise=True,
-    retry=retry_if_exception_type(
-        (
-            TimeoutError,
-            ConnectionError,
-            OSError,
-            APIConnectionError,
-            APITimeoutError,
-            InternalServerError,
-            RateLimitError,
-        )
-    ),
-    stop=stop_after_attempt(limits.max_retry_attempts),
-    wait=wait_random_exponential(min=1, max=60),
-)
-def _call_openai_api_for_page_ir_verification(
+def _run_validation_agent(
     *,
-    always_double_check_first_attempt: bool,
-    attempt: int,
-    input_items: list[Any],
-    instructions: str,
     model: str,
     next_item: Block | Table,
+    next_item_excerpt: dict[str, Any],
+    next_page_index: int,
+    next_png_bytes: bytes,
     prev_item: Block | Table,
-) -> PageIRContinuityVerdict:
-    """Wrapper for verification API calls with retries.
+    prev_item_excerpt: dict[str, Any],
+    prev_page_index: int,
+    prev_png_bytes: bytes,
+    usage_tracker: VerificationUsageTracker,
+    verdict: PageIRContinuityVerdict,
+) -> ValidationVerdict:
+    """Run the validation agent to check a continuity verdict against the source images.
 
     Parameters
     ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
-    attempt
-        The current attempt number (0-based).
-    input_items
-        The list of messages to send to the OpenAI API.
-    instructions
-        The verification instructions to include.
     model
-        The OpenAI model to use.
+        The model identifier.
     next_item
-        The next page candidate item.
+        The parsed next page candidate item.
+    next_item_excerpt
+        The excerpt JSON of the next candidate.
+    next_page_index
+        The 0-based index of the next page.
+    next_png_bytes
+        Raw PNG bytes of the next page (cropped).
     prev_item
-        The previous page candidate item.
+        The parsed previous page candidate item.
+    prev_item_excerpt
+        The excerpt JSON of the previous candidate.
+    prev_page_index
+        The 0-based index of the previous page.
+    prev_png_bytes
+        Raw PNG bytes of the previous page.
+    usage_tracker
+        Tracker to accumulate validation agent usage.
+    verdict
+        The verification verdict to validate.
 
     Returns
     -------
-    PageIRContinuityVerdict
-        The extracted PageIRContinuityVerdict.
-
-    Raises
-    ------
-    QualityError
-        If the response could not be parsed or failed quality checks.
+    ValidationVerdict
+        The validation verdict (with corrected_verdict when failing).
     """
 
-    response = openai_client.responses.parse(
-        input=input_items,
-        instructions=instructions,
+    prompts = validate_page_ir_continuity_verdict(
+        next_item_excerpt=next_item_excerpt,
+        next_page_index=next_page_index,
+        prev_item_excerpt=prev_item_excerpt,
+        prev_page_index=prev_page_index,
+        verdict_json=verdict.model_dump_json(),
+    )
+
+    agent = create_continuity_validation_agent(
+        instructions=prompts.system_message,
         model=model,
-        reasoning={"effort": "high"},
-        text_format=PageIRContinuityVerdict,
+        next_item=next_item,
+        prev_item=prev_item,
+        verify_continuity_fn=verify_page_ir_continuity_verdict,
     )
 
-    parsed = getattr(response, "output_parsed", None)
-    output_text = getattr(response, "output_text", None)
+    user_prompt: list[str | BinaryContent] = [
+        prompts.user_message,
+        "IMAGE A: ENTIRETY of Page N (previous page).",
+        BinaryContent(data=prev_png_bytes, media_type="image/png"),
+        "IMAGE B: TOP crop of page N+1 (next page).",
+        BinaryContent(data=next_png_bytes, media_type="image/png"),
+    ]
 
-    if parsed is None:
-        raise QualityError(
-            "Continuity verification returned no parsed output.",
-            failed_content=output_text,
-        )
+    result = agent.run_sync(user_prompt)
+    usage_tracker.validation.add_run_usage(result.usage())
 
-    try:
-        validate_verdict_with_context(
-            always_double_check_first_attempt=always_double_check_first_attempt,
-            attempt=attempt,
-            next_item=next_item,
-            prev_item=prev_item,
-            verdict=parsed,
-        )
-    except QualityError as e:
-        # Attach the raw output so the correction attempt can see what it wrote.
-        raise QualityError(str(e), failed_content=output_text) from e
-
-    return parsed
-
-
-def validate_verdict_with_context(
-    *,
-    always_double_check_first_attempt: bool,
-    attempt: int,
-    next_item: Block | Table,
-    prev_item: Block | Table,
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Run context-dependent validation checks on a continuity verdict.
-
-    Schema-internal invariants (is_continuation <-> continuation_kind, confidence
-    threshold, repeats_header <-> table-only) are already enforced by the Pydantic
-    model validators at parse time. This function runs the checks that require the
-    candidate items (prev_item/next_item).
-
-    Parameters
-    ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
-    attempt
-        The current attempt number (0-based).
-    next_item
-        The next page candidate item.
-    prev_item
-        The previous page candidate item.
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    # Force retry on first attempt.
-    if always_double_check_first_attempt and attempt == 0:
-        raise QualityError("Reason does not matter and is overwritten in caller.")
-
-    if verdict.is_continuation and verdict.confidence < 0.5:
-        logger.warning(
-            f"Low confidence ({verdict.confidence}) for continuation verdict."
-        )
-
-    validate_item_continuation_kind(
-        next_item=next_item, prev_item=prev_item, verdict=verdict
-    )
-    validate_repeats_header_requires_table_item(next_item=next_item, verdict=verdict)
-    validate_semantic_flow(next_item=next_item, verdict=verdict)
+    return result.output
 
 
 def verify_page_ir_pairs(
     *,
-    always_double_check_first_attempt: bool,
-    max_retries: int = 3,
     model: str,
     next_item: dict[str, Any],
     next_item_excerpt: dict[str, Any],
@@ -193,175 +135,171 @@ def verify_page_ir_pairs(
     prev_item_excerpt: dict[str, Any],
     prev_page_index: int,
     prev_png: Path,
+    usage_tracker: VerificationUsageTracker,
 ) -> PageIRContinuityVerdict:
-    """Verify continuity between two PageIR excerpts using LLM.
+    """Verify continuity between two PageIR excerpts using LLM agents.
+
+    Orchestration:
+
+    1. Run the verification agent (no reasoning) to produce a PageIRContinuityVerdict.
+    2. Run the validation agent (high reasoning) to check the verdict.
+    3. If validation passes, return the verification verdict.
+    4. If validation fails, return the corrected verdict from the validation agent.
 
     Parameters
     ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
-    max_retries
-        Maximum number of retries for quality errors.
     model
-        The OpenAI model to use.
+        The model identifier.
     next_item
-        The candidate item near top item from page N+1 JSON.
+        The candidate item dict near top of page N+1.
     next_item_excerpt
         The excerpt JSON of the candidate item near top of page N+1.
     next_page_index
         The 0-based index of the next page (N+1).
     next_png
-        The PNG file path of page N+1.
+        The PNG file path of page N+1 (cropped).
     prev_item
-        The candidate item near bottom item from page N JSON.
+        The candidate item dict near bottom of page N.
     prev_item_excerpt
         The excerpt JSON of the candidate item near bottom of page N.
     prev_page_index
         The 0-based index of the previous page (N).
     prev_png
         The PNG file path of page N.
+    usage_tracker
+        Tracker to accumulate token usage from both verification and validation agents.
 
     Returns
     -------
     PageIRContinuityVerdict
-        The continuity verdict between the two pages.
+        The final continuity verdict (original or corrected).
 
     Raises
     ------
     Exception
-        For transient API errors.
-    QualityError
-        If the LLM returns invalid or poor-quality output.
+        For transient API errors or agent failures.
     """
 
-    prev_image_url = encode_png_to_data_url(prev_png)
-    next_image_url = encode_png_to_data_url(next_png)
+    # Parse candidate items once.
+    prev_item_parsed: Block | Table = (
+        Block.model_validate(prev_item)
+        if prev_item["kind"] == "block"
+        else Table.model_validate(prev_item)
+    )
+    next_item_parsed: Block | Table = (
+        Block.model_validate(next_item)
+        if next_item["kind"] == "block"
+        else Table.model_validate(next_item)
+    )
+
+    # Run verification agent.
     prompts = verify_page_ir_pairs_from_extraction(
         next_item=next_item_excerpt,
         next_page_index=next_page_index,
         prev_item=prev_item_excerpt,
         prev_page_index=prev_page_index,
     )
-    instructions = prompts.system_message
-    input_items: list[Any] = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": prompts.user_message},
-                {
-                    "type": "input_text",
-                    "text": "IMAGE A: ENTIRETY of Page N (previous page).",
-                },
-                {"type": "input_image", "image_url": prev_image_url},
-                {
-                    "type": "input_text",
-                    "text": "IMAGE B: TOP crop of page N+1 (next page).",
-                },
-                {"type": "input_image", "image_url": next_image_url},
-            ],
-        }
+
+    agent = create_continuity_verification_agent(
+        instructions=prompts.system_message,
+        model=model,
+        next_item=next_item_parsed,
+        prev_item=prev_item_parsed,
+        verify_continuity_fn=verify_page_ir_continuity_verdict,
+    )
+
+    prev_png_bytes = prev_png.read_bytes()
+    next_png_bytes = next_png.read_bytes()
+
+    user_prompt: list[str | BinaryContent] = [
+        prompts.user_message,
+        "IMAGE A: ENTIRETY of Page N (previous page).",
+        BinaryContent(data=prev_png_bytes, media_type="image/png"),
+        "IMAGE B: TOP crop of page N+1 (next page).",
+        BinaryContent(data=next_png_bytes, media_type="image/png"),
     ]
 
-    for attempt in range(max_retries + 1):
-        try:
-            return _call_openai_api_for_page_ir_verification(
-                always_double_check_first_attempt=always_double_check_first_attempt,
-                attempt=attempt,
-                input_items=input_items,
-                instructions=instructions,
-                model=model,
-                next_item=(
-                    Block.model_validate(next_item)
-                    if next_item["kind"] == "block"
-                    else Table.model_validate(next_item)
-                ),
-                prev_item=(
-                    Block.model_validate(prev_item)
-                    if prev_item["kind"] == "block"
-                    else Table.model_validate(prev_item)
-                ),
-            )
-        except QualityError as e:
-            if attempt == max_retries:
-                logger.error(
-                    f"Verification failed after exhausting retries for pages "
-                    f"{prev_page_index}-{next_page_index}."
-                )
-                raise
+    result = agent.run_sync(user_prompt)
+    usage_tracker.verification.add_run_usage(result.usage())
+    verdict = result.output
 
-            if e.failed_content:
-                logger.error(f"Verification failed content: {e.failed_content}")
-                input_items.append(
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": e.failed_content}],
-                    }
-                )
+    logger.info(
+        f"Verification agent verdict for pages {prev_page_index}-{next_page_index}: "
+        f"is_continuation={verdict.is_continuation}, "
+        f"continuation_kind={verdict.continuation_kind.value}, "
+        f"confidence={verdict.confidence}"
+    )
 
-            if always_double_check_first_attempt and attempt == 0:
-                input_items.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": double_check_page_ir_verification().user_message,
-                            }
-                        ],
-                    }
-                )
-            else:
-                input_items.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    f"Your previous output had issues and must be corrected.\n"
-                                    f"ERROR: {str(e)}\n\n"
-                                    f"Return a complete PageIRContinuityVerdict that matches the schema and fixes the issue."
-                                ),
-                            }
-                        ],
-                    }
-                )
-            continue
-        except Exception as e:  # pylint: disable=broad-except
-            if isinstance(
-                e,
-                (
-                    TimeoutError,
-                    ConnectionError,
-                    OSError,
-                    APIConnectionError,
-                    APITimeoutError,
-                    RateLimitError,
-                    InternalServerError,
-                ),
-            ):
-                raise
+    # Run validation agent.
+    logger.info(
+        f"Running validation agent for pages {prev_page_index}-{next_page_index}..."
+    )
 
-            last_error = QualityError(f"Structured parse/validation failed: {e}")
+    validation_verdict = _run_validation_agent(
+        model=model,
+        next_item=next_item_parsed,
+        next_item_excerpt=next_item_excerpt,
+        next_page_index=next_page_index,
+        next_png_bytes=next_png_bytes,
+        prev_item=prev_item_parsed,
+        prev_item_excerpt=prev_item_excerpt,
+        prev_page_index=prev_page_index,
+        prev_png_bytes=prev_png_bytes,
+        usage_tracker=usage_tracker,
+        verdict=verdict,
+    )
 
-            if attempt >= max_retries:
-                raise last_error from e
+    # Return original or corrected verdict.
+    if validation_verdict.passed:
+        logger.success(f"Pages {prev_page_index}-{next_page_index}: validation passed.")
+        return verdict
 
-            input_items.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                f"The previous response failed structured parsing/validation.\n"
-                                f"ERROR: {e.__class__.__name__}: {e}\n\n"
-                                f"Return a complete PageIRContinuityVerdict that matches the schema exactly."
-                            ),
-                        }
-                    ],
-                }
-            )
-            continue
+    logger.warning(
+        f"Pages {prev_page_index}-{next_page_index}: validation failed: "
+        f"{validation_verdict.rationale[:300]}"
+    )
 
-    raise QualityError(f"Verification failed after {max_retries + 1} attempts.")
+    if validation_verdict.corrected_verdict is not None:
+        logger.info(
+            f"Pages {prev_page_index}-{next_page_index}: using corrected verdict "
+            f"from validation agent."
+        )
+        return validation_verdict.corrected_verdict
+
+    # Defensive fallback (schema validators should prevent this).
+    logger.warning(
+        f"Pages {prev_page_index}-{next_page_index}: validation agent did not "
+        f"provide corrected_verdict. Returning original verification verdict."
+    )
+    return verdict
+
+
+def verify_page_ir_continuity_verdict(
+    *,
+    next_item: Block | Table,
+    prev_item: Block | Table,
+    verdict: PageIRContinuityVerdict,
+) -> None:
+    """Validate *quality* (not schema) of a parsed PageIR.
+
+    Parameters
+    ----------
+    next_item
+        The parsed next page candidate item.
+    prev_item
+        The parsed previous page candidate item.
+    verdict
+        The PageIRContinuityVerdict to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    # NB: Order matters — don't change unless you really know what you are doing!
+    validate_item_continuation_kind(
+        next_item=next_item, prev_item=prev_item, verdict=verdict
+    )
+    validate_repeats_header_requires_table_item(next_item=next_item, verdict=verdict)
+    validate_semantic_flow(next_item=next_item, verdict=verdict)

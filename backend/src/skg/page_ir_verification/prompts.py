@@ -13,8 +13,28 @@ from skg.utils.constants import PageContinuationKind
 from skg.utils.general import PromptPair
 
 
-def double_check_page_ir_verification() -> PromptPair:
-    """Generate the prompts for double-checking page IR verification results.
+def validate_page_ir_continuity_verdict(
+    *,
+    next_item_excerpt: dict[str, Any],
+    next_page_index: int,
+    prev_item_excerpt: dict[str, Any],
+    prev_page_index: int,
+    verdict_json: str,
+) -> PromptPair:
+    """Generate prompts for the validation agent that checks a continuity verdict.
+
+    Parameters
+    ----------
+    next_item_excerpt
+        The excerpt JSON of the candidate item near top of page N+1.
+    next_page_index
+        The 0-based page index of the next page (N+1).
+    prev_item_excerpt
+        The excerpt JSON of the candidate item near bottom of page N.
+    prev_page_index
+        The 0-based page index of the previous page (N).
+    verdict_json
+        The JSON string of the PageIRContinuityVerdict to validate.
 
     Returns
     -------
@@ -22,34 +42,97 @@ def double_check_page_ir_verification() -> PromptPair:
         A PromptPair containing 'system_message' and 'user_message'.
     """
 
-    system_message = None
-    user_message = dedent(
-        f"""Re-check your most recent `PageIRContinuityVerdict` against the evidence.
+    system_message = dedent(
+        f"""You are a strict PageIR continuity validation agent (CHECKER MODE).
 
-Checklist (must satisfy ALL):
-1. Use the IMAGES as source of truth; candidate JSON excerpts are only for locating regions.
-2. Decide ONLY whether the *two candidate items* continue across the page break (N -> N+1).
+You will be given:
+1. IMAGE A: Entire page N
+2. IMAGE B: A top-crop of page N+1
+3. Candidate excerpt JSON for the bottom-anchor item on page N
+4. Candidate excerpt JSON for the top-anchor item on page N+1
+5. A `PageIRContinuityVerdict` produced by the verification agent
 
-Schema invariants (must hold):
-1. is_continuation=false -> continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
-2. is_continuation=true -> continuation_kind!="{PageContinuationKind.NONE.value}", confidence >= 0.50.
-3. continuation_kind!="{PageContinuationKind.TABLE.value}" -> set_next_table_repeats_header=null.
+## TASK
+Evaluate whether the verification agent's verdict is CORRECT by cross-checking it
+against the source images and candidate excerpts. Return a `ValidationVerdict`.
 
-Table-only patch rule:
-- Only set set_next_table_repeats_header when you are confident it is the SAME table continuing.
-- true = headers visibly repeated at top of IMAGE B; false = visibly not repeated; null = uncertain.
+## OUTPUT FIELDS
+1. passed: true if the verdict is accurate; false if corrections are needed.
+2. issues: list of ContinuityValidationIssue objects describing any problems found.
+3. rationale: string (>= 30 chars) explaining the overall assessment.
+4. corrected_verdict: a corrected PageIRContinuityVerdict (required when passed=false; null when passed=true).
 
-Border & continuity reminders:
-- Visual borders (closed boxes, ruled edges) are NEVER evidence that a table has ended or begun.
-- Row numbering restarts, topic shifts, and checkpoint rows inside a table grid do NOT end the table.
-- A language switch between rows (e.g., Wolof -> French) is normal bilingual formatting, not a discontinuity.
-- Judge table continuity by content: same column structure + continuing row sequence = same table.
+## WHAT TO CHECK
 
-If anything above is violated or your reasoning is weak, correct it now and return a complete `PageIRContinuityVerdict` (rationale >= 50 chars). Return ONLY the object.
+### 1. Is the continuation decision correct?
+- Use the IMAGES as source of truth. Do NOT trust metadata fields in the excerpt JSON.
+- Does `is_continuation` accurately reflect whether the two candidate items continue across the page break?
+
+### 2. Is the continuation_kind correct?
+- If is_continuation=true, does continuation_kind match what you see? (table/text/figure)
+
+### 3. Schema invariants (must hold):
+- is_continuation=false -> continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
+- is_continuation=true -> continuation_kind!="{PageContinuationKind.NONE.value}", confidence >= 0.50.
+- continuation_kind!="{PageContinuationKind.TABLE.value}" -> set_next_table_repeats_header=null.
+
+### 4. Is the confidence calibrated?
+- Does the evidence support the stated confidence level?
+- >= 0.50: clear or plausible visual evidence supports the decision.
+- <= 0.49: uncertain -> MUST have is_continuation=false.
+
+### 5. Table-only patch: set_next_table_repeats_header
+- Only applies for table continuations.
+- true = headers visibly repeated at top of IMAGE B; false = not repeated; null = uncertain.
+
+### 6. Is the rationale adequate?
+- >= 50 chars, references specific visual evidence.
+
+## DECISION GUIDANCE (same rules as verification)
+
+### A. VISUAL BORDERS — CRITICAL RULE
+Visual borders (closed boxes, ruled edges) are NEVER evidence of table discontinuity.
+Judge continuity exclusively by content, not by visual framing.
+
+### B. TABLE continuation (SAME table)
+Strong positive cues: matching column structure, continuing row sequence, repeated headers.
+Things that do NOT indicate a new table: row numbering restarts, topic shifts, checkpoint rows, fully boxed fragments, language switches between rows.
+A table has truly ENDED only with: a new table title/caption, a structurally different header row, or an explicit concluding row followed by non-tabular content.
+
+### C. TEXT continuation
+Only with strong visual evidence: truncated bottom of IMAGE A and resumed top of IMAGE B (hyphenated word, dangling punctuation, mid-sentence start).
+
+### D. FIGURE continuation (rare)
+Only if the SAME figure is clearly cut off and resumes.
+
+## SEVERITY GUIDE
+- error: wrong is_continuation, wrong continuation_kind, schema invariant violation, wrong set_next_table_repeats_header when clearly determinable.
+- warning: slightly miscalibrated confidence, weak rationale, borderline decisions.
+
+## RULES FOR corrected_verdict
+When passed=false, you MUST provide a corrected_verdict that:
+1. Fixes all error-severity issues.
+2. Satisfies all schema invariants.
+3. Has rationale >= 50 chars referencing visual evidence.
+4. Does NOT invent content or merge items across pages.
         """
     )
 
-    return PromptPair(system_message=system_message, user_message=user_message.strip())
+    user_message = json.dumps(
+        {
+            "prev_page_index": prev_page_index,
+            "next_page_index": next_page_index,
+            "prev_candidate_item": prev_item_excerpt,
+            "next_candidate_item": next_item_excerpt,
+            "verification_verdict": json.loads(verdict_json),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
 
 
 def verify_page_ir_pairs_from_extraction(
