@@ -4,14 +4,6 @@
 from enum import Enum
 from typing import Literal
 
-# Third Party Library
-from openai import (
-    APIConnectionError,
-    AuthenticationError,
-    InternalServerError,
-    RateLimitError,
-)
-
 
 # Enums for various constant types.
 class BlockType(str, Enum):
@@ -242,21 +234,3 @@ NonArtifacts = {
     "references",
     "table of contents",
 }
-
-# Non-retryable errors: if the API itself is broken (auth, rate limit, server error),
-# there is no point trying the remaining candidate pairs since they will all fail the
-# same way. Re-raise immediately so the caller can handle it.
-NON_RETRYABLE_ERROR_TYPES: tuple[type[Exception], ...] = (
-    ConnectionError,
-    PermissionError,
-    TimeoutError,
-)
-
-# Also treat HTTP-level failures surfaced by common SDKs as non-retryable.
-NON_RETRYABLE_ERROR_TYPES = (
-    *NON_RETRYABLE_ERROR_TYPES,
-    APIConnectionError,
-    AuthenticationError,
-    RateLimitError,
-    InternalServerError,
-)

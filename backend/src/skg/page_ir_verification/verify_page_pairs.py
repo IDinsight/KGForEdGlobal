@@ -24,7 +24,7 @@ from skg.page_ir_verification.utils import (
     PageIRVerificationDirs,
 )
 from skg.schemas import VerificationConfig
-from skg.utils.constants import NON_RETRYABLE_ERROR_TYPES, BlockType, ItemBoundary
+from skg.utils.constants import BlockType, ItemBoundary
 from skg.utils.general import make_dir, write_to_json
 
 
@@ -686,7 +686,7 @@ def crop_image_to_ymax(
         img.crop((0, 0, w, y)).save(output_png_fp)
 
 
-def execute_verification_attempts(  # pylint: disable=W9006
+def execute_verification_attempts(
     *,
     config: VerificationConfig,
     page_images_dir: Path,
@@ -758,13 +758,6 @@ def execute_verification_attempts(  # pylint: disable=W9006
                 prev_png=page_images_dir / f"{page_index:04}.png",
                 usage_tracker=usage_tracker,
             )
-        except NON_RETRYABLE_ERROR_TYPES:
-            logger.error(
-                f"Non-retryable error during verification attempt {attempt_no} "
-                f"for page pair {page_index}->{page_index + 1}. Aborting remaining "
-                f"candidate pairs."
-            )
-            raise
         except Exception as e:  # pylint: disable=broad-except
             attempt_summaries.append(
                 {
