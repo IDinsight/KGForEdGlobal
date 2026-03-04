@@ -74,7 +74,7 @@ def _apply_single_edge_verdict(
                 # later edges from overwriting an earlier propagation decision for the
                 # same key.
                 if prev_code and not next_code:
-                    existing = effective_local_codes.get(next_key)
+                    existing = local_code_patch.get(next_key)
 
                     if existing and existing != prev_code:
                         logger.warning(
@@ -85,11 +85,10 @@ def _apply_single_edge_verdict(
                             f"keeping earlier propagation."
                         )
                     else:
-                        effective_local_codes.setdefault(next_key, prev_code)
-
-                    local_code_patch.setdefault(next_key, prev_code)
+                        effective_local_codes[next_key] = prev_code
+                        local_code_patch.setdefault(next_key, prev_code)
                 elif next_code and not prev_code:
-                    existing = effective_local_codes.get(prev_key)
+                    existing = local_code_patch.get(prev_key)
 
                     if existing and existing != next_code:
                         logger.warning(
@@ -100,9 +99,8 @@ def _apply_single_edge_verdict(
                             f"keeping earlier propagation."
                         )
                     else:
-                        effective_local_codes.setdefault(prev_key, next_code)
-
-                    local_code_patch.setdefault(prev_key, next_code)
+                        effective_local_codes[prev_key] = next_code
+                        local_code_patch.setdefault(prev_key, next_code)
                 elif prev_code and next_code and prev_code != next_code:
                     local_code_conflicts.append(
                         {
