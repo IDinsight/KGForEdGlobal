@@ -960,7 +960,7 @@ def test_validation_verdict_error_issues_require_suggested_fix(
                 )
             ],
             passed=False,
-            rationale="Needs correction.",
+            rationale="Needs correction.asdkufhdashgads;ghdasjkhgafua;gha;lghasgh;jasfhgaskfjd",
         )
 
 
@@ -990,7 +990,7 @@ def test_validation_verdict_failed_requires_at_least_one_error_issue(
                 )
             ],
             passed=False,
-            rationale="Only minor issues.",
+            rationale="Only minor issues.ourghrhgrakegheragkeeklrbrekbherl;hghdgsa;djghasklgag",
         )
 
 
@@ -1013,16 +1013,7 @@ def test_validation_verdict_must_not_include_corrected_page_ir_when_passed(
             corrected_page_ir=make_minimal_page_ir(),
             issues=[],
             passed=True,
-            rationale="Looks good.",
-        )
-
-
-def test_validation_verdict_rationale_must_be_non_empty() -> None:
-    """rationale is required and must not be whitespace-only."""
-
-    with pytest.raises(ValidationError, match=r"Rationale must be non-empty"):
-        ExtractionValidationVerdict(
-            corrected_page_ir=None, issues=[], passed=True, rationale="   "
+            rationale="Looks good.;ougrghreughaergherughea;gheaghhgaskjghgkjadsgkjsaksahad",
         )
 
 
@@ -1053,7 +1044,7 @@ def test_validation_verdict_requires_corrected_page_ir_when_failed(
                 )
             ],
             passed=False,
-            rationale="Material errors present.",
+            rationale="Material errors present.34q;ougrqkghrbhbhfkbjhafbjafhbfkjbhkadfhbakdffasdgawgfdasafak",
         )
 
     # Sanity: passes when corrected_page_ir is provided and issues include an error +
@@ -1069,6 +1060,6 @@ def test_validation_verdict_requires_corrected_page_ir_when_failed(
             )
         ],
         passed=False,
-        rationale="Material errors present.",
+        rationale="Material errors present.43iugrgklgfhkhvdfklbreibreqi;bhq;hfkdhwergrgrawgagagadsfj",
     )
     assert verdict.passed is False

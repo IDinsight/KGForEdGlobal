@@ -433,7 +433,10 @@ def test__run_validation_agent_invokes_agent_and_tracks_usage(
         assert isinstance(page_ir_json, str) and page_ir_json
         return prompts
 
-    verdict = ExtractionValidationVerdict(passed=True, rationale="ok")
+    verdict = ExtractionValidationVerdict(
+        passed=True,
+        rationale="oksaga;ughweaklberqklbhrugh3q4ou43u3khgkhrg;klwhgv;hevklfavladsklakdlsf",
+    )
     stub_agent = _StubAgent(
         result=_StubRunResult(
             output=verdict,
@@ -532,7 +535,7 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
         corrected_page_ir=corrected,
         issues=[issue],
         passed=False,
-        rationale="Mismatch",
+        rationale="Mismatchoo3rhyg;lehgb;leahb;kqgb3qo;uhbo;3owlghrelbvhaeklbvfdakdkhh",
     )
 
     def fake_run_validation_agent(
@@ -635,7 +638,10 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
             usage_obj=_StubUsage(input_tokens=1, output_tokens=2, requests=1),
         )
     )
-    passing_verdict = ExtractionValidationVerdict(passed=True, rationale="All good")
+    passing_verdict = ExtractionValidationVerdict(
+        passed=True,
+        rationale="All goodxxxxxxxxxxxxxxxxxxxxxxxxxxxxasdfakdugawergaerwgaklguagha",
+    )
 
     def fake_run_validation_agent(
         *,
@@ -915,7 +921,10 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
             usage_obj=_StubUsage(input_tokens=1, output_tokens=1, requests=1),
         )
     )
-    passing_verdict = ExtractionValidationVerdict(passed=True, rationale="ok")
+    passing_verdict = ExtractionValidationVerdict(
+        passed=True,
+        rationale="okaoiugyreaoghyreoaughber;ahdgdashjasdgkhjadasdgadsfdasfdasdsas;g",
+    )
 
     def fake_run_validation_agent(
         *,
