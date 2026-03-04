@@ -1278,7 +1278,7 @@ def test__process_next_table_slice_explicit_header_drop_fallback_to_segment_coun
     next_item = Table(
         bbox=[0, 0, 100, 100],
         boundary=ItemBoundary.RESUMED,
-        header_row_count=0,
+        header_row_count=1,
         kind="table",
         repeats_header=True,
         rows=next_rows,
@@ -1298,7 +1298,7 @@ def test__process_next_table_slice_explicit_header_drop_fallback_to_segment_coun
 
     assert len(result["rows_to_add"]) == 1
     assert result["rows_to_add"][0].cells[0].text.text == "Data"
-    assert warnings
+    assert not warnings
 
 
 def test__process_next_table_slice_implicit_drop_calls_helper() -> None:

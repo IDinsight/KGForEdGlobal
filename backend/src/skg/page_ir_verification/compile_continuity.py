@@ -10,8 +10,9 @@ from loguru import logger
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, PageIR, Table
-from skg.page_ir_verification.utils import EdgeVerdictRecord
+from skg.page_ir_verification.utils import EdgeVerdictRecord, PageIRVerificationDirs
 from skg.utils.constants import ItemBoundary, PageContinuationKind
+from skg.utils.general import write_to_json
 
 
 def _apply_single_edge_verdict(
@@ -289,7 +290,8 @@ def compile_continuity_from_edge_verdicts(
     edge_records: list[EdgeVerdictRecord],
     min_confidence_to_patch: float,
     page_irs: dict[int, PageIR],
-) -> dict[str, Any]:
+    verification_dirs: PageIRVerificationDirs,
+) -> None:
     """Apply all continuity decisions in one pass as follows:
 
     1. Positive edge --> set prev.to_next and next.from_prev.
@@ -306,11 +308,9 @@ def compile_continuity_from_edge_verdicts(
         Minimum confidence threshold to apply edits.
     page_irs
         Mapping of page_index to PageIR objects.
-
-    Returns
-    -------
-    dict[str, Any]
-        A summary of applied edits.
+    verification_dirs
+        Directory paths for the verification run, used for writing the continuity
+        compile report.
     """
 
     # Initialize bools: (page_idx, item_idx) -> [from_prev, to_next].
@@ -384,10 +384,14 @@ def compile_continuity_from_edge_verdicts(
                 }
             )
 
-    return {
+    compile_report = {
         "applied_edges": applied_edges,
         "boundary_changes": boundary_changes,
         "local_code_changes": local_code_changes,
         "local_code_conflicts": local_code_conflicts,
         "repeats_header_changes": repeats_header_changes,
     }
+    write_to_json(
+        fp=verification_dirs.root / "continuity_compile_report.json",
+        json_info=compile_report,
+    )
