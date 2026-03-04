@@ -453,6 +453,128 @@ def _make_table_excerpt(
     }
 
 
+def _pick_bottommost(
+    candidates: list[tuple[int, Block | Table]],
+) -> tuple[int, Block | Table]:
+    """Pick the best bottom-of-page candidate from a pre-sorted list.
+
+    Candidates must already be sorted by bottom-edge (y1) descending.
+
+    Selection priority:
+
+    1. Extractor-flagged TRUNCATED/BOTH items (preferred boundary hints).
+    2. Tables near the bottom (within top-5 by y1).
+    3. Non-heading/non-caption blocks.
+    4. Absolute bottom item (last resort).
+
+    Parameters
+    ----------
+    candidates
+        Non-empty list of (item_index, item) pairs sorted by y1 descending.
+
+    Returns
+    -------
+    tuple[int, Block | Table]
+        The picked candidate index and item.
+    """
+
+    preferred = [
+        (i, item)
+        for i, item in candidates
+        if item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+    ]
+
+    def _pick(
+        sorted_candidates: list[tuple[int, Block | Table]],
+    ) -> tuple[int, Block | Table] | None:
+        """Pick the best candidate from the provided list using the defined priority.
+
+        Parameters
+        ----------
+        sorted_candidates
+            List of (item_index, item) pairs sorted by y1 descending.
+
+        Returns
+        -------
+        tuple[int, Block | Table] | None
+            The picked candidate index and item, or None if no suitable candidate found.
+        """
+
+        # Prefer a Table if it is "near" the bottom (within the bottom 5 items).
+        for i, item in sorted_candidates[:5]:
+            if item.kind == "table":
+                return i, item
+
+        # Otherwise pick the first non-table block, but never anchor on HEADING/CAPTION.
+        for i, item in sorted_candidates:
+            if item.kind != "table" and not _is_heading_or_caption_block(item):
+                return i, item
+
+        return None
+
+    picked = _pick(preferred)
+
+    if picked is not None:
+        return picked
+
+    picked = _pick(candidates)
+
+    if picked is not None:
+        return picked
+
+    return candidates[0]
+
+
+def _pick_topmost(
+    *, candidates: list[tuple[int, Block | Table]], prev_item: Block | Table
+) -> tuple[int, Block | Table]:
+    """Pick the best top-of-page candidate from a pre-sorted list.
+
+    Candidates must already be sorted by top-edge (y0) ascending.
+
+    Selection priority:
+
+    1. Extractor-flagged RESUMED/BOTH items matching prev_item kind.
+    2. Same-kind match (Table→Table or non-heading Block→Block).
+    3. Absolute top item (last resort).
+
+    Parameters
+    ----------
+    candidates
+        Non-empty list of (item_index, item) pairs sorted by y0 ascending.
+    prev_item
+        The chosen previous page candidate item.
+
+    Returns
+    -------
+    tuple[int, Block | Table]
+        The picked candidate index and item.
+    """
+
+    preferred = [
+        (i, item)
+        for i, item in candidates
+        if item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+    ]
+
+    if prev_item.kind == "table":
+        table_search = (
+            (i, item)
+            for source in (preferred, candidates)
+            for i, item in source
+            if item.kind == "table"
+        )
+        return next(table_search, candidates[0])
+
+    valid_items = (
+        (i, item)
+        for source in (preferred, candidates)
+        for i, item in source
+        if item.kind != "table" and not _is_heading_or_caption_block(item)
+    )
+    return next(valid_items, candidates[0])
+
+
 def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]:
     """Convert a row dict into a list of truncated cell strings.
 
@@ -522,14 +644,10 @@ def bottom_continuity_candidates(
         If k < 1, or if no candidates are found after filtering and cropping.
     """
 
-    assert k >= 1, f"k must be >= 1, got {k}"
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
 
-    # First candidate MUST match existing behavior.
-    first_i, first_item = bottommost_continuity_candidate(
-        image_height=image_height, items=items, visible_y_min=visible_y_min
-    )
-
-    # Build the same candidate pool for filling additional slots.
+    # Build the candidate pool once and reuse for both primary pick and extras.
     candidates = _filter_candidate_pool(image_height=image_height, items=items)
 
     if visible_y_min is not None:
@@ -543,6 +661,10 @@ def bottom_continuity_candidates(
 
     # Sort by bottom-edge descending.
     candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
+
+    # Pick the primary candidate using the same logic as
+    # bottommost_continuity_candidate.
+    first_i, first_item = _pick_bottommost(candidates=candidates)
 
     output: list[tuple[int, Block | Table]] = [(first_i, first_item)]
     seen: set[int] = {first_i}
@@ -561,8 +683,6 @@ def bottom_continuity_candidates(
         output.append((i, item))
         seen.add(i)
 
-    if not output:
-        raise ValueError("No suitable continuity candidates found.")
     return output
 
 
@@ -610,56 +730,7 @@ def bottommost_continuity_candidate(
     # Sort by bottom-edge (y1) descending (bbox is [x0, y0, x1, y1]).
     candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
 
-    # Weak prior: if the extractor flagged any items as TRUNCATED/BOTH, prefer those
-    # as boundary candidates. (We still verify with the LLM; this only affects which
-    # item we ask about.)
-    preferred = [
-        (i, item)
-        for i, item in candidates
-        if item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
-    ]
-
-    def _pick(
-        sorted_candidates: list[tuple[int, Block | Table]],
-    ) -> tuple[int, Block | Table] | None:
-        """Pick a candidate from an already y-sorted list, or return None.
-
-        Parameters
-        ----------
-        sorted_candidates
-            List of candidates sorted by bottom-edge descending.
-
-        Returns
-        -------
-        tuple[int, Block | Table] | None
-            The picked candidate index and item, or None if no suitable candidate.
-        """
-
-        # Prefer a Table if it is "near" the bottom (within the bottom 5 items).
-        for i, item in sorted_candidates[:5]:
-            if item.kind == "table":
-                return i, item
-
-        # Otherwise pick the first non-table block, but never anchor on HEADING/CAPTION.
-        for i, item in sorted_candidates:
-            if item.kind != "table" and not _is_heading_or_caption_block(item):
-                return i, item
-
-        return None
-
-    # Try preferred candidates first; fall back to geometric selection if needed.
-    picked = _pick(preferred)
-
-    if picked is not None:
-        return picked
-
-    picked = _pick(candidates)
-
-    if picked is not None:
-        return picked
-
-    # Last resort: take the absolute bottom item.
-    return candidates[0]
+    return _pick_bottommost(candidates=candidates)
 
 
 def crop_image_to_ymax(
@@ -1027,45 +1098,25 @@ def top_continuity_candidates_paired(
 
     assert k >= 1, f"k must be >= 1, got {k}"
 
-    # First candidate MUST match existing behavior.
-    first_i, first_item = topmost_continuity_candidate_paired(
-        image_height=image_height,
-        items=items,
-        prev_item=prev_item,
-        visible_y_max=visible_y_max,
-    )
-
-    # Build the same candidate pool for filling additional slots.
+    # Build the candidate pool once and reuse for both primary pick and extras.
     candidates = _filter_candidate_pool(image_height=image_height, items=items)
 
     if visible_y_max is not None:
         cropped = _apply_visible_crop(
             candidates=candidates, y_max=visible_y_max, y_min=0.0
         )
-
-        if not cropped:
-            debug = {
-                "visible_y_max": float(visible_y_max),
-                "image_height": float(image_height),
-                "num_candidates_before_crop": len(candidates),
-                "candidate_y0y1_sample": [
-                    (i, float(it.bbox[1]), float(it.bbox[3]))
-                    for i, it in candidates[:10]
-                ],
-            }
-            raise ValueError(
-                f"No top-crop-visible candidates found (visible_y_max provided). "
-                f"This usually means bbox coordinates and crop_y_max are in different "
-                f"coordinate spaces (e.g., points vs pixels) OR crop_y_max is too small. "
-                f"Debug: {debug}"
-            )
-
         candidates = cropped
 
-    assert candidates, "No non-artifact items found."
+    if not candidates:
+        raise ValueError("No non-artifact items found.")
 
     # Sort by top-edge ascending.
     candidates.sort(key=lambda p: float(p[1].bbox[1]))
+
+    # Pick the primary candidate using the same logic as
+    # topmost_continuity_candidate_paired.
+    first_i, first_item = _pick_topmost(candidates=candidates, prev_item=prev_item)
+
     output: list[tuple[int, Block | Table]] = [(first_i, first_item)]
     seen: set[int] = {first_i}
 
@@ -1094,7 +1145,6 @@ def top_continuity_candidates_paired(
             output.append((i, item))
             seen.add(i)
 
-    assert output, "No suitable continuity candidates found."
     return output
 
 
@@ -1148,66 +1198,15 @@ def topmost_continuity_candidate_paired(
         cropped = _apply_visible_crop(
             candidates=candidates, y_max=visible_y_max, y_min=0.0
         )
-
-        if not cropped:
-            debug = {
-                "visible_y_max": float(visible_y_max),
-                "image_height": float(image_height),
-                "prev_item_kind": getattr(prev_item, "kind", None),
-                "num_candidates_before_crop": len(candidates),
-                "candidate_y0y1_sample": [
-                    (i, float(it.bbox[1]), float(it.bbox[3]))
-                    for i, it in candidates[:10]
-                ],
-            }
-            raise ValueError(
-                f"No top-crop-visible candidates found (visible_y_max provided). "
-                f"This usually means bbox coordinates and crop_y_max are in different "
-                f"coordinate spaces (e.g., points vs pixels) OR crop_y_max is too small. "
-                f"Debug: {debug}"
-            )
-
         candidates = cropped
 
-    assert candidates, "No non-artifact items found."
+    if not candidates:
+        raise ValueError("No non-artifact items found.")
 
     # Sort by top-edge (y0) ascending (bbox is [x0, y0, x1, y1]).
     candidates.sort(key=lambda p: float(p[1].bbox[1]))
 
-    # Weak prior: if the extractor flagged any items as RESUMED/BOTH, prefer those as
-    # next-page boundary candidates. We still verify with the LLM; this only affects
-    # which item we ask about.
-    preferred = [
-        (i, item)
-        for i, item in candidates
-        if item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-    ]
-
-    # If prev ended with a Table, prefer to resume a Table.
-    if prev_item.kind == "table":
-        # Create a combined stream of items from preferred and candidates, opting for
-        # preferred and filtering on items that are tables.
-        table_search = (
-            (i, item)
-            for source in (preferred, candidates)
-            for i, item in source
-            if item.kind == "table"
-        )
-
-        # Return the first found table or default to candidates[0].
-        return next(table_search, candidates[0])
-
-    # Otherwise (prev ended with a Block), pick the first non-table Block near the top,
-    # but never anchor text continuation on a HEADING/CAPTION.
-    valid_items = (
-        (i, item)
-        for source in (preferred, candidates)
-        for i, item in source
-        if item.kind != "table" and not _is_heading_or_caption_block(item)
-    )
-
-    # Return the first match or default to candidates[0].
-    return next(valid_items, candidates[0])
+    return _pick_topmost(candidates=candidates, prev_item=prev_item)
 
 
 def truncate_text(*, max_chars: int, text: str) -> str:
@@ -1296,7 +1295,7 @@ def verify_single_page_pair(
         image_height=next_page_ir.image_height,
         items=next_items,
         prev_item=prev_item,
-        visible_y_max=None,  # full page
+        visible_y_max=None,  # Full page
     )
 
     # Crop using the lowest bbox bottom (y1) among the top-3 next candidates. This
