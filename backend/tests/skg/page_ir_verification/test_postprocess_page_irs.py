@@ -1,14 +1,11 @@
-"""This is the main module for testing page_ir_verification/utils.py."""
-
-# Future Library
-from __future__ import annotations
+"""This is the main module for testing page_ir_verification/postprocess_page_irs.py."""
 
 # Standard Library
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Self
 
 # Package Library
-from skg.page_ir_verification.utils import (
+from skg.page_ir_verification.postprocess_page_irs import (
     _process_table_row,
     _trim_excess_cells,
     align_table_rows_with_rowspans,
@@ -31,7 +28,7 @@ class TableCell:
     text: Optional[TextObj] = None
 
     @classmethod
-    def from_str(cls, s: Optional[str], r: int = 1, c: int = 1) -> TableCell:
+    def from_str(cls, s: Optional[str], r: int = 1, c: int = 1) -> Self:
         """Utility to create a TableCell from a simple string (or None).
 
         Parameters
@@ -45,7 +42,7 @@ class TableCell:
 
         Returns
         -------
-        TableCell
+        Self
             An instance of TableCell with the specified properties.
         """
 
