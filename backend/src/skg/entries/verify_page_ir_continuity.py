@@ -37,13 +37,15 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR
+from skg.page_ir_verification.compile_continuity import (
+    compile_continuity_from_edge_verdicts,
+)
+from skg.page_ir_verification.postprocess_page_irs import postprocess_verified_page_irs
 from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
     PageIRVerificationDirs,
-    compile_continuity_from_edge_verdicts,
     cross_check_extraction_run,
     persist_verification_run,
-    postprocess_verified_page_irs,
     save_verified_page_irs,
 )
 from skg.page_ir_verification.verify_page_pairs import (
