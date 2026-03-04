@@ -171,7 +171,7 @@ class ValidationVerdict(BaseSchema):
         ),
     )
     rationale: str = Field(
-        ..., description="Brief explanation of the overall assessment.", min_length=30
+        ..., description="Brief explanation of the overall assessment."
     )
 
     @model_validator(mode="after")
