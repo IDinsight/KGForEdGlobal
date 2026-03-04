@@ -225,6 +225,7 @@ def verify(
 
     # 4.
     start, end = cross_check_extraction_run(
+        computed_doc_key=computed_doc_key,
         end_page=end_page,
         expected_doc_key=expected_doc_key,
         extraction_config=extraction_config,

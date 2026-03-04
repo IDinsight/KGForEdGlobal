@@ -23,7 +23,6 @@ from skg.utils.general import (
     open_json_type,
     write_to_json,
 )
-from skg.utils.pdf import compute_doc_key
 
 
 class EdgeVerdictRecord(NamedTuple):
@@ -114,6 +113,7 @@ def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationD
 
 def cross_check_extraction_run(
     *,
+    computed_doc_key: str,
     end_page: int,
     expected_doc_key: str,
     extraction_config: ExtractionConfig,
@@ -126,6 +126,8 @@ def cross_check_extraction_run(
 
     Parameters
     ----------
+    computed_doc_key
+        The computed document key (hex string) from the provided PDF.
     end_page
         The exclusive end page index for continuity verification.
     expected_doc_key
@@ -154,7 +156,6 @@ def cross_check_extraction_run(
     """
 
     assert compare_directories(page_images_dir, page_irs_dir)
-    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
 
     if computed_doc_key != expected_doc_key:
         raise ValueError(
