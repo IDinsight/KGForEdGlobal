@@ -239,6 +239,10 @@ class VerificationConfig(BaseSchema):
         description="When cropping the top of page N+1 for verification, include this many extra pixels below the selected next candidate bbox.",
         ge=0,
     )
+    overwrite: bool = Field(
+        False,
+        description="If True, re-verify all page pairs even if pair reports already exist on disk. If False, reuse existing pair reports (resumed run support).",
+    )
     start_page: Optional[int] = Field(
         None, description="0-based start page (inclusive)."
     )
