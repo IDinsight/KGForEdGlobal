@@ -13,6 +13,8 @@ class BlockType(str, Enum):
         - artifact: Page numbers, running headers/footers
         - caption: Text specifically describing a table or figure
         - figure: Diagrams/figures/illustrations/flowcharts (boxed visual regions)
+        - footnote: Footnotes/endnotes (typically smaller font, may be separated by a
+            line)
         - heading: Visually distinct titles, section headers
         - list: A group of items (bullets, numbers)
         - paragraph: Standard blocks of prose
