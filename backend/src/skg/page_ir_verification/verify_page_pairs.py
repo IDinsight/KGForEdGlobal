@@ -155,6 +155,33 @@ class VerificationUsageTracker:
         }
 
 
+def _apply_visible_crop(
+    *, candidates: list[tuple[int, Block | Table]], y_max: float, y_min: float
+) -> list[tuple[int, Block | Table]]:
+    """Restrict candidates to those whose bbox intersects [y_min, y_max].
+
+    Parameters
+    ----------
+    candidates
+        Pre-filtered candidate pool.
+    y_max
+        Upper bound of the visible crop region (inclusive).
+    y_min
+        Lower bound of the visible crop region (inclusive).
+
+    Returns
+    -------
+    list[tuple[int, Block | Table]]
+        Candidates intersecting the crop region (may be empty).
+    """
+
+    return [
+        (i, item)
+        for i, item in candidates
+        if _bbox_intersects_y_range(bbox=item.bbox, y_max=y_max, y_min=y_min)
+    ]
+
+
 def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -> bool:
     """Return True if bbox intersects the vertical range [y_min, y_max]. bbox is
     [x0, y0, x1, y1] in full-page pixel coords.
@@ -207,8 +234,10 @@ def _extract_figure_preview(figure: dict[str, Any], max_chars: int) -> dict[str,
     # Handle text wrappers for caption and embedded_text.
     for field in ("caption", "embedded_text"):
         obj = figure.get(field)
+
         if isinstance(obj, dict):
             text = _get_text_content(obj)
+
             if text:
                 preview[field] = truncate_text(max_chars=max_chars, text=text)
 
@@ -243,6 +272,39 @@ def _extract_list_preview(list_items: list[Any]) -> list[str]:
     return preview
 
 
+def _filter_candidate_pool(
+    *, image_height: float, items: list[Block | Table]
+) -> list[tuple[int, Block | Table]]:
+    """Filter items to exclude artifacts and header/footer noise.
+
+    Falls back to the full item list if every item was filtered out (avoids empty-pool
+    crashes on sparse pages).
+
+    Parameters
+    ----------
+    image_height
+        The height of the page image in pixels.
+    items
+        All PageIR items on the page.
+
+    Returns
+    -------
+    list[tuple[int, Block | Table]]
+        Non-empty list of (item_index, item) pairs.
+    """
+
+    candidates = [
+        (i, item)
+        for i, item in enumerate(items)
+        if not (
+            is_artifact(item)
+            or is_probable_header_footer_noise(image_height=image_height, item=item)
+        )
+    ]
+
+    return candidates or list(enumerate(items))
+
+
 def _get_text_content(obj: Any) -> str:
     """Safely extract 'text' field from a dictionary wrapper.
 
@@ -258,6 +320,26 @@ def _get_text_content(obj: Any) -> str:
     """
 
     return str(obj.get("text") or "") if isinstance(obj, dict) else ""
+
+
+def _is_heading_or_caption_block(item: Block | Table) -> bool:
+    """Return True if item is a Block with block_type HEADING or CAPTION.
+
+    Parameters
+    ----------
+    item
+        The item to check.
+
+    Returns
+    -------
+    bool
+        True if the item is a heading or caption block.
+    """
+
+    return isinstance(item, Block) and item.block_type in {
+        BlockType.CAPTION,
+        BlockType.HEADING,
+    }
 
 
 def _make_block_excerpt(
@@ -290,6 +372,7 @@ def _make_block_excerpt(
 
     figure = item.get("figure")
     figure_preview = {}
+
     if isinstance(figure, dict):
         figure_preview = _extract_figure_preview(figure, max_text_chars)
 
@@ -441,28 +524,13 @@ def bottom_continuity_candidates(
         image_height=image_height, items=items, visible_y_min=visible_y_min
     )
 
-    # Recompute the same candidate pool used by bottommost_continuity_candidate.
-    candidates: list[tuple[int, Block | Table]] = [
-        (i, item)
-        for i, item in enumerate(items)
-        if not (
-            is_artifact(item)
-            or is_probable_header_footer_noise(image_height=image_height, item=item)
-        )
-    ]
-
-    # Fallback to all items if all were filtered out.
-    candidates = candidates or list(enumerate(items))
+    # Build the same candidate pool for filling additional slots.
+    candidates = _filter_candidate_pool(image_height=image_height, items=items)
 
     if visible_y_min is not None:
-        y_min = float(visible_y_min)
-        cropped = [
-            (i, item)
-            for i, item in candidates
-            if _bbox_intersects_y_range(
-                bbox=item.bbox, y_max=float(image_height), y_min=y_min
-            )
-        ]
+        cropped = _apply_visible_crop(
+            candidates=candidates, y_max=float(image_height), y_min=float(visible_y_min)
+        )
         assert cropped, "No bottom-crop-visible candidates found."
         candidates = cropped
 
@@ -482,10 +550,7 @@ def bottom_continuity_candidates(
             continue
 
         # Always allow tables; for blocks avoid heading/caption as text anchors.
-        if item.kind != "table" and (
-            isinstance(item, Block)
-            and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
-        ):
+        if item.kind != "table" and _is_heading_or_caption_block(item):
             continue
 
         output.append((i, item))
@@ -519,29 +584,13 @@ def bottommost_continuity_candidate(
         The index and item of the chosen bottom-most candidate.
     """
 
-    # Filter candidates.
-    candidates = [
-        (i, item)
-        for i, item in enumerate(items)
-        if not (
-            is_artifact(item)
-            or is_probable_header_footer_noise(image_height=image_height, item=item)
-        )
-    ]
-    candidates = candidates or list(enumerate(items))
+    # Filter and optionally crop.
+    candidates = _filter_candidate_pool(image_height=image_height, items=items)
 
-    # If we are verifying using a bottom-crop image, restrict candidates to items that
-    # actually appear in that crop (in full-page coordinate space). This prevents
-    # choosing an item the model cannot see, which would cause false negatives.
     if visible_y_min is not None:
-        y_min = float(visible_y_min)
-        cropped = [
-            (i, item)
-            for i, item in candidates
-            if _bbox_intersects_y_range(
-                bbox=item.bbox, y_max=float(image_height), y_min=y_min
-            )
-        ]
+        cropped = _apply_visible_crop(
+            candidates=candidates, y_max=float(image_height), y_min=float(visible_y_min)
+        )
         assert cropped, "No bottom-crop-visible candidates found."
         candidates = cropped
 
@@ -582,23 +631,19 @@ def bottommost_continuity_candidate(
 
         # Otherwise pick the first non-table block, but never anchor on HEADING/CAPTION.
         for i, item in sorted_candidates:
-            if item.kind != "table":
-                if isinstance(item, Block) and item.block_type in (
-                    BlockType.CAPTION,
-                    BlockType.HEADING,
-                ):
-                    continue
-
+            if item.kind != "table" and not _is_heading_or_caption_block(item):
                 return i, item
 
         return None
 
     # Try preferred candidates first; fall back to geometric selection if needed.
     picked = _pick(preferred)
+
     if picked is not None:
         return picked
 
     picked = _pick(candidates)
+
     if picked is not None:
         return picked
 
@@ -677,10 +722,10 @@ def execute_verification_attempts(
     selected_verdict: PageIRContinuityVerdict | None = None
 
     # For each candidate pair:
-    #  - Strip existing boundary hints (so model isn't biased from extraction).
-    #  - Call the model to verify continuity.
-    #  - Record the attempt summary.
-    #  - If a high confidence patch is found, break early.
+    #  1. Strip existing boundary hints (so model isn't biased from extraction).
+    #  2. Call the model to verify continuity.
+    #  3. Record the attempt summary.
+    #  4. If a high confidence patch is found, break early.
     for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
         try:
             verdict = verify_page_ir_pairs(
@@ -822,6 +867,7 @@ def generate_candidate_pairs(
 
     for pi, pitem, ni, nitem in pairs:
         key = (pi, ni)
+
         if key not in seen_pairs:
             seen_pairs.add(key)
             deduped_pairs.append((pi, pitem, ni, nitem))
@@ -949,6 +995,12 @@ def top_continuity_candidates_paired(
     -------
     list[tuple[int, Block | Table]]
         A list of (item_index, item) pairs. Length is in [1, k].
+
+    Raises
+    ------
+    ValueError
+        If no non-artifact items are found.
+        If no top-crop-visible candidates are found when visible_y_max is provided.
     """
 
     assert k >= 1, f"k must be >= 1, got {k}"
@@ -961,25 +1013,13 @@ def top_continuity_candidates_paired(
         visible_y_max=visible_y_max,
     )
 
-    # Recompute the same candidate pool used by topmost_continuity_candidate_paired.
-    candidates: list[tuple[int, Block | Table]] = [
-        (i, item)
-        for i, item in enumerate(items)
-        if not (
-            is_artifact(item)
-            or is_probable_header_footer_noise(image_height=image_height, item=item)
-        )
-    ]
-
-    # Fallback to all items if all were filtered out.
-    candidates = candidates or list(enumerate(items))
+    # Build the same candidate pool for filling additional slots.
+    candidates = _filter_candidate_pool(image_height=image_height, items=items)
 
     if visible_y_max is not None:
-        cropped = [
-            (i, item)
-            for i, item in candidates
-            if _bbox_intersects_y_range(bbox=item.bbox, y_max=visible_y_max, y_min=0.0)
-        ]
+        cropped = _apply_visible_crop(
+            candidates=candidates, y_max=visible_y_max, y_min=0.0
+        )
 
         if not cropped:
             debug = {
@@ -1004,7 +1044,6 @@ def top_continuity_candidates_paired(
 
     # Sort by top-edge ascending.
     candidates.sort(key=lambda p: float(p[1].bbox[1]))
-
     output: list[tuple[int, Block | Table]] = [(first_i, first_item)]
     seen: set[int] = {first_i}
 
@@ -1014,13 +1053,7 @@ def top_continuity_candidates_paired(
 
     for i, item in candidates:
         # For blocks, avoid heading/caption as text anchors.
-        if i in seen or (
-            item.kind != "table"
-            and (
-                isinstance(item, Block)
-                and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
-            )
-        ):
+        if i in seen or (item.kind != "table" and _is_heading_or_caption_block(item)):
             continue
 
         if item.kind == prev_item.kind:
@@ -1086,27 +1119,13 @@ def topmost_continuity_candidate_paired(
         If no top-crop-visible candidates are found when visible_y_max is provided.
     """
 
-    candidates = [
-        (i, item)
-        for i, item in enumerate(items)
-        if not (
-            is_artifact(item)
-            or is_probable_header_footer_noise(image_height=image_height, item=item)
-        )
-    ]
+    # Filter and optionally crop.
+    candidates = _filter_candidate_pool(image_height=image_height, items=items)
 
-    # Fallback to all items if all were filtered out.
-    candidates = candidates or list(enumerate(items))
-
-    # If we are verifying using a top-crop image, restrict candidates to items that
-    # actually appear in that crop (in full-page coordinate space). This prevents
-    # choosing an item the model cannot see, which would cause false negatives.
     if visible_y_max is not None:
-        cropped = [
-            (i, item)
-            for i, item in candidates
-            if _bbox_intersects_y_range(bbox=item.bbox, y_max=visible_y_max, y_min=0.0)
-        ]
+        cropped = _apply_visible_crop(
+            candidates=candidates, y_max=visible_y_max, y_min=0.0
+        )
 
         if not cropped:
             debug = {
@@ -1162,11 +1181,7 @@ def topmost_continuity_candidate_paired(
         (i, item)
         for source in (preferred, candidates)
         for i, item in source
-        if item.kind != "table"
-        and not (
-            isinstance(item, Block)
-            and item.block_type in {BlockType.CAPTION, BlockType.HEADING}
-        )
+        if item.kind != "table" and not _is_heading_or_caption_block(item)
     )
 
     # Return the first match or default to candidates[0].
