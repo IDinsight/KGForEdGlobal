@@ -48,6 +48,7 @@ from skg.page_ir_verification.utils import (
 )
 from skg.page_ir_verification.verify_page_pairs import (
     VerificationUsageTracker,
+    load_edge_verdict_from_pair_report,
     verify_single_page_pair,
 )
 from skg.schemas import RunConfig, RunCtx, VerificationConfig
@@ -98,8 +99,31 @@ def verify_page_ir_continuity(
     #  2. What the model decided (continuation, type, confidence, etc.)
     edge_records: list[EdgeVerdictRecord] = []
 
-    # Iterate in pairs.
+    # Iterate in pairs, skipping boundaries that already have a pair report on disk
+    # (resumed run). Existing reports are reloaded into edge_records so the compile
+    # step sees the full picture.
     for i in range(start, stop - 1):
+        pair_report_fp = (
+            verification_dirs.page_irs_pair_reports / f"{i:04}_{i + 1:04}.json"
+        )
+
+        if pair_report_fp.exists() and not config.overwrite:
+            try:
+                record = load_edge_verdict_from_pair_report(
+                    pair_report_fp=pair_report_fp
+                )
+                edge_records.append(record)
+                logger.info(
+                    f"Reloaded existing pair report for pages {i}-{i + 1} "
+                    f"(skipping verification)."
+                )
+                continue
+            except Exception as e:  # pylint: disable=broad-except
+                logger.warning(
+                    f"Failed to reload pair report for pages {i}-{i + 1}, "
+                    f"re-verifying: {e}"
+                )
+
         record = verify_single_page_pair(
             config=config,
             page_images_dir=page_images_dir,
