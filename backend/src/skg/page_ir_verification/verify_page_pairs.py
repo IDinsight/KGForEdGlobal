@@ -557,22 +557,29 @@ def _pick_topmost(
         if item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
     ]
 
-    if prev_item.kind == "table":
-        table_search = (
-            (i, item)
-            for source in (preferred, candidates)
-            for i, item in source
-            if item.kind == "table"
-        )
-        return next(table_search, candidates[0])
+    # Build a deduplicated search order: preferred items first, then remaining
+    # candidates (preserving positional order within each group).
+    seen_indices: set[int] = {i for i, _ in preferred}
+    unique_ordered: list[tuple[int, Block | Table]] = list(preferred) + [
+        (i, item) for i, item in candidates if i not in seen_indices
+    ]
 
-    valid_items = (
-        (i, item)
-        for source in (preferred, candidates)
-        for i, item in source
-        if item.kind != "table" and not _is_heading_or_caption_block(item)
+    if prev_item.kind == "table":
+        table_match = next(
+            ((i, item) for i, item in unique_ordered if item.kind == "table"),
+            None,
+        )
+        return table_match if table_match is not None else candidates[0]
+
+    valid_match = next(
+        (
+            (i, item)
+            for i, item in unique_ordered
+            if item.kind != "table" and not _is_heading_or_caption_block(item)
+        ),
+        None,
     )
-    return next(valid_items, candidates[0])
+    return valid_match if valid_match is not None else candidates[0]
 
 
 def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]:
@@ -684,53 +691,6 @@ def bottom_continuity_candidates(
         seen.add(i)
 
     return output
-
-
-def bottommost_continuity_candidate(
-    *,
-    image_height: float,
-    items: list[Block | Table],
-    visible_y_min: float | None = None,
-) -> tuple[int, Block | Table]:
-    """Pick the best "bottom of page" candidate for continuity checks.
-
-    Parameters
-    ----------
-    image_height
-        The height of the page image in pixels.
-    items
-        List of PageIR items on the page.
-    visible_y_min
-        If provided, restrict candidate selection to items whose bbox intersects the
-        visible crop range [visible_y_min, image_height] in full-page coordinates.
-
-    Returns
-    -------
-    tuple[int, Block | Table]
-        The index and item of the chosen bottom-most candidate.
-
-    Raises
-    ------
-    ValueError
-        If no candidates are found after filtering and cropping.
-    """
-
-    # Filter and optionally crop.
-    candidates = _filter_candidate_pool(image_height=image_height, items=items)
-
-    if visible_y_min is not None:
-        cropped = _apply_visible_crop(
-            candidates=candidates, y_max=float(image_height), y_min=float(visible_y_min)
-        )
-        candidates = cropped
-
-    if not candidates:
-        raise ValueError("No non-artifact items found.")
-
-    # Sort by bottom-edge (y1) descending (bbox is [x0, y0, x1, y1]).
-    candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
-
-    return _pick_bottommost(candidates=candidates)
 
 
 def crop_image_to_ymax(
@@ -908,7 +868,7 @@ def generate_candidate_pairs(
         A tuple of (candidate pairs list, primary indices dict).
     """
 
-    next_items = next_page_ir.items or []
+    next_items = next_page_ir.items
 
     # prev_candidates already computed by caller — reuse directly.
     prev_index, prev_item = prev_candidates[0]
@@ -1148,67 +1108,6 @@ def top_continuity_candidates_paired(
     return output
 
 
-def topmost_continuity_candidate_paired(
-    *,
-    image_height: float,
-    items: list[Block | Table],
-    prev_item: Block | Table,
-    visible_y_max: float | None = None,
-) -> tuple[int, Block | Table]:
-    """Pick the best "top of page" candidate, preferring the same kind as prev_item.
-
-    The process is as follows:
-
-    1. Filter out artifacts and noise.
-    2. Sort by top edge (y0) ascending (closest to top first).
-    3. Scan the top items:
-        - If we find an item of the SAME kind as prev_item (Table/Block), return it.
-        - This allows us to skip over a heading/caption to link Table-to-Table, or skip
-            over a top-aligned Table to link Text-to-Text.
-    4. Fallback: Return the absolute top-most item.
-
-    Parameters
-    ----------
-    image_height
-        The height of the page image in pixels.
-    items
-        List of items to search.
-    prev_item
-        The chosen previous page candidate item.
-    visible_y_max
-        If provided, restrict candidate selection to items whose bbox intersects the
-        visible crop range [0, visible_y_max] in full-page coordinates.
-
-    Returns
-    -------
-    tuple[int, Block | Table]
-        The index and the chosen item.
-
-    Raises
-    ------
-    ValueError
-        If no non-artifact items are found.
-        If no top-crop-visible candidates are found when visible_y_max is provided.
-    """
-
-    # Filter and optionally crop.
-    candidates = _filter_candidate_pool(image_height=image_height, items=items)
-
-    if visible_y_max is not None:
-        cropped = _apply_visible_crop(
-            candidates=candidates, y_max=visible_y_max, y_min=0.0
-        )
-        candidates = cropped
-
-    if not candidates:
-        raise ValueError("No non-artifact items found.")
-
-    # Sort by top-edge (y0) ascending (bbox is [x0, y0, x1, y1]).
-    candidates.sort(key=lambda p: float(p[1].bbox[1]))
-
-    return _pick_topmost(candidates=candidates, prev_item=prev_item)
-
-
 def truncate_text(*, max_chars: int, text: str) -> str:
     """Return a single-line truncated preview string.
 
@@ -1283,8 +1182,8 @@ def verify_single_page_pair(
 
     # Select the primary next candidate on the FULL next page (no crop restriction),
     # then crop page N+1 down to just below that candidate (+ padding).
-    prev_items = prev_page_ir.items or []
-    next_items = next_page_ir.items or []
+    prev_items = prev_page_ir.items
+    next_items = next_page_ir.items
 
     prev_candidates = bottom_continuity_candidates(
         image_height=prev_page_ir.image_height, items=prev_items
