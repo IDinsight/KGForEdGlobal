@@ -148,7 +148,7 @@ def make_simple_table(
     def _make(
         *,
         boundary: ItemBoundary = ItemBoundary.COMPLETE,
-        header_row_count: int = 0,
+        header_row_count: int = 1,
         n_cols: int | None = 2,
         repeats_header: bool | None = None,
     ) -> Table:

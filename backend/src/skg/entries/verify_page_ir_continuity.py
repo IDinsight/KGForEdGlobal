@@ -111,10 +111,7 @@ def verify_page_ir_continuity(
 
         if pair_report_fp.exists() and not config.overwrite:
             try:
-                record = load_edge_verdict_from_pair_report(
-                    pair_report_fp=pair_report_fp
-                )
-                edge_records.append(record)
+                edge_records.append(load_edge_verdict_from_pair_report(pair_report_fp))
                 logger.info(
                     f"Reloaded existing pair report for pages {i}-{i + 1} "
                     f"(skipping verification)."
@@ -134,20 +131,16 @@ def verify_page_ir_continuity(
             usage_tracker=usage_tracker,
             verification_dirs=verification_dirs,
         )
+
         if record:
             edge_records.append(record)
 
     # Compile continuity edits from edge verdicts.
-    compile_report = compile_continuity_from_edge_verdicts(
+    compile_continuity_from_edge_verdicts(
         edge_records=edge_records,
         min_confidence_to_patch=config.min_confidence_to_patch,
         page_irs=page_irs,
-    )
-
-    # Write continuity compile report.
-    write_to_json(
-        fp=verification_dirs.root / "continuity_compile_report.json",
-        json_info=compile_report,
+        verification_dirs=verification_dirs,
     )
 
     # Perform postprocess fixes.
