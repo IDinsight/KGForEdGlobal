@@ -58,6 +58,60 @@ def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int
     )
 
 
+def _insert_placeholders(
+    *, active_span: list[int], cells: list[Any], n_cols: int
+) -> list[Any]:
+    """Create a new list of cells with placeholders inserted for active rowspans.
+
+    Parameters
+    ----------
+    active_span
+        List tracking remaining rowspan counts for each column.
+    cells
+        The list of original table cells.
+    n_cols
+        The total number of columns in the table.
+
+    Returns
+    -------
+    list[Any]
+        A new list of table cells including the inserted placeholders.
+    """
+
+    new_cells: list[Any] = []
+    col = 0
+
+    for cell in cells:
+        while col < n_cols and active_span[col] > 0:
+            new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+            col += 1
+
+        if col >= n_cols:
+            break
+
+        new_cells.append(cell)
+
+        col_span = int(getattr(cell, "col_span", 1) or 1)
+        row_span = int(getattr(cell, "row_span", 1) or 1)
+
+        _update_active_span(
+            active_span=active_span,
+            col=col,
+            col_span=col_span,
+            n_cols=n_cols,
+            row_span=row_span,
+        )
+
+        col += col_span
+
+    # Fill trailing gaps if we haven't reached n_cols yet.
+    while col < n_cols and active_span[col] > 0:
+        new_cells.append(TableCell(col_span=1, row_span=1, text=None))
+        col += 1
+
+    return new_cells
+
+
 def _process_table_item(
     *, item: Table, item_index: int, page_index: int
 ) -> list[dict[str, Any]]:
@@ -232,42 +286,27 @@ def _process_table_row(
     """
 
     old_cells = list(row.cells or [])
-    new_cells: list[TableCell] = []
-    col = 0
 
-    # Fill cells and handle gaps.
-    for cell in old_cells:
-        # Insert placeholders for columns occupied by prior rowspans.
-        while col < n_cols and active_span[col] > 0:
-            new_cells.append(TableCell(col_span=1, row_span=1, text=None))
-            col += 1
+    # Pre-check: if the row's effective width plus the number of columns occupied by
+    # active rowspans already meets or exceeds n_cols, the extraction model correctly
+    # accounted for the spans. Skip placeholder insertion but still update active_span
+    # for any new rowspans introduced by this row's cells.m
+    old_effective = sum(int(getattr(c, "col_span", 1) or 1) for c in old_cells)
+    active_occupied = sum(1 for s in active_span if s > 0)
 
-        if col >= n_cols:
-            break
+    # Extraction model correctly accounted for the spans.
+    if old_effective + active_occupied >= n_cols:
+        return _update_spans_only(
+            active_span=active_span, cells=old_cells, n_cols=n_cols
+        )
 
-        new_cells.append(cell)
+    # Insert placeholders and track changes.
+    new_cells = _insert_placeholders(
+        active_span=active_span, cells=old_cells, n_cols=n_cols
+    )
 
-        # Update active_span for the current cell's dimensions.
-        col_span = int(getattr(cell, "col_span", 1) or 1)
-        row_span = int(getattr(cell, "row_span", 1) or 1)
-
-        if row_span > 1:
-            for dc in range(col_span):
-                target_col = col + dc
-                if target_col < n_cols:
-                    active_span[target_col] = max(active_span[target_col], row_span)
-
-        col += col_span
-
-    # Fill trailing gaps if we haven't reached n_cols yet.
-    while col < n_cols and active_span[col] > 0:
-        new_cells.append(TableCell(col_span=1, row_span=1, text=None))
-        col += 1
-
-    # Trim excess placeholders.
     trimmed = _trim_excess_cells(n_cols=n_cols, new_cells=new_cells)
 
-    # Return change summary if differences exist.
     if len(new_cells) != len(old_cells) or trimmed > 0:
         row.cells = new_cells
         return {
@@ -382,6 +421,77 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
             break
 
     return trimmed
+
+
+def _update_active_span(
+    *, active_span: list[int], col: int, col_span: int, n_cols: int, row_span: int
+) -> None:
+    """Update the active span list for a given cell's dimensions.
+
+    Parameters
+    ----------
+    active_span
+        List tracking remaining rowspan counts for each column.
+    col
+        The current starting column index for the cell.
+    col_span
+        The number of columns the cell spans.
+    n_cols
+        The total number of columns in the table.
+    row_span
+        The number of rows the cell spans.
+    """
+
+    if row_span > 1:
+        for dc in range(col_span):
+            target_col = col + dc
+
+            if target_col < n_cols:
+                active_span[target_col] = max(active_span[target_col], row_span)
+
+
+def _update_spans_only(
+    *, active_span: list[int], cells: list[Any], n_cols: int
+) -> dict[str, Any]:
+    """Update active spans without inserting new placeholder cells.
+
+    Parameters
+    ----------
+    active_span
+        List tracking remaining rowspan counts for each column.
+    cells
+        The list of original table cells.
+    n_cols
+        The total number of columns in the table.
+
+    Returns
+    -------
+    dict[str, Any]
+        An empty dictionary indicating no cell structural changes were made.
+    """
+
+    col = 0
+
+    for cell in cells:
+        while col < n_cols and active_span[col] > 0:
+            col += 1
+
+        if col >= n_cols:
+            break
+
+        col_span = int(getattr(cell, "col_span", 1) or 1)
+        row_span = int(getattr(cell, "row_span", 1) or 1)
+
+        _update_active_span(
+            active_span=active_span,
+            col=col,
+            col_span=col_span,
+            n_cols=n_cols,
+            row_span=row_span,
+        )
+        col += col_span
+
+    return {}
 
 
 def align_table_rows_with_rowspans(
@@ -512,7 +622,7 @@ def fix_false_truncated_prose_before_table(
             item.kind == "block"
             and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
             and item.block_type in {BlockType.PARAGRAPH, BlockType.LIST}
-            for item in (nxt.items or [])[:6]
+            for item in nxt_items[:6]
         )
 
         if has_resumed_prose:
