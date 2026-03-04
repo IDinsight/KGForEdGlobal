@@ -11,6 +11,8 @@ from pydantic import ValidationError
 # Package Library
 from skg.page_ir_extraction.schemas import (
     Block,
+    ExtractionValidationIssue,
+    ExtractionValidationVerdict,
     FigureUnit,
     ListItem,
     PageIR,
@@ -18,8 +20,6 @@ from skg.page_ir_extraction.schemas import (
     TableCell,
     TableRow,
     TextUnit,
-    ValidationIssue,
-    ValidationVerdict,
 )
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary
 from tests.constants import PARAM
@@ -949,10 +949,10 @@ def test_validation_verdict_error_issues_require_suggested_fix(
     with pytest.raises(
         ValidationError, match=r"must include a non-empty suggested_fix"
     ):
-        ValidationVerdict(
+        ExtractionValidationVerdict(
             corrected_page_ir=make_minimal_page_ir(),
             issues=[
-                ValidationIssue(
+                ExtractionValidationIssue(
                     description="Wrong classification",
                     item_index=0,
                     severity="error",
@@ -979,10 +979,10 @@ def test_validation_verdict_failed_requires_at_least_one_error_issue(
     with pytest.raises(
         ValidationError, match=r"must include at least one issue.*severity='error'"
     ):
-        ValidationVerdict(
+        ExtractionValidationVerdict(
             corrected_page_ir=make_minimal_page_ir(),
             issues=[
-                ValidationIssue(
+                ExtractionValidationIssue(
                     description="Slightly loose bbox",
                     item_index=0,
                     severity="warning",
@@ -1009,7 +1009,7 @@ def test_validation_verdict_must_not_include_corrected_page_ir_when_passed(
     with pytest.raises(
         ValidationError, match=r"passing verdict.*must not include corrected_page_ir"
     ):
-        ValidationVerdict(
+        ExtractionValidationVerdict(
             corrected_page_ir=make_minimal_page_ir(),
             issues=[],
             passed=True,
@@ -1021,7 +1021,7 @@ def test_validation_verdict_rationale_must_be_non_empty() -> None:
     """rationale is required and must not be whitespace-only."""
 
     with pytest.raises(ValidationError, match=r"Rationale must be non-empty"):
-        ValidationVerdict(
+        ExtractionValidationVerdict(
             corrected_page_ir=None, issues=[], passed=True, rationale="   "
         )
 
@@ -1042,10 +1042,10 @@ def test_validation_verdict_requires_corrected_page_ir_when_failed(
     with pytest.raises(
         ValidationError, match=r"failing verdict.*must include corrected_page_ir"
     ):
-        ValidationVerdict(
+        ExtractionValidationVerdict(
             corrected_page_ir=None,
             issues=[
-                ValidationIssue(
+                ExtractionValidationIssue(
                     description="Missing content",
                     item_index=None,
                     severity="error",
@@ -1058,10 +1058,10 @@ def test_validation_verdict_requires_corrected_page_ir_when_failed(
 
     # Sanity: passes when corrected_page_ir is provided and issues include an error +
     # fix.
-    verdict = ValidationVerdict(
+    verdict = ExtractionValidationVerdict(
         corrected_page_ir=make_minimal_page_ir(),
         issues=[
-            ValidationIssue(
+            ExtractionValidationIssue(
                 description="Missing content",
                 item_index=None,
                 severity="error",

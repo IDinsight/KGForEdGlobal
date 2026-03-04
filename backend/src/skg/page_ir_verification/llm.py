@@ -38,7 +38,10 @@ from skg.page_ir_verification.prompts import (
     validate_page_ir_continuity_verdict,
     verify_page_ir_pairs_from_extraction,
 )
-from skg.page_ir_verification.schemas import PageIRContinuityVerdict, ValidationVerdict
+from skg.page_ir_verification.schemas import (
+    ContinuityValidationVerdict,
+    PageIRContinuityVerdict,
+)
 from skg.page_ir_verification.validators import (
     validate_item_continuation_kind,
     validate_repeats_header_requires_table_item,
@@ -60,7 +63,7 @@ def _run_validation_agent(
     prev_png_bytes: bytes,
     usage_tracker: VerificationUsageTracker,
     verdict: PageIRContinuityVerdict,
-) -> ValidationVerdict:
+) -> ContinuityValidationVerdict:
     """Run the validation agent to check a continuity verdict against the source images.
 
     Parameters
@@ -90,7 +93,7 @@ def _run_validation_agent(
 
     Returns
     -------
-    ValidationVerdict
+    ContinuityValidationVerdict
         The validation verdict (with corrected_verdict when failing).
     """
 

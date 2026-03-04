@@ -40,7 +40,7 @@ from skg.page_ir_extraction.prompts import (
     extract_page_ir_from_pdf_page,
     validate_page_ir_extraction,
 )
-from skg.page_ir_extraction.schemas import PageIR, ValidationVerdict
+from skg.page_ir_extraction.schemas import ExtractionValidationVerdict, PageIR
 from skg.page_ir_extraction.utils import (
     ExtractionUsageTracker,
     extract_page_text_layer_hints,
@@ -74,7 +74,7 @@ def _run_validation_agent(
     page_ir: PageIR,
     png_bytes: bytes,
     usage_tracker: ExtractionUsageTracker,
-) -> ValidationVerdict:
+) -> ExtractionValidationVerdict:
     """Run the validation agent to compare an extracted PageIR against the source image.
 
     Creates a fresh validation agent (no conversation history) and invokes it with the
@@ -102,7 +102,7 @@ def _run_validation_agent(
 
     Returns
     -------
-    ValidationVerdict
+    ExtractionValidationVerdict
         The structured validation verdict (with corrected_page_ir when failing).
     """
 

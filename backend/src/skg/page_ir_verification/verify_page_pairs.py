@@ -24,7 +24,7 @@ from skg.page_ir_verification.utils import (
     PageIRVerificationDirs,
 )
 from skg.schemas import VerificationConfig
-from skg.utils.constants import BlockType, ItemBoundary
+from skg.utils.constants import NON_RETRYABLE_ERROR_TYPES, BlockType, ItemBoundary
 from skg.utils.general import make_dir, write_to_json
 
 
@@ -515,6 +515,11 @@ def bottom_continuity_candidates(
     -------
     list[tuple[int, Block | Table]]
         A list of (item_index, item) pairs. Length is in [1, k].
+
+    Raises
+    ------
+    ValueError
+        If k < 1, or if no candidates are found after filtering and cropping.
     """
 
     assert k >= 1, f"k must be >= 1, got {k}"
@@ -531,10 +536,10 @@ def bottom_continuity_candidates(
         cropped = _apply_visible_crop(
             candidates=candidates, y_max=float(image_height), y_min=float(visible_y_min)
         )
-        assert cropped, "No bottom-crop-visible candidates found."
         candidates = cropped
 
-    assert candidates, "No non-artifact items found."
+    if not candidates:
+        raise ValueError("No non-artifact items found.")
 
     # Sort by bottom-edge descending.
     candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
@@ -556,7 +561,8 @@ def bottom_continuity_candidates(
         output.append((i, item))
         seen.add(i)
 
-    assert output, "No suitable continuity candidates found."
+    if not output:
+        raise ValueError("No suitable continuity candidates found.")
     return output
 
 
@@ -582,6 +588,11 @@ def bottommost_continuity_candidate(
     -------
     tuple[int, Block | Table]
         The index and item of the chosen bottom-most candidate.
+
+    Raises
+    ------
+    ValueError
+        If no candidates are found after filtering and cropping.
     """
 
     # Filter and optionally crop.
@@ -591,10 +602,10 @@ def bottommost_continuity_candidate(
         cropped = _apply_visible_crop(
             candidates=candidates, y_max=float(image_height), y_min=float(visible_y_min)
         )
-        assert cropped, "No bottom-crop-visible candidates found."
         candidates = cropped
 
-    assert candidates, "No non-artifact items found."
+    if not candidates:
+        raise ValueError("No non-artifact items found.")
 
     # Sort by bottom-edge (y1) descending (bbox is [x0, y0, x1, y1]).
     candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
@@ -675,7 +686,7 @@ def crop_image_to_ymax(
         img.crop((0, 0, w, y)).save(output_png_fp)
 
 
-def execute_verification_attempts(
+def execute_verification_attempts(  # pylint: disable=W9006
     *,
     config: VerificationConfig,
     page_images_dir: Path,
@@ -747,6 +758,13 @@ def execute_verification_attempts(
                 prev_png=page_images_dir / f"{page_index:04}.png",
                 usage_tracker=usage_tracker,
             )
+        except NON_RETRYABLE_ERROR_TYPES:
+            logger.error(
+                f"Non-retryable error during verification attempt {attempt_no} "
+                f"for page pair {page_index}->{page_index + 1}. Aborting remaining "
+                f"candidate pairs."
+            )
+            raise
         except Exception as e:  # pylint: disable=broad-except
             attempt_summaries.append(
                 {

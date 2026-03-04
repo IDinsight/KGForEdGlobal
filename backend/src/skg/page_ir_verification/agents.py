@@ -3,7 +3,7 @@ validation.
 
 The verification Agent produces a PageIRContinuityVerdict (no reasoning, lower effort).
 The validation Agent receives the verification verdict + source images and returns a
-ValidationVerdict (high reasoning effort).
+ContinuityValidationVerdict (high reasoning effort).
 
 Both agents are constructed per-call via factory functions because the output validator
 closures capture call-specific context (candidate items, attempt counter).
@@ -20,7 +20,10 @@ from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 # Package Library
 from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
-from skg.page_ir_verification.schemas import PageIRContinuityVerdict, ValidationVerdict
+from skg.page_ir_verification.schemas import (
+    ContinuityValidationVerdict,
+    PageIRContinuityVerdict,
+)
 
 
 def create_continuity_verification_agent(
@@ -169,22 +172,24 @@ def create_continuity_validation_agent(
             openai_reasoning_effort="high", openai_reasoning_summary="detailed"
         ),
         output_retries=max_retries,
-        output_type=ValidationVerdict,
+        output_type=ContinuityValidationVerdict,
     )
 
     @agent.output_validator
-    def validate_correction_quality(output: ValidationVerdict) -> ValidationVerdict:
+    def validate_correction_quality(
+        output: ContinuityValidationVerdict,
+    ) -> ContinuityValidationVerdict:
         """Validate the corrected verdict (when present) using the same
         context-dependent checks as the verification agent.
 
         Parameters
         ----------
         output
-            The parsed ValidationVerdict from the model.
+            The parsed ContinuityValidationVerdict from the model.
 
         Returns
         -------
-        ValidationVerdict
+        ContinuityValidationVerdict
             The validated verdict.
         """
 
