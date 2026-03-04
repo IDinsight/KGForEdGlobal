@@ -9,7 +9,14 @@ from typing import Any
 from loguru import logger
 
 # Package Library
-from skg.page_ir_extraction.schemas import Block, PageIR, Table, TableCell, TextUnit
+from skg.page_ir_extraction.schemas import (
+    Block,
+    PageIR,
+    Table,
+    TableCell,
+    TableRow,
+    TextUnit,
+)
 from skg.page_ir_verification.utils import (
     PageIRVerificationDirs,
     derive_page_boundary_state,
@@ -52,14 +59,14 @@ def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int
 
 
 def _process_table_item(
-    *, item: Any, item_index: int, page_index: int
+    *, item: Table, item_index: int, page_index: int
 ) -> list[dict[str, Any]]:
     """Process a single table item to fix row alignments.
 
     Parameters
     ----------
     item
-        The document item (must be of kind 'table').
+        The table item to process.
     item_index
         The index of the item in the page.
     page_index
@@ -101,7 +108,7 @@ def _process_table_item(
 
 
 def _process_table_normalization(
-    *, item: Block | Table, item_index: int, page_index: int
+    *, item: Table, item_index: int, page_index: int
 ) -> list[dict[str, Any]]:
     """Analyze a single table and normalizes its rows.
 
@@ -205,7 +212,7 @@ def _process_table_normalization(
 
 
 def _process_table_row(
-    *, active_span: list[int], n_cols: int, row: Any
+    *, active_span: list[int], n_cols: int, row: TableRow
 ) -> dict[str, Any]:
     """Process a single row to align cells based on active rowspans.
 
@@ -216,7 +223,7 @@ def _process_table_row(
     n_cols
         The total number of columns in the table.
     row
-        The row object containing cells.
+        The table row containing cells.
 
     Returns
     -------
@@ -526,15 +533,22 @@ def fix_false_truncated_prose_before_table(
             continue
 
         old = last_prev.boundary
-        last_prev.boundary = ItemBoundary.COMPLETE
+
+        # BOTH means from_prev + to_next; clearing only the to_next direction preserves
+        # the from_prev connection.
+        new_boundary = (
+            ItemBoundary.RESUMED if old == ItemBoundary.BOTH else ItemBoundary.COMPLETE
+        )
+        last_prev.boundary = new_boundary
         prev.boundary_state = derive_page_boundary_state(page_ir=prev)
+        nxt.boundary_state = derive_page_boundary_state(page_ir=nxt)
 
         changes.append(
             {
                 "type": "clear_false_truncated_prose_before_table",
                 "page": p_idx,
                 "old_boundary": old.value,
-                "new_boundary": last_prev.boundary.value,
+                "new_boundary": new_boundary.value,
             }
         )
 
@@ -723,12 +737,7 @@ def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str
         #
         # NB: Only look at captions that appear *before the first table item* to avoid
         # accidentally grabbing a caption for a later, unrelated table/rubric.
-        if carry_from_prev is None and any(
-            item.kind == "table"
-            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-            and not (item.local_code or "").strip()
-            for item in items
-        ):
+        if carry_from_prev is None:
             first_relevant_table_index = next(
                 (
                     j
@@ -739,14 +748,13 @@ def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str
                 ),
                 None,
             )
-            caption_scope = (
-                items[:first_relevant_table_index]
-                if first_relevant_table_index is not None
-                else []
-            )
-            caption_code = find_caption_code(caption_scope)
-            if caption_code:
-                carry_from_prev = caption_code.strip() or None
+
+            if first_relevant_table_index is not None:
+                caption_scope = items[:first_relevant_table_index]
+                caption_code = find_caption_code(caption_scope)
+
+                if caption_code:
+                    carry_from_prev = caption_code.strip() or None
 
         carry_to_next: str | None = None
 
@@ -755,10 +763,9 @@ def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str
         # unresolved).
         applied_prev_carry = False
 
-        for item_index, item in enumerate(items):
-            if item.kind != "table":
-                continue
-
+        for item_index, item in (
+            (i, itm) for i, itm in enumerate(items) if itm.kind == "table"
+        ):
             boundary = item.boundary
             is_resumed = boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
             is_truncated = boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
@@ -777,6 +784,19 @@ def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str
                         "type": "propagate_table_local_code",
                     }
                 )
+            elif (
+                is_resumed
+                and code
+                and carry_from_prev
+                and code != carry_from_prev
+                and not applied_prev_carry
+            ):
+                logger.warning(
+                    f"Table local_code conflict on page {page_idx} item "
+                    f"{item_index}: carried '{carry_from_prev}' from previous "
+                    f"page but table already has '{code}' — keeping existing."
+                )
+                applied_prev_carry = True
 
             # Decide what we carry forward to the NEXT page: only the code of the table
             # that actually continues off this page (TRUNCATED/BOTH). If multiple
