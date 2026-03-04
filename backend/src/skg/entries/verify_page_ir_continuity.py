@@ -150,10 +150,10 @@ def verify(
     The process is as follows:
 
     1. Load the global run config and directory paths for the extraction run results.
-    2. Check that the page images and page IR directories have matching files and the
+    2. Create a usage tracker to accumulate token costs across all pages.
+    3. Validate page range.
+    4. Check that the page images and page IR directories have matching files and the
         document key matches the PDF.
-    3. Create a usage tracker to accumulate token costs across all pages.
-    4. Validate page range.
     5. Persist verification run metadata.
     6. Load all page IR JSONs so that we can apply edits and then write once.
     7. Run pairwise continuity verification across (N, N+1) in the selected page range
@@ -189,20 +189,22 @@ def verify(
     expected_doc_key = extraction_run_config.doc_key
 
     # 2.
-    page_indices = cross_check_extraction_run(
-        expected_doc_key=expected_doc_key,
-        extraction_config=extraction_config,
-        page_images_dir=page_images_dir,
-        page_irs_dir=page_irs_dir,
-    )
-
-    # 3.
     usage_tracker = VerificationUsageTracker()
 
     with pymupdf.open(str(extraction_config.pdf_fp)) as doc:
-        # 4.
+        # 3.
         _, start_page, end_page = validate_page_count(
             doc=doc, end_page=config.end_page, start_page=config.start_page
+        )
+
+        # 4.
+        start, end = cross_check_extraction_run(
+            end_page=end_page,
+            expected_doc_key=expected_doc_key,
+            extraction_config=extraction_config,
+            page_images_dir=page_images_dir,
+            page_irs_dir=page_irs_dir,
+            start_page=start_page,
         )
 
         # 5.
@@ -213,8 +215,6 @@ def verify(
 
         try:
             # 6.
-            start = max(start_page, page_indices[0])
-            end = min(end_page, page_indices[-1] + 1)  # +1 because end is exclusive
             page_irs = {
                 i: PageIR.model_validate(open_json_type(page_irs_dir / f"{i:04}.json"))
                 for i in range(start, end)

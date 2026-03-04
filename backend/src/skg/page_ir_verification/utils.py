@@ -870,16 +870,20 @@ def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationD
 
 def cross_check_extraction_run(
     *,
+    end_page: int,
     expected_doc_key: str,
     extraction_config: ExtractionConfig,
     page_images_dir: Path,
     page_irs_dir: Path,
-) -> list[int]:
+    start_page: int,
+) -> tuple[int, int]:
     """Cross-check that the extraction run matches expected parameters and that page
     IRs are present.
 
     Parameters
     ----------
+    end_page
+        The exclusive end page index for continuity verification.
     expected_doc_key
         The expected document key (hex string) from the extraction run metadata.
     extraction_config
@@ -888,16 +892,21 @@ def cross_check_extraction_run(
         Directory containing the rendered page images from extraction.
     page_irs_dir
         Directory containing the extracted page IR JSON files.
+    start_page
+        The inclusive start page index for continuity verification.
 
     Returns
     -------
-    list[int]
-        A list of page indices for which page IRs are present and verified.
+    tuple[int, int]
+        The verified (start_page, end_page) range for which page IR continuity can be
+        verified.
 
     Raises
     ------
     ValueError
         If the computed document key does not match the expected key.
+        If page IR continuity verification fails due to missing pages in the specified
+            range.
     """
 
     assert compare_directories(page_images_dir, page_irs_dir)
@@ -917,7 +926,23 @@ def cross_check_extraction_run(
     json_fps = sorted(page_irs_dir.glob("*.json"))
     page_indices = sorted(int(fp.stem) for fp in json_fps if fp.stem.isdigit())
     assert page_indices, f"No page IR JSONs found in: {page_irs_dir}"
-    return page_indices
+
+    start = max(start_page, page_indices[0])
+    end = min(end_page, page_indices[-1] + 1)  # +1 because end is exclusive
+
+    # Continuity verification requires every page in [start, end) to exist.
+    required = set(range(start, end))
+    available = set(page_indices)
+    missing = sorted(required - available)
+
+    if missing:
+        raise ValueError(
+            f"Page IR continuity verification requires contiguous pages in "
+            f"[{start}, {end}), but page IRs are missing for indices: {missing}. "
+            f"Re-run extraction for the missing pages or adjust start_page/end_page."
+        )
+
+    return start, end
 
 
 def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
