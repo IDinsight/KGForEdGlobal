@@ -682,6 +682,7 @@ def execute_verification_attempts(
     page_index: int,
     pairs: list[tuple[int, Block | Table, int, Block | Table]],
     next_crop_fp: Path,
+    usage_tracker: VerificationUsageTracker,
 ) -> dict[str, Any]:
     """Run model verification on the list of pairs until a match is found or list
     exhausted.
@@ -698,6 +699,8 @@ def execute_verification_attempts(
         List of candidate pairs to verify.
     next_crop_fp
         Filepath to the cropped image of the next page.
+    usage_tracker
+        Tracker to accumulate token usage across all verification attempts.
 
     Returns
     -------
@@ -729,7 +732,6 @@ def execute_verification_attempts(
     for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
         try:
             verdict = verify_page_ir_pairs(
-                always_double_check_first_attempt=config.always_double_check_first_attempt,
                 model=config.model,
                 next_item=nitem.model_dump(mode="json"),
                 next_item_excerpt=make_verification_excerpt(
@@ -743,6 +745,7 @@ def execute_verification_attempts(
                 ),
                 prev_page_index=page_index,
                 prev_png=page_images_dir / f"{page_index:04}.png",
+                usage_tracker=usage_tracker,
             )
         except Exception as e:  # pylint: disable=broad-except
             attempt_summaries.append(
@@ -1315,6 +1318,7 @@ def verify_single_page_pair(
         page_images_dir=page_images_dir,
         page_index=page_index,
         pairs=pairs,
+        usage_tracker=usage_tracker,
     )
 
     # Record the edge verdict (single selected pair per boundary).
