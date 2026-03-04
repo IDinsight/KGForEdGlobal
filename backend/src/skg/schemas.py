@@ -221,10 +221,6 @@ class ExtractionConfig(BaseSchema):
 class VerificationConfig(BaseSchema):
     """Configuration for page IR verification from a PDF document."""
 
-    always_double_check_first_attempt: bool = Field(
-        False,
-        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
-    )
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default: to end."
     )
@@ -235,14 +231,17 @@ class VerificationConfig(BaseSchema):
         description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
     )
     model: str = Field(
-        "gpt-5.2-2025-12-11", description="OpenAI model for page IR verification."
+        "openai:gpt-5.2-2025-12-11",
+        description="OpenAI model for page IR verification.",
     )
     next_page_crop_padding_px: int = Field(
         120,
         description="When cropping the top of page N+1 for verification, include this many extra pixels below the selected next candidate bbox.",
         ge=0,
     )
-    start_page: int = Field(0, description="0-based start page (inclusive).")
+    start_page: Optional[int] = Field(
+        None, description="0-based start page (inclusive)."
+    )
 
     @model_validator(mode="after")
     def check_page_range(self) -> Self:
@@ -259,7 +258,11 @@ class VerificationConfig(BaseSchema):
             If end_page is not greater than start_page.
         """
 
-        if self.end_page is not None and self.end_page <= self.start_page:
+        if (
+            self.end_page is not None
+            and self.start_page is not None
+            and self.end_page <= self.start_page
+        ):
             raise ValueError(
                 f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
             )

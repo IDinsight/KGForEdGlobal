@@ -32,8 +32,7 @@ from skg.page_ir_verification.prompts import (
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.page_ir_verification.validators import (
     validate_item_continuation_kind,
-    validate_page_continuation_kind,
-    validate_repeats_header_logic,
+    validate_repeats_header_requires_table_item,
     validate_semantic_flow,
 )
 from skg.schemas import Limits
@@ -99,24 +98,13 @@ def _call_openai_api_for_page_ir_verification(
         If the response could not be parsed or failed quality checks.
     """
 
-    if attempt == 0 or not always_double_check_first_attempt:
-        response = openai_client.responses.parse(
-            input=input_items,
-            instructions=instructions,
-            model=model,
-            reasoning={"effort": "high"},
-            # temperature=0,
-            text_format=PageIRContinuityVerdict,
-            # top_p=1.0,
-        )
-    else:
-        response = openai_client.responses.parse(
-            input=input_items,
-            instructions=instructions,
-            model=model,
-            reasoning={"effort": "high"},
-            text_format=PageIRContinuityVerdict,
-        )
+    response = openai_client.responses.parse(
+        input=input_items,
+        instructions=instructions,
+        model=model,
+        reasoning={"effort": "high"},
+        text_format=PageIRContinuityVerdict,
+    )
 
     parsed = getattr(response, "output_parsed", None)
     output_text = getattr(response, "output_text", None)
@@ -128,7 +116,7 @@ def _call_openai_api_for_page_ir_verification(
         )
 
     try:
-        verify_page_ir_continuity_verdict(
+        validate_verdict_with_context(
             always_double_check_first_attempt=always_double_check_first_attempt,
             attempt=attempt,
             next_item=next_item,
@@ -142,7 +130,7 @@ def _call_openai_api_for_page_ir_verification(
     return parsed
 
 
-def verify_page_ir_continuity_verdict(
+def validate_verdict_with_context(
     *,
     always_double_check_first_attempt: bool,
     attempt: int,
@@ -150,7 +138,12 @@ def verify_page_ir_continuity_verdict(
     prev_item: Block | Table,
     verdict: PageIRContinuityVerdict,
 ) -> None:
-    """Validate the semantic consistency of a continuity verdict.
+    """Run context-dependent validation checks on a continuity verdict.
+
+    Schema-internal invariants (is_continuation <-> continuation_kind, confidence
+    threshold, repeats_header <-> table-only) are already enforced by the Pydantic
+    model validators at parse time. This function runs the checks that require the
+    candidate items (prev_item/next_item).
 
     Parameters
     ----------
@@ -176,17 +169,14 @@ def verify_page_ir_continuity_verdict(
         raise QualityError("Reason does not matter and is overwritten in caller.")
 
     if verdict.is_continuation and verdict.confidence < 0.5:
-        # This is a soft check, but often indicates hallucination. We might not raise
-        # an error, but logging it is wise.
         logger.warning(
             f"Low confidence ({verdict.confidence}) for continuation verdict."
         )
 
-    validate_page_continuation_kind(verdict)
     validate_item_continuation_kind(
         next_item=next_item, prev_item=prev_item, verdict=verdict
     )
-    validate_repeats_header_logic(next_item=next_item, verdict=verdict)
+    validate_repeats_header_requires_table_item(next_item=next_item, verdict=verdict)
     validate_semantic_flow(next_item=next_item, verdict=verdict)
 
 
@@ -297,10 +287,8 @@ def verify_page_ir_pairs(
                     f"Verification failed after exhausting retries for pages "
                     f"{prev_page_index}-{next_page_index}."
                 )
-                raise  # Re-raise the final quality error
+                raise
 
-            # Append the assistant's failed attempt to history first. Without this, the
-            # model doesn't know what it's correcting.
             if e.failed_content:
                 logger.error(f"Verification failed content: {e.failed_content}")
                 input_items.append(
@@ -340,7 +328,6 @@ def verify_page_ir_pairs(
                 )
             continue
         except Exception as e:  # pylint: disable=broad-except
-            # Let transient errors propagate (tenacity should cover most of these).
             if isinstance(
                 e,
                 (
@@ -355,17 +342,11 @@ def verify_page_ir_pairs(
             ):
                 raise
 
-            # Handle general exceptions (like Pydantic ValidationErrors) that bubble up
-            # from the API call but might not have attached text.
             last_error = QualityError(f"Structured parse/validation failed: {e}")
 
             if attempt >= max_retries:
                 raise last_error from e
 
-            # If possible, we should try to add the assistant's context here too, but
-            # standard Python Exceptions won't carry the model output unless we wrap
-            # them in _call_openai_api_for_page_ir_verification. For now, we proceed
-            # with the Error feedback.
             input_items.append(
                 {
                     "role": "user",

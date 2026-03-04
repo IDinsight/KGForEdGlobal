@@ -1,5 +1,11 @@
-"""This module contains functionalities related to validating the **verified** PageIR
-information.
+"""This module contains context-dependent validation functions for **verified** PageIR
+continuity verdicts.
+
+These checks require access to the candidate items (prev_item / next_item) and
+therefore cannot live inside the Pydantic model validators on
+`PageIRContinuityVerdict`. Schema-internal invariants (is_continuation vs.
+continuation_kind consistency, confidence thresholds, repeats_header <-> table-only)
+are enforced by the model validators in `schemas.py`.
 """
 
 # Package Library
@@ -29,15 +35,17 @@ def validate_item_continuation_kind(
     Raises
     ------
     QualityError
-        If any quality checks fail.
+        If the continuation kind is incompatible with the candidate item types.
     """
 
-    kind = verdict.continuation_kind.value
+    if not verdict.is_continuation:
+        return
+
+    kind = verdict.continuation_kind
     prev_kind = prev_item.kind
     next_kind = next_item.kind
 
-    # Text continuations must be block-to-block (never into/from a table).
-    if kind == PageContinuationKind.TEXT.value and (
+    if kind == PageContinuationKind.TEXT and (
         prev_kind != "block" or next_kind != "block"
     ):
         raise QualityError(
@@ -45,8 +53,7 @@ def validate_item_continuation_kind(
             f"Found: {prev_kind} -> {next_kind}."
         )
 
-    # Table continuations must be table-to-table (never into/from a block).
-    if kind == PageContinuationKind.TABLE.value and (
+    if kind == PageContinuationKind.TABLE and (
         prev_kind != "table" or next_kind != "table"
     ):
         raise QualityError(
@@ -54,8 +61,7 @@ def validate_item_continuation_kind(
             f"Found: {prev_kind} -> {next_kind}."
         )
 
-    # Figure continuations must be figure-to-figure blocks.
-    if kind == PageContinuationKind.FIGURE.value:
+    if kind == PageContinuationKind.FIGURE:
         is_prev_figure = (
             prev_kind == "block" and prev_item.block_type == BlockType.FIGURE
         )
@@ -70,38 +76,14 @@ def validate_item_continuation_kind(
             )
 
 
-def validate_page_continuation_kind(verdict: PageIRContinuityVerdict) -> None:
-    """Check if continuations are structurally possible.
-
-    Parameters
-    ----------
-    verdict
-        The continuation verdict from the model.
-
-    Raises
-    ------
-    QualityError
-        If any continuation invariant is violated.
-    """
-
-    kind = verdict.continuation_kind.value
-
-    if verdict.is_continuation and kind == PageContinuationKind.NONE.value:
-        raise QualityError(
-            f"If is_continuation=true, continuation_kind cannot be '{PageContinuationKind.NONE.value}'."
-        )
-
-    if (not verdict.is_continuation) and kind != PageContinuationKind.NONE.value:
-        raise QualityError(
-            "If is_continuation=false, continuation_kind must be 'none'."
-        )
-
-
-def validate_repeats_header_logic(
+def validate_repeats_header_requires_table_item(
     *, next_item: Block | Table, verdict: PageIRContinuityVerdict
 ) -> None:
-    """If repeats_header is patched, it must be a table continuation and next_item must
-    be table.
+    """Validate that repeats_header is only patched when next_item is actually a table.
+
+    The schema-internal check (continuation must be true + kind must be TABLE) is
+    already enforced by the model validator. This function adds the external constraint
+    that the *next candidate item* must be a table.
 
     Parameters
     ----------
@@ -113,20 +95,11 @@ def validate_repeats_header_logic(
     Raises
     ------
     QualityError
-        If any quality checks fail.
+        If set_next_table_repeats_header is set but next_item is not a table.
     """
 
     if verdict.set_next_table_repeats_header is None:
         return
-
-    if (
-        not verdict.is_continuation
-        or verdict.continuation_kind != PageContinuationKind.TABLE
-    ):
-        raise QualityError(
-            "set_next_table_repeats_header may only be set when is_continuation=true "
-            "and continuation_kind='table'."
-        )
 
     if next_item.kind != "table":
         raise QualityError(
@@ -137,7 +110,7 @@ def validate_repeats_header_logic(
 def validate_semantic_flow(
     *, next_item: Block | Table, verdict: PageIRContinuityVerdict
 ) -> None:
-    """Catch semantic hallucinations, e.g., Text flowing into a Section Header.
+    """Catch semantic hallucinations (e.g., text flowing into a Section Header).
 
     Parameters
     ----------
@@ -149,13 +122,12 @@ def validate_semantic_flow(
     Raises
     ------
     QualityError
-        If any quality checks fail.
+        If text continuation flows into a heading.
     """
 
     if not verdict.is_continuation:
         return
 
-    # Text cannot continue into a Heading/Title.
     if (
         verdict.continuation_kind == PageContinuationKind.TEXT
         and next_item.kind == "block"
