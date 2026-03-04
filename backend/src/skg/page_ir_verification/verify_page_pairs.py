@@ -1207,7 +1207,9 @@ def truncate_text(*, max_chars: int, text: str) -> str:
     text = (text or "").replace("\n", " ").strip()
 
     return (
-        text if len(text) <= max_chars else text[: max(0, max_chars - 1)].rstrip() + "…"
+        text
+        if len(text) <= max_chars
+        else text[: max(0, max_chars - 3)].rstrip() + "..."
     )
 
 
