@@ -3,8 +3,6 @@ pairs of page IR JSONs
 """
 
 # Standard Library
-import re
-
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,12 +14,14 @@ from PIL import Image
 from pydantic_ai.result import RunUsage
 
 # Package Library
-from skg.page_ir_extraction.schemas import Block, PageIR, Table, TextUnit
+from skg.page_ir_extraction.schemas import Block, PageIR, Table
 from skg.page_ir_verification.llm import verify_page_ir_pairs
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
     PageIRVerificationDirs,
+    is_artifact,
+    is_probable_header_footer_noise,
 )
 from skg.schemas import VerificationConfig
 from skg.utils.constants import BlockType, ItemBoundary
@@ -1269,73 +1269,3 @@ def verify_single_page_pair(
     )
 
     return record
-
-
-def is_artifact(item: Block | Table) -> bool:
-    """Check if an item is an artifact.
-
-    Parameters
-    ----------
-    item
-        The item to check.
-
-    Returns
-    -------
-    bool
-        True if the item is an artifact, False otherwise.
-    """
-
-    return False if item.kind != "block" else item.block_type == BlockType.ARTIFACT
-
-
-def is_probable_header_footer_noise(
-    *, image_height: float, item: Block | Table
-) -> bool:
-    """Heuristic to exclude common header/footer noise (page numbers, running headers).
-
-    Parameters
-    ----------
-    image_height
-        The height of the page image in pixels.
-    item
-        The item to check.
-
-    Returns
-    -------
-    bool
-        True if the item is likely header/footer noise, False otherwise.
-    """
-
-    if item.kind != "block":
-        return False
-
-    text_or_none = item.text
-    text = text_or_none.text.strip() if isinstance(text_or_none, TextUnit) else ""
-
-    if not text:
-        return False
-
-    # Very small box height is usually a strong cue (page numbers, running headers).
-    bbox = item.bbox
-    _, y0, _, y1 = map(float, bbox)
-    near_top = y0 <= 0.06 * image_height
-    near_bottom = y1 >= 0.94 * image_height
-
-    if not (near_top or near_bottom):
-        return False
-
-    # Require small box height to avoid sparse pages from being mis-classified as
-    # footer/header noise.
-    box_h = y1 - y0
-
-    if box_h > max(90.0, 0.05 * image_height):
-        return False
-
-    # Common page number/footer patterns (keep conservative).
-    t = re.sub(r"\s+", " ", text).strip()
-    if (len(t) <= 12 and re.fullmatch(r"(\d+|[ivxlcdm]+)", t.lower())) or (
-        len(t) <= 20 and re.fullmatch(r"(page\s*)?\d+(\s*/\s*\d+)?", t.lower())
-    ):
-        return True
-
-    return False
