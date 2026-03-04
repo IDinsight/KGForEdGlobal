@@ -18,7 +18,7 @@ from PIL import Image
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TableCell, TextUnit
 from skg.page_ir_verification.llm import verify_page_ir_pairs
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
-from skg.schemas import RunCtx, VerificationConfig
+from skg.schemas import ExtractionConfig, RunCtx, VerificationConfig
 from skg.utils.constants import (
     BlockType,
     CaptionTablePrefixes,
@@ -26,7 +26,13 @@ from skg.utils.constants import (
     PageBoundaryState,
     PageContinuationKind,
 )
-from skg.utils.general import make_dir, open_json_type, write_to_json
+from skg.utils.general import (
+    compare_directories,
+    make_dir,
+    open_json_type,
+    write_to_json,
+)
+from skg.utils.pdf import compute_doc_key
 
 # Compiled regexes.
 _TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -1341,6 +1347,58 @@ def crop_image_to_ymax(
         img.crop((0, 0, w, y)).save(output_png_fp)
 
 
+def cross_check_extraction_run(
+    *,
+    expected_doc_key: str,
+    extraction_config: ExtractionConfig,
+    page_images_dir: Path,
+    page_irs_dir: Path,
+) -> list[int]:
+    """Cross-check that the extraction run matches expected parameters and that page
+    IRs are present.
+
+    Parameters
+    ----------
+    expected_doc_key
+        The expected document key (hex string) from the extraction run metadata.
+    extraction_config
+        The extraction configuration used for the run.
+    page_images_dir
+        Directory containing the rendered page images from extraction.
+    page_irs_dir
+        Directory containing the extracted page IR JSON files.
+
+    Returns
+    -------
+    list[int]
+        A list of page indices for which page IRs are present and verified.
+
+    Raises
+    ------
+    ValueError
+        If the computed document key does not match the expected key.
+    """
+
+    assert compare_directories(page_images_dir, page_irs_dir)
+    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
+
+    if computed_doc_key != expected_doc_key:
+        raise ValueError(
+            f"PDF doc_key mismatch.\n"
+            f"  PDF provided to verify(): {extraction_config.pdf_fp}\n"
+            f"  computed doc_key:         {computed_doc_key}\n"
+            f"  extraction_run.json key:  {expected_doc_key}\n"
+            f"You are likely verifying against a different PDF than the one used for "
+            f"extraction. Pass the same PDF used in the extraction step or re-run "
+            f"extraction."
+        )
+
+    json_fps = sorted(page_irs_dir.glob("*.json"))
+    page_indices = sorted(int(fp.stem) for fp in json_fps if fp.stem.isdigit())
+    assert page_indices, f"No page IR JSONs found in: {page_irs_dir}"
+    return page_indices
+
+
 def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
     """Derive page-level boundary_state from verified item boundaries.
 
@@ -2099,17 +2157,17 @@ def persist_verification_run(
 
     verification_dirs = create_page_ir_verification_dirs(output_dir=output_dir)
     exclude_keys = {"model", "overwrite"}
+    extra = {
+        k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys
+    }
     verification_run = RunCtx(
-        extra={
-            k: v
-            for k, v in config.model_dump(mode="json").items()
-            if k not in exclude_keys
-        },
+        extra=extra,
         models=[config.model],
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
     )
     write_to_json(fp=output_dir / "verification_run.json", json_info=verification_run)
+
     logger.info(f"Saving verification results to: {verification_dirs.root}")
 
     return verification_dirs, verification_run

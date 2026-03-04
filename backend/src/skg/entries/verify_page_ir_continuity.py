@@ -30,6 +30,7 @@ from loguru import logger
 # the command line. However, it is not necessary if it is imported from a pip install.
 if __name__ == "__main__":
     PACKAGE_PATH = Path(__file__).resolve().parents[2]
+
     if PACKAGE_PATH not in sys.path:
         print(f"Appending '{PACKAGE_PATH}' to system path...")
         sys.path.append(str(PACKAGE_PATH))
@@ -40,13 +41,14 @@ from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
     PageIRVerificationDirs,
     compile_continuity_from_edge_verdicts,
+    cross_check_extraction_run,
     persist_verification_run,
     postprocess_verified_page_irs,
     save_verified_page_irs,
     verify_single_page_pair,
 )
 from skg.schemas import RunConfig, RunCtx, VerificationConfig
-from skg.utils.general import compare_directories, open_json_type, write_to_json
+from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key, validate_page_count
 
 # Instantiate typer apps for the command line interface.
@@ -140,7 +142,7 @@ def verify(
 
     The process is as follows:
 
-    1. Load config and validate extraction run existence.
+    1. Load the global run config and directory paths for the extraction run results.
     2. Check that the page images and page IR directories have matching files and the
         document key matches the PDF.
     3. Validate page range.
@@ -176,47 +178,35 @@ def verify(
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")
     )
+    expected_doc_key = extraction_run_config.doc_key
 
     # 2.
-    assert compare_directories(page_images_dir, page_irs_dir)
-    expected_doc_key = extraction_run_config.extra["doc_key"]
-
-    if computed_doc_key != expected_doc_key:
-        raise ValueError(
-            f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify(): {extraction_config.pdf_fp}\n"
-            f"  computed doc_key:         {computed_doc_key}\n"
-            f"  extraction_run.json key:  {expected_doc_key}\n"
-            f"You are likely verifying against a different PDF than the one used for "
-            f"extraction. Pass the same PDF used in the extraction step or re-run "
-            f"extraction."
-        )
-
-    json_fps = sorted(page_irs_dir.glob("*.json"))
-    page_indices = sorted(int(fp.stem) for fp in json_fps if fp.stem.isdigit())
-    assert page_indices, f"No page IR JSONs found in: {page_irs_dir}"
-
-    verification_results_dir = (
-        extraction_config.output_dir / expected_doc_key / "verification"
+    page_indices = cross_check_extraction_run(
+        expected_doc_key=expected_doc_key,
+        extraction_config=extraction_config,
+        page_images_dir=page_images_dir,
+        page_irs_dir=page_irs_dir,
     )
 
     with pymupdf.open(str(extraction_config.pdf_fp)) as doc:
         # 3.
-        _, _, end_page = validate_page_count(
+        _, start_page, end_page = validate_page_count(
             doc=doc, end_page=config.end_page, start_page=config.start_page
         )
 
         # 4.
         verification_dirs, verification_run = persist_verification_run(
-            config=config, output_dir=verification_results_dir
+            config=config,
+            output_dir=extraction_config.output_dir / expected_doc_key / "verification",
         )
 
         try:
             # 5.
-            start = max(config.start_page, page_indices[0])
+            start = max(start_page, page_indices[0])
+            end = min(end_page, page_indices[-1] + 1)  # +1 because end is exclusive
             page_irs = {
                 i: PageIR.model_validate(open_json_type(page_irs_dir / f"{i:04}.json"))
-                for i in range(start, end_page)
+                for i in range(start, end)
             }
 
             # 6.
@@ -234,6 +224,7 @@ def verify(
                 verification_dirs=verification_dirs,
             )
             verification_run.extra["status"] = "success"
+
             logger.success("Page IR continuity verification completed successfully!")
         except Exception as e:  # pylint: disable=broad-except
             verification_run.extra["status"] = "error"

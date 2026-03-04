@@ -33,13 +33,14 @@ from skg.page_ir_extraction.llm import extract_page_ir
 from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_extraction.utils import (
     ExtractionUsageTracker,
+    PageIRExtractionDirs,
     persist_extraction_run,
     read_png_dimensions,
     render_and_save_page_to_png,
 )
 from skg.page_ir_extraction.validators import compute_boundary_state_from_items
 from skg.schemas import ExtractionConfig, RunConfig
-from skg.utils.general import PipelineDirs, open_json_type, write_to_json
+from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import validate_page_count
 
 # Instantiate typer apps for the command line interface.
@@ -52,7 +53,7 @@ def extract_page_by_page(
     doc: pymupdf.Document,
     doc_key: str,
     end_page: int,
-    extraction_dirs: PipelineDirs,
+    extraction_dirs: PageIRExtractionDirs,
     start_page: int,
     usage_tracker: ExtractionUsageTracker,
 ) -> None:
