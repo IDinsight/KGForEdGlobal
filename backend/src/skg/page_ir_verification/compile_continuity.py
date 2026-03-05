@@ -703,10 +703,12 @@ def _patch_repeats_header(
     before_repeats = table.repeats_header
     before_hrc = table.header_row_count
 
-    table.repeats_header = desired
+    # Clearing repeats_header to None removes header_row_count constraints, which lets
+    # us safely update header_row_count even if validate_assignment is enabled.
+    if table.repeats_header is not None:
+        table.repeats_header = None
 
-    # Adjust header_row_count to satisfy the Pydantic model invariant. When clearing
-    # repeats_header to None, leave header_row_count as-is (no constraint applies).
+    # Adjust header_row_count for explicit True/False patches only.
     if desired is True and table.header_row_count == 0:
         # The LLM says headers are repeated but extraction counted 0 header rows.
         # Assume 1 header row (the most common case) so the invariant holds.
@@ -723,6 +725,9 @@ def _patch_repeats_header(
             f"Page {page_index} item {item_index}: set header_row_count=0 to satisfy "
             f"repeats_header=False invariant (was {before_hrc})."
         )
+
+    # Finally, set the desired repeats_header value (including None).
+    table.repeats_header = desired
 
     change: dict[str, Any] = {
         "page": page_index,
@@ -832,11 +837,30 @@ def _reconcile_item_state(
     """
 
     from_prev, to_next = flags
-    boundary_change = None
-    header_change = None
+    boundary_change: dict[str, Any] | None = None
+    header_change: dict[str, Any] | None = None
 
     before_boundary = item.boundary
     after_boundary = _bools_to_boundary(from_prev, to_next)
+
+    is_table = item.kind == "table"
+    table: Table | None = item if is_table else None
+
+    # If a table is about to transition into a non-continuation boundary state, clear
+    # repeats_header BEFORE updating the boundary. This avoids transient invariant
+    # violations if validate_assignment is enabled on the schema.
+    if (
+        is_table
+        and table is not None
+        and after_boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+        and table.repeats_header is not None
+    ):
+        header_change = _patch_repeats_header(
+            desired=None,
+            item_index=item_index,
+            page_index=page_index,
+            table=table,
+        )
 
     if before_boundary != after_boundary:
         boundary_change = {
@@ -848,41 +872,30 @@ def _reconcile_item_state(
         item.boundary = after_boundary
 
     # repeats_header only meaningful for tables.
-    if item.kind != "table":
+    if not is_table or table is None:
         return boundary_change, header_change
 
-    table = item
-
-    # Case A: Connection broken (not RESUMED or BOTH) --> Clear header.
-    if item.boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
-        if table.repeats_header is not None:
-            header_change = _patch_repeats_header(
-                desired=None,
-                item_index=item_index,
-                page_index=page_index,
-                table=table,
+    # Case A: Connection broken (not RESUMED or BOTH) --> repeats_header must be None.
+    if after_boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
+        # When a table transitions from continuation (repeats_header=False,
+        # header_row_count=0) to COMPLETE/TRUNCATED, the zeroed header count may be a
+        # leftover artifact. That is, the original extraction may have had real header
+        # rows that were cleared during an earlier repeats_header=False patch. Flag for
+        # human review since we can't recover the correct count automatically.
+        if table.header_row_count == 0:
+            logger.warning(
+                f"Page {page_index} item {item_index}: boundary downgraded to "
+                f"{after_boundary.value} with header_row_count=0. This table may "
+                f"have lost its original header count from a prior "
+                f"repeats_header=False patch. Flagging for review."
             )
 
-            # When a table transitions from continuation (repeats_header=False,
-            # header_row_count=0) to COMPLETE/TRUNCATED, the zeroed header count may be
-            # a leftover artifact. That is, the original extraction may have had real
-            # header rows that were cleared during an earlier repeats_header=False
-            # patch. Flag for human review since we can't recover the correct count
-            # automatically.
-            if table.header_row_count == 0:
-                logger.warning(
-                    f"Page {page_index} item {item_index}: boundary downgraded to "
-                    f"{item.boundary.value} with header_row_count=0. This table may "
-                    f"have lost its original header count from a prior "
-                    f"repeats_header=False patch. Flagging for review."
+            if header_change is not None:
+                header_change["needs_review"] = True
+                header_change["review_reason"] = (
+                    "header_row_count=0 after boundary downgrade; may need "
+                    "manual correction"
                 )
-
-                if header_change is not None:
-                    header_change["needs_review"] = True
-                    header_change["review_reason"] = (
-                        "header_row_count=0 after boundary downgrade; may need "
-                        "manual correction"
-                    )
 
         return boundary_change, header_change
 
