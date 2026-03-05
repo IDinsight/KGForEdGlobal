@@ -1282,8 +1282,8 @@ def verify_single_page_pair(
             "attempts": result["attempt_summaries"],
             "primary_candidate_selection": primary_indices,
             "selected_candidate_selection": {
-                "prev_candidate_index": result["selected_prev_index"],
-                "next_candidate_index": result["selected_next_index"],
+                "prev_item_index": result["selected_prev_index"],
+                "next_item_index": result["selected_next_index"],
             },
             "verdict": selected_verdict.model_dump(mode="json"),
         },
