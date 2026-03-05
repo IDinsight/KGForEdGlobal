@@ -1,6 +1,7 @@
 """This module contains utility functions related to post-processing verified page IRs."""
 
 # Standard Library
+import json
 import re
 
 from typing import Any
@@ -128,8 +129,13 @@ def _process_page_tables(
     changes: list[dict[str, Any]],
     items: list[tuple[int, Block | Table]],
     page_idx: int,
+    resumed_table_keys: set[tuple[int, int]],
+    truncated_table_keys: set[tuple[int, int]],
 ) -> str | None:
     """Process tables on a page, applying carried codes and finding the next carry.
+
+    This uses VERIFIED table-continuation edges (not raw extractor boundaries) to
+    decide whether a table is "resumed" (incoming edge) or "truncated" (outgoing edge).
 
     Parameters
     ----------
@@ -141,6 +147,10 @@ def _process_page_tables(
         The list of (original_item_index, item) tuples on the current page.
     page_idx
         The index of the current page.
+    resumed_table_keys
+        Set of (page_idx, item_idx) keys that have an incoming VERIFIED table edge.
+    truncated_table_keys
+        Set of (page_idx, item_idx) keys that have an outgoing VERIFIED table edge.
 
     Returns
     -------
@@ -152,9 +162,8 @@ def _process_page_tables(
     applied_prev_carry = False
 
     for item_index, item in ((i, itm) for i, itm in items if itm.kind == "table"):
-        boundary = item.boundary
-        is_resumed = boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-        is_truncated = boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+        is_resumed = (page_idx, item_index) in resumed_table_keys
+        is_truncated = (page_idx, item_index) in truncated_table_keys
         code = (item.local_code or "").strip()
 
         # Fill missing code on a resumed table from the previous page's carry.
@@ -427,14 +436,23 @@ def _process_table_row(
 
 
 def _seed_carry_from_caption(
+    *,
     items: list[tuple[int, Block | Table]],
+    page_idx: int,
+    resumed_table_keys: set[tuple[int, int]],
 ) -> str | None:
-    """Attempt to find a table code from a caption before the first resumed table.
+    """Attempt to find a table code from a caption before the first VERIFIED-resumed
+    table.
 
     Parameters
     ----------
     items
         The list of (original_item_index, item) tuples on the current page.
+    page_idx
+        Current page index.
+    resumed_table_keys
+        Set of (page_idx, item_idx) keys that have an incoming VERIFIED table
+        continuation edge from the previous page.
 
     Returns
     -------
@@ -445,9 +463,9 @@ def _seed_carry_from_caption(
     first_relevant_table_pos = next(
         (
             pos
-            for pos, (_, item) in enumerate(items)
+            for pos, (orig_idx, item) in enumerate(items)
             if item.kind == "table"
-            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            and (page_idx, orig_idx) in resumed_table_keys
             and not (item.local_code or "").strip()
         ),
         None,
@@ -628,9 +646,13 @@ def _update_spans_only(
 
 
 def _validate_carry_for_page(
-    *, carry_from_prev: str | None, items: list[tuple[int, Block | Table]]
+    *,
+    carry_from_prev: str | None,
+    items: list[tuple[int, Block | Table]],
+    page_idx: int,
+    resumed_table_keys: set[tuple[int, int]],
 ) -> str | None:
-    """Drop the carried code if the current page has no resumed tables.
+    """Drop the carried code if the current page has no VERIFIED-resumed tables.
 
     Parameters
     ----------
@@ -638,6 +660,11 @@ def _validate_carry_for_page(
         The code carried from the previous page.
     items
         The list of (original_item_index, item) tuples on the current page.
+    page_idx
+        Current page index.
+    resumed_table_keys
+        Set of (page_idx, item_idx) keys that have an incoming VERIFIED table
+        continuation edge from the previous page.
 
     Returns
     -------
@@ -646,9 +673,8 @@ def _validate_carry_for_page(
     """
 
     if carry_from_prev is not None and not any(
-        item.kind == "table"
-        and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-        for _, item in items
+        item.kind == "table" and (page_idx, item_index) in resumed_table_keys
+        for item_index, item in items
     ):
         return None
 
@@ -880,6 +906,52 @@ def fix_false_truncated_prose_before_table(
     return changes
 
 
+def load_verified_table_continuation_edges(
+    verification_dirs: PageIRVerificationDirs,
+) -> set[tuple[int, int, int, int]]:
+    """Load the set of VERIFIED table-continuation edges from the compile report.
+
+    The compile step (compile_continuity_from_edge_verdicts) writes
+    `continuity_compile_report.json`, whose `applied_edges` list includes the edges
+    that were actually applied (i.e., met min_confidence_to_patch and were not skipped).
+
+    We treat an edge as a VERIFIED table continuation edge iff:
+
+    1. applied == True
+    2. is_continuation == True
+    3. continuation_kind == "table"
+
+    Returns
+    -------
+    set[tuple[int, int, int, int]]
+        A set of edges represented as tuples of (prev_page, prev_index, next_page,
+        next_index).
+    """
+
+    fp = verification_dirs.root / "continuity_compile_report.json"
+    report = json.loads(fp.read_text())
+    edges: set[tuple[int, int, int, int]] = set()
+
+    for edge in report.get("applied_edges", []) or []:
+        if not edge.get("applied", False):
+            continue
+        if not edge.get("is_continuation", False):
+            continue
+        if (edge.get("continuation_kind") or "").lower() != "table":
+            continue
+
+        edges.add(
+            (
+                int(edge["prev_page"]),
+                int(edge["prev_index"]),
+                int(edge["next_page"]),
+                int(edge["next_index"]),
+            )
+        )
+
+    return edges
+
+
 def normalize_empty_table_cells(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
     """Normalize visually-empty table cell TextUnit text like '' / ' ' / '\\n' into
     text='' while preserving the TextUnit object (and its provenance such as bbox).
@@ -982,8 +1054,11 @@ def postprocess_verified_page_irs(
     # Fix false truncated prose before tables.
     prose_table_fix_changes = fix_false_truncated_prose_before_table(page_irs)
 
-    # Enrich data by flowing local codes across the now-verified boundaries.
-    table_code_changes = propagate_table_local_codes(page_irs)
+    # Enrich data by flowing local codes across VERIFIED table-continuation edges.
+    verified_table_edges = load_verified_table_continuation_edges(verification_dirs)
+    table_code_changes = propagate_table_local_codes(
+        page_irs=page_irs, verified_table_continuation_edges=verified_table_edges
+    )
 
     # Normalize empty-string cell text to stabilize downstream logic that distinguishes
     # empty vs. non-empty cells.
@@ -1018,36 +1093,54 @@ def postprocess_verified_page_irs(
     )
 
 
-def propagate_table_local_codes(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
-    """Carry forward "Table X" codes on tables that continue across page boundaries
-    when the verification step has confirmed the continuation. This is a common failure
-    mode where the model correctly identifies a table continuation but fails to copy
-    the local code, leaving the carried code as the only signal of the connection
-    between the two table parts.
+def propagate_table_local_codes(
+    *,
+    page_irs: dict[int, PageIR],
+    verified_table_continuation_edges: set[tuple[int, int, int, int]],
+) -> list[dict[str, Any]]:
+    """Carry forward "Table X" codes across VERIFIED table-continuation edges.
 
     This post-pass is intentionally conservative:
 
-    1. Only propagate codes *across page boundaries* when the verification step has
-        marked the table as RESUMED/BOTH (on this page) and TRUNCATED/BOTH (on the
-        prior page).
+    1. Only propagate codes across page boundaries when the compile step has actually
+       *applied* a TABLE continuation edge (i.e., met min_confidence_to_patch).
     2. Only carry *one* code forward: the code of the **last table in reading order**
-        on the page that continues onto the next page (TRUNCATED/BOTH).
+       on the page that continues onto the next page (outgoing verified edge).
     3. Never let later, non-continuing tables overwrite the carry-forward code.
-
-    In short, this function "guarantees" the code that is propagated to page N+1 is the
-    code of the table that actually continues off page N, and it prevents a later
-    complete/misclassified “table-ish” object from overwriting that carry-forward value.
 
     Parameters
     ----------
     page_irs
         The dictionary of page IRs by page index.
+    verified_table_continuation_edges
+        Set of (prev_page, prev_item_index, next_page, next_item_index) tuples for
+        TABLE continuation edges that were actually applied by the compile step.
 
     Returns
     -------
     list[dict[str, Any]]
         A list of changes made during the postpass.
     """
+
+    # Precompute which table items have VERIFIED incoming/outgoing edges.
+    resumed_table_keys: set[tuple[int, int]] = {
+        (next_page, next_index)
+        for (
+            prev_page,
+            prev_index,
+            next_page,
+            next_index,
+        ) in verified_table_continuation_edges
+    }
+    truncated_table_keys: set[tuple[int, int]] = {
+        (prev_page, prev_index)
+        for (
+            prev_page,
+            prev_index,
+            next_page,
+            next_index,
+        ) in verified_table_continuation_edges
+    }
 
     carry_from_prev: str | None = None
     changes: list[dict[str, Any]] = []
@@ -1065,17 +1158,24 @@ def propagate_table_local_codes(page_irs: dict[int, PageIR]) -> list[dict[str, A
         items = [(i, it) for i, it in enumerate(page.items) if not is_artifact(it)]
 
         carry_from_prev = _validate_carry_for_page(
-            carry_from_prev=carry_from_prev, items=items
+            carry_from_prev=carry_from_prev,
+            items=items,
+            page_idx=page_idx,
+            resumed_table_keys=resumed_table_keys,
         )
 
         if carry_from_prev is None:
-            carry_from_prev = _seed_carry_from_caption(items=items)
+            carry_from_prev = _seed_carry_from_caption(
+                items=items, page_idx=page_idx, resumed_table_keys=resumed_table_keys
+            )
 
         carry_to_next = _process_page_tables(
             carry_from_prev=carry_from_prev,
             changes=changes,
             items=items,
             page_idx=page_idx,
+            resumed_table_keys=resumed_table_keys,
+            truncated_table_keys=truncated_table_keys,
         )
 
         # Carry forward only the table that continues onto the next page.
