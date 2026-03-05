@@ -49,6 +49,11 @@ def _apply_all_local_code_patches(
                     "page": page_index,
                 }
             )
+        elif before != code:
+            logger.warning(
+                f"Page {page_index} item {item_index}: skipping local_code patch "
+                f"'{code}' because item already has local_code='{before}'."
+            )
 
     return local_code_changes
 
@@ -113,7 +118,6 @@ def _apply_edge_verdicts(
             )
             applied_edges.append(
                 _make_edge_summary(
-                    applied=False,
                     record=record,
                     should_apply=should_apply,
                     skip_reason="missing_candidate_key",
@@ -137,7 +141,6 @@ def _apply_edge_verdicts(
 
         applied_edges.append(
             _make_edge_summary(
-                applied=should_apply,
                 record=record,
                 should_apply=should_apply,
                 skipped=False,
@@ -149,7 +152,6 @@ def _apply_edge_verdicts(
 
 def _make_edge_summary(
     *,
-    applied: bool,
     record: EdgeVerdictRecord,
     should_apply: bool,
     skip_reason: str | None = None,
@@ -186,7 +188,7 @@ def _make_edge_summary(
         "continuation_kind": verdict.continuation_kind.value,
         "confidence": verdict.confidence,
         "eligible_by_confidence": should_apply,
-        "applied": applied,
+        "applied": should_apply and not skipped,
         "skipped": skipped,
     }
 
@@ -233,11 +235,14 @@ def _mutate_for_edge(
     """
 
     verdict = record.verdict
-    dirty_keys.update({prev_key, next_key})
 
     if verdict.is_continuation:
-        bools[prev_key][1] = True  # prev.to_next
-        bools[next_key][0] = True  # next.from_prev
+        if not bools[prev_key][1]:
+            bools[prev_key][1] = True
+            dirty_keys.add(prev_key)
+        if not bools[next_key][0]:
+            bools[next_key][0] = True
+            dirty_keys.add(next_key)
 
         _propagate_local_codes(
             effective_local_codes=effective_local_codes,
@@ -256,8 +261,12 @@ def _mutate_for_edge(
             repeats_header_patch[next_key] = verdict.set_next_table_repeats_header
     else:
         # Clear only the directional connection for THIS candidate pair.
-        bools[prev_key][1] = False
-        bools[next_key][0] = False
+        if bools[prev_key][1]:
+            bools[prev_key][1] = False
+            dirty_keys.add(prev_key)
+        if bools[next_key][0]:
+            bools[next_key][0] = False
+            dirty_keys.add(next_key)
 
 
 def _propagate_local_codes(
