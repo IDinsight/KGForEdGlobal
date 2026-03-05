@@ -442,8 +442,7 @@ def load_verification_verdicts(
     """Load all verification verdict JSONs and return validated EdgeVerdictRecords.
 
     Delegates to `load_edge_verdict_from_pair_report` for each file, ensuring
-    consistent parsing logic across resumed runs and batch loading. Files that fail to
-    parse or have None page indices are skipped with a warning.
+    consistent parsing logic across resumed runs and batch loading.
 
     Parameters
     ----------
