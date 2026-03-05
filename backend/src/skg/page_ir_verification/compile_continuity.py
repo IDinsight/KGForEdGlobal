@@ -142,8 +142,8 @@ def _apply_single_edge_verdict(
     """
 
     verdict = record.verdict
-    prev_key = (record.prev_page_index, record.prev_candidate_index)
-    next_key = (record.next_page_index, record.next_candidate_index)
+    prev_key = (record.prev_page_index, record.prev_item_index)
+    next_key = (record.next_page_index, record.next_item_index)
     should_apply = verdict.confidence >= min_confidence
 
     # Pair reports can get out of sync with PageIR item indices if upstream extraction
@@ -155,8 +155,8 @@ def _apply_single_edge_verdict(
             f"(pages {record.prev_page_index}->{record.next_page_index})."
         )
         return {
-            "prev_index": record.prev_candidate_index,
-            "next_index": record.next_candidate_index,
+            "prev_index": record.prev_item_index,
+            "next_index": record.next_item_index,
             "prev_page": record.prev_page_index,
             "next_page": record.next_page_index,
             "is_continuation": verdict.is_continuation,
@@ -181,8 +181,8 @@ def _apply_single_edge_verdict(
     )
 
     return {
-        "prev_index": record.prev_candidate_index,
-        "next_index": record.next_candidate_index,
+        "prev_index": record.prev_item_index,
+        "next_index": record.next_item_index,
         "prev_page": record.prev_page_index,
         "next_page": record.next_page_index,
         "is_continuation": verdict.is_continuation,
@@ -257,7 +257,7 @@ def _apply_verdict_mutations(
                         logger.warning(
                             f"local_code propagation conflict at page "
                             f"{record.next_page_index} item "
-                            f"{record.next_candidate_index}: existing "
+                            f"{record.next_item_index}: existing "
                             f"'{existing}' vs incoming '{prev_code}' — "
                             f"keeping earlier propagation."
                         )
@@ -271,7 +271,7 @@ def _apply_verdict_mutations(
                         logger.warning(
                             f"local_code propagation conflict at page "
                             f"{record.prev_page_index} item "
-                            f"{record.prev_candidate_index}: existing "
+                            f"{record.prev_item_index}: existing "
                             f"'{existing}' vs incoming '{next_code}' — "
                             f"keeping earlier propagation."
                         )
@@ -283,8 +283,8 @@ def _apply_verdict_mutations(
                         {
                             "prev_page": record.prev_page_index,
                             "next_page": record.next_page_index,
-                            "prev_index": record.prev_candidate_index,
-                            "next_index": record.next_candidate_index,
+                            "prev_index": record.prev_item_index,
+                            "next_index": record.next_item_index,
                             "prev_code": prev_code,
                             "next_code": next_code,
                             "continuation_kind": verdict.continuation_kind.value,
@@ -549,8 +549,8 @@ def _sort_and_validate_edge_records(
         key=lambda r: (
             int(r.prev_page_index),
             int(r.next_page_index),
-            int(r.prev_candidate_index),
-            int(r.next_candidate_index),
+            int(r.prev_item_index),
+            int(r.next_item_index),
         ),
     )
     seen_boundaries: set[tuple[int, int]] = set()

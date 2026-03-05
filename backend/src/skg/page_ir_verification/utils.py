@@ -28,9 +28,9 @@ from skg.utils.general import (
 class EdgeVerdictRecord(NamedTuple):
     """Edge verdict record between two page IR candidates."""
 
-    next_candidate_index: int
+    next_item_index: int
     next_page_index: int
-    prev_candidate_index: int
+    prev_item_index: int
     prev_page_index: int
     verdict: PageIRContinuityVerdict
 
