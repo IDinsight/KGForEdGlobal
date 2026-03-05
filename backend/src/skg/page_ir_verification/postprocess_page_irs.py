@@ -81,12 +81,23 @@ def _insert_placeholders(
     new_cells: list[Any] = []
     col = 0
 
-    for cell in cells:
+    for idx, cell in enumerate(cells):
         while col < n_cols and active_span[col] > 0:
             new_cells.append(TableCell(col_span=1, row_span=1, text=None))
             col += 1
 
         if col >= n_cols:
+            # No remaining width. This indicates an inconsistency between prior
+            # rowspans and the extracted cells in this row. We drop the remaining cells
+            # to preserve the table's declared width (n_cols).
+            dropped = len(cells) - idx
+
+            if dropped > 0:
+                logger.warning(
+                    f"Row overflow while inserting rowspan placeholders: "
+                    f"dropping {dropped} cell(s) beyond n_cols={n_cols}."
+                )
+
             break
 
         new_cells.append(cell)
@@ -664,9 +675,7 @@ def _validate_page_gap(
     return carry_from_prev
 
 
-def align_table_rows_with_rowspans(
-    *, page_irs: dict[int, PageIR]
-) -> list[dict[str, Any]]:
+def align_table_rows_with_rowspans(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
     """Insert placeholder empty cells where prior-row rowspans occupy columns. Fixes
     common failure mode where a row under a row-spanned subject shifts left.
 
@@ -734,7 +743,7 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
 
 
 def fix_false_truncated_prose_before_table(
-    *, page_irs: dict[int, PageIR]
+    page_irs: dict[int, PageIR],
 ) -> list[dict[str, Any]]:
     """If a page ends with a truncated prose block but the next page starts with a
     table/caption and there is no resumed prose block, clear the truncation when the
@@ -845,9 +854,7 @@ def fix_false_truncated_prose_before_table(
     return changes
 
 
-def normalize_empty_table_cells_to_null(
-    *, page_irs: dict[int, PageIR]
-) -> list[dict[str, Any]]:
+def normalize_empty_table_cells(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
     """Normalize visually-empty table cell TextUnit text like '' / ' ' / '\\n' into
     text='' while preserving the TextUnit object (and its provenance such as bbox).
     This stabilizes rowspan logic and downstream canonicalization by making emptiness
@@ -898,7 +905,7 @@ def normalize_empty_table_cells_to_null(
 
 
 def normalize_table_row_cell_counts(
-    *, page_irs: dict[int, PageIR]
+    page_irs: dict[int, PageIR],
 ) -> list[dict[str, Any]]:
     """Ensure each table row has an effective width of n_cols columns (accounting for
     col_span). Fixes the common LLM error of dropping empty cells at the start/end of
@@ -947,20 +954,20 @@ def postprocess_verified_page_irs(
     """
 
     # Fix false truncated prose before tables.
-    prose_table_fix_changes = fix_false_truncated_prose_before_table(page_irs=page_irs)
+    prose_table_fix_changes = fix_false_truncated_prose_before_table(page_irs)
 
     # Enrich data by flowing local codes across the now-verified boundaries.
-    table_code_changes = propagate_table_local_codes(page_irs=page_irs)
+    table_code_changes = propagate_table_local_codes(page_irs)
 
     # Normalize empty-string cell text to stabilize downstream logic that distinguishes
     # empty vs. non-empty cells.
-    empty_cell_changes = normalize_empty_table_cells_to_null(page_irs=page_irs)
+    empty_cell_changes = normalize_empty_table_cells(page_irs)
 
     # Insert placeholders under rowspans to prevent column drift.
-    rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs=page_irs)
+    rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs)
 
     # Fix structural "empty cell" hallucinations from the extraction model.
-    pad_changes = normalize_table_row_cell_counts(page_irs=page_irs)
+    pad_changes = normalize_table_row_cell_counts(page_irs)
 
     # Persist what was changed for audit/debug.
     write_to_json(
@@ -985,7 +992,7 @@ def postprocess_verified_page_irs(
     )
 
 
-def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
+def propagate_table_local_codes(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
     """Carry forward "Table X" codes across VERIFIED continuation boundaries.
 
     This post-pass is intentionally conservative:
@@ -1024,7 +1031,7 @@ def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str
         )
 
         page = page_irs[page_idx]
-        items = page.items or []
+        items = [it for it in (page.items or []) if not is_artifact(it)]
 
         carry_from_prev = _validate_carry_for_page(
             carry_from_prev=carry_from_prev, items=items
