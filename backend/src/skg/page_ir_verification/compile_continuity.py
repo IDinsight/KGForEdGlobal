@@ -517,6 +517,9 @@ def _deduplicate_and_sort_edge_records(
     ----------
     edge_records
         List of edge verdict records to sort, validate, and deduplicate.
+    min_confidence_to_patch
+        Minimum confidence threshold to consider an edge a "confident positive"
+        continuation for selection purposes.
 
     Returns
     -------
