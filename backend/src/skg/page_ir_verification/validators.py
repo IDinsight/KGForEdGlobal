@@ -135,6 +135,6 @@ def validate_semantic_flow(
     ):
         text_preview = next_item.text.text[:30] + "..." if next_item.text else "EMPTY"
         raise QualityError(
-            f"Invalid Text Continuation: The next item is a HEADING ('{text_preview}'). "
+            f"Invalid Text Continuation: The next item is a HEADING/CAPTION ('{text_preview}'). "
             f"Standard text does not continue directly into a heading."
         )
