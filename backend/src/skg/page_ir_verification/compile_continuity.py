@@ -335,6 +335,10 @@ def _propagate_local_codes(
         The verdict object.
     """
 
+    # Only propagate local_code for table and figure continuations. Text blocks
+    # (paragraphs, headings, lists) rarely carry local_code, and propagating across a
+    # text break risks incorrectly assigning a code from one logical block to an
+    # unrelated one.
     if verdict.continuation_kind not in {
         PageContinuationKind.TABLE,
         PageContinuationKind.FIGURE,
@@ -486,6 +490,129 @@ def _boundary_to_bools(boundary: ItemBoundary | None) -> tuple[bool, bool]:
         return False, True
 
     return False, False  # COMPLETE or None
+
+
+def _deduplicate_and_sort_edge_records(
+    *, edge_records: list[EdgeVerdictRecord], min_confidence_to_patch: float
+) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
+    """Select at most one edge record per boundary, then sort deterministically.
+
+    Continuity compilation assumes at most one selected pair per page boundary
+    (prev_page_index, next_page_index). If multiple records exist for the same
+    boundary, this function selects the "best" one and discards the others:
+
+    Selection order (highest priority first):
+
+    1. Prefer *confident positive continuations* (is_continuation=True and
+       verdict.confidence >= min_confidence_to_patch)
+    2. If no confident positives exist, select the record with the highest
+       verdict.confidence
+    3. Tie-breakers (determinism): prefer is_continuation=True, then lower
+       (prev_item_index, next_item_index)
+
+    It logs a warning for each deduplicated boundary and returns a report of the
+    discarded records for inclusion in the compile report.
+
+    Parameters
+    ----------
+    edge_records
+        List of edge verdict records to sort, validate, and deduplicate.
+
+    Returns
+    -------
+    tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]
+        (sorted_edge_records, boundary_duplicate_resolutions)
+    """
+
+    def _brief(r: EdgeVerdictRecord) -> dict[str, Any]:
+        """Helper to create a brief summary of an edge record for reporting purposes.
+
+        Parameters
+        ----------
+        r
+            The EdgeVerdictRecord to summarize.
+
+        Returns
+        -------
+        dict[str, Any]
+            A brief summary of the edge record's key attributes.
+        """
+
+        v = r.verdict
+        return {
+            "prev_index": int(r.prev_item_index),
+            "next_index": int(r.next_item_index),
+            "is_continuation": bool(v.is_continuation),
+            "continuation_kind": v.continuation_kind.value,
+            "confidence": float(v.confidence),
+        }
+
+    boundary_map: dict[tuple[int, int], list[EdgeVerdictRecord]] = {}
+    for r in edge_records:
+        boundary = (int(r.prev_page_index), int(r.next_page_index))
+        boundary_map.setdefault(boundary, []).append(r)
+
+    boundary_duplicate_resolutions: list[dict[str, Any]] = []
+    selected: list[EdgeVerdictRecord] = []
+
+    for boundary, records in sorted(boundary_map.items()):
+        if len(records) == 1:
+            selected.append(records[0])
+            continue
+
+        best = _select_best_edge_record_for_boundary(
+            min_confidence_to_patch=min_confidence_to_patch, records=records
+        )
+
+        discarded = [r for r in records if r is not best]
+        discarded = sorted(
+            discarded,
+            key=lambda r: (
+                -float(r.verdict.confidence),
+                -(1 if r.verdict.is_continuation else 0),
+                int(r.prev_item_index),
+                int(r.next_item_index),
+            ),
+        )
+
+        logger.warning(
+            f"Duplicate edge records detected for boundary {boundary}; selected "
+            f"prev_index={best.prev_item_index} next_index={best.next_item_index} "
+            f"(confidence={best.verdict.confidence}, is_continuation={best.verdict.is_continuation}) "
+            f"and discarded {len(discarded)} other record(s)."
+        )
+
+        boundary_duplicate_resolutions.append(
+            {
+                "prev_page": boundary[0],
+                "next_page": boundary[1],
+                "selected": _brief(best),
+                "discarded": [_brief(r) for r in discarded],
+                "reason": "dedupe_one_record_per_boundary_prefer_confident_positive",
+                "min_confidence_to_patch": float(min_confidence_to_patch),
+            }
+        )
+        selected.append(best)
+
+    # Sort deterministically after selection.
+    sorted_edge_records = sorted(
+        selected,
+        key=lambda r: (
+            int(r.prev_page_index),
+            int(r.next_page_index),
+            int(r.prev_item_index),
+            int(r.next_item_index),
+        ),
+    )
+
+    for r in sorted_edge_records:
+        if int(r.next_page_index) != int(r.prev_page_index) + 1:
+            logger.warning(
+                f"Non-adjacent edge record detected: {r.prev_page_index}->{r.next_page_index}. "
+                "This is unexpected for page-pair continuity verification."
+            )
+
+    return sorted_edge_records, boundary_duplicate_resolutions
 
 
 def _initialize_states(
@@ -728,6 +855,28 @@ def _reconcile_item_state(
                 page_index=page_index,
                 table=table,
             )
+
+            # When a table transitions from continuation (repeats_header=False,
+            # header_row_count=0) to COMPLETE/TRUNCATED, the zeroed header count may be
+            # a leftover artifact. That is, the original extraction may have had real
+            # header rows that were cleared during an earlier repeats_header=False
+            # patch. Flag for human review since we can't recover the correct count
+            # automatically.
+            if table.header_row_count == 0:
+                logger.warning(
+                    f"Page {page_index} item {item_index}: boundary downgraded to "
+                    f"{item.boundary.value} with header_row_count=0. This table may "
+                    f"have lost its original header count from a prior "
+                    f"repeats_header=False patch. Flagging for review."
+                )
+
+                if header_change is not None:
+                    header_change["needs_review"] = True
+                    header_change["review_reason"] = (
+                        "header_row_count=0 after boundary downgrade; may need "
+                        "manual correction"
+                    )
+
         return boundary_change, header_change
 
     # Case B: Connection exists --> Apply patch if present.
@@ -783,129 +932,6 @@ def _select_best_edge_record_for_boundary(
     )
 
 
-def _deduplicate_and_sort_edge_records(
-    edge_records: list[EdgeVerdictRecord], min_confidence_to_patch: float
-) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
-    """Select at most one edge record per boundary, then sort deterministically.
-
-    Continuity compilation assumes at most one selected pair per page boundary
-    (prev_page_index, next_page_index). If multiple records exist for the same
-    boundary, this function selects the "best" one and discards the others:
-
-    Selection order (highest priority first):
-
-    1. Prefer *confident positive continuations* (is_continuation=True and
-       verdict.confidence >= min_confidence_to_patch)
-    2. If no confident positives exist, select the record with the highest
-       verdict.confidence
-    3. Tie-breakers (determinism): prefer is_continuation=True, then lower
-       (prev_item_index, next_item_index)
-
-    It logs a warning for each deduplicated boundary and returns a report of the
-    discarded records for inclusion in the compile report.
-
-    Parameters
-    ----------
-    edge_records
-        List of edge verdict records to sort, validate, and deduplicate.
-
-    Returns
-    -------
-    tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]
-        (sorted_edge_records, boundary_duplicate_resolutions)
-    """
-
-    def _brief(r: EdgeVerdictRecord) -> dict[str, Any]:
-        """Helper to create a brief summary of an edge record for reporting purposes.
-
-        Parameters
-        ----------
-        r
-            The EdgeVerdictRecord to summarize.
-
-        Returns
-        -------
-        dict[str, Any]
-            A brief summary of the edge record's key attributes.
-        """
-
-        v = r.verdict
-        return {
-            "prev_index": int(r.prev_item_index),
-            "next_index": int(r.next_item_index),
-            "is_continuation": bool(v.is_continuation),
-            "continuation_kind": v.continuation_kind.value,
-            "confidence": float(v.confidence),
-        }
-
-    boundary_map: dict[tuple[int, int], list[EdgeVerdictRecord]] = {}
-    for r in edge_records:
-        boundary = (int(r.prev_page_index), int(r.next_page_index))
-        boundary_map.setdefault(boundary, []).append(r)
-
-    boundary_duplicate_resolutions: list[dict[str, Any]] = []
-    selected: list[EdgeVerdictRecord] = []
-
-    for boundary, records in sorted(boundary_map.items()):
-        if len(records) == 1:
-            selected.append(records[0])
-            continue
-
-        best = _select_best_edge_record_for_boundary(
-            min_confidence_to_patch=min_confidence_to_patch, records=records
-        )
-
-        discarded = [r for r in records if r is not best]
-        discarded = sorted(
-            discarded,
-            key=lambda r: (
-                -float(r.verdict.confidence),
-                -(1 if r.verdict.is_continuation else 0),
-                int(r.prev_item_index),
-                int(r.next_item_index),
-            ),
-        )
-
-        logger.warning(
-            f"Duplicate edge records detected for boundary {boundary}; selected "
-            f"prev_index={best.prev_item_index} next_index={best.next_item_index} "
-            f"(confidence={best.verdict.confidence}, is_continuation={best.verdict.is_continuation}) "
-            f"and discarded {len(discarded)} other record(s)."
-        )
-
-        boundary_duplicate_resolutions.append(
-            {
-                "prev_page": boundary[0],
-                "next_page": boundary[1],
-                "selected": _brief(best),
-                "discarded": [_brief(r) for r in discarded],
-                "reason": "dedupe_one_record_per_boundary_prefer_confident_positive",
-                "min_confidence_to_patch": float(min_confidence_to_patch),
-            }
-        )
-        selected.append(best)
-
-    # Sort deterministically after selection.
-    sorted_edge_records = sorted(
-        selected,
-        key=lambda r: (
-            int(r.prev_page_index),
-            int(r.next_page_index),
-            int(r.prev_item_index),
-            int(r.next_item_index),
-        ),
-    )
-
-    for r in sorted_edge_records:
-        if int(r.next_page_index) != int(r.prev_page_index) + 1:
-            logger.warning(
-                f"Non-adjacent edge record detected: {r.prev_page_index}->{r.next_page_index}. "
-                "This is unexpected for page-pair continuity verification."
-            )
-
-    return sorted_edge_records, boundary_duplicate_resolutions
-
-
 def compile_continuity_from_edge_verdicts(
     *,
     edge_records: list[EdgeVerdictRecord],
@@ -936,7 +962,9 @@ def compile_continuity_from_edge_verdicts(
 
     bools, effective_local_codes = _initialize_states(page_irs)
     sorted_edge_records, boundary_duplicate_resolutions = (
-        _deduplicate_and_sort_edge_records(edge_records, min_confidence_to_patch)
+        _deduplicate_and_sort_edge_records(
+            edge_records=edge_records, min_confidence_to_patch=min_confidence_to_patch
+        )
     )
 
     dirty_keys: set[tuple[int, int]] = set()
