@@ -818,14 +818,12 @@ def execute_verification_attempts(
             f"{page_index}->{page_index + 1}. Errors: {errors}"
         )
 
-    # Check if we broke early with a high confidence patch.
+    # If we broke early with a high-confidence patch (first attempt >= threshold), keep
+    # that verdict for stability.
     if successful_attempts[-1][1] >= config.min_confidence_to_patch:
         selected = successful_attempts[-1]
-    # Or, prefer the primary pair verdict (attempt 0) if it succeeded.
-    elif successful_attempts[0][0] == 0:
-        selected = successful_attempts[0]
-    # Otherwise, fall back to the best successful attempt.
     else:
+        # Otherwise, select the highest-confidence successful attempt.
         selected = max(successful_attempts, key=lambda x: x[1])
 
     _, _, selected_prev_index, selected_next_index, selected_verdict = selected
