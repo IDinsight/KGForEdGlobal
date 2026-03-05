@@ -12,7 +12,7 @@ are enforced by the model validators in `schemas.py`.
 from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
-from skg.utils.constants import BlockType, ItemBoundary, PageContinuationKind
+from skg.utils.constants import BlockType, PageContinuationKind
 
 
 def validate_item_continuation_kind(
@@ -95,6 +95,15 @@ def validate_repeats_header_requires_table_item(
     already enforced by the model validator. This function adds external constraints
     that ensure the requested patch will not violate the Table schema invariants.
 
+    NB: Table.repeats_header is only valid when next_item.boundary is RESUMED or BOTH
+    (enforced by the Table schema). However, Step 2 exists specifically because
+    extraction may have misclassified the next-page table boundary as COMPLETE even
+    when the table is clearly a continuation. We therefore allow the verifier to
+    request a repeats_header patch even if the current extracted boundary is not
+    RESUMED/BOTH. The patch application layer MUST patch table boundaries first (based
+    on the same table-continuation verdict), then apply repeats_header, and then
+    re-validate the resulting Table object to ensure schema invariants hold.
+
     Parameters
     ----------
     next_item
@@ -115,14 +124,6 @@ def validate_repeats_header_requires_table_item(
     if next_item.kind != "table":
         raise QualityError(
             "set_next_table_repeats_header is only valid when next_item is a table."
-        )
-
-    # repeats_header is only allowed on continuation pages (RESUMED or BOTH).
-    if next_item.boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
-        raise QualityError(
-            f"set_next_table_repeats_header is only valid when next_item.boundary is "
-            f"'{ItemBoundary.RESUMED.value}' or '{ItemBoundary.BOTH.value}'. "
-            f"(Got boundary='{next_item.boundary.value}'.)"
         )
 
     # Enforce Table schema invariants so the patch cannot create an invalid Table.
