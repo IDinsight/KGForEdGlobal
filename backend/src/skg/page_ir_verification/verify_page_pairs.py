@@ -25,7 +25,7 @@ from skg.page_ir_verification.utils import (
 )
 from skg.schemas import VerificationConfig
 from skg.utils.constants import BlockType, ItemBoundary
-from skg.utils.general import make_dir, open_json_type, write_to_json
+from skg.utils.general import make_dir, write_to_json
 
 
 @dataclass
@@ -951,37 +951,6 @@ def generate_candidate_pairs(
     primary_indices = {"prev_item_index": prev_index, "next_item_index": next_index}
 
     return deduped_pairs, primary_indices
-
-
-def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecord:
-    """Load a single EdgeVerdictRecord from a persisted pair report JSON.
-
-    Parameters
-    ----------
-    pair_report_fp
-        Path to the pair report JSON file (e.g., `0003_0004.json`).
-
-    Returns
-    -------
-    EdgeVerdictRecord
-        The reconstructed edge verdict record.
-
-    Raises
-    ------
-    KeyError
-        If the pair report JSON is missing required fields.
-    """
-
-    data = open_json_type(pair_report_fp)
-    verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
-    selection = data["selected_candidate_selection"]
-    return EdgeVerdictRecord(
-        next_item_index=selection["next_item_index"],
-        next_page_index=verdict.next_page_index,
-        prev_item_index=selection["prev_item_index"],
-        prev_page_index=verdict.prev_page_index,
-        verdict=verdict,
-    )
 
 
 def make_verification_excerpt(

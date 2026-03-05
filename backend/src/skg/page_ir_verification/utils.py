@@ -301,6 +301,37 @@ def is_probable_header_footer_noise(
     return False
 
 
+def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecord:
+    """Load a single EdgeVerdictRecord from a persisted pair report JSON.
+
+    Parameters
+    ----------
+    pair_report_fp
+        Path to the pair report JSON file (e.g., `0003_0004.json`).
+
+    Returns
+    -------
+    EdgeVerdictRecord
+        The reconstructed edge verdict record.
+
+    Raises
+    ------
+    KeyError
+        If the pair report JSON is missing required fields.
+    """
+
+    data = open_json_type(pair_report_fp)
+    verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
+    selection = data["selected_candidate_selection"]
+    return EdgeVerdictRecord(
+        next_item_index=selection["next_item_index"],
+        next_page_index=verdict.next_page_index,
+        prev_item_index=selection["prev_item_index"],
+        prev_page_index=verdict.prev_page_index,
+        verdict=verdict,
+    )
+
+
 def load_page_irs_from_verification(
     *, doc_key: Optional[str], verified_page_irs_dir: Path
 ) -> list[PageIR]:
@@ -410,9 +441,9 @@ def load_verification_verdicts(
 ) -> dict[tuple[int, int], EdgeVerdictRecord]:
     """Load all verification verdict JSONs and return validated EdgeVerdictRecords.
 
-    Each verdict is validated through `PageIRContinuityVerdict.model_validate()`,
-    ensuring all schema invariants (confidence thresholds, continuation_kind
-    consistency, repeats_header constraints) are enforced on loaded data.
+    Delegates to `load_edge_verdict_from_pair_report` for each file, ensuring
+    consistent parsing logic across resumed runs and batch loading. Files that fail to
+    parse or have None page indices are skipped with a warning.
 
     Parameters
     ----------
@@ -436,17 +467,10 @@ def load_verification_verdicts(
         raise NotADirectoryError(f"Verdict directory not found: {verdict_dir}")
 
     for fp in sorted(verdict_dir.glob("*.json")):
-        data = open_json_type(fp)
-        verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
-        selection = data["selected_candidate_selection"]
-
-        record = EdgeVerdictRecord(
-            next_item_index=int(selection["next_item_index"]),
-            next_page_index=verdict.next_page_index,
-            prev_item_index=int(selection["prev_item_index"]),
-            prev_page_index=verdict.prev_page_index,
-            verdict=verdict,
-        )
+        record = load_edge_verdict_from_pair_report(fp)
+        assert (
+            record.prev_page_index is not None and record.next_page_index is not None
+        ), "load_edge_verdict_from_pair_report should raise if page indices are missing"
         verdicts[(record.prev_page_index, record.next_page_index)] = record
 
     logger.info(f"Loaded {len(verdicts)} verification verdict(s) from: {verdict_dir}")
