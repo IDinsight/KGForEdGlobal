@@ -726,8 +726,8 @@ def execute_verification_attempts(
     next_crop_fp: Path,
     usage_tracker: VerificationUsageTracker,
 ) -> dict[str, Any]:
-    """Run model verification on the list of pairs until a match is found or list
-    exhausted.
+    """Execute the ordered list of verification attempts for a single page pair,
+    accumulating results and selecting the best verdict.
 
     Parameters
     ----------
@@ -786,8 +786,8 @@ def execute_verification_attempts(
             attempt_summaries.append(
                 {
                     "attempt_no": attempt_no,
-                    "prev_candidate_index": pi,
-                    "next_candidate_index": ni,
+                    "prev_item_index": pi,
+                    "next_item_index": ni,
                     "error": str(e),
                 }
             )
@@ -796,8 +796,8 @@ def execute_verification_attempts(
         attempt_summaries.append(
             {
                 "attempt_no": attempt_no,
-                "prev_candidate_index": pi,
-                "next_candidate_index": ni,
+                "prev_item_index": pi,
+                "next_item_index": ni,
                 "is_continuation": verdict.is_continuation,
                 "continuation_kind": verdict.continuation_kind.value,
                 "confidence": verdict.confidence,
@@ -922,10 +922,7 @@ def generate_candidate_pairs(
             if len(deduped_pairs) >= 9:
                 break
 
-    primary_indices = {
-        "prev_candidate_index": prev_index,
-        "next_candidate_index": next_index,
-    }
+    primary_indices = {"prev_item_index": prev_index, "next_item_index": next_index}
 
     return deduped_pairs, primary_indices
 
@@ -953,9 +950,9 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
     verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
     selection = data["selected_candidate_selection"]
     return EdgeVerdictRecord(
-        next_candidate_index=selection["next_candidate_index"],
+        next_item_index=selection["next_item_index"],
         next_page_index=verdict.next_page_index,
-        prev_candidate_index=selection["prev_candidate_index"],
+        prev_item_index=selection["prev_item_index"],
         prev_page_index=verdict.prev_page_index,
         verdict=verdict,
     )
@@ -1266,9 +1263,9 @@ def verify_single_page_pair(
     selected_verdict.prev_page_index = page_index
     selected_verdict.next_page_index = page_index + 1
     record = EdgeVerdictRecord(
-        next_candidate_index=result["selected_next_index"],
+        next_item_index=result["selected_next_index"],
         next_page_index=page_index + 1,
-        prev_candidate_index=result["selected_prev_index"],
+        prev_item_index=result["selected_prev_index"],
         prev_page_index=page_index,
         verdict=selected_verdict,
     )
