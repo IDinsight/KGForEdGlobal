@@ -50,10 +50,7 @@ def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int
     """
 
     return max(
-        (
-            sum((c.col_span or 1) for c in (r.cells or []))
-            for r in rows[:header_row_count]
-        ),
+        (sum(c.col_span for c in r.cells) for r in rows[:header_row_count]),
         default=0,
     )
 
@@ -102,8 +99,8 @@ def _insert_placeholders(
 
         new_cells.append(cell)
 
-        col_span = int(getattr(cell, "col_span", 1) or 1)
-        row_span = int(getattr(cell, "row_span", 1) or 1)
+        col_span = cell.col_span
+        row_span = cell.row_span
 
         _update_active_span(
             active_span=active_span,
@@ -224,7 +221,7 @@ def _process_table_item(
     # active_span[c] = number of FUTURE rows that still occupy column c.
     active_span = [0] * n_cols
 
-    for row_index, row in enumerate(item.rows or []):
+    for row_index, row in enumerate(item.rows):
         # Process the row without decrementing active_span yet.
         row_change = _process_table_row(active_span=active_span, n_cols=n_cols, row=row)
 
@@ -269,8 +266,8 @@ def _process_table_normalization(
     if not isinstance(n_cols, int) or n_cols <= 0:
         return []
 
-    rows = item.rows or []
-    header_row_count = int(item.header_row_count or 0)
+    rows = item.rows
+    header_row_count = item.header_row_count
 
     # Determine padding strategy based on table signals.
     pad_left = _should_pad_left(
@@ -290,8 +287,12 @@ def _process_table_normalization(
 
     # Apply normalization to rows.
     for row_index, row in enumerate(rows):
-        cells = row.cells or []
-        effective_cols = sum((cell.col_span or 1) for cell in cells)
+        # NB: `cells` is a direct reference to `row.cells` (not a copy). This is
+        # intentional: `_trim_excess_cells` mutates the list in-place via `.pop()`,
+        # which must modify the actual row. Do NOT copy `row.cells` here without
+        # also re-assigning `row.cells = cells` after trimming.
+        cells = row.cells
+        effective_cols = sum(cell.col_span for cell in cells)
 
         # Record over-wide rows (common in messy PDFs/extraction noise).
         if effective_cols > n_cols:
@@ -302,7 +303,7 @@ def _process_table_normalization(
             trimmed = _trim_excess_cells(n_cols=n_cols, new_cells=cells)
 
             after_cells = len(cells)
-            after_effective = sum((cell.col_span or 1) for cell in cells)
+            after_effective = sum(cell.col_span for cell in cells)
 
             table_changes.append(
                 {
@@ -353,6 +354,10 @@ def _process_table_row(
 ) -> dict[str, Any]:
     """Process a single row to align cells based on active rowspans.
 
+    This function only inserts placeholders for active rowspans. It does NOT trim
+    excess cells---that responsibility belongs to `normalize_table_row_cell_counts`,
+    which handles all width corrections in a single pass.
+
     Parameters
     ----------
     active_span
@@ -368,32 +373,29 @@ def _process_table_row(
         A dictionary of changes if modifications were made, otherwise empty.
     """
 
-    old_cells = list(row.cells or [])
+    old_cells = list(row.cells)
 
     # Pre-check: if the row already spans the full table width (or more), assume the
     # extraction model has already materialized any implicit rowspan occupancy. In
     # that case, skip placeholder insertion but still update `active_span` for any
     # new rowspans introduced by this row's cells.
-    old_effective = sum(int(getattr(c, "col_span", 1) or 1) for c in old_cells)
+    old_effective = sum(c.col_span for c in old_cells)
 
     if old_effective >= n_cols:
         return _update_spans_only(
             active_span=active_span, cells=old_cells, n_cols=n_cols
         )
 
-    # Insert placeholders and track changes.
+    # Insert placeholders.
     new_cells = _insert_placeholders(
         active_span=active_span, cells=old_cells, n_cols=n_cols
     )
 
-    trimmed = _trim_excess_cells(n_cols=n_cols, new_cells=new_cells)
-
-    if len(new_cells) != len(old_cells) or trimmed > 0:
+    if len(new_cells) != len(old_cells):
         row.cells = new_cells
         return {
             "before_cells": len(old_cells),
             "after_cells": len(new_cells),
-            "trimmed_trailing_placeholders": trimmed,
         }
 
     return {}
@@ -464,9 +466,7 @@ def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
     rows_for_modal = rows[header_row_count:] if header_row_count > 0 else rows
 
     full_width_rows_cells = [
-        cs
-        for r in rows_for_modal
-        if (cs := r.cells or []) and sum((c.col_span or 1) for c in cs) >= n_cols
+        r.cells for r in rows_for_modal if sum(c.col_span for c in r.cells) >= n_cols
     ]
 
     if not full_width_rows_cells:
@@ -517,13 +517,10 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
             True if the cell is a removable placeholder, False otherwise.
         """
 
-        col_span = int(getattr(cell, "col_span", 1) or 1)
-        row_span = int(getattr(cell, "row_span", 1) or 1)
-        text = getattr(cell, "text", None)
-        return col_span == 1 and row_span == 1 and text is None
+        return cell.col_span == 1 and cell.row_span == 1 and cell.text is None
 
     trimmed = 0
-    effective_cols = sum(int(getattr(c, "col_span", 1) or 1) for c in new_cells)
+    effective_cols = sum(c.col_span for c in new_cells)
 
     # Only trim *empty placeholders* and only until effective_cols fits n_cols.
     while effective_cols > n_cols and new_cells:
@@ -595,8 +592,8 @@ def _update_spans_only(
         if col >= n_cols:
             break
 
-        col_span = int(getattr(cell, "col_span", 1) or 1)
-        row_span = int(getattr(cell, "row_span", 1) or 1)
+        col_span = cell.col_span
+        row_span = cell.row_span
 
         _update_active_span(
             active_span=active_span,
@@ -667,11 +664,6 @@ def _validate_page_gap(
             )
             return None
 
-        logger.warning(
-            f"Non-contiguous page indices detected ({last_page_idx} -> {page_idx}); "
-            f"not propagating table local_codes across the gap."
-        )
-
     return carry_from_prev
 
 
@@ -695,7 +687,7 @@ def align_table_rows_with_rowspans(page_irs: dict[int, PageIR]) -> list[dict[str
     for page_index in sorted(page_irs.keys()):
         page_ir = page_irs[page_index]
 
-        for item_index, item in enumerate(page_ir.items or []):
+        for item_index, item in enumerate(page_ir.items):
             if item.kind != "table":
                 continue
 
@@ -780,8 +772,8 @@ def fix_false_truncated_prose_before_table(
         prev = page_irs[p_idx]
         nxt = page_irs[n_idx]
 
-        prev_items = [it for it in (prev.items or []) if not is_artifact(it)]
-        nxt_items = [it for it in (nxt.items or []) if not is_artifact(it)]
+        prev_items = [it for it in prev.items if not is_artifact(it)]
+        nxt_items = [it for it in nxt.items if not is_artifact(it)]
 
         if not prev_items or not nxt_items:
             continue
@@ -840,7 +832,6 @@ def fix_false_truncated_prose_before_table(
         )
         last_prev.boundary = new_boundary
         prev.boundary_state = derive_page_boundary_state(page_ir=prev)
-        nxt.boundary_state = derive_page_boundary_state(page_ir=nxt)
 
         changes.append(
             {
@@ -876,12 +867,12 @@ def normalize_empty_table_cells(page_irs: dict[int, PageIR]) -> list[dict[str, A
     for page_index in sorted(page_irs.keys()):
         page_ir = page_irs[page_index]
 
-        for item_index, item in enumerate(page_ir.items or []):
+        for item_index, item in enumerate(page_ir.items):
             if item.kind != "table":
                 continue
 
-            for row_index, row in enumerate(item.rows or []):
-                for cell_index, cell in enumerate(row.cells or []):
+            for row_index, row in enumerate(item.rows):
+                for cell_index, cell in enumerate(row.cells):
                     text_or_none = cell.text
 
                     if (
@@ -925,7 +916,7 @@ def normalize_table_row_cell_counts(
     changes: list[dict[str, Any]] = []
 
     for page_index, page_ir in sorted(page_irs.items()):
-        for item_index, item in enumerate(page_ir.items or []):
+        for item_index, item in enumerate(page_ir.items):
             if item.kind != "table":
                 continue
 
@@ -1031,7 +1022,7 @@ def propagate_table_local_codes(page_irs: dict[int, PageIR]) -> list[dict[str, A
         )
 
         page = page_irs[page_idx]
-        items = [it for it in (page.items or []) if not is_artifact(it)]
+        items = [it for it in page.items if not is_artifact(it)]
 
         carry_from_prev = _validate_carry_for_page(
             carry_from_prev=carry_from_prev, items=items

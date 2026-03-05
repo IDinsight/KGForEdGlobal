@@ -61,7 +61,7 @@ from skg.document_ir.utils import (
 )
 from skg.page_ir_extraction.schemas import Block, PageIR, Table
 from skg.page_ir_verification.utils import (
-    VerificationVerdict,
+    EdgeVerdictRecord,
     load_page_irs_from_verification,
     load_verification_verdicts,
 )
@@ -80,7 +80,7 @@ def stitch_document_ir(
     page_irs: list[PageIR],
     pdf_name: str,
     stitching_dirs: DocumentIRDirs,
-    verdicts: dict[tuple[int, int], VerificationVerdict],
+    verdicts: dict[tuple[int, int], EdgeVerdictRecord],
 ) -> None:
     """Stitch verified PageIRs into a single DocumentIR.
 

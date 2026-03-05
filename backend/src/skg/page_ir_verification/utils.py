@@ -45,42 +45,6 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
-@dataclass(frozen=True)
-class VerificationVerdict:
-    """Parsed verdict from the page-pair verification step.
-
-    Fields
-    ------
-    confidence
-        Model confidence in the verdict (0.0–1.0).
-    continuation_kind
-        The kind of continuation ('table', 'text', 'figure', or None).
-    is_continuation
-        Whether the page pair contains a cross-page continuation.
-    next_item_index
-        Original item index in PageIR.items on the next page (from
-        selected_candidate_selection.next_item_index).
-    next_page_index
-        0-based page index of the next page.
-    prev_item_index
-        Original item index in PageIR.items on the previous page (from
-        selected_candidate_selection.prev_item_index).
-    prev_page_index
-        0-based page index of the previous page.
-    set_next_table_repeats_header
-        If not None, override the next table's repeats_header flag with this value.
-    """
-
-    confidence: float
-    continuation_kind: Optional[str]
-    is_continuation: bool
-    next_item_index: int
-    next_page_index: int
-    prev_item_index: int
-    prev_page_index: int
-    set_next_table_repeats_header: Optional[bool]
-
-
 def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationDirs:
     """Create page IR verification directories for a given verification run.
 
@@ -231,7 +195,7 @@ def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
         The derived page-level boundary state.
     """
 
-    items = page_ir.items or []
+    items = page_ir.items
     image_height = page_ir.image_height
 
     candidates = [
@@ -443,8 +407,12 @@ def load_page_irs_from_verification(
 
 def load_verification_verdicts(
     verdict_dir: Path,
-) -> dict[tuple[int, int], VerificationVerdict]:
-    """Load all verification verdict JSONs.
+) -> dict[tuple[int, int], EdgeVerdictRecord]:
+    """Load all verification verdict JSONs and return validated EdgeVerdictRecords.
+
+    Each verdict is validated through `PageIRContinuityVerdict.model_validate()`,
+    ensuring all schema invariants (confidence thresholds, continuation_kind
+    consistency, repeats_header constraints) are enforced on loaded data.
 
     Parameters
     ----------
@@ -453,8 +421,8 @@ def load_verification_verdicts(
 
     Returns
     -------
-    dict[tuple[int, int], VerificationVerdict]
-        Mapping of `(prev_page_index, next_page_index)` to parsed verdict.
+    dict[tuple[int, int], EdgeVerdictRecord]
+        Mapping of (prev_page_index, next_page_index) to validated record.
 
     Raises
     ------
@@ -462,28 +430,24 @@ def load_verification_verdicts(
         If the specified verdict_dir is not a directory.
     """
 
-    verdicts: dict[tuple[int, int], VerificationVerdict] = {}
+    verdicts: dict[tuple[int, int], EdgeVerdictRecord] = {}
 
     if not verdict_dir.is_dir():
         raise NotADirectoryError(f"Verdict directory not found: {verdict_dir}")
 
     for fp in sorted(verdict_dir.glob("*.json")):
         data = open_json_type(fp)
-        verdict_data = data["verdict"]
+        verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
         selection = data["selected_candidate_selection"]
-        next_item_index = int(selection["next_item_index"])
-        prev_item_index = int(selection["prev_item_index"])
-        verdict = VerificationVerdict(
-            confidence=float(verdict_data["confidence"]),
-            continuation_kind=verdict_data["continuation_kind"],
-            is_continuation=bool(verdict_data["is_continuation"]),
-            next_item_index=next_item_index,
-            next_page_index=int(verdict_data["next_page_index"]),
-            prev_item_index=prev_item_index,
-            prev_page_index=int(verdict_data["prev_page_index"]),
-            set_next_table_repeats_header=verdict_data["set_next_table_repeats_header"],
+
+        record = EdgeVerdictRecord(
+            next_item_index=int(selection["next_item_index"]),
+            next_page_index=verdict.next_page_index,
+            prev_item_index=int(selection["prev_item_index"]),
+            prev_page_index=verdict.prev_page_index,
+            verdict=verdict,
         )
-        verdicts[(verdict.prev_page_index, verdict.next_page_index)] = verdict
+        verdicts[(record.prev_page_index, record.next_page_index)] = record
 
     logger.info(f"Loaded {len(verdicts)} verification verdict(s) from: {verdict_dir}")
 
