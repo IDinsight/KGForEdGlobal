@@ -143,19 +143,29 @@ def _apply_edge_verdicts(
             )
             continue
 
-        if should_apply:
-            _mutate_for_edge(
-                bools=bools,
-                dirty_keys=dirty_keys,
-                effective_local_codes=effective_local_codes,
-                local_code_conflicts=local_code_conflicts,
-                local_code_patch=local_code_patch,
-                local_code_propagation_conflicts=local_code_propagation_conflicts,
-                next_key=next_key,
-                prev_key=prev_key,
-                record=record,
-                repeats_header_patch=repeats_header_patch,
+        if not should_apply:
+            applied_edges.append(
+                _make_edge_summary(
+                    record=record,
+                    should_apply=should_apply,
+                    skip_reason="below_confidence_threshold",
+                    skipped=True,
+                )
             )
+            continue
+
+        _mutate_for_edge(
+            bools=bools,
+            dirty_keys=dirty_keys,
+            effective_local_codes=effective_local_codes,
+            local_code_conflicts=local_code_conflicts,
+            local_code_patch=local_code_patch,
+            local_code_propagation_conflicts=local_code_propagation_conflicts,
+            next_key=next_key,
+            prev_key=prev_key,
+            record=record,
+            repeats_header_patch=repeats_header_patch,
+        )
 
         applied_edges.append(
             _make_edge_summary(
@@ -186,7 +196,8 @@ def _make_edge_summary(
     skip_reason
         Reason for skipping, if applicable.
     skipped
-        Whether the verdict was skipped entirely.
+        Whether the verdict was skipped entirely (e.g., missing keys or below
+        threshold).
 
     Returns
     -------
@@ -736,8 +747,45 @@ def _reconcile_item_state(
     return boundary_change, header_change
 
 
+def _select_best_edge_record_for_boundary(
+    *, min_confidence_to_patch: float, records: list[EdgeVerdictRecord]
+) -> EdgeVerdictRecord:
+    """Select the best edge record for a single page boundary.
+
+    Mirrors verify_page_pairs.execute_verification_attempts:
+
+    1. Prefer confident positive continuations (is_continuation=True and
+        verdict.confidence >= min_confidence_to_patch).
+    2. If no confident positive exists, select the highest-confidence record overall.
+    3. Deterministic tie-breakers: prefer is_continuation=True, then lower
+        (prev_item_index, next_item_index).
+    """
+
+    if not records:
+        raise ValueError("records must be non-empty")
+
+    confident_positives = [
+        r
+        for r in records
+        if bool(r.verdict.is_continuation)
+        and float(r.verdict.confidence) >= float(min_confidence_to_patch)
+    ]
+    candidates = confident_positives if confident_positives else records
+
+    return max(
+        candidates,
+        key=lambda r: (
+            float(r.verdict.confidence),
+            1 if bool(r.verdict.is_continuation) else 0,
+            -int(r.prev_item_index),
+            -int(r.next_item_index),
+        ),
+    )
+
+
 def _sort_and_validate_edge_records(
     edge_records: list[EdgeVerdictRecord],
+    min_confidence_to_patch: float,
 ) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
     """Select at most one edge record per boundary, then sort deterministically.
 
@@ -747,9 +795,12 @@ def _sort_and_validate_edge_records(
 
     Selection order (highest priority first):
 
-    1. Higher verdict.confidence
-    2. Prefer is_continuation=True when confidence ties
-    3. Lower (prev_item_index, next_item_index) to keep determinism
+    1. Prefer *confident positive continuations* (is_continuation=True and
+       verdict.confidence >= min_confidence_to_patch)
+    2. If no confident positives exist, select the record with the highest
+       verdict.confidence
+    3. Tie-breakers (determinism): prefer is_continuation=True, then lower
+       (prev_item_index, next_item_index)
 
     It logs a warning for each deduplicated boundary and returns a report of the
     discarded records for inclusion in the compile report.
@@ -801,8 +852,13 @@ def _sort_and_validate_edge_records(
             selected.append(records[0])
             continue
 
-        ranked = sorted(
-            records,
+        best = _select_best_edge_record_for_boundary(
+            min_confidence_to_patch=min_confidence_to_patch, records=records
+        )
+
+        discarded = [r for r in records if r is not best]
+        discarded = sorted(
+            discarded,
             key=lambda r: (
                 -float(r.verdict.confidence),
                 -(1 if r.verdict.is_continuation else 0),
@@ -810,8 +866,6 @@ def _sort_and_validate_edge_records(
                 int(r.next_item_index),
             ),
         )
-        best = ranked[0]
-        discarded = ranked[1:]
 
         logger.warning(
             f"Duplicate edge records detected for boundary {boundary}; selected "
@@ -826,7 +880,8 @@ def _sort_and_validate_edge_records(
                 "next_page": boundary[1],
                 "selected": _brief(best),
                 "discarded": [_brief(r) for r in discarded],
-                "reason": "dedupe_one_record_per_boundary",
+                "reason": "dedupe_one_record_per_boundary_prefer_confident_positive",
+                "min_confidence_to_patch": float(min_confidence_to_patch),
             }
         )
         selected.append(best)
@@ -882,7 +937,7 @@ def compile_continuity_from_edge_verdicts(
 
     bools, effective_local_codes = _initialize_states(page_irs)
     sorted_edge_records, boundary_duplicate_resolutions = (
-        _sort_and_validate_edge_records(edge_records)
+        _sort_and_validate_edge_records(edge_records, min_confidence_to_patch)
     )
 
     dirty_keys: set[tuple[int, int]] = set()
