@@ -321,11 +321,25 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
     ------
     KeyError
         If the pair report JSON is missing required fields.
+    ValueError
+        If the verdict in the pair report JSON is missing page indices, which indicates
+        it was written by an older pipeline version. In this case, re-run verification
+        for this page pair to populate the missing fields.
     """
 
     data = open_json_type(pair_report_fp)
     verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
     selection = data["selected_candidate_selection"]
+
+    if verdict.prev_page_index is None or verdict.next_page_index is None:
+        raise ValueError(
+            f"Pair report {pair_report_fp.name} has null page indices in verdict "
+            f"(prev_page_index={verdict.prev_page_index}, "
+            f"next_page_index={verdict.next_page_index}). This usually means the "
+            f"report was written by an older pipeline version that did not populate "
+            f"these fields. Re-run verification for this page pair."
+        )
+
     return EdgeVerdictRecord(
         next_item_index=selection["next_item_index"],
         next_page_index=verdict.next_page_index,
