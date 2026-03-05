@@ -45,12 +45,12 @@ from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
     PageIRVerificationDirs,
     cross_check_extraction_run,
+    load_edge_verdict_from_pair_report,
     persist_verification_run,
     save_verified_page_irs,
 )
 from skg.page_ir_verification.verify_page_pairs import (
     VerificationUsageTracker,
-    load_edge_verdict_from_pair_report,
     verify_single_page_pair,
 )
 from skg.schemas import RunConfig, RunCtx, VerificationConfig

@@ -124,7 +124,7 @@ def _process_page_tables(
     *,
     carry_from_prev: str | None,
     changes: list[dict[str, Any]],
-    items: list[Any],
+    items: list[tuple[int, Block | Table]],
     page_idx: int,
 ) -> str | None:
     """Process tables on a page, applying carried codes and finding the next carry.
@@ -136,7 +136,7 @@ def _process_page_tables(
     changes
         The list of changes to append mutations to.
     items
-        The list of items on the current page.
+        The list of (original_item_index, item) tuples on the current page.
     page_idx
         The index of the current page.
 
@@ -149,9 +149,7 @@ def _process_page_tables(
     carry_to_next: str | None = None
     applied_prev_carry = False
 
-    for item_index, item in (
-        (i, itm) for i, itm in enumerate(items) if itm.kind == "table"
-    ):
+    for item_index, item in ((i, itm) for i, itm in items if itm.kind == "table"):
         boundary = item.boundary
         is_resumed = boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
         is_truncated = boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
@@ -351,7 +349,7 @@ def _process_table_normalization(
 
 def _process_table_row(
     *, active_span: list[int], n_cols: int, row: TableRow
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Process a single row to align cells based on active rowspans.
 
     This function only inserts placeholders for active rowspans. It does NOT trim
@@ -369,8 +367,8 @@ def _process_table_row(
 
     Returns
     -------
-    dict[str, Any]
-        A dictionary of changes if modifications were made, otherwise empty.
+    dict[str, Any] | None
+        A dictionary of changes if modifications were made, otherwise None.
     """
 
     old_cells = list(row.cells)
@@ -382,9 +380,8 @@ def _process_table_row(
     old_effective = sum(c.col_span for c in old_cells)
 
     if old_effective >= n_cols:
-        return _update_spans_only(
-            active_span=active_span, cells=old_cells, n_cols=n_cols
-        )
+        _update_spans_only(active_span=active_span, cells=old_cells, n_cols=n_cols)
+        return None
 
     # Insert placeholders.
     new_cells = _insert_placeholders(
@@ -398,16 +395,18 @@ def _process_table_row(
             "after_cells": len(new_cells),
         }
 
-    return {}
+    return None
 
 
-def _seed_carry_from_caption(items: list[Any]) -> str | None:
+def _seed_carry_from_caption(
+    items: list[tuple[int, Block | Table]],
+) -> str | None:
     """Attempt to find a table code from a caption before the first resumed table.
 
     Parameters
     ----------
     items
-        The list of items on the current page.
+        The list of (original_item_index, item) tuples on the current page.
 
     Returns
     -------
@@ -415,10 +414,10 @@ def _seed_carry_from_caption(items: list[Any]) -> str | None:
         The discovered caption code, or None if not found.
     """
 
-    first_relevant_table_index = next(
+    first_relevant_table_pos = next(
         (
-            j
-            for j, item in enumerate(items)
+            pos
+            for pos, (_, item) in enumerate(items)
             if item.kind == "table"
             and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
             and not (item.local_code or "").strip()
@@ -426,8 +425,8 @@ def _seed_carry_from_caption(items: list[Any]) -> str | None:
         None,
     )
 
-    if first_relevant_table_index is not None:
-        caption_scope = items[:first_relevant_table_index]
+    if first_relevant_table_pos is not None:
+        caption_scope = [item for _, item in items[:first_relevant_table_pos]]
         caption_code = find_caption_code(caption_scope)
 
         if caption_code:
@@ -565,7 +564,7 @@ def _update_active_span(
 
 def _update_spans_only(
     *, active_span: list[int], cells: list[Any], n_cols: int
-) -> dict[str, Any]:
+) -> None:
     """Update active spans without inserting new placeholder cells.
 
     Parameters
@@ -576,11 +575,6 @@ def _update_spans_only(
         The list of original table cells.
     n_cols
         The total number of columns in the table.
-
-    Returns
-    -------
-    dict[str, Any]
-        An empty dictionary indicating no cell structural changes were made.
     """
 
     col = 0
@@ -604,11 +598,9 @@ def _update_spans_only(
         )
         col += col_span
 
-    return {}
-
 
 def _validate_carry_for_page(
-    *, carry_from_prev: str | None, items: list[Any]
+    *, carry_from_prev: str | None, items: list[tuple[int, Block | Table]]
 ) -> str | None:
     """Drop the carried code if the current page has no resumed tables.
 
@@ -617,7 +609,7 @@ def _validate_carry_for_page(
     carry_from_prev
         The code carried from the previous page.
     items
-        The list of items on the current page.
+        The list of (original_item_index, item) tuples on the current page.
 
     Returns
     -------
@@ -628,7 +620,7 @@ def _validate_carry_for_page(
     if carry_from_prev is not None and not any(
         item.kind == "table"
         and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-        for item in items
+        for _, item in items
     ):
         return None
 
@@ -1022,7 +1014,7 @@ def propagate_table_local_codes(page_irs: dict[int, PageIR]) -> list[dict[str, A
         )
 
         page = page_irs[page_idx]
-        items = [it for it in page.items if not is_artifact(it)]
+        items = [(i, it) for i, it in enumerate(page.items) if not is_artifact(it)]
 
         carry_from_prev = _validate_carry_for_page(
             carry_from_prev=carry_from_prev, items=items
