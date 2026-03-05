@@ -783,9 +783,8 @@ def _select_best_edge_record_for_boundary(
     )
 
 
-def _sort_and_validate_edge_records(
-    edge_records: list[EdgeVerdictRecord],
-    min_confidence_to_patch: float,
+def _deduplicate_and_sort_edge_records(
+    edge_records: list[EdgeVerdictRecord], min_confidence_to_patch: float
 ) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
     """Select at most one edge record per boundary, then sort deterministically.
 
@@ -937,7 +936,7 @@ def compile_continuity_from_edge_verdicts(
 
     bools, effective_local_codes = _initialize_states(page_irs)
     sorted_edge_records, boundary_duplicate_resolutions = (
-        _sort_and_validate_edge_records(edge_records, min_confidence_to_patch)
+        _deduplicate_and_sort_edge_records(edge_records, min_confidence_to_patch)
     )
 
     dirty_keys: set[tuple[int, int]] = set()
