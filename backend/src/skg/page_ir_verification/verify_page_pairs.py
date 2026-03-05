@@ -428,9 +428,22 @@ def _make_table_excerpt(
     header_rows = rows[: min(header_row_count, preview_rows)]
     body_rows = rows[header_row_count:]
     top_body = body_rows[:preview_rows]
-    bottom_body = (
-        body_rows[-preview_rows:] if len(body_rows) > (2 * preview_rows) else []
-    )
+
+    # Show bottom rows whenever the table extends beyond the top preview, but
+    # de-duplicate any overlap (small tables where top and bottom slices intersect).
+    if len(body_rows) > preview_rows:
+        bottom_slice = body_rows[-preview_rows:]
+
+        # Only keep rows from the bottom slice that aren't already in the top slice.
+        top_end_index = preview_rows  # index into body_rows
+        bottom_start_index = len(body_rows) - preview_rows
+        bottom_body = (
+            bottom_slice
+            if bottom_start_index >= top_end_index
+            else body_rows[top_end_index:]
+        )
+    else:
+        bottom_body = []
 
     return {
         "kind": "table",
@@ -807,8 +820,13 @@ def execute_verification_attempts(
 
         successful_attempts.append((attempt_no, verdict.confidence, pi, ni, verdict))
 
-        # Early exit on high confidence.
-        if verdict.confidence >= config.min_confidence_to_patch:
+        # Early exit only when we find a confident positive continuation. A confident
+        # "no continuation" on the primary pair should NOT prevent us from trying
+        # alternate candidate pairs that may reveal the true continuation.
+        if (
+            verdict.is_continuation
+            and verdict.confidence >= config.min_confidence_to_patch
+        ):
             break
 
     if not successful_attempts:
@@ -818,12 +836,20 @@ def execute_verification_attempts(
             f"{page_index}->{page_index + 1}. Errors: {errors}"
         )
 
-    # If we broke early with a high-confidence patch (first attempt >= threshold), keep
-    # that verdict for stability.
-    if successful_attempts[-1][1] >= config.min_confidence_to_patch:
-        selected = successful_attempts[-1]
+    # Selection: prefer confident positive continuations over confident negatives. A
+    # high-confidence "no continuation" is less trustworthy than a moderate-confidence
+    # "yes continuation" found on an alternate pair.
+    confident_positives = [
+        a
+        for a in successful_attempts
+        if a[4].is_continuation and a[1] >= config.min_confidence_to_patch
+    ]
+
+    if confident_positives:
+        # Among confident positives, pick the highest confidence.
+        selected = max(confident_positives, key=lambda x: x[1])
     else:
-        # Otherwise, select the highest-confidence successful attempt.
+        # No confident positive found--pick highest confidence overall.
         selected = max(successful_attempts, key=lambda x: x[1])
 
     _, _, selected_prev_index, selected_next_index, selected_verdict = selected

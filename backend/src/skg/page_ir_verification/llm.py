@@ -262,20 +262,13 @@ def verify_page_ir_pairs(
         f"{validation_verdict.rationale[:300]}"
     )
 
-    if validation_verdict.corrected_verdict is not None:
-        logger.info(
-            f"Pages {prev_page_index}-{next_page_index}: using corrected verdict "
-            f"from validation agent."
-        )
-        return validation_verdict.corrected_verdict
-
-    # Defensive fallback (schema validators should prevent this).
-    logger.warning(
-        f"Pages {prev_page_index}-{next_page_index}: validation agent did not "
-        f"provide corrected_verdict. Returning original verification verdict."
+    # Schema guarantees corrected_verdict is non-null when passed=false.
+    logger.info(
+        f"Pages {prev_page_index}-{next_page_index}: using corrected verdict "
+        f"from validation agent."
     )
 
-    return verdict
+    return validation_verdict.corrected_verdict
 
 
 def verify_page_ir_continuity_verdict(
@@ -306,4 +299,4 @@ def verify_page_ir_continuity_verdict(
         next_item=next_item, prev_item=prev_item, verdict=verdict
     )
     validate_repeats_header_requires_table_item(next_item=next_item, verdict=verdict)
-    validate_semantic_flow(next_item=next_item, verdict=verdict)
+    validate_semantic_flow(next_item=next_item, prev_item=prev_item, verdict=verdict)
