@@ -1198,7 +1198,7 @@ def verify_single_page_pair(
 
     prev_page_ir, next_page_ir = page_irs[page_index], page_irs[page_index + 1]
 
-    # Skip if either page has no items
+    # Skip if either page has no items.
     if not (prev_page_ir.items and next_page_ir.items):
         logger.warning(
             f"Skipping continuity check for pages {page_index}-{page_index + 1}: "
@@ -1207,16 +1207,14 @@ def verify_single_page_pair(
         )
         return None
 
-    # Select the primary next candidate on the FULL next page (no crop restriction),
-    # then crop page N+1 down to just below that candidate (+ padding).
+    # Select the primary next candidate on the FULL next page (N + 1) without any crop
+    # restrictions, then crop page N + 1 down to just below that candidate (+ padding).
     prev_items = prev_page_ir.items
     next_items = next_page_ir.items
-
     prev_candidates = bottom_continuity_candidates(
         image_height=prev_page_ir.image_height, items=prev_items
     )
     _, prev_item = prev_candidates[0]
-
     next_candidates_primary_full = top_continuity_candidates_paired(
         image_height=next_page_ir.image_height,
         items=next_items,
