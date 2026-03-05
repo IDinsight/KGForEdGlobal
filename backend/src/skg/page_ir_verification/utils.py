@@ -59,12 +59,12 @@ class VerificationVerdict:
         Whether the page pair contains a cross-page continuation.
     next_item_index
         Original item index in PageIR.items on the next page (from
-        selected_candidate_selection.next_candidate_index). None if absent.
+        selected_candidate_selection.next_item_index).
     next_page_index
         0-based page index of the next page.
     prev_item_index
         Original item index in PageIR.items on the previous page (from
-        selected_candidate_selection.prev_candidate_index). None if absent.
+        selected_candidate_selection.prev_item_index).
     prev_page_index
         0-based page index of the previous page.
     set_next_table_repeats_header
@@ -74,9 +74,9 @@ class VerificationVerdict:
     confidence: float
     continuation_kind: Optional[str]
     is_continuation: bool
-    next_item_index: Optional[int]
+    next_item_index: int
     next_page_index: int
-    prev_item_index: Optional[int]
+    prev_item_index: int
     prev_page_index: int
     set_next_table_repeats_header: Optional[bool]
 
@@ -155,6 +155,18 @@ def cross_check_extraction_run(
             range.
     """
 
+    if start_page < 0 or end_page < 0:
+        raise ValueError(
+            f"start_page and end_page must be non-negative "
+            f"(got start_page={start_page}, end_page={end_page})."
+        )
+
+    if start_page >= end_page:
+        raise ValueError(
+            f"start_page must be less than end_page "
+            f"(got start_page={start_page}, end_page={end_page})."
+        )
+
     if not compare_directories(page_images_dir, page_irs_dir):
         raise ValueError(
             f"Page images and page IR directories do not have matching files:\n"
@@ -181,6 +193,14 @@ def cross_check_extraction_run(
 
     start = max(start_page, page_indices[0])
     end = min(end_page, page_indices[-1] + 1)  # +1 because end is exclusive
+
+    if start >= end:
+        raise ValueError(
+            f"Requested verification range [{start_page}, {end_page}) does not overlap "
+            f"available extracted pages [{page_indices[0]}, {page_indices[-1] + 1}). "
+            f"Computed range after clamping is [{start}, {end}), which is empty. "
+            f"Adjust start_page/end_page or re-run extraction."
+        )
 
     # Continuity verification requires every page in [start, end) to exist.
     required = set(range(start, end))
@@ -262,7 +282,12 @@ def is_artifact(item: Block | Table) -> bool:
 def is_probable_header_footer_noise(
     *, image_height: float, item: Block | Table
 ) -> bool:
-    """Heuristic to exclude common header/footer noise (page numbers, running headers).
+    """Heuristic to exclude common header/footer noise, primarily page-number-like
+    tokens.
+
+    This heuristic is intentionally conservative: it targets short page-number patterns
+    near the top/bottom margins and does not attempt to remove arbitrary running
+    headers.
 
     Parameters
     ----------
@@ -446,14 +471,15 @@ def load_verification_verdicts(
         data = open_json_type(fp)
         verdict_data = data["verdict"]
         selection = data["selected_candidate_selection"]
-
+        next_item_index = int(selection["next_item_index"])
+        prev_item_index = int(selection["prev_item_index"])
         verdict = VerificationVerdict(
             confidence=float(verdict_data["confidence"]),
             continuation_kind=verdict_data["continuation_kind"],
             is_continuation=bool(verdict_data["is_continuation"]),
-            next_item_index=selection["next_candidate_index"],
+            next_item_index=next_item_index,
             next_page_index=int(verdict_data["next_page_index"]),
-            prev_item_index=selection["prev_candidate_index"],
+            prev_item_index=prev_item_index,
             prev_page_index=int(verdict_data["prev_page_index"]),
             set_next_table_repeats_header=verdict_data["set_next_table_repeats_header"],
         )
