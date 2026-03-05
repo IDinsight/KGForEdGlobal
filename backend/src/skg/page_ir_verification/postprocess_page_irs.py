@@ -112,6 +112,78 @@ def _insert_placeholders(
     return new_cells
 
 
+def _process_page_tables(
+    *,
+    carry_from_prev: str | None,
+    changes: list[dict[str, Any]],
+    items: list[Any],
+    page_idx: int,
+) -> str | None:
+    """Process tables on a page, applying carried codes and finding the next carry.
+
+    Parameters
+    ----------
+    carry_from_prev
+        The code carried from the previous page.
+    changes
+        The list of changes to append mutations to.
+    items
+        The list of items on the current page.
+    page_idx
+        The index of the current page.
+
+    Returns
+    -------
+    str | None
+        The code to carry forward to the next page.
+    """
+
+    carry_to_next: str | None = None
+    applied_prev_carry = False
+
+    for item_index, item in (
+        (i, itm) for i, itm in enumerate(items) if itm.kind == "table"
+    ):
+        boundary = item.boundary
+        is_resumed = boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+        is_truncated = boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+        code = (item.local_code or "").strip()
+
+        # Fill missing code on a resumed table from the previous page's carry.
+        if is_resumed and not code and carry_from_prev and not applied_prev_carry:
+            item.local_code = carry_from_prev
+            code = carry_from_prev
+            applied_prev_carry = True
+            changes.append(
+                {
+                    "item_index": item_index,
+                    "page": page_idx,
+                    "set_local_code": carry_from_prev,
+                    "type": "propagate_table_local_code",
+                }
+            )
+        elif (
+            is_resumed
+            and code
+            and carry_from_prev
+            and code != carry_from_prev
+            and not applied_prev_carry
+        ):
+            logger.warning(
+                f"Table local_code conflict on page {page_idx} item {item_index}: "
+                f"carried '{carry_from_prev}' from previous page but table already has "
+                f"'{code}' — keeping existing and NOT applying carried code to any other "
+                f"resumed tables on this page."
+            )
+            applied_prev_carry = True  # Consume the carry for this page
+
+        # Decide what we carry forward to the NEXT page.
+        if is_truncated and code:
+            carry_to_next = code
+
+    return carry_to_next
+
+
 def _process_table_item(
     *, item: Table, item_index: int, page_index: int
 ) -> list[dict[str, Any]]:
@@ -287,15 +359,13 @@ def _process_table_row(
 
     old_cells = list(row.cells or [])
 
-    # Pre-check: if the row's effective width plus the number of columns occupied by
-    # active rowspans already meets or exceeds n_cols, the extraction model correctly
-    # accounted for the spans. Skip placeholder insertion but still update active_span
-    # for any new rowspans introduced by this row's cells.m
+    # Pre-check: if the row already spans the full table width (or more), assume the
+    # extraction model has already materialized any implicit rowspan occupancy. In
+    # that case, skip placeholder insertion but still update `active_span` for any
+    # new rowspans introduced by this row's cells.
     old_effective = sum(int(getattr(c, "col_span", 1) or 1) for c in old_cells)
-    active_occupied = sum(1 for s in active_span if s > 0)
 
-    # Extraction model correctly accounted for the spans.
-    if old_effective + active_occupied >= n_cols:
+    if old_effective >= n_cols:
         return _update_spans_only(
             active_span=active_span, cells=old_cells, n_cols=n_cols
         )
@@ -316,6 +386,41 @@ def _process_table_row(
         }
 
     return {}
+
+
+def _seed_carry_from_caption(items: list[Any]) -> str | None:
+    """Attempt to find a table code from a caption before the first resumed table.
+
+    Parameters
+    ----------
+    items
+        The list of items on the current page.
+
+    Returns
+    -------
+    str | None
+        The discovered caption code, or None if not found.
+    """
+
+    first_relevant_table_index = next(
+        (
+            j
+            for j, item in enumerate(items)
+            if item.kind == "table"
+            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            and not (item.local_code or "").strip()
+        ),
+        None,
+    )
+
+    if first_relevant_table_index is not None:
+        caption_scope = items[:first_relevant_table_index]
+        caption_code = find_caption_code(caption_scope)
+
+        if caption_code:
+            return caption_code.strip() or None
+
+    return None
 
 
 def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
@@ -494,6 +599,71 @@ def _update_spans_only(
     return {}
 
 
+def _validate_carry_for_page(
+    *, carry_from_prev: str | None, items: list[Any]
+) -> str | None:
+    """Drop the carried code if the current page has no resumed tables.
+
+    Parameters
+    ----------
+    carry_from_prev
+        The code carried from the previous page.
+    items
+        The list of items on the current page.
+
+    Returns
+    -------
+    str | None
+        The updated carried code.
+    """
+
+    if carry_from_prev is not None and not any(
+        item.kind == "table"
+        and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+        for item in items
+    ):
+        return None
+
+    return carry_from_prev
+
+
+def _validate_page_gap(
+    *, carry_from_prev: str | None, last_page_idx: int | None, page_idx: int
+) -> str | None:
+    """Clear the carried code if a gap is detected between the current and last page.
+
+    Parameters
+    ----------
+    carry_from_prev
+        The code carried from the previous page.
+    last_page_idx
+        The index of the last processed page.
+    page_idx
+        The index of the current page.
+
+    Returns
+    -------
+    str | None
+        The updated carried code.
+    """
+
+    if last_page_idx is not None and page_idx != last_page_idx + 1:
+        if carry_from_prev is not None:
+            logger.warning(
+                f"Non-contiguous page indices detected ({last_page_idx} -> {page_idx}); "
+                f"dropping carried table local_code '{carry_from_prev}' and not "
+                f"propagating across the gap."
+            )
+            return None
+
+        logger.warning(
+            f"Non-contiguous page indices detected ({last_page_idx} -> {page_idx}); "
+            f"not propagating table local_codes across the gap."
+        )
+
+    return carry_from_prev
+
+
 def align_table_rows_with_rowspans(
     *, page_irs: dict[int, PageIR]
 ) -> list[dict[str, Any]]:
@@ -588,6 +758,16 @@ def fix_false_truncated_prose_before_table(
     for i in range(len(page_indices) - 1):
         p_idx = page_indices[i]
         n_idx = page_indices[i + 1]
+
+        # This post-pass assumes contiguous pages. If we're running on a sparse subset
+        # of pages, skip cross-page inference across gaps.
+        if n_idx != p_idx + 1:
+            logger.warning(
+                f"Non-contiguous page indices detected ({p_idx} -> {n_idx}); "
+                f"skipping prose/table false-truncation fix across the gap."
+            )
+            continue
+
         prev = page_irs[p_idx]
         nxt = page_irs[n_idx]
 
@@ -668,9 +848,10 @@ def fix_false_truncated_prose_before_table(
 def normalize_empty_table_cells_to_null(
     *, page_irs: dict[int, PageIR]
 ) -> list[dict[str, Any]]:
-    """Convert visually-empty table cell text like '' / ' ' / '\\n' into text=None.
+    """Normalize visually-empty table cell TextUnit text like '' / ' ' / '\\n' into
+    text='' while preserving the TextUnit object (and its provenance such as bbox).
     This stabilizes rowspan logic and downstream canonicalization by making emptiness
-    explicit.
+    explicit without dropping metadata.
 
     Parameters
     ----------
@@ -687,6 +868,7 @@ def normalize_empty_table_cells_to_null(
 
     for page_index in sorted(page_irs.keys()):
         page_ir = page_irs[page_index]
+
         for item_index, item in enumerate(page_ir.items or []):
             if item.kind != "table":
                 continue
@@ -694,18 +876,21 @@ def normalize_empty_table_cells_to_null(
             for row_index, row in enumerate(item.rows or []):
                 for cell_index, cell in enumerate(row.cells or []):
                     text_or_none = cell.text
+
                     if (
                         isinstance(text_or_none, TextUnit)
                         and not (text_or_none.text or "").strip()
                     ):
-                        cell.text = None
+                        before_text = text_or_none.text
+                        text_or_none.text = ""
                         changes.append(
                             {
-                                "type": "empty_string_cell_to_null",
+                                "type": "normalize_empty_string_cell_text",
                                 "page": page_index,
                                 "item_index": item_index,
                                 "row_index": row_index,
                                 "cell_index": cell_index,
+                                "before_text": before_text,
                             }
                         )
 
@@ -715,8 +900,9 @@ def normalize_empty_table_cells_to_null(
 def normalize_table_row_cell_counts(
     *, page_irs: dict[int, PageIR]
 ) -> list[dict[str, Any]]:
-    """Ensure each table row has exactly n_cols cells. Fixes the common LLM error of
-    dropping empty cells at the start/end of rows.
+    """Ensure each table row has an effective width of n_cols columns (accounting for
+    col_span). Fixes the common LLM error of dropping empty cells at the start/end of
+    rows.
 
     Parameters
     ----------
@@ -766,7 +952,8 @@ def postprocess_verified_page_irs(
     # Enrich data by flowing local codes across the now-verified boundaries.
     table_code_changes = propagate_table_local_codes(page_irs=page_irs)
 
-    # Normalize empty-string cells into explicit nulls.
+    # Normalize empty-string cell text to stabilize downstream logic that distinguishes
+    # empty vs. non-empty cells.
     empty_cell_changes = normalize_empty_table_cells_to_null(page_irs=page_irs)
 
     # Insert placeholders under rowspans to prevent column drift.
@@ -781,7 +968,7 @@ def postprocess_verified_page_irs(
         json_info={
             "prose_table_fix_changes": prose_table_fix_changes,
             "table_local_code_changes": table_code_changes,
-            "empty_cell_null_changes": empty_cell_changes,
+            "empty_cell_text_normalization_changes": empty_cell_changes,
             "rowspan_alignment_changes": rowspan_alignment_changes,
             "table_row_padding_changes": pad_changes,
         },
@@ -827,94 +1014,34 @@ def propagate_table_local_codes(*, page_irs: dict[int, PageIR]) -> list[dict[str
 
     carry_from_prev: str | None = None
     changes: list[dict[str, Any]] = []
+    last_page_idx: int | None = None
 
     for page_idx in sorted(page_irs.keys()):
+        carry_from_prev = _validate_page_gap(
+            carry_from_prev=carry_from_prev,
+            last_page_idx=last_page_idx,
+            page_idx=page_idx,
+        )
+
         page = page_irs[page_idx]
         items = page.items or []
 
-        # If the previous page "carried" a table code, but this page doesn't actually
-        # resume a table, drop it so it can't block caption seeding or future logic.
-        if carry_from_prev is not None and not any(
-            item.kind == "table"
-            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-            for item in items
-        ):
-            carry_from_prev = None
+        carry_from_prev = _validate_carry_for_page(
+            carry_from_prev=carry_from_prev, items=items
+        )
 
-        # Seed carry_from_prev from a caption *only if* we don't already have carry
-        # from the previous page. This supports patterns like "Table 3 (continued)" at
-        # the top of the page when the table itself is missing a code.
-        #
-        # NB: Only look at captions that appear *before the first table item* to avoid
-        # accidentally grabbing a caption for a later, unrelated table/rubric.
         if carry_from_prev is None:
-            first_relevant_table_index = next(
-                (
-                    j
-                    for j, item in enumerate(items)
-                    if item.kind == "table"
-                    and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-                    and not (item.local_code or "").strip()
-                ),
-                None,
-            )
+            carry_from_prev = _seed_carry_from_caption(items=items)
 
-            if first_relevant_table_index is not None:
-                caption_scope = items[:first_relevant_table_index]
-                caption_code = find_caption_code(caption_scope)
-
-                if caption_code:
-                    carry_from_prev = caption_code.strip() or None
-
-        carry_to_next: str | None = None
-
-        # Ensure we only apply carry_from_prev once on this page (if multiple resumed
-        # tables exist, we can't disambiguate with a single code; leave the rest
-        # unresolved).
-        applied_prev_carry = False
-
-        for item_index, item in (
-            (i, itm) for i, itm in enumerate(items) if itm.kind == "table"
-        ):
-            boundary = item.boundary
-            is_resumed = boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-            is_truncated = boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
-            code = (item.local_code or "").strip()
-
-            # Fill missing code on a resumed table from the previous page's carry.
-            if is_resumed and not code and carry_from_prev and not applied_prev_carry:
-                item.local_code = carry_from_prev
-                code = carry_from_prev
-                applied_prev_carry = True
-                changes.append(
-                    {
-                        "item_index": item_index,
-                        "page": page_idx,
-                        "set_local_code": carry_from_prev,
-                        "type": "propagate_table_local_code",
-                    }
-                )
-            elif (
-                is_resumed
-                and code
-                and carry_from_prev
-                and code != carry_from_prev
-                and not applied_prev_carry
-            ):
-                logger.warning(
-                    f"Table local_code conflict on page {page_idx} item "
-                    f"{item_index}: carried '{carry_from_prev}' from previous "
-                    f"page but table already has '{code}' — keeping existing."
-                )
-                applied_prev_carry = True
-
-            # Decide what we carry forward to the NEXT page: only the code of the table
-            # that actually continues off this page (TRUNCATED/BOTH). If multiple
-            # tables continue, we carry the last one in reading order.
-            if is_truncated and code:
-                carry_to_next = code
+        carry_to_next = _process_page_tables(
+            carry_from_prev=carry_from_prev,
+            changes=changes,
+            items=items,
+            page_idx=page_idx,
+        )
 
         # Carry forward only the table that continues onto the next page.
         carry_from_prev = carry_to_next
+        last_page_idx = page_idx
 
     return changes
