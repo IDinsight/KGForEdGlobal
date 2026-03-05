@@ -12,7 +12,7 @@ are enforced by the model validators in `schemas.py`.
 from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
-from skg.utils.constants import BlockType, PageContinuationKind
+from skg.utils.constants import BlockType, ItemBoundary, PageContinuationKind
 
 
 def validate_item_continuation_kind(
@@ -45,13 +45,23 @@ def validate_item_continuation_kind(
     prev_kind = prev_item.kind
     next_kind = next_item.kind
 
-    if kind == PageContinuationKind.TEXT and (
-        prev_kind != "block" or next_kind != "block"
-    ):
-        raise QualityError(
-            f"continuation_kind='text' requires both candidates to be Blocks. "
-            f"Found: {prev_kind} -> {next_kind}."
-        )
+    if kind == PageContinuationKind.TEXT:
+        if prev_kind != "block" or next_kind != "block":
+            raise QualityError(
+                f"continuation_kind='text' requires both candidates to be Blocks. "
+                f"Found: {prev_kind} -> {next_kind}."
+            )
+
+        # Disallow 'text' continuation on figures; figure continuation must use
+        # continuation_kind='figure'.
+        if (
+            prev_item.block_type == BlockType.FIGURE
+            or next_item.block_type == BlockType.FIGURE
+        ):
+            raise QualityError(
+                "continuation_kind='text' requires both candidates to be non-figure Blocks. "
+                "Use continuation_kind='figure' for figure continuations."
+            )
 
     if kind == PageContinuationKind.TABLE and (
         prev_kind != "table" or next_kind != "table"
@@ -82,8 +92,8 @@ def validate_repeats_header_requires_table_item(
     """Validate that repeats_header is only patched when next_item is actually a table.
 
     The schema-internal check (continuation must be true + kind must be TABLE) is
-    already enforced by the model validator. This function adds the external constraint
-    that the *next candidate item* must be a table.
+    already enforced by the model validator. This function adds external constraints
+    that ensure the requested patch will not violate the Table schema invariants.
 
     Parameters
     ----------
@@ -95,7 +105,8 @@ def validate_repeats_header_requires_table_item(
     Raises
     ------
     QualityError
-        If set_next_table_repeats_header is set but next_item is not a table.
+        If set_next_table_repeats_header is set but the candidate table cannot safely
+        accept the requested repeats_header value.
     """
 
     if verdict.set_next_table_repeats_header is None:
@@ -104,6 +115,31 @@ def validate_repeats_header_requires_table_item(
     if next_item.kind != "table":
         raise QualityError(
             "set_next_table_repeats_header is only valid when next_item is a table."
+        )
+
+    # repeats_header is only allowed on continuation pages (RESUMED or BOTH).
+    if next_item.boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
+        raise QualityError(
+            f"set_next_table_repeats_header is only valid when next_item.boundary is "
+            f"'{ItemBoundary.RESUMED.value}' or '{ItemBoundary.BOTH.value}'. "
+            f"(Got boundary='{next_item.boundary.value}'.)"
+        )
+
+    # Enforce Table schema invariants so the patch cannot create an invalid Table.
+    if (
+        verdict.set_next_table_repeats_header is True
+        and next_item.header_row_count == 0
+    ):
+        raise QualityError(
+            "set_next_table_repeats_header=True requires next_item.header_row_count >= 1."
+        )
+
+    if (
+        verdict.set_next_table_repeats_header is False
+        and next_item.header_row_count > 0
+    ):
+        raise QualityError(
+            "set_next_table_repeats_header=False requires next_item.header_row_count == 0."
         )
 
 
