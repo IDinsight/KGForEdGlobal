@@ -836,9 +836,7 @@ def execute_verification_attempts(
             f"{page_index}->{page_index + 1}. Errors: {errors}"
         )
 
-    # Selection: prefer confident positive continuations over confident negatives. A
-    # high-confidence "no continuation" is less trustworthy than a moderate-confidence
-    # "yes continuation" found on an alternate pair.
+    # Selection: prefer confident positive continuations over confident negatives.
     confident_positives = [
         a
         for a in successful_attempts
