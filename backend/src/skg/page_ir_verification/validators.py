@@ -108,21 +108,26 @@ def validate_repeats_header_requires_table_item(
 
 
 def validate_semantic_flow(
-    *, next_item: Block | Table, verdict: PageIRContinuityVerdict
+    *,
+    next_item: Block | Table,
+    prev_item: Block | Table,
+    verdict: PageIRContinuityVerdict,
 ) -> None:
-    """Catch semantic hallucinations (e.g., text flowing into a Section Header).
+    """Catch semantic hallucinations (e.g., text flowing into/from a Section Header).
 
     Parameters
     ----------
     next_item
         The next page candidate item.
+    prev_item
+        The previous page candidate item.
     verdict
         The continuation verdict from the model.
 
     Raises
     ------
     QualityError
-        If text continuation flows into a heading.
+        If text continuation flows into or from a heading.
     """
 
     if not verdict.is_continuation:
@@ -137,4 +142,15 @@ def validate_semantic_flow(
         raise QualityError(
             f"Invalid Text Continuation: The next item is a HEADING/CAPTION ('{text_preview}'). "
             f"Standard text does not continue directly into a heading."
+        )
+
+    if (
+        verdict.continuation_kind == PageContinuationKind.TEXT
+        and prev_item.kind == "block"
+        and prev_item.block_type in {BlockType.CAPTION, BlockType.HEADING}
+    ):
+        text_preview = prev_item.text.text[:30] + "..." if prev_item.text else "EMPTY"
+        raise QualityError(
+            f"Invalid Text Continuation: The previous item is a HEADING/CAPTION ('{text_preview}'). "
+            f"Headings/captions do not get truncated into a text continuation."
         )
