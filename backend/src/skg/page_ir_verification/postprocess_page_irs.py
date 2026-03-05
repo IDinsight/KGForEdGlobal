@@ -57,7 +57,7 @@ def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int
 
 def _insert_placeholders(
     *, active_span: list[int], cells: list[Any], n_cols: int
-) -> list[Any]:
+) -> tuple[list[Any], int]:
     """Create a new list of cells with placeholders inserted for active rowspans.
 
     Parameters
@@ -71,12 +71,14 @@ def _insert_placeholders(
 
     Returns
     -------
-    list[Any]
-        A new list of table cells including the inserted placeholders.
+    tuple[list[Any], int]
+        (new_cells, dropped_cells) where dropped_cells counts original cells dropped
+        due to overflow.
     """
 
     new_cells: list[Any] = []
     col = 0
+    dropped_cells = 0
 
     for idx, cell in enumerate(cells):
         while col < n_cols and active_span[col] > 0:
@@ -87,12 +89,12 @@ def _insert_placeholders(
             # No remaining width. This indicates an inconsistency between prior
             # rowspans and the extracted cells in this row. We drop the remaining cells
             # to preserve the table's declared width (n_cols).
-            dropped = len(cells) - idx
+            dropped_cells = len(cells) - idx
 
-            if dropped > 0:
+            if dropped_cells > 0:
                 logger.warning(
                     f"Row overflow while inserting rowspan placeholders: "
-                    f"dropping {dropped} cell(s) beyond n_cols={n_cols}."
+                    f"dropping {dropped_cells} cell(s) beyond n_cols={n_cols}."
                 )
 
             break
@@ -117,7 +119,7 @@ def _insert_placeholders(
         new_cells.append(TableCell(col_span=1, row_span=1, text=None))
         col += 1
 
-    return new_cells
+    return new_cells, dropped_cells
 
 
 def _process_page_tables(
@@ -172,6 +174,16 @@ def _process_page_tables(
             is_resumed
             and code
             and carry_from_prev
+            and code == carry_from_prev
+            and not applied_prev_carry
+        ):
+            # Carry already satisfied by this first resumed table; consume it so we do
+            # not incorrectly apply it to later resumed tables on the same page.
+            applied_prev_carry = True
+        elif (
+            is_resumed
+            and code
+            and carry_from_prev
             and code != carry_from_prev
             and not applied_prev_carry
         ):
@@ -180,6 +192,15 @@ def _process_page_tables(
                 f"carried '{carry_from_prev}' from previous page but table already has "
                 f"'{code}' — keeping existing and NOT applying carried code to any other "
                 f"resumed tables on this page."
+            )
+            changes.append(
+                {
+                    "type": "propagate_table_local_code_conflict",
+                    "page": page_idx,
+                    "item_index": item_index,
+                    "carried_local_code": carry_from_prev,
+                    "existing_local_code": code,
+                }
             )
             applied_prev_carry = True  # Consume the carry for this page
 
@@ -216,7 +237,9 @@ def _process_table_item(
     if not isinstance(n_cols, int) or n_cols <= 0:
         return item_changes
 
-    # active_span[c] = number of FUTURE rows that still occupy column c.
+    # active_span[c] = number of rows remaining (including the current row) that column
+    # c is occupied due to rowspans from prior rows. We decrement after processing each
+    # row.
     active_span = [0] * n_cols
 
     for row_index, row in enumerate(item.rows):
@@ -384,16 +407,21 @@ def _process_table_row(
         return None
 
     # Insert placeholders.
-    new_cells = _insert_placeholders(
+    new_cells, dropped_cells = _insert_placeholders(
         active_span=active_span, cells=old_cells, n_cols=n_cols
     )
 
-    if len(new_cells) != len(old_cells):
+    if len(new_cells) != len(old_cells) or dropped_cells:
         row.cells = new_cells
-        return {
+        change = {
             "before_cells": len(old_cells),
             "after_cells": len(new_cells),
         }
+
+        if dropped_cells:
+            change["overflow_dropped_cells"] = dropped_cells
+
+        return change
 
     return None
 
@@ -628,7 +656,11 @@ def _validate_carry_for_page(
 
 
 def _validate_page_gap(
-    *, carry_from_prev: str | None, last_page_idx: int | None, page_idx: int
+    *,
+    carry_from_prev: str | None,
+    changes: list[dict[str, Any]],
+    last_page_idx: int | None,
+    page_idx: int,
 ) -> str | None:
     """Clear the carried code if a gap is detected between the current and last page.
 
@@ -636,6 +668,9 @@ def _validate_page_gap(
     ----------
     carry_from_prev
         The code carried from the previous page.
+    changes
+        The list of change records to append to when a carried code is dropped due to a
+        page gap.
     last_page_idx
         The index of the last processed page.
     page_idx
@@ -653,6 +688,14 @@ def _validate_page_gap(
                 f"Non-contiguous page indices detected ({last_page_idx} -> {page_idx}); "
                 f"dropping carried table local_code '{carry_from_prev}' and not "
                 f"propagating across the gap."
+            )
+            changes.append(
+                {
+                    "type": "propagate_table_local_code_dropped_due_to_page_gap",
+                    "from_page": last_page_idx,
+                    "to_page": page_idx,
+                    "dropped_local_code": carry_from_prev,
+                }
             )
             return None
 
@@ -1009,6 +1052,7 @@ def propagate_table_local_codes(page_irs: dict[int, PageIR]) -> list[dict[str, A
     for page_idx in sorted(page_irs.keys()):
         carry_from_prev = _validate_page_gap(
             carry_from_prev=carry_from_prev,
+            changes=changes,
             last_page_idx=last_page_idx,
             page_idx=page_idx,
         )
