@@ -206,7 +206,10 @@ def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
     ]
 
     if not candidates:
-        return PageBoundaryState.STANDALONE
+        # Fallback: if filtering removes everything (e.g., overly aggressive noise
+        # heuristics), derive the page-level boundary state from the raw items so we
+        # don't incorrectly label the page as STANDALONE.
+        candidates = items
 
     from_prev = any(
         item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
