@@ -788,9 +788,11 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
                 else ""
             )
             if text and (m := TABLE_CODE_RE.match(text)) is not None:
-                # Normalize to canonical "Table {num}" even if original language was
-                # "Tableau/Jedwali/Tab."
-                return f"Table {m.group('num')}"
+                # Return the verbatim matched prefix + number from the source text. Do
+                # NOT canonicalize to English (e.g., "Tableau 3" stays as-is);
+                # canonicalization is the responsibility of downstream pipeline stages,
+                # not the verification/postprocess layer.
+                return m.group(0).strip()
 
     return None
 
@@ -1055,6 +1057,12 @@ def postprocess_verified_page_irs(
     prose_table_fix_changes = fix_false_truncated_prose_before_table(page_irs)
 
     # Enrich data by flowing local codes across VERIFIED table-continuation edges.
+    #
+    # NB: compile_continuity already propagates local_code at the edge level (between
+    # the exact candidate pair items). This second pass operates at the chain level: it
+    # carries codes sequentially across multi-page table spans and seeds missing codes
+    # from nearby captions. Both passes guard against double-patching (compile skips
+    # items that already have a code; this pass checks `not code` before applying).
     verified_table_edges = load_verified_table_continuation_edges(verification_dirs)
     table_code_changes = propagate_table_local_codes(
         page_irs=page_irs, verified_table_continuation_edges=verified_table_edges
@@ -1065,6 +1073,13 @@ def postprocess_verified_page_irs(
     empty_cell_changes = normalize_empty_table_cells(page_irs)
 
     # Insert placeholders under rowspans to prevent column drift.
+    #
+    # NB: This runs BEFORE normalize_table_row_cell_counts (padding). The padding
+    # step's _should_pad_left heuristic counts leading-blank cells among full-width
+    # rows. Rowspan placeholders inserted here (text=None at col 0) can inflate the
+    # leading-blank ratio and theoretically trigger incorrect left-padding. In practice
+    # this requires both large column-0 rowspans AND separate short rows in the same
+    # table, which is rare. Flag for review if left-padding anomalies appear.
     rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs)
 
     # Fix structural "empty cell" hallucinations from the extraction model.
