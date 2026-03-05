@@ -38,7 +38,7 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification.utils import VerificationVerdict, is_artifact
+from skg.page_ir_verification.utils import EdgeVerdictRecord, is_artifact
 from skg.schemas import RunCtx, StitchingConfig
 from skg.utils.constants import (
     BlockType,
@@ -268,24 +268,26 @@ def _append_unmatched_warnings(
 def _apply_verification_verdict(
     *,
     current_page_ir: PageIR,
+    edge_record: EdgeVerdictRecord,
     link_debug: list[dict[str, Any]],
     next_page_ir: PageIR,
     next_page_items: list[tuple[int, Block | Table]],
     page_pair_debug: list[dict[str, Any]],
     prev_page_items: list[tuple[int, Block | Table]],
-    verdict: VerificationVerdict,
 ) -> dict[ItemKey, ItemKey]:
     """Attempt to create a stitching link from a high-confidence verification verdict.
 
-    This is called only when `verdict.confidence >= threshold` and
-    `verdict.is_continuation is True`. It validates that the verdict's item indices
-    resolve to compatible items in the normalized item lists, applies
+    This is called only when edge_record.verdict.confidence >= threshold and
+    edge_record.verdict.is_continuation is True. It validates that the verdict's item
+    indices resolve to compatible items in the normalized item lists, applies
     `set_next_table_repeats_header` when present, and returns a direct link dict.
 
     Parameters
     ----------
     current_page_ir
         The previous PageIR.
+    edge_record
+        The high-confidence edge verdict record to apply.
     link_debug
         List to append per-link debug info to.
     next_page_ir
@@ -296,8 +298,6 @@ def _apply_verification_verdict(
         List to append per-page-pair debug info to.
     prev_page_items
         The previous page's normalized items list.
-    verdict
-        The high-confidence verification verdict to apply.
 
     Returns
     -------
@@ -305,6 +305,7 @@ def _apply_verification_verdict(
         A single-entry link dict `{(prev_page, prev_item) : (next_page, next_item)}`.
     """
 
+    verdict = edge_record.verdict
     prev_page = current_page_ir.page_index
     next_page = next_page_ir.page_index
 
@@ -315,14 +316,14 @@ def _apply_verification_verdict(
         "verdict_override": True,
         "verdict_confidence": verdict.confidence,
         "verdict_is_continuation": verdict.is_continuation,
-        "verdict_continuation_kind": verdict.continuation_kind,
-        "verdict_prev_item_index": verdict.prev_item_index,
-        "verdict_next_item_index": verdict.next_item_index,
+        "verdict_continuation_kind": verdict.continuation_kind.value,
+        "verdict_prev_item_index": edge_record.prev_item_index,
+        "verdict_next_item_index": edge_record.next_item_index,
         "chosen_links": [],
     }
 
-    prev_idx = verdict.prev_item_index
-    next_idx = verdict.next_item_index
+    prev_idx = edge_record.prev_item_index
+    next_idx = edge_record.next_item_index
     assert (
         isinstance(prev_idx, int)
         and isinstance(next_idx, int)
@@ -339,7 +340,7 @@ def _apply_verification_verdict(
     assert prev_item and next_item
 
     # Validate that the items match the verdict's continuation_kind.
-    kind = verdict.continuation_kind
+    kind = verdict.continuation_kind.value
     kind_ok = False
 
     if kind == "table":
@@ -368,7 +369,7 @@ def _apply_verification_verdict(
             "next_item_orig_index": next_idx,
             "score": verdict.confidence,
             "note": "verdict_override",
-            "verdict_continuation_kind": verdict.continuation_kind,
+            "verdict_continuation_kind": verdict.continuation_kind.value,
         }
     )
     pair_debug["chosen_links"].append(
@@ -2484,7 +2485,7 @@ def compute_page_break_links(
     page_irs: list[PageIR],
     page_pair_debug: list[dict[str, Any]],
     verdict_confidence_threshold: float,
-    verdicts: dict[tuple[int, int], VerificationVerdict],
+    verdicts: dict[tuple[int, int], EdgeVerdictRecord],
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
     """Compute a mapping of (page_i, item_index) -> (page_i+1, item_index) links for
@@ -2510,7 +2511,7 @@ def compute_page_break_links(
     verdict_confidence_threshold
         Minimum verdict confidence to bypass heuristic scoring.
     verdicts
-        Mapping of `(prev_page_index, next_page_index)` to verification verdicts.
+        Mapping of `(prev_page_index, next_page_index)` to edge verdict records.
     warnings
         A list to append warning messages to.
 
@@ -2532,13 +2533,13 @@ def compute_page_break_links(
 
         page_pair_links = process_page_pair(
             current_page_ir=page_irs[i],
+            edge_record=verdicts[(cur_page_index, next_page_index)],
             link_debug=link_debug,
             min_link_score=min_link_score,
             next_page_ir=page_irs[i + 1],
             next_page_items=items_mapping[page_irs[i + 1].page_index],
             page_pair_debug=page_pair_debug,
             prev_page_items=items_mapping[page_irs[i].page_index],
-            verdict=verdicts[(cur_page_index, next_page_index)],
             verdict_confidence_threshold=verdict_confidence_threshold,
             warnings=warnings,
         )
@@ -3520,13 +3521,13 @@ def propagate_caption_table_local_codes(
 def process_page_pair(
     *,
     current_page_ir: PageIR,
+    edge_record: EdgeVerdictRecord,
     link_debug: list[dict[str, Any]],
     min_link_score: float,
     next_page_ir: PageIR,
     next_page_items: list[tuple[int, Block | Table]],
     page_pair_debug: list[dict[str, Any]],
     prev_page_items: list[tuple[int, Block | Table]],
-    verdict: VerificationVerdict,
     verdict_confidence_threshold: float,
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
@@ -3548,6 +3549,9 @@ def process_page_pair(
     ----------
     current_page_ir
         The current PageIR.
+    edge_record
+        Edge verdict record for this page pair. If above the confidence threshold, it
+        bypasses heuristic scoring.
     link_debug
         List to append per-link debug info to.
     min_link_score
@@ -3560,9 +3564,6 @@ def process_page_pair(
         Optional list to append per-page-pair debug info to.
     prev_page_items
         The previous page's normalized items list.
-    verdict
-        Verification verdict for this page pair. If above the confidence threshold, it
-        bypasses heuristic scoring.
     verdict_confidence_threshold
         Minimum verdict confidence to bypass heuristic scoring.
     warnings
@@ -3573,6 +3574,8 @@ def process_page_pair(
     dict[tuple[int, int], tuple[int, int]]
         Forward links for items that continue across the page break.
     """
+
+    verdict = edge_record.verdict
 
     # 1.
     if verdict.confidence >= verdict_confidence_threshold:
@@ -3585,7 +3588,7 @@ def process_page_pair(
                     "verdict_override": True,
                     "verdict_confidence": verdict.confidence,
                     "verdict_is_continuation": False,
-                    "verdict_continuation_kind": verdict.continuation_kind,
+                    "verdict_continuation_kind": verdict.continuation_kind.value,
                     "chosen_links": [],
                     "note": "verdict_no_continuation",
                 }
@@ -3600,12 +3603,12 @@ def process_page_pair(
         # High-confidence "yes continuation" —> try to apply the verdict directly.
         return _apply_verification_verdict(
             current_page_ir=current_page_ir,
+            edge_record=edge_record,
             link_debug=link_debug,
             next_page_ir=next_page_ir,
             next_page_items=next_page_items,
             page_pair_debug=page_pair_debug,
             prev_page_items=prev_page_items,
-            verdict=verdict,
         )
 
     # 2.
