@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 # Third Party Library
 from loguru import logger
@@ -350,7 +350,7 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
 
 
 def load_page_irs_from_verification(
-    *, doc_key: Optional[str], verified_page_irs_dir: Path
+    *, doc_key: str | None, verified_page_irs_dir: Path
 ) -> list[PageIR]:
     """Load and validate all verified page IR JSONs from the verification output
     directory.
@@ -406,7 +406,7 @@ def load_page_irs_from_verification(
         )
 
     # Validate doc_key consistency + presence.
-    if doc_key is None:
+    if not doc_key:
         raise ValueError(
             "extraction_run.json is missing extra.doc_key (expected_doc_key)."
         )
@@ -484,9 +484,6 @@ def load_verification_verdicts(
 
     for fp in sorted(verdict_dir.glob("*.json")):
         record = load_edge_verdict_from_pair_report(fp)
-        assert (
-            record.prev_page_index is not None and record.next_page_index is not None
-        ), "load_edge_verdict_from_pair_report should raise if page indices are missing"
         verdicts[(record.prev_page_index, record.next_page_index)] = record
 
     logger.info(f"Loaded {len(verdicts)} verification verdict(s) from: {verdict_dir}")
