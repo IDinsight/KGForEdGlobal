@@ -17,8 +17,11 @@ from skg.utils.general import write_to_json
 
 def _apply_all_local_code_patches(
     *, local_code_patch: dict[tuple[int, int], str], page_irs: dict[int, PageIR]
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Apply local code modifications to page items.
+
+    This function never overwrites an existing local_code on an item. If a patch would
+    overwrite a non-empty local_code, it is skipped and recorded.
 
     Parameters
     ----------
@@ -29,11 +32,12 @@ def _apply_all_local_code_patches(
 
     Returns
     -------
-    list[dict[str, Any]]
-        List of local code changes applied.
+    tuple[list[dict[str, Any]], list[dict[str, Any]]]
+        (local_code_changes, local_code_patch_skips)
     """
 
     local_code_changes: list[dict[str, Any]] = []
+    local_code_patch_skips: list[dict[str, Any]] = []
 
     for (page_index, item_index), code in sorted(local_code_patch.items()):
         item = page_irs[page_index].items[item_index]
@@ -50,12 +54,21 @@ def _apply_all_local_code_patches(
                 }
             )
         elif before != code:
+            local_code_patch_skips.append(
+                {
+                    "desired": code,
+                    "existing": before,
+                    "item_index": item_index,
+                    "page": page_index,
+                    "reason": "item_already_has_local_code",
+                }
+            )
             logger.warning(
                 f"Page {page_index} item {item_index}: skipping local_code patch "
                 f"'{code}' because item already has local_code='{before}'."
             )
 
-    return local_code_changes
+    return local_code_changes, local_code_patch_skips
 
 
 def _apply_edge_verdicts(
@@ -64,6 +77,7 @@ def _apply_edge_verdicts(
     dirty_keys: set[tuple[int, int]],
     effective_local_codes: dict[tuple[int, int], str | None],
     local_code_conflicts: list[dict[str, Any]],
+    local_code_propagation_conflicts: list[dict[str, Any]],
     local_code_patch: dict[tuple[int, int], str],
     min_confidence_to_patch: float,
     repeats_header_patch: dict[tuple[int, int], bool],
@@ -85,6 +99,9 @@ def _apply_edge_verdicts(
         Dictionary of current effective local codes.
     local_code_conflicts
         List to record local code conflicts.
+    local_code_propagation_conflicts
+        List to record propagation conflicts when multiple edges attempt to set
+        different local_code values for the same target.
     local_code_patch
         Dictionary to record local code patches.
     min_confidence_to_patch
@@ -133,6 +150,7 @@ def _apply_edge_verdicts(
                 effective_local_codes=effective_local_codes,
                 local_code_conflicts=local_code_conflicts,
                 local_code_patch=local_code_patch,
+                local_code_propagation_conflicts=local_code_propagation_conflicts,
                 next_key=next_key,
                 prev_key=prev_key,
                 record=record,
@@ -161,8 +179,6 @@ def _make_edge_summary(
 
     Parameters
     ----------
-    applied
-        Whether the verdict was actually applied.
     record
         The edge verdict record.
     should_apply
@@ -204,6 +220,7 @@ def _mutate_for_edge(
     dirty_keys: set[tuple[int, int]],
     effective_local_codes: dict[tuple[int, int], str | None],
     local_code_conflicts: list[dict[str, Any]],
+    local_code_propagation_conflicts: list[dict[str, Any]],
     local_code_patch: dict[tuple[int, int], str],
     next_key: tuple[int, int],
     prev_key: tuple[int, int],
@@ -222,6 +239,9 @@ def _mutate_for_edge(
         Mapping of (page_idx, item_idx) to effective local_code (after prior patches).
     local_code_conflicts
         List to append any local_code conflicts detected.
+    local_code_propagation_conflicts
+        List to append any conflicts between multiple propagated local_code values
+        targeting the same item.
     local_code_patch
         Mapping of (page_idx, item_idx) to desired local_code string.
     next_key
@@ -247,6 +267,7 @@ def _mutate_for_edge(
         _propagate_local_codes(
             effective_local_codes=effective_local_codes,
             local_code_conflicts=local_code_conflicts,
+            local_code_propagation_conflicts=local_code_propagation_conflicts,
             local_code_patch=local_code_patch,
             next_key=next_key,
             prev_key=prev_key,
@@ -273,6 +294,7 @@ def _propagate_local_codes(
     *,
     effective_local_codes: dict[tuple[int, int], str | None],
     local_code_conflicts: list[dict[str, Any]],
+    local_code_propagation_conflicts: list[dict[str, Any]],
     local_code_patch: dict[tuple[int, int], str],
     next_key: tuple[int, int],
     prev_key: tuple[int, int],
@@ -287,6 +309,9 @@ def _propagate_local_codes(
         Mapping of (page_idx, item_idx) to effective local_code.
     local_code_conflicts
         List to append any conflicts detected.
+    local_code_propagation_conflicts
+        List to append propagation conflicts when multiple edges attempt to set
+        different local_code values for the same target.
     local_code_patch
         Mapping of (page_idx, item_idx) to desired local_code string.
     next_key
@@ -313,6 +338,8 @@ def _propagate_local_codes(
             code=prev_code,
             effective_local_codes=effective_local_codes,
             local_code_patch=local_code_patch,
+            local_code_propagation_conflicts=local_code_propagation_conflicts,
+            source_key=prev_key,
             target_key=next_key,
         )
     elif next_code and not prev_code:
@@ -320,6 +347,8 @@ def _propagate_local_codes(
             code=next_code,
             effective_local_codes=effective_local_codes,
             local_code_patch=local_code_patch,
+            local_code_propagation_conflicts=local_code_propagation_conflicts,
+            source_key=next_key,
             target_key=prev_key,
         )
     elif prev_code and next_code and prev_code != next_code:
@@ -341,9 +370,16 @@ def _try_propagate_code(
     code: str,
     effective_local_codes: dict[tuple[int, int], str | None],
     local_code_patch: dict[tuple[int, int], str],
+    local_code_propagation_conflicts: list[dict[str, Any]],
+    source_key: tuple[int, int],
     target_key: tuple[int, int],
 ) -> None:
-    """Attempt to propagate a local_code to a target key, logging conflicts.
+    """Attempt to propagate a local_code to a target key.
+
+    This updates effective_local_codes in-place and records a patch via
+    local_code_patch.setdefault(). If a different code has already been propagated to
+    the same target_key earlier in the compile pass, this records a propagation
+    conflict and keeps the earlier propagated value.
 
     Parameters
     ----------
@@ -353,6 +389,10 @@ def _try_propagate_code(
         Mapping of effective local codes (updated in-place).
     local_code_patch
         Mapping of local code patches (updated in-place via setdefault).
+    local_code_propagation_conflicts
+        List to append propagation conflicts.
+    source_key
+        The (page_idx, item_idx) key that the code was propagated from.
     target_key
         The (page_idx, item_idx) key to propagate to.
     """
@@ -360,14 +400,27 @@ def _try_propagate_code(
     existing = local_code_patch.get(target_key)
 
     if existing and existing != code:
+        local_code_propagation_conflicts.append(
+            {
+                "target_page": target_key[0],
+                "target_index": target_key[1],
+                "source_page": source_key[0],
+                "source_index": source_key[1],
+                "existing_code": existing,
+                "incoming_code": code,
+                "kept_code": existing,
+                "reason": "propagation_conflict_keep_earlier",
+            }
+        )
         logger.warning(
             f"local_code propagation conflict at page {target_key[0]} "
             f"item {target_key[1]}: existing '{existing}' vs incoming "
             f"'{code}' — keeping earlier propagation."
         )
-    else:
-        effective_local_codes[target_key] = code
-        local_code_patch.setdefault(target_key, code)
+        return
+
+    effective_local_codes[target_key] = code
+    local_code_patch.setdefault(target_key, code)
 
 
 def _bools_to_boundary(from_prev: bool, to_next: bool) -> ItemBoundary:
@@ -550,6 +603,9 @@ def _reconcile_dirty_item_states(
     """Reconcile updated boundaries and repeats_header states for only the items
     that were touched by edge verdicts.
 
+    NB: This also reconciles any items with repeats_header patches even when their
+    boundary booleans did not change.
+
     Parameters
     ----------
     bools
@@ -570,8 +626,9 @@ def _reconcile_dirty_item_states(
     boundary_changes: list[dict[str, Any]] = []
     repeats_header_changes: list[dict[str, Any]] = []
 
-    # Also include any keys that have a repeats_header patch but weren't directly
-    # touched by bools mutations (defensive — shouldn't happen, but costs nothing).
+    # Also include keys that have a repeats_header patch even if the boundary bits did
+    # not change (e.g., boundary already RESUMED/BOTH but header behavior needs
+    # patching).
     all_keys = dirty_keys | set(repeats_header_patch.keys())
 
     for page_index, item_index in sorted(all_keys):
@@ -681,22 +738,102 @@ def _reconcile_item_state(
 
 def _sort_and_validate_edge_records(
     edge_records: list[EdgeVerdictRecord],
-) -> list[EdgeVerdictRecord]:
-    """Sort edge records deterministically and log warnings for anomalies.
+) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
+    """Select at most one edge record per boundary, then sort deterministically.
+
+    Continuity compilation assumes at most one selected pair per page boundary
+    (prev_page_index, next_page_index). If multiple records exist for the same
+    boundary, this function selects the "best" one and discards the others:
+
+    Selection order (highest priority first):
+
+    1. Higher verdict.confidence
+    2. Prefer is_continuation=True when confidence ties
+    3. Lower (prev_item_index, next_item_index) to keep determinism
+
+    It logs a warning for each deduplicated boundary and returns a report of the
+    discarded records for inclusion in the compile report.
 
     Parameters
     ----------
     edge_records
-        List of edge verdict records to sort and validate.
+        List of edge verdict records to sort, validate, and deduplicate.
 
     Returns
     -------
-    list[EdgeVerdictRecord]
-        Deterministically sorted edge records.
+    tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]
+        (sorted_edge_records, boundary_duplicate_resolutions)
     """
 
+    def _brief(r: EdgeVerdictRecord) -> dict[str, Any]:
+        """Helper to create a brief summary of an edge record for reporting purposes.
+
+        Parameters
+        ----------
+        r
+            The EdgeVerdictRecord to summarize.
+
+        Returns
+        -------
+        dict[str, Any]
+            A brief summary of the edge record's key attributes.
+        """
+
+        v = r.verdict
+        return {
+            "prev_index": int(r.prev_item_index),
+            "next_index": int(r.next_item_index),
+            "is_continuation": bool(v.is_continuation),
+            "continuation_kind": v.continuation_kind.value,
+            "confidence": float(v.confidence),
+        }
+
+    boundary_map: dict[tuple[int, int], list[EdgeVerdictRecord]] = {}
+    for r in edge_records:
+        boundary = (int(r.prev_page_index), int(r.next_page_index))
+        boundary_map.setdefault(boundary, []).append(r)
+
+    boundary_duplicate_resolutions: list[dict[str, Any]] = []
+    selected: list[EdgeVerdictRecord] = []
+
+    for boundary, records in sorted(boundary_map.items()):
+        if len(records) == 1:
+            selected.append(records[0])
+            continue
+
+        ranked = sorted(
+            records,
+            key=lambda r: (
+                -float(r.verdict.confidence),
+                -(1 if r.verdict.is_continuation else 0),
+                int(r.prev_item_index),
+                int(r.next_item_index),
+            ),
+        )
+        best = ranked[0]
+        discarded = ranked[1:]
+
+        logger.warning(
+            f"Duplicate edge records detected for boundary {boundary}; selected "
+            f"prev_index={best.prev_item_index} next_index={best.next_item_index} "
+            f"(confidence={best.verdict.confidence}, is_continuation={best.verdict.is_continuation}) "
+            f"and discarded {len(discarded)} other record(s)."
+        )
+
+        boundary_duplicate_resolutions.append(
+            {
+                "prev_page": boundary[0],
+                "next_page": boundary[1],
+                "selected": _brief(best),
+                "discarded": [_brief(r) for r in discarded],
+                "reason": "dedupe_one_record_per_boundary",
+            }
+        )
+        selected.append(best)
+
+    # Sort deterministically after selection.
     sorted_edge_records = sorted(
-        edge_records,
+        selected,
         key=lambda r: (
             int(r.prev_page_index),
             int(r.next_page_index),
@@ -704,26 +841,15 @@ def _sort_and_validate_edge_records(
             int(r.next_item_index),
         ),
     )
-    seen_boundaries: set[tuple[int, int]] = set()
 
     for r in sorted_edge_records:
-        boundary = (int(r.prev_page_index), int(r.next_page_index))
-
-        if boundary in seen_boundaries:
-            logger.warning(
-                f"Duplicate edge record detected for boundary {boundary}; "
-                "continuity compilation assumes at most one selected pair per boundary."
-            )
-        else:
-            seen_boundaries.add(boundary)
-
         if int(r.next_page_index) != int(r.prev_page_index) + 1:
             logger.warning(
                 f"Non-adjacent edge record detected: {r.prev_page_index}->{r.next_page_index}. "
                 "This is unexpected for page-pair continuity verification."
             )
 
-    return sorted_edge_records
+    return sorted_edge_records, boundary_duplicate_resolutions
 
 
 def compile_continuity_from_edge_verdicts(
@@ -755,10 +881,13 @@ def compile_continuity_from_edge_verdicts(
     """
 
     bools, effective_local_codes = _initialize_states(page_irs)
-    sorted_edge_records = _sort_and_validate_edge_records(edge_records)
+    sorted_edge_records, boundary_duplicate_resolutions = (
+        _sort_and_validate_edge_records(edge_records)
+    )
 
     dirty_keys: set[tuple[int, int]] = set()
     local_code_conflicts: list[dict[str, Any]] = []
+    local_code_propagation_conflicts: list[dict[str, Any]] = []
     local_code_patch: dict[tuple[int, int], str] = {}
     repeats_header_patch: dict[tuple[int, int], bool] = {}
 
@@ -767,6 +896,7 @@ def compile_continuity_from_edge_verdicts(
         dirty_keys=dirty_keys,
         effective_local_codes=effective_local_codes,
         local_code_conflicts=local_code_conflicts,
+        local_code_propagation_conflicts=local_code_propagation_conflicts,
         local_code_patch=local_code_patch,
         min_confidence_to_patch=min_confidence_to_patch,
         repeats_header_patch=repeats_header_patch,
@@ -780,14 +910,17 @@ def compile_continuity_from_edge_verdicts(
         repeats_header_patch=repeats_header_patch,
     )
 
-    local_code_changes = _apply_all_local_code_patches(
+    local_code_changes, local_code_patch_skips = _apply_all_local_code_patches(
         local_code_patch=local_code_patch, page_irs=page_irs
     )
 
     compile_report = {
         "applied_edges": applied_edges,
+        "boundary_duplicate_resolutions": boundary_duplicate_resolutions,
         "boundary_changes": boundary_changes,
         "local_code_changes": local_code_changes,
+        "local_code_patch_skips": local_code_patch_skips,
+        "local_code_propagation_conflicts": local_code_propagation_conflicts,
         "local_code_conflicts": local_code_conflicts,
         "repeats_header_changes": repeats_header_changes,
     }
