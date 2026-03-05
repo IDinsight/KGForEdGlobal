@@ -1019,7 +1019,11 @@ def postprocess_verified_page_irs(
 
 
 def propagate_table_local_codes(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
-    """Carry forward "Table X" codes across VERIFIED continuation boundaries.
+    """Carry forward "Table X" codes on tables that continue across page boundaries
+    when the verification step has confirmed the continuation. This is a common failure
+    mode where the model correctly identifies a table continuation but fails to copy
+    the local code, leaving the carried code as the only signal of the connection
+    between the two table parts.
 
     This post-pass is intentionally conservative:
 
