@@ -10,7 +10,11 @@ from loguru import logger
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, PageIR, Table
-from skg.page_ir_verification.utils import EdgeVerdictRecord, PageIRVerificationDirs
+from skg.page_ir_verification.utils import (
+    EdgeVerdictRecord,
+    PageIRContinuityVerdict,
+    PageIRVerificationDirs,
+)
 from skg.utils.constants import ItemBoundary, PageContinuationKind
 from skg.utils.general import write_to_json
 
@@ -310,7 +314,7 @@ def _propagate_local_codes(
     next_key: tuple[int, int],
     prev_key: tuple[int, int],
     record: EdgeVerdictRecord,
-    verdict: Any,
+    verdict: PageIRContinuityVerdict,
 ) -> None:
     """Propagate local_code across a TRUE continuation edge when one side is missing.
 
