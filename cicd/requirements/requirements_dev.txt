@@ -697,10 +697,6 @@ executing==2.2.1 \
     --hash=sha256:3632cc370565f6648cc328b32435bd120a1e4ebb20c77e3fdde9a13cd1e533c4 \
     --hash=sha256:760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017
     # via logfire
-fastapi==0.115.14 \
-    --hash=sha256:6c0c8bf9420bd58f565e585036d971872472b4f7d3f6c73b698e10cffdefb3ca \
-    --hash=sha256:b1de15cdc1c499a4da47914db35d0e4ef8f1ce62b624e94e0e5824421df99739
-    # via skg (pyproject.toml)
 fastavro==1.12.1 \
     --hash=sha256:00650ca533907361edda22e6ffe8cf87ab2091c5d8aee5c8000b0f2dcdda7ed3 \
     --hash=sha256:02281432dcb11c78b3280da996eff61ee0eff39c5de06c6e0fbf19275093e6d4 \
@@ -2210,7 +2206,6 @@ pydantic==2.12.5 \
     #   ag-ui-protocol
     #   anthropic
     #   cohere
-    #   fastapi
     #   fastmcp
     #   genai-prices
     #   google-genai
@@ -2561,10 +2556,6 @@ pyyaml==6.0.3 \
     #   mistralai
     #   pre-commit
     #   pydantic-evals
-redis==7.2.1 \
-    --hash=sha256:49e231fbc8df2001436ae5252b3f0f3dc930430239bfeb6da4c7ee92b16e5d33 \
-    --hash=sha256:6163c1a47ee2d9d01221d8456bc1c75ab953cbda18cfbc15e7140e9ba16ca3a5
-    # via skg (pyproject.toml)
 referencing==0.37.0 \
     --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231 \
     --hash=sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8
@@ -2946,7 +2937,6 @@ starlette==0.46.2 \
     --hash=sha256:595633ce89f8ffa71a015caed34a5b2dc1c0cdb3f0f1fbd1e69339cf2abeec35 \
     --hash=sha256:7f7361f34eed179294600af672f565727419830b54b7b084efe44bb82d2fccd5
     # via
-    #   fastapi
     #   mcp
     #   pydantic-ai-slim
 tabulate==0.9.0 \
@@ -3085,7 +3075,6 @@ typing-extensions==4.15.0 \
     #   alembic
     #   anthropic
     #   cohere
-    #   fastapi
     #   google-genai
     #   groq
     #   grpcio

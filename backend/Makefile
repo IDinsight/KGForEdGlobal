@@ -136,26 +136,8 @@ clean-docker-container = \
 	docker system prune -f
 
 ########## TEST SETUP ##########
-test: up-test run-tests down-test  ## Run backend tests
-
-up-test: up-redis
-
-up-redis:
-	$(call clean-docker-container,redis-test)
-	@sleep 2
-	@echo "$(GREEN)Starting a new Redis container...$(RESET)"
-	@$(export-test-env) \
-	docker run \
-		--name redis-test \
-     	-p $$REDIS_PORT:6379 \
-	 	-d $(DOCKER_REDIS_IMAGE)
+test: run-tests  ## Run backend tests
 
 run-tests:
 	@$(export-test-env) \
-	$(UV) run pytest -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests
-
-########## TEST TEARDOWN ##########
-down-test: down-redis ## Tear down all local test containers
-
-down-redis:
-	$(call clean-docker-container,redis-test)
+	$(UV) run pytest -n auto -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests
