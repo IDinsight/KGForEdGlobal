@@ -218,6 +218,7 @@ def _make_edge_summary(
         "is_continuation": verdict.is_continuation,
         "continuation_kind": verdict.continuation_kind.value,
         "confidence": verdict.confidence,
+        "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
         "eligible_by_confidence": should_apply,
         "applied": should_apply and not skipped,
         "skipped": skipped,
@@ -496,24 +497,44 @@ def _boundary_to_bools(boundary: ItemBoundary | None) -> tuple[bool, bool]:
     return False, False  # COMPLETE or None
 
 
+def _brief_edge_record(record: EdgeVerdictRecord) -> dict[str, Any]:
+    """Return a brief JSON-serializable summary of an edge record.
+
+    Parameters
+    ----------
+    record
+        The edge verdict record to summarize.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary of the record's compile-relevant fields.
+    """
+
+    verdict = record.verdict
+    return {
+        "prev_index": int(record.prev_item_index),
+        "next_index": int(record.next_item_index),
+        "is_continuation": bool(verdict.is_continuation),
+        "continuation_kind": verdict.continuation_kind.value,
+        "confidence": float(verdict.confidence),
+        "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
+    }
+
+
 def _deduplicate_and_sort_edge_records(
-    *, edge_records: list[EdgeVerdictRecord], min_confidence_to_select_positive: float
+    edge_records: list[EdgeVerdictRecord],
 ) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
-    """Select at most one edge record per boundary, enforce adjacency, and sort.
+    """Collapse exact duplicate edge records and reject conflicting duplicates.
 
-    Continuity compilation assumes at most one selected pair per page boundary
-    (prev_page_index, next_page_index). If multiple records exist for the same
-    boundary, this function selects the same "best" record that verification would keep
-    for that boundary and discards the others.
+    Verification is the source of truth for per-boundary candidate selection. Compile
+    therefore must not re-rank competing records for the same page boundary. This
+    helper only:
 
-    Selection order (highest priority first):
-
-    1. Prefer *strong positive continuations* (is_continuation=True and
-        verdict.confidence >= min_confidence_to_select_positive)
-    2. If no strong positives exist, select the record with the highest
-        verdict.confidence
-    3. Tie-breakers (determinism): prefer is_continuation=True, then lower
-       (prev_item_index, next_item_index)
+    1. Collapses exact duplicate records for the same boundary when their
+        compile-relevant semantics are identical.
+    2. Raises a ValueError if multiple *conflicting* records exist for the same
+        boundary, because that indicates inconsistent upstream verification outputs.
 
     After deduplication, every retained record must be adjacent
     (next_page_index == prev_page_index + 1). Non-adjacent edge records are invalid for
@@ -522,10 +543,7 @@ def _deduplicate_and_sort_edge_records(
     Parameters
     ----------
     edge_records
-        List of edge verdict records to deduplicate and sort.
-    min_confidence_to_select_positive
-        Minimum confidence threshold for a positive continuation verdict to outrank
-        negatives during per-boundary selection.
+        List of edge verdict records to collapse and sort.
 
     Returns
     -------
@@ -535,36 +553,15 @@ def _deduplicate_and_sort_edge_records(
     Raises
     ------
     ValueError
-        If any retained edge record is non-adjacent.
+        If any boundary has conflicting duplicate records or if any retained edge
+        record is non-adjacent.
     """
 
-    def _brief(r: EdgeVerdictRecord) -> dict[str, Any]:
-        """Helper to create a brief summary of an edge record for reporting purposes.
-
-        Parameters
-        ----------
-        r
-            The EdgeVerdictRecord to summarize.
-
-        Returns
-        -------
-        dict[str, Any]
-            A brief summary of the edge record's key attributes.
-        """
-
-        v = r.verdict
-        return {
-            "prev_index": int(r.prev_item_index),
-            "next_index": int(r.next_item_index),
-            "is_continuation": bool(v.is_continuation),
-            "continuation_kind": v.continuation_kind.value,
-            "confidence": float(v.confidence),
-        }
-
     boundary_map: dict[tuple[int, int], list[EdgeVerdictRecord]] = {}
-    for r in edge_records:
-        boundary = (int(r.prev_page_index), int(r.next_page_index))
-        boundary_map.setdefault(boundary, []).append(r)
+
+    for record in edge_records:
+        boundary = (int(record.prev_page_index), int(record.next_page_index))
+        boundary_map.setdefault(boundary, []).append(record)
 
     boundary_duplicate_resolutions: list[dict[str, Any]] = []
     selected: list[EdgeVerdictRecord] = []
@@ -574,67 +571,70 @@ def _deduplicate_and_sort_edge_records(
             selected.append(records[0])
             continue
 
-        best = _select_best_edge_record_for_boundary(
-            min_confidence_to_select_positive=min_confidence_to_select_positive,
-            records=records,
-        )
+        identity_groups: dict[tuple[Any, ...], list[EdgeVerdictRecord]] = {}
 
-        discarded = [r for r in records if r is not best]
-        discarded = sorted(
-            discarded,
-            key=lambda r: (
-                -float(r.verdict.confidence),
-                -(1 if r.verdict.is_continuation else 0),
-                int(r.prev_item_index),
-                int(r.next_item_index),
-            ),
-        )
+        for record in records:
+            identity_groups.setdefault(_edge_record_identity_key(record), []).append(
+                record
+            )
 
-        logger.warning(
-            f"Duplicate edge records detected for boundary {boundary}; selected "
-            f"prev_index={best.prev_item_index} next_index={best.next_item_index} "
-            f"(confidence={best.verdict.confidence}, is_continuation={best.verdict.is_continuation}) "
-            f"and discarded {len(discarded)} other record(s)."
-        )
+        if len(identity_groups) > 1:
+            conflict_summaries = [
+                _brief_edge_record(group_records[0])
+                for _, group_records in sorted(
+                    identity_groups.items(), key=lambda p: p[0]
+                )
+            ]
+            raise ValueError(
+                f"Conflicting edge records detected for boundary "
+                f"{boundary}. Compile treats verification-selected boundary records "
+                f"as ground truth and will not re-rank them. Conflicting records: "
+                f"{conflict_summaries}"
+            )
 
-        boundary_duplicate_resolutions.append(
-            {
-                "prev_page": boundary[0],
-                "next_page": boundary[1],
-                "selected": _brief(best),
-                "discarded": [_brief(r) for r in discarded],
-                "reason": "dedupe_one_record_per_boundary_match_verification_selection",
-                "min_confidence_to_select_positive": float(
-                    min_confidence_to_select_positive
-                ),
-            }
-        )
-        selected.append(best)
+        kept = records[0]
+        duplicate_count = len(records) - 1
 
-    # Sort deterministically after selection.
+        if duplicate_count > 0:
+            logger.warning(
+                f"Exact duplicate edge records detected for boundary {boundary}; "
+                f"keeping one record and discarding {duplicate_count} duplicate(s)."
+            )
+            boundary_duplicate_resolutions.append(
+                {
+                    "prev_page": boundary[0],
+                    "next_page": boundary[1],
+                    "selected": _brief_edge_record(kept),
+                    "discarded_count": duplicate_count,
+                    "reason": "collapsed_exact_duplicate_edge_records",
+                }
+            )
+
+        selected.append(kept)
+
     sorted_edge_records = sorted(
         selected,
-        key=lambda r: (
-            int(r.prev_page_index),
-            int(r.next_page_index),
-            int(r.prev_item_index),
-            int(r.next_item_index),
+        key=lambda record: (
+            int(record.prev_page_index),
+            int(record.next_page_index),
+            int(record.prev_item_index),
+            int(record.next_item_index),
         ),
     )
 
     non_adjacent = [
-        r
-        for r in sorted_edge_records
-        if int(r.next_page_index) != int(r.prev_page_index) + 1
+        record
+        for record in sorted_edge_records
+        if int(record.next_page_index) != int(record.prev_page_index) + 1
     ]
 
     if non_adjacent:
         details = ", ".join(
             (
-                f"{r.prev_page_index}->{r.next_page_index} "
-                f"(prev_index={r.prev_item_index}, next_index={r.next_item_index})"
+                f"{record.prev_page_index}->{record.next_page_index} "
+                f"(prev_index={record.prev_item_index}, next_index={record.next_item_index})"
             )
-            for r in non_adjacent
+            for record in non_adjacent
         )
         raise ValueError(
             f"Non-adjacent edge record(s) detected during continuity compilation: "
@@ -642,6 +642,37 @@ def _deduplicate_and_sort_edge_records(
         )
 
     return sorted_edge_records, boundary_duplicate_resolutions
+
+
+def _edge_record_identity_key(record: EdgeVerdictRecord) -> tuple[Any, ...]:
+    """Return the compile-relevant identity key for an edge verdict record.
+
+    This intentionally compares only the fields that affect continuity compilation, not
+    explanatory text such as rationale.
+
+    Parameters
+    ----------
+    record
+        The edge verdict record.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        A deterministic identity tuple for compile-relevant semantics.
+    """
+
+    verdict = record.verdict
+
+    return (
+        int(record.prev_page_index),
+        int(record.next_page_index),
+        int(record.prev_item_index),
+        int(record.next_item_index),
+        bool(verdict.is_continuation),
+        verdict.continuation_kind.value,
+        float(verdict.confidence),
+        verdict.set_next_table_repeats_header,
+    )
 
 
 def _initialize_states(
@@ -699,11 +730,9 @@ def _patch_repeats_header(
 ) -> dict[str, Any]:
     """Patch table.repeats_header in an invariant-safe order.
 
-    Explicit True/False patches are assumed to have already passed verification-time
-    validation against the candidate table's current header_row_count. This helper
-    therefore does not repair header_row_count for explicit patches; it only clears
-    repeats_header to None first so in-place updates remain safe even if assignment
-    validation is enabled.
+    NB: rpeats_header is a visual repeated-header signal. A False patch therefore does
+    not imply any required header_row_count value. This helper only performs the
+    repeats_header mutation itself and returns a concise change summary.
 
     Parameters
     ----------
@@ -723,7 +752,6 @@ def _patch_repeats_header(
     """
 
     before_repeats = table.repeats_header
-    before_hrc = table.header_row_count
 
     # Clearing repeats_header to None first avoids transient invariant violations
     # during in-place updates if assignment validation is enabled on the schema.
@@ -732,18 +760,12 @@ def _patch_repeats_header(
 
     table.repeats_header = desired
 
-    change: dict[str, Any] = {
+    return {
         "page": page_index,
         "item_index": item_index,
         "before": before_repeats,
         "after": desired,
     }
-
-    if table.header_row_count != before_hrc:
-        change["header_row_count_before"] = before_hrc
-        change["header_row_count_after"] = table.header_row_count
-
-    return change
 
 
 def _reconcile_dirty_item_states(
@@ -752,9 +774,8 @@ def _reconcile_dirty_item_states(
     dirty_keys: set[tuple[int, int]],
     page_irs: dict[int, PageIR],
     repeats_header_patch: dict[tuple[int, int], bool],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Reconcile updated boundaries and repeats_header states for only the items
-    that were touched by edge verdicts.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Reconcile updated boundaries and repeats_header states for touched items.
 
     NB: This also reconciles any items with repeats_header patches even when their
     boundary booleans did not change.
@@ -773,22 +794,21 @@ def _reconcile_dirty_item_states(
     Returns
     -------
     tuple
-        A tuple containing the lists of boundary changes and repeats_header changes.
+        A tuple containing the lists of boundary changes, repeats_header changes, and
+        repeats_header review flags.
     """
 
     boundary_changes: list[dict[str, Any]] = []
     repeats_header_changes: list[dict[str, Any]] = []
+    repeats_header_review_flags: list[dict[str, Any]] = []
 
-    # Also include keys that have a repeats_header patch even if the boundary bits did
-    # not change (e.g., boundary already RESUMED/BOTH but header behavior needs
-    # patching).
     all_keys = dirty_keys | set(repeats_header_patch.keys())
 
     for page_index, item_index in sorted(all_keys):
         flags = bools[(page_index, item_index)]
         item = page_irs[page_index].items[item_index]
 
-        b_change, h_change = _reconcile_item_state(
+        b_change, h_change, h_review = _reconcile_item_state(
             flags=flags,
             item=item,
             item_index=item_index,
@@ -800,8 +820,10 @@ def _reconcile_dirty_item_states(
             boundary_changes.append(b_change)
         if h_change:
             repeats_header_changes.append(h_change)
+        if h_review:
+            repeats_header_review_flags.append(h_review)
 
-    return boundary_changes, repeats_header_changes
+    return boundary_changes, repeats_header_changes, repeats_header_review_flags
 
 
 def _reconcile_item_state(
@@ -811,13 +833,13 @@ def _reconcile_item_state(
     flags: list[bool],
     page_index: int,
     repeats_header_patch: dict[tuple[int, int], bool],
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
     """Update item boundary and table headers based on calculated flags.
 
     Explicit repeats_header patches are assumed to have already passed
     verification-time validation. This function applies them in an invariant-safe order
     while also clearing repeats_header when a table no longer has a continuation
-    boundary.
+    boundary. Any review notes are returned separately from actual header changes.
 
     Parameters
     ----------
@@ -834,19 +856,22 @@ def _reconcile_item_state(
 
     Returns
     -------
-    tuple[dict[str, Any] | None, dict[str, Any] | None]
-        A tuple of (boundary_change, header_change) summaries, or None if no change.
+    tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]
+        A tuple of (boundary_change, header_change, header_review_flag) summaries, or
+        None values when no output is needed.
     """
 
     from_prev, to_next = flags
     boundary_change: dict[str, Any] | None = None
     header_change: dict[str, Any] | None = None
+    header_review_flag: dict[str, Any] | None = None
 
     before_boundary = item.boundary
     after_boundary = _bools_to_boundary(from_prev, to_next)
 
     is_table = item.kind == "table"
     table: Table | None = item if is_table else None
+    before_repeats = table.repeats_header if table is not None else None
 
     # If a table is about to transition into a non-continuation boundary state, clear
     # repeats_header BEFORE updating the boundary. This avoids transient invariant
@@ -873,43 +898,42 @@ def _reconcile_item_state(
         }
         item.boundary = after_boundary
 
-    # repeats_header only meaningful for tables.
     if not is_table or table is None:
-        return boundary_change, header_change
+        return boundary_change, header_change, header_review_flag
 
-    # Case A: Connection broken (not RESUMED or BOTH) --> repeats_header must be None.
+    # Connection broken -> repeats_header must be None. The only review case worth
+    # flagging here is a downgraded continuation that previously had an
+    # explicit/extracted False visual signal *and* zero extracted header rows, because
+    # that may indicate a now-standalone table starting without any header row.
     if after_boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
-        # When a table transitions from continuation with header_row_count=0 to a
-        # non-continuation boundary, that zero count may now be suspect. We cannot
-        # recover the original header rows automatically, so flag for human review.
-        if table.header_row_count == 0:
+        if (
+            before_boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            and before_repeats is False
+            and table.header_row_count == 0
+        ):
             logger.warning(
                 f"Page {page_index} item {item_index}: boundary downgraded to "
-                f"{after_boundary.value} with header_row_count=0. This table may "
-                f"need manual review."
+                f"{after_boundary.value} after a non-repeated-header table state with "
+                f"header_row_count=0. This table may need manual review."
             )
+            header_review_flag = {
+                "page": page_index,
+                "item_index": item_index,
+                "before_boundary": getattr(before_boundary, "value", None),
+                "after_boundary": after_boundary.value,
+                "before_repeats_header": before_repeats,
+                "header_row_count": table.header_row_count,
+                "reason": (
+                    "boundary_downgraded_after_non_repeated_header_state_with_zero_header_rows"
+                ),
+            }
 
-            if header_change is None:
-                header_change = {
-                    "page": page_index,
-                    "item_index": item_index,
-                    "before": None,
-                    "after": None,
-                }
+        return boundary_change, header_change, header_review_flag
 
-            header_change["needs_review"] = True
-            header_change["review_reason"] = (
-                "header_row_count=0 after boundary downgrade; may need manual correction"
-            )
-
-        return boundary_change, header_change
-
-    # Case B: Connection exists --> Apply patch if present.
+    # Connection exists -> Apply explicit patch if present.
     key = (page_index, item_index)
-
     if key in repeats_header_patch:
         desired = repeats_header_patch[key]
-
         if table.repeats_header != desired:
             header_change = _patch_repeats_header(
                 desired=desired,
@@ -918,61 +942,7 @@ def _reconcile_item_state(
                 table=table,
             )
 
-    return boundary_change, header_change
-
-
-def _select_best_edge_record_for_boundary(
-    *, min_confidence_to_select_positive: float, records: list[EdgeVerdictRecord]
-) -> EdgeVerdictRecord:
-    """Select the best edge record for a single page boundary.
-
-    Mirrors verify_page_pairs._pair_priority_key:
-
-    1. Prefer strong positive continuations (is_continuation=True and
-       verdict.confidence >= min_confidence_to_select_positive).
-    2. If no strong positive exists, select the highest-confidence record overall.
-    3. Deterministic tie-breakers: prefer is_continuation=True, then lower
-       (prev_item_index, next_item_index).
-
-    Parameters
-    ----------
-    min_confidence_to_select_positive
-        Minimum confidence threshold for a positive continuation verdict to outrank
-        negatives during selection.
-    records
-        List of EdgeVerdictRecord objects for the same page boundary.
-
-    Returns
-    -------
-    EdgeVerdictRecord
-        The selected best record for the boundary.
-
-    Raises
-    ------
-    ValueError
-        If the records list is empty.
-    """
-
-    if not records:
-        raise ValueError("records must be non-empty")
-
-    strong_positives = [
-        r
-        for r in records
-        if bool(r.verdict.is_continuation)
-        and float(r.verdict.confidence) >= float(min_confidence_to_select_positive)
-    ]
-    candidates = strong_positives if strong_positives else records
-
-    return max(
-        candidates,
-        key=lambda r: (
-            float(r.verdict.confidence),
-            1 if bool(r.verdict.is_continuation) else 0,
-            -int(r.prev_item_index),
-            -int(r.next_item_index),
-        ),
-    )
+    return boundary_change, header_change, header_review_flag
 
 
 def compile_continuity_from_edge_verdicts(
@@ -998,9 +968,9 @@ def compile_continuity_from_edge_verdicts(
     min_confidence_to_patch
         Minimum confidence threshold to apply edits.
     min_confidence_to_select_positive
-        Minimum confidence threshold for a positive continuation verdict to outrank
-        negatives during per-boundary deduplication, matching verification-time
-        attempt selection.
+        Verification-time selection threshold carried through for provenance in the
+        compile report. Compile treats incoming edge_records as already
+        verification-selected and does not re-rank per-boundary candidates.
     page_irs
         Mapping of page_index to PageIR objects.
     verification_dirs
@@ -1010,10 +980,7 @@ def compile_continuity_from_edge_verdicts(
 
     bools, effective_local_codes = _initialize_states(page_irs)
     sorted_edge_records, boundary_duplicate_resolutions = (
-        _deduplicate_and_sort_edge_records(
-            edge_records=edge_records,
-            min_confidence_to_select_positive=min_confidence_to_select_positive,
-        )
+        _deduplicate_and_sort_edge_records(edge_records=edge_records)
     )
 
     dirty_keys: set[tuple[int, int]] = set()
@@ -1034,7 +1001,11 @@ def compile_continuity_from_edge_verdicts(
         sorted_edge_records=sorted_edge_records,
     )
 
-    boundary_changes, repeats_header_changes = _reconcile_dirty_item_states(
+    (
+        boundary_changes,
+        repeats_header_changes,
+        repeats_header_review_flags,
+    ) = _reconcile_dirty_item_states(
         bools=bools,
         dirty_keys=dirty_keys,
         page_irs=page_irs,
@@ -1058,6 +1029,7 @@ def compile_continuity_from_edge_verdicts(
         "local_code_propagation_conflicts": local_code_propagation_conflicts,
         "local_code_conflicts": local_code_conflicts,
         "repeats_header_changes": repeats_header_changes,
+        "repeats_header_review_flags": repeats_header_review_flags,
     }
 
     write_to_json(
