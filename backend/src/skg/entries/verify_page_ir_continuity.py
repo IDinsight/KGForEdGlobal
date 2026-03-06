@@ -134,7 +134,7 @@ def verify_page_ir_continuity(
             edge_records.append(record)
 
     # Compile continuity edits from edge verdicts.
-    compile_continuity_from_edge_verdicts(
+    verified_table_edges = compile_continuity_from_edge_verdicts(
         edge_records=edge_records,
         min_confidence_to_patch=config.min_confidence_to_patch,
         min_confidence_to_select_positive=config.min_confidence_to_select_positive,
@@ -144,7 +144,9 @@ def verify_page_ir_continuity(
 
     # Perform postprocess fixes.
     postprocess_verified_page_irs(
-        page_irs=page_irs, verification_dirs=verification_dirs
+        page_irs=page_irs,
+        verification_dirs=verification_dirs,
+        verified_table_continuation_edges=verified_table_edges,
     )
 
     # Write verified page IRs after all edits have been applied.
