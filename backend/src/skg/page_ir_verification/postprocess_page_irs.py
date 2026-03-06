@@ -52,73 +52,6 @@ def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int
     )
 
 
-def _insert_placeholders(
-    *, active_span: list[int], cells: list[Any], n_cols: int
-) -> tuple[list[Any], int]:
-    """Create a new list of cells with placeholders inserted for active rowspans.
-
-    Parameters
-    ----------
-    active_span
-        List tracking remaining rowspan counts for each column.
-    cells
-        The list of original table cells.
-    n_cols
-        The total number of columns in the table.
-
-    Returns
-    -------
-    tuple[list[Any], int]
-        (new_cells, dropped_cells) where dropped_cells counts original cells dropped
-        due to overflow.
-    """
-
-    new_cells: list[Any] = []
-    col = 0
-    dropped_cells = 0
-
-    for idx, cell in enumerate(cells):
-        while col < n_cols and active_span[col] > 0:
-            new_cells.append(TableCell(col_span=1, row_span=1, text=None))
-            col += 1
-
-        if col >= n_cols:
-            # No remaining width. This indicates an inconsistency between prior
-            # rowspans and the extracted cells in this row. We drop the remaining cells
-            # to preserve the table's declared width (n_cols).
-            dropped_cells = len(cells) - idx
-
-            if dropped_cells > 0:
-                logger.warning(
-                    f"Row overflow while inserting rowspan placeholders: "
-                    f"dropping {dropped_cells} cell(s) beyond n_cols={n_cols}."
-                )
-
-            break
-
-        new_cells.append(cell)
-
-        col_span = cell.col_span
-        row_span = cell.row_span
-
-        _update_active_span(
-            active_span=active_span,
-            col=col,
-            col_span=col_span,
-            n_cols=n_cols,
-            row_span=row_span,
-        )
-
-        col += col_span
-
-    # Fill trailing gaps if we haven't reached n_cols yet.
-    while col < n_cols and active_span[col] > 0:
-        new_cells.append(TableCell(col_span=1, row_span=1, text=None))
-        col += 1
-
-    return new_cells, dropped_cells
-
-
 def _is_synthetic_placeholder_cell(cell: TableCell) -> bool:
     """True if the cell is a synthetic 1x1 empty placeholder inserted by postprocess.
 
@@ -279,7 +212,6 @@ def _process_table_item(
 
         if row_change:
             full_change = {
-                "type": "rowspan_alignment_inserted_placeholders",
                 "page": page_index,
                 "item_index": item_index,
                 "row_index": row_index,
@@ -406,9 +338,10 @@ def _process_table_row(
 ) -> dict[str, Any] | None:
     """Process a single row to align cells based on active rowspans.
 
-    This function only inserts placeholders for active rowspans. It does NOT trim
-    excess cells---that responsibility belongs to `normalize_table_row_cell_counts`,
-    which handles all width corrections in a single pass.
+    This function performs a placement simulation against the current `active_span`
+    state. It only mutates the row when placeholder insertion can repair the row
+    WITHOUT dropping any original extracted cells. If the row cannot be placed
+    consistently, the original row is preserved and a conflict record is returned.
 
     Parameters
     ----------
@@ -422,36 +355,61 @@ def _process_table_row(
     Returns
     -------
     dict[str, Any] | None
-        A dictionary of changes if modifications were made, otherwise None.
+        A dictionary describing either a safe repair or an unresolved conflict,
+        otherwise None.
     """
 
     old_cells = list(row.cells)
-
-    # Pre-check: if the row already spans the full table width (or more), assume the
-    # extraction model has already materialized any implicit rowspan occupancy. In
-    # that case, skip placeholder insertion but still update `active_span` for any
-    # new rowspans introduced by this row's cells.
-    old_effective = sum(c.col_span for c in old_cells)
-
-    if old_effective >= n_cols:
-        _update_spans_only(active_span=active_span, cells=old_cells, n_cols=n_cols)
-        return None
-
-    # Insert placeholders.
-    new_cells, dropped_cells = _insert_placeholders(
+    placement = _simulate_rowspan_alignment(
         active_span=active_span, cells=old_cells, n_cols=n_cols
     )
+    status = placement["status"]
 
-    if len(new_cells) != len(old_cells) or dropped_cells:
+    if status == "already_aligned":
+        updated_active_span = placement["updated_active_span"]
+        active_span[:] = updated_active_span
+        return None
+
+    if status == "needs_placeholders":
+        new_cells = placement["proposed_cells"]
+        updated_active_span = placement["updated_active_span"]
+        active_span[:] = updated_active_span
         row.cells = new_cells
-        change = {"before_cells": len(old_cells), "after_cells": len(new_cells)}
+        return {
+            "type": "rowspan_alignment_inserted_placeholders",
+            "before_cells": len(old_cells),
+            "after_cells": len(new_cells),
+            "inserted_placeholders": placement["inserted_placeholders"],
+        }
 
-        if dropped_cells:
-            change["overflow_dropped_cells"] = dropped_cells
+    # Conflict path: preserve the original extracted row and avoid destructive repair.
+    # We still advance span state using the original row so later rows continue to be
+    # processed deterministically, but we surface the inconsistency explicitly for
+    # audit/review.
+    _update_spans_only(active_span=active_span, cells=old_cells, n_cols=n_cols)
 
-        return change
+    conflict: dict[str, Any] = {
+        "type": "rowspan_alignment_conflict_overflow",
+        "before_cells": len(old_cells),
+        "n_cols": n_cols,
+        "inserted_placeholders_attempted": placement["inserted_placeholders"],
+        "overflow_original_cells": placement["overflow_original_cells"],
+        "active_span_snapshot": placement.get(
+            "active_span_snapshot", list(active_span)
+        ),
+    }
 
-    return None
+    overflow_cell_col_span = placement.get("overflow_cell_col_span")
+
+    if overflow_cell_col_span is not None:
+        conflict["overflow_cell_col_span"] = overflow_cell_col_span
+
+    logger.warning(
+        f"Rowspan alignment conflict: preserving original row with {len(old_cells)} "
+        f"cell(s) because simulated placement overflowed n_cols={n_cols}."
+    )
+
+    return conflict
 
 
 def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
@@ -507,6 +465,99 @@ def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
         len(natural_full_width_rows_cells) >= 3
         and (leading_blank_count / len(natural_full_width_rows_cells)) >= 0.6
     )
+
+
+def _simulate_rowspan_alignment(
+    *, active_span: list[int], cells: list[Any], n_cols: int
+) -> dict[str, Any]:
+    """Simulate placing a row against active rowspans without mutating source cells.
+
+    NB: This is intentionally conservative. It NEVER drops original extracted cells to
+    force a row to fit `n_cols`. When the row cannot be placed consistently against the
+    currently active rowspans, it returns `overflow_conflict` so the caller can
+    preserve the source row and record the inconsistency for review.
+
+    Parameters
+    ----------
+    active_span
+        List tracking remaining rowspan counts for each column.
+    cells
+        The list of original table cells.
+    n_cols
+        The total number of columns in the table.
+
+    Returns
+    -------
+    dict[str, Any]
+        A placement result with keys:
+            - `status`: one of `already_aligned`, `needs_placeholders`, or
+                `overflow_conflict`
+            - `proposed_cells`: the safely aligned row cells when repair is possible
+            - `updated_active_span`: the post-row active span state before the
+                caller's usual per-row decrement
+            - `inserted_placeholders`: count of synthetic placeholders inserted
+            - `overflow_original_cells`: count of original cells left unplaced when a
+                conflict is detected
+    """
+
+    proposed_cells: list[Any] = []
+    simulated_active_span = list(active_span)
+    col = 0
+    inserted_placeholders = 0
+
+    for idx, cell in enumerate(cells):
+        while col < n_cols and simulated_active_span[col] > 0:
+            proposed_cells.append(TableCell(col_span=1, row_span=1, text=None))
+            inserted_placeholders += 1
+            col += 1
+
+        if col >= n_cols:
+            overflow_original_cells = len(cells) - idx
+            return {
+                "status": "overflow_conflict",
+                "proposed_cells": None,
+                "updated_active_span": None,
+                "inserted_placeholders": inserted_placeholders,
+                "overflow_original_cells": overflow_original_cells,
+                "active_span_snapshot": list(active_span),
+            }
+
+        proposed_cells.append(cell)
+
+        _update_active_span(
+            active_span=simulated_active_span,
+            col=col,
+            col_span=cell.col_span,
+            n_cols=n_cols,
+            row_span=cell.row_span,
+        )
+        col += cell.col_span
+
+        if col > n_cols:
+            return {
+                "status": "overflow_conflict",
+                "proposed_cells": None,
+                "updated_active_span": None,
+                "inserted_placeholders": inserted_placeholders,
+                "overflow_original_cells": len(cells) - (idx + 1),
+                "overflow_cell_col_span": cell.col_span,
+                "active_span_snapshot": list(active_span),
+            }
+
+    while col < n_cols and simulated_active_span[col] > 0:
+        proposed_cells.append(TableCell(col_span=1, row_span=1, text=None))
+        inserted_placeholders += 1
+        col += 1
+
+    status = "needs_placeholders" if inserted_placeholders > 0 else "already_aligned"
+
+    return {
+        "status": status,
+        "proposed_cells": proposed_cells,
+        "updated_active_span": simulated_active_span,
+        "inserted_placeholders": inserted_placeholders,
+        "overflow_original_cells": 0,
+    }
 
 
 def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:

@@ -105,7 +105,7 @@ def _require_non_negative_int(
     field_name
         The name of the field being validated (e.g., "verdict.prev_page_index").
     report_name
-        The name of the pair report file (e.g., "0003_0004.json
+        The name of the pair report file (e.g., "0003_0004.json").
     value
         The value to validate.
 
@@ -248,30 +248,29 @@ def cross_check_extraction_run(
     if not page_indices:
         raise ValueError(f"No page IR JSONs found in: {page_irs_dir}")
 
-    start = max(start_page, page_indices[0])
-    end = min(end_page, page_indices[-1] + 1)  # +1 because end is exclusive
+    available_start = page_indices[0]
+    available_end = page_indices[-1] + 1  # +1 because end is exclusive
 
-    if start >= end:
+    if start_page < available_start or end_page > available_end:
         raise ValueError(
-            f"Requested verification range [{start_page}, {end_page}) does not overlap "
-            f"available extracted pages [{page_indices[0]}, {page_indices[-1] + 1}). "
-            f"Computed range after clamping is [{start}, {end}), which is empty. "
+            f"Requested verification range [{start_page}, {end_page}) falls outside "
+            f"available extracted pages [{available_start}, {available_end}). "
             f"Adjust start_page/end_page or re-run extraction."
         )
 
-    # Continuity verification requires every page in [start, end) to exist.
-    required = set(range(start, end))
+    # Continuity verification requires every page in [start_page, end_page) to exist.
+    required = set(range(start_page, end_page))
     available = set(page_indices)
     missing = sorted(required - available)
 
     if missing:
         raise ValueError(
             f"Page IR continuity verification requires contiguous pages in "
-            f"[{start}, {end}), but page IRs are missing for indices: {missing}. "
+            f"[{start_page}, {end_page}), but page IRs are missing for indices: {missing}. "
             f"Re-run extraction for the missing pages or adjust start_page/end_page."
         )
 
-    return start, end
+    return start_page, end_page
 
 
 def is_artifact(item: Block | Table) -> bool:
