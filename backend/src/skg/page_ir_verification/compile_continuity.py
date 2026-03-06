@@ -126,267 +126,6 @@ def _apply_edge_verdicts(
     return applied_edges
 
 
-def _make_edge_summary(
-    *,
-    record: EdgeVerdictRecord,
-    should_apply: bool,
-    skip_reason: str | None = None,
-    skipped: bool,
-) -> dict[str, Any]:
-    """Build a JSON-serializable summary dict for a single edge verdict.
-
-    Parameters
-    ----------
-    record
-        The edge verdict record.
-    should_apply
-        Whether the confidence met the threshold.
-    skip_reason
-        Reason for skipping, if applicable.
-    skipped
-        Whether the verdict was skipped entirely (e.g., missing keys or below
-        threshold).
-
-    Returns
-    -------
-    dict[str, Any]
-        Summary dictionary.
-    """
-
-    verdict = record.verdict
-    summary: dict[str, Any] = {
-        "prev_index": record.prev_item_index,
-        "next_index": record.next_item_index,
-        "prev_page": record.prev_page_index,
-        "next_page": record.next_page_index,
-        "is_continuation": verdict.is_continuation,
-        "continuation_kind": verdict.continuation_kind.value,
-        "confidence": verdict.confidence,
-        "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
-        "eligible_by_confidence": should_apply,
-        "applied": should_apply and not skipped,
-        "skipped": skipped,
-    }
-
-    if skip_reason is not None:
-        summary["skip_reason"] = skip_reason
-
-    return summary
-
-
-def _mutate_for_edge(
-    *,
-    bools: dict[tuple[int, int], list[bool]],
-    dirty_keys: set[tuple[int, int]],
-    effective_local_codes: dict[tuple[int, int], str | None],
-    local_code_conflicts: list[dict[str, Any]],
-    local_code_propagation_conflicts: list[dict[str, Any]],
-    local_code_patch: dict[tuple[int, int], str],
-    next_key: tuple[int, int],
-    prev_key: tuple[int, int],
-    record: EdgeVerdictRecord,
-    repeats_header_patch: dict[tuple[int, int], bool],
-) -> None:
-    """Apply in-place mutations for a single confident edge verdict.
-
-    Parameters
-    ----------
-    bools
-        Mapping of (page_idx, item_idx) to [from_prev, to_next] booleans.
-    dirty_keys
-        Set to track which keys were mutated by edge verdicts.
-    effective_local_codes
-        Mapping of (page_idx, item_idx) to effective local_code (after prior patches).
-    local_code_conflicts
-        List to append any local_code conflicts detected.
-    local_code_propagation_conflicts
-        List to append any conflicts between multiple propagated local_code values
-        targeting the same item.
-    local_code_patch
-        Mapping of (page_idx, item_idx) to desired local_code string.
-    next_key
-        The tuple key (page_idx, item_idx) for the next candidate.
-    prev_key
-        The tuple key (page_idx, item_idx) for the previous candidate.
-    record
-        The edge verdict record to apply.
-    repeats_header_patch
-        Mapping of (page_idx, item_idx) to desired repeats_header boolean.
-    """
-
-    verdict = record.verdict
-
-    if verdict.is_continuation:
-        if not bools[prev_key][1]:
-            bools[prev_key][1] = True
-            dirty_keys.add(prev_key)
-        if not bools[next_key][0]:
-            bools[next_key][0] = True
-            dirty_keys.add(next_key)
-
-        _propagate_local_codes(
-            effective_local_codes=effective_local_codes,
-            local_code_conflicts=local_code_conflicts,
-            local_code_propagation_conflicts=local_code_propagation_conflicts,
-            local_code_patch=local_code_patch,
-            next_key=next_key,
-            prev_key=prev_key,
-            record=record,
-            verdict=verdict,
-        )
-
-        if (
-            verdict.continuation_kind == PageContinuationKind.TABLE
-            and verdict.set_next_table_repeats_header is not None
-        ):
-            repeats_header_patch[next_key] = verdict.set_next_table_repeats_header
-    else:
-        # Clear only the directional connection for THIS candidate pair.
-        if bools[prev_key][1]:
-            bools[prev_key][1] = False
-            dirty_keys.add(prev_key)
-        if bools[next_key][0]:
-            bools[next_key][0] = False
-            dirty_keys.add(next_key)
-
-
-def _propagate_local_codes(
-    *,
-    effective_local_codes: dict[tuple[int, int], str | None],
-    local_code_conflicts: list[dict[str, Any]],
-    local_code_propagation_conflicts: list[dict[str, Any]],
-    local_code_patch: dict[tuple[int, int], str],
-    next_key: tuple[int, int],
-    prev_key: tuple[int, int],
-    record: EdgeVerdictRecord,
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Propagate local_code across a TRUE continuation edge when one side is missing.
-
-    Parameters
-    ----------
-    effective_local_codes
-        Mapping of (page_idx, item_idx) to effective local_code.
-    local_code_conflicts
-        List to append any conflicts detected.
-    local_code_propagation_conflicts
-        List to append propagation conflicts when multiple edges attempt to set
-        different local_code values for the same target.
-    local_code_patch
-        Mapping of (page_idx, item_idx) to desired local_code string.
-    next_key
-        The tuple key for the next candidate.
-    prev_key
-        The tuple key for the previous candidate.
-    record
-        The edge verdict record.
-    verdict
-        The verdict object.
-    """
-
-    # Only propagate local_code for table and figure continuations. Text blocks
-    # (paragraphs, headings, lists) rarely carry local_code, and propagating across a
-    # text break risks incorrectly assigning a code from one logical block to an
-    # unrelated one.
-    if verdict.continuation_kind not in {
-        PageContinuationKind.TABLE,
-        PageContinuationKind.FIGURE,
-    }:
-        return
-
-    prev_code = effective_local_codes.get(prev_key)
-    next_code = effective_local_codes.get(next_key)
-
-    if prev_code and not next_code:
-        _try_propagate_code(
-            code=prev_code,
-            effective_local_codes=effective_local_codes,
-            local_code_patch=local_code_patch,
-            local_code_propagation_conflicts=local_code_propagation_conflicts,
-            source_key=prev_key,
-            target_key=next_key,
-        )
-    elif next_code and not prev_code:
-        _try_propagate_code(
-            code=next_code,
-            effective_local_codes=effective_local_codes,
-            local_code_patch=local_code_patch,
-            local_code_propagation_conflicts=local_code_propagation_conflicts,
-            source_key=next_key,
-            target_key=prev_key,
-        )
-    elif prev_code and next_code and prev_code != next_code:
-        local_code_conflicts.append(
-            {
-                "prev_page": record.prev_page_index,
-                "next_page": record.next_page_index,
-                "prev_index": record.prev_item_index,
-                "next_index": record.next_item_index,
-                "prev_code": prev_code,
-                "next_code": next_code,
-                "continuation_kind": verdict.continuation_kind.value,
-            }
-        )
-
-
-def _try_propagate_code(
-    *,
-    code: str,
-    effective_local_codes: dict[tuple[int, int], str | None],
-    local_code_patch: dict[tuple[int, int], str],
-    local_code_propagation_conflicts: list[dict[str, Any]],
-    source_key: tuple[int, int],
-    target_key: tuple[int, int],
-) -> None:
-    """Attempt to propagate a local_code to a target key.
-
-    This updates effective_local_codes in-place and records a patch via
-    local_code_patch.setdefault(). If a different code has already been propagated to
-    the same target_key earlier in the compile pass, this records a propagation
-    conflict and keeps the earlier propagated value.
-
-    Parameters
-    ----------
-    code
-        The local_code to propagate.
-    effective_local_codes
-        Mapping of effective local codes (updated in-place).
-    local_code_patch
-        Mapping of local code patches (updated in-place via setdefault).
-    local_code_propagation_conflicts
-        List to append propagation conflicts.
-    source_key
-        The (page_idx, item_idx) key that the code was propagated from.
-    target_key
-        The (page_idx, item_idx) key to propagate to.
-    """
-
-    existing = local_code_patch.get(target_key)
-
-    if existing and existing != code:
-        local_code_propagation_conflicts.append(
-            {
-                "target_page": target_key[0],
-                "target_index": target_key[1],
-                "source_page": source_key[0],
-                "source_index": source_key[1],
-                "existing_code": existing,
-                "incoming_code": code,
-                "kept_code": existing,
-                "reason": "propagation_conflict_keep_earlier",
-            }
-        )
-        logger.warning(
-            f"local_code propagation conflict at page {target_key[0]} "
-            f"item {target_key[1]}: existing '{existing}' vs incoming "
-            f"'{code}' — keeping earlier propagation."
-        )
-        return
-
-    effective_local_codes[target_key] = code
-    local_code_patch.setdefault(target_key, code)
-
-
 def _bools_to_boundary(from_prev: bool, to_next: bool) -> ItemBoundary:
     """Convert (from_prev, to_next) booleans to ItemBoundary enum.
 
@@ -518,9 +257,18 @@ def _deduplicate_and_sort_edge_records(
         identity_groups: dict[tuple[Any, ...], list[EdgeVerdictRecord]] = {}
 
         for record in records:
-            identity_groups.setdefault(_edge_record_identity_key(record), []).append(
-                record
+            verdict = record.verdict
+            identity_key = (
+                int(record.prev_page_index),
+                int(record.next_page_index),
+                int(record.prev_item_index),
+                int(record.next_item_index),
+                bool(verdict.is_continuation),
+                verdict.continuation_kind.value,
+                float(verdict.confidence),
+                verdict.set_next_table_repeats_header,
             )
+            identity_groups.setdefault(identity_key, []).append(record)
 
         if len(identity_groups) > 1:
             conflict_summaries = [
@@ -588,37 +336,6 @@ def _deduplicate_and_sort_edge_records(
     return sorted_edge_records, boundary_duplicate_resolutions
 
 
-def _edge_record_identity_key(record: EdgeVerdictRecord) -> tuple[Any, ...]:
-    """Return the compile-relevant identity key for an edge verdict record.
-
-    This intentionally compares only the fields that affect continuity compilation, not
-    explanatory text such as rationale.
-
-    Parameters
-    ----------
-    record
-        The edge verdict record.
-
-    Returns
-    -------
-    tuple[Any, ...]
-        A deterministic identity tuple for compile-relevant semantics.
-    """
-
-    verdict = record.verdict
-
-    return (
-        int(record.prev_page_index),
-        int(record.next_page_index),
-        int(record.prev_item_index),
-        int(record.next_item_index),
-        bool(verdict.is_continuation),
-        verdict.continuation_kind.value,
-        float(verdict.confidence),
-        verdict.set_next_table_repeats_header,
-    )
-
-
 def _initialize_states(
     page_irs: dict[int, PageIR],
 ) -> tuple[dict[tuple[int, int], list[bool]], dict[tuple[int, int], str | None]]:
@@ -650,6 +367,130 @@ def _initialize_states(
             )
 
     return bools, normalized_local_codes
+
+
+def _make_edge_summary(
+    *,
+    record: EdgeVerdictRecord,
+    should_apply: bool,
+    skip_reason: str | None = None,
+    skipped: bool,
+) -> dict[str, Any]:
+    """Build a JSON-serializable summary dict for a single edge verdict.
+
+    Parameters
+    ----------
+    record
+        The edge verdict record.
+    should_apply
+        Whether the confidence met the threshold.
+    skip_reason
+        Reason for skipping, if applicable.
+    skipped
+        Whether the verdict was skipped entirely (e.g., missing keys or below
+        threshold).
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary dictionary.
+    """
+
+    verdict = record.verdict
+    summary: dict[str, Any] = {
+        "prev_index": record.prev_item_index,
+        "next_index": record.next_item_index,
+        "prev_page": record.prev_page_index,
+        "next_page": record.next_page_index,
+        "is_continuation": verdict.is_continuation,
+        "continuation_kind": verdict.continuation_kind.value,
+        "confidence": verdict.confidence,
+        "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
+        "eligible_by_confidence": should_apply,
+        "applied": should_apply and not skipped,
+        "skipped": skipped,
+    }
+
+    if skip_reason is not None:
+        summary["skip_reason"] = skip_reason
+
+    return summary
+
+
+def _mutate_for_edge(
+    *,
+    bools: dict[tuple[int, int], list[bool]],
+    dirty_keys: set[tuple[int, int]],
+    effective_local_codes: dict[tuple[int, int], str | None],
+    local_code_conflicts: list[dict[str, Any]],
+    local_code_propagation_conflicts: list[dict[str, Any]],
+    local_code_patch: dict[tuple[int, int], str],
+    next_key: tuple[int, int],
+    prev_key: tuple[int, int],
+    record: EdgeVerdictRecord,
+    repeats_header_patch: dict[tuple[int, int], bool],
+) -> None:
+    """Apply in-place mutations for a single confident edge verdict.
+
+    Parameters
+    ----------
+    bools
+        Mapping of (page_idx, item_idx) to [from_prev, to_next] booleans.
+    dirty_keys
+        Set to track which keys were mutated by edge verdicts.
+    effective_local_codes
+        Mapping of (page_idx, item_idx) to effective local_code (after prior patches).
+    local_code_conflicts
+        List to append any local_code conflicts detected.
+    local_code_propagation_conflicts
+        List to append any conflicts between multiple propagated local_code values
+        targeting the same item.
+    local_code_patch
+        Mapping of (page_idx, item_idx) to desired local_code string.
+    next_key
+        The tuple key (page_idx, item_idx) for the next candidate.
+    prev_key
+        The tuple key (page_idx, item_idx) for the previous candidate.
+    record
+        The edge verdict record to apply.
+    repeats_header_patch
+        Mapping of (page_idx, item_idx) to desired repeats_header boolean.
+    """
+
+    verdict = record.verdict
+
+    if verdict.is_continuation:
+        if not bools[prev_key][1]:
+            bools[prev_key][1] = True
+            dirty_keys.add(prev_key)
+        if not bools[next_key][0]:
+            bools[next_key][0] = True
+            dirty_keys.add(next_key)
+
+        _propagate_local_codes(
+            effective_local_codes=effective_local_codes,
+            local_code_conflicts=local_code_conflicts,
+            local_code_propagation_conflicts=local_code_propagation_conflicts,
+            local_code_patch=local_code_patch,
+            next_key=next_key,
+            prev_key=prev_key,
+            record=record,
+            verdict=verdict,
+        )
+
+        if (
+            verdict.continuation_kind == PageContinuationKind.TABLE
+            and verdict.set_next_table_repeats_header is not None
+        ):
+            repeats_header_patch[next_key] = verdict.set_next_table_repeats_header
+    else:
+        # Clear only the directional connection for THIS candidate pair.
+        if bools[prev_key][1]:
+            bools[prev_key][1] = False
+            dirty_keys.add(prev_key)
+        if bools[next_key][0]:
+            bools[next_key][0] = False
+            dirty_keys.add(next_key)
 
 
 def _normalize_local_code(code: str | None) -> str | None:
@@ -712,6 +553,85 @@ def _patch_repeats_header(
     }
 
 
+def _propagate_local_codes(
+    *,
+    effective_local_codes: dict[tuple[int, int], str | None],
+    local_code_conflicts: list[dict[str, Any]],
+    local_code_propagation_conflicts: list[dict[str, Any]],
+    local_code_patch: dict[tuple[int, int], str],
+    next_key: tuple[int, int],
+    prev_key: tuple[int, int],
+    record: EdgeVerdictRecord,
+    verdict: PageIRContinuityVerdict,
+) -> None:
+    """Propagate local_code across a TRUE continuation edge when one side is missing.
+
+    Parameters
+    ----------
+    effective_local_codes
+        Mapping of (page_idx, item_idx) to effective local_code.
+    local_code_conflicts
+        List to append any conflicts detected.
+    local_code_propagation_conflicts
+        List to append propagation conflicts when multiple edges attempt to set
+        different local_code values for the same target.
+    local_code_patch
+        Mapping of (page_idx, item_idx) to desired local_code string.
+    next_key
+        The tuple key for the next candidate.
+    prev_key
+        The tuple key for the previous candidate.
+    record
+        The edge verdict record.
+    verdict
+        The verdict object.
+    """
+
+    # Only propagate local_code for table and figure continuations. Text blocks
+    # (paragraphs, headings, lists) rarely carry local_code, and propagating across a
+    # text break risks incorrectly assigning a code from one logical block to an
+    # unrelated one.
+    if verdict.continuation_kind not in {
+        PageContinuationKind.TABLE,
+        PageContinuationKind.FIGURE,
+    }:
+        return
+
+    prev_code = effective_local_codes.get(prev_key)
+    next_code = effective_local_codes.get(next_key)
+
+    if prev_code and not next_code:
+        _try_propagate_code(
+            code=prev_code,
+            effective_local_codes=effective_local_codes,
+            local_code_patch=local_code_patch,
+            local_code_propagation_conflicts=local_code_propagation_conflicts,
+            source_key=prev_key,
+            target_key=next_key,
+        )
+    elif next_code and not prev_code:
+        _try_propagate_code(
+            code=next_code,
+            effective_local_codes=effective_local_codes,
+            local_code_patch=local_code_patch,
+            local_code_propagation_conflicts=local_code_propagation_conflicts,
+            source_key=next_key,
+            target_key=prev_key,
+        )
+    elif prev_code and next_code and prev_code != next_code:
+        local_code_conflicts.append(
+            {
+                "prev_page": record.prev_page_index,
+                "next_page": record.next_page_index,
+                "prev_index": record.prev_item_index,
+                "next_index": record.next_item_index,
+                "prev_code": prev_code,
+                "next_code": next_code,
+                "continuation_kind": verdict.continuation_kind.value,
+            }
+        )
+
+
 def _reconcile_dirty_item_states(
     *,
     bools: dict[tuple[int, int], list[bool]],
@@ -745,13 +665,11 @@ def _reconcile_dirty_item_states(
     boundary_changes: list[dict[str, Any]] = []
     repeats_header_changes: list[dict[str, Any]] = []
     repeats_header_review_flags: list[dict[str, Any]] = []
-
     all_keys = dirty_keys | set(repeats_header_patch.keys())
 
     for page_index, item_index in sorted(all_keys):
         flags = bools[(page_index, item_index)]
         item = page_irs[page_index].items[item_index]
-
         b_change, h_change, h_review = _reconcile_item_state(
             flags=flags,
             item=item,
@@ -827,10 +745,7 @@ def _reconcile_item_state(
         and table.repeats_header is not None
     ):
         header_change = _patch_repeats_header(
-            desired=None,
-            item_index=item_index,
-            page_index=page_index,
-            table=table,
+            desired=None, item_index=item_index, page_index=page_index, table=table
         )
 
     if before_boundary != after_boundary:
@@ -878,6 +793,7 @@ def _reconcile_item_state(
     key = (page_index, item_index)
     if key in repeats_header_patch:
         desired = repeats_header_patch[key]
+
         if table.repeats_header != desired:
             header_change = _patch_repeats_header(
                 desired=desired,
@@ -887,6 +803,64 @@ def _reconcile_item_state(
             )
 
     return boundary_change, header_change, header_review_flag
+
+
+def _try_propagate_code(
+    *,
+    code: str,
+    effective_local_codes: dict[tuple[int, int], str | None],
+    local_code_patch: dict[tuple[int, int], str],
+    local_code_propagation_conflicts: list[dict[str, Any]],
+    source_key: tuple[int, int],
+    target_key: tuple[int, int],
+) -> None:
+    """Attempt to propagate a local_code to a target key.
+
+    This updates effective_local_codes in-place and records a patch via
+    local_code_patch.setdefault(). If a different code has already been propagated to
+    the same target_key earlier in the compile pass, this records a propagation
+    conflict and keeps the earlier propagated value.
+
+    Parameters
+    ----------
+    code
+        The local_code to propagate.
+    effective_local_codes
+        Mapping of effective local codes (updated in-place).
+    local_code_patch
+        Mapping of local code patches (updated in-place via setdefault).
+    local_code_propagation_conflicts
+        List to append propagation conflicts.
+    source_key
+        The (page_idx, item_idx) key that the code was propagated from.
+    target_key
+        The (page_idx, item_idx) key to propagate to.
+    """
+
+    existing = local_code_patch.get(target_key)
+
+    if existing and existing != code:
+        local_code_propagation_conflicts.append(
+            {
+                "target_page": target_key[0],
+                "target_index": target_key[1],
+                "source_page": source_key[0],
+                "source_index": source_key[1],
+                "existing_code": existing,
+                "incoming_code": code,
+                "kept_code": existing,
+                "reason": "propagation_conflict_keep_earlier",
+            }
+        )
+        logger.warning(
+            f"local_code propagation conflict at page {target_key[0]} "
+            f"item {target_key[1]}: existing '{existing}' vs incoming "
+            f"'{code}' — keeping earlier propagation."
+        )
+        return
+
+    effective_local_codes[target_key] = code
+    local_code_patch.setdefault(target_key, code)
 
 
 def compile_continuity_from_edge_verdicts(
