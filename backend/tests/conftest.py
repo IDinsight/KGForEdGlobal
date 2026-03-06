@@ -12,7 +12,7 @@ import sys
 
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, AsyncGenerator, Generator
+from typing import Any, Generator
 from unittest.mock import MagicMock
 
 # Third Party Library
@@ -22,7 +22,6 @@ import pymupdf
 import pytest
 
 from PIL import Image, ImageDraw
-from redis import asyncio as aioredis
 
 # Append the framework path.
 PACKAGE_PATH = Path(__file__).resolve().parents[2]
@@ -35,7 +34,7 @@ if PACKAGE_PATH / "backend" / "tests" not in sys.path:
 
 # Package Library
 from skg.utils import logging_  # noqa: E402
-from tests.constants import FIXTURES_DIR, REDIS_URL  # noqa: E402
+from tests.constants import FIXTURES_DIR  # noqa: E402
 from tests.types_ import InstallLoguruMock, LogCall  # noqa: E402
 
 
@@ -88,25 +87,6 @@ def fixture_pdf_doc() -> Generator[pymupdf.Document, None, None]:
     yield doc
 
     doc.close()
-
-
-@pytest.fixture(scope="function")
-async def fixture_redis_client() -> AsyncGenerator[aioredis.Redis, None]:
-    """Create a redis client for testing.
-
-    Yields
-    ------
-    Generator[aioredis.Redis, None, None]
-        Redis client for testing.
-    """
-
-    rclient = await aioredis.from_url(REDIS_URL, decode_responses=True)
-
-    await rclient.flushdb()
-
-    yield rclient
-
-    await rclient.aclose()
 
 
 @pytest.fixture

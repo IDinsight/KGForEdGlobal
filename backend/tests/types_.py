@@ -3,7 +3,7 @@
 # Standard Library
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Awaitable, Callable, Optional, Protocol, TypedDict
+from typing import Any, Optional, Protocol, TypedDict
 
 
 class WriteCall(TypedDict):
@@ -43,46 +43,6 @@ class InstallWriteJsonMock(Protocol):
         """
 
 
-class ACompletionCall(TypedDict):
-    """TypedDict for a call to an async completion function."""
-
-    args: tuple
-    kwargs: dict[str, Any]
-
-
-class InstallGetACompletionMock(Protocol):
-    """Protocol for the `mock_get_acompletion` fixture installer function."""
-
-    def __call__(
-        self,
-        target_module: ModuleType,
-        *,
-        return_value: Optional[str] = None,
-        return_values: Optional[list[str]] = None,
-        side_effect: Optional[Callable[[dict[str, Any]], str | Awaitable[str]]] = None,
-    ) -> list[ACompletionCall]:
-        """Patch `target_module.get_acompletion` with an async fake.
-
-        Parameters
-        ----------
-        target_module
-            The module where to patch `get_acompletion`.
-        return_value
-            Constant string to return on every call.
-        return_values
-            Sequence of strings to return per call; if calls exceed length, the last
-            value is reused.
-        side_effect
-            Function (sync or async) taking kwargs and returning a string. If provided,
-            it overrides `return_value(s)`.
-
-        Returns
-        -------
-        list[ACompletionCall]
-            A live list of captured calls: [{"args": (), "kwargs": {...}}, ...].
-        """
-
-
 class LogCall(TypedDict, total=False):
     """TypedDict for a call to a logging function."""
 
@@ -118,38 +78,3 @@ class InstallLoguruMock(Protocol):
         list[LogCall]
             A live list of captured LogCall dicts (one per `.log(...)` invocation).
         """
-
-
-class InstallValidateApiCall(Protocol):
-    """Protocol for the `mock__validate_api_call` fixture installer function."""
-
-    return_value: str
-    calls: list[dict[str, Any]]
-
-    def __call__(self, **kwargs: dict[str, Any]) -> Awaitable[str]:
-        """Patch `validate_api_call` to record calls and return a fixed value.
-
-        Parameters
-        ----------
-        **kwargs
-            Arbitrary keyword arguments representing the parameters passed to
-            `validate_api_call`.
-
-        Returns
-        -------
-        Awaitable[str]
-            The fixed return value specified when installing the mock.
-        """
-
-    @property
-    def last(self) -> Optional[dict[str, Any]]:
-        """Get the last call dict, or None if no calls have been made.
-
-        Returns
-        -------
-        Optional[dict[str, Any]]
-            The last call dictionary or None.
-        """
-
-    def reset(self) -> None:
-        """Clear the call history."""
