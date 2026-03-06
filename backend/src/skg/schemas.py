@@ -230,13 +230,19 @@ class VerificationConfig(BaseSchema):
         le=1.0,
         description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
     )
+    min_confidence_to_select_positive: float = Field(
+        0.50,
+        description="Minimum confidence for a positive continuation verdict to outrank negatives during attempt selection. This does not control patching.",
+        ge=0.0,
+        le=1.0,
+    )
     model: str = Field(
         "openai:gpt-5.2-2025-12-11",
         description="OpenAI model for page IR verification.",
     )
     next_page_crop_padding_px: int = Field(
         120,
-        description="When cropping the top of page N+1 for verification, include this many extra pixels below the selected next candidate bbox.",
+        description="When cropping the top of page N+1 for verification, include this many extra pixels below the selected next candidate bbox. Crops are pair-specific.",
         ge=0,
     )
     overwrite: bool = Field(
@@ -269,6 +275,31 @@ class VerificationConfig(BaseSchema):
         ):
             raise ValueError(
                 f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def check_confidences(self) -> Self:
+        """Ensure that min_confidence_to_select_positive is less than or equal to
+        min_confidence_to_patch to maintain logical consistency between selection and
+        patching thresholds.
+
+        Returns
+        -------
+        Self
+            The passed in VerificationConfig.
+
+        Raises
+        ------
+        ValueError
+            If min_confidence_to_select_positive is greater than
+            min_confidence_to_patch.
+        """
+
+        if self.min_confidence_to_select_positive > self.min_confidence_to_patch:
+            raise ValueError(
+                "min_confidence_to_select_positive must be <= min_confidence_to_patch so selection remains at least as permissive as patching."
             )
 
         return self

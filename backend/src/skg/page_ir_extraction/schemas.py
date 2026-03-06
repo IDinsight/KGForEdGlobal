@@ -2,8 +2,11 @@
 Representations (IRs).
 """
 
+# Future Library
+from __future__ import annotations
+
 # Standard Library
-from typing import Literal, Optional, Self
+from typing import Any, Literal, Optional, Self
 
 # Third Party Library
 from pydantic import Field, model_validator
@@ -11,6 +14,108 @@ from pydantic import Field, model_validator
 # Package Library
 from skg.schemas import BaseSchema, BBox, LanguageField
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
+
+
+def _next_free_column(occupied_columns: set[int]) -> int:
+    """Return the leftmost unoccupied column index for the current row.
+
+    Parameters
+    ----------
+    occupied_columns
+        Columns already occupied in the current row, including carry-over occupancy
+        from row spans above.
+
+    Returns
+    -------
+    int
+        The next available column index.
+    """
+
+    column_index = 0
+
+    while column_index in occupied_columns:
+        column_index += 1
+
+    return column_index
+
+
+def _occupied_columns_for_span(*, col_span: int, start_col: int) -> set[int]:
+    """Return the set of columns covered by a cell span.
+
+    Parameters
+    ----------
+    col_span
+        Number of columns spanned by the cell.
+    start_col
+        Starting column index of the cell.
+
+    Returns
+    -------
+    set[int]
+        Covered column indices.
+    """
+
+    return set(range(start_col, start_col + col_span))
+
+
+def validate_validation_verdict_state(
+    *, corrected_present: bool, issues: list[Any], passed: bool
+) -> None:
+    """Validate common pass/fail invariants for validation verdict schemas.
+
+    This is a shared utility used by both extraction and verification validation
+    verdict schemas. Each issue in *issues* must expose a `severity` attribute
+    (`"error"` or `"warning"`).
+
+    Parameters
+    ----------
+    corrected_present
+        Whether a corrected object is present on the verdict.
+    issues
+        Validation issues attached to the verdict. Each issue must expose a `severity`
+        attribute.
+    passed
+        Whether the verdict passed validation.
+
+    Raises
+    ------
+    ValueError
+        If the corrected object, issue severities, and pass/fail state are inconsistent.
+    """
+
+    error_count = sum(
+        1 for issue in issues if getattr(issue, "severity", None) == "error"
+    )
+
+    if passed:
+        if corrected_present:
+            raise ValueError(
+                "A passing verdict (passed=true) must not include a corrected output."
+            )
+
+        if error_count > 0:
+            raise ValueError(
+                "A passing verdict (passed=true) must not include any issue with severity='error'. "
+                "Downgrade the issue(s) to warning or set passed=false."
+            )
+
+        return
+
+    if not corrected_present:
+        raise ValueError(
+            "A failing verdict (passed=false) must include a corrected output that fixes all error-severity issues."
+        )
+
+    if not issues:
+        raise ValueError(
+            "A failing verdict (passed=false) must include at least one issue."
+        )
+
+    if error_count == 0:
+        raise ValueError(
+            "A failing verdict (passed=false) must include at least one issue with severity='error'. "
+            "If all issues are warnings, set passed=true."
+        )
 
 
 # Schemas for component models.
@@ -164,7 +269,7 @@ class Table(BaseSchema):
 
     @model_validator(mode="after")
     def validate_row_and_col_spans(self) -> Self:
-        """Validate row/col span consistency across the table grid.
+        """Validate row/column spans by simulating the occupied table grid.
 
         Checks enforced:
 
@@ -174,65 +279,76 @@ class Table(BaseSchema):
             (text != null).
         4. If n_cols is set:
            - No individual cell may have col_span > n_cols.
-           - No row may exceed n_cols (sum of col_spans).
+           - No placed cell may run past n_cols.
+           - Occupancy created by row spans must not overlap later rows.
            - At least one row must reach n_cols.
 
         Returns
         -------
         Self
-            The passed in Table.
+            The validated table.
 
         Raises
         ------
         ValueError
-            If any span check fails.
+            If any span or occupancy check fails.
         """
 
         n_rows = len(self.rows)
+        occupied_by_row: list[set[int]] = [set() for _ in range(n_rows)]
         row_widths: list[int] = []
 
-        for r, row in enumerate(self.rows):
-            current_row_width = 0
-
-            for c, cell in enumerate(row.cells):
-                # Bounds: row_span can't run off the table.
-                if r + cell.row_span > n_rows:
+        for row_index, row in enumerate(self.rows):
+            for cell_index, cell in enumerate(row.cells):
+                if row_index + cell.row_span > n_rows:
                     raise ValueError(
-                        f"row_span exceeds table bounds at rows[{r}].cells[{c}]: "
-                        f"row_span={cell.row_span} but only {n_rows - r} rows remain."
+                        f"row_span exceeds table bounds at rows[{row_index}].cells[{cell_index}]: "
+                        f"row_span={cell.row_span} but only {n_rows - row_index} rows remain."
                     )
 
-                # Empty merges: spanned cells should carry content.
                 if (cell.row_span > 1 or cell.col_span > 1) and cell.text is None:
                     raise ValueError(
-                        f"Spanned cell must not have text=null at rows[{r}].cells[{c}] "
+                        f"Spanned cell must not have text=null at rows[{row_index}].cells[{cell_index}] "
                         f"(row_span={cell.row_span}, col_span={cell.col_span})."
                     )
 
-                # If n_cols is known, individual cell col_span can't exceed it.
                 if self.n_cols is not None and cell.col_span > self.n_cols:
                     raise ValueError(
-                        f"col_span exceeds n_cols at rows[{r}].cells[{c}]: "
+                        f"col_span exceeds n_cols at rows[{row_index}].cells[{cell_index}]: "
                         f"col_span={cell.col_span}, n_cols={self.n_cols}."
                     )
 
-                current_row_width += cell.col_span
-
-            # Validate total row width against n_cols.
-            if self.n_cols is not None and current_row_width > self.n_cols:
-                raise ValueError(
-                    f"Row exceeds n_cols at rows[{r}]: "
-                    f"sum(col_span)={current_row_width}, n_cols={self.n_cols}."
+                start_col = _next_free_column(occupied_by_row[row_index])
+                occupied_cols = _occupied_columns_for_span(
+                    col_span=cell.col_span, start_col=start_col
                 )
+                stop_col = start_col + cell.col_span
 
-            row_widths.append(current_row_width)
+                if self.n_cols is not None and stop_col > self.n_cols:
+                    raise ValueError(
+                        f"Placed cell exceeds n_cols at rows[{row_index}].cells[{cell_index}]: "
+                        f"start_col={start_col}, col_span={cell.col_span}, n_cols={self.n_cols}."
+                    )
 
-        # Global table check: at least one row must reach n_cols.
-        if self.n_cols is not None and all(w < self.n_cols for w in row_widths):
+                for span_row_index in range(row_index, row_index + cell.row_span):
+                    overlap = occupied_by_row[span_row_index].intersection(
+                        occupied_cols
+                    )
+
+                    if overlap:
+                        raise ValueError(
+                            f"Overlapping occupancy detected at rows[{row_index}].cells[{cell_index}] "
+                            f"for columns {sorted(overlap)} on row {span_row_index}."
+                        )
+
+                    occupied_by_row[span_row_index].update(occupied_cols)
+
+            row_widths.append(len(occupied_by_row[row_index]))
+
+        if self.n_cols is not None and all(width < self.n_cols for width in row_widths):
             raise ValueError(
                 f"Table.n_cols={self.n_cols} but no row reaches that width. "
-                f"Row widths={row_widths}. This usually indicates missing cells "
-                f"or wrong n_cols."
+                f"Occupied row widths={row_widths}. This usually indicates missing cells or wrong n_cols."
             )
 
         return self
@@ -675,10 +791,7 @@ class ExtractionValidationVerdict(BaseSchema):
 
     @model_validator(mode="after")
     def validate_corrected_page_ir_consistency(self) -> Self:
-        """Validate that corrected_page_ir is present iff passed=false.
-
-        A failing verdict must include a corrected PageIR so the pipeline can use it
-        directly. A passing verdict must NOT include one (unnecessary overhead).
+        """Validate the relationship between pass/fail state, issues, and fixes.
 
         Returns
         -------
@@ -688,21 +801,15 @@ class ExtractionValidationVerdict(BaseSchema):
         Raises
         ------
         ValueError
-            If corrected_page_ir presence is inconsistent with passed.
+            If corrected_page_ir presence or issue severities are inconsistent with the
+            pass/fail state.
         """
 
-        if not self.passed and self.corrected_page_ir is None:
-            raise ValueError(
-                "A failing verdict (passed=false) must include corrected_page_ir "
-                "with a complete, corrected PageIR that fixes all error-severity "
-                "issues. Return the full corrected PageIR, not a partial patch."
-            )
-
-        if self.passed and self.corrected_page_ir is not None:
-            raise ValueError(
-                "A passing verdict (passed=true) must not include corrected_page_ir. "
-                "Set corrected_page_ir to null when the extraction is correct."
-            )
+        validate_validation_verdict_state(
+            corrected_present=self.corrected_page_ir is not None,
+            issues=self.issues,
+            passed=self.passed,
+        )
 
         return self
 
@@ -732,40 +839,6 @@ class ExtractionValidationVerdict(BaseSchema):
                     f"Error-severity issue at issues[{i}] must include a non-empty "
                     f"suggested_fix describing the concrete correction the extraction "
                     f"agent should apply. Issue description: {issue.description[:200]}"
-                )
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_fail_requires_error_issues(self) -> Self:
-        """Validate that a failing verdict includes at least one error-severity issue.
-
-        A failing verdict must contain actionable error(s) for the extraction agent to
-        correct. If all issues are warnings, the verdict should pass.
-
-        Returns
-        -------
-        Self
-            The validated ExtractionValidationVerdict.
-
-        Raises
-        ------
-        ValueError
-            If passed=false but no error-severity issues are present.
-        """
-
-        if not self.passed:
-            if not self.issues:
-                raise ValueError(
-                    "A failing verdict (passed=false) must include at least one issue."
-                )
-
-            has_errors = any(issue.severity == "error" for issue in self.issues)
-
-            if not has_errors:
-                raise ValueError(
-                    "A failing verdict (passed=false) must include at least one issue "
-                    "with severity='error'. If all issues are warnings, set passed=true."
                 )
 
         return self

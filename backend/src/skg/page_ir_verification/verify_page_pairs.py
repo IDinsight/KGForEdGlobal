@@ -96,6 +96,48 @@ class AgentUsageBucket:
         }
 
 
+@dataclass(frozen=True)
+class CandidatePairSpec:
+    """Ordered candidate pair proposed for continuity verification.
+
+    Attributes
+    ----------
+    crop_y_max
+        Pair-specific crop limit for the next-page image.
+    next_index
+        Item index on page N+1.
+    next_item
+        Candidate continuation item on page N+1.
+    next_rank
+        Rank of the next-page candidate within its ordered pool for this previous
+        anchor.
+    prev_index
+        Item index on page N.
+    prev_item
+        Candidate boundary anchor on page N.
+    prev_rank
+        Rank of the previous-page candidate within the ordered bottom-candidate pool.
+    """
+
+    crop_y_max: float
+    next_index: int
+    next_item: Block | Table
+    next_rank: int
+    prev_index: int
+    prev_item: Block | Table
+    prev_rank: int
+
+
+@dataclass(frozen=True)
+class VerifiedCandidateAttempt:
+    """Successful verification attempt for a single candidate pair."""
+
+    attempt_no: int
+    crop_fp: Path
+    spec: CandidatePairSpec
+    verdict: PageIRContinuityVerdict
+
+
 @dataclass
 class VerificationUsageTracker:
     """Track LLM token usage across the entire verification pipeline run.
@@ -205,6 +247,78 @@ def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -
     y1 = float(bbox[3])
 
     return not (y1 < float(y_min) or y0 > float(y_max))
+
+
+def _boundary_hint_priority(
+    *, next_item: Block | Table, prev_item: Block | Table
+) -> int:
+    """Return a small priority bonus when extractor boundary hints line up.
+
+    Parameters
+    ----------
+    next_item
+        Candidate item on page N+1.
+    prev_item
+        Candidate item on page N.
+
+    Returns
+    -------
+    int
+        0 when the boundary hints are consistent with a continuation and 1 otherwise.
+        Lower is better.
+    """
+
+    next_boundary_good = next_item.boundary in {ItemBoundary.BOTH, ItemBoundary.RESUMED}
+    prev_boundary_good = prev_item.boundary in {
+        ItemBoundary.BOTH,
+        ItemBoundary.TRUNCATED,
+    }
+
+    return 0 if next_boundary_good and prev_boundary_good else 1
+
+
+def _ensure_pair_specific_crop(
+    *,
+    crop_cache: dict[tuple[int, int], Path],
+    next_page_image_fp: Path,
+    next_page_index: int,
+    output_dir: Path,
+    spec: CandidatePairSpec,
+) -> Path:
+    """Create or reuse the next-page crop for a candidate pair.
+
+    Parameters
+    ----------
+    crop_cache
+        Cache from crop key to rendered crop path.
+    next_page_image_fp
+        Full-page PNG for page N+1.
+    next_page_index
+        Zero-based page index of the next page.
+    output_dir
+        Directory where pair-specific crops should be written.
+    spec
+        Candidate pair specification.
+
+    Returns
+    -------
+    Path
+        Path to the rendered crop image.
+    """
+
+    crop_key = (spec.next_index, int(round(spec.crop_y_max)))
+    cached_fp = crop_cache.get(crop_key)
+
+    if cached_fp is not None:
+        return cached_fp
+
+    crop_fp = output_dir / f"{next_page_index:04}_top_to_item_{spec.next_index:03}.png"
+    crop_image_to_ymax(
+        input_png_fp=next_page_image_fp, output_png_fp=crop_fp, y_max=spec.crop_y_max
+    )
+    crop_cache[crop_key] = crop_fp
+
+    return crop_fp
 
 
 def _extract_figure_preview(figure: dict[str, Any], max_chars: int) -> dict[str, str]:
@@ -342,6 +456,30 @@ def _is_heading_or_caption_block(item: Block | Table) -> bool:
     }
 
 
+def _is_patchable_positive(
+    *, config: VerificationConfig, verdict: PageIRContinuityVerdict
+) -> bool:
+    """Return whether a verdict is both positive and eligible for patching.
+
+    Parameters
+    ----------
+    config
+        The verification configuration containing the patching confidence threshold.
+    verdict
+        The continuity verdict to evaluate.
+
+    Returns
+    -------
+    bool
+        True if the verdict is a positive continuation with confidence above the
+        patching threshold, False otherwise.
+    """
+
+    return (
+        verdict.is_continuation and verdict.confidence >= config.min_confidence_to_patch
+    )
+
+
 def _make_block_excerpt(
     *, bbox: Any, item: dict[str, Any], local_code: Any, max_text_chars: int
 ) -> dict[str, Any]:
@@ -464,6 +602,110 @@ def _make_table_excerpt(
             for r in bottom_body
         ],
     }
+
+
+def _ordered_next_candidates(
+    *, image_height: float, items: list[Block | Table], prev_item: Block | Table
+) -> list[tuple[int, Block | Table]]:
+    """Return ordered next-page candidates for a given previous-page anchor.
+
+    Same-kind matches are ranked before cross-kind matches while preserving the
+    reading-order stability returned by `top_continuity_candidates_paired`.
+
+    Parameters
+    ----------
+    image_height
+        The height of the page image in pixels.
+    items
+        List of PageIR items on the next page.
+    prev_item
+        The chosen previous page candidate item.
+
+    Returns
+    -------
+    list[tuple[int, Block | Table]]
+        List of (item_index, item) pairs ordered by same-kind priority and reading
+        order.
+    """
+
+    next_candidates = top_continuity_candidates_paired(
+        image_height=image_height, items=items, prev_item=prev_item, visible_y_max=None
+    )
+    other_kind = [
+        (index, item) for index, item in next_candidates if item.kind != prev_item.kind
+    ]
+    same_kind = [
+        (index, item) for index, item in next_candidates if item.kind == prev_item.kind
+    ]
+
+    return same_kind + other_kind
+
+
+def _pair_priority_key(
+    *, attempt: VerifiedCandidateAttempt, config: VerificationConfig
+) -> tuple[int, float, int, int, int, int]:
+    """Return the ranking key used to select the best explanatory verdict.
+
+    Ranking policy
+    --------------
+
+    1. Positive continuations at or above `min_confidence_to_select_positive`.
+    2. All remaining attempts.
+    3. Within a bucket, prefer higher confidence, then lower candidate ranks, then
+       same-kind matches, then aligned boundary hints.
+
+    Parameters
+    ----------
+    attempt
+        The verification attempt to generate a key for.
+    config
+        The verification configuration containing the confidence threshold.
+
+    Returns
+    -------
+    tuple[int, float, int, int, int, int]
+        The priority key tuple.
+    """
+
+    verdict = attempt.verdict
+    spec = attempt.spec
+    is_strong_positive = (
+        verdict.is_continuation
+        and verdict.confidence >= config.min_confidence_to_select_positive
+    )
+    same_kind_penalty = 0 if spec.prev_item.kind == spec.next_item.kind else 1
+
+    return (
+        0 if is_strong_positive else 1,
+        -verdict.confidence,
+        spec.prev_rank,
+        spec.next_rank,
+        same_kind_penalty,
+        _boundary_hint_priority(next_item=spec.next_item, prev_item=spec.prev_item),
+    )
+
+
+def _pair_specific_crop_y_max(
+    *, image_height: float, item: Block | Table, padding_px: int
+) -> float:
+    """Return the pair-specific crop limit for the next-page evidence image.
+
+    Parameters
+    ----------
+    image_height
+        Height of the next page image in pixels.
+    item
+        Candidate continuation item on the next page.
+    padding_px
+        Extra pixels to include below the candidate.
+
+    Returns
+    -------
+    float
+        Clamped crop limit in full-page coordinates.
+    """
+
+    return min(float(image_height), float(item.bbox[3]) + float(padding_px))
 
 
 def _pick_bottommost(
@@ -593,6 +835,63 @@ def _pick_topmost(
         None,
     )
     return valid_match if valid_match is not None else candidates[0]
+
+
+def _select_successful_attempt(
+    *, config: VerificationConfig, successful_attempts: list[VerifiedCandidateAttempt]
+) -> VerifiedCandidateAttempt:
+    """Select the best explanatory attempt for a page boundary.
+
+    This selection is independent from the separate patch gate governed by
+    `min_confidence_to_patch`.
+
+    Parameters
+    ----------
+    config
+        The verification configuration containing the confidence threshold.
+    successful_attempts
+        List of successful verification attempts to select from.
+
+    Returns
+    -------
+    VerifiedCandidateAttempt
+        The selected attempt with the highest priority according to the defined ranking
+        policy.
+    """
+
+    return min(
+        successful_attempts,
+        key=lambda attempt: _pair_priority_key(attempt=attempt, config=config),
+    )
+
+
+def _should_stop_after_attempt(
+    *, attempt: VerifiedCandidateAttempt, config: VerificationConfig
+) -> bool:
+    """Return whether verification can stop early after a successful attempt.
+
+    Early exit is intentionally conservative: only the primary-primary pair may short
+    circuit the search, and only when it is already patchable.
+
+    Parameters
+    ----------
+    attempt
+        The successful verification attempt to evaluate.
+    config
+        The verification configuration containing the confidence threshold.
+
+    Returns
+    -------
+    bool
+        True if the attempt is the primary-primary pair and is patchable, False
+        otherwise.
+    """
+
+    return (
+        attempt.spec.next_rank == 0
+        and attempt.spec.prev_rank == 0
+        and _is_patchable_positive(config=config, verdict=attempt.verdict)
+    )
 
 
 def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]:
@@ -733,38 +1032,33 @@ def crop_image_to_ymax(
 def execute_verification_attempts(
     *,
     config: VerificationConfig,
-    page_images_dir: Path,
+    next_page_image_fp: Path,
     page_index: int,
-    pairs: list[tuple[int, Block | Table, int, Block | Table]],
-    next_crop_fp: Path,
+    pair_crop_dir: Path,
+    pairs: list[CandidatePairSpec],
     usage_tracker: VerificationUsageTracker,
 ) -> dict[str, Any]:
-    """Execute the ordered list of verification attempts for a single page pair,
-    accumulating results and selecting the best verdict.
+    """Execute ordered verification attempts for a single page boundary.
 
     Parameters
     ----------
     config
         The verification configuration.
-    page_images_dir
-        Directory containing page images.
+    next_page_image_fp
+        Full-page PNG path for page N+1.
     page_index
         The 0-based index of the previous page (N).
+    pair_crop_dir
+        Directory where pair-specific next-page crops are written.
     pairs
-        List of candidate pairs to verify.
-    next_crop_fp
-        Filepath to the cropped image of the next page.
+        Ordered candidate pair specifications to verify.
     usage_tracker
         Tracker to accumulate token usage across all verification attempts.
 
     Returns
     -------
     dict[str, Any]
-        A dictionary containing:
-          - attempt_summaries: List of attempt summaries.
-          - selected_verdict: The selected PageIRContinuityVerdict.
-          - selected_prev_index: The index of the selected previous item.
-          - selected_next_index: The index of the selected next item.
+        Attempt summaries plus the selected candidate pair and verdict.
 
     Raises
     ------
@@ -773,182 +1067,176 @@ def execute_verification_attempts(
     """
 
     attempt_summaries: list[dict[str, Any]] = []
+    crop_cache: dict[tuple[int, int], Path] = {}
+    successful_attempts: list[VerifiedCandidateAttempt] = []
 
-    # Store successful attempts as tuples: (attempt_no, confidence, pi, ni, verdict).
-    successful_attempts: list[tuple[int, float, int, int, PageIRContinuityVerdict]] = []
+    for attempt_no, spec in enumerate(pairs):
+        crop_fp = _ensure_pair_specific_crop(
+            crop_cache=crop_cache,
+            next_page_image_fp=next_page_image_fp,
+            next_page_index=page_index + 1,
+            output_dir=pair_crop_dir,
+            spec=spec,
+        )
 
-    for attempt_no, (pi, pitem, ni, nitem) in enumerate(pairs):
         try:
             verdict = verify_page_ir_pairs(
                 model=config.model,
-                next_item=nitem.model_dump(mode="json"),
+                next_item=spec.next_item.model_dump(mode="json"),
                 next_item_excerpt=make_verification_excerpt(
-                    item=strip_continuity_hints(nitem.model_dump(mode="json"))
+                    item=strip_continuity_hints(spec.next_item.model_dump(mode="json"))
                 ),
                 next_page_index=page_index + 1,
-                next_png=next_crop_fp,
-                prev_item=pitem.model_dump(mode="json"),
+                next_png=crop_fp,
+                prev_item=spec.prev_item.model_dump(mode="json"),
                 prev_item_excerpt=make_verification_excerpt(
-                    item=strip_continuity_hints(pitem.model_dump(mode="json"))
+                    item=strip_continuity_hints(spec.prev_item.model_dump(mode="json"))
                 ),
                 prev_page_index=page_index,
-                prev_png=page_images_dir / f"{page_index:04}.png",
+                prev_png=next_page_image_fp.parent / f"{page_index:04}.png",
                 usage_tracker=usage_tracker,
             )
-        except Exception as e:  # pylint: disable=broad-except
+        except Exception as error:  # pylint: disable=broad-except
             attempt_summaries.append(
                 {
                     "attempt_no": attempt_no,
-                    "prev_item_index": pi,
-                    "next_item_index": ni,
-                    "error": str(e),
+                    "crop_y_max": spec.crop_y_max,
+                    "error": str(error),
+                    "next_item_index": spec.next_index,
+                    "next_rank": spec.next_rank,
+                    "prev_item_index": spec.prev_index,
+                    "prev_rank": spec.prev_rank,
                 }
             )
             continue
 
+        attempt = VerifiedCandidateAttempt(
+            attempt_no=attempt_no, crop_fp=crop_fp, spec=spec, verdict=verdict
+        )
+        successful_attempts.append(attempt)
         attempt_summaries.append(
             {
                 "attempt_no": attempt_no,
-                "prev_item_index": pi,
-                "next_item_index": ni,
-                "is_continuation": verdict.is_continuation,
-                "continuation_kind": verdict.continuation_kind.value,
                 "confidence": verdict.confidence,
+                "continuation_kind": verdict.continuation_kind.value,
+                "crop_y_max": spec.crop_y_max,
+                "crop_png_fp": str(crop_fp),
+                "eligible_for_patch": _is_patchable_positive(
+                    config=config,
+                    verdict=verdict,
+                ),
+                "is_continuation": verdict.is_continuation,
+                "next_item_index": spec.next_index,
+                "next_rank": spec.next_rank,
+                "prev_item_index": spec.prev_index,
+                "prev_rank": spec.prev_rank,
                 "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
             }
         )
 
-        successful_attempts.append((attempt_no, verdict.confidence, pi, ni, verdict))
-
-        # Early exit only when we find a confident positive continuation. A confident
-        # "no continuation" on the primary pair should NOT prevent us from trying
-        # alternate candidate pairs that may reveal the true continuation.
-        if (
-            verdict.is_continuation
-            and verdict.confidence >= config.min_confidence_to_patch
-        ):
+        if _should_stop_after_attempt(attempt=attempt, config=config):
             break
 
     if not successful_attempts:
-        errors = [s["error"] for s in attempt_summaries if "error" in s]
+        errors = [
+            summary["error"] for summary in attempt_summaries if "error" in summary
+        ]
         raise RuntimeError(
             f"All {len(pairs)} verification attempts failed for page pair "
             f"{page_index}->{page_index + 1}. Errors: {errors}"
         )
 
-    # Selection: prefer confident positive continuations over confident negatives.
-    confident_positives = [
-        a
-        for a in successful_attempts
-        if a[4].is_continuation and a[1] >= config.min_confidence_to_patch
-    ]
-
-    if confident_positives:
-        # Among confident positives, pick the highest confidence.
-        selected = max(confident_positives, key=lambda x: x[1])
-    else:
-        # No confident positive found--pick highest confidence overall.
-        selected = max(successful_attempts, key=lambda x: x[1])
-
-    _, _, selected_prev_index, selected_next_index, selected_verdict = selected
+    selected_attempt = _select_successful_attempt(
+        config=config, successful_attempts=successful_attempts
+    )
 
     return {
         "attempt_summaries": attempt_summaries,
-        "selected_verdict": selected_verdict,
-        "selected_prev_index": selected_prev_index,
-        "selected_next_index": selected_next_index,
+        "selected_eligible_for_patch": _is_patchable_positive(
+            config=config, verdict=selected_attempt.verdict
+        ),
+        "selected_next_index": selected_attempt.spec.next_index,
+        "selected_prev_index": selected_attempt.spec.prev_index,
+        "selected_verdict": selected_attempt.verdict,
     }
 
 
 def generate_candidate_pairs(
     *,
-    crop_y_max: float,
+    config: VerificationConfig,
     next_page_ir: PageIR,
     prev_candidates: list[tuple[int, Block | Table]],
-) -> tuple[list[tuple[int, Block | Table, int, Block | Table]], dict[str, int]]:
-    """Generate and deduplicate the list of candidate pairs to verify.
+) -> tuple[list[CandidatePairSpec], dict[str, int]]:
+    """Generate ordered candidate pair specifications for a page boundary.
+
+    Candidate discovery always uses the full next-page JSON. Pair-specific crops are
+    computed later and used only for evidence delivery to the verifier.
 
     Parameters
     ----------
-    crop_y_max
-        The y-coordinate (in original page coordinates) used to crop the next page
-        image. Used as `visible_y_max` when selecting top-of-page candidates on the
-        next page.
+    config
+        The verification configuration.
     next_page_ir
-        The PageIR of the next page.
+        PageIR for page N+1.
     prev_candidates
-        Pre-computed bottom-of-page candidates from the previous page, as returned by
-        `bottom_continuity_candidates()`. The first element is the primary candidate.
+        Ordered bottom-of-page candidates from page N. The first element is the primary
+        previous-page anchor.
 
     Returns
     -------
-    tuple[list[tuple[int, Block | Table, int, Block | Table]], dict[str, int]]
-        A tuple of (candidate pairs list, primary indices dict).
+    tuple[list[CandidatePairSpec], dict[str, int]]
+        Ordered pair specs plus the primary candidate indices for reporting.
     """
 
     next_items = next_page_ir.items
-
-    # prev_candidates already computed by caller — reuse directly.
-    prev_index, prev_item = prev_candidates[0]
-
-    # Get top candidates on next page, restricted to the crop region. crop_y_max is the
-    # y-coordinate the caller used to create the crop image, so it exactly defines the
-    # visible region.
-    next_candidates_primary = top_continuity_candidates_paired(
+    primary_prev_index, primary_prev_item = prev_candidates[0]
+    primary_next_candidates = _ordered_next_candidates(
         image_height=next_page_ir.image_height,
         items=next_items,
-        prev_item=prev_item,
-        visible_y_max=crop_y_max,
+        prev_item=primary_prev_item,
     )
-    next_index, next_item = next_candidates_primary[0]
+    primary_next_index, _ = primary_next_candidates[0]
+    primary_indices = {
+        "next_item_index": primary_next_index,
+        "prev_item_index": primary_prev_index,
+    }
+    pair_specs: list[CandidatePairSpec] = []
+    seen_pairs: set[tuple[int, int]] = set()
 
-    # Build ordered candidate pairs: Always try primary pair first. Then try additional
-    # previous candidates, preferring same-kind next candidates first.
-    pairs: list[tuple[int, Block | Table, int, Block | Table]] = [
-        (prev_index, prev_item, next_index, next_item)
-    ]
-
-    # Start with the primary pair. Then, for each possible bottom candidate, get a few
-    # top candidates on the next page and order them so same-kind is tried first
-    # (table -> table, block -> block, then mixed). Duplicate pairs are expected and
-    # removed by the de-dupe step below.
-    for pi, pitem in prev_candidates:
-        next_candidates = (
-            next_candidates_primary
-            if pi == prev_index
-            else top_continuity_candidates_paired(
-                image_height=next_page_ir.image_height,
-                items=next_items,
-                prev_item=pitem,
-                visible_y_max=crop_y_max,
-            )
+    for prev_rank, (prev_index, prev_item) in enumerate(prev_candidates):
+        ordered_next_candidates = _ordered_next_candidates(
+            image_height=next_page_ir.image_height,
+            items=next_items,
+            prev_item=prev_item,
         )
 
-        # Same-kind first, then cross-kind.
-        same = [(ni, nit) for (ni, nit) in next_candidates if nit.kind == pitem.kind]
-        other = [(ni, nit) for (ni, nit) in next_candidates if nit.kind != pitem.kind]
+        for next_rank, (next_index, next_item) in enumerate(ordered_next_candidates):
+            pair_key = (prev_index, next_index)
 
-        for ni, nitem in same + other:
-            pairs.append((pi, pitem, ni, nitem))
+            if pair_key in seen_pairs:
+                continue
 
-    # De-dupe pairs (to avoid re-checking the same pair), preserve order, and cap
-    # attempts (to limit model calls).
-    seen_pairs: set[tuple[int, int]] = set()
-    deduped_pairs: list[tuple[int, Block | Table, int, Block | Table]] = []
+            seen_pairs.add(pair_key)
+            pair_specs.append(
+                CandidatePairSpec(
+                    crop_y_max=_pair_specific_crop_y_max(
+                        image_height=next_page_ir.image_height,
+                        item=next_item,
+                        padding_px=config.next_page_crop_padding_px,
+                    ),
+                    next_index=next_index,
+                    next_item=next_item,
+                    next_rank=next_rank,
+                    prev_index=prev_index,
+                    prev_item=prev_item,
+                    prev_rank=prev_rank,
+                )
+            )
 
-    for pi, pitem, ni, nitem in pairs:
-        key = (pi, ni)
+            if len(pair_specs) >= 9:
+                return pair_specs, primary_indices
 
-        if key not in seen_pairs:
-            seen_pairs.add(key)
-            deduped_pairs.append((pi, pitem, ni, nitem))
-
-            if len(deduped_pairs) >= 9:
-                break
-
-    primary_indices = {"prev_item_index": prev_index, "next_item_index": next_index}
-
-    return deduped_pairs, primary_indices
+    return pair_specs, primary_indices
 
 
 def make_verification_excerpt(
@@ -1157,7 +1445,7 @@ def verify_single_page_pair(
     usage_tracker: VerificationUsageTracker,
     verification_dirs: PageIRVerificationDirs,
 ) -> EdgeVerdictRecord | None:
-    """Handle the verification logic for a specific pair of pages.
+    """Handle continuity verification for a specific pair of pages.
 
     Parameters
     ----------
@@ -1168,25 +1456,25 @@ def verify_single_page_pair(
     page_index
         The index of the previous page in the pair to verify.
     page_irs
-        The dictionary of page IRs by page index.
+        PageIR objects keyed by page index.
     usage_tracker
         Tracker to accumulate token usage from both verification and validation agents.
     verification_dirs
-        The verification directories.
+        Verification output directories.
 
     Returns
     -------
     EdgeVerdictRecord | None
-        The created EdgeVerdictRecord if verification was performed, or None if skipped.
+        The created edge verdict record if verification was performed, or None if the
+        pair was skipped.
     """
 
-    assert (
-        page_index in page_irs and (page_index + 1) in page_irs
-    ), f"Missing page IR for {page_index} or {page_index + 1}"
+    if page_index not in page_irs or (page_index + 1) not in page_irs:
+        raise ValueError(f"Missing page IR for {page_index} or {page_index + 1}.")
 
-    prev_page_ir, next_page_ir = page_irs[page_index], page_irs[page_index + 1]
+    next_page_ir = page_irs[page_index + 1]
+    prev_page_ir = page_irs[page_index]
 
-    # Skip if either page has no items.
     if not (prev_page_ir.items and next_page_ir.items):
         logger.warning(
             f"Skipping continuity check for pages {page_index}-{page_index + 1}: "
@@ -1195,66 +1483,28 @@ def verify_single_page_pair(
         )
         return None
 
-    # Select the primary next candidate on the FULL next page (N + 1) without any crop
-    # restrictions, then crop page N + 1 down to just below that candidate (+ padding).
-    prev_items = prev_page_ir.items
-    next_items = next_page_ir.items
     prev_candidates = bottom_continuity_candidates(
-        image_height=prev_page_ir.image_height, items=prev_items
+        image_height=prev_page_ir.image_height, items=prev_page_ir.items
     )
-    _, prev_item = prev_candidates[0]
-    next_candidates_primary_full = top_continuity_candidates_paired(
-        image_height=next_page_ir.image_height,
-        items=next_items,
-        prev_item=prev_item,
-        visible_y_max=None,  # Full page
-    )
-
-    # Crop using the lowest bbox bottom (y1) among the top-3 next candidates. This
-    # avoids cropping out the 2nd/3rd candidate that we may still test.
-    top_k = next_candidates_primary_full[:3]
-
-    if not top_k:
-        # Extremely defensive fallback; should not happen if next_page_ir has items.
-        crop_y_max = float(config.next_page_crop_padding_px) + 1.0
-    else:
-        max_y1 = max(float(nit.bbox[3]) for _, nit in top_k)
-        crop_y_max = max_y1 + float(config.next_page_crop_padding_px)
-
-    next_crop_fp = (
-        verification_dirs.page_irs_pair_crops / f"{page_index + 1:04}_top.png"
-    )
-
-    crop_image_to_ymax(
-        input_png_fp=page_images_dir / f"{page_index + 1:04}.png",
-        output_png_fp=next_crop_fp,
-        y_max=crop_y_max,
-    )
-
     pairs, primary_indices = generate_candidate_pairs(
-        crop_y_max=crop_y_max,
-        next_page_ir=next_page_ir,
-        prev_candidates=prev_candidates,
+        config=config, next_page_ir=next_page_ir, prev_candidates=prev_candidates
     )
 
-    # Run verification attempts on the generated pairs.
     logger.info(
         f"Verifying continuity between pages {page_index} and {page_index + 1}..."
     )
 
     result = execute_verification_attempts(
         config=config,
-        next_crop_fp=next_crop_fp,
-        page_images_dir=page_images_dir,
+        next_page_image_fp=page_images_dir / f"{page_index + 1:04}.png",
         page_index=page_index,
+        pair_crop_dir=verification_dirs.page_irs_pair_crops,
         pairs=pairs,
         usage_tracker=usage_tracker,
     )
-
-    # Record the edge verdict (single selected pair per boundary).
     selected_verdict = result["selected_verdict"]
-    selected_verdict.prev_page_index = page_index
     selected_verdict.next_page_index = page_index + 1
+    selected_verdict.prev_page_index = page_index
     record = EdgeVerdictRecord(
         next_item_index=result["selected_next_index"],
         next_page_index=page_index + 1,
@@ -1270,8 +1520,9 @@ def verify_single_page_pair(
             "attempts": result["attempt_summaries"],
             "primary_candidate_selection": primary_indices,
             "selected_candidate_selection": {
-                "prev_item_index": result["selected_prev_index"],
+                "eligible_for_patch": result["selected_eligible_for_patch"],
                 "next_item_index": result["selected_next_index"],
+                "prev_item_index": result["selected_prev_index"],
             },
             "verdict": selected_verdict.model_dump(mode="json"),
         },
