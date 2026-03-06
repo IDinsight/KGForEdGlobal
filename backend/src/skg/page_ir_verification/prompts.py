@@ -83,7 +83,8 @@ against the source images and candidate excerpts. Return a `ContinuityValidation
 
 ### 5. Table-only patch: set_next_table_repeats_header
 - Only applies for table continuations.
-- true = headers visibly repeated at top of IMAGE B; false = not repeated; null = uncertain.
+- true = headers visibly repeated at top of IMAGE B; false = repeated table header visibly not repeated; null = uncertain.
+- For false, judge from the image only. Do NOT require the excerpt JSON to have header_row_count=0; extraction may still count header-like or section rows.
 
 ### 6. Is the rationale adequate?
 - >= 50 chars, references specific visual evidence.
@@ -200,7 +201,7 @@ Return ONLY a `PageIRContinuityVerdict` object (no extra keys, no prose).
 ## TABLE-ONLY PATCH: set_next_table_repeats_header
 Only applies when is_continuation=true AND continuation_kind="{PageContinuationKind.TABLE.value}" AND next candidate is a table you are confident is the SAME table:
 - true  = header rows are visibly repeated at the top of IMAGE B
-- false = same table continues but headers are visibly NOT repeated
+- false = same table continues but the repeated table header is visibly NOT repeated
 - null  = cannot confidently tell (do not guess)
 
 ## DECISION GUIDANCE
@@ -220,6 +221,7 @@ Things that do NOT indicate a new table:
 - Row numbering/labels restart (e.g., "Week 27" then "Week 1") — common when sections/terms change.
 - Topic or skill-area shifts — common inside single scope-and-sequence tables.
 - Checkpoint/section rows (merged rows naming a unit/term/assessment) appearing inside the grid.
+- A header-like or merged row at the top of IMAGE B does not by itself mean the repeated table header is present. Distinguish repeated column headers from section/checkpoint rows.
 - Fully boxed table fragments on consecutive pages (see rule A above).
 - Language switches between rows (e.g., Wolof -> French) — normal bilingual formatting.
 
