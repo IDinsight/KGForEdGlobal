@@ -101,6 +101,22 @@ def _apply_visible_crop(
     ]
 
 
+def _candidate_family(item: Block | Table) -> str:
+    """Return the structural family used for continuity candidate matching.
+
+    Families are intentionally coarser than full semantics but finer than `item.kind`:
+    tables only match tables, figures only match figures, and all other non-table
+    blocks are treated as text/list-like block candidates.
+    """
+
+    if item.kind == "table":
+        return "table"
+    if _is_figure_block(item):
+        return "figure"
+
+    return "block"
+
+
 def _extract_figure_preview(
     *, figure: dict[str, Any], max_chars: int
 ) -> dict[str, str]:
@@ -238,6 +254,23 @@ def _is_heading_or_caption_block(item: Block | Table) -> bool:
     }
 
 
+def _is_figure_block(item: Block | Table) -> bool:
+    """Return True if item is a Block with block_type FIGURE.
+
+    Parameters
+    ----------
+    item
+        The item to check.
+
+    Returns
+    -------
+    bool
+        True if the item is a figure block.
+    """
+
+    return isinstance(item, Block) and item.block_type == BlockType.FIGURE
+
+
 def _is_patchable_positive(
     *, config: VerificationConfig, verdict: PageIRContinuityVerdict
 ) -> bool:
@@ -260,6 +293,56 @@ def _is_patchable_positive(
     return (
         verdict.is_continuation and verdict.confidence >= config.min_confidence_to_patch
     )
+
+
+def _is_viable_nonfigure_block_anchor(item: Block | Table) -> bool:
+    """Return True for block anchors suitable for text/list-style continuity.
+
+    Parameters
+    ----------
+    item
+        The item to evaluate.
+
+    Returns
+    -------
+    bool
+        True if the item is a non-figure Block that is not a HEADING or CAPTION, False
+        otherwise.
+    """
+
+    return (
+        isinstance(item, Block)
+        and not _is_heading_or_caption_block(item)
+        and item.block_type != BlockType.FIGURE
+    )
+
+
+def _is_viable_same_family_candidate(
+    *, anchor: Block | Table, candidate: Block | Table
+) -> bool:
+    """Return True if candidate is a valid same-family continuation target.
+
+    Parameters
+    ----------
+    anchor
+        The previous-page candidate item serving as the continuity anchor.
+    candidate
+        The next-page candidate item being evaluated for same-family continuity.
+
+    Returns
+    -------
+    bool
+        True if the candidate is a viable same-family match for the anchor, False
+        otherwise.
+    """
+
+    if not _shares_candidate_family(left=anchor, right=candidate):
+        return False
+
+    if _candidate_family(anchor) == "block":
+        return _is_viable_nonfigure_block_anchor(candidate)
+
+    return True
 
 
 def _make_block_excerpt(
@@ -397,10 +480,12 @@ def _ordered_next_candidates(
 ) -> list[tuple[int, Block | Table]]:
     """Return ordered next-page candidates for a given previous-page anchor.
 
-    Same-kind matches are ranked before cross-kind matches while preserving the
-    reading-order stability. The top candidate is initially picked using
-    `_pick_topmost`, and subsequent items are added to a pool of up to `k` candidates
-    before a final re-ordering strictly enforces same-kind priority.
+    Same-family matches are ranked before cross-family matches while preserving the
+    reading-order stability. Families are finer than raw `item.kind`: tables match
+    tables, figure blocks match figure blocks, and other non-table blocks match other
+    non-table blocks. The top candidate is initially picked using `_pick_topmost`, and
+    subsequent items are added to a pool of up to `k` candidates before a final
+    re-ordering strictly enforces same-family priority.
 
     Parameters
     ----------
@@ -419,17 +504,18 @@ def _ordered_next_candidates(
     Returns
     -------
     list[tuple[int, Block | Table]]
-        List of (item_index, item) pairs ordered by same-kind priority and reading
+        List of (item_index, item) pairs ordered by same-family priority and reading
         order. Length is in [1, k].
 
     Raises
     ------
     ValueError
+        If k < 1.
         If no non-artifact items are found.
-        If no top-crop-visible candidates are found when visible_y_max is provided.
     """
 
-    assert k >= 1, f"k must be >= 1, got {k}"
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
 
     # Build the candidate pool once and reuse for both primary pick and extras.
     candidates = _filter_candidate_pool(image_height=image_height, items=items)
@@ -451,36 +537,41 @@ def _ordered_next_candidates(
     next_candidates: list[tuple[int, Block | Table]] = [(first_i, first_item)]
     seen: set[int] = {first_i}
 
-    same_kind_pool: list[tuple[int, Block | Table]] = []
-    other_kind_pool: list[tuple[int, Block | Table]] = []
+    same_family_pool: list[tuple[int, Block | Table]] = []
+    other_family_pool: list[tuple[int, Block | Table]] = []
 
     for i, item in candidates:
         # For blocks, avoid heading/caption as text anchors.
         if i in seen or (item.kind == "block" and _is_heading_or_caption_block(item)):
             continue
 
-        if item.kind == prev_item.kind:
-            same_kind_pool.append((i, item))
+        if _shares_candidate_family(left=item, right=prev_item):
+            same_family_pool.append((i, item))
         else:
-            other_kind_pool.append((i, item))
+            other_family_pool.append((i, item))
 
     # Fill the candidate list up to `k` elements.
-    for bucket in (same_kind_pool, other_kind_pool):
+    for bucket in (same_family_pool, other_family_pool):
         for i, item in bucket:
             if len(next_candidates) >= k:
                 break
 
             next_candidates.append((i, item))
 
-    # Finally, strictly enforce same-kind before other-kind for the `k` selected items.
-    same_kind_final = [
-        (index, item) for index, item in next_candidates if item.kind == prev_item.kind
+    # Finally, strictly enforce same-family before other-family for the `k` selected
+    # items.
+    same_family_final = [
+        (index, item)
+        for index, item in next_candidates
+        if _shares_candidate_family(left=item, right=prev_item)
     ]
-    other_kind_final = [
-        (index, item) for index, item in next_candidates if item.kind != prev_item.kind
+    other_family_final = [
+        (index, item)
+        for index, item in next_candidates
+        if not _shares_candidate_family(left=item, right=prev_item)
     ]
 
-    return same_kind_final + other_kind_final
+    return same_family_final + other_family_final
 
 
 def _pair_priority_key(
@@ -494,7 +585,7 @@ def _pair_priority_key(
     1. Positive continuations at or above `min_confidence_to_select_positive`.
     2. All remaining attempts.
     3. Within a bucket, prefer higher confidence, then lower candidate ranks, then
-        same-kind matches, then aligned boundary hints.
+        same-family matches, then aligned boundary hints.
 
     Parameters
     ----------
@@ -516,7 +607,9 @@ def _pair_priority_key(
         and verdict.confidence >= config.min_confidence_to_select_positive
     )
 
-    same_kind_penalty = 0 if spec.prev_item.kind == spec.next_item.kind else 1
+    same_family_penalty = (
+        0 if _shares_candidate_family(left=spec.prev_item, right=spec.next_item) else 1
+    )
 
     next_boundary_good = spec.next_item.boundary in {
         ItemBoundary.BOTH,
@@ -533,7 +626,7 @@ def _pair_priority_key(
         -verdict.confidence,
         spec.prev_rank,
         spec.next_rank,
-        same_kind_penalty,
+        same_family_penalty,
         boundary_penalty,
     )
 
@@ -549,8 +642,9 @@ def _pick_bottommost(
 
     1. Extractor-flagged TRUNCATED/BOTH items (preferred boundary hints).
     2. Tables near the bottom (within top-5 by y1).
-    3. Non-heading/non-caption blocks.
-    4. Absolute bottom item (last resort).
+    3. Figure blocks near the bottom (within top-5 by y1).
+    4. Non-heading/non-caption, non-figure blocks.
+    5. Absolute bottom item (last resort).
 
     Parameters
     ----------
@@ -590,9 +684,16 @@ def _pick_bottommost(
             if item.kind == "table":
                 return i, item
 
-        # Otherwise pick the first non-table block, but never anchor on HEADING/CAPTION.
+        # Then prefer a figure block near the bottom so figure continuations surface
+        # before generic block->block pairings.
+        for i, item in sorted_candidates[:5]:
+            if _is_figure_block(item):
+                return i, item
+
+        # Otherwise pick the first non-figure block, but never anchor on
+        # HEADING/CAPTION.
         for i, item in sorted_candidates:
-            if item.kind != "table" and not _is_heading_or_caption_block(item):
+            if _is_viable_nonfigure_block_anchor(item):
                 return i, item
 
         return None
@@ -619,9 +720,11 @@ def _pick_topmost(
 
     Selection priority:
 
-    1. Extractor-flagged RESUMED/BOTH items matching prev_item kind.
-    2. Same-kind match (Table→Table or non-heading Block→Block).
-    3. Absolute top item (last resort).
+    1. Extractor-flagged RESUMED/BOTH items matching prev_item family.
+    2. Same-family match (Table→Table, Figure→Figure, non-figure Block→non-figure
+        Block).
+    3. First viable non-figure block (fallback for generic block continuity).
+    4. Absolute top item (last resort).
 
     Parameters
     ----------
@@ -649,22 +752,46 @@ def _pick_topmost(
         (i, item) for i, item in candidates if i not in seen_indices
     ]
 
-    if prev_item.kind == "table":
-        table_match = next(
-            ((i, item) for i, item in unique_ordered if item.kind == "table"),
-            None,
-        )
-        return table_match if table_match is not None else candidates[0]
+    family_match = next(
+        (
+            (i, item)
+            for i, item in unique_ordered
+            if _is_viable_same_family_candidate(anchor=prev_item, candidate=item)
+        ),
+        None,
+    )
+
+    if family_match is not None:
+        return family_match
 
     valid_match = next(
         (
             (i, item)
             for i, item in unique_ordered
-            if item.kind != "table" and not _is_heading_or_caption_block(item)
+            if _is_viable_nonfigure_block_anchor(item)
         ),
         None,
     )
     return valid_match if valid_match is not None else candidates[0]
+
+
+def _shares_candidate_family(*, left: Block | Table, right: Block | Table) -> bool:
+    """Return True if two items belong to the same continuity candidate family.
+
+    Parameters
+    ----------
+    left
+        The first item to compare.
+    right
+        The second item to compare.
+
+    Returns
+    -------
+    bool
+        True if both items belong to the same candidate family, False otherwise.
+    """
+
+    return _candidate_family(left) == _candidate_family(right)
 
 
 def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]:

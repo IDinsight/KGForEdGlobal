@@ -190,8 +190,9 @@ class Table(BaseSchema):
         description=(
             "For tables that continue from a previous page, indicates whether the "
             "repeated table header rows are visibly repeated on this page. "
-            "Null if unknown. This is a visual continuation signal, not a guarantee "
-            "that header_row_count is zero when false."
+            "Null if unknown. This is a visual continuation signal and may be "
+            "set independently of header_row_count because extraction can miss or "
+            "miscount repeated header rows."
         ),
     )
     rows: list[TableRow] = Field(
@@ -235,12 +236,12 @@ class Table(BaseSchema):
         Enforced checks:
 
         1. repeats_header may only be set when boundary is RESUMED or BOTH.
-        2. If repeats_header is True, header_row_count must be >= 1.
 
-        NB: repeats_header=False is a visual claim that the repeated table header is
-        not shown at the top of this continuation page. It does not require
-        header_row_count == 0, because extraction may still count header-like or
-        section rows at the top of the page.
+        NB: repeats_header is a visual claim about whether the repeated table header is
+        shown at the top of this continuation page. It does not need to agree with
+        header_row_count in either direction, because extraction may miss repeated
+        header rows or may count header-like/section rows that are not true repeated
+        headers.
 
         Returns
         -------
@@ -260,18 +261,6 @@ class Table(BaseSchema):
             raise ValueError(
                 f"repeats_header is only allowed when boundary is "
                 f"{ItemBoundary.RESUMED.value} or {ItemBoundary.BOTH.value}."
-            )
-
-        # When the extractor is confident enough to set repeats_header=True explicitly,
-        # enforce that header rows are actually present on-page.
-        #
-        # NB: repeats_header=False remains a visual signal only: the repeated table
-        # header is not shown at the top of this continuation page. That does not imply
-        # header_row_count == 0 because the extractor may still count header-like or
-        # section rows on the page.
-        if self.repeats_header is True and self.header_row_count == 0:
-            raise ValueError(
-                "repeats_header=True requires header_row_count >= 1 (header rows must be present)."
             )
 
         return self
