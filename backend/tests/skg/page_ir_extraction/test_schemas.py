@@ -1355,10 +1355,10 @@ def test_table_repeats_header_requires_boundary_resumed_or_both(
     assert table.repeats_header is True
 
 
-def test_table_repeats_header_true_requires_header_rows(
+def test_table_repeats_header_true_does_not_requires_header_rows(
     bbox: list[float], make_table_cell: Callable[..., TableCell]
 ) -> None:
-    """repeats_header=True with header_row_count=0 should be rejected.
+    """repeats_header=True with header_row_count=0 should NOT be rejected.
 
     Parameters
     ----------
@@ -1371,20 +1371,16 @@ def test_table_repeats_header_true_requires_header_rows(
 
     row0 = TableRow(cells=[make_table_cell(text="A"), make_table_cell(text="B")])
     row1 = TableRow(cells=[make_table_cell(text="1"), make_table_cell(text="2")])
-
-    with pytest.raises(
-        ValidationError, match="repeats_header=True requires header_row_count >= 1"
-    ):
-        Table(
-            bbox=bbox,
-            boundary=ItemBoundary.RESUMED,
-            header_row_count=0,
-            kind="table",
-            local_code=None,
-            n_cols=2,
-            repeats_header=True,
-            rows=[row0, row1],
-        )
+    Table(
+        bbox=bbox,
+        boundary=ItemBoundary.RESUMED,
+        header_row_count=0,
+        kind="table",
+        local_code=None,
+        n_cols=2,
+        repeats_header=True,
+        rows=[row0, row1],
+    )
 
 
 def test_table_requires_at_least_one_row(bbox: list[float]) -> None:
