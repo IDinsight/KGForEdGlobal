@@ -100,9 +100,9 @@ def validate_repeats_header_requires_table_item(
     extraction may have misclassified the next-page table boundary as COMPLETE even
     when the table is clearly a continuation. We therefore allow the verifier to
     request a repeats_header patch even if the current extracted boundary is not
-    RESUMED/BOTH. The patch application layer MUST patch table boundaries first (based
-    on the same table-continuation verdict), then apply repeats_header, and then
-    re-validate the resulting Table object to ensure schema invariants hold.
+    RESUMED/BOTH. The compile layer applies updates in an invariant-safe order:
+    clear repeats_header first when a boundary is being downgraded, update the
+    boundary, then apply any validator-approved explicit repeats_header patch.
 
     Parameters
     ----------
