@@ -295,6 +295,58 @@ def _is_patchable_positive(
     )
 
 
+def _is_strong_primary_negative_stop(
+    *,
+    config: VerificationConfig,
+    spec: CandidatePairSpec,
+    verdict: PageIRContinuityVerdict,
+) -> bool:
+    """Return whether a primary-primary negative is strong enough to stop searching.
+
+    Rationale
+    ---------
+
+    A negative verdict only disproves continuity for the *specific* candidate pair, so
+    we should usually continue exploring alternate anchors. The expensive failure mode
+    in practice is repeatedly evaluating more pairs even when the best primary-primary
+    pair already has a very strong negative result.
+
+    This early-stop is intentionally conservative:
+
+    1. It only applies to the primary-primary attempt.
+    2. It requires a same-family match (table-table, figure-figure, block-block).
+    3. It requires a very high confidence negative.
+
+    The confidence floor is clamped to at least 0.90 so ordinary "pretty confident"
+    negatives do not suppress fallback search over alternate pairs.
+
+    Parameters
+    ----------
+    config
+        The verification configuration.
+    spec
+        The candidate pair specification for the current attempt.
+    verdict
+        The continuity verdict to evaluate.
+
+    Returns
+    -------
+    bool
+        True when the attempt is a strong-enough primary-primary negative to stop the
+        remaining search, False otherwise.
+    """
+
+    min_negative_stop_confidence = max(0.90, float(config.min_confidence_to_patch))
+
+    return (
+        spec.prev_rank == 0
+        and spec.next_rank == 0
+        and not verdict.is_continuation
+        and verdict.confidence >= min_negative_stop_confidence
+        and _shares_candidate_family(left=spec.prev_item, right=spec.next_item)
+    )
+
+
 def _is_viable_nonfigure_block_anchor(item: Block | Table) -> bool:
     """Return True for block anchors suitable for text/list-style continuity.
 
@@ -991,19 +1043,18 @@ def execute_verification_attempts(
     successful_attempts: list[VerifiedCandidateAttempt] = []
 
     for attempt_no, spec in enumerate(pairs):
+        logger.info(
+            f"Verifying pages {page_index}-{page_index + 1} | attempt {attempt_no + 1}/{len(pairs)} | "
+            f"prev_item={spec.prev_index} (rank {spec.prev_rank}) | "
+            f"next_item={spec.next_index} (rank {spec.next_rank})"
+        )
+
         crop_fp = ensure_pair_specific_crop(
             crop_cache=crop_cache,
             next_page_image_fp=next_page_image_fp,
             next_page_index=page_index + 1,
             output_dir=pair_crop_dir,
             spec=spec,
-        )
-
-        logger.info(
-            f"Attempt {attempt_no + 1}/{len(pairs)} for pages "
-            f"{page_index}-{page_index + 1}: prev_rank={spec.prev_rank} "
-            f"next_rank={spec.next_rank} (prev_idx={spec.prev_index}, "
-            f"next_idx={spec.next_index})"
         )
 
         try:
@@ -1042,35 +1093,51 @@ def execute_verification_attempts(
         )
         successful_attempts.append(attempt)
         is_eligible_for_patch = _is_patchable_positive(config=config, verdict=verdict)
-
-        attempt_summaries.append(
-            {
-                "attempt_no": attempt_no,
-                "confidence": verdict.confidence,
-                "continuation_kind": verdict.continuation_kind.value,
-                "crop_y_max": spec.crop_y_max,
-                "crop_png_fp": str(crop_fp),
-                "eligible_for_patch": is_eligible_for_patch,
-                "is_continuation": verdict.is_continuation,
-                "next_item_index": spec.next_index,
-                "next_rank": spec.next_rank,
-                "prev_item_index": spec.prev_index,
-                "prev_rank": spec.prev_rank,
-                "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
-            }
+        is_early_stop_negative = _is_strong_primary_negative_stop(
+            config=config, spec=spec, verdict=verdict
         )
 
-        # The primary-primary pair may short-circuit the search when:
-        #  1. It is a patchable positive, OR
-        #  2. It is a confident negative (no point trying secondary candidates).
-        if attempt.spec.next_rank == 0 and attempt.spec.prev_rank == 0:
-            if is_eligible_for_patch:
-                break
-            if (
-                not verdict.is_continuation
-                and verdict.confidence >= config.min_confidence_to_patch
-            ):
-                break
+        attempt_summary = {
+            "attempt_no": attempt_no,
+            "confidence": verdict.confidence,
+            "continuation_kind": verdict.continuation_kind.value,
+            "crop_y_max": spec.crop_y_max,
+            "crop_png_fp": str(crop_fp),
+            "eligible_for_patch": is_eligible_for_patch,
+            "is_continuation": verdict.is_continuation,
+            "next_item_index": spec.next_index,
+            "next_rank": spec.next_rank,
+            "prev_item_index": spec.prev_index,
+            "prev_rank": spec.prev_rank,
+            "set_next_table_repeats_header": verdict.set_next_table_repeats_header,
+        }
+
+        if (
+            attempt.spec.next_rank == 0
+            and attempt.spec.prev_rank == 0
+            and is_eligible_for_patch
+        ):
+            attempt_summary["early_stop_reason"] = "primary_primary_patchable_positive"
+            attempt_summaries.append(attempt_summary)
+            logger.info(
+                f"Stopping verification early for pages {page_index}-{page_index + 1} "
+                f"after attempt {attempt_no}: primary-primary pair is patchable positive."
+            )
+            break
+
+        if is_early_stop_negative:
+            attempt_summary["early_stop_reason"] = (
+                "primary_primary_same_family_high_confidence_negative"
+            )
+            attempt_summaries.append(attempt_summary)
+            logger.info(
+                f"Stopping verification early for pages {page_index}-{page_index + 1} "
+                f"after attempt {attempt_no}: primary-primary pair is a same-family "
+                f"high-confidence negative (confidence={verdict.confidence})."
+            )
+            break
+
+        attempt_summaries.append(attempt_summary)
 
     if not successful_attempts:
         errors = [
