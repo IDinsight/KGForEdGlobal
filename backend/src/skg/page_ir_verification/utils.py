@@ -45,6 +45,54 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _derive_page_boundary_state(page_ir: PageIR) -> PageBoundaryState:
+    """Derive page-level boundary_state from verified item boundaries.
+
+    Parameters
+    ----------
+    page_ir
+        The page IR dictionary.
+
+    Returns
+    -------
+    PageBoundaryState
+        The derived page-level boundary state.
+    """
+
+    items = page_ir.items
+    image_height = page_ir.image_height
+
+    candidates = [
+        item
+        for item in items
+        if not is_artifact(item)
+        and not is_probable_header_footer_noise(image_height=image_height, item=item)
+    ]
+
+    if not candidates:
+        # Fallback: if filtering removes everything (e.g., overly aggressive noise
+        # heuristics), derive the page-level boundary state from the raw items so we
+        # don't incorrectly label the page as STANDALONE.
+        candidates = items
+
+    from_prev = any(
+        item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+        for item in candidates
+    )
+    to_next = any(
+        item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
+        for item in candidates
+    )
+
+    if from_prev and to_next:
+        return PageBoundaryState.BOTH
+    if from_prev:
+        return PageBoundaryState.CONTINUES_FROM_PREV
+    if to_next:
+        return PageBoundaryState.CONTINUES_TO_NEXT
+    return PageBoundaryState.STANDALONE
+
+
 def create_page_ir_verification_dirs(output_dir: Path) -> PageIRVerificationDirs:
     """Create page IR verification directories for a given verification run.
 
@@ -181,54 +229,6 @@ def cross_check_extraction_run(
     return start, end
 
 
-def derive_page_boundary_state(page_ir: PageIR) -> PageBoundaryState:
-    """Derive page-level boundary_state from verified item boundaries.
-
-    Parameters
-    ----------
-    page_ir
-        The page IR dictionary.
-
-    Returns
-    -------
-    PageBoundaryState
-        The derived page-level boundary state.
-    """
-
-    items = page_ir.items
-    image_height = page_ir.image_height
-
-    candidates = [
-        item
-        for item in items
-        if not is_artifact(item)
-        and not is_probable_header_footer_noise(image_height=image_height, item=item)
-    ]
-
-    if not candidates:
-        # Fallback: if filtering removes everything (e.g., overly aggressive noise
-        # heuristics), derive the page-level boundary state from the raw items so we
-        # don't incorrectly label the page as STANDALONE.
-        candidates = items
-
-    from_prev = any(
-        item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-        for item in candidates
-    )
-    to_next = any(
-        item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
-        for item in candidates
-    )
-
-    if from_prev and to_next:
-        return PageBoundaryState.BOTH
-    if from_prev:
-        return PageBoundaryState.CONTINUES_FROM_PREV
-    if to_next:
-        return PageBoundaryState.CONTINUES_TO_NEXT
-    return PageBoundaryState.STANDALONE
-
-
 def is_artifact(item: Block | Table) -> bool:
     """Check if an item is an artifact.
 
@@ -354,6 +354,10 @@ def load_page_irs_from_verification(
     """Load and validate all verified page IR JSONs from the verification output
     directory.
 
+    NB: This loader is intended for callers that expect a self-contained verified
+    page-IR set whose page_index values are contiguous and start at 0. It is not the
+    loader used by the page-IR verification pipeline itself.
+
     Parameters
     ----------
     doc_key
@@ -364,7 +368,7 @@ def load_page_irs_from_verification(
     Returns
     -------
     list[PageIR]
-        The loaded and validated PageIRs in filename order.
+        The loaded and validated PageIRs sorted by PageIR.page_index.
 
     Raises
     ------
@@ -474,6 +478,8 @@ def load_verification_verdicts(
     ------
     NotADirectoryError
         If the specified verdict_dir is not a directory.
+    ValueError
+        If any verdict JSON is missing required page indices.
     """
 
     verdicts: dict[tuple[int, int], EdgeVerdictRecord] = {}
@@ -483,7 +489,17 @@ def load_verification_verdicts(
 
     for fp in sorted(verdict_dir.glob("*.json")):
         record = load_edge_verdict_from_pair_report(fp)
-        verdicts[(record.prev_page_index, record.next_page_index)] = record
+        key = (record.prev_page_index, record.next_page_index)
+
+        if key in verdicts:
+            raise ValueError(
+                f"Duplicate verification verdict key {key} found while loading "
+                f"{fp.name}. A verdict for this boundary was already loaded. "
+                f"Verification verdict files must contain at most one record per "
+                f"(prev_page_index, next_page_index) boundary."
+            )
+
+        verdicts[key] = record
 
     logger.info(f"Loaded {len(verdicts)} verification verdict(s) from: {verdict_dir}")
 
@@ -537,6 +553,14 @@ def save_verified_page_irs(
         The dictionary of page IRs by page index.
     verification_dirs
         The verification directories.
+
+    Raises
+    ------
+    ValueError
+        If any page IR's page_index does not match its dictionary key, which indicates
+        a mismatch that could lead to incorrectly saved results. In this case, the
+        function raises an error and refuses to save any results to prevent silent data
+        corruption.
     """
 
     logger.info(
@@ -546,8 +570,15 @@ def save_verified_page_irs(
     for i in sorted(page_irs.keys()):
         page_ir = page_irs[i]
 
+        if page_ir.page_index != i:
+            raise ValueError(
+                f"Verified PageIR dict key/page_index mismatch: dict key={i}, "
+                f"page_ir.page_index={page_ir.page_index}. Refusing to save "
+                f"mismatched verified PageIR output."
+            )
+
         # Derive page-level boundary_state from verified item boundaries.
-        page_ir.boundary_state = derive_page_boundary_state(page_ir)
+        page_ir.boundary_state = _derive_page_boundary_state(page_ir)
 
         # Write verified JSON.
         write_to_json(
