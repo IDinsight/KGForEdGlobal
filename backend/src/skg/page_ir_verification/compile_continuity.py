@@ -552,7 +552,7 @@ def _patch_repeats_header(
 ) -> dict[str, Any]:
     """Patch table.repeats_header in an invariant-safe order.
 
-    NB: rpeats_header is a visual repeated-header signal. A False patch therefore does
+    NB: repeats_header is a visual repeated-header signal. A False patch therefore does
     not imply any required header_row_count value. This helper only performs the
     repeats_header mutation itself and returns a concise change summary.
 
