@@ -33,6 +33,23 @@ TABLE_CODE_RE = re.compile(
 )
 
 
+def _cell_is_visually_blank(cell: TableCell) -> bool:
+    """True if the cell is visually blank.
+
+    Parameters
+    ----------
+    cell
+        The cell to check.
+
+    Returns
+    -------
+    bool
+        True if the cell has no visible text content.
+    """
+
+    return cell.text is None or (cell.text.text or "").strip() == ""
+
+
 def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int:
     """Calculate the max width found in the header rows.
 
@@ -121,6 +138,24 @@ def _insert_placeholders(
         col += 1
 
     return new_cells, dropped_cells
+
+
+def _is_synthetic_placeholder_cell(cell: TableCell) -> bool:
+    """True if the cell is a synthetic 1x1 empty placeholder inserted by postprocess.
+
+    Parameters
+    ----------
+    cell
+        The cell to check.
+
+    Returns
+    -------
+    bool
+        True if the cell matches the lightweight placeholder shape used by rowspan
+        alignment and row-padding repair steps.
+    """
+
+    return cell.col_span == 1 and cell.row_span == 1 and cell.text is None
 
 
 def _process_page_tables(
@@ -507,25 +542,29 @@ def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
     if header_row_count > 0 and header_effective_cols == n_cols:
         return True
 
-    # Modal leading blank.
+    # Modal leading blank. Ignore synthetic leading placeholders inserted by the
+    # rowspan-alignment pass. Those cells are repair artifacts, not extraction evidence
+    # about where naturally missing cells belong.
     rows_for_modal = rows[header_row_count:] if header_row_count > 0 else rows
 
-    full_width_rows_cells = [
-        r.cells for r in rows_for_modal if sum(c.col_span for c in r.cells) >= n_cols
+    natural_full_width_rows_cells = [
+        r.cells
+        for r in rows_for_modal
+        if sum(c.col_span for c in r.cells) >= n_cols
+        and r.cells
+        and not _is_synthetic_placeholder_cell(r.cells[0])
     ]
 
-    if not full_width_rows_cells:
+    if not natural_full_width_rows_cells:
         return False
 
     leading_blank_count = sum(
-        1
-        for cs in full_width_rows_cells
-        if cs[0].text is None or (cs[0].text.text or "").strip() == ""
+        1 for cs in natural_full_width_rows_cells if _cell_is_visually_blank(cs[0])
     )
 
     return (
-        len(full_width_rows_cells) >= 3
-        and (leading_blank_count / len(full_width_rows_cells)) >= 0.6
+        len(natural_full_width_rows_cells) >= 3
+        and (leading_blank_count / len(natural_full_width_rows_cells)) >= 0.6
     )
 
 
@@ -548,22 +587,6 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
         The number of cells trimmed.
     """
 
-    def _is_removable_placeholder(cell: TableCell) -> bool:
-        """True if the cell is a 1x1 empty placeholder.
-
-        Parameters
-        ----------
-        cell
-            The cell to check.
-
-        Returns
-        -------
-        bool
-            True if the cell is a removable placeholder, False otherwise.
-        """
-
-        return cell.col_span == 1 and cell.row_span == 1 and cell.text is None
-
     trimmed = 0
     effective_cols = sum(c.col_span for c in new_cells)
 
@@ -571,7 +594,7 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
     while effective_cols > n_cols and new_cells:
         tail = new_cells[-1]
 
-        if _is_removable_placeholder(tail):
+        if _is_synthetic_placeholder_cell(tail):
             new_cells.pop()
             trimmed += 1
             effective_cols -= 1  # Placeholder is guaranteed col_span==1 above
@@ -1053,9 +1076,6 @@ def postprocess_verified_page_irs(
         The verification directories.
     """
 
-    # Fix false truncated prose before tables.
-    prose_table_fix_changes = fix_false_truncated_prose_before_table(page_irs)
-
     # Enrich data by flowing local codes across VERIFIED table-continuation edges.
     #
     # NB: compile_continuity already propagates local_code at the edge level (between
@@ -1075,11 +1095,8 @@ def postprocess_verified_page_irs(
     # Insert placeholders under rowspans to prevent column drift.
     #
     # NB: This runs BEFORE normalize_table_row_cell_counts (padding). The padding
-    # step's _should_pad_left heuristic counts leading-blank cells among full-width
-    # rows. Rowspan placeholders inserted here (text=None at col 0) can inflate the
-    # leading-blank ratio and theoretically trigger incorrect left-padding. In practice
-    # this requires both large column-0 rowspans AND separate short rows in the same
-    # table, which is rare. Flag for review if left-padding anomalies appear.
+    # heuristic now ignores synthetic leading placeholders inserted by this pass, so
+    # rowspan repair does not bias the later left-vs-right padding decision.
     rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs)
 
     # Fix structural "empty cell" hallucinations from the extraction model.
@@ -1089,21 +1106,19 @@ def postprocess_verified_page_irs(
     write_to_json(
         fp=verification_dirs.root / "postprocess_report.json",
         json_info={
-            "prose_table_fix_changes": prose_table_fix_changes,
             "table_local_code_changes": table_code_changes,
             "empty_cell_text_normalization_changes": empty_cell_changes,
             "rowspan_alignment_changes": rowspan_alignment_changes,
-            "table_row_padding_changes": pad_changes,
+            "table_row_normalization_changes": pad_changes,
         },
     )
 
     logger.success(
         f"Saved postprocess report with "
-        f"{len(prose_table_fix_changes)} prose-table fixes, "
         f"{len(table_code_changes)} table code propagations, "
         f"{len(empty_cell_changes)} empty cell normalizations, "
         f"{len(rowspan_alignment_changes)} rowspan alignment changes, and "
-        f"{len(pad_changes)} table row padding changes to: "
+        f"{len(pad_changes)} table row normalization changes to: "
         f"{verification_dirs.root / 'postprocess_report.json'}"
     )
 

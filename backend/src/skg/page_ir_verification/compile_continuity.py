@@ -19,62 +19,6 @@ from skg.utils.constants import ItemBoundary, PageContinuationKind
 from skg.utils.general import write_to_json
 
 
-def _apply_all_local_code_patches(
-    *, local_code_patch: dict[tuple[int, int], str], page_irs: dict[int, PageIR]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Apply local code modifications to page items.
-
-    This function never overwrites an existing local_code on an item. If a patch would
-    overwrite a non-empty local_code, it is skipped and recorded.
-
-    Parameters
-    ----------
-    local_code_patch
-        Dictionary containing local codes to patch.
-    page_irs
-        Mapping of page_index to PageIR objects.
-
-    Returns
-    -------
-    tuple[list[dict[str, Any]], list[dict[str, Any]]]
-        (local_code_changes, local_code_patch_skips)
-    """
-
-    local_code_changes: list[dict[str, Any]] = []
-    local_code_patch_skips: list[dict[str, Any]] = []
-
-    for (page_index, item_index), code in sorted(local_code_patch.items()):
-        item = page_irs[page_index].items[item_index]
-        before = _normalize_local_code(getattr(item, "local_code", None))
-
-        if before is None:
-            item.local_code = code
-            local_code_changes.append(
-                {
-                    "after": code,
-                    "before": None,
-                    "item_index": item_index,
-                    "page": page_index,
-                }
-            )
-        elif before != code:
-            local_code_patch_skips.append(
-                {
-                    "desired": code,
-                    "existing": before,
-                    "item_index": item_index,
-                    "page": page_index,
-                    "reason": "item_already_has_local_code",
-                }
-            )
-            logger.warning(
-                f"Page {page_index} item {item_index}: skipping local_code patch "
-                f"'{code}' because item already has local_code='{before}'."
-            )
-
-    return local_code_changes, local_code_patch_skips
-
-
 def _apply_edge_verdicts(
     *,
     bools: dict[tuple[int, int], list[bool]],
@@ -693,19 +637,19 @@ def _initialize_states(
     """
 
     bools: dict[tuple[int, int], list[bool]] = {}
-    effective_local_codes: dict[tuple[int, int], str | None] = {}
+    normalized_local_codes: dict[tuple[int, int], str | None] = {}
 
     for page_index in sorted(page_irs):
-        page = page_irs[page_index]
+        page_ir = page_irs[page_index]
 
-        for item_index, item in enumerate(page.items):
+        for item_index, item in enumerate(page_ir.items):
             fp, tn = _boundary_to_bools(item.boundary)
             bools[(page_index, item_index)] = [fp, tn]
-            effective_local_codes[(page_index, item_index)] = _normalize_local_code(
+            normalized_local_codes[(page_index, item_index)] = _normalize_local_code(
                 getattr(item, "local_code", None)
             )
 
-    return bools, effective_local_codes
+    return bools, normalized_local_codes
 
 
 def _normalize_local_code(code: str | None) -> str | None:
@@ -955,11 +899,10 @@ def compile_continuity_from_edge_verdicts(
 ) -> None:
     """Apply all continuity decisions in one pass as follows:
 
-    1. Positive edge --> set prev.to_next and next.from_prev.
-    2. Negative edge --> clear ONLY that directional connection
-
-    Then recompute ItemBoundary enums from bits and also enforce repeats_header
-    consistency with boundary state.
+    1. Positive edge -> set prev.to_next and next.from_prev
+    2. Negative edge -> clear ONLY that directional connection
+    3. Then recompute ItemBoundary enums from bits and also enforce repeats_header
+        consistency with boundary state.
 
     Parameters
     ----------
@@ -980,7 +923,7 @@ def compile_continuity_from_edge_verdicts(
 
     bools, effective_local_codes = _initialize_states(page_irs)
     sorted_edge_records, boundary_duplicate_resolutions = (
-        _deduplicate_and_sort_edge_records(edge_records=edge_records)
+        _deduplicate_and_sort_edge_records(edge_records)
     )
 
     dirty_keys: set[tuple[int, int]] = set()
@@ -1012,9 +955,37 @@ def compile_continuity_from_edge_verdicts(
         repeats_header_patch=repeats_header_patch,
     )
 
-    local_code_changes, local_code_patch_skips = _apply_all_local_code_patches(
-        local_code_patch=local_code_patch, page_irs=page_irs
-    )
+    local_code_changes: list[dict[str, Any]] = []
+    local_code_patch_skips: list[dict[str, Any]] = []
+
+    for (page_index, item_index), code in sorted(local_code_patch.items()):
+        item = page_irs[page_index].items[item_index]
+        before = _normalize_local_code(getattr(item, "local_code", None))
+
+        if before is None:
+            item.local_code = code
+            local_code_changes.append(
+                {
+                    "after": code,
+                    "before": None,
+                    "item_index": item_index,
+                    "page": page_index,
+                }
+            )
+        elif before != code:
+            local_code_patch_skips.append(
+                {
+                    "desired": code,
+                    "existing": before,
+                    "item_index": item_index,
+                    "page": page_index,
+                    "reason": "item_already_has_local_code",
+                }
+            )
+            logger.warning(
+                f"Page {page_index} item {item_index}: skipping local_code patch "
+                f"'{code}' because item already has local_code='{before}'."
+            )
 
     compile_report = {
         "applied_edges": applied_edges,
