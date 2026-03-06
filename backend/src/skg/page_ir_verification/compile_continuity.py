@@ -15,6 +15,7 @@ from skg.page_ir_verification.utils import (
     PageIRContinuityVerdict,
     PageIRVerificationDirs,
 )
+from skg.schemas import VerificationConfig
 from skg.utils.constants import ItemBoundary, PageContinuationKind
 from skg.utils.general import write_to_json
 
@@ -1026,3 +1027,53 @@ def compile_continuity_from_edge_verdicts(
     )
 
     return _collect_verified_table_continuation_edges(applied_edges)
+
+
+def run_compile_step(
+    *,
+    config: VerificationConfig,
+    edge_records: list[EdgeVerdictRecord],
+    page_irs: dict[int, PageIR],
+    verification_dirs: PageIRVerificationDirs,
+) -> tuple[bool, set[tuple[int, int, int, int]] | None]:
+    """Execute the compile step, skipping if outputs already exist and overwrite=False.
+
+    Parameters
+    ----------
+    config
+        The verification configuration, including thresholds and overwrite flag.
+    verification_dirs
+        Directory paths for the verification run, used for checking existing outputs
+        and writing the continuity compile report.
+    edge_records
+        List of edge verdict records to compile into continuity decisions.
+    page_irs
+        Mapping of page_index to PageIR objects to be mutated in-place based on
+        compiled continuity decisions.
+
+    Returns
+    -------
+    tuple[bool, set[tuple[int, int, int, int]] | None]
+        A tuple of (did_run_compile, verified_table_edges), where did_run_compile
+        indicates whether the compile step was executed, and verified_table_edges is a
+        set of (prev_page, prev_index, next_page, next_index) tuples for VERIFIED
+        table-continuation edges if compile was run, or None if compile was skipped.
+    """
+
+    compile_report_fp = verification_dirs.root / "continuity_compile_report.json"
+
+    if not config.overwrite and compile_report_fp.exists():
+        logger.warning(
+            "Skipping continuity compile because continuity_compile_report.json "
+            "already exists and overwrite=False."
+        )
+        return False, None
+
+    verified_table_edges = compile_continuity_from_edge_verdicts(
+        edge_records=edge_records,
+        min_confidence_to_patch=config.min_confidence_to_patch,
+        min_confidence_to_select_positive=config.min_confidence_to_select_positive,
+        page_irs=page_irs,
+        verification_dirs=verification_dirs,
+    )
+    return True, verified_table_edges

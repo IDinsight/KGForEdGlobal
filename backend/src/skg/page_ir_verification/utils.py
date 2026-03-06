@@ -678,6 +678,69 @@ def persist_verification_run(
     return verification_dirs, verification_run
 
 
+def run_save_step(
+    *,
+    compile_ran: bool,
+    config: VerificationConfig,
+    page_irs: dict[int, PageIR],
+    postprocess_ran: bool,
+    start: int,
+    stop: int,
+    verification_dirs: PageIRVerificationDirs,
+) -> None:
+    """Execute the save step, skipping if expected outputs exist and overwrite=False.
+
+    Parameters
+    ----------
+    compile_ran
+        Whether the compile step ran in this execution (vs. being reused from a
+        previous run).
+    config
+        The verification run configuration.
+    page_irs
+        The dictionary of page IRs by page index.
+    postprocess_ran
+        Whether the postprocess step ran in this execution (vs. being reused from a
+        previous run).
+    start
+        0-based start page (inclusive).
+    stop
+        0-based end page (exclusive).
+    verification_dirs
+        The verification directories.
+
+    Raises
+    ------
+    RuntimeError
+        If the compile step needs to run but cannot because of existing outputs while
+        overwrite=False.
+    """
+
+    expected_outputs = [
+        verification_dirs.page_irs_verified / f"{page_index:04}.json"
+        for page_index in range(start, stop)
+    ]
+
+    # If overwrite is False and ALL expected outputs exist, skip.
+    if not config.overwrite and all(fp.exists() for fp in expected_outputs):
+        logger.warning(
+            "Skipping save_verified_page_irs because the requested verified PageIR "
+            "outputs already exist and overwrite=False."
+        )
+        return
+
+    if not compile_ran or not postprocess_ran:
+        raise RuntimeError(
+            "Cannot run save_verified_page_irs() because one or more upstream "
+            "verification outputs are being reused while overwrite=False, but the "
+            "in-memory PageIRs for this run do not reflect the full compiled + "
+            "postprocessed state required for saving. Delete the stale verification "
+            "outputs or rerun with overwrite=True."
+        )
+
+    save_verified_page_irs(page_irs=page_irs, verification_dirs=verification_dirs)
+
+
 def save_verified_page_irs(
     *, page_irs: dict[int, PageIR], verification_dirs: PageIRVerificationDirs
 ) -> None:
