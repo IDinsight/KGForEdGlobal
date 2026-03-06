@@ -268,21 +268,13 @@ def extract_page_ir(
         f"Page {page_index + 1}: validation failed: {verdict.rationale[:300]}"
     )
 
-    if verdict.corrected_page_ir is not None:
-        logger.info(
-            f"Page {page_index + 1}: using corrected PageIR from validation agent."
-        )
+    assert (
+        verdict.corrected_page_ir is not None
+    ), "Validation failed but no corrected PageIR provided."
 
-        return verdict.corrected_page_ir
+    logger.info(f"Page {page_index + 1}: using corrected PageIR from validation agent.")
 
-    # Fallback: if the validation agent somehow failed to provide a corrected PageIR
-    # (should not happen given schema validators, but defensive). Return the original.
-    logger.warning(
-        f"Page {page_index + 1}: validation agent did not provide corrected_page_ir. "
-        f"Returning original extraction."
-    )
-
-    return page_ir
+    return verdict.corrected_page_ir
 
 
 def verify_page_ir_extraction_quality(
