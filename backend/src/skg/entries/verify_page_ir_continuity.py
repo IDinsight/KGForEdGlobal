@@ -139,6 +139,7 @@ def verify_page_ir_continuity(
     compile_continuity_from_edge_verdicts(
         edge_records=edge_records,
         min_confidence_to_patch=config.min_confidence_to_patch,
+        min_confidence_to_select_positive=config.min_confidence_to_select_positive,
         page_irs=page_irs,
         verification_dirs=verification_dirs,
     )

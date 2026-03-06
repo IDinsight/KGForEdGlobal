@@ -129,8 +129,8 @@ def _apply_edge_verdicts(
         next_key = (record.next_page_index, record.next_item_index)
         should_apply = verdict.confidence >= min_confidence_to_patch
 
-        # Pair reports can get out of sync with PageIR item indices if upstream
-        # extraction outputs changed but old reports were reused.
+        # Compiled edge verdicts should always refer to items that exist in the current
+        # PageIR set.
         if prev_key not in bools or next_key not in bools:
             logger.warning(
                 f"Skipping edge verdict because candidate keys were not found in "
@@ -497,38 +497,45 @@ def _boundary_to_bools(boundary: ItemBoundary | None) -> tuple[bool, bool]:
 
 
 def _deduplicate_and_sort_edge_records(
-    *, edge_records: list[EdgeVerdictRecord], min_confidence_to_patch: float
+    *, edge_records: list[EdgeVerdictRecord], min_confidence_to_select_positive: float
 ) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
-    """Select at most one edge record per boundary, then sort deterministically.
+    """Select at most one edge record per boundary, enforce adjacency, and sort.
 
     Continuity compilation assumes at most one selected pair per page boundary
     (prev_page_index, next_page_index). If multiple records exist for the same
-    boundary, this function selects the "best" one and discards the others:
+    boundary, this function selects the same "best" record that verification would keep
+    for that boundary and discards the others.
 
     Selection order (highest priority first):
 
-    1. Prefer *confident positive continuations* (is_continuation=True and
-       verdict.confidence >= min_confidence_to_patch)
-    2. If no confident positives exist, select the record with the highest
-       verdict.confidence
+    1. Prefer *strong positive continuations* (is_continuation=True and
+        verdict.confidence >= min_confidence_to_select_positive)
+    2. If no strong positives exist, select the record with the highest
+        verdict.confidence
     3. Tie-breakers (determinism): prefer is_continuation=True, then lower
        (prev_item_index, next_item_index)
 
-    It logs a warning for each deduplicated boundary and returns a report of the
-    discarded records for inclusion in the compile report.
+    After deduplication, every retained record must be adjacent
+    (next_page_index == prev_page_index + 1). Non-adjacent edge records are invalid for
+    page-pair continuity compilation and cause a ValueError.
 
     Parameters
     ----------
     edge_records
-        List of edge verdict records to sort, validate, and deduplicate.
-    min_confidence_to_patch
-        Minimum confidence threshold to consider an edge a "confident positive"
-        continuation for selection purposes.
+        List of edge verdict records to deduplicate and sort.
+    min_confidence_to_select_positive
+        Minimum confidence threshold for a positive continuation verdict to outrank
+        negatives during per-boundary selection.
 
     Returns
     -------
     tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]
         (sorted_edge_records, boundary_duplicate_resolutions)
+
+    Raises
+    ------
+    ValueError
+        If any retained edge record is non-adjacent.
     """
 
     def _brief(r: EdgeVerdictRecord) -> dict[str, Any]:
@@ -568,7 +575,8 @@ def _deduplicate_and_sort_edge_records(
             continue
 
         best = _select_best_edge_record_for_boundary(
-            min_confidence_to_patch=min_confidence_to_patch, records=records
+            min_confidence_to_select_positive=min_confidence_to_select_positive,
+            records=records,
         )
 
         discarded = [r for r in records if r is not best]
@@ -595,8 +603,10 @@ def _deduplicate_and_sort_edge_records(
                 "next_page": boundary[1],
                 "selected": _brief(best),
                 "discarded": [_brief(r) for r in discarded],
-                "reason": "dedupe_one_record_per_boundary_prefer_confident_positive",
-                "min_confidence_to_patch": float(min_confidence_to_patch),
+                "reason": "dedupe_one_record_per_boundary_match_verification_selection",
+                "min_confidence_to_select_positive": float(
+                    min_confidence_to_select_positive
+                ),
             }
         )
         selected.append(best)
@@ -612,12 +622,24 @@ def _deduplicate_and_sort_edge_records(
         ),
     )
 
-    for r in sorted_edge_records:
-        if int(r.next_page_index) != int(r.prev_page_index) + 1:
-            logger.warning(
-                f"Non-adjacent edge record detected: {r.prev_page_index}->{r.next_page_index}. "
-                "This is unexpected for page-pair continuity verification."
+    non_adjacent = [
+        r
+        for r in sorted_edge_records
+        if int(r.next_page_index) != int(r.prev_page_index) + 1
+    ]
+
+    if non_adjacent:
+        details = ", ".join(
+            (
+                f"{r.prev_page_index}->{r.next_page_index} "
+                f"(prev_index={r.prev_item_index}, next_index={r.next_item_index})"
             )
+            for r in non_adjacent
+        )
+        raise ValueError(
+            f"Non-adjacent edge record(s) detected during continuity compilation: "
+            f"{details}. Continuity compilation only supports adjacent page pairs."
+        )
 
     return sorted_edge_records, boundary_duplicate_resolutions
 
@@ -675,13 +697,13 @@ def _normalize_local_code(code: str | None) -> str | None:
 def _patch_repeats_header(
     *, desired: bool | None, item_index: int, page_index: int, table: Table
 ) -> dict[str, Any]:
-    """Patch table.repeats_header and adjust header_row_count for consistency.
+    """Patch table.repeats_header in an invariant-safe order.
 
-    Enforces the invariant from Table.validate_repeats_header_consistency:
-
-    - repeats_header=True requires header_row_count >= 1
-    - repeats_header=False requires header_row_count == 0
-    - repeats_header=None has no header_row_count constraint
+    Explicit True/False patches are assumed to have already passed verification-time
+    validation against the candidate table's current header_row_count. This helper
+    therefore does not repair header_row_count for explicit patches; it only clears
+    repeats_header to None first so in-place updates remain safe even if assignment
+    validation is enabled.
 
     Parameters
     ----------
@@ -703,30 +725,11 @@ def _patch_repeats_header(
     before_repeats = table.repeats_header
     before_hrc = table.header_row_count
 
-    # Clearing repeats_header to None removes header_row_count constraints, which lets
-    # us safely update header_row_count even if validate_assignment is enabled.
+    # Clearing repeats_header to None first avoids transient invariant violations
+    # during in-place updates if assignment validation is enabled on the schema.
     if table.repeats_header is not None:
         table.repeats_header = None
 
-    # Adjust header_row_count for explicit True/False patches only.
-    if desired is True and table.header_row_count == 0:
-        # The LLM says headers are repeated but extraction counted 0 header rows.
-        # Assume 1 header row (the most common case) so the invariant holds.
-        table.header_row_count = 1
-        logger.info(
-            f"Page {page_index} item {item_index}: set header_row_count=1 to satisfy "
-            f"repeats_header=True invariant (was 0)."
-        )
-    elif desired is False and table.header_row_count > 0:
-        # The LLM says headers are NOT repeated, so the counted header rows are
-        # actually body rows on this continuation page.
-        table.header_row_count = 0
-        logger.info(
-            f"Page {page_index} item {item_index}: set header_row_count=0 to satisfy "
-            f"repeats_header=False invariant (was {before_hrc})."
-        )
-
-    # Finally, set the desired repeats_header value (including None).
     table.repeats_header = desired
 
     change: dict[str, Any] = {
@@ -811,11 +814,10 @@ def _reconcile_item_state(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Update item boundary and table headers based on calculated flags.
 
-    When patching repeats_header, also adjusts header_row_count to maintain the
-    consistency invariant enforced by Table.validate_repeats_header_consistency:
-
-    - repeats_header=True requires header_row_count >= 1
-    - repeats_header=False requires header_row_count == 0
+    Explicit repeats_header patches are assumed to have already passed
+    verification-time validation. This function applies them in an invariant-safe order
+    while also clearing repeats_header when a table no longer has a continuation
+    boundary.
 
     Parameters
     ----------
@@ -877,25 +879,28 @@ def _reconcile_item_state(
 
     # Case A: Connection broken (not RESUMED or BOTH) --> repeats_header must be None.
     if after_boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}:
-        # When a table transitions from continuation (repeats_header=False,
-        # header_row_count=0) to COMPLETE/TRUNCATED, the zeroed header count may be a
-        # leftover artifact. That is, the original extraction may have had real header
-        # rows that were cleared during an earlier repeats_header=False patch. Flag for
-        # human review since we can't recover the correct count automatically.
+        # When a table transitions from continuation with header_row_count=0 to a
+        # non-continuation boundary, that zero count may now be suspect. We cannot
+        # recover the original header rows automatically, so flag for human review.
         if table.header_row_count == 0:
             logger.warning(
                 f"Page {page_index} item {item_index}: boundary downgraded to "
                 f"{after_boundary.value} with header_row_count=0. This table may "
-                f"have lost its original header count from a prior "
-                f"repeats_header=False patch. Flagging for review."
+                f"need manual review."
             )
 
-            if header_change is not None:
-                header_change["needs_review"] = True
-                header_change["review_reason"] = (
-                    "header_row_count=0 after boundary downgrade; may need "
-                    "manual correction"
-                )
+            if header_change is None:
+                header_change = {
+                    "page": page_index,
+                    "item_index": item_index,
+                    "before": None,
+                    "after": None,
+                }
+
+            header_change["needs_review"] = True
+            header_change["review_reason"] = (
+                "header_row_count=0 after boundary downgrade; may need manual correction"
+            )
 
         return boundary_change, header_change
 
@@ -917,29 +922,47 @@ def _reconcile_item_state(
 
 
 def _select_best_edge_record_for_boundary(
-    *, min_confidence_to_patch: float, records: list[EdgeVerdictRecord]
+    *, min_confidence_to_select_positive: float, records: list[EdgeVerdictRecord]
 ) -> EdgeVerdictRecord:
     """Select the best edge record for a single page boundary.
 
-    Mirrors verify_page_pairs.execute_verification_attempts:
+    Mirrors verify_page_pairs._pair_priority_key:
 
-    1. Prefer confident positive continuations (is_continuation=True and
-        verdict.confidence >= min_confidence_to_patch).
-    2. If no confident positive exists, select the highest-confidence record overall.
+    1. Prefer strong positive continuations (is_continuation=True and
+       verdict.confidence >= min_confidence_to_select_positive).
+    2. If no strong positive exists, select the highest-confidence record overall.
     3. Deterministic tie-breakers: prefer is_continuation=True, then lower
-        (prev_item_index, next_item_index).
+       (prev_item_index, next_item_index).
+
+    Parameters
+    ----------
+    min_confidence_to_select_positive
+        Minimum confidence threshold for a positive continuation verdict to outrank
+        negatives during selection.
+    records
+        List of EdgeVerdictRecord objects for the same page boundary.
+
+    Returns
+    -------
+    EdgeVerdictRecord
+        The selected best record for the boundary.
+
+    Raises
+    ------
+    ValueError
+        If the records list is empty.
     """
 
     if not records:
         raise ValueError("records must be non-empty")
 
-    confident_positives = [
+    strong_positives = [
         r
         for r in records
         if bool(r.verdict.is_continuation)
-        and float(r.verdict.confidence) >= float(min_confidence_to_patch)
+        and float(r.verdict.confidence) >= float(min_confidence_to_select_positive)
     ]
-    candidates = confident_positives if confident_positives else records
+    candidates = strong_positives if strong_positives else records
 
     return max(
         candidates,
@@ -956,6 +979,7 @@ def compile_continuity_from_edge_verdicts(
     *,
     edge_records: list[EdgeVerdictRecord],
     min_confidence_to_patch: float,
+    min_confidence_to_select_positive: float,
     page_irs: dict[int, PageIR],
     verification_dirs: PageIRVerificationDirs,
 ) -> None:
@@ -973,6 +997,10 @@ def compile_continuity_from_edge_verdicts(
         List of edge verdict records.
     min_confidence_to_patch
         Minimum confidence threshold to apply edits.
+    min_confidence_to_select_positive
+        Minimum confidence threshold for a positive continuation verdict to outrank
+        negatives during per-boundary deduplication, matching verification-time
+        attempt selection.
     page_irs
         Mapping of page_index to PageIR objects.
     verification_dirs
@@ -983,7 +1011,8 @@ def compile_continuity_from_edge_verdicts(
     bools, effective_local_codes = _initialize_states(page_irs)
     sorted_edge_records, boundary_duplicate_resolutions = (
         _deduplicate_and_sort_edge_records(
-            edge_records=edge_records, min_confidence_to_patch=min_confidence_to_patch
+            edge_records=edge_records,
+            min_confidence_to_select_positive=min_confidence_to_select_positive,
         )
     )
 
@@ -1020,6 +1049,10 @@ def compile_continuity_from_edge_verdicts(
         "applied_edges": applied_edges,
         "boundary_duplicate_resolutions": boundary_duplicate_resolutions,
         "boundary_changes": boundary_changes,
+        "selection_policy": {
+            "min_confidence_to_patch": min_confidence_to_patch,
+            "min_confidence_to_select_positive": min_confidence_to_select_positive,
+        },
         "local_code_changes": local_code_changes,
         "local_code_patch_skips": local_code_patch_skips,
         "local_code_propagation_conflicts": local_code_propagation_conflicts,
