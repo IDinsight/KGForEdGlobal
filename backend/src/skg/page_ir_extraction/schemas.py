@@ -486,8 +486,14 @@ class FigureUnit(BaseSchema):
         return self
 
     @model_validator(mode="after")
-    def validate_contains_text_requires_embedded_text(self) -> Self:
+    def validate_contains_text_embedded_text_consistency(self) -> Self:
         """Validate consistency between contains_text and embedded_text.
+
+        Rules
+        -----
+        1. contains_text=true  -> embedded_text is required and must be non-whitespace.
+        2. contains_text=false -> embedded_text must be null.
+        3. contains_text=null  -> embedded_text must also be null.
 
         Returns
         -------
@@ -513,9 +519,18 @@ class FigureUnit(BaseSchema):
                     "contains_text=false and embedded_text=null."
                 )
 
-        if self.contains_text is False and self.embedded_text is not None:
+            return self
+
+        # At this point, contains_text is either False or None.
+        if self.embedded_text is not None:
+            if self.contains_text is False:
+                raise ValueError(
+                    "figure.contains_text=false requires figure.embedded_text=null."
+                )
+
             raise ValueError(
-                "figure.contains_text=false requires figure.embedded_text=null."
+                "figure.contains_text=null requires figure.embedded_text=null. "
+                "If embedded text is present, set contains_text=true."
             )
 
         return self

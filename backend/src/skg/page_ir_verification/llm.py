@@ -21,6 +21,7 @@ Orchestration flow
 """
 
 # Standard Library
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,66 @@ from skg.page_ir_verification.validators import (
     validate_repeats_header_requires_table_item,
     validate_semantic_flow,
 )
-from skg.page_ir_verification.verify_page_pairs import VerificationUsageTracker
+from skg.utils.general import AgentUsageBucket
+
+
+@dataclass
+class VerificationUsageTracker:
+    """Track LLM token usage across the entire verification pipeline run.
+
+    Maintains separate buckets for each agent type and provides a summary suitable for
+    persisting in `verification_run.json`.
+    """
+
+    verification: AgentUsageBucket
+    validation: AgentUsageBucket
+
+    def __init__(self) -> None:
+        """Initialize empty usage buckets for verification and validation agents."""
+
+        self.verification = AgentUsageBucket(agent_name="verification")
+        self.validation = AgentUsageBucket(agent_name="validation")
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to a JSON-friendly dictionary with per-agent and total summaries.
+
+        Returns
+        -------
+        dict[str, object]
+            Dictionary containing `agents` breakdown and `totals`.
+        """
+
+        verification_d = self.verification.to_dict()
+        validation_d = self.validation.to_dict()
+
+        totals = {
+            "cache_read_tokens": (
+                self.verification.cache_read_tokens + self.validation.cache_read_tokens
+            ),
+            "cache_write_tokens": (
+                self.verification.cache_write_tokens
+                + self.validation.cache_write_tokens
+            ),
+            "input_tokens": (
+                self.verification.input_tokens + self.validation.input_tokens
+            ),
+            "output_tokens": (
+                self.verification.output_tokens + self.validation.output_tokens
+            ),
+            "requests": self.verification.requests + self.validation.requests,
+            "runs": self.verification.runs + self.validation.runs,
+            "total_tokens": (
+                self.verification.input_tokens
+                + self.verification.output_tokens
+                + self.validation.input_tokens
+                + self.validation.output_tokens
+            ),
+        }
+
+        return {
+            "agents": {"verification": verification_d, "validation": validation_d},
+            "totals": totals,
+        }
 
 
 def _run_validation_agent(

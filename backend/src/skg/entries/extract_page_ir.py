@@ -29,10 +29,9 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.page_ir_extraction.llm import extract_page_ir
+from skg.page_ir_extraction.llm import ExtractionUsageTracker, extract_page_ir
 from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_extraction.utils import (
-    ExtractionUsageTracker,
     PageIRExtractionDirs,
     persist_extraction_run,
     read_png_dimensions,

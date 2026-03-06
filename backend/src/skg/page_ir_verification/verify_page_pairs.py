@@ -11,11 +11,10 @@ from typing import Any
 # Third Party Library
 from loguru import logger
 from PIL import Image
-from pydantic_ai.result import RunUsage
 
 # Package Library
 from skg.page_ir_extraction.schemas import Block, PageIR, Table
-from skg.page_ir_verification.llm import verify_page_ir_pairs
+from skg.page_ir_verification.llm import VerificationUsageTracker, verify_page_ir_pairs
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
@@ -26,74 +25,6 @@ from skg.page_ir_verification.utils import (
 from skg.schemas import VerificationConfig
 from skg.utils.constants import BlockType, ItemBoundary
 from skg.utils.general import make_dir, write_to_json
-
-
-@dataclass
-class AgentUsageBucket:
-    """Accumulated token usage for a single agent type (e.g., verification or
-    validation).
-
-    Attributes
-    ----------
-    agent_name
-        Human-readable label (e.g., "verification", "validation").
-    cache_read_tokens
-        Total cache-read input tokens across all calls.
-    cache_write_tokens
-        Total cache-write tokens across all calls.
-    input_tokens
-        Total prompt/input tokens across all calls.
-    output_tokens
-        Total completion/output tokens across all calls.
-    requests
-        Total API requests (including retries within a single agent run).
-    runs
-        Number of agent.run_sync() invocations.
-    """
-
-    agent_name: str
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    requests: int = 0
-    runs: int = 0
-
-    def add_run_usage(self, usage: RunUsage) -> None:
-        """Accumulate a single RunUsage into this bucket.
-
-        Parameters
-        ----------
-        usage
-            The RunUsage returned by `result.usage()`.
-        """
-
-        self.cache_read_tokens += usage.cache_read_tokens
-        self.cache_write_tokens += usage.cache_write_tokens
-        self.input_tokens += usage.input_tokens
-        self.output_tokens += usage.output_tokens
-        self.requests += usage.requests
-        self.runs += 1
-
-    def to_dict(self) -> dict[str, int | str]:
-        """Serialize to a JSON-friendly dictionary.
-
-        Returns
-        -------
-        dict[str, int | str]
-            Dictionary with all tracked fields.
-        """
-
-        return {
-            "agent_name": self.agent_name,
-            "cache_read_tokens": self.cache_read_tokens,
-            "cache_write_tokens": self.cache_write_tokens,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "requests": self.requests,
-            "runs": self.runs,
-            "total_tokens": self.input_tokens + self.output_tokens,
-        }
 
 
 @dataclass(frozen=True)
@@ -138,69 +69,12 @@ class VerifiedCandidateAttempt:
     verdict: PageIRContinuityVerdict
 
 
-@dataclass
-class VerificationUsageTracker:
-    """Track LLM token usage across the entire verification pipeline run.
-
-    Maintains separate buckets for each agent type and provides a summary suitable for
-    persisting in `verification_run.json`.
-    """
-
-    verification: AgentUsageBucket
-    validation: AgentUsageBucket
-
-    def __init__(self) -> None:
-        """Initialize empty usage buckets for verification and validation agents."""
-
-        self.verification = AgentUsageBucket(agent_name="verification")
-        self.validation = AgentUsageBucket(agent_name="validation")
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize to a JSON-friendly dictionary with per-agent and total summaries.
-
-        Returns
-        -------
-        dict[str, object]
-            Dictionary containing `agents` breakdown and `totals`.
-        """
-
-        verification_d = self.verification.to_dict()
-        validation_d = self.validation.to_dict()
-
-        totals = {
-            "cache_read_tokens": (
-                self.verification.cache_read_tokens + self.validation.cache_read_tokens
-            ),
-            "cache_write_tokens": (
-                self.verification.cache_write_tokens
-                + self.validation.cache_write_tokens
-            ),
-            "input_tokens": (
-                self.verification.input_tokens + self.validation.input_tokens
-            ),
-            "output_tokens": (
-                self.verification.output_tokens + self.validation.output_tokens
-            ),
-            "requests": self.verification.requests + self.validation.requests,
-            "runs": self.verification.runs + self.validation.runs,
-            "total_tokens": (
-                self.verification.input_tokens
-                + self.verification.output_tokens
-                + self.validation.input_tokens
-                + self.validation.output_tokens
-            ),
-        }
-
-        return {
-            "agents": {"verification": verification_d, "validation": validation_d},
-            "totals": totals,
-        }
-
-
 def _apply_visible_crop(
     *, candidates: list[tuple[int, Block | Table]], y_max: float, y_min: float
 ) -> list[tuple[int, Block | Table]]:
     """Restrict candidates to those whose bbox intersects [y_min, y_max].
+
+    NB: item.bbox[1] is y0, item.bbox[3] is y1.
 
     Parameters
     ----------
@@ -217,36 +91,14 @@ def _apply_visible_crop(
         Candidates intersecting the crop region (may be empty).
     """
 
+    f_y_min = float(y_min)
+    f_y_max = float(y_max)
+
     return [
         (i, item)
         for i, item in candidates
-        if _bbox_intersects_y_range(bbox=item.bbox, y_max=y_max, y_min=y_min)
+        if not (float(item.bbox[3]) < f_y_min or float(item.bbox[1]) > f_y_max)
     ]
-
-
-def _bbox_intersects_y_range(*, bbox: list[float], y_max: float, y_min: float) -> bool:
-    """Return True if bbox intersects the vertical range [y_min, y_max]. bbox is
-    [x0, y0, x1, y1] in full-page pixel coords.
-
-    Parameters
-    ----------
-    bbox
-        The bounding box to check.
-    y_max
-        The maximum y coordinate of the range.
-    y_min
-        The minimum y coordinate of the range.
-
-    Returns
-    -------
-    bool
-        True if the bbox intersects the y range, False otherwise.
-    """
-
-    y0 = float(bbox[1])
-    y1 = float(bbox[3])
-
-    return not (y1 < float(y_min) or y0 > float(y_max))
 
 
 def _boundary_hint_priority(
@@ -713,7 +565,7 @@ def _pick_bottommost(
 ) -> tuple[int, Block | Table]:
     """Pick the best bottom-of-page candidate from a pre-sorted list.
 
-    Candidates must already be sorted by bottom-edge (y1) descending.
+    NB: Candidates must already be sorted by bottom-edge (y1) descending.
 
     Selection priority:
 
@@ -932,13 +784,7 @@ def bottom_continuity_candidates(
     k: int = 3,
     visible_y_min: float | None = None,
 ) -> list[tuple[int, Block | Table]]:
-    """Return up to k strong "bottom of page" candidates for continuity checks.
-
-    This is a generalization of `bottommost_continuity_candidate`. The first element of
-    the returned list is guaranteed to match the choice made by
-    `bottommost_continuity_candidate` and subsequent candidates are additional
-    near-bottom items that are plausible alternatives (e.g., a paragraph above a
-    complete table).
+    """Return up to k bottom-of-page candidates for continuity checks.
 
     Parameters
     ----------
@@ -970,10 +816,9 @@ def bottom_continuity_candidates(
     candidates = _filter_candidate_pool(image_height=image_height, items=items)
 
     if visible_y_min is not None:
-        cropped = _apply_visible_crop(
+        candidates = _apply_visible_crop(
             candidates=candidates, y_max=float(image_height), y_min=float(visible_y_min)
         )
-        candidates = cropped
 
     if not candidates:
         raise ValueError("No non-artifact items found.")
@@ -981,9 +826,8 @@ def bottom_continuity_candidates(
     # Sort by bottom-edge descending.
     candidates.sort(key=lambda c: float(c[1].bbox[3]), reverse=True)
 
-    # Pick the primary candidate using the same logic as
-    # bottommost_continuity_candidate.
-    first_i, first_item = _pick_bottommost(candidates=candidates)
+    # Pick the primary bottommost candidate.
+    first_i, first_item = _pick_bottommost(candidates)
 
     output: list[tuple[int, Block | Table]] = [(first_i, first_item)]
     seen: set[int] = {first_i}
@@ -996,7 +840,7 @@ def bottom_continuity_candidates(
             continue
 
         # Always allow tables; for blocks avoid heading/caption as text anchors.
-        if item.kind != "table" and _is_heading_or_caption_block(item):
+        if item.kind == "block" and _is_heading_or_caption_block(item):
             continue
 
         output.append((i, item))
