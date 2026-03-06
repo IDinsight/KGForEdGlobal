@@ -17,8 +17,9 @@
 	},
 	"page_ir_verification": {
 		"end_page": null,
-		"min_confidence_to_patch": 0.5,
-		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_patch": 0.50,
+		"min_confidence_to_select_positive": 0.50,
+		"min_confidence_to_stop_negative_search": 0.90,
 		"model": "openai:gpt-5.2-2025-12-11",
 		"next_page_crop_padding_px": 120,
 		"overwrite": false,

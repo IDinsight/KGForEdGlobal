@@ -236,6 +236,12 @@ class VerificationConfig(BaseSchema):
         ge=0.0,
         le=1.0,
     )
+    min_confidence_to_stop_negative_search: float = Field(
+        0.95,
+        description="Minimum confidence for a same-family primary-primary negative verdict to stop alternate candidate-pair search for a page boundary. This controls verification search budget, not compile-time patching.",
+        ge=0.0,
+        le=1.0,
+    )
     model: str = Field(
         "openai:gpt-5.2-2025-12-11",
         description="OpenAI model for page IR verification.",
@@ -281,9 +287,7 @@ class VerificationConfig(BaseSchema):
 
     @model_validator(mode="after")
     def check_confidences(self) -> Self:
-        """Ensure that min_confidence_to_select_positive is less than or equal to
-        min_confidence_to_patch to maintain logical consistency between selection and
-        patching thresholds.
+        """Ensure confidence thresholds remain logically consistent.
 
         Returns
         -------
@@ -294,12 +298,19 @@ class VerificationConfig(BaseSchema):
         ------
         ValueError
             If min_confidence_to_select_positive is greater than
-            min_confidence_to_patch.
+                min_confidence_to_patch.
+            If min_confidence_to_stop_negative_search is lower than
+                min_confidence_to_patch.
         """
 
         if self.min_confidence_to_select_positive > self.min_confidence_to_patch:
             raise ValueError(
                 "min_confidence_to_select_positive must be <= min_confidence_to_patch so selection remains at least as permissive as patching."
+            )
+
+        if self.min_confidence_to_stop_negative_search < self.min_confidence_to_patch:
+            raise ValueError(
+                "min_confidence_to_stop_negative_search must be >= min_confidence_to_patch so early negative stopping remains at least as conservative as patching."
             )
 
         return self

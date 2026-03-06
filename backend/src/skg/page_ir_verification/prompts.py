@@ -15,6 +15,9 @@ from skg.utils.general import PromptPair
 
 def validate_page_ir_continuity_verdict(
     *,
+    min_confidence_to_patch: float,
+    min_confidence_to_select_positive: float,
+    min_confidence_to_stop_negative_search: float,
     next_item_excerpt: dict[str, Any],
     next_page_index: int,
     prev_item_excerpt: dict[str, Any],
@@ -25,6 +28,14 @@ def validate_page_ir_continuity_verdict(
 
     Parameters
     ----------
+    min_confidence_to_patch
+        Positive verdicts at or above this threshold may be patched into PageIR state.
+    min_confidence_to_select_positive
+        Positive verdicts at or above this threshold may outrank negatives during
+        candidate-pair selection.
+    min_confidence_to_stop_negative_search
+        Same-family primary-primary negative verdicts at or above this threshold may
+        stop alternate candidate-pair search.
     next_item_excerpt
         The excerpt JSON of the candidate item near top of page N+1.
     next_page_index
@@ -80,6 +91,9 @@ against the source images and candidate excerpts. Return a `ContinuityValidation
 - Does the evidence support the stated confidence level?
 - >= 0.50: clear or plausible visual evidence supports the decision.
 - <= 0.49: uncertain -> MUST have is_continuation=false.
+- Positive verdicts with confidence >= {min_confidence_to_patch:.2f} may be patched into PageIR state, so reserve that range for decisions with genuinely strong visual support.
+- Positive verdicts with confidence >= {min_confidence_to_select_positive:.2f} may outrank negatives during candidate-pair selection.
+- A same-family primary-primary negative verdict with confidence >= {min_confidence_to_stop_negative_search:.2f} may stop alternate candidate-pair search, so reserve that range for negatives with genuinely strong visual evidence.
 
 ### 5. Table-only patch: set_next_table_repeats_header
 - Only applies for table continuations.
@@ -123,6 +137,11 @@ When passed=false, you MUST provide a corrected_verdict that:
         {
             "prev_page_index": prev_page_index,
             "next_page_index": next_page_index,
+            "thresholds": {
+                "min_confidence_to_patch": min_confidence_to_patch,
+                "min_confidence_to_select_positive": min_confidence_to_select_positive,
+                "min_confidence_to_stop_negative_search": min_confidence_to_stop_negative_search,
+            },
             "prev_candidate_item": prev_item_excerpt,
             "next_candidate_item": next_item_excerpt,
             "verification_verdict": json.loads(verdict_json),
@@ -138,6 +157,9 @@ When passed=false, you MUST provide a corrected_verdict that:
 
 def verify_page_ir_pairs_from_extraction(
     *,
+    min_confidence_to_patch: float,
+    min_confidence_to_select_positive: float,
+    min_confidence_to_stop_negative_search: float,
     next_item: dict[str, Any],
     next_page_index: int,
     prev_item: dict[str, Any],
@@ -147,6 +169,14 @@ def verify_page_ir_pairs_from_extraction(
 
     Parameters
     ----------
+    min_confidence_to_patch
+        Positive verdicts at or above this threshold may be patched into PageIR state.
+    min_confidence_to_select_positive
+        Positive verdicts at or above this threshold may outrank negatives during
+        candidate-pair selection.
+    min_confidence_to_stop_negative_search
+        Same-family primary-primary negative verdicts at or above this threshold may
+        stop alternate candidate-pair search.
     next_item
         The candidate item near the TOP of page N+1 JSON.
     next_page_index
@@ -246,6 +276,9 @@ Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes o
 ## CONFIDENCE CALIBRATION
 - >= 0.50: clear or plausible visual evidence supports your decision.
 - <= 0.49: uncertain -> MUST choose is_continuation=false.
+- Positive verdicts with confidence >= {min_confidence_to_patch:.2f} may be patched into PageIR state, so reserve that range for decisions with genuinely strong visual support.
+- Positive verdicts with confidence >= {min_confidence_to_select_positive:.2f} may outrank negatives during candidate-pair selection.
+- A same-family primary-primary negative verdict with confidence >= {min_confidence_to_stop_negative_search:.2f} may stop alternate candidate-pair search, so reserve that range for negatives with genuinely strong visual evidence.
         """
     )
 
@@ -253,6 +286,11 @@ Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes o
         {
             "prev_page_index": prev_page_index,
             "next_page_index": next_page_index,
+            "thresholds": {
+                "min_confidence_to_patch": min_confidence_to_patch,
+                "min_confidence_to_select_positive": min_confidence_to_select_positive,
+                "min_confidence_to_stop_negative_search": min_confidence_to_stop_negative_search,
+            },
             "prev_candidate_item": prev_item,
             "next_candidate_item": next_item,
         },

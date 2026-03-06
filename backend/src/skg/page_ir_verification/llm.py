@@ -112,6 +112,9 @@ class VerificationUsageTracker:
 
 def _run_validation_agent(
     *,
+    min_confidence_to_patch: float,
+    min_confidence_to_select_positive: float,
+    min_confidence_to_stop_negative_search: float,
     model: str,
     next_item: Block | Table,
     next_item_excerpt: dict[str, Any],
@@ -128,6 +131,14 @@ def _run_validation_agent(
 
     Parameters
     ----------
+    min_confidence_to_patch
+        Positive verdicts at or above this threshold may be patched into PageIR state.
+    min_confidence_to_select_positive
+        Positive verdicts at or above this threshold may outrank negatives during
+        candidate-pair selection.
+    min_confidence_to_stop_negative_search
+        Same-family primary-primary negative verdicts at or above this threshold may
+        stop alternate candidate-pair search.
     model
         The model identifier.
     next_item
@@ -158,6 +169,9 @@ def _run_validation_agent(
     """
 
     prompts = validate_page_ir_continuity_verdict(
+        min_confidence_to_patch=min_confidence_to_patch,
+        min_confidence_to_select_positive=min_confidence_to_select_positive,
+        min_confidence_to_stop_negative_search=min_confidence_to_stop_negative_search,
         next_item_excerpt=next_item_excerpt,
         next_page_index=next_page_index,
         prev_item_excerpt=prev_item_excerpt,
@@ -189,6 +203,9 @@ def _run_validation_agent(
 
 def verify_page_ir_pairs(
     *,
+    min_confidence_to_patch: float,
+    min_confidence_to_select_positive: float,
+    min_confidence_to_stop_negative_search: float,
     model: str,
     next_item: dict[str, Any],
     next_item_excerpt: dict[str, Any],
@@ -211,6 +228,14 @@ def verify_page_ir_pairs(
 
     Parameters
     ----------
+    min_confidence_to_patch
+        Positive verdicts at or above this threshold may be patched into PageIR state.
+    min_confidence_to_select_positive
+        Positive verdicts at or above this threshold may outrank negatives during
+        candidate-pair selection.
+    min_confidence_to_stop_negative_search
+        Same-family primary-primary negative verdicts at or above this threshold may
+        stop alternate candidate-pair search.
     model
         The model identifier.
     next_item
@@ -257,6 +282,9 @@ def verify_page_ir_pairs(
 
     # Run verification agent.
     prompts = verify_page_ir_pairs_from_extraction(
+        min_confidence_to_patch=min_confidence_to_patch,
+        min_confidence_to_select_positive=min_confidence_to_select_positive,
+        min_confidence_to_stop_negative_search=min_confidence_to_stop_negative_search,
         next_item=next_item_excerpt,
         next_page_index=next_page_index,
         prev_item=prev_item_excerpt,
@@ -299,6 +327,9 @@ def verify_page_ir_pairs(
     )
 
     validation_verdict = _run_validation_agent(
+        min_confidence_to_patch=min_confidence_to_patch,
+        min_confidence_to_select_positive=min_confidence_to_select_positive,
+        min_confidence_to_stop_negative_search=min_confidence_to_stop_negative_search,
         model=model,
         next_item=next_item_parsed,
         next_item_excerpt=next_item_excerpt,
