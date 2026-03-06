@@ -317,8 +317,9 @@ def _is_strong_primary_negative_stop(
     2. It requires a same-family match (table-table, figure-figure, block-block).
     3. It requires a very high confidence negative.
 
-    The confidence floor is clamped to at least 0.90 so ordinary "pretty confident"
-    negatives do not suppress fallback search over alternate pairs.
+    The cutoff comes from `config.min_confidence_to_stop_negative_search`. Keep it high
+    enough that only genuinely strong negatives suppress fallback search over alternate
+    pairs.
 
     Parameters
     ----------
@@ -336,8 +337,7 @@ def _is_strong_primary_negative_stop(
         remaining search, False otherwise.
     """
 
-    min_negative_stop_confidence = max(0.90, float(config.min_confidence_to_patch))
-
+    min_negative_stop_confidence = float(config.min_confidence_to_stop_negative_search)
     return (
         spec.prev_rank == 0
         and spec.next_rank == 0
@@ -1040,6 +1040,7 @@ def execute_verification_attempts(
 
     attempt_summaries: list[dict[str, Any]] = []
     crop_cache: dict[tuple[int, int], Path] = {}
+    early_stop_reason: str | None = None
     successful_attempts: list[VerifiedCandidateAttempt] = []
 
     for attempt_no, spec in enumerate(pairs):
@@ -1059,6 +1060,11 @@ def execute_verification_attempts(
 
         try:
             verdict = verify_page_ir_pairs(
+                min_confidence_to_patch=config.min_confidence_to_patch,
+                min_confidence_to_select_positive=config.min_confidence_to_select_positive,
+                min_confidence_to_stop_negative_search=(
+                    config.min_confidence_to_stop_negative_search
+                ),
                 model=config.model,
                 next_item=spec.next_item.model_dump(mode="json"),
                 next_item_excerpt=make_verification_excerpt(
@@ -1117,24 +1123,28 @@ def execute_verification_attempts(
             and attempt.spec.prev_rank == 0
             and is_eligible_for_patch
         ):
-            attempt_summary["early_stop_reason"] = "primary_primary_patchable_positive"
+            early_stop_reason = "primary_primary_patchable_positive"
+            attempt_summary["early_stop_reason"] = early_stop_reason
             attempt_summaries.append(attempt_summary)
+
             logger.info(
                 f"Stopping verification early for pages {page_index}-{page_index + 1} "
                 f"after attempt {attempt_no}: primary-primary pair is patchable positive."
             )
+
             break
 
         if is_early_stop_negative:
-            attempt_summary["early_stop_reason"] = (
-                "primary_primary_same_family_high_confidence_negative"
-            )
+            early_stop_reason = "primary_primary_same_family_high_confidence_negative"
+            attempt_summary["early_stop_reason"] = early_stop_reason
             attempt_summaries.append(attempt_summary)
+
             logger.info(
                 f"Stopping verification early for pages {page_index}-{page_index + 1} "
                 f"after attempt {attempt_no}: primary-primary pair is a same-family "
                 f"high-confidence negative (confidence={verdict.confidence})."
             )
+
             break
 
         attempt_summaries.append(attempt_summary)
@@ -1156,6 +1166,7 @@ def execute_verification_attempts(
 
     return {
         "attempt_summaries": attempt_summaries,
+        "early_stop_reason": early_stop_reason,
         "selected_eligible_for_patch": _is_patchable_positive(
             config=config, verdict=selected_attempt.verdict
         ),
@@ -1420,6 +1431,16 @@ def verify_single_page_pair(
         / f"{page_index:04}_{page_index + 1:04}.json",
         json_info={
             "attempts": result["attempt_summaries"],
+            "selection_policy": {
+                "min_confidence_to_patch": config.min_confidence_to_patch,
+                "min_confidence_to_select_positive": (
+                    config.min_confidence_to_select_positive
+                ),
+                "min_confidence_to_stop_negative_search": (
+                    config.min_confidence_to_stop_negative_search
+                ),
+                "early_stop_reason": result["early_stop_reason"],
+            },
             "primary_candidate_selection": primary_indices,
             "selected_candidate_selection": {
                 "eligible_for_patch": result["selected_eligible_for_patch"],
