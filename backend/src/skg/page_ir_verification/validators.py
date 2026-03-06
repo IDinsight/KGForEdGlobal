@@ -92,8 +92,11 @@ def validate_repeats_header_requires_table_item(
     """Validate that repeats_header is only patched when next_item is actually a table.
 
     The schema-internal check (continuation must be true + kind must be TABLE) is
-    already enforced by the model validator. This function adds external constraints
-    that ensure the requested patch will not violate the Table schema invariants.
+    already enforced by the model validator. This function adds the external constraint
+    that the next-page candidate must actually be a table. It does NOT
+    require header_row_count >= 1 for a True patch. Step 2 is allowed to recover the
+    visual repeated-header signal even when page-local extraction missed the header
+    rows or counted them incorrectly.
 
     NB: Table.repeats_header is only valid when next_item.boundary is RESUMED or BOTH
     (enforced by the Table schema). However, Step 2 exists specifically because
@@ -114,11 +117,8 @@ def validate_repeats_header_requires_table_item(
     Raises
     ------
     QualityError
-        If set_next_table_repeats_header is set but the candidate table cannot safely
-        accept the requested repeats_header value. set_next_table_repeats_header=False
-        is allowed even when header_row_count > 0, because the patch is a visual
-        repeated-header signal rather than a guarantee that no header-like rows were
-        extracted.
+        If set_next_table_repeats_header is set but the next-page candidate is not a
+        table.
     """
 
     if verdict.set_next_table_repeats_header is None:
@@ -127,15 +127,6 @@ def validate_repeats_header_requires_table_item(
     if next_item.kind != "table":
         raise QualityError(
             "set_next_table_repeats_header is only valid when next_item is a table."
-        )
-
-    # Enforce Table schema invariants so the patch cannot create an invalid Table.
-    if (
-        verdict.set_next_table_repeats_header is True
-        and next_item.header_row_count == 0
-    ):
-        raise QualityError(
-            "set_next_table_repeats_header=True requires next_item.header_row_count >= 1."
         )
 
 

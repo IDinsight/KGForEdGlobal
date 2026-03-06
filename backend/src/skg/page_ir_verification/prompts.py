@@ -84,7 +84,7 @@ against the source images and candidate excerpts. Return a `ContinuityValidation
 ### 5. Table-only patch: set_next_table_repeats_header
 - Only applies for table continuations.
 - true = headers visibly repeated at top of IMAGE B; false = repeated table header visibly not repeated; null = uncertain.
-- For false, judge from the image only. Do NOT require the excerpt JSON to have header_row_count=0; extraction may still count header-like or section rows.
+- Judge true/false from the image only. Do NOT require the excerpt JSON to agree on header_row_count; extraction may miss repeated header rows or still count header-like/section rows.
 
 ### 6. Is the rationale adequate?
 - >= 50 chars, references specific visual evidence.
@@ -203,6 +203,7 @@ Only applies when is_continuation=true AND continuation_kind="{PageContinuationK
 - true  = header rows are visibly repeated at the top of IMAGE B
 - false = same table continues but the repeated table header is visibly NOT repeated
 - null  = cannot confidently tell (do not guess)
+- Judge true/false from the image only. Do NOT require the excerpt JSON to agree on header_row_count; extraction may miss repeated header rows or still count header-like/section rows.
 
 ## DECISION GUIDANCE
 
