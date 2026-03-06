@@ -18,12 +18,8 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification.utils import (
-    PageIRVerificationDirs,
-    derive_page_boundary_state,
-    is_artifact,
-)
-from skg.utils.constants import BlockType, CaptionTablePrefixes, ItemBoundary
+from skg.page_ir_verification.utils import PageIRVerificationDirs, is_artifact
+from skg.utils.constants import BlockType, CaptionTablePrefixes
 from skg.utils.general import write_to_json
 
 # Compiled regexes.
@@ -31,23 +27,6 @@ TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
 TABLE_CODE_RE = re.compile(
     rf"^\s*(?:{TABLE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b", re.IGNORECASE
 )
-
-
-def _cell_is_visually_blank(cell: TableCell) -> bool:
-    """True if the cell is visually blank.
-
-    Parameters
-    ----------
-    cell
-        The cell to check.
-
-    Returns
-    -------
-    bool
-        True if the cell has no visible text content.
-    """
-
-    return cell.text is None or (cell.text.text or "").strip() == ""
 
 
 def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int:
@@ -457,61 +436,12 @@ def _process_table_row(
 
     if len(new_cells) != len(old_cells) or dropped_cells:
         row.cells = new_cells
-        change = {
-            "before_cells": len(old_cells),
-            "after_cells": len(new_cells),
-        }
+        change = {"before_cells": len(old_cells), "after_cells": len(new_cells)}
 
         if dropped_cells:
             change["overflow_dropped_cells"] = dropped_cells
 
         return change
-
-    return None
-
-
-def _seed_carry_from_caption(
-    *,
-    items: list[tuple[int, Block | Table]],
-    page_idx: int,
-    resumed_table_keys: set[tuple[int, int]],
-) -> str | None:
-    """Attempt to find a table code from a caption before the first VERIFIED-resumed
-    table.
-
-    Parameters
-    ----------
-    items
-        The list of (original_item_index, item) tuples on the current page.
-    page_idx
-        Current page index.
-    resumed_table_keys
-        Set of (page_idx, item_idx) keys that have an incoming VERIFIED table
-        continuation edge from the previous page.
-
-    Returns
-    -------
-    str | None
-        The discovered caption code, or None if not found.
-    """
-
-    first_relevant_table_pos = next(
-        (
-            pos
-            for pos, (orig_idx, item) in enumerate(items)
-            if item.kind == "table"
-            and (page_idx, orig_idx) in resumed_table_keys
-            and not (item.local_code or "").strip()
-        ),
-        None,
-    )
-
-    if first_relevant_table_pos is not None:
-        caption_scope = [item for _, item in items[:first_relevant_table_pos]]
-        caption_code = find_caption_code(caption_scope)
-
-        if caption_code:
-            return caption_code.strip() or None
 
     return None
 
@@ -539,6 +469,7 @@ def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
     header_effective_cols = _get_header_effective_cols(
         header_row_count=header_row_count, rows=rows
     )
+
     if header_row_count > 0 and header_effective_cols == n_cols:
         return True
 
@@ -559,7 +490,9 @@ def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
         return False
 
     leading_blank_count = sum(
-        1 for cs in natural_full_width_rows_cells if _cell_is_visually_blank(cs[0])
+        1
+        for cs in natural_full_width_rows_cells
+        if cs[0].text is None or (cs[0].text.text or "").strip() == ""
     )
 
     return (
@@ -668,42 +601,6 @@ def _update_spans_only(
         col += col_span
 
 
-def _validate_carry_for_page(
-    *,
-    carry_from_prev: str | None,
-    items: list[tuple[int, Block | Table]],
-    page_idx: int,
-    resumed_table_keys: set[tuple[int, int]],
-) -> str | None:
-    """Drop the carried code if the current page has no VERIFIED-resumed tables.
-
-    Parameters
-    ----------
-    carry_from_prev
-        The code carried from the previous page.
-    items
-        The list of (original_item_index, item) tuples on the current page.
-    page_idx
-        Current page index.
-    resumed_table_keys
-        Set of (page_idx, item_idx) keys that have an incoming VERIFIED table
-        continuation edge from the previous page.
-
-    Returns
-    -------
-    str | None
-        The updated carried code.
-    """
-
-    if carry_from_prev is not None and not any(
-        item.kind == "table" and (page_idx, item_index) in resumed_table_keys
-        for item_index, item in items
-    ):
-        return None
-
-    return carry_from_prev
-
-
 def _validate_page_gap(
     *,
     carry_from_prev: str | None,
@@ -801,6 +698,7 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
         if item.kind == "block" and item.block_type == BlockType.CAPTION:
             # Prefer extractor-provided local_code.
             code = (item.local_code or "").strip()
+
             if code and TABLE_CODE_RE.match(code):
                 return code
 
@@ -810,6 +708,7 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
                 if isinstance(item.text, TextUnit)
                 else ""
             )
+
             if text and (m := TABLE_CODE_RE.match(text)) is not None:
                 # Return the verbatim matched prefix + number from the source text. Do
                 # NOT canonicalize to English (e.g., "Tableau 3" stays as-is);
@@ -818,117 +717,6 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
                 return m.group(0).strip()
 
     return None
-
-
-def fix_false_truncated_prose_before_table(
-    page_irs: dict[int, PageIR],
-) -> list[dict[str, Any]]:
-    """If a page ends with a truncated prose block but the next page starts with a
-    table/caption and there is no resumed prose block, clear the truncation when the
-    prose appears complete. This repairs false-positive prose truncations at section
-    breaks into tables.
-
-    Parameters
-    ----------
-    page_irs
-        Mapping of page_index to PageIR objects.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        A list of change summaries for items that were modified.
-    """
-
-    changes: list[dict[str, Any]] = []
-    page_indices = sorted(page_irs.keys())
-
-    for i in range(len(page_indices) - 1):
-        p_idx = page_indices[i]
-        n_idx = page_indices[i + 1]
-
-        # This post-pass assumes contiguous pages. If we're running on a sparse subset
-        # of pages, skip cross-page inference across gaps.
-        if n_idx != p_idx + 1:
-            logger.warning(
-                f"Non-contiguous page indices detected ({p_idx} -> {n_idx}); "
-                f"skipping prose/table false-truncation fix across the gap."
-            )
-            continue
-
-        prev = page_irs[p_idx]
-        nxt = page_irs[n_idx]
-
-        prev_items = [it for it in prev.items if not is_artifact(it)]
-        nxt_items = [it for it in nxt.items if not is_artifact(it)]
-
-        if not prev_items or not nxt_items:
-            continue
-
-        last_prev = prev_items[-1]
-        first_next = nxt_items[0]
-
-        # Only consider prose blocks marked truncated/both.
-        if (
-            last_prev.kind != "block"
-            or (last_prev.boundary not in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH})
-            or (last_prev.block_type not in {BlockType.PARAGRAPH, BlockType.LIST})
-        ):
-            continue
-
-        # Only fire when next page starts with a table/caption.
-        next_is_tableish = first_next.kind == "table" or (
-            first_next.kind == "block" and first_next.block_type == BlockType.CAPTION
-        )
-
-        if not next_is_tableish:
-            continue
-
-        # If next page has a resumed prose block early on, let it be a real
-        # continuation.
-        has_resumed_prose = any(
-            item.kind == "block"
-            and item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-            and item.block_type in {BlockType.PARAGRAPH, BlockType.LIST}
-            for item in nxt_items[:6]
-        )
-
-        if has_resumed_prose:
-            continue
-
-        # If the prose ends cleanly, treat as complete.
-        text_or_none = last_prev.text
-        text = (
-            (text_or_none.text or "").strip()
-            if isinstance(text_or_none, TextUnit)
-            else ""
-        )
-        ends_cleanly = bool(
-            re.search(r"[.!?]['\"\)]?\s*$", text)
-        ) and not text.endswith("-")
-
-        if not ends_cleanly:
-            continue
-
-        old = last_prev.boundary
-
-        # BOTH means from_prev + to_next; clearing only the to_next direction preserves
-        # the from_prev connection.
-        new_boundary = (
-            ItemBoundary.RESUMED if old == ItemBoundary.BOTH else ItemBoundary.COMPLETE
-        )
-        last_prev.boundary = new_boundary
-        prev.boundary_state = derive_page_boundary_state(prev)
-
-        changes.append(
-            {
-                "type": "clear_false_truncated_prose_before_table",
-                "page": p_idx,
-                "old_boundary": old.value,
-                "new_boundary": new_boundary.value,
-            }
-        )
-
-    return changes
 
 
 def load_verified_table_continuation_edges(
@@ -1187,17 +975,33 @@ def propagate_table_local_codes(
         page = page_irs[page_idx]
         items = [(i, it) for i, it in enumerate(page.items) if not is_artifact(it)]
 
-        carry_from_prev = _validate_carry_for_page(
-            carry_from_prev=carry_from_prev,
-            items=items,
-            page_idx=page_idx,
-            resumed_table_keys=resumed_table_keys,
-        )
+        # Drop the carried code if the current page has no VERIFIED-resumed tables.
+        if carry_from_prev is not None and not any(
+            item.kind == "table" and (page_idx, item_index) in resumed_table_keys
+            for item_index, item in items
+        ):
+            carry_from_prev = None
 
+        # Attempt to find a table code from a caption before the first VERIFIED-resumed
+        # table.
         if carry_from_prev is None:
-            carry_from_prev = _seed_carry_from_caption(
-                items=items, page_idx=page_idx, resumed_table_keys=resumed_table_keys
+            first_relevant_table_pos = next(
+                (
+                    pos
+                    for pos, (orig_idx, item) in enumerate(items)
+                    if item.kind == "table"
+                    and (page_idx, orig_idx) in resumed_table_keys
+                    and not (item.local_code or "").strip()
+                ),
+                None,
             )
+
+            if first_relevant_table_pos is not None:
+                caption_scope = [item for _, item in items[:first_relevant_table_pos]]
+                caption_code = find_caption_code(caption_scope)
+
+                if caption_code:
+                    carry_from_prev = caption_code.strip() or None
 
         carry_to_next = _process_page_tables(
             carry_from_prev=carry_from_prev,

@@ -126,7 +126,7 @@ def _apply_edge_verdicts(
     return applied_edges
 
 
-def _bools_to_boundary(from_prev: bool, to_next: bool) -> ItemBoundary:
+def _bools_to_boundary(*, from_prev: bool, to_next: bool) -> ItemBoundary:
     """Convert (from_prev, to_next) booleans to ItemBoundary enum.
 
     Parameters
@@ -729,7 +729,7 @@ def _reconcile_item_state(
     header_review_flag: dict[str, Any] | None = None
 
     before_boundary = item.boundary
-    after_boundary = _bools_to_boundary(from_prev, to_next)
+    after_boundary = _bools_to_boundary(from_prev=from_prev, to_next=to_next)
 
     is_table = item.kind == "table"
     table: Table | None = item if is_table else None
