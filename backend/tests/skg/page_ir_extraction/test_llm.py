@@ -14,6 +14,7 @@ from pydantic_ai import BinaryContent
 
 # Package Library
 from skg.page_ir_extraction import llm as llm_module
+from skg.page_ir_extraction.llm import ExtractionUsageTracker
 from skg.page_ir_extraction.schemas import (
     Block,
     ExtractionValidationIssue,
@@ -21,7 +22,6 @@ from skg.page_ir_extraction.schemas import (
     PageIR,
     TextUnit,
 )
-from skg.page_ir_extraction.utils import ExtractionUsageTracker
 from skg.utils.constants import BlockType, ItemBoundary
 
 
