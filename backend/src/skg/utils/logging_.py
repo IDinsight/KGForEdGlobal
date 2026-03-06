@@ -166,13 +166,13 @@ def initialize_logger(
     global _LOGGER_INITIALIZED
 
     # Configure logfire.
-    logfire.configure(
-        code_source=logfire.CodeSource(
-            repository="https://github.com/IDinsight/SenegalEducation",
-            revision="main",
-        ),
-        console=False,
-    )
+    # logfire.configure(
+    #     code_source=logfire.CodeSource(
+    #         repository="https://github.com/IDinsight/SenegalKG",
+    #         revision="main",
+    #     ),
+    #     console=False,
+    # )
 
     # Remove any default handlers attached to the root logger.
     logging.root.handlers = []
