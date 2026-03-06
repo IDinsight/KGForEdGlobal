@@ -855,8 +855,13 @@ def normalize_empty_table_cells(page_irs: dict[int, PageIR]) -> list[dict[str, A
                 for cell_index, cell in enumerate(row.cells):
                     text_or_none = cell.text
 
+                    # Only record a normalization when we actually mutate the stored
+                    # text. Cells that are already exactly "" are already normalized
+                    # and should not produce noisy repeat change records on subsequent
+                    # runs.
                     if (
                         isinstance(text_or_none, TextUnit)
+                        and text_or_none.text != ""
                         and not (text_or_none.text or "").strip()
                     ):
                         before_text = text_or_none.text
@@ -1050,6 +1055,17 @@ def propagate_table_local_codes(
             item.kind == "table" and (page_idx, item_index) in resumed_table_keys
             for item_index, item in items
         ):
+            logger.info(
+                f"Page {page_idx} has no VERIFIED-resumed tables; dropping carried "
+                f"table local_code '{carry_from_prev}'."
+            )
+            changes.append(
+                {
+                    "type": "propagate_table_local_code_dropped_no_resumed_table",
+                    "page": page_idx,
+                    "dropped_local_code": carry_from_prev,
+                }
+            )
             carry_from_prev = None
 
         # Attempt to find a table code from a caption before the first VERIFIED-resumed
