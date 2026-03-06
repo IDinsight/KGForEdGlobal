@@ -45,7 +45,7 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
-def create_page_ir_verification_dirs(*, output_dir: Path) -> PageIRVerificationDirs:
+def create_page_ir_verification_dirs(output_dir: Path) -> PageIRVerificationDirs:
     """Create page IR verification directories for a given verification run.
 
     Parameters
@@ -181,7 +181,7 @@ def cross_check_extraction_run(
     return start, end
 
 
-def derive_page_boundary_state(*, page_ir: PageIR) -> PageBoundaryState:
+def derive_page_boundary_state(page_ir: PageIR) -> PageBoundaryState:
     """Derive page-level boundary_state from verified item boundaries.
 
     Parameters
@@ -287,7 +287,7 @@ def is_probable_header_footer_noise(
     if not (near_top or near_bottom):
         return False
 
-    # Require small box height to avoid sparse pages from being mis-classified as
+    # Require small box height to avoid sparse pages from being misclassified as
     # footer/header noise.
     box_h = y1 - y0
 
@@ -296,6 +296,7 @@ def is_probable_header_footer_noise(
 
     # Common page number/footer patterns (keep conservative).
     t = re.sub(r"\s+", " ", text).strip()
+
     if (len(t) <= 12 and re.fullmatch(r"(\d+|[ivxlcdm]+)", t.lower())) or (
         len(t) <= 20 and re.fullmatch(r"(page\s*)?\d+(\s*/\s*\d+)?", t.lower())
     ):
@@ -319,8 +320,6 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
 
     Raises
     ------
-    KeyError
-        If the pair report JSON is missing required fields.
     ValueError
         If the verdict in the pair report JSON is missing page indices, which indicates
         it was written by an older pipeline version. In this case, re-run verification
@@ -329,7 +328,6 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
 
     data = open_json_type(pair_report_fp)
     verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
-    selection = data["selected_candidate_selection"]
 
     if verdict.prev_page_index is None or verdict.next_page_index is None:
         raise ValueError(
@@ -340,6 +338,7 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
             f"these fields. Re-run verification for this page pair."
         )
 
+    selection = data["selected_candidate_selection"]
     return EdgeVerdictRecord(
         next_item_index=selection["next_item_index"],
         next_page_index=verdict.next_page_index,
@@ -509,7 +508,7 @@ def persist_verification_run(
         The created verification directories and persisted verification run metadata.
     """
 
-    verification_dirs = create_page_ir_verification_dirs(output_dir=output_dir)
+    verification_dirs = create_page_ir_verification_dirs(output_dir)
     exclude_keys = {"model", "overwrite"}
     extra = {
         k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys
@@ -548,7 +547,7 @@ def save_verified_page_irs(
         page_ir = page_irs[i]
 
         # Derive page-level boundary_state from verified item boundaries.
-        page_ir.boundary_state = derive_page_boundary_state(page_ir=page_ir)
+        page_ir.boundary_state = derive_page_boundary_state(page_ir)
 
         # Write verified JSON.
         write_to_json(
