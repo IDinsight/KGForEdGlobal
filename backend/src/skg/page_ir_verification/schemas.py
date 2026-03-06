@@ -9,6 +9,7 @@ from typing import Literal, Optional, Self
 from pydantic import Field, model_validator
 
 # Package Library
+from skg.page_ir_extraction.schemas import validate_validation_verdict_state
 from skg.schemas import BaseSchema
 from skg.utils.constants import PageContinuationKind
 
@@ -176,7 +177,7 @@ class ContinuityValidationVerdict(BaseSchema):
 
     @model_validator(mode="after")
     def validate_corrected_verdict_consistency(self) -> Self:
-        """Validate that corrected_verdict is present iff passed=false.
+        """Validate the relationship between pass/fail state, issues, and fixes.
 
         Returns
         -------
@@ -186,21 +187,15 @@ class ContinuityValidationVerdict(BaseSchema):
         Raises
         ------
         ValueError
-            If corrected_verdict presence is inconsistent with passed.
+            If corrected_verdict presence or issue severities are inconsistent with the
+            pass/fail state.
         """
 
-        if not self.passed and self.corrected_verdict is None:
-            raise ValueError(
-                "A failing verdict (passed=false) must include corrected_verdict "
-                "with a complete, corrected PageIRContinuityVerdict that fixes all "
-                "error-severity issues."
-            )
-
-        if self.passed and self.corrected_verdict is not None:
-            raise ValueError(
-                "A passing verdict (passed=true) must not include corrected_verdict. "
-                "Set corrected_verdict to null when the verification is correct."
-            )
+        validate_validation_verdict_state(
+            corrected_present=self.corrected_verdict is not None,
+            issues=self.issues,
+            passed=self.passed,
+        )
 
         return self
 
@@ -226,37 +221,6 @@ class ContinuityValidationVerdict(BaseSchema):
                 raise ValueError(
                     f"Error-severity issue at issues[{i}] must include a non-empty "
                     f"suggested_fix. Issue description: {issue.description[:200]}"
-                )
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_fail_requires_error_issues(self) -> Self:
-        """Validate that a failing verdict includes at least one error-severity issue.
-
-        Returns
-        -------
-        Self
-            The validated instance.
-
-        Raises
-        ------
-        ValueError
-            If passed=false but no error-severity issues are present.
-        """
-
-        if not self.passed:
-            if not self.issues:
-                raise ValueError(
-                    "A failing verdict (passed=false) must include at least one issue."
-                )
-
-            has_errors = any(issue.severity == "error" for issue in self.issues)
-
-            if not has_errors:
-                raise ValueError(
-                    "A failing verdict (passed=false) must include at least one issue "
-                    "with severity='error'. If all issues are warnings, set passed=true."
                 )
 
         return self

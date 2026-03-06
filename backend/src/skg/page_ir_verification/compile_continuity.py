@@ -133,7 +133,7 @@ def _apply_edge_verdicts(
         # extraction outputs changed but old reports were reused.
         if prev_key not in bools or next_key not in bools:
             logger.warning(
-                "Skipping edge verdict because candidate keys were not found in "
+                f"Skipping edge verdict because candidate keys were not found in "
                 f"current PageIRs: prev_key={prev_key} next_key={next_key} "
                 f"(pages {record.prev_page_index}->{record.next_page_index})."
             )
