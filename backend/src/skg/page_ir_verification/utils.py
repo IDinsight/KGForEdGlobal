@@ -93,6 +93,51 @@ def _derive_page_boundary_state(page_ir: PageIR) -> PageBoundaryState:
     return PageBoundaryState.STANDALONE
 
 
+def _require_non_negative_int(
+    *, field_name: str, report_name: str, value: object
+) -> int:
+    """Helper to validate that a value is a non-negative integer, with consistent
+    error messaging for pair report validation errors that may require re-running
+    verification.
+
+    Parameters
+    ----------
+    field_name
+        The name of the field being validated (e.g., "verdict.prev_page_index").
+    report_name
+        The name of the pair report file (e.g., "0003_0004.json
+    value
+        The value to validate.
+
+    Returns
+    -------
+    int
+        The validated non-negative integer value.
+
+    Raises
+    ------
+    ValueError
+        If the value is not a non-negative integer, with a message indicating the
+        specific field and report that is invalid, and suggesting to re-run
+        verification for the page pair to resolve the issue.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"Pair report {report_name} has invalid {field_name}={value!r}. "
+            f"Expected a non-negative integer. Re-run verification for this "
+            f"page pair."
+        )
+    if value < 0:
+        raise ValueError(
+            f"Pair report {report_name} has invalid {field_name}={value}. "
+            f"Expected a non-negative integer. Re-run verification for this "
+            f"page pair."
+        )
+
+    return value
+
+
 def create_page_ir_verification_dirs(output_dir: Path) -> PageIRVerificationDirs:
     """Create page IR verification directories for a given verification run.
 
@@ -321,12 +366,24 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
     Raises
     ------
     ValueError
-        If the verdict in the pair report JSON is missing page indices, which indicates
-        it was written by an older pipeline version. In this case, re-run verification
-        for this page pair to populate the missing fields.
+        If the pair report is malformed, stale, or inconsistent with its filename.
+        Re-run verification for this page pair to regenerate a valid report.
     """
 
     data = open_json_type(pair_report_fp)
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Pair report {pair_report_fp.name} must be a JSON object. "
+            f"Re-run verification for this page pair."
+        )
+
+    if "verdict" not in data:
+        raise ValueError(
+            f"Pair report {pair_report_fp.name} is missing the 'verdict' field. "
+            f"Re-run verification for this page pair."
+        )
+
     verdict = PageIRContinuityVerdict.model_validate(data["verdict"])
 
     if verdict.prev_page_index is None or verdict.next_page_index is None:
@@ -338,12 +395,92 @@ def load_edge_verdict_from_pair_report(pair_report_fp: Path) -> EdgeVerdictRecor
             f"these fields. Re-run verification for this page pair."
         )
 
-    selection = data["selected_candidate_selection"]
+    prev_page_index = _require_non_negative_int(
+        field_name="verdict.prev_page_index",
+        report_name=pair_report_fp.name,
+        value=verdict.prev_page_index,
+    )
+    next_page_index = _require_non_negative_int(
+        field_name="verdict.next_page_index",
+        report_name=pair_report_fp.name,
+        value=verdict.next_page_index,
+    )
+
+    if next_page_index != prev_page_index + 1:
+        raise ValueError(
+            f"Pair report {pair_report_fp.name} has non-adjacent verdict page "
+            f"indices ({prev_page_index}, {next_page_index}). Expected an adjacent "
+            f"boundary i->i+1. Re-run verification for this page pair."
+        )
+
+    stem_match = re.fullmatch(r"(\d+)_(\d+)", pair_report_fp.stem)
+
+    if stem_match:
+        expected_prev_page_index = int(stem_match.group(1))
+        expected_next_page_index = int(stem_match.group(2))
+
+        if (
+            prev_page_index != expected_prev_page_index
+            or next_page_index != expected_next_page_index
+        ):
+            raise ValueError(
+                f"Pair report {pair_report_fp.name} is inconsistent with its "
+                f"filename. Filename encodes page boundary "
+                f"({expected_prev_page_index}, {expected_next_page_index}) but "
+                f"verdict encodes ({prev_page_index}, {next_page_index}). "
+                f"Re-run verification for this page pair."
+            )
+
+    selection = data.get("selected_candidate_selection")
+
+    if not isinstance(selection, dict):
+        raise ValueError(
+            f"Pair report {pair_report_fp.name} is missing a valid "
+            f"'selected_candidate_selection' object. Re-run verification for this "
+            f"page pair."
+        )
+
+    missing_selection_keys = {
+        key
+        for key in ["eligible_for_patch", "next_item_index", "prev_item_index"]
+        if key not in selection
+    }
+
+    if missing_selection_keys:
+        missing_keys_str = ", ".join(sorted(missing_selection_keys))
+        raise ValueError(
+            f"Pair report {pair_report_fp.name} is missing required selection "
+            f"field(s): {missing_keys_str}. This usually means the report was "
+            f"written by an older or incompatible pipeline version. Re-run "
+            f"verification for this page pair."
+        )
+
+    eligible_for_patch = selection["eligible_for_patch"]
+
+    if not isinstance(eligible_for_patch, bool):
+        raise ValueError(
+            f"Pair report {pair_report_fp.name} has invalid "
+            f"selected_candidate_selection.eligible_for_patch="
+            f"{eligible_for_patch!r}. Expected a boolean. Re-run verification for "
+            f"this page pair."
+        )
+
+    prev_item_index = _require_non_negative_int(
+        field_name="selected_candidate_selection.prev_item_index",
+        report_name=pair_report_fp.name,
+        value=selection["prev_item_index"],
+    )
+    next_item_index = _require_non_negative_int(
+        field_name="selected_candidate_selection.next_item_index",
+        report_name=pair_report_fp.name,
+        value=selection["next_item_index"],
+    )
+
     return EdgeVerdictRecord(
-        next_item_index=selection["next_item_index"],
-        next_page_index=verdict.next_page_index,
-        prev_item_index=selection["prev_item_index"],
-        prev_page_index=verdict.prev_page_index,
+        next_item_index=next_item_index,
+        next_page_index=next_page_index,
+        prev_item_index=prev_item_index,
+        prev_page_index=prev_page_index,
         verdict=verdict,
     )
 
