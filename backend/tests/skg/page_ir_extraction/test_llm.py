@@ -386,6 +386,76 @@ def _make_ctx_only_validator(
     return validator
 
 
+class TestExtractionUsageTracker:
+    """Tests for ExtractionUsageTracker initialization and serialization."""
+
+    def test_initial_state_is_zeroed(self) -> None:
+        """A freshly created tracker should have all counters at zero."""
+
+        tracker = ExtractionUsageTracker()
+
+        assert tracker.extraction.input_tokens == 0
+        assert tracker.extraction.output_tokens == 0
+        assert tracker.extraction.requests == 0
+        assert tracker.extraction.runs == 0
+        assert tracker.validation.input_tokens == 0
+        assert tracker.validation.output_tokens == 0
+        assert tracker.validation.requests == 0
+        assert tracker.validation.runs == 0
+
+    def test_to_dict_totals_are_correct(self) -> None:
+        """to_dict() totals should be the sum of extraction + validation buckets."""
+
+        tracker = ExtractionUsageTracker()
+
+        # Simulate some usage by directly setting attributes.
+        tracker.extraction.cache_read_tokens = 10
+        tracker.extraction.cache_write_tokens = 20
+        tracker.extraction.input_tokens = 100
+        tracker.extraction.output_tokens = 50
+        tracker.extraction.requests = 3
+        tracker.extraction.runs = 1
+
+        tracker.validation.cache_read_tokens = 5
+        tracker.validation.cache_write_tokens = 15
+        tracker.validation.input_tokens = 80
+        tracker.validation.output_tokens = 40
+        tracker.validation.requests = 2
+        tracker.validation.runs = 1
+
+        d = tracker.to_dict()
+
+        totals = d["totals"]
+        assert totals["cache_read_tokens"] == 15
+        assert totals["cache_write_tokens"] == 35
+        assert totals["input_tokens"] == 180
+        assert totals["output_tokens"] == 90
+        assert totals["requests"] == 5
+        assert totals["runs"] == 2
+        assert totals["total_tokens"] == 270  # 100+50+80+40
+
+    def test_to_dict_contains_agent_names(self) -> None:
+        """to_dict() should contain per-agent breakdown keyed by agent name."""
+
+        tracker = ExtractionUsageTracker()
+        d = tracker.to_dict()
+
+        assert "agents" in d
+        assert "extraction" in d["agents"]
+        assert "validation" in d["agents"]
+
+    def test_to_dict_zero_state(self) -> None:
+        """to_dict() on a fresh tracker should have all-zero totals."""
+
+        tracker = ExtractionUsageTracker()
+        d = tracker.to_dict()
+        totals = d["totals"]
+
+        assert totals["total_tokens"] == 0
+        assert totals["requests"] == 0
+        assert totals["runs"] == 0
+
+
 def test__run_validation_agent_invokes_agent_and_tracks_usage(
     fixture_page_ir_minimal: PageIR,
     fixture_usage_tracker: ExtractionUsageTracker,
@@ -476,6 +546,351 @@ def test__run_validation_agent_invokes_agent_and_tracks_usage(
     assert user_prompt[0] == "USER"
     assert isinstance(user_prompt[1], BinaryContent)
     assert user_prompt[1].data.startswith(b"\x89PNG")
+
+
+def test_extract_page_ir_accumulates_extraction_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_blank_page: Path,
+    tmp_path: Path,
+) -> None:
+    """extract_page_ir should accumulate extraction agent usage in the tracker.
+
+    Parameters
+    ----------
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    tracker = ExtractionUsageTracker()
+
+    extracted = PageIR(
+        items=[
+            _make_block(
+                bbox=(1.0, 1.0, 10.0, 10.0),
+                block_type=BlockType.PARAGRAPH,
+                boundary=ItemBoundary.COMPLETE,
+                text="Extracted",
+            )
+        ]
+    )
+    stub_agent = _StubAgent(
+        result=_StubRunResult(
+            output=extracted,
+            usage_obj=_StubUsage(
+                cache_read_tokens=5,
+                cache_write_tokens=10,
+                input_tokens=100,
+                output_tokens=50,
+                requests=2,
+            ),
+        )
+    )
+
+    passing_verdict = ExtractionValidationVerdict(
+        passed=True,
+        rationale="Good" + "x" * 60,
+    )
+
+    monkeypatch.setattr(
+        llm_module,
+        "extract_page_ir_from_pdf_page",
+        lambda **kw: SimpleNamespace(system_message="SYS", user_message="USER"),
+    )
+    monkeypatch.setattr(
+        llm_module, "_run_validation_agent", lambda **kw: passing_verdict
+    )
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    _install_stub_extraction_agent(
+        agent=stub_agent, monkeypatch=monkeypatch, raw_page_irs_dir=raw_dir
+    )
+
+    llm_module.extract_page_ir(
+        image_height=3508,
+        image_width=2480,
+        languages=["en"],
+        model="openai:stub",
+        page_index=0,
+        pdf_page=None,
+        png_fp=synthetic_blank_page,
+        raw_page_irs_dir=raw_dir,
+        usage_tracker=tracker,
+    )
+
+    assert tracker.extraction.input_tokens == 100
+    assert tracker.extraction.output_tokens == 50
+    assert tracker.extraction.cache_read_tokens == 5
+    assert tracker.extraction.cache_write_tokens == 10
+    assert tracker.extraction.requests == 2
+    assert tracker.extraction.runs == 1
+
+
+def test_extract_page_ir_asserts_when_validation_fails_without_corrected_page_ir(
+    monkeypatch: pytest.MonkeyPatch, synthetic_blank_page: Path, tmp_path: Path
+) -> None:
+    """extract_page_ir should raise AssertionError when validation fails but
+    corrected_page_ir is None.
+
+    Parameters
+    ----------
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    tracker = ExtractionUsageTracker()
+
+    extracted = PageIR(
+        items=[
+            _make_block(
+                bbox=(1.0, 1.0, 10.0, 10.0),
+                block_type=BlockType.PARAGRAPH,
+                boundary=ItemBoundary.COMPLETE,
+                text="Extracted",
+            )
+        ]
+    )
+    stub_agent = _StubAgent(
+        result=_StubRunResult(
+            output=extracted,
+            usage_obj=_StubUsage(input_tokens=1, output_tokens=1, requests=1),
+        )
+    )
+
+    def fake_run_validation_agent(**kwargs: Any) -> ExtractionValidationVerdict:
+        """Ignore arguments and return the bad verdict.
+
+        Returns
+        -------
+        ExtractionValidationVerdict
+             The bad verdict with no corrected PageIR.
+        """
+
+        return ExtractionValidationVerdict.model_construct(
+            corrected_page_ir=None,
+            issues=[],
+            passed=False,
+            rationale="Something wrong" + "x" * 60,
+        )
+
+    monkeypatch.setattr(llm_module, "_run_validation_agent", fake_run_validation_agent)
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    _install_stub_extraction_agent(
+        agent=stub_agent, monkeypatch=monkeypatch, raw_page_irs_dir=raw_dir
+    )
+
+    # Patch prompt builder to return a minimal object.
+    monkeypatch.setattr(
+        llm_module,
+        "extract_page_ir_from_pdf_page",
+        lambda **kw: SimpleNamespace(system_message="SYS", user_message="USER"),
+    )
+
+    with pytest.raises(AssertionError, match="no corrected PageIR"):
+        llm_module.extract_page_ir(
+            image_height=3508,
+            image_width=2480,
+            languages=["en"],
+            model="openai:stub",
+            page_index=0,
+            pdf_page=None,
+            png_fp=synthetic_blank_page,
+            raw_page_irs_dir=raw_dir,
+            usage_tracker=tracker,
+        )
+
+
+def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
+    fixture_usage_tracker: ExtractionUsageTracker,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_blank_page: Path,
+    tmp_path: Path,
+) -> None:
+    """`extract_page_ir` should forward PDF-derived hints into prompt construction.
+
+    This covers the `pdf_page is not None` branch and checks that:
+
+    1. `extract_page_text_layer_hints` is invoked
+    2. The returned `table_hint`/`text_hint` are passed into
+        `extract_page_ir_from_pdf_page`
+
+    Parameters
+    ----------
+    fixture_usage_tracker
+        Usage tracker used by the orchestration code.
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    extracted = PageIR(
+        items=[
+            _make_block(
+                bbox=(1.0, 1.0, 10.0, 10.0),
+                block_type=BlockType.PARAGRAPH,
+                boundary=ItemBoundary.COMPLETE,
+                text="Extracted",
+            )
+        ]
+    )
+    stub_agent = _StubAgent(
+        result=_StubRunResult(
+            output=extracted,
+            usage_obj=_StubUsage(input_tokens=1, output_tokens=1, requests=1),
+        )
+    )
+    passing_verdict = ExtractionValidationVerdict(
+        passed=True,
+        rationale="okaoiugyreaoghyreoaughber;ahdgdashjasdgkhjadasdgadsfdasfdasdsas;g",
+    )
+
+    def fake_run_validation_agent(
+        *,
+        image_height: int,
+        image_width: int,
+        model: str,
+        page_index: int,
+        page_ir: PageIR,
+        png_bytes: bytes,
+        usage_tracker: ExtractionUsageTracker,
+    ) -> ExtractionValidationVerdict:
+        """Return a passing verdict.
+
+        Parameters
+        ----------
+        image_height
+            Image height in pixels.
+        image_width
+            Image width in pixels.
+        model
+            Model identifier.
+        page_index
+            0-based page index.
+        page_ir
+            Extracted PageIR passed to validation.
+        png_bytes
+            PNG bytes of the page image.
+        usage_tracker
+            Shared usage tracker.
+
+        Returns
+        -------
+        ExtractionValidationVerdict
+            A passing verdict.
+        """
+
+        return passing_verdict
+
+    def fake_extract_page_text_layer_hints(*, page: Any, page_index: int) -> Any:
+        """Return a hint payload and validate arguments.
+
+        Parameters
+        ----------
+        page
+            The PDF page object.
+        page_index
+            0-based page index.
+
+        Returns
+        -------
+        Any
+            A hint-like object with `has_hints`, `table_hint`, and `text_hint`.
+        """
+
+        assert page is pdf_page
+        assert page_index == 0
+        return SimpleNamespace(has_hints=True, table_hint="TABLE", text_hint="TEXT")
+
+    seen_prompt_kwargs: dict[str, Any] = {}
+
+    def fake_extract_page_ir_from_pdf_page(
+        *,
+        image_height: int,
+        image_width: int,
+        languages: list[str],
+        page_index: int,
+        table_layer_hint: str | None,
+        text_layer_hint: str | None,
+    ) -> Any:
+        """Capture kwargs and return a minimal prompt pair.
+
+        Parameters
+        ----------
+        image_height
+            Image height in pixels.
+        image_width
+            Image width in pixels.
+        languages
+            Languages list forwarded from the caller.
+        page_index
+            0-based page index.
+        table_layer_hint
+            Table hint derived from the PDF layer.
+        text_layer_hint
+            Text hint derived from the PDF layer.
+
+        Returns
+        -------
+        Any
+            An object with `system_message` and `user_message`.
+        """
+
+        seen_prompt_kwargs.update(
+            {
+                "image_height": image_height,
+                "image_width": image_width,
+                "languages": languages,
+                "page_index": page_index,
+                "table_layer_hint": table_layer_hint,
+                "text_layer_hint": text_layer_hint,
+            }
+        )
+        return SimpleNamespace(system_message="SYS", user_message="USER")
+
+    pdf_page = SimpleNamespace()
+
+    monkeypatch.setattr(llm_module, "_run_validation_agent", fake_run_validation_agent)
+    monkeypatch.setattr(
+        llm_module, "extract_page_ir_from_pdf_page", fake_extract_page_ir_from_pdf_page
+    )
+    monkeypatch.setattr(
+        llm_module, "extract_page_text_layer_hints", fake_extract_page_text_layer_hints
+    )
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    _install_stub_extraction_agent(
+        agent=stub_agent, monkeypatch=monkeypatch, raw_page_irs_dir=raw_dir
+    )
+
+    out = llm_module.extract_page_ir(
+        image_height=3508,
+        image_width=2480,
+        languages=["en"],
+        model="openai:stub",
+        page_index=0,
+        pdf_page=pdf_page,
+        png_fp=synthetic_blank_page,
+        raw_page_irs_dir=raw_dir,
+        usage_tracker=fixture_usage_tracker,
+    )
+
+    assert out is extracted
+    assert seen_prompt_kwargs["table_layer_hint"] == "TABLE"
+    assert seen_prompt_kwargs["text_layer_hint"] == "TEXT"
 
 
 def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
@@ -707,6 +1122,117 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
     assert fixture_usage_tracker.extraction.runs == 1
 
 
+def test_extract_page_ir_skips_hints_when_pdf_page_is_none(
+    monkeypatch: pytest.MonkeyPatch, synthetic_blank_page: Path, tmp_path: Path
+) -> None:
+    """When pdf_page is None, hint extraction should be skipped and hints passed as
+    None to the prompt builder.
+
+    Parameters
+    ----------
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    tracker = ExtractionUsageTracker()
+
+    extracted = PageIR(
+        items=[
+            _make_block(
+                bbox=(1.0, 1.0, 10.0, 10.0),
+                block_type=BlockType.PARAGRAPH,
+                boundary=ItemBoundary.COMPLETE,
+                text="Body",
+            )
+        ]
+    )
+    stub_agent = _StubAgent(
+        result=_StubRunResult(
+            output=extracted,
+            usage_obj=_StubUsage(input_tokens=1, output_tokens=1, requests=1),
+        )
+    )
+
+    passing_verdict = ExtractionValidationVerdict(
+        passed=True,
+        rationale="Fine" + "x" * 60,
+    )
+
+    hint_called = []
+
+    def fake_extract_hints(**kwargs: Any) -> Any:
+        """Record that hint extraction was called and return no hints.
+
+        Returns
+        -------
+        Any
+            An object with has_hints=False and no hints.
+        """
+
+        hint_called.append(True)
+        return SimpleNamespace(has_hints=False, table_hint=None, text_hint=None)
+
+    seen_prompt_kwargs: dict[str, Any] = {}
+
+    def fake_prompt_builder(**kwargs: Any) -> Any:
+        """Record the kwargs passed to the prompt builder and return a dummy prompt
+        pair.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments passed to the prompt builder, expected to include
+            'table_layer_hint' and 'text_layer_hint'.
+
+        Returns
+        -------
+        Any
+            An object with `system_message` and `user_message` attributes.
+        """
+
+        seen_prompt_kwargs.update(kwargs)
+        return SimpleNamespace(system_message="SYS", user_message="USER")
+
+    monkeypatch.setattr(llm_module, "extract_page_text_layer_hints", fake_extract_hints)
+    monkeypatch.setattr(
+        llm_module, "extract_page_ir_from_pdf_page", fake_prompt_builder
+    )
+    monkeypatch.setattr(
+        llm_module,
+        "_run_validation_agent",
+        lambda **kw: passing_verdict,
+    )
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    _install_stub_extraction_agent(
+        agent=stub_agent, monkeypatch=monkeypatch, raw_page_irs_dir=raw_dir
+    )
+
+    llm_module.extract_page_ir(
+        image_height=3508,
+        image_width=2480,
+        languages=["en"],
+        model="openai:stub",
+        page_index=0,
+        pdf_page=None,
+        png_fp=synthetic_blank_page,
+        raw_page_irs_dir=raw_dir,
+        usage_tracker=tracker,
+    )
+
+    # extract_page_text_layer_hints should NOT have been called.
+    assert not hint_called
+
+    # Hints should be None in the prompt builder call.
+    assert seen_prompt_kwargs["table_layer_hint"] is None
+    assert seen_prompt_kwargs["text_layer_hint"] is None
+
+
 def test_verify_page_ir_extraction_quality_calls_validators_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -879,184 +1405,83 @@ def test_verify_page_ir_extraction_quality_calls_validators_in_order(
     assert ctx.non_artifact_items[0][0] == 1
 
 
-def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
-    fixture_usage_tracker: ExtractionUsageTracker,
+def test_verify_quality_non_artifact_items_all_included_when_no_artifacts(
     monkeypatch: pytest.MonkeyPatch,
-    synthetic_blank_page: Path,
-    tmp_path: Path,
 ) -> None:
-    """`extract_page_ir` should forward PDF-derived hints into prompt construction.
-
-    This covers the `pdf_page is not None` branch and checks that:
-
-    1. `extract_page_text_layer_hints` is invoked
-    2. The returned `table_hint`/`text_hint` are passed into
-        `extract_page_ir_from_pdf_page`
+    """When there are no ARTIFACT blocks, non_artifact_items should include every item
+    with its original index.
 
     Parameters
     ----------
-    fixture_usage_tracker
-        Usage tracker used by the orchestration code.
     monkeypatch
         Pytest monkeypatch fixture.
-    synthetic_blank_page
-        PNG fixture path provided by the shared conftest.
-    tmp_path
-        Temporary directory for raw extraction artifacts.
     """
 
-    extracted = PageIR(
+    captured_ctx: list[Any] = []
+
+    def capturing_validator(ctx: Any) -> None:
+        """A validator that captures the ctx object for inspection.
+
+        Parameters
+        ----------
+        ctx
+            The shared quality context passed to validators.
+        """
+
+        if not captured_ctx:
+            captured_ctx.append(ctx)
+
+    # Patch all validators to no-ops, but capture ctx from the first one.
+    for name in [
+        "validate_image_dimensions",
+        "validate_extraction_text_constraints",
+        "validate_item_bboxes_required_and_in_bounds",
+        "validate_full_page_bboxes",
+        "validate_no_duplicate_item_bboxes",
+        "validate_basic_block_invariants",
+        "validate_footnote_blocks_are_plausible",
+        "validate_figure_blocks_are_well_formed",
+        "validate_artifacts_are_true_artifacts",
+        "validate_table_integrity",
+        "validate_placeholder_bboxes",
+        "validate_continuity_for_extraction",
+        "validate_gross_reading_order",
+    ]:
+        monkeypatch.setattr(llm_module, name, capturing_validator)
+
+    monkeypatch.setattr(
+        llm_module,
+        "validate_full_page_figure_requires_double_check",
+        lambda *, attempt, ctx: None,
+    )
+
+    page_ir = PageIR(
         items=[
             _make_block(
-                bbox=(1.0, 1.0, 10.0, 10.0),
+                bbox=(0.0, 0.0, 50.0, 20.0),
+                block_type=BlockType.HEADING,
+                boundary=ItemBoundary.COMPLETE,
+                text="Title",
+            ),
+            _make_block(
+                bbox=(0.0, 30.0, 200.0, 80.0),
                 block_type=BlockType.PARAGRAPH,
                 boundary=ItemBoundary.COMPLETE,
-                text="Extracted",
-            )
+                text="Body",
+            ),
         ]
     )
-    stub_agent = _StubAgent(
-        result=_StubRunResult(
-            output=extracted,
-            usage_obj=_StubUsage(input_tokens=1, output_tokens=1, requests=1),
-        )
-    )
-    passing_verdict = ExtractionValidationVerdict(
-        passed=True,
-        rationale="okaoiugyreaoghyreoaughber;ahdgdashjasdgkhjadasdgadsfdasfdasdsas;g",
+
+    llm_module.verify_page_ir_extraction_quality(
+        attempt=0,
+        image_height=400,
+        image_width=300,
+        page_ir=page_ir,
     )
 
-    def fake_run_validation_agent(
-        *,
-        image_height: int,
-        image_width: int,
-        model: str,
-        page_index: int,
-        page_ir: PageIR,
-        png_bytes: bytes,
-        usage_tracker: ExtractionUsageTracker,
-    ) -> ExtractionValidationVerdict:
-        """Return a passing verdict.
+    ctx = captured_ctx[0]
 
-        Parameters
-        ----------
-        image_height
-            Image height in pixels.
-        image_width
-            Image width in pixels.
-        model
-            Model identifier.
-        page_index
-            0-based page index.
-        page_ir
-            Extracted PageIR passed to validation.
-        png_bytes
-            PNG bytes of the page image.
-        usage_tracker
-            Shared usage tracker.
-
-        Returns
-        -------
-        ExtractionValidationVerdict
-            A passing verdict.
-        """
-
-        return passing_verdict
-
-    def fake_extract_page_text_layer_hints(*, page: Any, page_index: int) -> Any:
-        """Return a hint payload and validate arguments.
-
-        Parameters
-        ----------
-        page
-            The PDF page object.
-        page_index
-            0-based page index.
-
-        Returns
-        -------
-        Any
-            A hint-like object with `has_hints`, `table_hint`, and `text_hint`.
-        """
-
-        assert page is pdf_page
-        assert page_index == 0
-        return SimpleNamespace(has_hints=True, table_hint="TABLE", text_hint="TEXT")
-
-    seen_prompt_kwargs: dict[str, Any] = {}
-
-    def fake_extract_page_ir_from_pdf_page(
-        *,
-        image_height: int,
-        image_width: int,
-        languages: list[str],
-        page_index: int,
-        table_layer_hint: str | None,
-        text_layer_hint: str | None,
-    ) -> Any:
-        """Capture kwargs and return a minimal prompt pair.
-
-        Parameters
-        ----------
-        image_height
-            Image height in pixels.
-        image_width
-            Image width in pixels.
-        languages
-            Languages list forwarded from the caller.
-        page_index
-            0-based page index.
-        table_layer_hint
-            Table hint derived from the PDF layer.
-        text_layer_hint
-            Text hint derived from the PDF layer.
-
-        Returns
-        -------
-        Any
-            An object with `system_message` and `user_message`.
-        """
-
-        seen_prompt_kwargs.update(
-            {
-                "image_height": image_height,
-                "image_width": image_width,
-                "languages": languages,
-                "page_index": page_index,
-                "table_layer_hint": table_layer_hint,
-                "text_layer_hint": text_layer_hint,
-            }
-        )
-        return SimpleNamespace(system_message="SYS", user_message="USER")
-
-    pdf_page = SimpleNamespace()
-
-    monkeypatch.setattr(llm_module, "_run_validation_agent", fake_run_validation_agent)
-    monkeypatch.setattr(
-        llm_module, "extract_page_ir_from_pdf_page", fake_extract_page_ir_from_pdf_page
-    )
-    monkeypatch.setattr(
-        llm_module, "extract_page_text_layer_hints", fake_extract_page_text_layer_hints
-    )
-
-    raw_dir = tmp_path / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    _install_stub_extraction_agent(
-        agent=stub_agent, monkeypatch=monkeypatch, raw_page_irs_dir=raw_dir
-    )
-
-    out = llm_module.extract_page_ir(
-        image_height=3508,
-        image_width=2480,
-        languages=["en"],
-        model="openai:stub",
-        page_index=0,
-        pdf_page=pdf_page,
-        png_fp=synthetic_blank_page,
-        raw_page_irs_dir=raw_dir,
-        usage_tracker=fixture_usage_tracker,
-    )
-
-    assert out is extracted
-    assert seen_prompt_kwargs["table_layer_hint"] == "TABLE"
-    assert seen_prompt_kwargs["text_layer_hint"] == "TEXT"
+    # All items should be non-artifact.
+    assert len(ctx.non_artifact_items) == 2
+    assert ctx.non_artifact_items[0] == (0, page_ir.items[0])
+    assert ctx.non_artifact_items[1] == (1, page_ir.items[1])

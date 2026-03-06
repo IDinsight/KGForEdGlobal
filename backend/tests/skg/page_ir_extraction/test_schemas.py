@@ -20,6 +20,9 @@ from skg.page_ir_extraction.schemas import (
     TableCell,
     TableRow,
     TextUnit,
+    _next_free_column,
+    _occupied_columns_for_span,
+    validate_validation_verdict_state,
 )
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary
 from tests.constants import PARAM
@@ -284,6 +287,193 @@ def make_text_unit() -> Callable[..., TextUnit]:
     return _make
 
 
+class TestNextFreeColumn:
+    """Tests for _next_free_column."""
+
+    def test_empty_set_returns_zero(self) -> None:
+        """If no columns are occupied, the next free column should be 0."""
+
+        assert _next_free_column(set()) == 0
+
+    def test_skips_occupied(self) -> None:
+        """If columns 0, 1, and 2 are occupied, the next free column should be 3."""
+
+        assert _next_free_column({0, 1, 2}) == 3
+
+    def test_finds_gap(self) -> None:
+        """If columns 0 and 2 are occupied, the next free column should be 1."""
+
+        assert _next_free_column({0, 2}) == 1
+
+
+class TestOccupiedColumnsForSpan:
+    """Tests for _occupied_columns_for_span."""
+
+    def test_single_column(self) -> None:
+        """A cell with col_span=1 starting at column 0 should occupy only column 0."""
+
+        assert _occupied_columns_for_span(col_span=1, start_col=0) == {0}
+
+    def test_multi_column(self) -> None:
+        """A cell with col_span=3 starting at column 2 should occupy columns 2, 3, and
+        4.
+        """
+
+        assert _occupied_columns_for_span(col_span=3, start_col=2) == {2, 3, 4}
+
+
+class TestValidateValidationVerdictState:
+    """Tests for the shared validate_validation_verdict_state utility."""
+
+    def test_passing_with_corrected_raises(self) -> None:
+        """A passing verdict must not include a corrected output, since that implies a
+        change was made to fix an error. If the output is correct, there should be no
+        change needed, and therefore no corrected output should be present.
+        """
+
+        with pytest.raises(ValueError, match="must not include a corrected output"):
+            validate_validation_verdict_state(
+                corrected_present=True, issues=[], passed=True
+            )
+
+    def test_passing_with_error_issues_raises(self) -> None:
+        """A passing verdict must not include any error-severity issues, since that
+        would contradict the notion of passing. If there are error-severity issues
+        present, it indicates that there are problems that need to be addressed, which
+        is incompatible with a passing verdict.
+        """
+
+        issue = type("I", (), {"severity": "error"})()
+
+        with pytest.raises(ValueError, match="must not include any issue.*error"):
+            validate_validation_verdict_state(
+                corrected_present=False, issues=[issue], passed=True
+            )
+
+    def test_failing_without_corrected_raises(self) -> None:
+        """A failing verdict must include a corrected output, since the presence of a
+        failure implies that there is an issue that needs to be addressed, and the
+        corrected output represents the necessary change to fix the error.
+        """
+
+        issue = type("I", (), {"severity": "error"})()
+
+        with pytest.raises(ValueError, match="must include a corrected output"):
+            validate_validation_verdict_state(
+                corrected_present=False, issues=[issue], passed=False
+            )
+
+    def test_failing_without_issues_raises(self) -> None:
+        """A failing verdict must include at least one issue, since the failure is
+        meant to indicate that there is a problem that needs to be fixed, and without
+        any issues provided, there would be no information about what the problem is or
+        how to address it.
+        """
+
+        with pytest.raises(ValueError, match="must include at least one issue"):
+            validate_validation_verdict_state(
+                corrected_present=True, issues=[], passed=False
+            )
+
+    def test_failing_with_only_warnings_raises(self) -> None:
+        """A failing verdict must include at least one error-severity issue, since
+        warnings indicate potential problems but do not necessarily imply a failure.
+        """
+
+        issue = type("I", (), {"severity": "warning"})()
+
+        with pytest.raises(ValueError, match="at least one issue.*severity='error'"):
+            validate_validation_verdict_state(
+                corrected_present=True, issues=[issue], passed=False
+            )
+
+    def test_passing_with_warnings_is_ok(self) -> None:
+        """Passing verdict may include warning-severity issues."""
+
+        issue = type("I", (), {"severity": "warning"})()
+
+        # Should not raise.
+        validate_validation_verdict_state(
+            corrected_present=False, issues=[issue], passed=True
+        )
+
+    def test_failing_valid(self) -> None:
+        """A well-formed failing verdict should not raise."""
+
+        issue = type("I", (), {"severity": "error"})()
+        validate_validation_verdict_state(
+            corrected_present=True, issues=[issue], passed=False
+        )
+
+
+def test_block_artifact_whitespace_only_text_rejected(
+    bbox: list[float], make_text_unit: Callable[..., TextUnit]
+) -> None:
+    """Artifact block with whitespace-only text should be rejected.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Block instance. This is necessary
+        because the Block schema requires a bbox field, and we need to provide a valid
+        one to reach the validation logic for the text content of an artifact block.
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests. This is used to generate a TextUnit
+        instance with whitespace-only text content to test the validation logic that
+        enforces that if a Block is of type ARTIFACT, its text content must not be
+        whitespace-only, ensuring that artifact blocks have meaningful text content
+        rather than being empty or consisting solely of whitespace, which would not be
+        valid for an artifact block.
+    """
+
+    with pytest.raises(ValidationError, match="requires non-empty text"):
+        Block(
+            bbox=bbox,
+            block_type=BlockType.ARTIFACT,
+            boundary=ItemBoundary.COMPLETE,
+            figure=None,
+            kind="block",
+            list_items=None,
+            local_code=None,
+            text=make_text_unit(language="en", text="  \t  "),
+        )
+
+
+def test_block_caption_whitespace_only_text_rejected(
+    bbox: list[float], make_text_unit: Callable[..., TextUnit]
+) -> None:
+    """Caption block with whitespace-only text should be rejected.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Block instance. This is necessary
+        because the Block schema requires a bbox field, and we need to provide a valid
+        one to reach the validation logic for the text content of a caption block.
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests. This is used to generate a TextUnit
+        instance with whitespace-only text content to test the validation logic that
+        enforces that if a Block is of type CAPTION, its text content must not be
+        whitespace-only, ensuring that caption blocks have meaningful text content
+        rather than being empty or consisting solely of whitespace, which would not be
+        valid for a caption block.
+    """
+
+    with pytest.raises(ValidationError, match="requires non-empty text"):
+        Block(
+            bbox=bbox,
+            block_type=BlockType.CAPTION,
+            boundary=ItemBoundary.COMPLETE,
+            figure=None,
+            kind="block",
+            list_items=None,
+            local_code=None,
+            text=make_text_unit(language="en", text="\n"),
+        )
+
+
 @PARAM(
     "block_type,fields,expected_match",
     [
@@ -408,6 +598,177 @@ def test_block_enforces_block_type_specific_invariants(
 
     with pytest.raises(ValidationError, match=expected_match):
         Block.model_validate(payload)
+
+
+def test_block_list_with_figure_rejected(
+    bbox: list[float], make_text_unit: Callable[..., TextUnit]
+) -> None:
+    """List block with figure set should be rejected.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Block instance. This is necessary
+        because the Block schema requires a bbox field, and we need to provide a valid
+        one to reach the validation logic for the block_type-specific invariants.
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests. This is used to generate a valid
+        TextUnit instance for the ListItem text field, allowing us to isolate the test
+        to the figure field by ensuring that the list item text content is valid and
+        does not cause validation errors that would interfere with testing the figure
+        validation logic that enforces that if a Block is of type LIST, the figure
+        field must be null, since list blocks should not contain figure metadata, and
+        the presence of figure metadata in a list block would violate the schema's
+        rules for mutually-exclusive content based on block_type.
+    """
+
+    with pytest.raises(ValidationError, match="requires figure=null"):
+        Block(
+            bbox=bbox,
+            block_type=BlockType.LIST,
+            boundary=ItemBoundary.COMPLETE,
+            figure=FigureUnit(
+                alt_text="x",
+                caption=None,
+                contains_text=None,
+                embedded_text=None,
+                figure_kind=FigureKind.UNKNOWN,
+            ),
+            kind="block",
+            list_items=[
+                ListItem(
+                    marker="•",
+                    text=make_text_unit(language="en", text="item"),
+                )
+            ],
+            local_code=None,
+            text=None,
+        )
+
+
+def test_block_paragraph_whitespace_only_text_rejected(
+    bbox: list[float], make_text_unit: Callable[..., TextUnit]
+) -> None:
+    """Paragraph block with whitespace-only text should be rejected.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Block instance. This is necessary
+        because the Block schema requires a bbox field, and we need to provide a valid
+        one to reach the validation logic for the text content of a paragraph block.
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests. This is used to generate a TextUnit
+        instance with whitespace-only text content to test the validation logic that
+        enforces that if a Block is of type PARAGRAPH, its text content must not be
+        whitespace-only, ensuring that paragraph blocks have meaningful text content
+        rather than being empty or consisting solely of whitespace, which would not be
+        valid for a paragraph block.
+    """
+
+    with pytest.raises(ValidationError, match="requires non-empty text"):
+        Block(
+            bbox=bbox,
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            figure=None,
+            kind="block",
+            list_items=None,
+            local_code=None,
+            text=make_text_unit(language="en", text="   "),
+        )
+
+
+def test_block_valid_figure(bbox: list[float]) -> None:
+    """A valid figure block should be accepted.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Block instance. This is necessary
+        because the Block schema requires a bbox field, and we need to provide a valid
+        one to create a valid figure block, which allows us to test that a Block of
+        type FIGURE with appropriate figure metadata is accepted as valid according to
+        the schema.
+    """
+
+    block = Block(
+        bbox=bbox,
+        block_type=BlockType.FIGURE,
+        boundary=ItemBoundary.COMPLETE,
+        figure=FigureUnit(
+            alt_text="flowchart",
+            caption=None,
+            contains_text=False,
+            embedded_text=None,
+            figure_kind=FigureKind.DIAGRAM,
+        ),
+        kind="block",
+        list_items=None,
+        local_code=None,
+        text=None,
+    )
+    assert block.figure is not None
+
+
+def test_block_valid_list(
+    bbox: list[float], make_text_unit: Callable[..., TextUnit]
+) -> None:
+    """A valid list block should be accepted.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Block instance. This is necessary
+        because the Block schema requires a bbox field, and we need to provide a valid
+        one to create a valid list block, which allows us to test that a Block of type
+        LIST with appropriate list items is accepted as valid according to the schema.
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests.
+    """
+
+    block = Block(
+        bbox=bbox,
+        block_type=BlockType.LIST,
+        boundary=ItemBoundary.COMPLETE,
+        figure=None,
+        kind="block",
+        list_items=[
+            ListItem(marker="1.", text=make_text_unit(language="en", text="First")),
+            ListItem(marker="2.", text=make_text_unit(language="en", text="Second")),
+        ],
+        local_code=None,
+        text=None,
+    )
+    assert len(block.list_items) == 2
+
+
+def test_figure_contains_text_none_with_embedded_text_rejected(
+    make_text_unit: Callable[..., TextUnit],
+) -> None:
+    """contains_text=None with embedded_text present should be rejected.
+
+    Parameters
+    ----------
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests.
+    """
+
+    with pytest.raises(
+        ValidationError,
+        match="contains_text=null requires figure.embedded_text=null",
+    ):
+        FigureUnit(
+            alt_text="chart",
+            caption=None,
+            contains_text=None,
+            embedded_text=make_text_unit(language="en", text="some text"),
+            figure_kind=FigureKind.UNKNOWN,
+        )
 
 
 def test_figure_unit_caption_text_must_not_be_whitespace_only(
@@ -541,6 +902,42 @@ def test_figure_unit_requires_non_empty_alt_text() -> None:
         )
 
 
+def test_figure_valid_with_text(
+    make_text_unit: Callable[..., TextUnit],
+) -> None:
+    """A valid FigureUnit with contains_text=True and embedded_text should be accepted.
+
+    Parameters
+    ----------
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests.
+    """
+
+    fig = FigureUnit(
+        alt_text="bar chart with labels",
+        caption=make_text_unit(language="en", text="Figure 1: Revenue"),
+        contains_text=True,
+        embedded_text=make_text_unit(language="en", text="Q1 Q2 Q3"),
+        figure_kind=FigureKind.CHART,
+    )
+    assert fig.contains_text is True
+    assert fig.embedded_text is not None
+
+
+def test_figure_valid_without_text() -> None:
+    """A valid FigureUnit with no text should be accepted."""
+
+    fig = FigureUnit(
+        alt_text="decorative image",
+        caption=None,
+        contains_text=False,
+        embedded_text=None,
+        figure_kind=FigureKind.TIMELINE,
+    )
+    assert fig.contains_text is False
+
+
 def test_list_item_marker_must_not_be_whitespace_only(
     make_text_unit: Callable[..., TextUnit],
 ) -> None:
@@ -583,6 +980,74 @@ def test_list_item_text_must_not_be_whitespace_only(
         ValidationError, match=r"List item text must not be whitespace-only"
     ):
         ListItem(marker="•", text=make_text_unit(language="en", text="   "))
+
+
+def test_list_item_valid_with_null_marker(
+    make_text_unit: Callable[..., TextUnit],
+) -> None:
+    """A ListItem with marker=None should be accepted (e.g., TOC entries).
+
+    Parameters
+    ----------
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests. This is used to generate a valid
+        TextUnit instance for the ListItem text field, allowing us to test that a
+        ListItem with marker=None is accepted as valid when the text content is valid,
+        which is important for cases like table of contents entries where a marker may
+        not be present.
+    """
+
+    item = ListItem(marker=None, text=make_text_unit(language="en", text="Chapter 1"))
+    assert item.marker is None
+
+
+def test_list_item_valid_with_marker(make_text_unit: Callable[..., TextUnit]) -> None:
+    """A ListItem with a real marker should be accepted.
+
+    Parameters
+    ----------
+    make_text_unit
+        A factory function for creating TextUnit instances, injected to allow for
+        consistent TextUnit creation across tests. This is used to generate a valid
+        TextUnit instance for the ListItem text field, allowing us to test that a
+        ListItem with a real marker (e.g., "•") is accepted as valid when the text
+        content is valid, which is important for typical list items that include a
+        marker.
+    """
+
+    item = ListItem(marker="•", text=make_text_unit(language="en", text="Bullet"))
+    assert item.marker == "•"
+
+
+def test_page_ir_defaults(make_heading_block: Callable[..., Block]) -> None:
+    """PageIR optional fields should default correctly.
+
+    Parameters
+    ----------
+    make_heading_block
+        A factory function for creating a valid heading Block, injected to allow for
+        consistent Block creation across tests. This is used to create a valid PageIR
+        instance with minimal required fields, allowing us to test that all optional
+        fields in the PageIR schema default to None or the expected default value when
+        not provided.
+    """
+
+    page = PageIR(items=[make_heading_block(text="Title")])
+    assert page.coord_space == "px"
+    assert page.doc_key is None
+    assert page.dpi is None
+    assert page.image_height is None
+    assert page.image_width is None
+    assert page.page_index is None
+    assert page.pdf_name is None
+
+
+def test_page_ir_empty_items() -> None:
+    """PageIR with empty items list should be accepted (blank pages exist)."""
+
+    page = PageIR(items=[])
+    assert page.items == []
 
 
 def test_page_ir_union_parses_block_and_table_items(
@@ -636,6 +1101,77 @@ def test_table_header_row_count_cannot_exceed_row_count(
         ValidationError, match=r"header_row_count.*cannot exceed number of rows"
     ):
         make_simple_table(header_row_count=3)
+
+
+def test_table_header_row_count_error_includes_local_code(
+    bbox: list[float], make_table_cell: Callable[..., TableCell]
+) -> None:
+    """header_row_count error message should include local_code when present.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Table instance.
+    make_table_cell
+        A factory function for creating TableCell instances, injected to allow for
+        consistent TableCell creation across tests. This is used to generate a valid
+        Table instance with a local_code value and an invalid header_row_count, allowing
+        us to test that the ValidationError message includes the local_code value when
+        header_row_count exceeds the number of rows, which is important for providing
+        clear and specific error messages that help identify which table has the issue
+        when multiple tables are present.
+    """
+
+    row0 = TableRow(cells=[make_table_cell(text="A")])
+
+    with pytest.raises(ValidationError, match="local_code='Table 1.2'"):
+        Table(
+            bbox=bbox,
+            boundary=ItemBoundary.COMPLETE,
+            header_row_count=5,
+            kind="table",
+            local_code="Table 1.2",
+            n_cols=None,
+            repeats_header=None,
+            rows=[row0],
+        )
+
+
+def test_table_n_cols_none_skips_column_checks(
+    bbox: list[float], make_table_cell: Callable[..., TableCell]
+) -> None:
+    """When n_cols is None, uneven row widths are allowed.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Table instance.
+    make_table_cell
+        A factory function for creating TableCell instances, injected to allow for
+        consistent TableCell creation across tests.
+    """
+
+    row0 = TableRow(cells=[make_table_cell(text="A"), make_table_cell(text="B")])
+    row1 = TableRow(
+        cells=[
+            make_table_cell(text="1"),
+            make_table_cell(text="2"),
+            make_table_cell(text="3"),
+        ]
+    )
+
+    # Should not raise.
+    table = Table(
+        bbox=bbox,
+        boundary=ItemBoundary.COMPLETE,
+        header_row_count=0,
+        kind="table",
+        local_code=None,
+        n_cols=None,
+        repeats_header=None,
+        rows=[row0, row1],
+    )
+    assert len(table.rows) == 2
 
 
 def test_table_n_cols_requires_at_least_one_row_reaches_n_cols(
@@ -729,6 +1265,72 @@ def test_table_n_cols_rejects_cell_col_span_exceeding_n_cols(
         )
 
 
+def test_table_placed_cell_exceeds_n_cols(
+    bbox: list[float], make_table_cell: Callable[..., TableCell]
+) -> None:
+    """A cell whose placement + col_span exceeds n_cols should be rejected.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Table instance.
+    make_table_cell
+        A factory function for creating TableCell instances, injected to allow for
+        consistent TableCell creation across tests.
+    """
+
+    # 3 cells of col_span=1 in a row with n_cols=2.
+    row0 = TableRow(
+        cells=[
+            make_table_cell(col_span=1, row_span=1, text="A"),
+            make_table_cell(col_span=1, row_span=1, text="B"),
+            make_table_cell(col_span=1, row_span=1, text="C"),
+        ]
+    )
+
+    with pytest.raises(ValidationError, match="Placed cell exceeds n_cols"):
+        Table(
+            bbox=bbox,
+            boundary=ItemBoundary.COMPLETE,
+            header_row_count=0,
+            kind="table",
+            local_code=None,
+            n_cols=2,
+            repeats_header=None,
+            rows=[row0],
+        )
+
+
+def test_table_repeats_header_allowed_with_both_boundary(
+    bbox: list[float], make_table_cell: Callable[..., TableCell]
+) -> None:
+    """repeats_header should be allowed when boundary is BOTH.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Table instance.
+    make_table_cell
+        A factory function for creating TableCell instances, injected to allow for
+        consistent TableCell creation across tests.
+    """
+
+    row0 = TableRow(cells=[make_table_cell(text="H1"), make_table_cell(text="H2")])
+    row1 = TableRow(cells=[make_table_cell(text="1"), make_table_cell(text="2")])
+
+    table = Table(
+        bbox=bbox,
+        boundary=ItemBoundary.BOTH,
+        header_row_count=1,
+        kind="table",
+        local_code=None,
+        n_cols=2,
+        repeats_header=True,
+        rows=[row0, row1],
+    )
+    assert table.repeats_header is True
+
+
 def test_table_repeats_header_requires_boundary_resumed_or_both(
     make_simple_table: Callable[..., Table],
 ) -> None:
@@ -751,6 +1353,38 @@ def test_table_repeats_header_requires_boundary_resumed_or_both(
     # Sanity: allowed when RESUMED.
     table = make_simple_table(boundary=ItemBoundary.RESUMED, repeats_header=True)
     assert table.repeats_header is True
+
+
+def test_table_repeats_header_true_requires_header_rows(
+    bbox: list[float], make_table_cell: Callable[..., TableCell]
+) -> None:
+    """repeats_header=True with header_row_count=0 should be rejected.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Table instance.
+    make_table_cell
+        A factory function for creating TableCell instances, injected to allow for
+        consistent TableCell creation across tests.
+    """
+
+    row0 = TableRow(cells=[make_table_cell(text="A"), make_table_cell(text="B")])
+    row1 = TableRow(cells=[make_table_cell(text="1"), make_table_cell(text="2")])
+
+    with pytest.raises(
+        ValidationError, match="repeats_header=True requires header_row_count >= 1"
+    ):
+        Table(
+            bbox=bbox,
+            boundary=ItemBoundary.RESUMED,
+            header_row_count=0,
+            kind="table",
+            local_code=None,
+            n_cols=2,
+            repeats_header=True,
+            rows=[row0, row1],
+        )
 
 
 def test_table_requires_at_least_one_row(bbox: list[float]) -> None:
@@ -866,6 +1500,48 @@ def test_table_spanned_cells_require_text(
         )
 
 
+def test_table_valid_with_row_and_col_spans(
+    bbox: list[float], make_table_cell: Callable[..., TableCell]
+) -> None:
+    """A table with valid row/col spans should be accepted.
+
+    Parameters
+    ----------
+    bbox
+        A valid bounding box to use for creating the Table instance.
+    make_table_cell
+        A factory function for creating TableCell instances, injected to allow for
+        consistent TableCell creation across tests.
+    """
+
+    # 3x3 grid: cell (0,0) spans 2 rows, cell (0,1) spans 2 cols.
+    row0 = TableRow(
+        cells=[
+            make_table_cell(col_span=1, row_span=2, text="A"),
+            make_table_cell(col_span=2, row_span=1, text="BC"),
+        ]
+    )
+    row1 = TableRow(
+        cells=[
+            # col 0 occupied by row span; cells go to col 1, col 2.
+            make_table_cell(col_span=1, row_span=1, text="D"),
+            make_table_cell(col_span=1, row_span=1, text="E"),
+        ]
+    )
+
+    table = Table(
+        bbox=bbox,
+        boundary=ItemBoundary.COMPLETE,
+        header_row_count=0,
+        kind="table",
+        local_code=None,
+        n_cols=3,
+        repeats_header=None,
+        rows=[row0, row1],
+    )
+    assert len(table.rows) == 2
+
+
 def test_text_unit_rejects_extra_fields(
     make_text_unit: Callable[..., TextUnit],
 ) -> None:
@@ -944,3 +1620,133 @@ def test_validation_verdict_failed_requires_at_least_one_error_issue(
             passed=False,
             rationale="Only minor issues.ourghrhgrakegheragkeeklrbrekbherl;hghdgsa;djghasklgag",
         )
+
+
+def test_verdict_failing_requires_non_empty_issues(
+    make_minimal_page_ir: Callable[..., PageIR],
+) -> None:
+    """A failing verdict must include at least one issue.
+
+    Parameters
+    ----------
+    make_minimal_page_ir
+        A factory function for creating a minimal valid PageIR, injected to allow for
+        consistent PageIR creation across tests.
+    """
+
+    with pytest.raises(ValidationError, match="must include at least one issue"):
+        ExtractionValidationVerdict(
+            corrected_page_ir=make_minimal_page_ir(),
+            issues=[],
+            passed=False,
+            rationale="Needs work" + "x" * 60,
+        )
+
+
+def test_verdict_passing_rejects_corrected_page_ir(
+    make_minimal_page_ir: Callable[..., PageIR],
+) -> None:
+    """A passing verdict must not include a corrected_page_ir.
+
+    Parameters
+    ----------
+    make_minimal_page_ir
+        A factory function for creating a minimal valid PageIR, injected to allow for
+        consistent PageIR creation across tests.
+    """
+
+    with pytest.raises(ValidationError, match="must not include a corrected output"):
+        ExtractionValidationVerdict(
+            corrected_page_ir=make_minimal_page_ir(),
+            issues=[],
+            passed=True,
+            rationale="All good" + "x" * 60,
+        )
+
+
+def test_verdict_passing_rejects_error_severity_issues(
+    make_minimal_page_ir: Callable[..., PageIR],
+) -> None:
+    """A passing verdict must not include any error-severity issue.
+
+    Parameters
+    ----------
+    make_minimal_page_ir
+        A factory function for creating a minimal valid PageIR, injected to allow for
+        consistent PageIR creation across tests.
+    """
+
+    with pytest.raises(ValidationError, match="must not include any issue"):
+        ExtractionValidationVerdict(
+            corrected_page_ir=None,
+            issues=[
+                ExtractionValidationIssue(
+                    description="Bad",
+                    item_index=0,
+                    severity="error",
+                    suggested_fix="Fix it",
+                )
+            ],
+            passed=True,
+            rationale="Looks fine" + "x" * 60,
+        )
+
+
+def test_verdict_rationale_min_length_enforced() -> None:
+    """Rationale must be at least 50 characters."""
+
+    with pytest.raises(ValidationError, match="min_length|at least 50"):
+        ExtractionValidationVerdict(
+            corrected_page_ir=None,
+            issues=[],
+            passed=True,
+            rationale="Short",
+        )
+
+
+def test_verdict_valid_failing(
+    make_minimal_page_ir: Callable[..., PageIR],
+) -> None:
+    """A well-formed failing verdict should be accepted.
+
+    Parameters
+    ----------
+    make_minimal_page_ir
+        A factory function for creating a minimal valid PageIR, injected to allow for
+        consistent PageIR creation across tests.
+    """
+
+    v = ExtractionValidationVerdict(
+        corrected_page_ir=make_minimal_page_ir(),
+        issues=[
+            ExtractionValidationIssue(
+                description="Wrong classification",
+                item_index=0,
+                severity="error",
+                suggested_fix="Change block_type to heading",
+            )
+        ],
+        passed=False,
+        rationale="Classification error on first item needs correction" + "x" * 20,
+    )
+    assert v.passed is False
+    assert v.corrected_page_ir is not None
+
+
+def test_verdict_valid_passing() -> None:
+    """A well-formed passing verdict should be accepted."""
+
+    v = ExtractionValidationVerdict(
+        corrected_page_ir=None,
+        issues=[
+            ExtractionValidationIssue(
+                description="Slightly off bbox",
+                item_index=0,
+                severity="warning",
+                suggested_fix=None,
+            )
+        ],
+        passed=True,
+        rationale="Extraction is faithful with only minor bbox imprecision" + "x" * 20,
+    )
+    assert v.passed is True
