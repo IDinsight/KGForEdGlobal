@@ -697,7 +697,7 @@ class PageIR(BaseSchema):
         description="Source PDF filename (no path). This should be populated by the Python pipeline; it may be null during extraction.",
     )
 
-    # Filled in by vision model.
+    # Filled in by Python pipeline.
     boundary_state: PageBoundaryState = Field(
         default=PageBoundaryState.STANDALONE,
         description="Overall continuity of the page. Derived from item boundaries in Python.",
