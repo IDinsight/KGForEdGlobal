@@ -205,6 +205,43 @@ def _brief_edge_record(record: EdgeVerdictRecord) -> dict[str, Any]:
     }
 
 
+def _collect_verified_table_continuation_edges(
+    applied_edges: list[dict[str, Any]],
+) -> set[tuple[int, int, int, int]]:
+    """Return the applied VERIFIED table-continuation edges in tuple form.
+
+    Parameters
+    ----------
+    applied_edges
+        The compile-time applied edge summaries.
+
+    Returns
+    -------
+    set[tuple[int, int, int, int]]
+        A set of (prev_page, prev_index, next_page, next_index) tuples for edges that
+        were actually applied and represent TABLE continuations.
+    """
+
+    verified_table_edges: set[tuple[int, int, int, int]] = set()
+
+    for edge in applied_edges:
+        if (
+            edge.get("applied")
+            and edge.get("is_continuation")
+            and (edge.get("continuation_kind") or "").lower() == "table"
+        ):
+            verified_table_edges.add(
+                (
+                    int(edge["prev_page"]),
+                    int(edge["prev_index"]),
+                    int(edge["next_page"]),
+                    int(edge["next_index"]),
+                )
+            )
+
+    return verified_table_edges
+
+
 def _deduplicate_and_sort_edge_records(
     edge_records: list[EdgeVerdictRecord],
 ) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
@@ -870,7 +907,7 @@ def compile_continuity_from_edge_verdicts(
     min_confidence_to_select_positive: float,
     page_irs: dict[int, PageIR],
     verification_dirs: PageIRVerificationDirs,
-) -> None:
+) -> set[tuple[int, int, int, int]]:
     """Apply all continuity decisions in one pass as follows:
 
     1. Positive edge -> set prev.to_next and next.from_prev
@@ -893,6 +930,12 @@ def compile_continuity_from_edge_verdicts(
     verification_dirs
         Directory paths for the verification run, used for writing the continuity
         compile report.
+
+    Returns
+    -------
+    set[tuple[int, int, int, int]]
+        The applied VERIFIED table-continuation edges as
+        (prev_page, prev_index, next_page, next_index) tuples.
     """
 
     bools, effective_local_codes = _initialize_states(page_irs)
@@ -981,3 +1024,5 @@ def compile_continuity_from_edge_verdicts(
         fp=verification_dirs.root / "continuity_compile_report.json",
         json_info=compile_report,
     )
+
+    return _collect_verified_table_continuation_edges(applied_edges)

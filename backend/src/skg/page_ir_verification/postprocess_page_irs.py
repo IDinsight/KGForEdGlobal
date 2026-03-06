@@ -174,6 +174,7 @@ def _process_page_tables(
 
     carry_to_next: str | None = None
     applied_prev_carry = False
+    saw_truncated_table = False
 
     for item_index, item in ((i, itm) for i, itm in items if itm.kind == "table"):
         is_resumed = (page_idx, item_index) in resumed_table_keys
@@ -227,9 +228,16 @@ def _process_page_tables(
             )
             applied_prev_carry = True  # Consume the carry for this page
 
-        # Decide what we carry forward to the NEXT page.
-        if is_truncated and code:
-            carry_to_next = code
+        # Decide what we carry forward to the NEXT page. The last continuing table in
+        # reading order wins, even if that final table lacks a code. In that case we
+        # intentionally clear any earlier carry to avoid leaking the wrong code onto
+        # the next page.
+        if is_truncated:
+            saw_truncated_table = True
+            carry_to_next = code or None
+
+    if not saw_truncated_table:
+        return None
 
     return carry_to_next
 
@@ -681,12 +689,13 @@ def align_table_rows_with_rowspans(page_irs: dict[int, PageIR]) -> list[dict[str
 
 
 def find_caption_code(items: list[Block | Table]) -> str | None:
-    """Find the first valid Table-like local_code from a caption block.
+    """Find the nearest preceding valid Table-like local_code from a caption block.
 
     Parameters
     ----------
     items
-        List of PageIR items.
+        List of PageIR items ordered by reading order. The nearest qualifying caption
+        before the target table is preferred over earlier captions on the page.
 
     Returns
     -------
@@ -694,7 +703,7 @@ def find_caption_code(items: list[Block | Table]) -> str | None:
         The found caption local_code, or None if not found.
     """
 
-    for item in items:
+    for item in reversed(items):
         if item.kind == "block" and item.block_type == BlockType.CAPTION:
             # Prefer extractor-provided local_code.
             code = (item.local_code or "").strip()
@@ -850,7 +859,10 @@ def normalize_table_row_cell_counts(
 
 
 def postprocess_verified_page_irs(
-    *, page_irs: dict[int, PageIR], verification_dirs: PageIRVerificationDirs
+    *,
+    page_irs: dict[int, PageIR],
+    verification_dirs: PageIRVerificationDirs,
+    verified_table_continuation_edges: set[tuple[int, int, int, int]] | None = None,
 ) -> None:
     """Run all postpass fixes before writing verified JSONs.
 
@@ -862,6 +874,9 @@ def postprocess_verified_page_irs(
         The dictionary of page IRs by page index.
     verification_dirs
         The verification directories.
+    verified_table_continuation_edges
+        Optional in-memory set of VERIFIED table-continuation edges. When omitted, the
+        edges are reloaded from the compile report instead.
     """
 
     # Enrich data by flowing local codes across VERIFIED table-continuation edges.
@@ -871,7 +886,11 @@ def postprocess_verified_page_irs(
     # carries codes sequentially across multi-page table spans and seeds missing codes
     # from nearby captions. Both passes guard against double-patching (compile skips
     # items that already have a code; this pass checks `not code` before applying).
-    verified_table_edges = load_verified_table_continuation_edges(verification_dirs)
+    verified_table_edges = (
+        verified_table_continuation_edges
+        if verified_table_continuation_edges is not None
+        else load_verified_table_continuation_edges(verification_dirs)
+    )
     table_code_changes = propagate_table_local_codes(
         page_irs=page_irs, verified_table_continuation_edges=verified_table_edges
     )
