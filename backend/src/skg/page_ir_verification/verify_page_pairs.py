@@ -101,79 +101,9 @@ def _apply_visible_crop(
     ]
 
 
-def _boundary_hint_priority(
-    *, next_item: Block | Table, prev_item: Block | Table
-) -> int:
-    """Return a small priority bonus when extractor boundary hints line up.
-
-    Parameters
-    ----------
-    next_item
-        Candidate item on page N+1.
-    prev_item
-        Candidate item on page N.
-
-    Returns
-    -------
-    int
-        0 when the boundary hints are consistent with a continuation and 1 otherwise.
-        Lower is better.
-    """
-
-    next_boundary_good = next_item.boundary in {ItemBoundary.BOTH, ItemBoundary.RESUMED}
-    prev_boundary_good = prev_item.boundary in {
-        ItemBoundary.BOTH,
-        ItemBoundary.TRUNCATED,
-    }
-
-    return 0 if next_boundary_good and prev_boundary_good else 1
-
-
-def _ensure_pair_specific_crop(
-    *,
-    crop_cache: dict[tuple[int, int], Path],
-    next_page_image_fp: Path,
-    next_page_index: int,
-    output_dir: Path,
-    spec: CandidatePairSpec,
-) -> Path:
-    """Create or reuse the next-page crop for a candidate pair.
-
-    Parameters
-    ----------
-    crop_cache
-        Cache from crop key to rendered crop path.
-    next_page_image_fp
-        Full-page PNG for page N+1.
-    next_page_index
-        Zero-based page index of the next page.
-    output_dir
-        Directory where pair-specific crops should be written.
-    spec
-        Candidate pair specification.
-
-    Returns
-    -------
-    Path
-        Path to the rendered crop image.
-    """
-
-    crop_key = (spec.next_index, int(round(spec.crop_y_max)))
-    cached_fp = crop_cache.get(crop_key)
-
-    if cached_fp is not None:
-        return cached_fp
-
-    crop_fp = output_dir / f"{next_page_index:04}_top_to_item_{spec.next_index:03}.png"
-    crop_image_to_ymax(
-        input_png_fp=next_page_image_fp, output_png_fp=crop_fp, y_max=spec.crop_y_max
-    )
-    crop_cache[crop_key] = crop_fp
-
-    return crop_fp
-
-
-def _extract_figure_preview(figure: dict[str, Any], max_chars: int) -> dict[str, str]:
+def _extract_figure_preview(
+    *, figure: dict[str, Any], max_chars: int
+) -> dict[str, str]:
     """Extract verification fields from a figure dictionary.
 
     Parameters
@@ -364,7 +294,9 @@ def _make_block_excerpt(
     figure_preview = {}
 
     if isinstance(figure, dict):
-        figure_preview = _extract_figure_preview(figure, max_text_chars)
+        figure_preview = _extract_figure_preview(
+            figure=figure, max_chars=max_text_chars
+        )
 
     output: dict[str, Any] = {
         "kind": "block",
@@ -414,26 +346,25 @@ def _make_table_excerpt(
 
     rows = item.get("rows") or []
     header_row_count = int(item.get("header_row_count") or 0)
-
     header_rows = rows[: min(header_row_count, preview_rows)]
     body_rows = rows[header_row_count:]
     top_body = body_rows[:preview_rows]
 
     # Show bottom rows whenever the table extends beyond the top preview, but
-    # de-duplicate any overlap (small tables where top and bottom slices intersect).
+    # deduplicate any overlap (small tables where top and bottom slices intersect).
+    bottom_body: list[Any] = []
+
     if len(body_rows) > preview_rows:
         bottom_slice = body_rows[-preview_rows:]
 
         # Only keep rows from the bottom slice that aren't already in the top slice.
-        top_end_index = preview_rows  # index into body_rows
+        top_end_index = preview_rows  # Index into body_rows
         bottom_start_index = len(body_rows) - preview_rows
         bottom_body = (
             bottom_slice
             if bottom_start_index >= top_end_index
             else body_rows[top_end_index:]
         )
-    else:
-        bottom_body = []
 
     return {
         "kind": "table",
@@ -457,12 +388,19 @@ def _make_table_excerpt(
 
 
 def _ordered_next_candidates(
-    *, image_height: float, items: list[Block | Table], prev_item: Block | Table
+    *,
+    image_height: float,
+    items: list[Block | Table],
+    k: int = 3,
+    prev_item: Block | Table,
+    visible_y_max: float | None = None,
 ) -> list[tuple[int, Block | Table]]:
     """Return ordered next-page candidates for a given previous-page anchor.
 
     Same-kind matches are ranked before cross-kind matches while preserving the
-    reading-order stability returned by `top_continuity_candidates_paired`.
+    reading-order stability. The top candidate is initially picked using
+    `_pick_topmost`, and subsequent items are added to a pool of up to `k` candidates
+    before a final re-ordering strictly enforces same-kind priority.
 
     Parameters
     ----------
@@ -470,27 +408,79 @@ def _ordered_next_candidates(
         The height of the page image in pixels.
     items
         List of PageIR items on the next page.
+    k
+        Maximum number of candidates to return. Must be >= 1.
     prev_item
         The chosen previous page candidate item.
+    visible_y_max
+        If provided, restrict candidate selection to items whose bbox intersects the
+        visible crop range [0, visible_y_max] in full-page coordinates.
 
     Returns
     -------
     list[tuple[int, Block | Table]]
         List of (item_index, item) pairs ordered by same-kind priority and reading
-        order.
+        order. Length is in [1, k].
+
+    Raises
+    ------
+    ValueError
+        If no non-artifact items are found.
+        If no top-crop-visible candidates are found when visible_y_max is provided.
     """
 
-    next_candidates = top_continuity_candidates_paired(
-        image_height=image_height, items=items, prev_item=prev_item, visible_y_max=None
-    )
-    other_kind = [
-        (index, item) for index, item in next_candidates if item.kind != prev_item.kind
-    ]
-    same_kind = [
+    assert k >= 1, f"k must be >= 1, got {k}"
+
+    # Build the candidate pool once and reuse for both primary pick and extras.
+    candidates = _filter_candidate_pool(image_height=image_height, items=items)
+
+    if visible_y_max is not None:
+        candidates = _apply_visible_crop(
+            candidates=candidates, y_max=visible_y_max, y_min=0.0
+        )
+
+    if not candidates:
+        raise ValueError("No non-artifact items found.")
+
+    # Sort by top-edge ascending.
+    candidates.sort(key=lambda p: float(p[1].bbox[1]))
+
+    # Pick the primary candidate using topmost logic.
+    first_i, first_item = _pick_topmost(candidates=candidates, prev_item=prev_item)
+
+    next_candidates: list[tuple[int, Block | Table]] = [(first_i, first_item)]
+    seen: set[int] = {first_i}
+
+    same_kind_pool: list[tuple[int, Block | Table]] = []
+    other_kind_pool: list[tuple[int, Block | Table]] = []
+
+    for i, item in candidates:
+        # For blocks, avoid heading/caption as text anchors.
+        if i in seen or (item.kind == "block" and _is_heading_or_caption_block(item)):
+            continue
+
+        if item.kind == prev_item.kind:
+            same_kind_pool.append((i, item))
+        else:
+            other_kind_pool.append((i, item))
+
+    # Fill the candidate list up to `k` elements.
+    for bucket in (same_kind_pool, other_kind_pool):
+        for i, item in bucket:
+            if len(next_candidates) >= k:
+                break
+
+            next_candidates.append((i, item))
+
+    # Finally, strictly enforce same-kind before other-kind for the `k` selected items.
+    same_kind_final = [
         (index, item) for index, item in next_candidates if item.kind == prev_item.kind
     ]
+    other_kind_final = [
+        (index, item) for index, item in next_candidates if item.kind != prev_item.kind
+    ]
 
-    return same_kind + other_kind
+    return same_kind_final + other_kind_final
 
 
 def _pair_priority_key(
@@ -504,7 +494,7 @@ def _pair_priority_key(
     1. Positive continuations at or above `min_confidence_to_select_positive`.
     2. All remaining attempts.
     3. Within a bucket, prefer higher confidence, then lower candidate ranks, then
-       same-kind matches, then aligned boundary hints.
+        same-kind matches, then aligned boundary hints.
 
     Parameters
     ----------
@@ -525,7 +515,18 @@ def _pair_priority_key(
         verdict.is_continuation
         and verdict.confidence >= config.min_confidence_to_select_positive
     )
+
     same_kind_penalty = 0 if spec.prev_item.kind == spec.next_item.kind else 1
+
+    next_boundary_good = spec.next_item.boundary in {
+        ItemBoundary.BOTH,
+        ItemBoundary.RESUMED,
+    }
+    prev_boundary_good = spec.prev_item.boundary in {
+        ItemBoundary.BOTH,
+        ItemBoundary.TRUNCATED,
+    }
+    boundary_penalty = 0 if next_boundary_good and prev_boundary_good else 1
 
     return (
         0 if is_strong_positive else 1,
@@ -533,31 +534,8 @@ def _pair_priority_key(
         spec.prev_rank,
         spec.next_rank,
         same_kind_penalty,
-        _boundary_hint_priority(next_item=spec.next_item, prev_item=spec.prev_item),
+        boundary_penalty,
     )
-
-
-def _pair_specific_crop_y_max(
-    *, image_height: float, item: Block | Table, padding_px: int
-) -> float:
-    """Return the pair-specific crop limit for the next-page evidence image.
-
-    Parameters
-    ----------
-    image_height
-        Height of the next page image in pixels.
-    item
-        Candidate continuation item on the next page.
-    padding_px
-        Extra pixels to include below the candidate.
-
-    Returns
-    -------
-    float
-        Clamped crop limit in full-page coordinates.
-    """
-
-    return min(float(image_height), float(item.bbox[3]) + float(padding_px))
 
 
 def _pick_bottommost(
@@ -637,7 +615,7 @@ def _pick_topmost(
 ) -> tuple[int, Block | Table]:
     """Pick the best top-of-page candidate from a pre-sorted list.
 
-    Candidates must already be sorted by top-edge (y0) ascending.
+    NB: Candidates must already be sorted by top-edge (y0) ascending.
 
     Selection priority:
 
@@ -687,63 +665,6 @@ def _pick_topmost(
         None,
     )
     return valid_match if valid_match is not None else candidates[0]
-
-
-def _select_successful_attempt(
-    *, config: VerificationConfig, successful_attempts: list[VerifiedCandidateAttempt]
-) -> VerifiedCandidateAttempt:
-    """Select the best explanatory attempt for a page boundary.
-
-    This selection is independent from the separate patch gate governed by
-    `min_confidence_to_patch`.
-
-    Parameters
-    ----------
-    config
-        The verification configuration containing the confidence threshold.
-    successful_attempts
-        List of successful verification attempts to select from.
-
-    Returns
-    -------
-    VerifiedCandidateAttempt
-        The selected attempt with the highest priority according to the defined ranking
-        policy.
-    """
-
-    return min(
-        successful_attempts,
-        key=lambda attempt: _pair_priority_key(attempt=attempt, config=config),
-    )
-
-
-def _should_stop_after_attempt(
-    *, attempt: VerifiedCandidateAttempt, config: VerificationConfig
-) -> bool:
-    """Return whether verification can stop early after a successful attempt.
-
-    Early exit is intentionally conservative: only the primary-primary pair may short
-    circuit the search, and only when it is already patchable.
-
-    Parameters
-    ----------
-    attempt
-        The successful verification attempt to evaluate.
-    config
-        The verification configuration containing the confidence threshold.
-
-    Returns
-    -------
-    bool
-        True if the attempt is the primary-primary pair and is patchable, False
-        otherwise.
-    """
-
-    return (
-        attempt.spec.next_rank == 0
-        and attempt.spec.prev_rank == 0
-        and _is_patchable_positive(config=config, verdict=attempt.verdict)
-    )
 
 
 def _table_row_preview(*, max_cell_chars: int, row: dict[str, Any]) -> list[str]:
@@ -849,28 +770,52 @@ def bottom_continuity_candidates(
     return output
 
 
-def crop_image_to_ymax(
-    *, input_png_fp: Path, output_png_fp: Path, y_max: float
-) -> None:
-    """Crop a rendered page PNG to [0, y_max] in pixel coordinates.
+def ensure_pair_specific_crop(
+    *,
+    crop_cache: dict[tuple[int, int], Path],
+    next_page_image_fp: Path,
+    next_page_index: int,
+    output_dir: Path,
+    spec: CandidatePairSpec,
+) -> Path:
+    """Create or reuse the next-page crop for a candidate pair.
 
     Parameters
     ----------
-    input_png_fp
-        Full-page PNG path (the extraction-time rendered page image).
-    output_png_fp
-        Where to write the cropped PNG.
-    y_max
-        The maximum Y coordinate (in pixels) to crop to. Values outside the image
-        height will be clamped to the image bounds.
+    crop_cache
+        Cache from crop key to rendered crop path.
+    next_page_image_fp
+        Full-page PNG for page N+1.
+    next_page_index
+        Zero-based page index of the next page.
+    output_dir
+        Directory where pair-specific crops should be written.
+    spec
+        Candidate pair specification.
+
+    Returns
+    -------
+    Path
+        Path to the rendered crop image.
     """
 
-    with Image.open(input_png_fp) as img:
-        w, h = img.size
-        y = max(1, min(int(round(y_max)), h))
+    crop_key = (spec.next_index, int(round(spec.crop_y_max)))
+    cached_fp = crop_cache.get(crop_key)
 
-        make_dir(output_png_fp.parent)
-        img.crop((0, 0, w, y)).save(output_png_fp)
+    if cached_fp is not None:
+        return cached_fp
+
+    crop_fp = output_dir / f"{next_page_index:04}_top_to_item_{spec.next_index:03}.png"
+    make_dir(crop_fp.parent)
+
+    with Image.open(next_page_image_fp) as img:
+        w, h = img.size
+        y = max(1, min(int(round(spec.crop_y_max)), h))
+        img.crop((0, 0, w, y)).save(crop_fp)
+
+    crop_cache[crop_key] = crop_fp
+
+    return crop_fp
 
 
 def execute_verification_attempts(
@@ -915,7 +860,7 @@ def execute_verification_attempts(
     successful_attempts: list[VerifiedCandidateAttempt] = []
 
     for attempt_no, spec in enumerate(pairs):
-        crop_fp = _ensure_pair_specific_crop(
+        crop_fp = ensure_pair_specific_crop(
             crop_cache=crop_cache,
             next_page_image_fp=next_page_image_fp,
             next_page_index=page_index + 1,
@@ -958,6 +903,8 @@ def execute_verification_attempts(
             attempt_no=attempt_no, crop_fp=crop_fp, spec=spec, verdict=verdict
         )
         successful_attempts.append(attempt)
+        is_eligible_for_patch = _is_patchable_positive(config=config, verdict=verdict)
+
         attempt_summaries.append(
             {
                 "attempt_no": attempt_no,
@@ -965,10 +912,7 @@ def execute_verification_attempts(
                 "continuation_kind": verdict.continuation_kind.value,
                 "crop_y_max": spec.crop_y_max,
                 "crop_png_fp": str(crop_fp),
-                "eligible_for_patch": _is_patchable_positive(
-                    config=config,
-                    verdict=verdict,
-                ),
+                "eligible_for_patch": is_eligible_for_patch,
                 "is_continuation": verdict.is_continuation,
                 "next_item_index": spec.next_index,
                 "next_rank": spec.next_rank,
@@ -978,7 +922,13 @@ def execute_verification_attempts(
             }
         )
 
-        if _should_stop_after_attempt(attempt=attempt, config=config):
+        # Only the primary-primary pair may short circuit the search, and only when it
+        # is already patchable.
+        if (
+            attempt.spec.next_rank == 0
+            and attempt.spec.prev_rank == 0
+            and is_eligible_for_patch
+        ):
             break
 
     if not successful_attempts:
@@ -990,8 +940,10 @@ def execute_verification_attempts(
             f"{page_index}->{page_index + 1}. Errors: {errors}"
         )
 
-    selected_attempt = _select_successful_attempt(
-        config=config, successful_attempts=successful_attempts
+    # Select the best explanatory attempt using the priority key ranking policy.
+    selected_attempt = min(
+        successful_attempts,
+        key=lambda attempt_: _pair_priority_key(attempt=attempt_, config=config),
     )
 
     return {
@@ -1061,13 +1013,13 @@ def generate_candidate_pairs(
                 continue
 
             seen_pairs.add(pair_key)
+            crop_y_max = min(
+                float(next_page_ir.image_height),
+                float(next_item.bbox[3]) + float(config.next_page_crop_padding_px),
+            )
             pair_specs.append(
                 CandidatePairSpec(
-                    crop_y_max=_pair_specific_crop_y_max(
-                        image_height=next_page_ir.image_height,
-                        item=next_item,
-                        padding_px=config.next_page_crop_padding_px,
-                    ),
+                    crop_y_max=crop_y_max,
                     next_index=next_index,
                     next_item=next_item,
                     next_rank=next_rank,
@@ -1112,29 +1064,21 @@ def make_verification_excerpt(
     bbox = item["bbox"]
     kind = item["kind"]
     local_code = item.get("local_code", None)
+    assert kind in ("block", "table"), f"Unexpected item kind: {kind}"
 
-    if kind == "table":
-        return _make_table_excerpt(
+    return (
+        _make_table_excerpt(
             bbox=bbox,
             item=item,
             local_code=local_code,
             max_cell_chars=max_cell_chars,
             preview_rows=preview_rows,
         )
-
-    if kind == "block":
-        return _make_block_excerpt(
+        if kind == "table"
+        else _make_block_excerpt(
             bbox=bbox, item=item, local_code=local_code, max_text_chars=max_text_chars
         )
-
-    return {
-        "kind": kind or "unknown",
-        "bbox": bbox,
-        "local_code": local_code,
-        "preview": truncate_text(
-            max_chars=max_text_chars, text=_get_text_content(item.get("text"))
-        ),
-    }
+    )
 
 
 def strip_continuity_hints(item_json: dict[str, Any]) -> dict[str, Any]:
@@ -1157,100 +1101,6 @@ def strip_continuity_hints(item_json: dict[str, Any]) -> dict[str, Any]:
     # Only tables have repeats_header.
     if output.get("kind") == "table":
         output.pop("repeats_header", None)
-
-    return output
-
-
-def top_continuity_candidates_paired(
-    *,
-    image_height: float,
-    items: list[Block | Table],
-    k: int = 3,
-    prev_item: Block | Table,
-    visible_y_max: float | None = None,
-) -> list[tuple[int, Block | Table]]:
-    """Return up to k strong "top of page" candidates for continuity checks.
-
-    This is a generalization of `topmost_continuity_candidate_paired`. The first
-    element of the returned list is guaranteed to match the choice made by
-    `topmost_continuity_candidate_paired` and subsequent candidates are additional
-    top-visible items ordered to try same-kind continuations first (Table -> Table,
-    Block -> Block), then cross-kind.
-
-    Parameters
-    ----------
-    image_height
-        The height of the page image in pixels.
-    items
-        List of PageIR items on the next page.
-    k
-        Maximum number of candidates to return. Must be >= 1.
-    prev_item
-        The chosen previous page candidate item.
-    visible_y_max
-        If provided, restrict candidate selection to items whose bbox intersects the
-        visible crop range [0, visible_y_max] in full-page coordinates.
-
-    Returns
-    -------
-    list[tuple[int, Block | Table]]
-        A list of (item_index, item) pairs. Length is in [1, k].
-
-    Raises
-    ------
-    ValueError
-        If no non-artifact items are found.
-        If no top-crop-visible candidates are found when visible_y_max is provided.
-    """
-
-    assert k >= 1, f"k must be >= 1, got {k}"
-
-    # Build the candidate pool once and reuse for both primary pick and extras.
-    candidates = _filter_candidate_pool(image_height=image_height, items=items)
-
-    if visible_y_max is not None:
-        cropped = _apply_visible_crop(
-            candidates=candidates, y_max=visible_y_max, y_min=0.0
-        )
-        candidates = cropped
-
-    if not candidates:
-        raise ValueError("No non-artifact items found.")
-
-    # Sort by top-edge ascending.
-    candidates.sort(key=lambda p: float(p[1].bbox[1]))
-
-    # Pick the primary candidate using the same logic as
-    # topmost_continuity_candidate_paired.
-    first_i, first_item = _pick_topmost(candidates=candidates, prev_item=prev_item)
-
-    output: list[tuple[int, Block | Table]] = [(first_i, first_item)]
-    seen: set[int] = {first_i}
-
-    # Prefer same-kind first, then cross-kind, while keeping reading-order stability.
-    same_kind: list[tuple[int, Block | Table]] = []
-    other_kind: list[tuple[int, Block | Table]] = []
-
-    for i, item in candidates:
-        # For blocks, avoid heading/caption as text anchors.
-        if i in seen or (item.kind != "table" and _is_heading_or_caption_block(item)):
-            continue
-
-        if item.kind == prev_item.kind:
-            same_kind.append((i, item))
-        else:
-            other_kind.append((i, item))
-
-    for bucket in (same_kind, other_kind):
-        for i, item in bucket:
-            if len(output) >= k:
-                break
-
-            if i in seen:
-                continue
-
-            output.append((i, item))
-            seen.add(i)
 
     return output
 
@@ -1351,9 +1201,9 @@ def verify_single_page_pair(
     selected_verdict.prev_page_index = page_index
     record = EdgeVerdictRecord(
         next_item_index=result["selected_next_index"],
-        next_page_index=page_index + 1,
+        next_page_index=selected_verdict.next_page_index,
         prev_item_index=result["selected_prev_index"],
-        prev_page_index=page_index,
+        prev_page_index=selected_verdict.prev_page_index,
         verdict=selected_verdict,
     )
 
