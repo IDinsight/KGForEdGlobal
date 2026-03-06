@@ -932,7 +932,11 @@ def ensure_pair_specific_crop(
     if cached_fp is not None:
         return cached_fp
 
-    crop_fp = output_dir / f"{next_page_index:04}_top_to_item_{spec.next_index:03}.png"
+    crop_y_max_px = int(round(spec.crop_y_max))
+    crop_fp = output_dir / (
+        f"{next_page_index:04}_top_to_item_{spec.next_index:03}_"
+        f"ymax_{crop_y_max_px:05}.png"
+    )
     make_dir(crop_fp.parent)
 
     with Image.open(next_page_image_fp) as img:
