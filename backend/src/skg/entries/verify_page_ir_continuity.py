@@ -37,18 +37,16 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR
-from skg.page_ir_verification.compile_continuity import (
-    compile_continuity_from_edge_verdicts,
-)
+from skg.page_ir_verification.compile_continuity import run_compile_step
 from skg.page_ir_verification.llm import VerificationUsageTracker
-from skg.page_ir_verification.postprocess_page_irs import postprocess_verified_page_irs
+from skg.page_ir_verification.postprocess_page_irs import run_postprocess_step
 from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
     PageIRVerificationDirs,
     cross_check_extraction_run,
     load_edge_verdict_from_pair_report,
     persist_verification_run,
-    save_verified_page_irs,
+    run_save_step,
 )
 from skg.page_ir_verification.verify_page_pairs import verify_single_page_pair
 from skg.schemas import RunConfig, RunCtx, VerificationConfig
@@ -92,6 +90,12 @@ def verify_page_ir_continuity(
     ------
     RuntimeError
         If continuity verification fails completely for any page pair.
+        If the compile step needs to run but cannot because of existing outputs while
+            overwrite=False.
+        If the postprocess step needs to run but cannot because of existing outputs
+            while overwrite=False.
+        If the save step needs to run but cannot because of existing outputs while
+            overwrite=False.
     """
 
     # Edge records will hold one record per boundary (page i -> i + 1) containing:
@@ -133,24 +137,30 @@ def verify_page_ir_continuity(
         if record:
             edge_records.append(record)
 
-    # Compile continuity edits from edge verdicts.
-    verified_table_edges = compile_continuity_from_edge_verdicts(
+    compile_ran, verified_table_edges = run_compile_step(
+        config=config,
         edge_records=edge_records,
-        min_confidence_to_patch=config.min_confidence_to_patch,
-        min_confidence_to_select_positive=config.min_confidence_to_select_positive,
         page_irs=page_irs,
         verification_dirs=verification_dirs,
     )
 
-    # Perform postprocess fixes.
-    postprocess_verified_page_irs(
+    postprocess_ran = run_postprocess_step(
+        compile_ran=compile_ran,
+        config=config,
         page_irs=page_irs,
         verification_dirs=verification_dirs,
-        verified_table_continuation_edges=verified_table_edges,
+        verified_table_edges=verified_table_edges,
     )
 
-    # Write verified page IRs after all edits have been applied.
-    save_verified_page_irs(page_irs=page_irs, verification_dirs=verification_dirs)
+    run_save_step(
+        compile_ran=compile_ran,
+        config=config,
+        page_irs=page_irs,
+        postprocess_ran=postprocess_ran,
+        start=start,
+        stop=stop,
+        verification_dirs=verification_dirs,
+    )
 
 
 @cli.command()

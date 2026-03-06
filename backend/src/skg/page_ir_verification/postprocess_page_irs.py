@@ -19,6 +19,7 @@ from skg.page_ir_extraction.schemas import (
     TextUnit,
 )
 from skg.page_ir_verification.utils import PageIRVerificationDirs, is_artifact
+from skg.schemas import VerificationConfig
 from skg.utils.constants import BlockType, CaptionTablePrefixes
 from skg.utils.general import write_to_json
 
@@ -1103,3 +1104,75 @@ def propagate_table_local_codes(
         last_page_idx = page_idx
 
     return changes
+
+
+def run_postprocess_step(
+    *,
+    compile_ran: bool,
+    config: VerificationConfig,
+    page_irs: dict[int, PageIR],
+    verification_dirs: PageIRVerificationDirs,
+    verified_table_edges: set[tuple[int, int, int, int]] | None,
+) -> bool:
+    """Execute the postprocess step, skipping if outputs already exist and
+    overwrite=False.
+
+    Parameters
+    ----------
+    compile_ran
+        Whether the compile step ran in this execution. This is used to guard against
+        the case where continuity_compile_report.json already exists while
+        overwrite=False, which implies the compile step did not run in this execution
+        and the in-memory PageIRs do not include the continuity edits. In this case, we
+        must skip postprocess to avoid writing continuity-unaware PageIRs, which would
+        be inconsistent with the compile report and could cause downstream issues.
+    config
+        The verification run configuration.
+    page_irs
+        The dictionary of page IRs by page index.
+    verification_dirs
+        The verification directories.
+    verified_table_edges
+        Optional in-memory set of VERIFIED table-continuation edges. When omitted, the
+        edges are reloaded from the compile report instead.
+
+    Returns
+    -------
+    bool
+        True if the postprocess step was executed, False if it was skipped due to
+        existing outputs and overwrite=False.
+
+    Raises
+    ------
+    RuntimeError
+        If continuity_compile_report.json already exists while overwrite=False, which
+        implies the compile step did not run in this execution and the in-memory
+        PageIRs do not include the continuity edits. In this case, we must skip
+        postprocess to avoid writing continuity-unaware PageIRs, which would be
+        inconsistent with the compile report and could cause downstream issues.
+    """
+
+    postprocess_report_fp = verification_dirs.root / "postprocess_report.json"
+
+    if not config.overwrite and postprocess_report_fp.exists():
+        logger.warning(
+            "Skipping postprocess because postprocess_report.json already exists and "
+            "overwrite=False."
+        )
+        return False
+
+    if not compile_ran:
+        raise RuntimeError(
+            "Cannot run postprocess_verified_page_irs() because "
+            "continuity_compile_report.json already exists while overwrite=False, "
+            "but the in-memory PageIRs for this run do not include the compiled "
+            "continuity edits. Delete the stale verification outputs or rerun with "
+            "overwrite=True."
+        )
+
+    postprocess_verified_page_irs(
+        page_irs=page_irs,
+        verification_dirs=verification_dirs,
+        verified_table_continuation_edges=verified_table_edges,
+    )
+    return True
