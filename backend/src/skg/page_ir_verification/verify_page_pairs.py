@@ -999,6 +999,13 @@ def execute_verification_attempts(
             spec=spec,
         )
 
+        logger.info(
+            f"Attempt {attempt_no + 1}/{len(pairs)} for pages "
+            f"{page_index}-{page_index + 1}: prev_rank={spec.prev_rank} "
+            f"next_rank={spec.next_rank} (prev_idx={spec.prev_index}, "
+            f"next_idx={spec.next_index})"
+        )
+
         try:
             verdict = verify_page_ir_pairs(
                 model=config.model,
@@ -1053,14 +1060,17 @@ def execute_verification_attempts(
             }
         )
 
-        # Only the primary-primary pair may short circuit the search, and only when it
-        # is already patchable.
-        if (
-            attempt.spec.next_rank == 0
-            and attempt.spec.prev_rank == 0
-            and is_eligible_for_patch
-        ):
-            break
+        # The primary-primary pair may short-circuit the search when:
+        #  1. It is a patchable positive, OR
+        #  2. It is a confident negative (no point trying secondary candidates).
+        if attempt.spec.next_rank == 0 and attempt.spec.prev_rank == 0:
+            if is_eligible_for_patch:
+                break
+            if (
+                not verdict.is_continuation
+                and verdict.confidence >= config.min_confidence_to_patch
+            ):
+                break
 
     if not successful_attempts:
         errors = [
