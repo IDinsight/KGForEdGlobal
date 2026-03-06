@@ -894,7 +894,7 @@ def fix_false_truncated_prose_before_table(
             ItemBoundary.RESUMED if old == ItemBoundary.BOTH else ItemBoundary.COMPLETE
         )
         last_prev.boundary = new_boundary
-        prev.boundary_state = derive_page_boundary_state(page_ir=prev)
+        prev.boundary_state = derive_page_boundary_state(prev)
 
         changes.append(
             {

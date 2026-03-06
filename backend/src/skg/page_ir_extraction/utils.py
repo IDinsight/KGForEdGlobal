@@ -12,7 +12,6 @@ import pymupdf
 
 from loguru import logger
 from PIL import Image
-from pydantic_ai.result import RunUsage
 
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR
@@ -24,131 +23,6 @@ from skg.utils.pdf import compute_doc_key
 _MAX_REPLACEMENT_CHAR_RATIO = 0.02
 _MIN_PRINTABLE_RATIO = 0.90
 _MIN_TEXT_LENGTH = 20
-
-
-@dataclass
-class AgentUsageBucket:
-    """Accumulated token usage for a single agent type (e.g., extraction or validation).
-
-    Attributes
-    ----------
-    agent_name
-        Human-readable label (e.g., "extraction", "validation").
-    cache_read_tokens
-        Total cache-read input tokens across all calls.
-    cache_write_tokens
-        Total cache-write tokens across all calls.
-    input_tokens
-        Total prompt/input tokens across all calls.
-    output_tokens
-        Total completion/output tokens across all calls.
-    requests
-        Total API requests (including retries within a single agent run).
-    runs
-        Number of agent.run_sync() invocations.
-    """
-
-    agent_name: str
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    requests: int = 0
-    runs: int = 0
-
-    def add_run_usage(self, usage: RunUsage) -> None:
-        """Accumulate a single RunUsage into this bucket.
-
-        Parameters
-        ----------
-        usage
-            The RunUsage returned by `result.usage()`.
-        """
-
-        self.cache_read_tokens += usage.cache_read_tokens
-        self.cache_write_tokens += usage.cache_write_tokens
-        self.input_tokens += usage.input_tokens
-        self.output_tokens += usage.output_tokens
-        self.requests += usage.requests
-        self.runs += 1
-
-    def to_dict(self) -> dict[str, int | str]:
-        """Serialize to a JSON-friendly dictionary.
-
-        Returns
-        -------
-        dict[str, int | str]
-            Dictionary with all tracked fields.
-        """
-
-        return {
-            "agent_name": self.agent_name,
-            "cache_read_tokens": self.cache_read_tokens,
-            "cache_write_tokens": self.cache_write_tokens,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "requests": self.requests,
-            "runs": self.runs,
-            "total_tokens": self.input_tokens + self.output_tokens,
-        }
-
-
-@dataclass
-class ExtractionUsageTracker:
-    """Track LLM token usage across the entire extraction pipeline run.
-
-    Maintains separate buckets for each agent type and provides a summary suitable for
-    persisting in `extraction_run.json`.
-    """
-
-    extraction: AgentUsageBucket
-    validation: AgentUsageBucket
-
-    def __init__(self) -> None:
-        """Initialize empty usage buckets for extraction and validation agents."""
-
-        self.extraction = AgentUsageBucket(agent_name="extraction")
-        self.validation = AgentUsageBucket(agent_name="validation")
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize to a JSON-friendly dictionary with per-agent and total summaries.
-
-        Returns
-        -------
-        dict[str, object]
-            Dictionary containing `agents` breakdown and `totals`.
-        """
-
-        extraction_d = self.extraction.to_dict()
-        validation_d = self.validation.to_dict()
-
-        totals = {
-            "cache_read_tokens": (
-                self.extraction.cache_read_tokens + self.validation.cache_read_tokens
-            ),
-            "cache_write_tokens": (
-                self.extraction.cache_write_tokens + self.validation.cache_write_tokens
-            ),
-            "input_tokens": (
-                self.extraction.input_tokens + self.validation.input_tokens
-            ),
-            "output_tokens": (
-                self.extraction.output_tokens + self.validation.output_tokens
-            ),
-            "requests": self.extraction.requests + self.validation.requests,
-            "runs": self.extraction.runs + self.validation.runs,
-            "total_tokens": (
-                self.extraction.input_tokens
-                + self.extraction.output_tokens
-                + self.validation.input_tokens
-                + self.validation.output_tokens
-            ),
-        }
-
-        return {
-            "agents": {"extraction": extraction_d, "validation": validation_d},
-            "totals": totals,
-        }
 
 
 @dataclass(frozen=True)

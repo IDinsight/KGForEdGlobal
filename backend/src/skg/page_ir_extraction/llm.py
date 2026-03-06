@@ -23,6 +23,7 @@ Orchestration flow
 """
 
 # Standard Library
+from dataclasses import dataclass
 from pathlib import Path
 
 # Third Party Library
@@ -41,10 +42,7 @@ from skg.page_ir_extraction.prompts import (
     validate_page_ir_extraction,
 )
 from skg.page_ir_extraction.schemas import ExtractionValidationVerdict, PageIR
-from skg.page_ir_extraction.utils import (
-    ExtractionUsageTracker,
-    extract_page_text_layer_hints,
-)
+from skg.page_ir_extraction.utils import extract_page_text_layer_hints
 from skg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
     validate_artifacts_are_true_artifacts,
@@ -63,6 +61,65 @@ from skg.page_ir_extraction.validators import (
     validate_table_integrity,
 )
 from skg.utils.constants import BlockType
+from skg.utils.general import AgentUsageBucket
+
+
+@dataclass
+class ExtractionUsageTracker:
+    """Track LLM token usage across the entire extraction pipeline run.
+
+    Maintains separate buckets for each agent type and provides a summary suitable for
+    persisting in `extraction_run.json`.
+    """
+
+    extraction: AgentUsageBucket
+    validation: AgentUsageBucket
+
+    def __init__(self) -> None:
+        """Initialize empty usage buckets for extraction and validation agents."""
+
+        self.extraction = AgentUsageBucket(agent_name="extraction")
+        self.validation = AgentUsageBucket(agent_name="validation")
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to a JSON-friendly dictionary with per-agent and total summaries.
+
+        Returns
+        -------
+        dict[str, object]
+            Dictionary containing `agents` breakdown and `totals`.
+        """
+
+        extraction_d = self.extraction.to_dict()
+        validation_d = self.validation.to_dict()
+
+        totals = {
+            "cache_read_tokens": (
+                self.extraction.cache_read_tokens + self.validation.cache_read_tokens
+            ),
+            "cache_write_tokens": (
+                self.extraction.cache_write_tokens + self.validation.cache_write_tokens
+            ),
+            "input_tokens": (
+                self.extraction.input_tokens + self.validation.input_tokens
+            ),
+            "output_tokens": (
+                self.extraction.output_tokens + self.validation.output_tokens
+            ),
+            "requests": self.extraction.requests + self.validation.requests,
+            "runs": self.extraction.runs + self.validation.runs,
+            "total_tokens": (
+                self.extraction.input_tokens
+                + self.extraction.output_tokens
+                + self.validation.input_tokens
+                + self.validation.output_tokens
+            ),
+        }
+
+        return {
+            "agents": {"extraction": extraction_d, "validation": validation_d},
+            "totals": totals,
+        }
 
 
 def _run_validation_agent(

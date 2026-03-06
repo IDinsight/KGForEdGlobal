@@ -40,6 +40,7 @@ from skg.page_ir_extraction.schemas import PageIR
 from skg.page_ir_verification.compile_continuity import (
     compile_continuity_from_edge_verdicts,
 )
+from skg.page_ir_verification.llm import VerificationUsageTracker
 from skg.page_ir_verification.postprocess_page_irs import postprocess_verified_page_irs
 from skg.page_ir_verification.utils import (
     EdgeVerdictRecord,
@@ -49,10 +50,7 @@ from skg.page_ir_verification.utils import (
     persist_verification_run,
     save_verified_page_irs,
 )
-from skg.page_ir_verification.verify_page_pairs import (
-    VerificationUsageTracker,
-    verify_single_page_pair,
-)
+from skg.page_ir_verification.verify_page_pairs import verify_single_page_pair
 from skg.schemas import RunConfig, RunCtx, VerificationConfig
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key, validate_page_count
