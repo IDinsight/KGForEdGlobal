@@ -115,7 +115,10 @@ def validate_repeats_header_requires_table_item(
     ------
     QualityError
         If set_next_table_repeats_header is set but the candidate table cannot safely
-        accept the requested repeats_header value.
+        accept the requested repeats_header value. set_next_table_repeats_header=False
+        is allowed even when header_row_count > 0, because the patch is a visual
+        repeated-header signal rather than a guarantee that no header-like rows were
+        extracted.
     """
 
     if verdict.set_next_table_repeats_header is None:
@@ -133,14 +136,6 @@ def validate_repeats_header_requires_table_item(
     ):
         raise QualityError(
             "set_next_table_repeats_header=True requires next_item.header_row_count >= 1."
-        )
-
-    if (
-        verdict.set_next_table_repeats_header is False
-        and next_item.header_row_count > 0
-    ):
-        raise QualityError(
-            "set_next_table_repeats_header=False requires next_item.header_row_count == 0."
         )
 
 

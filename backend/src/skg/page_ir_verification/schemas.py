@@ -44,7 +44,12 @@ class PageIRContinuityVerdict(BaseSchema):
     )
     set_next_table_repeats_header: Optional[bool] = Field(
         None,
-        description=f"Only allowed when is_continuation=true AND continuation_kind='{PageContinuationKind.TABLE.value}' AND next candidate is a table. True/false patches repeats_header; null leaves as-is.",
+        description=(
+            f"Only allowed when is_continuation=true AND "
+            f"continuation_kind='{PageContinuationKind.TABLE.value}' AND "
+            f"next candidate is a table. True/false patches the visual repeats_header signal; "
+            f"null leaves as-is. False does not imply header_row_count == 0."
+        ),
     )
 
     @model_validator(mode="after")

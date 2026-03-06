@@ -187,7 +187,12 @@ class Table(BaseSchema):
     )
     repeats_header: Optional[bool] = Field(
         None,
-        description="For tables that continue from a previous page, indicates whether the header rows are visibly repeated on this page. Null if unknown.",
+        description=(
+            "For tables that continue from a previous page, indicates whether the "
+            "repeated table header rows are visibly repeated on this page. "
+            "Null if unknown. This is a visual continuation signal, not a guarantee "
+            "that header_row_count is zero when false."
+        ),
     )
     rows: list[TableRow] = Field(
         ...,
@@ -231,7 +236,11 @@ class Table(BaseSchema):
 
         1. repeats_header may only be set when boundary is RESUMED or BOTH.
         2. If repeats_header is True, header_row_count must be >= 1.
-        3. If repeats_header is False, header_row_count must be 0.
+
+        NB: repeats_header=False is a visual claim that the repeated table header is
+        not shown at the top of this continuation page. It does not require
+        header_row_count == 0, because extraction may still count header-like or
+        section rows at the top of the page.
 
         Returns
         -------
@@ -253,16 +262,16 @@ class Table(BaseSchema):
                 f"{ItemBoundary.RESUMED.value} or {ItemBoundary.BOTH.value}."
             )
 
-        # When the extractor is confident enough to set repeats_header explicitly,
-        # enforce that header_row_count reflects what is actually present on-page.
+        # When the extractor is confident enough to set repeats_header=True explicitly,
+        # enforce that header rows are actually present on-page.
+        #
+        # NB: repeats_header=False remains a visual signal only: the repeated table
+        # header is not shown at the top of this continuation page. That does not imply
+        # header_row_count == 0 because the extractor may still count header-like or
+        # section rows on the page.
         if self.repeats_header is True and self.header_row_count == 0:
             raise ValueError(
                 "repeats_header=True requires header_row_count >= 1 (header rows must be present)."
-            )
-
-        if self.repeats_header is False and self.header_row_count > 0:
-            raise ValueError(
-                "repeats_header=False requires header_row_count == 0 (no header rows should be counted)."
             )
 
         return self
