@@ -315,7 +315,7 @@ def verify_page_ir_pairs(
     verdict = result.output
 
     logger.info(
-        f"Verification agent verdict for pages {prev_page_index}-{next_page_index}: "
+        f"Verification agent verdict for pages {prev_page_index + 1}-{next_page_index + 1}: "
         f"is_continuation={verdict.is_continuation}, "
         f"continuation_kind={verdict.continuation_kind.value}, "
         f"confidence={verdict.confidence}"
@@ -323,7 +323,7 @@ def verify_page_ir_pairs(
 
     # Run validation agent.
     logger.info(
-        f"Running validation agent for pages {prev_page_index}-{next_page_index}..."
+        f"Running validation agent for pages {prev_page_index + 1}-{next_page_index + 1}..."
     )
 
     validation_verdict = _run_validation_agent(
@@ -345,17 +345,19 @@ def verify_page_ir_pairs(
 
     # Return original or corrected verdict.
     if validation_verdict.passed:
-        logger.success(f"Pages {prev_page_index}-{next_page_index}: validation passed.")
+        logger.success(
+            f"Pages {prev_page_index + 1}-{next_page_index + 1}: validation passed."
+        )
         return verdict
 
     logger.warning(
-        f"Pages {prev_page_index}-{next_page_index}: validation failed: "
+        f"Pages {prev_page_index + 1}-{next_page_index + 1}: validation failed: "
         f"{validation_verdict.rationale[:300]}"
     )
 
     # Schema guarantees corrected_verdict is non-null when passed=false.
     logger.info(
-        f"Pages {prev_page_index}-{next_page_index}: using corrected verdict "
+        f"Pages {prev_page_index + 1}-{next_page_index + 1}: using corrected verdict "
         f"from validation agent."
     )
 
