@@ -1045,7 +1045,8 @@ def execute_verification_attempts(
 
     for attempt_no, spec in enumerate(pairs):
         logger.info(
-            f"Verifying pages {page_index}-{page_index + 1} | attempt {attempt_no + 1}/{len(pairs)} | "
+            f"Verifying pages {page_index + 1}-{page_index + 2} | "
+            f"attempt {attempt_no + 1}/{len(pairs)} | "
             f"prev_item={spec.prev_index} (rank {spec.prev_rank}) | "
             f"next_item={spec.next_index} (rank {spec.next_rank})"
         )
@@ -1128,7 +1129,7 @@ def execute_verification_attempts(
             attempt_summaries.append(attempt_summary)
 
             logger.info(
-                f"Stopping verification early for pages {page_index}-{page_index + 1} "
+                f"Stopping verification early for pages {page_index + 1}-{page_index + 2} "
                 f"after attempt {attempt_no}: primary-primary pair is patchable positive."
             )
 
@@ -1140,7 +1141,7 @@ def execute_verification_attempts(
             attempt_summaries.append(attempt_summary)
 
             logger.info(
-                f"Stopping verification early for pages {page_index}-{page_index + 1} "
+                f"Stopping verification early for pages {page_index + 1}-{page_index + 2} "
                 f"after attempt {attempt_no}: primary-primary pair is a same-family "
                 f"high-confidence negative (confidence={verdict.confidence})."
             )
@@ -1155,7 +1156,7 @@ def execute_verification_attempts(
         ]
         raise RuntimeError(
             f"All {len(pairs)} verification attempts failed for page pair "
-            f"{page_index}->{page_index + 1}. Errors: {errors}"
+            f"{page_index + 1}->{page_index + 2}. Errors: {errors}"
         )
 
     # Select the best explanatory attempt using the priority key ranking policy.
@@ -1383,14 +1384,16 @@ def verify_single_page_pair(
     """
 
     if page_index not in page_irs or (page_index + 1) not in page_irs:
-        raise ValueError(f"Missing page IR for {page_index} or {page_index + 1}.")
+        raise ValueError(
+            f"Missing page IR for page index {page_index} or {page_index + 1}."
+        )
 
     next_page_ir = page_irs[page_index + 1]
     prev_page_ir = page_irs[page_index]
 
     if not (prev_page_ir.items and next_page_ir.items):
         logger.warning(
-            f"Skipping continuity check for pages {page_index}-{page_index + 1}: "
+            f"Skipping continuity check for pages {page_index + 1}-{page_index + 2}: "
             f"prev_items={len(prev_page_ir.items)} "
             f"next_items={len(next_page_ir.items)}"
         )
@@ -1404,7 +1407,7 @@ def verify_single_page_pair(
     )
 
     logger.info(
-        f"Verifying continuity between pages {page_index} and {page_index + 1}..."
+        f"Verifying continuity between pages {page_index + 1} and {page_index + 2}..."
     )
 
     result = execute_verification_attempts(
@@ -1452,7 +1455,7 @@ def verify_single_page_pair(
     )
 
     logger.success(
-        f"Finished verifying continuity between pages {page_index} and {page_index + 1}!"
+        f"Finished verifying continuity between pages {page_index + 1} and {page_index + 2}!"
     )
 
     return record
