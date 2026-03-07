@@ -1381,6 +1381,11 @@ def verify_single_page_pair(
     EdgeVerdictRecord | None
         The created edge verdict record if verification was performed, or None if the
         pair was skipped.
+
+    Raises
+    ------
+    ValueError
+        If the required PageIRs for the page pair are missing.
     """
 
     if page_index not in page_irs or (page_index + 1) not in page_irs:
