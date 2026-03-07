@@ -6,11 +6,41 @@ from unittest.mock import MagicMock, Mock, patch
 # Package Library
 from skg.page_ir_extraction.schemas import Block, Table, TextUnit
 from skg.page_ir_verification import verify_page_pairs
-from skg.utils.constants import BlockType
+from skg.utils.constants import BlockType, ItemBoundary
 from tests.constants import PARAM
 
 
-def create_mock_item(y0: float, y1: float) -> Mock:
+def create_mock_item_for_pick_bottommost(
+    kind: str, boundary: ItemBoundary, is_figure: bool = False, is_viable: bool = False
+) -> Mock:
+    """Helper to create a mock Block or Table with explicit routing attributes.
+
+    Parameters
+    ----------
+    kind
+        The kind of the item (e.g., 'table', 'block').
+    boundary
+        The ItemBoundary enum value.
+    is_figure
+        Whether the mocked _is_figure_block should return True.
+    is_viable
+        Whether the mocked _is_viable_nonfigure_block_anchor should return True.
+
+    Returns
+    -------
+    Mock
+        The configured mock item.
+    """
+
+    item = Mock()
+    item.kind = kind
+    item.boundary = boundary
+    item.is_figure = is_figure
+    item.is_viable = is_viable
+    return item
+
+
+def create_mock_item_for_visible_crop(y0: float, y1: float) -> Mock:
     """Helper to create a mock item with specific y0 and y1 bounding box coordinates.
 
     Parameters
@@ -84,7 +114,7 @@ class TestApplyVisibleCrop:
         """
 
         y_min, y_max = 100.0, 500.0
-        item = create_mock_item(y0, y1)
+        item = create_mock_item_for_visible_crop(y0, y1)
         candidates = [(42, item)]  # Arbitrary index 42
         result = verify_page_pairs._apply_visible_crop(
             candidates=candidates, y_max=y_max, y_min=y_min
@@ -105,8 +135,8 @@ class TestApplyVisibleCrop:
         """
 
         y_min, y_max = 100.0, 500.0
-        item_inside = create_mock_item(200, 300)
-        item_outside = create_mock_item(10, 90)
+        item_inside = create_mock_item_for_visible_crop(200, 300)
+        item_outside = create_mock_item_for_visible_crop(10, 90)
         candidates = [(0, item_inside), (1, item_outside), (2, item_inside)]
 
         result = verify_page_pairs._apply_visible_crop(
@@ -227,6 +257,178 @@ class TestFilterCandidatePool:
             image_height=1000.0, items=items
         )
         assert result == [(0, "item0"), (1, "item1")]
+
+
+@patch("skg.page_ir_verification.verify_page_pairs._is_viable_nonfigure_block_anchor")
+@patch("skg.page_ir_verification.verify_page_pairs._is_figure_block")
+class TestPickBottommost:
+    """Test suite for the _pick_bottommost selection logic."""
+
+    def setup_method(self) -> None:
+        """Setup logic to configure the mocked helper functions before each test."""
+
+        # By setting the side_effects to lambda functions, the patches will dynamically
+        # return whatever we set on our mock items in the tests.
+        self.mock_is_fig_side_effect = lambda item: getattr(item, "is_figure", False)
+        self.mock_is_viable_side_effect = lambda item: getattr(item, "is_viable", False)
+
+    def test_absolute_fallback_returns_first_item(
+        self, mock_is_figure: MagicMock, mock_is_viable: MagicMock
+    ) -> None:
+        """Test that if nothing matches any criteria, candidates[0] is returned.
+
+        Parameters
+        ----------
+        mock_is_figure
+            The mocked _is_figure_block function, which will return True if the item
+            has the attribute is_figure set to True.
+        mock_is_viable
+            The mocked _is_viable_nonfigure_block_anchor function, which will return
+            True if the item has the attribute is_viable set to True.
+        """
+
+        mock_is_figure.side_effect = self.mock_is_fig_side_effect
+        mock_is_viable.side_effect = self.mock_is_viable_side_effect
+
+        # Neither preferred, neither tables, neither figures, neither viable.
+        item0 = create_mock_item_for_pick_bottommost("block", ItemBoundary.COMPLETE)
+        item1 = create_mock_item_for_pick_bottommost("block", ItemBoundary.COMPLETE)
+
+        candidates = [(0, item0), (1, item1)]
+        result = verify_page_pairs._pick_bottommost(candidates)
+        assert result == (0, item0)
+
+    def test_fallback_to_regular_candidates(
+        self, mock_is_figure: MagicMock, mock_is_viable: MagicMock
+    ) -> None:
+        """Test that if no preferred candidates exist, it uses the regular list.
+
+        Parameters
+        ----------
+        mock_is_figure
+            The mocked _is_figure_block function, which will return True if the item
+            has the attribute is_figure set to True.
+        mock_is_viable
+            The mocked _is_viable_nonfigure_block_anchor function, which will return
+            True if the item has the attribute is_viable set to True.
+        """
+
+        mock_is_figure.side_effect = self.mock_is_fig_side_effect
+        mock_is_viable.side_effect = self.mock_is_viable_side_effect
+
+        item0 = create_mock_item_for_pick_bottommost("block", ItemBoundary.COMPLETE)
+        item1 = create_mock_item_for_pick_bottommost(
+            "table", ItemBoundary.COMPLETE
+        )  # Not preferred, but best
+        candidates = [(0, item0), (1, item1)]
+
+        result = verify_page_pairs._pick_bottommost(candidates)
+        assert result == (1, item1)
+
+    def test_preferred_figure_in_top_5(
+        self, mock_is_figure: MagicMock, mock_is_viable: MagicMock
+    ) -> None:
+        """Test that a preferred figure in the top 5 is picked if no table exists.
+
+        Parameters
+        ----------
+        mock_is_figure
+            The mocked _is_figure_block function, which will return True if the item
+            has the attribute is_figure set to True.
+        mock_is_viable
+            The mocked _is_viable_nonfigure_block_anchor function, which will return
+            True if the item has the attribute is_viable set to True.
+        """
+
+        mock_is_figure.side_effect = self.mock_is_fig_side_effect
+        mock_is_viable.side_effect = self.mock_is_viable_side_effect
+
+        item0 = create_mock_item_for_pick_bottommost("block", ItemBoundary.COMPLETE)
+        item1 = create_mock_item_for_pick_bottommost(
+            "block", ItemBoundary.BOTH, is_figure=True
+        )  # Should win
+        item2 = create_mock_item_for_pick_bottommost(
+            "block", ItemBoundary.TRUNCATED, is_viable=True
+        )
+
+        candidates = [(0, item0), (1, item1), (2, item2)]
+
+        result = verify_page_pairs._pick_bottommost(candidates)
+        assert result == (1, item1)
+
+    def test_preferred_table_in_top_5(
+        self, mock_is_figure: MagicMock, mock_is_viable: MagicMock
+    ) -> None:
+        """Test that a preferred (TRUNCATED) table in the top 5 is picked first.
+
+        Parameters
+        ----------
+        mock_is_figure
+            The mocked _is_figure_block function, which will return True if the item
+            has the attribute is_figure set to True.
+        mock_is_viable
+            The mocked _is_viable_nonfigure_block_anchor function, which will return
+            True if the item has the attribute is_viable set to True.
+        """
+
+        mock_is_figure.side_effect = self.mock_is_fig_side_effect
+        mock_is_viable.side_effect = self.mock_is_viable_side_effect
+
+        item0 = create_mock_item_for_pick_bottommost("block", ItemBoundary.COMPLETE)
+        item1 = create_mock_item_for_pick_bottommost(
+            "table", ItemBoundary.TRUNCATED
+        )  # Should win
+        item2 = create_mock_item_for_pick_bottommost(
+            "block", ItemBoundary.COMPLETE, is_viable=True
+        )
+        candidates = [(0, item0), (1, item1), (2, item2)]
+
+        result = verify_page_pairs._pick_bottommost(candidates)
+        assert result == (1, item1)
+
+    def test_table_outside_top_5_is_ignored_by_first_loop(
+        self, mock_is_figure: MagicMock, mock_is_viable: MagicMock
+    ) -> None:
+        """Test that a table outside the first 5 elements misses the table priority.
+
+        Parameters
+        ----------
+        mock_is_figure
+            The mocked _is_figure_block function, which will return True if the item
+            has the attribute is_figure set to True.
+        mock_is_viable
+            The mocked _is_viable_nonfigure_block_anchor function, which will return
+            True if the item has the attribute is_viable set to True.
+        """
+
+        mock_is_figure.side_effect = self.mock_is_fig_side_effect
+        mock_is_viable.side_effect = self.mock_is_viable_side_effect
+
+        # Items 0 through 4 are PREFERRED blocks. This fills up the first 5 slots
+        # of the `preferred` list inside the function.
+        candidates = [
+            (i, create_mock_item_for_pick_bottommost("block", ItemBoundary.TRUNCATED))
+            for i in range(5)
+        ]
+
+        # Item 5 (6th item) is a preferred table. Because 5 preferred items precede it,
+        # it falls outside the [:5] slice when _pick(preferred) is called.
+        table_item = create_mock_item_for_pick_bottommost(
+            "table", ItemBoundary.TRUNCATED
+        )
+        candidates.append((5, table_item))
+
+        # Item 6 is a preferred viable block.
+        viable_item = create_mock_item_for_pick_bottommost(
+            "block", ItemBoundary.TRUNCATED, is_viable=True
+        )
+        candidates.append((6, viable_item))
+
+        result = verify_page_pairs._pick_bottommost(candidates)
+
+        # The table is missed because it is the 6th preferred item. The loop falls
+        # through to the viable block loop, which checks all items.
+        assert result == (6, viable_item)
 
 
 @PARAM(

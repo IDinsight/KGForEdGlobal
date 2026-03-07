@@ -737,7 +737,7 @@ def _pick_bottommost(
                 return i, item
 
         # Then prefer a figure block near the bottom so figure continuations surface
-        # before generic block->block pairings.
+        # before generic block -> block pairings.
         for i, item in sorted_candidates[:5]:
             if _is_figure_block(item):
                 return i, item
