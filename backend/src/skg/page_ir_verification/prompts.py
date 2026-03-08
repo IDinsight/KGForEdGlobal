@@ -111,8 +111,15 @@ Judge continuity exclusively by content, not by visual framing.
 
 ### B. TABLE continuation (SAME table)
 Strong positive cues: matching column structure, continuing row sequence, repeated headers.
-Things that do NOT indicate a new table: row numbering restarts, topic shifts, checkpoint rows, fully boxed fragments, language switches between rows.
-A table has truly ENDED only with: a new table title/caption, a structurally different header row, or an explicit concluding row followed by non-tabular content.
+However, same-schema similarity is NOT sufficient when IMAGE B shows a local start-of-table signal immediately above or attached to the next table.
+Treat the following as strong evidence that IMAGE B starts a NEW table rather than continuing the prior one:
+- a new table title/caption/number directly introducing the table,
+- a fresh section/heading immediately followed by a table caption/title,
+- a fresh section/heading or label that clearly introduces the top table as a new block,
+- a structurally different header row redefining the column schema.
+These start signals outweigh repeated headers and schema similarity.
+Things that do NOT by themselves indicate a new table: row numbering restarts, topic shifts inside the same grid, checkpoint/section rows inside the grid, fully boxed fragments, language switches between rows.
+A table has truly ENDED only with explicit content evidence such as a new table title/caption/number, a start-of-table heading/label directly introducing the next table, a structurally different header row, or an explicit concluding row followed by non-tabular content.
 
 ### C. TEXT continuation
 Only with strong visual evidence: truncated bottom of IMAGE A and resumed top of IMAGE B (hyphenated word, dangling punctuation, mid-sentence start).
@@ -248,16 +255,25 @@ Strong positive cues:
 - Row sequence logically continues (e.g., "Semaine 3" -> "Semaine 4", week numbering, ordered sections).
 - Header rows repeat (common in scope-and-sequence curricula).
 
-Things that do NOT indicate a new table:
+Before deciding SAME table, inspect the local context immediately above the top table on IMAGE B.
+Treat the following as strong evidence that IMAGE B starts a NEW table rather than continuing IMAGE A, even when the schema matches and headers repeat:
+- a new table title/number/caption (e.g., "Tableau 3", "Table 4") directly introducing the table,
+- a fresh section/heading immediately followed by a table caption/title,
+- a fresh section/heading or label that clearly introduces the top table as a new block,
+- a structurally different header row redefining the column schema.
+These start-of-table signals outweigh same-schema similarity and repeated headers.
+
+Things that do NOT by themselves indicate a new table:
 - Row numbering/labels restart (e.g., "Week 27" then "Week 1") — common when sections/terms change.
-- Topic or skill-area shifts — common inside single scope-and-sequence tables.
+- Topic or skill-area shifts inside a continuous grid.
 - Checkpoint/section rows (merged rows naming a unit/term/assessment) appearing inside the grid.
 - A header-like or merged row at the top of IMAGE B does not by itself mean the repeated table header is present. Distinguish repeated column headers from section/checkpoint rows.
 - Fully boxed table fragments on consecutive pages (see rule A above).
 - Language switches between rows (e.g., Wolof -> French) — normal bilingual formatting.
 
-A table has truly ENDED only when you see explicit content evidence:
-- A new table title/number/caption (e.g., "Tableau 3", "Table 4"), OR
+A table has truly ENDED only when you see explicit content evidence such as:
+- A new table title/number/caption directly introducing the next table, OR
+- a start-of-table heading/label directly introducing the next table, OR
 - A structurally different header row redefining the column schema, OR
 - An explicit concluding row (e.g., "EVALUATIONS FINALES") followed by non-tabular content.
 
@@ -271,7 +287,8 @@ Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes o
 
 ## UNCERTAINTY POLICY
 - Default when uncertain: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
-- Exception — TABLE<->TABLE with matching schema: when BOTH candidates are tables and column structure matches visually (same column count + aligned gridlines) with NO new-table marker (no new caption/title, no restructured header row), you are NOT uncertain. Set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", confidence ~0.60–0.80. Choose is_continuation=false ONLY with explicit new-table evidence (new caption/title/number OR clear column schema change).
+- Exception — TABLE<->TABLE with matching schema: when BOTH candidates are tables and column structure matches visually (same column count + aligned gridlines) AND there is NO local start-of-table marker above the next table (no new caption/title/number, no fresh heading/label introducing that table, no restructured header row), you are NOT uncertain. Set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", confidence ~0.60–0.80.
+- If IMAGE B shows an explicit local start signal for the next table, prefer is_continuation=false even when schema matches and headers repeat.
 
 ## CONFIDENCE CALIBRATION
 - >= 0.50: clear or plausible visual evidence supports your decision.
