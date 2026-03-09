@@ -1221,6 +1221,133 @@ class TestPickBottommost:
         assert result == (6, viable_item)
 
 
+class TestPickTopmost:
+    """Tests for the _pick_topmost selection logic."""
+
+    def test_falls_back_to_absolute_top_item_when_no_family_or_viable_block_exists(
+        self,
+    ) -> None:
+        """Test that the absolute top item is returned when no preferred branch matches.
+
+        This covers the final fallback where the candidate list contains no same-family
+        match for the previous anchor and no viable non-figure block candidate.
+        """
+
+        heading_item = create_text_block(
+            block_type=BlockType.HEADING,
+            boundary=ItemBoundary.COMPLETE,
+            text="Heading",
+            y0=5.0,
+            y1=15.0,
+        )
+        figure_item = create_figure_block(
+            alt_text="Diagram",
+            block_type=BlockType.FIGURE,
+            boundary=ItemBoundary.COMPLETE,
+            y0=20.0,
+            y1=40.0,
+        )
+        prev_item = create_table(boundary=ItemBoundary.TRUNCATED, y0=900.0, y1=980.0)
+        result = verify_page_pairs._pick_topmost(
+            candidates=[(0, heading_item), (1, figure_item)], prev_item=prev_item
+        )
+        assert result == (0, heading_item)
+
+    def test_prefers_resumed_same_family_candidate_over_earlier_cross_family_item(
+        self,
+    ) -> None:
+        """Test that a preferred same-family match beats an earlier cross-family item.
+
+        The candidate list is already sorted by y0, so the first item is earlier on the
+        page. `_pick_topmost` should still choose the resumed same-family candidate
+        once preferred items are searched before the remaining pool.
+        """
+
+        earlier_table = create_table(boundary=ItemBoundary.COMPLETE, y0=5.0, y1=20.0)
+        resumed_paragraph = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.RESUMED,
+            text="Continuation paragraph",
+            y0=25.0,
+            y1=45.0,
+        )
+        prev_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.TRUNCATED,
+            text="Previous paragraph",
+            y0=900.0,
+            y1=980.0,
+        )
+        result = verify_page_pairs._pick_topmost(
+            candidates=[(0, earlier_table), (1, resumed_paragraph)], prev_item=prev_item
+        )
+        assert result == (1, resumed_paragraph)
+
+    def test_skips_heading_same_family_candidate_for_block_anchor_and_uses_viable_block(
+        self,
+    ) -> None:
+        """Test that heading blocks do not satisfy block-anchor same-family matching.
+
+        For block anchors, `_pick_topmost` requires the chosen same-family candidate to
+        be a viable non-figure block, so a heading should be skipped in favor of a
+        later paragraph.
+        """
+
+        heading_item = create_text_block(
+            block_type=BlockType.HEADING,
+            boundary=ItemBoundary.RESUMED,
+            text="Section heading",
+            y0=5.0,
+            y1=15.0,
+        )
+        paragraph_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Body continuation",
+            y0=20.0,
+            y1=40.0,
+        )
+        prev_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.TRUNCATED,
+            text="Previous paragraph",
+            y0=900.0,
+            y1=980.0,
+        )
+
+        result = verify_page_pairs._pick_topmost(
+            candidates=[(0, heading_item), (1, paragraph_item)], prev_item=prev_item
+        )
+        assert result == (1, paragraph_item)
+
+    def test_uses_first_viable_nonfigure_block_when_no_same_family_match_exists(
+        self,
+    ) -> None:
+        """Test that the generic viable-block fallback is used when families do not
+        match.
+        """
+
+        figure_item = create_figure_block(
+            alt_text="Diagram",
+            block_type=BlockType.FIGURE,
+            boundary=ItemBoundary.COMPLETE,
+            y0=5.0,
+            y1=20.0,
+        )
+        paragraph_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Fallback paragraph",
+            y0=25.0,
+            y1=45.0,
+        )
+        prev_item = create_table(boundary=ItemBoundary.TRUNCATED, y0=900.0, y1=980.0)
+        result = verify_page_pairs._pick_topmost(
+            candidates=[(0, figure_item), (1, paragraph_item)], prev_item=prev_item
+        )
+        assert result == (1, paragraph_item)
+
+
 def test_clamps_saved_crop_height_to_page_height_when_requested_crop_exceeds_image(
     tmp_path: Path,
 ) -> None:
