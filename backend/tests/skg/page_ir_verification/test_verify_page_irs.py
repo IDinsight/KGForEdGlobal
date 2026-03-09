@@ -3,6 +3,7 @@
 # Standard Library
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, Mock, call, patch
 
@@ -26,11 +27,72 @@ from skg.utils.constants import BlockType, ItemBoundary
 from tests.constants import PARAM
 
 
+class VerdictStub:
+    """VerdictStub object compatible with the function under test."""
+
+    def __init__(
+        self,
+        *,
+        confidence: float,
+        continuation_kind_value: str,
+        is_continuation: bool,
+        set_next_table_repeats_header: bool | None = None,
+    ) -> None:
+        """Initialize the verdict stub.
+
+        Parameters
+        ----------
+        confidence
+            Confidence score for the verdict.
+        continuation_kind_value
+            String value exposed via `continuation_kind.value`.
+        is_continuation
+            Whether the page-pair is judged to be continuous.
+        set_next_table_repeats_header
+            Optional table header patch flag.
+        """
+
+        self.confidence = confidence
+        self.continuation_kind = SimpleNamespace(value=continuation_kind_value)
+        self.is_continuation = is_continuation
+        self.next_page_index: int | None = None
+        self.prev_page_index: int | None = None
+        self.set_next_table_repeats_header = set_next_table_repeats_header
+
+    def model_dump(self, mode: str) -> dict[str, Any]:
+        """Return a dict matching the accessed verdict fields.
+
+        Parameters
+        ----------
+        mode
+            Dump mode requested by the caller.
+
+        Returns
+        -------
+        dict[str, Any]
+            Serialized verdict content.
+        """
+
+        assert mode == "json"
+        return {
+            "confidence": self.confidence,
+            "continuation_kind": self.continuation_kind.value,
+            "is_continuation": self.is_continuation,
+            "next_page_index": self.next_page_index,
+            "prev_page_index": self.prev_page_index,
+            "set_next_table_repeats_header": self.set_next_table_repeats_header,
+        }
+
+
 @dataclass(frozen=True)
 class VerificationConfigStub:
     """Minimal config stub for candidate-pair generation tests."""
 
-    next_page_crop_padding_px: float
+    min_confidence_to_patch: float = 0.0
+    min_confidence_to_select_positive: float = 0.0
+    min_confidence_to_stop_negative_search: float = 0.0
+    model: str = "fake"
+    next_page_crop_padding_px: float = 25.0
 
 
 def create_block_item_json(*, repeats_header: bool | None = None) -> dict[str, Any]:
@@ -62,40 +124,61 @@ def create_block_item_json(*, repeats_header: bool | None = None) -> dict[str, A
 
 
 def create_candidate_pair_spec(
-    *, crop_y_max: float, next_index: int, prev_index: int
+    *,
+    crop_y_max: float = 100.0,
+    next_boundary: ItemBoundary = ItemBoundary.COMPLETE,
+    next_index: int = 0,
+    next_rank: int = 0,
+    prev_boundary: ItemBoundary = ItemBoundary.TRUNCATED,
+    prev_index: int = 0,
+    prev_rank: int = 0,
 ) -> verify_page_pairs.CandidatePairSpec:
-    """Create a minimal candidate-pair spec for crop-helper tests.
+    """Create a minimal candidate-pair spec for verification-attempt tests.
 
     Parameters
     ----------
     crop_y_max
         Requested crop height in page coordinates.
+    next_boundary
+        Boundary state for the next-page item.
     next_index
         Next-page candidate index.
+    next_rank
+        Rank of the next-page candidate.
+    prev_boundary
+        Boundary state for the previous-page item.
     prev_index
         Previous-page candidate index.
+    prev_rank
+        Rank of the previous-page candidate.
 
     Returns
     -------
     verify_page_pairs.CandidatePairSpec
-        A candidate-pair specification.
+        A candidate-pair specification with valid block items.
     """
 
     next_item = create_text_block(
-        text=f"Next {next_index}", y0=0.0, y1=max(1.0, crop_y_max)
+        boundary=next_boundary,
+        text=f"Next {next_index}",
+        y0=0.0,
+        y1=max(1.0, crop_y_max),
     )
     prev_item = create_text_block(
-        boundary=ItemBoundary.TRUNCATED, text=f"Prev {prev_index}", y0=900.0, y1=980.0
+        boundary=prev_boundary,
+        text=f"Prev {prev_index}",
+        y0=900.0,
+        y1=980.0,
     )
 
     return verify_page_pairs.CandidatePairSpec(
         crop_y_max=crop_y_max,
         next_index=next_index,
         next_item=next_item,
-        next_rank=0,
+        next_rank=next_rank,
         prev_index=prev_index,
         prev_item=prev_item,
-        prev_rank=0,
+        prev_rank=prev_rank,
     )
 
 
@@ -247,6 +330,25 @@ def create_page_ir(*, image_height: int, items: list[Block]) -> PageIR:
     return PageIR(image_height=image_height, items=items)
 
 
+def create_page_ir_like(*, image_height: float, items: list[Any]) -> SimpleNamespace:
+    """Create a minimal page-IR-like object for orchestration tests.
+
+    Parameters
+    ----------
+    image_height
+        Page image height in pixels.
+    items
+        Ordered page items.
+
+    Returns
+    -------
+    SimpleNamespace
+        Object exposing `image_height` and `items`.
+    """
+
+    return SimpleNamespace(image_height=image_height, items=items)
+
+
 def create_row(cells: list[Any]) -> dict[str, list[Any]]:
     """Create a table-row payload for table excerpt tests.
 
@@ -391,6 +493,60 @@ def create_text_cell(text: Any) -> dict[str, Any]:
     """
 
     return {"text": text}
+
+
+def create_verdict(
+    *,
+    confidence: float,
+    continuation_kind_value: str,
+    is_continuation: bool,
+    set_next_table_repeats_header: bool | None = None,
+) -> SimpleNamespace:
+    """Create a lightweight verdict object with the accessed attributes.
+
+    Parameters
+    ----------
+    confidence
+        The verdict confidence score.
+    continuation_kind_value
+        String value exposed via `continuation_kind.value`.
+    is_continuation
+        Whether the verdict is a positive continuation.
+    set_next_table_repeats_header
+        Optional table-header patch hint.
+
+    Returns
+    -------
+    SimpleNamespace
+        A verdict-like object compatible with the function under test.
+    """
+
+    return SimpleNamespace(
+        confidence=confidence,
+        continuation_kind=SimpleNamespace(value=continuation_kind_value),
+        is_continuation=is_continuation,
+        set_next_table_repeats_header=set_next_table_repeats_header,
+    )
+
+
+def create_verification_dirs(*, root_dir: Path) -> SimpleNamespace:
+    """Create a minimal verification-dirs-like object.
+
+    Parameters
+    ----------
+    root_dir
+        Base directory used to derive report and crop paths.
+
+    Returns
+    -------
+    SimpleNamespace
+        Object exposing the directory attributes used by the function.
+    """
+
+    return SimpleNamespace(
+        page_irs_pair_crops=root_dir / "pair_crops",
+        page_irs_pair_reports=root_dir / "pair_reports",
+    )
 
 
 class TestApplyVisibleCrop:
@@ -1453,6 +1609,128 @@ def test_bottom_continuity_candidates_sorts_by_bottom_edge_before_primary_pick()
     assert result == [(1, highest_item)]
 
 
+def test_builds_record_and_writes_report_from_selected_attempt() -> None:
+    """Test that the function wires helper outputs into the final record and report.
+
+    This covers the successful orchestration path: previous-page candidates are chosen,
+    candidate pairs are generated, verification attempts are executed, page indices are
+    stamped onto the selected verdict, and the JSON report payload is written with the
+    expected summary fields.
+    """
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        model="test-model",
+    )
+    next_item = create_text_block(
+        boundary=ItemBoundary.RESUMED, text="Continuation paragraph", y0=12.0, y1=40.0
+    )
+    prev_item = create_text_block(
+        boundary=ItemBoundary.TRUNCATED, text="Previous paragraph", y0=920.0, y1=980.0
+    )
+    page_irs = {
+        4: create_page_ir_like(image_height=1000.0, items=[prev_item]),
+        5: create_page_ir_like(image_height=1100.0, items=[next_item]),
+    }
+    primary_indices = {"next_item_index": 7, "prev_item_index": 3}
+    selected_verdict = VerdictStub(
+        confidence=0.93,
+        continuation_kind_value="text_continuation",
+        is_continuation=True,
+        set_next_table_repeats_header=None,
+    )
+    execute_result = {
+        "attempt_summaries": [{"attempt_no": 0, "is_continuation": True}],
+        "early_stop_reason": "patchable_positive",
+        "selected_eligible_for_patch": True,
+        "selected_next_index": 7,
+        "selected_prev_index": 3,
+        "selected_verdict": selected_verdict,
+    }
+    page_images_dir = Path("/tmp/pages")
+    usage_tracker = MagicMock()
+    verification_dirs = create_verification_dirs(root_dir=Path("/tmp/verification"))
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.bottom_continuity_candidates",
+            return_value=[(3, prev_item)],
+        ) as mock_bottom_candidates,
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.execute_verification_attempts",
+            return_value=execute_result,
+        ) as mock_execute_attempts,
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.generate_candidate_pairs",
+            return_value=([MagicMock()], primary_indices),
+        ) as mock_generate_pairs,
+        patch("skg.page_ir_verification.verify_page_pairs.write_to_json") as mock_write,
+    ):
+        record = verify_page_pairs.verify_single_page_pair(
+            config=config,
+            page_images_dir=page_images_dir,
+            page_index=4,
+            page_irs=page_irs,
+            usage_tracker=usage_tracker,
+            verification_dirs=verification_dirs,
+        )
+
+    mock_bottom_candidates.assert_called_once_with(
+        image_height=1000.0, items=[prev_item]
+    )
+    mock_generate_pairs.assert_called_once_with(
+        config=config, next_page_ir=page_irs[5], prev_candidates=[(3, prev_item)]
+    )
+    mock_execute_attempts.assert_called_once_with(
+        config=config,
+        next_page_image_fp=page_images_dir / "0005.png",
+        page_index=4,
+        pair_crop_dir=verification_dirs.page_irs_pair_crops,
+        pairs=[mock_generate_pairs.return_value[0][0]],
+        usage_tracker=usage_tracker,
+    )
+    mock_write.assert_called_once()
+
+    assert selected_verdict.next_page_index == 5
+    assert selected_verdict.prev_page_index == 4
+    assert record is not None
+    assert record.next_item_index == 7
+    assert record.next_page_index == 5
+    assert record.prev_item_index == 3
+    assert record.prev_page_index == 4
+    assert record.verdict is selected_verdict
+
+    write_kwargs = mock_write.call_args.kwargs
+    assert write_kwargs["fp"] == (
+        verification_dirs.page_irs_pair_reports / "0004_0005.json"
+    )
+    assert write_kwargs["json_info"] == {
+        "attempts": [{"attempt_no": 0, "is_continuation": True}],
+        "primary_candidate_selection": {"next_item_index": 7, "prev_item_index": 3},
+        "selected_candidate_selection": {
+            "eligible_for_patch": True,
+            "next_item_index": 7,
+            "prev_item_index": 3,
+        },
+        "selection_policy": {
+            "early_stop_reason": "patchable_positive",
+            "min_confidence_to_patch": 0.8,
+            "min_confidence_to_select_positive": 0.9,
+            "min_confidence_to_stop_negative_search": 0.95,
+        },
+        "verdict": {
+            "confidence": 0.93,
+            "continuation_kind": "text_continuation",
+            "is_continuation": True,
+            "next_page_index": 5,
+            "prev_page_index": 4,
+            "set_next_table_repeats_header": None,
+        },
+    }
+
+
 def test_clamps_saved_crop_height_to_page_height_when_requested_crop_exceeds_image(
     tmp_path: Path,
 ) -> None:
@@ -1833,6 +2111,190 @@ def test_make_table_excerpt_splits_top_and_bottom_body_previews_without_overlap(
     }
 
 
+def test_raises_runtime_error_when_all_attempts_fail() -> None:
+    """Test that the function raises when every verification attempt errors out.
+
+    The raised error should mention the page pair and preserve the collected exception
+    messages from all failed attempts.
+    """
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        model="test-model",
+        next_page_crop_padding_px=25.0,
+    )
+    pair_a = create_candidate_pair_spec(
+        crop_y_max=10.0,
+        next_index=1,
+        next_rank=0,
+        prev_index=0,
+        prev_rank=0,
+    )
+    pair_b = create_candidate_pair_spec(
+        crop_y_max=20.0,
+        next_index=2,
+        next_rank=1,
+        prev_index=3,
+        prev_rank=1,
+    )
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            side_effect=[Path("/tmp/crops/a.png"), Path("/tmp/crops/b.png")],
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            return_value={"excerpt": True},
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            side_effect=lambda item_json: item_json,
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            side_effect=[ValueError("bad-a"), RuntimeError("bad-b")],
+        ),
+    ):
+        with pytest.raises(RuntimeError) as exc_info:
+            verify_page_pairs.execute_verification_attempts(
+                config=config,
+                next_page_image_fp=Path("/tmp/pages/0001.png"),
+                page_index=5,
+                pair_crop_dir=Path("/tmp/crops"),
+                pairs=[pair_a, pair_b],
+                usage_tracker=MagicMock(),
+            )
+
+    message = str(exc_info.value)
+    assert "All 2 verification attempts failed" in message
+    assert "page pair 6->7" in message
+    assert "bad-a" in message
+    assert "bad-b" in message
+
+
+def test_raises_value_error_when_either_required_page_ir_is_missing() -> None:
+    """Test that a missing page IR for either side of the pair raises `ValueError`."""
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        model="test-model",
+    )
+    usage_tracker = MagicMock()
+    verification_dirs = create_verification_dirs(root_dir=Path("/tmp/verification"))
+
+    with pytest.raises(ValueError, match="Missing page IR for page index 3 or 4"):
+        verify_page_pairs.verify_single_page_pair(
+            config=config,
+            page_images_dir=Path("/tmp/pages"),
+            page_index=3,
+            page_irs={3: create_page_ir_like(image_height=1000.0, items=[])},
+            usage_tracker=usage_tracker,
+            verification_dirs=verification_dirs,
+        )
+
+
+def test_records_errors_then_selects_the_later_successful_attempt() -> None:
+    """Test that failed attempts are summarized and later successes remain selectable.
+
+    This covers the mixed outcome path where one verification call raises and a later
+    call succeeds. The function should preserve the error summary, continue iterating,
+    and return the successful candidate selection.
+    """
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        model="test-model",
+        next_page_crop_padding_px=25.0,
+    )
+    crop_fp_a = Path("/tmp/crops/a.png")
+    crop_fp_b = Path("/tmp/crops/b.png")
+    pair_a = create_candidate_pair_spec(
+        crop_y_max=40.0,
+        next_index=10,
+        next_rank=0,
+        prev_index=1,
+        prev_rank=0,
+    )
+    pair_b = create_candidate_pair_spec(
+        crop_y_max=80.0,
+        next_index=11,
+        next_rank=1,
+        prev_index=2,
+        prev_rank=1,
+    )
+    usage_tracker = MagicMock()
+    verdict = create_verdict(
+        confidence=0.77, continuation_kind_value="none", is_continuation=False
+    )
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            side_effect=[crop_fp_a, crop_fp_b],
+        ) as mock_ensure_crop,
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            return_value={"excerpt": True},
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            side_effect=lambda item_json: item_json,
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            side_effect=[RuntimeError("boom"), verdict],
+        ) as mock_verify,
+    ):
+        result = verify_page_pairs.execute_verification_attempts(
+            config=config,
+            next_page_image_fp=Path("/tmp/pages/0001.png"),
+            page_index=0,
+            pair_crop_dir=Path("/tmp/crops"),
+            pairs=[pair_a, pair_b],
+            usage_tracker=usage_tracker,
+        )
+
+    assert mock_ensure_crop.call_count == 2
+    assert mock_verify.call_count == 2
+    assert result["early_stop_reason"] is None
+    assert result["selected_eligible_for_patch"] is False
+    assert result["selected_next_index"] == 11
+    assert result["selected_prev_index"] == 2
+    assert result["selected_verdict"] is verdict
+    assert result["attempt_summaries"] == [
+        {
+            "attempt_no": 0,
+            "crop_y_max": 40.0,
+            "error": "boom",
+            "next_item_index": 10,
+            "next_rank": 0,
+            "prev_item_index": 1,
+            "prev_rank": 0,
+        },
+        {
+            "attempt_no": 1,
+            "confidence": 0.77,
+            "continuation_kind": "none",
+            "crop_png_fp": str(crop_fp_b),
+            "crop_y_max": 80.0,
+            "eligible_for_patch": False,
+            "is_continuation": False,
+            "next_item_index": 11,
+            "next_rank": 1,
+            "prev_item_index": 2,
+            "prev_rank": 1,
+            "set_next_table_repeats_header": None,
+        },
+    ]
+
+
 def test_removes_boundary_but_preserves_non_table_repeats_header_field() -> None:
     """Test that non-table items keep `repeats_header` because the function guards on
     kind.
@@ -1904,6 +2366,64 @@ def test_removes_table_continuity_hints_without_mutating_input() -> None:
     }
 
 
+def test_returns_none_and_skips_downstream_work_when_either_page_has_no_items() -> None:
+    """Test that empty page items short-circuit verification and return `None`.
+
+    The function should not attempt candidate selection, verification, or report
+    writing when either page in the boundary pair has an empty item list.
+    """
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        model="test-model",
+    )
+    page_irs = {
+        0: create_page_ir_like(image_height=1000.0, items=[]),
+        1: create_page_ir_like(
+            image_height=1000.0,
+            items=[
+                create_text_block(
+                    boundary=ItemBoundary.COMPLETE,
+                    text="Next page paragraph",
+                    y0=10.0,
+                    y1=30.0,
+                )
+            ],
+        ),
+    }
+    usage_tracker = MagicMock()
+    verification_dirs = create_verification_dirs(root_dir=Path("/tmp/verification"))
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.bottom_continuity_candidates"
+        ) as mock_bottom_candidates,
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.execute_verification_attempts"
+        ) as mock_execute_attempts,
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.generate_candidate_pairs"
+        ) as mock_generate_pairs,
+        patch("skg.page_ir_verification.verify_page_pairs.write_to_json") as mock_write,
+    ):
+        result = verify_page_pairs.verify_single_page_pair(
+            config=config,
+            page_images_dir=Path("/tmp/pages"),
+            page_index=0,
+            page_irs=page_irs,
+            usage_tracker=usage_tracker,
+            verification_dirs=verification_dirs,
+        )
+
+    assert result is None
+    mock_bottom_candidates.assert_not_called()
+    mock_execute_attempts.assert_not_called()
+    mock_generate_pairs.assert_not_called()
+    mock_write.assert_not_called()
+
+
 def test_reuses_cached_crop_for_same_next_index_and_same_rounded_crop_height(
     tmp_path: Path,
 ) -> None:
@@ -1957,6 +2477,181 @@ def test_reuses_cached_crop_for_same_next_index_and_same_rounded_crop_height(
     assert crop_cache == {(4, 20): first_crop_fp}
     mock_image_open.assert_not_called()
     mock_make_dir.assert_not_called()
+
+
+def test_stops_early_for_primary_primary_patchable_positive() -> None:
+    """Test that a patchable primary-primary positive stops further verification.
+
+    When the first pair is rank-0 on both sides and produces a patch-eligible positive,
+    the function should record the early-stop reason and skip later candidate pairs.
+    """
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        model="test-model",
+    )
+    pair_a = create_candidate_pair_spec(
+        crop_y_max=50.0,
+        next_boundary=ItemBoundary.RESUMED,
+        next_index=3,
+        next_rank=0,
+        prev_boundary=ItemBoundary.TRUNCATED,
+        prev_index=4,
+        prev_rank=0,
+    )
+    pair_b = create_candidate_pair_spec(
+        crop_y_max=90.0,
+        next_index=8,
+        next_rank=1,
+        prev_index=9,
+        prev_rank=1,
+    )
+    verdict = create_verdict(
+        confidence=0.92,
+        continuation_kind_value="continuous_text",
+        is_continuation=True,
+        set_next_table_repeats_header=True,
+    )
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            return_value=Path("/tmp/crops/first.png"),
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            return_value={"excerpt": True},
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            side_effect=lambda item_json: item_json,
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            return_value=verdict,
+        ) as mock_verify,
+    ):
+        result = verify_page_pairs.execute_verification_attempts(
+            config=config,
+            next_page_image_fp=Path("/tmp/pages/0001.png"),
+            page_index=0,
+            pair_crop_dir=Path("/tmp/crops"),
+            pairs=[pair_a, pair_b],
+            usage_tracker=MagicMock(),
+        )
+
+    assert mock_verify.call_count == 1
+    assert result["early_stop_reason"] == "primary_primary_patchable_positive"
+    assert result["selected_eligible_for_patch"] is True
+    assert result["selected_next_index"] == 3
+    assert result["selected_prev_index"] == 4
+    assert result["attempt_summaries"] == [
+        {
+            "attempt_no": 0,
+            "confidence": 0.92,
+            "continuation_kind": "continuous_text",
+            "crop_png_fp": "/tmp/crops/first.png",
+            "crop_y_max": 50.0,
+            "early_stop_reason": "primary_primary_patchable_positive",
+            "eligible_for_patch": True,
+            "is_continuation": True,
+            "next_item_index": 3,
+            "next_rank": 0,
+            "prev_item_index": 4,
+            "prev_rank": 0,
+            "set_next_table_repeats_header": True,
+        }
+    ]
+
+
+def test_stops_early_for_primary_primary_same_family_high_confidence_negative() -> None:
+    """Test that a strong same-family negative stops fallback search early.
+
+    This covers the negative early-stop branch, which requires both candidates to be
+    primary rank, the verdict to be negative above the configured threshold, and the
+    pair to share a candidate family.
+    """
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        model="test-model",
+    )
+    pair_a = create_candidate_pair_spec(
+        crop_y_max=55.0,
+        next_boundary=ItemBoundary.RESUMED,
+        next_index=6,
+        next_rank=0,
+        prev_boundary=ItemBoundary.TRUNCATED,
+        prev_index=7,
+        prev_rank=0,
+    )
+    pair_b = create_candidate_pair_spec(
+        crop_y_max=95.0,
+        next_index=12,
+        next_rank=1,
+        prev_index=13,
+        prev_rank=1,
+    )
+    verdict = create_verdict(
+        confidence=0.96, continuation_kind_value="none", is_continuation=False
+    )
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            return_value=Path("/tmp/crops/negative.png"),
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            return_value={"excerpt": True},
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            side_effect=lambda item_json: item_json,
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            return_value=verdict,
+        ) as mock_verify,
+    ):
+        result = verify_page_pairs.execute_verification_attempts(
+            config=config,
+            next_page_image_fp=Path("/tmp/pages/0001.png"),
+            page_index=0,
+            pair_crop_dir=Path("/tmp/crops"),
+            pairs=[pair_a, pair_b],
+            usage_tracker=MagicMock(),
+        )
+
+    assert mock_verify.call_count == 1
+    assert (
+        result["early_stop_reason"]
+        == "primary_primary_same_family_high_confidence_negative"
+    )
+    assert result["selected_eligible_for_patch"] is False
+    assert result["selected_next_index"] == 6
+    assert result["selected_prev_index"] == 7
+    assert result["attempt_summaries"] == [
+        {
+            "attempt_no": 0,
+            "confidence": 0.96,
+            "continuation_kind": "none",
+            "crop_png_fp": "/tmp/crops/negative.png",
+            "crop_y_max": 55.0,
+            "early_stop_reason": "primary_primary_same_family_high_confidence_negative",
+            "eligible_for_patch": False,
+            "is_continuation": False,
+            "next_item_index": 6,
+            "next_rank": 0,
+            "prev_item_index": 7,
+            "prev_rank": 0,
+            "set_next_table_repeats_header": None,
+        }
+    ]
 
 
 def test_table_row_preview_returns_empty_list_for_missing_cells() -> None:
@@ -2036,3 +2731,96 @@ def test_truncate_text_returns_ellipsis_only_when_limit_is_less_than_three() -> 
     """Return only an ellipsis when truncation is required below three characters."""
 
     assert verify_page_pairs.truncate_text(max_chars=2, text="abcdef") == "..."
+
+
+def test_uses_pair_priority_key_to_select_the_best_successful_attempt() -> None:
+    """Test that final selection delegates ordering to `_pair_priority_key()`.
+
+    This covers the multi-success path without early stopping. The function should keep
+    all successful attempts, call the priority helper, and return the attempt with the
+    lowest ranking key.
+    """
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.99,
+        model="test-model",
+    )
+    pair_a = create_candidate_pair_spec(
+        crop_y_max=30.0,
+        next_index=21,
+        next_rank=1,
+        prev_index=31,
+        prev_rank=1,
+    )
+    pair_b = create_candidate_pair_spec(
+        crop_y_max=60.0,
+        next_index=22,
+        next_rank=2,
+        prev_index=32,
+        prev_rank=2,
+    )
+    verdict_a = create_verdict(
+        confidence=0.61, continuation_kind_value="none", is_continuation=False
+    )
+    verdict_b = create_verdict(
+        confidence=0.85, continuation_kind_value="continuous_text", is_continuation=True
+    )
+
+    def priority_side_effect(
+        *,
+        attempt: verify_page_pairs.VerifiedCandidateAttempt,
+        config: VerificationConfigStub,
+    ) -> tuple[int, int]:
+        """Return a deterministic key that favors the second attempt.
+
+        Parameters
+        ----------
+        attempt
+            The verification attempt for which to compute the priority key.
+        config
+            The verification configuration, which is not used in this side effect but
+            is included to match the signature of the real function.
+        """
+
+        del config
+        return (0, 1) if attempt.spec.next_index == 22 else (1, 0)
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            side_effect=[Path("/tmp/crops/a.png"), Path("/tmp/crops/b.png")],
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            return_value={"excerpt": True},
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            side_effect=lambda item_json: item_json,
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            side_effect=[verdict_a, verdict_b],
+        ),
+        patch(
+            "skg.page_ir_verification.verify_page_pairs._pair_priority_key",
+            side_effect=priority_side_effect,
+        ) as mock_priority,
+    ):
+        result = verify_page_pairs.execute_verification_attempts(
+            config=config,
+            next_page_image_fp=Path("/tmp/pages/0001.png"),
+            page_index=0,
+            pair_crop_dir=Path("/tmp/crops"),
+            pairs=[pair_a, pair_b],
+            usage_tracker=MagicMock(),
+        )
+
+    assert mock_priority.call_count == 2
+    assert result["early_stop_reason"] is None
+    assert result["selected_eligible_for_patch"] is True
+    assert result["selected_next_index"] == 22
+    assert result["selected_prev_index"] == 32
+    assert result["selected_verdict"] is verdict_b

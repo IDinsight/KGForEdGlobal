@@ -387,20 +387,19 @@ def _initialize_states(
     Returns
     -------
     tuple
-        A tuple containing the initialized bools dictionary and effective
-        local codes dictionary.
+        A tuple containing the initialized bools dictionary and effective local codes
+        dictionary.
     """
 
     bools: dict[tuple[int, int], list[bool]] = {}
     normalized_local_codes: dict[tuple[int, int], str | None] = {}
 
     for page_index in sorted(page_irs):
-        page_ir = page_irs[page_index]
-
-        for item_index, item in enumerate(page_ir.items):
+        for item_index, item in enumerate(page_irs[page_index].items):
+            key = (page_index, item_index)
             fp, tn = _boundary_to_bools(item.boundary)
-            bools[(page_index, item_index)] = [fp, tn]
-            normalized_local_codes[(page_index, item_index)] = _normalize_local_code(
+            bools[key] = [fp, tn]
+            normalized_local_codes[key] = _normalize_local_code(
                 getattr(item, "local_code", None)
             )
 
