@@ -129,11 +129,7 @@ def _apply_edge_verdicts(
         )
 
         applied_edges.append(
-            _make_edge_summary(
-                record=record,
-                should_apply=should_apply,
-                skipped=False,
-            )
+            _make_edge_summary(record=record, should_apply=should_apply, skipped=False)
         )
 
     return applied_edges
