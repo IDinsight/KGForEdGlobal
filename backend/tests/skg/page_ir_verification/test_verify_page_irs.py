@@ -2,10 +2,14 @@
 
 # Standard Library
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, Mock, call, patch
 
 # Third Party Library
 import pytest
+
+from PIL import Image
 
 # Package Library
 from skg.page_ir_extraction.schemas import (
@@ -27,6 +31,72 @@ class VerificationConfigStub:
     """Minimal config stub for candidate-pair generation tests."""
 
     next_page_crop_padding_px: float
+
+
+def create_block_item_json(*, repeats_header: bool | None = None) -> dict[str, Any]:
+    """Create a representative block item JSON payload.
+
+    Parameters
+    ----------
+    repeats_header
+        Optional `repeats_header` field to include in the payload.
+
+    Returns
+    -------
+    dict[str, Any]
+        A representative block item JSON dictionary.
+    """
+
+    item_json: dict[str, Any] = {
+        "bbox": [0.0, 10.0, 100.0, 40.0],
+        "boundary": "truncated",
+        "kind": "block",
+        "meta": {"tags": ["body", "candidate"]},
+        "text": {"language": "en", "text": "Body paragraph"},
+    }
+
+    if repeats_header is not None:
+        item_json["repeats_header"] = repeats_header
+
+    return item_json
+
+
+def create_candidate_pair_spec(
+    *, crop_y_max: float, next_index: int, prev_index: int
+) -> verify_page_pairs.CandidatePairSpec:
+    """Create a minimal candidate-pair spec for crop-helper tests.
+
+    Parameters
+    ----------
+    crop_y_max
+        Requested crop height in page coordinates.
+    next_index
+        Next-page candidate index.
+    prev_index
+        Previous-page candidate index.
+
+    Returns
+    -------
+    verify_page_pairs.CandidatePairSpec
+        A candidate-pair specification.
+    """
+
+    next_item = create_text_block(
+        text=f"Next {next_index}", y0=0.0, y1=max(1.0, crop_y_max)
+    )
+    prev_item = create_text_block(
+        boundary=ItemBoundary.TRUNCATED, text=f"Prev {prev_index}", y0=900.0, y1=980.0
+    )
+
+    return verify_page_pairs.CandidatePairSpec(
+        crop_y_max=crop_y_max,
+        next_index=next_index,
+        next_item=next_item,
+        next_rank=0,
+        prev_index=prev_index,
+        prev_item=prev_item,
+        prev_rank=0,
+    )
 
 
 def create_figure_block(
@@ -68,6 +138,23 @@ def create_figure_block(
         local_code=None,
         text=None,
     )
+
+
+def create_image(*, fp: Path, size: tuple[int, int]) -> None:
+    """Create a solid-color test image on disk.
+
+    Parameters
+    ----------
+    fp
+        Output path for the PNG image.
+    size
+        Image size as `(width, height)`.
+    """
+
+    fp.parent.mkdir(parents=True, exist_ok=True)
+
+    with Image.new("RGB", size) as image:
+        image.save(fp)
 
 
 def create_mock_item_for_pick_bottommost(
@@ -181,6 +268,35 @@ def create_table(
             )
         ],
     )
+
+
+def create_table_item_json() -> dict[str, Any]:
+    """Create a representative table item JSON payload.
+
+    Returns
+    -------
+    dict[str, Any]
+        A representative table item JSON dictionary.
+    """
+
+    return {
+        "bbox": [0.0, 10.0, 100.0, 80.0],
+        "boundary": "resumed",
+        "cells": [
+            {
+                "bbox": [0.0, 10.0, 50.0, 20.0],
+                "col_span": 1,
+                "column": 0,
+                "is_header": True,
+                "row": 0,
+                "row_span": 1,
+                "text": {"language": "en", "text": "Header"},
+            }
+        ],
+        "kind": "table",
+        "meta": {"source": {"page": 4}},
+        "repeats_header": True,
+    }
 
 
 def create_text_block(
@@ -1052,6 +1168,76 @@ class TestPickBottommost:
         assert result == (6, viable_item)
 
 
+def test_clamps_saved_crop_height_to_page_height_when_requested_crop_exceeds_image(
+    tmp_path: Path,
+) -> None:
+    """Test that oversized requested crops save the full page height, not a taller
+    image.
+
+    The helper keeps the rounded, requested crop height in the cache key and filename,
+    but the actual raster crop must clamp to the real page height.
+
+    Parameters
+    ----------
+    tmp_path
+        The temporary directory provided by pytest for storing test files.
+    """
+
+    crop_cache: dict[tuple[int, int], Path] = {}
+    next_page_image_fp = tmp_path / "next_page.png"
+    output_dir = tmp_path / "pair_crops"
+    spec = create_candidate_pair_spec(crop_y_max=120.6, next_index=2, prev_index=0)
+    create_image(fp=next_page_image_fp, size=(60, 80))
+
+    crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+        crop_cache=crop_cache,
+        next_page_image_fp=next_page_image_fp,
+        next_page_index=7,
+        output_dir=output_dir,
+        spec=spec,
+    )
+
+    assert crop_cache == {(2, 121): crop_fp}
+    assert crop_fp.name == "0007_top_to_item_002_ymax_00121.png"
+
+    with Image.open(crop_fp) as cropped_image:
+        assert cropped_image.size == (60, 80)
+
+
+def test_enforces_minimum_one_pixel_crop_when_requested_crop_rounds_to_zero(
+    tmp_path: Path,
+) -> None:
+    """Test that tiny requested crops still produce a non-empty, 1-pixel-tall image.
+
+    This guards the lower clamp that prevents invalid zero-height image crops.
+
+    Parameters
+    ----------
+    tmp_path
+        The temporary directory provided by pytest for storing test files.
+    """
+
+    crop_cache: dict[tuple[int, int], Path] = {}
+    next_page_image_fp = tmp_path / "next_page.png"
+    output_dir = tmp_path / "pair_crops"
+    spec = create_candidate_pair_spec(crop_y_max=0.4, next_index=1, prev_index=0)
+    create_image(fp=next_page_image_fp, size=(50, 90))
+
+    crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+        crop_cache=crop_cache,
+        next_page_image_fp=next_page_image_fp,
+        next_page_index=3,
+        output_dir=output_dir,
+        spec=spec,
+    )
+
+    assert crop_cache == {(1, 0): crop_fp}
+    assert crop_fp.name == "0003_top_to_item_001_ymax_00000.png"
+
+    with Image.open(crop_fp) as cropped_image:
+        assert cropped_image.size == (50, 1)
+
+
 @PARAM(
     "kind, block_type, expected",
     [
@@ -1187,3 +1373,129 @@ def test_is_probable_header_footer_noise(
         image_height=image_height, item=mock_item
     )
     assert result is expected, f"Failed scenario: {scenario}"
+
+
+def test_removes_boundary_but_preserves_non_table_repeats_header_field() -> None:
+    """Test that non-table items keep `repeats_header` because the function guards on
+    kind.
+
+    This validates that the helper does not blindly drop `repeats_header` from all item
+    payloads. The current behavior is intentionally table-specific.
+    """
+
+    item_json = create_block_item_json(repeats_header=False)
+    cleaned_item_json = verify_page_pairs.strip_continuity_hints(item_json=item_json)
+
+    assert cleaned_item_json == {
+        "bbox": [0.0, 10.0, 100.0, 40.0],
+        "kind": "block",
+        "meta": {"tags": ["body", "candidate"]},
+        "repeats_header": False,
+        "text": {"language": "en", "text": "Body paragraph"},
+    }
+    assert item_json["boundary"] == "truncated"
+    assert item_json["repeats_header"] is False
+
+
+def test_removes_table_continuity_hints_without_mutating_input() -> None:
+    """Test that table-specific continuity hints are stripped from a deep-copied
+    payload.
+
+    This covers the actual table path: both `boundary` and `repeats_header` should be
+    removed, while nested payload content should be preserved and detached from the
+    original input object.
+    """
+
+    item_json = create_table_item_json()
+    cleaned_item_json = verify_page_pairs.strip_continuity_hints(item_json=item_json)
+    cleaned_item_json["meta"]["source"]["page"] = 99
+
+    assert cleaned_item_json == {
+        "bbox": [0.0, 10.0, 100.0, 80.0],
+        "cells": [
+            {
+                "bbox": [0.0, 10.0, 50.0, 20.0],
+                "col_span": 1,
+                "column": 0,
+                "is_header": True,
+                "row": 0,
+                "row_span": 1,
+                "text": {"language": "en", "text": "Header"},
+            }
+        ],
+        "kind": "table",
+        "meta": {"source": {"page": 99}},
+    }
+    assert item_json == {
+        "bbox": [0.0, 10.0, 100.0, 80.0],
+        "boundary": "resumed",
+        "cells": [
+            {
+                "bbox": [0.0, 10.0, 50.0, 20.0],
+                "col_span": 1,
+                "column": 0,
+                "is_header": True,
+                "row": 0,
+                "row_span": 1,
+                "text": {"language": "en", "text": "Header"},
+            }
+        ],
+        "kind": "table",
+        "meta": {"source": {"page": 4}},
+        "repeats_header": True,
+    }
+
+
+def test_reuses_cached_crop_for_same_next_index_and_same_rounded_crop_height(
+    tmp_path: Path,
+) -> None:
+    """Test that cache reuse depends only on next index and rounded crop height.
+
+    Two pair specs with different previous anchors but the same next-page target and
+    the same rounded `crop_y_max` should resolve to the same on-disk crop without
+    reopening or rewriting the image.
+
+    Parameters
+    ----------
+    tmp_path
+        The temporary directory provided by pytest for storing test files.
+    """
+
+    crop_cache: dict[tuple[int, int], Path] = {}
+    next_page_image_fp = tmp_path / "next_page.png"
+    output_dir = tmp_path / "pair_crops"
+    spec_a = create_candidate_pair_spec(crop_y_max=20.4, next_index=4, prev_index=0)
+    spec_b = create_candidate_pair_spec(crop_y_max=20.49, next_index=4, prev_index=9)
+    create_image(fp=next_page_image_fp, size=(40, 100))
+
+    first_crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+        crop_cache=crop_cache,
+        next_page_image_fp=next_page_image_fp,
+        next_page_index=5,
+        output_dir=output_dir,
+        spec=spec_a,
+    )
+
+    with Image.open(first_crop_fp) as cropped_image:
+        assert cropped_image.size == (40, 20)
+
+    with (
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.Image.open", autospec=True
+        ) as mock_image_open,
+        patch(
+            "skg.page_ir_verification.verify_page_pairs.make_dir", autospec=True
+        ) as mock_make_dir,
+    ):
+        second_crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+            crop_cache=crop_cache,
+            next_page_image_fp=next_page_image_fp,
+            next_page_index=5,
+            output_dir=output_dir,
+            spec=spec_b,
+        )
+
+    assert first_crop_fp == second_crop_fp
+    assert crop_cache == {(4, 20): first_crop_fp}
+    mock_image_open.assert_not_called()
+    mock_make_dir.assert_not_called()
