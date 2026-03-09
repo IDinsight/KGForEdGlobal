@@ -104,9 +104,19 @@ def _apply_visible_crop(
 def _candidate_family(item: Block | Table) -> str:
     """Return the structural family used for continuity candidate matching.
 
-    Families are intentionally coarser than full semantics but finer than `item.kind`:
-    tables only match tables, figures only match figures, and all other non-table
+    Families are intentionally coarser than full semantics but finer than `item.kind`.
+    Tables only match tables, figures only match figures, and all other non-table
     blocks are treated as text/list-like block candidates.
+
+    Parameters
+    ----------
+    item
+        The item to classify.
+
+    Returns
+    -------
+    str
+        The candidate family: "table", "figure", or "block".
     """
 
     if item.kind == "table":
@@ -594,7 +604,7 @@ def _ordered_next_candidates(
 
     for i, item in candidates:
         # For blocks, avoid heading/caption as text anchors.
-        if i in seen or (item.kind == "block" and _is_heading_or_caption_block(item)):
+        if i in seen or _is_heading_or_caption_block(item):
             continue
 
         if _shares_candidate_family(left=item, right=prev_item):
@@ -791,6 +801,7 @@ def _pick_topmost(
         The picked candidate index and item.
     """
 
+    # 1.
     preferred = [
         (i, item)
         for i, item in candidates
@@ -800,10 +811,11 @@ def _pick_topmost(
     # Build a deduplicated search order: preferred items first, then remaining
     # candidates (preserving positional order within each group).
     seen_indices: set[int] = {i for i, _ in preferred}
-    unique_ordered: list[tuple[int, Block | Table]] = list(preferred) + [
+    unique_ordered: list[tuple[int, Block | Table]] = preferred + [
         (i, item) for i, item in candidates if i not in seen_indices
     ]
 
+    # 2.
     family_match = next(
         (
             (i, item)
@@ -816,6 +828,7 @@ def _pick_topmost(
     if family_match is not None:
         return family_match
 
+    # 3.
     valid_match = next(
         (
             (i, item)
@@ -824,6 +837,8 @@ def _pick_topmost(
         ),
         None,
     )
+
+    # 4.
     return valid_match if valid_match is not None else candidates[0]
 
 

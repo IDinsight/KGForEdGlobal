@@ -3,11 +3,62 @@
 # Standard Library
 from unittest.mock import MagicMock, Mock, patch
 
+# Third Party Library
+import pytest
+
 # Package Library
-from skg.page_ir_extraction.schemas import Block, Table, TextUnit
+from skg.page_ir_extraction.schemas import (
+    Block,
+    FigureUnit,
+    Table,
+    TableCell,
+    TableRow,
+    TextUnit,
+)
 from skg.page_ir_verification import verify_page_pairs
 from skg.utils.constants import BlockType, ItemBoundary
 from tests.constants import PARAM
+
+
+def create_figure_block(
+    *,
+    alt_text: str,
+    block_type: BlockType = BlockType.FIGURE,
+    boundary: ItemBoundary = ItemBoundary.COMPLETE,
+    y0: float,
+    y1: float,
+) -> Block:
+    """Create a valid figure block for continuity-candidate tests.
+
+    Parameters
+    ----------
+    alt_text
+        Short descriptive alt text for the figure metadata.
+    block_type
+        The block type to assign to the figure block.
+    boundary
+        The page-boundary state for the block.
+    y0
+        The top edge of the block bounding box.
+    y1
+        The bottom edge of the block bounding box.
+
+    Returns
+    -------
+    Block
+        A valid figure block.
+    """
+
+    return Block(
+        bbox=[0.0, y0, 100.0, y1],
+        block_type=block_type,
+        boundary=boundary,
+        figure=FigureUnit(alt_text=alt_text),
+        kind="block",
+        list_items=None,
+        local_code=None,
+        text=None,
+    )
 
 
 def create_mock_item_for_pick_bottommost(
@@ -60,6 +111,89 @@ def create_mock_item_for_visible_crop(y0: float, y1: float) -> Mock:
     item = Mock()
     item.bbox = [0.0, float(y0), 100.0, float(y1)]
     return item
+
+
+def create_table(
+    *, boundary: ItemBoundary = ItemBoundary.COMPLETE, y0: float, y1: float
+) -> Table:
+    """Create a minimal valid table for continuity-candidate tests.
+
+    Parameters
+    ----------
+    boundary
+        The page-boundary state for the table.
+    y0
+        The top edge of the table bounding box.
+    y1
+        The bottom edge of the table bounding box.
+
+    Returns
+    -------
+    Table
+        A valid single-cell table.
+    """
+
+    return Table(
+        bbox=[0.0, y0, 100.0, y1],
+        boundary=boundary,
+        header_row_count=0,
+        kind="table",
+        local_code=None,
+        n_cols=1,
+        repeats_header=None,
+        rows=[
+            TableRow(
+                cells=[
+                    TableCell(
+                        col_span=1,
+                        row_span=1,
+                        text=TextUnit(language="en", text="Cell"),
+                    )
+                ]
+            )
+        ],
+    )
+
+
+def create_text_block(
+    *,
+    block_type: BlockType = BlockType.PARAGRAPH,
+    boundary: ItemBoundary = ItemBoundary.COMPLETE,
+    text: str,
+    y0: float,
+    y1: float,
+) -> Block:
+    """Create a valid text block for continuity-candidate tests.
+
+    Parameters
+    ----------
+    block_type
+        The block type to assign to the block.
+    boundary
+        The page-boundary state for the block.
+    text
+        The text content for the block.
+    y0
+        The top edge of the block bounding box.
+    y1
+        The bottom edge of the block bounding box.
+
+    Returns
+    -------
+    Block
+        A valid text-bearing block.
+    """
+
+    return Block(
+        bbox=[0.0, y0, 100.0, y1],
+        block_type=block_type,
+        boundary=boundary,
+        figure=None,
+        kind="block",
+        list_items=None,
+        local_code=None,
+        text=TextUnit(language="en", text=text),
+    )
 
 
 class TestApplyVisibleCrop:
@@ -257,6 +391,224 @@ class TestFilterCandidatePool:
             image_height=1000.0, items=items
         )
         assert result == [(0, "item0"), (1, "item1")]
+
+
+class TestOrderedNextCandidates:
+    """Tests for ordered next-page continuity candidate selection."""
+
+    def test_heading_and_caption_blocks_are_excluded_from_additional_candidates(
+        self,
+    ) -> None:
+        """Test that heading and caption blocks are skipped when filling extra slots.
+
+        The primary pick may still be a normal text block, but heading and caption
+        blocks should not appear in the supplemental candidate pools that follow it.
+        """
+
+        first_paragraph = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Paragraph 1",
+            y0=10.0,
+            y1=20.0,
+        )
+        heading_block = create_text_block(
+            block_type=BlockType.HEADING,
+            boundary=ItemBoundary.COMPLETE,
+            text="Heading",
+            y0=25.0,
+            y1=35.0,
+        )
+        caption_block = create_text_block(
+            block_type=BlockType.CAPTION,
+            boundary=ItemBoundary.COMPLETE,
+            text="Caption",
+            y0=40.0,
+            y1=50.0,
+        )
+        second_paragraph = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Paragraph 2",
+            y0=55.0,
+            y1=65.0,
+        )
+        table_item = create_table(
+            boundary=ItemBoundary.COMPLETE,
+            y0=70.0,
+            y1=90.0,
+        )
+        prev_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.TRUNCATED,
+            text="Previous paragraph",
+            y0=900.0,
+            y1=980.0,
+        )
+
+        result = verify_page_pairs._ordered_next_candidates(
+            image_height=1000.0,
+            items=[
+                first_paragraph,
+                heading_block,
+                caption_block,
+                second_paragraph,
+                table_item,
+            ],
+            k=5,
+            prev_item=prev_item,
+            visible_y_max=None,
+        )
+
+        assert [index for index, _ in result] == [0, 3, 4]
+
+    def test_invalid_k_raises_value_error(self) -> None:
+        """Test that `k` must be at least one."""
+
+        prev_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.TRUNCATED,
+            text="Previous paragraph",
+            y0=900.0,
+            y1=980.0,
+        )
+
+        with pytest.raises(ValueError, match="k must be >= 1, got 0"):
+            verify_page_pairs._ordered_next_candidates(
+                image_height=1000.0,
+                items=[
+                    create_text_block(
+                        block_type=BlockType.PARAGRAPH,
+                        boundary=ItemBoundary.COMPLETE,
+                        text="Next paragraph",
+                        y0=10.0,
+                        y1=30.0,
+                    )
+                ],
+                k=0,
+                prev_item=prev_item,
+                visible_y_max=None,
+            )
+
+    def test_raises_when_visible_crop_removes_every_candidate(self) -> None:
+        """Test that an empty post-crop candidate pool raises `ValueError`."""
+
+        next_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Hidden below crop",
+            y0=250.0,
+            y1=300.0,
+        )
+        prev_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.TRUNCATED,
+            text="Previous paragraph",
+            y0=900.0,
+            y1=980.0,
+        )
+
+        with pytest.raises(ValueError, match="No non-artifact items found."):
+            verify_page_pairs._ordered_next_candidates(
+                image_height=1000.0,
+                items=[next_item],
+                k=3,
+                prev_item=prev_item,
+                visible_y_max=100.0,
+            )
+
+    def test_same_family_candidates_preserve_reading_order_after_final_reordering(
+        self,
+    ) -> None:
+        """Test that final ordering promotes same-family matches without scrambling
+        them.
+
+        This covers the branch where the primary candidate returned by `_pick_topmost`
+        is cross-family, after which the final return value must still move same-family
+        matches ahead of that cross-family primary while preserving within-pool reading
+        order.
+        """
+
+        later_paragraph = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Later paragraph",
+            y0=30.0,
+            y1=40.0,
+        )
+        table_item = create_table(
+            boundary=ItemBoundary.COMPLETE,
+            y0=10.0,
+            y1=20.0,
+        )
+        earlier_paragraph = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Earlier paragraph",
+            y0=20.0,
+            y1=25.0,
+        )
+        prev_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.TRUNCATED,
+            text="Previous paragraph",
+            y0=900.0,
+            y1=980.0,
+        )
+
+        with patch(
+            "skg.page_ir_verification.verify_page_pairs._pick_topmost"
+        ) as mock_pick_topmost:
+            mock_pick_topmost.return_value = (1, table_item)
+            result = verify_page_pairs._ordered_next_candidates(
+                image_height=1000.0,
+                items=[later_paragraph, table_item, earlier_paragraph],
+                k=3,
+                prev_item=prev_item,
+                visible_y_max=None,
+            )
+
+        assert [index for index, _ in result] == [2, 0, 1]
+
+    def test_uses_figure_family_before_generic_block_fallbacks(self) -> None:
+        """Test that figure anchors prefer figure candidates over earlier text blocks."""
+
+        paragraph_item = create_text_block(
+            block_type=BlockType.PARAGRAPH,
+            boundary=ItemBoundary.COMPLETE,
+            text="Paragraph before figure",
+            y0=5.0,
+            y1=15.0,
+        )
+        figure_item = create_figure_block(
+            alt_text="Diagram",
+            block_type=BlockType.FIGURE,
+            boundary=ItemBoundary.RESUMED,
+            y0=20.0,
+            y1=40.0,
+        )
+        table_item = create_table(
+            boundary=ItemBoundary.COMPLETE,
+            y0=45.0,
+            y1=65.0,
+        )
+        prev_item = create_figure_block(
+            alt_text="Previous diagram",
+            block_type=BlockType.FIGURE,
+            boundary=ItemBoundary.TRUNCATED,
+            y0=900.0,
+            y1=980.0,
+        )
+
+        result = verify_page_pairs._ordered_next_candidates(
+            image_height=1000.0,
+            items=[paragraph_item, figure_item, table_item],
+            k=2,
+            prev_item=prev_item,
+            visible_y_max=None,
+        )
+
+        assert [index for index, _ in result] == [1, 0]
 
 
 @patch("skg.page_ir_verification.verify_page_pairs._is_viable_nonfigure_block_anchor")
