@@ -1198,10 +1198,29 @@ def generate_candidate_pairs(
     next_page_ir: PageIR,
     prev_candidates: list[tuple[int, Block | Table]],
 ) -> tuple[list[CandidatePairSpec], dict[str, int]]:
-    """Generate ordered candidate pair specifications for a page boundary.
+    """Generate the ranked verification workload for a single page boundary.
 
-    Candidate discovery always uses the full next-page JSON. Pair-specific crops are
-    computed later and used only for evidence delivery to the verifier.
+    This function does two related but distinct pieces of work, which is why
+    `_ordered_next_candidates(...)` is called twice for the primary previous-page
+    anchor.
+
+    First, before the loop, it computes the *primary* next-page match for the first
+    previous-page candidate. Those indices are returned separately in
+    `primary_indices` for reporting, logging, and downstream bookkeeping. That pre-loop
+    call intentionally happens before pair expansion so the caller always gets the
+    canonical primary boundary pair, even if later pair generation hits deduplication
+    or the global pair cap.
+
+    Second, inside the loop, it recomputes ordered next-page candidates for *each*
+    previous-page anchor and expands them into concrete `CandidatePairSpec` objects.
+    Each spec stores the previous/next ranks, the item indices, and a pair-specific
+    `crop_y_max` that limits how much of page N + 1 is shown to the verifier. Candidate
+    discovery itself still uses the full next-page JSON; the crop is only an evidence
+    delivery hint for the image sent with that pair.
+
+    During expansion, duplicate `(prev_index, next_index)` pairs are skipped and the
+    total workload is capped at nine candidate pairs (can be changed or parameterized
+    if needed in the future).
 
     Parameters
     ----------
@@ -1210,8 +1229,8 @@ def generate_candidate_pairs(
     next_page_ir
         PageIR for page N+1.
     prev_candidates
-        Ordered bottom-of-page candidates from page N. The first element is the primary
-        previous-page anchor.
+        Ordered bottom-of-page candidates from page N. The first element is treated as
+        the primary previous-page anchor.
 
     Returns
     -------
