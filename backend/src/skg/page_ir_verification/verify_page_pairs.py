@@ -305,58 +305,6 @@ def _is_patchable_positive(
     )
 
 
-def _is_strong_primary_negative_stop(
-    *,
-    config: VerificationConfig,
-    spec: CandidatePairSpec,
-    verdict: PageIRContinuityVerdict,
-) -> bool:
-    """Return whether a primary-primary negative is strong enough to stop searching.
-
-    Rationale
-    ---------
-
-    A negative verdict only disproves continuity for the *specific* candidate pair, so
-    we should usually continue exploring alternate anchors. The expensive failure mode
-    in practice is repeatedly evaluating more pairs even when the best primary-primary
-    pair already has a very strong negative result.
-
-    This early-stop is intentionally conservative:
-
-    1. It only applies to the primary-primary attempt.
-    2. It requires a same-family match (table-table, figure-figure, block-block).
-    3. It requires a very high confidence negative.
-
-    The cutoff comes from `config.min_confidence_to_stop_negative_search`. Keep it high
-    enough that only genuinely strong negatives suppress fallback search over alternate
-    pairs.
-
-    Parameters
-    ----------
-    config
-        The verification configuration.
-    spec
-        The candidate pair specification for the current attempt.
-    verdict
-        The continuity verdict to evaluate.
-
-    Returns
-    -------
-    bool
-        True when the attempt is a strong-enough primary-primary negative to stop the
-        remaining search, False otherwise.
-    """
-
-    min_negative_stop_confidence = float(config.min_confidence_to_stop_negative_search)
-    return (
-        spec.prev_rank == 0
-        and spec.next_rank == 0
-        and not verdict.is_continuation
-        and verdict.confidence >= min_negative_stop_confidence
-        and _shares_candidate_family(left=spec.prev_item, right=spec.next_item)
-    )
-
-
 def _is_viable_nonfigure_block_anchor(item: Block | Table) -> bool:
     """Return True for block anchors suitable for text/list-style continuity.
 
@@ -377,34 +325,6 @@ def _is_viable_nonfigure_block_anchor(item: Block | Table) -> bool:
         and not _is_heading_or_caption_block(item)
         and item.block_type != BlockType.FIGURE
     )
-
-
-def _is_viable_same_family_candidate(
-    *, anchor: Block | Table, candidate: Block | Table
-) -> bool:
-    """Return True if candidate is a valid same-family continuation target.
-
-    Parameters
-    ----------
-    anchor
-        The previous-page candidate item serving as the continuity anchor.
-    candidate
-        The next-page candidate item being evaluated for same-family continuity.
-
-    Returns
-    -------
-    bool
-        True if the candidate is a viable same-family match for the anchor, False
-        otherwise.
-    """
-
-    if not _shares_candidate_family(left=anchor, right=candidate):
-        return False
-
-    if _candidate_family(anchor) == "block":
-        return _is_viable_nonfigure_block_anchor(candidate)
-
-    return True
 
 
 def _make_block_excerpt(
@@ -783,8 +703,10 @@ def _pick_topmost(
     Selection priority:
 
     1. Extractor-flagged RESUMED/BOTH items matching prev_item family.
-    2. Same-family match (Table→Table, Figure→Figure, non-figure Block→non-figure
-        Block).
+    2. Same-family match (Table -> Table, Figure -> Figure, non-figure
+        Block -> non-figure Block). A candidate is a viable same-family match if it
+        shares a family with the anchor. If the anchor is a block, the candidate must
+        also be a viable non-figure block.
     3. First viable non-figure block (fallback for generic block continuity).
     4. Absolute top item (last resort).
 
@@ -820,7 +742,11 @@ def _pick_topmost(
         (
             (i, item)
             for i, item in unique_ordered
-            if _is_viable_same_family_candidate(anchor=prev_item, candidate=item)
+            if _shares_candidate_family(left=prev_item, right=item)
+            and (
+                _candidate_family(prev_item) != "block"
+                or _is_viable_nonfigure_block_anchor(item)
+            )
         ),
         None,
     )
@@ -1148,8 +1074,17 @@ def execute_verification_attempts(
         )
         successful_attempts.append(attempt)
         is_eligible_for_patch = _is_patchable_positive(config=config, verdict=verdict)
-        is_early_stop_negative = _is_strong_primary_negative_stop(
-            config=config, spec=spec, verdict=verdict
+
+        # Stop searching if a primary-primary pair in the same family yields a very
+        # high-confidence negative. This avoids expensive fallback searches for
+        # alternate anchors when the best candidate is already strongly disproven.
+        is_early_stop_negative = (
+            spec.prev_rank == 0
+            and spec.next_rank == 0
+            and not verdict.is_continuation
+            and verdict.confidence
+            >= float(config.min_confidence_to_stop_negative_search)
+            and _shares_candidate_family(left=spec.prev_item, right=spec.next_item)
         )
 
         attempt_summary = {
