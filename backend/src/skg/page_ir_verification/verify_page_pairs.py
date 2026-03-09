@@ -972,25 +972,58 @@ def ensure_pair_specific_crop(
     output_dir: Path,
     spec: CandidatePairSpec,
 ) -> Path:
-    """Create or reuse the next-page crop for a candidate pair.
+    """Create or reuse the pair-specific top crop of page N + 1 used for continuity
+    verification.
+
+    This prepares the "next page" image evidence for a single `CandidatePairSpec`. In
+    the verification workflow, page N is always shown in full, but page N + 1 is shown
+    only as a top crop that extends far enough to include the selected next-page
+    candidate plus any configured padding. This keeps the verifier focused on the
+    relevant boundary region while avoiding unnecessary visual context lower on page
+    N + 1.
+
+    The crop is specific to the candidate pair only through the next-page anchor: the
+    cache key is `(spec.next_index, round(spec.crop_y_max))`. If a crop with the same
+    target item and crop height has already been rendered during this page-pair run,
+    the cached file path is returned immediately.
+
+    Otherwise, the function:
+
+    1. Builds a deterministic output filename from the next-page index, the candidate
+        item's index, and the rounded crop height.
+    2. Opens the full-page PNG for page N + 1.
+    3. Clamps `spec.crop_y_max` to the valid image range `[1, image_height]`.
+    4. Crops the rectangle `(0, 0, image_width, y_max)`, i.e. the full page width from
+        the top of the page down to the requested bottom edge.
+    5. Saves the crop, records it in `crop_cache`, and returns the path.
+
+    NB:
+
+    1. This function does **not** decide how much of page N + 1 should be visible; it
+        trusts `spec.crop_y_max`, which is computed upstream during candidate-pair
+        generation.
+    2. The crop is an evidence-delivery optimization for the verifier. Candidate
+        discovery still uses the full next-page PageIR JSON.
 
     Parameters
     ----------
     crop_cache
-        Cache from crop key to rendered crop path.
+        In-memory cache mapping `(next_item_index, rounded_crop_y_max)` to the saved
+        crop path for the current page-pair verification run.
     next_page_image_fp
-        Full-page PNG for page N+1.
+        Path to the full rendered PNG for page N + 1.
     next_page_index
-        Zero-based page index of the next page.
+        Zero-based page index of page N + 1. Used only for deterministic output naming.
     output_dir
-        Directory where pair-specific crops should be written.
+        Directory where pair-specific next-page crop images are written.
     spec
-        Candidate pair specification.
+        Candidate pair specification containing the selected next-page item and the
+        maximum y-coordinate to include in the crop.
 
     Returns
     -------
     Path
-        Path to the rendered crop image.
+        Filesystem path to the rendered or reused crop image for page N+1.
     """
 
     crop_key = (spec.next_index, int(round(spec.crop_y_max)))
