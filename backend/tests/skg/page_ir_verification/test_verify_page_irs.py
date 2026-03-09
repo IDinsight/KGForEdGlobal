@@ -1348,6 +1348,111 @@ class TestPickTopmost:
         assert result == (1, paragraph_item)
 
 
+def test_bottom_continuity_candidates_honors_visible_y_min_before_filling_output() -> (
+    None
+):
+    """Test that `visible_y_min` restricts both the primary pick and extra candidates."""
+
+    hidden_bottom = create_table(boundary=ItemBoundary.TRUNCATED, y0=100.0, y1=140.0)
+    visible_table = create_table(boundary=ItemBoundary.COMPLETE, y0=780.0, y1=860.0)
+    visible_block = create_text_block(
+        block_type=BlockType.PARAGRAPH,
+        boundary=ItemBoundary.COMPLETE,
+        text="Visible paragraph",
+        y0=720.0,
+        y1=770.0,
+    )
+    result = verify_page_pairs.bottom_continuity_candidates(
+        image_height=1000.0,
+        items=[hidden_bottom, visible_block, visible_table],
+        k=3,
+        visible_y_min=700.0,
+    )
+    assert [index for index, _ in result] == [2, 1]
+
+
+def test_bottom_continuity_candidates_raises_for_invalid_k() -> None:
+    """Test that ``bottom_continuity_candidates()`` rejects `k < 1`."""
+
+    item = create_text_block(text="Body", y0=10.0, y1=20.0)
+
+    with pytest.raises(ValueError, match="k must be >= 1"):
+        verify_page_pairs.bottom_continuity_candidates(
+            image_height=1000.0, items=[item], k=0, visible_y_min=None
+        )
+
+
+def test_bottom_continuity_candidates_raises_when_crop_removes_all_candidates() -> None:
+    """Test that cropping can eliminate every candidate and trigger the empty-pool error."""
+
+    low_item = create_text_block(text="Low", y0=10.0, y1=20.0)
+
+    with pytest.raises(ValueError, match="No non-artifact items found."):
+        verify_page_pairs.bottom_continuity_candidates(
+            image_height=1000.0,
+            items=[low_item],
+            k=3,
+            visible_y_min=900.0,
+        )
+
+
+def test_bottom_continuity_candidates_returns_primary_then_non_heading_extras() -> None:
+    """Test that extras preserve near-bottom order while skipping heading anchors."""
+
+    primary_table = create_table(boundary=ItemBoundary.TRUNCATED, y0=880.0, y1=980.0)
+    heading_block = create_text_block(
+        block_type=BlockType.HEADING,
+        boundary=ItemBoundary.COMPLETE,
+        text="Section 2",
+        y0=820.0,
+        y1=870.0,
+    )
+    body_block = create_text_block(
+        block_type=BlockType.PARAGRAPH,
+        boundary=ItemBoundary.COMPLETE,
+        text="Body continuation",
+        y0=760.0,
+        y1=810.0,
+    )
+    second_table = create_table(boundary=ItemBoundary.COMPLETE, y0=700.0, y1=750.0)
+    result = verify_page_pairs.bottom_continuity_candidates(
+        image_height=1000.0,
+        items=[second_table, body_block, heading_block, primary_table],
+        k=3,
+        visible_y_min=None,
+    )
+    assert [index for index, _ in result] == [3, 1, 0]
+
+
+def test_bottom_continuity_candidates_sorts_by_bottom_edge_before_primary_pick() -> (
+    None
+):
+    """Test that the primary picker receives candidates sorted by descending `y1`."""
+
+    lower_item = create_text_block(text="Lower", y0=100.0, y1=150.0)
+    highest_item = create_text_block(text="Highest", y0=300.0, y1=950.0)
+    middle_item = create_table(y0=200.0, y1=600.0)
+
+    with patch(
+        "skg.page_ir_verification.verify_page_pairs._pick_bottommost"
+    ) as mock_pick_bottommost:
+        mock_pick_bottommost.return_value = (1, highest_item)
+        result = verify_page_pairs.bottom_continuity_candidates(
+            image_height=1000.0,
+            items=[lower_item, highest_item, middle_item],
+            k=1,
+            visible_y_min=None,
+        )
+
+    sorted_candidates = mock_pick_bottommost.call_args.kwargs.get("candidates")
+
+    if sorted_candidates is None:
+        sorted_candidates = mock_pick_bottommost.call_args.args[0]
+
+    assert [index for index, _ in sorted_candidates] == [1, 2, 0]
+    assert result == [(1, highest_item)]
+
+
 def test_clamps_saved_crop_height_to_page_height_when_requested_crop_exceeds_image(
     tmp_path: Path,
 ) -> None:
