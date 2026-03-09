@@ -1348,10 +1348,10 @@ def make_verification_excerpt(
         The verification excerpt of the item.
     """
 
-    bbox = item["bbox"]
     kind = item["kind"]
-    local_code = item.get("local_code", None)
     assert kind in ("block", "table"), f"Unexpected item kind: {kind}"
+    bbox = item["bbox"]
+    local_code = item.get("local_code", None)
 
     return (
         _make_table_excerpt(
