@@ -157,6 +157,25 @@ def create_image(*, fp: Path, size: tuple[int, int]) -> None:
         image.save(fp)
 
 
+def create_list_item(*, marker: str | None, text: str) -> dict[str, Any]:
+    """Create a list-item payload for block excerpt tests.
+
+    Parameters
+    ----------
+    marker
+        The list marker to attach to the item.
+    text
+        The text payload for the list item.
+
+    Returns
+    -------
+    dict[str, Any]
+        A PageIR-style list-item dictionary.
+    """
+
+    return {"marker": marker, "text": {"language": "en", "text": text}}
+
+
 def create_mock_item_for_pick_bottommost(
     kind: str, boundary: ItemBoundary, is_figure: bool = False, is_viable: bool = False
 ) -> Mock:
@@ -226,6 +245,23 @@ def create_page_ir(*, image_height: int, items: list[Block]) -> PageIR:
     """
 
     return PageIR(image_height=image_height, items=items)
+
+
+def create_row(cells: list[Any]) -> dict[str, list[Any]]:
+    """Create a table-row payload for table excerpt tests.
+
+    Parameters
+    ----------
+    cells
+        The row cells.
+
+    Returns
+    -------
+    dict[str, list[Any]]
+        A PageIR-style row dictionary.
+    """
+
+    return {"cells": cells}
 
 
 def create_table(
@@ -338,6 +374,23 @@ def create_text_block(
         local_code=None,
         text=TextUnit(language="en", text=text),
     )
+
+
+def create_text_cell(text: Any) -> dict[str, Any]:
+    """Create a text-cell payload for table excerpt tests.
+
+    Parameters
+    ----------
+    text
+        The value to place under the cell `text` field.
+
+    Returns
+    -------
+    dict[str, Any]
+        A PageIR-style cell dictionary.
+    """
+
+    return {"text": text}
 
 
 class TestApplyVisibleCrop:
@@ -1373,6 +1426,179 @@ def test_is_probable_header_footer_noise(
         image_height=image_height, item=mock_item
     )
     assert result is expected, f"Failed scenario: {scenario}"
+
+
+def test_make_block_excerpt_builds_all_preview_sections_with_truncation_and_caps() -> (
+    None
+):
+    """Test that block excerpts normalize and truncate text across all preview channels.
+
+    This tests with a mixed payload containing body text, more than six list items, and
+    figure metadata. The assertions verify that each preview path applies the correct
+    truncation logic and that the list preview is capped.
+    """
+
+    item = {
+        "block_type": BlockType.PARAGRAPH,
+        "figure": {
+            "alt_text": "ABCDEFGHIJKL",
+            "caption": {"text": "Caption line"},
+            "embedded_text": {"text": "Embedded words here"},
+            "figure_kind": "diagram",
+        },
+        "kind": "block",
+        "list_items": [
+            create_list_item(marker="1.", text="A" * 200),
+            create_list_item(marker="-", text="Second item"),
+            "third item",
+            create_list_item(marker="4.", text="Fourth item"),
+            create_list_item(marker="5.", text="Fifth item"),
+            create_list_item(marker="6.", text="Sixth item"),
+            create_list_item(marker="7.", text="Seventh item should be dropped"),
+        ],
+        "text": {"language": "en", "text": "Line 1\nLine 2\nLine 3"},
+    }
+
+    excerpt = verify_page_pairs._make_block_excerpt(
+        bbox=[0.0, 10.0, 100.0, 80.0], item=item, local_code="B-01", max_text_chars=10
+    )
+
+    assert excerpt["kind"] == "block"
+    assert excerpt["bbox"] == [0.0, 10.0, 100.0, 80.0]
+    assert excerpt["local_code"] == "B-01"
+    assert excerpt["block_type"] == BlockType.PARAGRAPH
+    assert excerpt["text_preview"] == "Line 1..."
+    assert excerpt["figure_preview"] == {
+        "alt_text": "ABCDEFG...",
+        "caption": "Caption...",
+        "embedded_text": "Embedde...",
+        "kind": "diagram",
+    }
+    assert len(excerpt["list_preview"]) == 6
+    assert excerpt["list_preview"][0].startswith("1. ")
+    assert excerpt["list_preview"][0].endswith("...")
+    assert excerpt["list_preview"][1] == "- Second item"
+    assert excerpt["list_preview"][2] == "third item"
+    assert excerpt["list_preview"][5] == "6. Sixth item"
+
+
+def test_make_block_excerpt_omits_empty_or_malformed_preview_sections() -> None:
+    """Test that block excerpts do not emit empty preview keys for blank inputs.
+
+    This tests the scenario where text is blank, the list payload is empty, and figure
+    subfields are missing or malformed. The helper should return only the required
+    structural fields.
+    """
+
+    item = {
+        "block_type": BlockType.PARAGRAPH,
+        "figure": {"caption": "not-a-dict", "embedded_text": {"not_text": "ignored"}},
+        "kind": "block",
+        "list_items": [],
+        "text": {"language": "en", "text": "  \n  "},
+    }
+
+    excerpt = verify_page_pairs._make_block_excerpt(
+        bbox=[5.0, 15.0, 95.0, 45.0], item=item, local_code=None, max_text_chars=20
+    )
+    assert excerpt == {
+        "bbox": [5.0, 15.0, 95.0, 45.0],
+        "block_type": BlockType.PARAGRAPH,
+        "kind": "block",
+        "local_code": None,
+    }
+
+
+def test_make_table_excerpt_handles_malformed_cells_and_overstated_header_counts() -> (
+    None
+):
+    """Test that table excerpts normalize odd cell payloads without crashing.
+
+    This targets two brittle edges: malformed cell `text` payloads and a
+    `header_row_count` that exceeds the available rows. The helper should keep the
+    declared header count, preview only the rows that exist, and normalize odd cell
+    shapes into safe strings.
+    """
+
+    item = {
+        "header_row_count": 5,
+        "n_cols": 3,
+        "rows": [
+            create_row(
+                cells=[
+                    create_text_cell(text={"text": "ok"}),
+                    create_text_cell(text="wrong-shape"),
+                    123,
+                ],
+            ),
+            create_row(cells=[create_text_cell(text={"text": "still header"}), None]),
+        ],
+    }
+    excerpt = verify_page_pairs._make_table_excerpt(
+        bbox=[2.0, 4.0, 50.0, 40.0],
+        item=item,
+        local_code=None,
+        max_cell_chars=20,
+        preview_rows=2,
+    )
+    assert excerpt == {
+        "bbox": [2.0, 4.0, 50.0, 40.0],
+        "bottom_rows_preview": [],
+        "header_preview": [["ok", "", "123"], ["still header", "None"]],
+        "header_row_count": 5,
+        "kind": "table",
+        "local_code": None,
+        "n_cols": 3,
+        "row_count": 2,
+        "top_rows_preview": [],
+    }
+
+
+def test_make_table_excerpt_splits_top_and_bottom_body_previews_without_overlap() -> (
+    None
+):
+    """Test that table excerpts window long bodies without duplicating overlap rows.
+
+    This tests the deduplication branch where the top and bottom body slices would
+    otherwise overlap. The helper should keep the header rows, the top body window, and
+    only the non-overlapping tail rows.
+    """
+
+    item = {
+        "header_row_count": 1,
+        "n_cols": 2,
+        "rows": [
+            create_row(cells=[create_text_cell(text={"text": "abcdefghi"}), "H2"]),
+            create_row(cells=[create_text_cell(text={"text": "row1-long"}), "B1"]),
+            create_row(cells=[create_text_cell(text={"text": "row2-long"}), "B2"]),
+            create_row(cells=[create_text_cell(text={"text": "row3-long"}), "B3"]),
+            create_row(cells=[create_text_cell(text={"text": "row4-long"}), "B4"]),
+            create_row(cells=[create_text_cell(text={"text": "row5-long"}), "B5"]),
+        ],
+    }
+    excerpt = verify_page_pairs._make_table_excerpt(
+        bbox=[0.0, 0.0, 100.0, 120.0],
+        item=item,
+        local_code="T-01",
+        max_cell_chars=8,
+        preview_rows=3,
+    )
+
+    assert excerpt == {
+        "bbox": [0.0, 0.0, 100.0, 120.0],
+        "bottom_rows_preview": [["row4-...", "B4"], ["row5-...", "B5"]],
+        "header_preview": [["abcde...", "H2"]],
+        "header_row_count": 1,
+        "kind": "table",
+        "local_code": "T-01",
+        "n_cols": 2,
+        "row_count": 6,
+        "top_rows_preview": [
+            ["row1-...", "B1"],
+            ["row2-...", "B2"],
+            ["row3-...", "B3"],
+        ],
+    }
 
 
 def test_removes_boundary_but_preserves_non_table_repeats_header_field() -> None:
