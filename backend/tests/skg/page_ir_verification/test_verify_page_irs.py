@@ -1,7 +1,8 @@
 """This is the main module for testing page_ir_verification/verify_page_irs.py."""
 
 # Standard Library
-from unittest.mock import MagicMock, Mock, patch
+from dataclasses import dataclass
+from unittest.mock import MagicMock, Mock, call, patch
 
 # Third Party Library
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from skg.page_ir_extraction.schemas import (
     Block,
     FigureUnit,
+    PageIR,
     Table,
     TableCell,
     TableRow,
@@ -18,6 +20,13 @@ from skg.page_ir_extraction.schemas import (
 from skg.page_ir_verification import verify_page_pairs
 from skg.utils.constants import BlockType, ItemBoundary
 from tests.constants import PARAM
+
+
+@dataclass(frozen=True)
+class VerificationConfigStub:
+    """Minimal config stub for candidate-pair generation tests."""
+
+    next_page_crop_padding_px: float
 
 
 def create_figure_block(
@@ -111,6 +120,25 @@ def create_mock_item_for_visible_crop(y0: float, y1: float) -> Mock:
     item = Mock()
     item.bbox = [0.0, float(y0), 100.0, float(y1)]
     return item
+
+
+def create_page_ir(*, image_height: int, items: list[Block]) -> PageIR:
+    """Create a minimal `PageIR` for candidate-pair generation tests.
+
+    Parameters
+    ----------
+    image_height
+        The rendered page height in pixels.
+    items
+        The page items in reading order.
+
+    Returns
+    -------
+    PageIR
+        A minimal page IR instance.
+    """
+
+    return PageIR(image_height=image_height, items=items)
 
 
 def create_table(
@@ -391,6 +419,247 @@ class TestFilterCandidatePool:
             image_height=1000.0, items=items
         )
         assert result == [(0, "item0"), (1, "item1")]
+
+
+class TestGenerateCandidatePairs:
+    """Tests for candidate-pair generation across a page boundary."""
+
+    @patch("skg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
+    def test_calls_ordered_next_candidates_once_for_primary_reporting_and_once_per_prev_anchor(
+        self, mock_ordered_next_candidates: MagicMock
+    ) -> None:
+        """Test that the function performs a dedicated primary lookup before pair
+        expansion.
+
+        The pre-loop lookup establishes `primary_indices` from the first previous-page
+        anchor, while the loop then recomputes ordered next candidates for each
+        previous anchor to build the full verification workload.
+
+        Parameters
+        ----------
+        mock_ordered_next_candidates
+            The mocked _ordered_next_candidates function, which should be called once
+            for the primary candidate selection and then once per previous anchor
+            during pair expansion.
+        """
+
+        config = VerificationConfigStub(next_page_crop_padding_px=25.0)
+        prev_item_a = create_text_block(
+            boundary=ItemBoundary.TRUNCATED, text="Previous A", y0=900.0, y1=960.0
+        )
+        prev_item_b = create_text_block(
+            boundary=ItemBoundary.TRUNCATED, text="Previous B", y0=940.0, y1=990.0
+        )
+        next_item_a = create_text_block(
+            boundary=ItemBoundary.RESUMED, text="Next A", y0=10.0, y1=40.0
+        )
+        next_item_b = create_text_block(
+            boundary=ItemBoundary.COMPLETE, text="Next B", y0=50.0, y1=90.0
+        )
+        next_page_ir = create_page_ir(
+            image_height=1000, items=[next_item_a, next_item_b]
+        )
+        prev_candidates: list[tuple[int, Block]] = [
+            (10, prev_item_a),
+            (11, prev_item_b),
+        ]
+        mock_ordered_next_candidates.side_effect = [
+            [(0, next_item_a)],
+            [(0, next_item_a), (1, next_item_b)],
+            [(1, next_item_b)],
+        ]
+
+        pair_specs, primary_indices = verify_page_pairs.generate_candidate_pairs(
+            config=config, next_page_ir=next_page_ir, prev_candidates=prev_candidates
+        )
+
+        assert primary_indices == {"next_item_index": 0, "prev_item_index": 10}
+        assert [
+            (spec.prev_index, spec.next_index, spec.prev_rank, spec.next_rank)
+            for spec in pair_specs
+        ] == [
+            (10, 0, 0, 0),
+            (10, 1, 0, 1),
+            (11, 1, 1, 0),
+        ]
+        assert mock_ordered_next_candidates.call_count == 3
+        mock_ordered_next_candidates.assert_has_calls(
+            [
+                call(
+                    image_height=1000, items=next_page_ir.items, prev_item=prev_item_a
+                ),
+                call(
+                    image_height=1000, items=next_page_ir.items, prev_item=prev_item_a
+                ),
+                call(
+                    image_height=1000, items=next_page_ir.items, prev_item=prev_item_b
+                ),
+            ]
+        )
+
+    @patch("skg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
+    def test_caps_crop_y_max_and_skips_duplicate_pairs(
+        self, mock_ordered_next_candidates: MagicMock
+    ) -> None:
+        """Test that crop padding is capped at page height and duplicate pairs are
+        skipped.
+
+        Parameters
+        ----------
+        mock_ordered_next_candidates
+            The mocked _ordered_next_candidates function, which should be called for
+            each previous anchor and return candidate pools that test the crop padding
+            logic and duplicate pair skipping. In this test, the second previous anchor
+            would generate a duplicate pair with the first if not for the skipping
+            logic, and the crop padding should be applied to limit candidates to a
+            reasonable area below the page boundary.
+        """
+
+        config = VerificationConfigStub(next_page_crop_padding_px=50.0)
+        prev_item = create_text_block(
+            boundary=ItemBoundary.TRUNCATED, text="Previous anchor", y0=920.0, y1=990.0
+        )
+        next_item_bottom = create_text_block(
+            boundary=ItemBoundary.RESUMED, text="Bottom candidate", y0=930.0, y1=980.0
+        )
+        next_item_mid = create_text_block(
+            boundary=ItemBoundary.COMPLETE, text="Middle candidate", y0=70.0, y1=100.0
+        )
+        next_page_ir = create_page_ir(
+            image_height=1000, items=[next_item_bottom, next_item_mid]
+        )
+        mock_ordered_next_candidates.side_effect = [
+            [(0, next_item_bottom)],
+            [(0, next_item_bottom), (0, next_item_bottom), (1, next_item_mid)],
+        ]
+
+        pair_specs, primary_indices = verify_page_pairs.generate_candidate_pairs(
+            config=config, next_page_ir=next_page_ir, prev_candidates=[(7, prev_item)]
+        )
+
+        assert primary_indices == {"next_item_index": 0, "prev_item_index": 7}
+        assert [
+            (spec.prev_index, spec.next_index, spec.crop_y_max) for spec in pair_specs
+        ] == [
+            (7, 0, 1000.0),
+            (7, 1, 150.0),
+        ]
+
+    @patch("skg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
+    def test_stops_after_nine_candidate_pairs(
+        self, mock_ordered_next_candidates: MagicMock
+    ) -> None:
+        """Test that pair generation stops once the nine-pair workload limit is reached.
+
+        Parameters
+        ----------
+        mock_ordered_next_candidates
+            The mocked _ordered_next_candidates function, which should be called for
+            each previous anchor until the nine-pair limit is reached. In this test, we
+            set up enough previous anchors and next candidates that without the limit,
+            we would generate more than nine pairs. We want to confirm that the
+            function stops generating pairs once it hits the limit, even if there are
+            more candidates available.
+        """
+
+        config = VerificationConfigStub(next_page_crop_padding_px=10.0)
+        prev_candidates: list[tuple[int, Block]] = [
+            (
+                10,
+                create_text_block(
+                    boundary=ItemBoundary.TRUNCATED,
+                    text="Previous 10",
+                    y0=900.0,
+                    y1=930.0,
+                ),
+            ),
+            (
+                11,
+                create_text_block(
+                    boundary=ItemBoundary.TRUNCATED,
+                    text="Previous 11",
+                    y0=910.0,
+                    y1=940.0,
+                ),
+            ),
+            (
+                12,
+                create_text_block(
+                    boundary=ItemBoundary.TRUNCATED,
+                    text="Previous 12",
+                    y0=920.0,
+                    y1=950.0,
+                ),
+            ),
+            (
+                13,
+                create_text_block(
+                    boundary=ItemBoundary.TRUNCATED,
+                    text="Previous 13",
+                    y0=930.0,
+                    y1=960.0,
+                ),
+            ),
+        ]
+        next_items = [
+            create_text_block(
+                boundary=ItemBoundary.RESUMED,
+                text="Next 0",
+                y0=10.0,
+                y1=20.0,
+            ),
+            create_text_block(
+                boundary=ItemBoundary.COMPLETE,
+                text="Next 1",
+                y0=30.0,
+                y1=40.0,
+            ),
+            create_text_block(
+                boundary=ItemBoundary.COMPLETE,
+                text="Next 2",
+                y0=50.0,
+                y1=60.0,
+            ),
+        ]
+        next_page_ir = create_page_ir(
+            image_height=1000,
+            items=next_items,
+        )
+        ordered_next_candidates = [
+            (0, next_items[0]),
+            (1, next_items[1]),
+            (2, next_items[2]),
+        ]
+        mock_ordered_next_candidates.side_effect = [
+            ordered_next_candidates,
+            ordered_next_candidates,
+            ordered_next_candidates,
+            ordered_next_candidates,
+            ordered_next_candidates,
+        ]
+
+        pair_specs, primary_indices = verify_page_pairs.generate_candidate_pairs(
+            config=config, next_page_ir=next_page_ir, prev_candidates=prev_candidates
+        )
+
+        assert primary_indices == {
+            "next_item_index": 0,
+            "prev_item_index": 10,
+        }
+        assert len(pair_specs) == 9
+        assert [spec.prev_index for spec in pair_specs] == [
+            10,
+            10,
+            10,
+            11,
+            11,
+            11,
+            12,
+            12,
+            12,
+        ]
+        assert [spec.next_index for spec in pair_specs] == [0, 1, 2, 0, 1, 2, 0, 1, 2]
+        assert mock_ordered_next_candidates.call_count == 4
 
 
 class TestOrderedNextCandidates:
