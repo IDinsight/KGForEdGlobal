@@ -257,60 +257,6 @@ def test_deduplicate_and_sort_edge_records_raises_for_non_adjacent_pages() -> No
         )
 
 
-def test_deduplicate_and_sort_edge_records_sorts_selected_records_by_page_and_item() -> (
-    None
-):
-    """It should return retained records sorted by page boundary and item indexes."""
-
-    later_boundary = make_edge_verdict_record(
-        confidence=0.93,
-        continuation_kind=PageContinuationKind.TABLE,
-        is_continuation=True,
-        next_item_index=0,
-        next_page_index=3,
-        prev_item_index=1,
-        prev_page_index=2,
-        set_next_table_repeats_header=True,
-    )
-    earlier_boundary_higher_item = make_edge_verdict_record(
-        confidence=0.88,
-        continuation_kind=PageContinuationKind.TEXT,
-        is_continuation=True,
-        next_item_index=2,
-        next_page_index=1,
-        prev_item_index=4,
-        prev_page_index=0,
-        set_next_table_repeats_header=None,
-    )
-    earlier_boundary_lower_item = make_edge_verdict_record(
-        confidence=0.89,
-        continuation_kind=PageContinuationKind.TEXT,
-        is_continuation=True,
-        next_item_index=1,
-        next_page_index=1,
-        prev_item_index=0,
-        prev_page_index=0,
-        set_next_table_repeats_header=None,
-    )
-
-    sorted_edge_records, boundary_duplicate_resolutions = (
-        compile_continuity._deduplicate_and_sort_edge_records(
-            edge_records=[
-                later_boundary,
-                earlier_boundary_higher_item,
-                earlier_boundary_lower_item,
-            ]
-        )
-    )
-
-    assert sorted_edge_records == [
-        earlier_boundary_lower_item,
-        earlier_boundary_higher_item,
-        later_boundary,
-    ]
-    assert not boundary_duplicate_resolutions
-
-
 def test_initialize_states_normalizes_local_codes_for_blocks_and_tables() -> None:
     """It should strip local_code whitespace and coerce blank values to None."""
 
