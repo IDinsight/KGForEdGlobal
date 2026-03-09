@@ -64,6 +64,14 @@ def _apply_edge_verdicts(
     -------
     list[dict[str, Any]]
         List of applied edge summaries.
+
+    Raises
+    ------
+    ValueError
+        If any edge verdict references a (page_idx, item_idx) candidate key that is not
+        present in the current PageIR-derived state dictionaries. This indicates stale
+        or mismatched verification inputs and compile aborts rather than silently
+        skipping the edge.
     """
 
     applied_edges: list[dict[str, Any]] = []
@@ -75,22 +83,26 @@ def _apply_edge_verdicts(
         should_apply = verdict.confidence >= min_confidence_to_patch
 
         # Compiled edge verdicts should always refer to items that exist in the current
-        # PageIR set.
-        if prev_key not in bools or next_key not in bools:
-            logger.warning(
-                f"Skipping edge verdict because candidate keys were not found in "
-                f"current PageIRs: prev_key={prev_key} next_key={next_key} "
-                f"(pages {record.prev_page_index}->{record.next_page_index})."
+        # PageIR set. If not, the verification outputs and PageIR inputs are out of
+        # sync (for example: stale pair reports, changed PageIR extraction, or a
+        # resumed run against different inputs). This is a hard error, not a
+        # recoverable skip.
+        missing_parts: list[str] = []
+
+        if prev_key not in bools:
+            missing_parts.append(f"prev_key={prev_key}")
+        if next_key not in bools:
+            missing_parts.append(f"next_key={next_key}")
+
+        if missing_parts:
+            details = ", ".join(missing_parts)
+            raise ValueError(
+                f"Edge verdict references candidate item(s) that do not exist in the "
+                f"current PageIR set. This usually indicates stale pair reports or "
+                f"mismatched PageIR inputs. "
+                f"Boundary={record.prev_page_index}->{record.next_page_index}; "
+                f"{details}; record={_brief_edge_record(record)}"
             )
-            applied_edges.append(
-                _make_edge_summary(
-                    record=record,
-                    should_apply=should_apply,
-                    skip_reason="missing_candidate_key",
-                    skipped=True,
-                )
-            )
-            continue
 
         if not should_apply:
             applied_edges.append(
@@ -257,7 +269,7 @@ def _deduplicate_and_sort_edge_records(
     2. Raises a ValueError if multiple *conflicting* records exist for the same
         boundary, because that indicates inconsistent upstream verification outputs.
 
-    After deduplication, every retained record must be adjacent
+    NB: After deduplication, every retained record must be adjacent
     (next_page_index == prev_page_index + 1). Non-adjacent edge records are invalid for
     page-pair continuity compilation and cause a ValueError.
 
@@ -280,6 +292,9 @@ def _deduplicate_and_sort_edge_records(
 
     boundary_map: dict[tuple[int, int], list[EdgeVerdictRecord]] = {}
 
+    # Group records only by page boundary first. Compile intentionally treats
+    # verification's selected boundary candidates as authoritative, so all records for
+    # the same prev/next page pair must either be exact duplicates or an error.
     for record in edge_records:
         boundary = (int(record.prev_page_index), int(record.next_page_index))
         boundary_map.setdefault(boundary, []).append(record)
@@ -288,14 +303,20 @@ def _deduplicate_and_sort_edge_records(
     selected: list[EdgeVerdictRecord] = []
 
     for boundary, records in sorted(boundary_map.items()):
+        # If a boundary has only one record, there is nothing to resolve.
         if len(records) == 1:
             selected.append(records[0])
             continue
 
         identity_groups: dict[tuple[Any, ...], list[EdgeVerdictRecord]] = {}
 
+        # Build a compile-relevant identity key.
         for record in records:
             verdict = record.verdict
+
+            #  If two records differ on any of these fields, they are not true
+            #  duplicates -> they represent conflicting upstream outputs for the same
+            #  boundary.
             identity_key = (
                 int(record.prev_page_index),
                 int(record.next_page_index),
@@ -308,6 +329,9 @@ def _deduplicate_and_sort_edge_records(
             )
             identity_groups.setdefault(identity_key, []).append(record)
 
+        # More than one identity group means the same page boundary has multiple
+        # non-identical records. Compile refuses to choose between them because that
+        # would amount to re-ranking verification output.
         if len(identity_groups) > 1:
             conflict_summaries = [
                 _brief_edge_record(group_records[0])
@@ -322,6 +346,8 @@ def _deduplicate_and_sort_edge_records(
                 f"{conflict_summaries}"
             )
 
+        # At this point every record for the boundary is semantically identical, so we
+        # keep one representative and record how many exact duplicates were collapsed.
         kept = records[0]
         duplicate_count = len(records) - 1
 
@@ -342,6 +368,8 @@ def _deduplicate_and_sort_edge_records(
 
         selected.append(kept)
 
+    # Once boundary-level duplicates are resolved, sort the retained records into the
+    # deterministic order expected by downstream compile logic.
     sorted_edge_records = sorted(
         selected,
         key=lambda record: (
@@ -352,6 +380,8 @@ def _deduplicate_and_sort_edge_records(
         ),
     )
 
+    # Compile only supports edges between adjacent page pairs. This check runs after
+    # deduplication so the final retained set is validated exactly as it will be used.
     non_adjacent = [
         record
         for record in sorted_edge_records
