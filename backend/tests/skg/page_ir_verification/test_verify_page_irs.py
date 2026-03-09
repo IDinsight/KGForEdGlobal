@@ -1852,3 +1852,82 @@ def test_reuses_cached_crop_for_same_next_index_and_same_rounded_crop_height(
     assert crop_cache == {(4, 20): first_crop_fp}
     mock_image_open.assert_not_called()
     mock_make_dir.assert_not_called()
+
+
+def test_table_row_preview_returns_empty_list_for_missing_cells() -> None:
+    """Return an empty preview when the row has no cells key."""
+
+    row: dict[str, Any] = {}
+    assert not verify_page_pairs._table_row_preview(max_cell_chars=20, row=row)
+
+
+def test_table_row_preview_returns_empty_strings_for_dict_cells_without_text_dict() -> (
+    None
+):
+    """Use empty strings when dict cells do not expose a nested text payload."""
+
+    row = create_row(cells=[{}, {"text": None}, {"text": "plain string"}])
+    assert verify_page_pairs._table_row_preview(max_cell_chars=20, row=row) == [
+        "",
+        "",
+        "",
+    ]
+
+
+def test_table_row_preview_stringifies_non_dict_cells_before_truncating() -> None:
+    """Convert non-dict cells to strings before applying truncation."""
+
+    row = create_row(cells=[12345, True, ["abc", "def"]])
+    assert verify_page_pairs._table_row_preview(max_cell_chars=8, row=row) == [
+        "12345",
+        "True",
+        "['abc...",
+    ]
+
+
+def test_table_row_preview_truncates_dict_cell_text_and_preserves_cell_order() -> None:
+    """Preview dict-backed cells in order and truncate each cell independently."""
+
+    row = create_row(
+        cells=[
+            {"text": {"text": "Alpha Beta"}},
+            {"text": {"text": "Gamma Delta Epsilon"}},
+            {"text": {"text": "Zeta"}},
+        ]
+    )
+    assert verify_page_pairs._table_row_preview(max_cell_chars=10, row=row) == [
+        "Alpha Beta",
+        "Gamma D...",
+        "Zeta",
+    ]
+
+
+def test_truncate_text_appends_ellipsis_when_text_exceeds_limit() -> None:
+    """Append an ellipsis when the normalized text is longer than the limit."""
+
+    assert (
+        verify_page_pairs.truncate_text(max_chars=8, text="abcdefghijk") == "abcde..."
+    )
+
+
+def test_truncate_text_keeps_text_shorter_than_limit() -> None:
+    """Return the original text when it already fits within the limit."""
+
+    assert verify_page_pairs.truncate_text(max_chars=12, text="hello") == "hello"
+
+
+def test_truncate_text_replaces_newlines_and_strips_surrounding_whitespace() -> None:
+    """Normalize newlines to spaces and trim leading and trailing whitespace."""
+
+    assert (
+        verify_page_pairs.truncate_text(
+            max_chars=50, text="  First line\nsecond line\n third line  "
+        )
+        == "First line second line  third line"
+    )
+
+
+def test_truncate_text_returns_ellipsis_only_when_limit_is_less_than_three() -> None:
+    """Return only an ellipsis when truncation is required below three characters."""
+
+    assert verify_page_pairs.truncate_text(max_chars=2, text="abcdef") == "..."
