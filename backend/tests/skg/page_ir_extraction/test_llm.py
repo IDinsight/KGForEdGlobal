@@ -432,7 +432,7 @@ class TestExtractionUsageTracker:
         assert totals["output_tokens"] == 90
         assert totals["requests"] == 5
         assert totals["runs"] == 2
-        assert totals["total_tokens"] == 320
+        assert totals["total_tokens"] == 270
 
     def test_to_dict_contains_agent_names(self) -> None:
         """to_dict() should contain per-agent breakdown keyed by agent name."""

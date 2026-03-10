@@ -109,12 +109,8 @@ class ExtractionUsageTracker:
             "requests": self.extraction.requests + self.validation.requests,
             "runs": self.extraction.runs + self.validation.runs,
             "total_tokens": (
-                self.extraction.cache_read_tokens
-                + self.extraction.cache_write_tokens
-                + self.extraction.input_tokens
+                self.extraction.input_tokens
                 + self.extraction.output_tokens
-                + self.validation.cache_read_tokens
-                + self.validation.cache_write_tokens
                 + self.validation.input_tokens
                 + self.validation.output_tokens
             ),
