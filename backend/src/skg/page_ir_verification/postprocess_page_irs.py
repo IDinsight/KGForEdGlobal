@@ -921,7 +921,7 @@ def postprocess_verified_page_irs(
     verification_dirs: PageIRVerificationDirs,
     verified_table_continuation_edges: set[tuple[int, int, int, int]] | None = None,
 ) -> None:
-    """Run all postpass fixes before writing verified JSONs.
+    """Run all postprocess fixes before writing verified JSONs.
 
     NB: Order matters here. Don't change unless you know what you are doing!
 
@@ -1013,7 +1013,7 @@ def propagate_table_local_codes(
     Returns
     -------
     list[dict[str, Any]]
-        A list of changes made during the postpass.
+        A list of changes made during the post-pass.
     """
 
     # Precompute which table items have VERIFIED incoming/outgoing edges.
