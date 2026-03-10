@@ -97,8 +97,12 @@ class VerificationUsageTracker:
             "requests": self.verification.requests + self.validation.requests,
             "runs": self.verification.runs + self.validation.runs,
             "total_tokens": (
-                self.verification.input_tokens
+                self.verification.cache_read_tokens
+                + self.verification.cache_write_tokens
+                + self.verification.input_tokens
                 + self.verification.output_tokens
+                + self.validation.cache_read_tokens
+                + self.validation.cache_write_tokens
                 + self.validation.input_tokens
                 + self.validation.output_tokens
             ),
