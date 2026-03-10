@@ -53,24 +53,6 @@ def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int
     )
 
 
-def _is_synthetic_placeholder_cell(cell: TableCell) -> bool:
-    """True if the cell is a synthetic 1x1 empty placeholder inserted by postprocess.
-
-    Parameters
-    ----------
-    cell
-        The cell to check.
-
-    Returns
-    -------
-    bool
-        True if the cell matches the lightweight placeholder shape used by rowspan
-        alignment and row-padding repair steps.
-    """
-
-    return cell.col_span == 1 and cell.row_span == 1 and cell.text is None
-
-
 def _process_page_tables(
     *,
     carry_from_prev: str | None,
@@ -323,7 +305,10 @@ def _process_table_normalization(
             continue
 
         missing = n_cols - effective_cols
-        padding = [TableCell(col_span=1, row_span=1, text=None) for _ in range(missing)]
+        padding = [
+            TableCell(col_span=1, row_span=1, synthetic=True, text=None)
+            for _ in range(missing)
+        ]
 
         # Apply the fix.
         row.cells = (padding + cells) if pad_left else (cells + padding)
@@ -464,7 +449,7 @@ def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
         for r in rows_for_modal
         if sum(c.col_span for c in r.cells) >= n_cols
         and r.cells
-        and not _is_synthetic_placeholder_cell(r.cells[0])
+        and not r.cells[0].synthetic
     ]
 
     if not natural_full_width_rows_cells:
@@ -522,7 +507,9 @@ def _simulate_rowspan_alignment(
 
     for idx, cell in enumerate(cells):
         while col < n_cols and simulated_active_span[col] > 0:
-            proposed_cells.append(TableCell(col_span=1, row_span=1, text=None))
+            proposed_cells.append(
+                TableCell(col_span=1, row_span=1, synthetic=True, text=None)
+            )
             inserted_placeholders += 1
             col += 1
 
@@ -560,7 +547,9 @@ def _simulate_rowspan_alignment(
             }
 
     while col < n_cols and simulated_active_span[col] > 0:
-        proposed_cells.append(TableCell(col_span=1, row_span=1, text=None))
+        proposed_cells.append(
+            TableCell(col_span=1, row_span=1, synthetic=True, text=None)
+        )
         inserted_placeholders += 1
         col += 1
 
@@ -601,7 +590,7 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
     while effective_cols > n_cols and new_cells:
         tail = new_cells[-1]
 
-        if _is_synthetic_placeholder_cell(tail):
+        if tail.synthetic:
             new_cells.pop()
             trimmed += 1
             effective_cols -= 1  # Placeholder is guaranteed col_span==1 above
