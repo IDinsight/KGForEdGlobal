@@ -1039,7 +1039,7 @@ def compile_continuity_from_edge_verdicts(
         for edge in applied_edges
         if edge.get("applied")
         and edge.get("is_continuation")
-        and (edge.get("continuation_kind") or "").lower() == "table"
+        and edge.get("continuation_kind") == PageContinuationKind.TABLE.value
     }
 
 
