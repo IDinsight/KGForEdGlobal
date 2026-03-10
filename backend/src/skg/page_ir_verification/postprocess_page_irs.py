@@ -227,7 +227,11 @@ def _process_table_item(
 
 
 def _process_table_normalization(
-    *, item: Table, item_index: int, page_index: int
+    *,
+    item: Table,
+    item_index: int,
+    page_index: int,
+    rowspan_conflict_keys: set[tuple[int, int, int]],
 ) -> list[dict[str, Any]]:
     """Analyze a single table and normalizes its rows.
 
@@ -239,6 +243,10 @@ def _process_table_normalization(
         The index of the item on the page.
     page_index
         The index of the page containing the item.
+    rowspan_conflict_keys
+        Set of (page_index, item_index, row_index) keys identifying rows that had
+        unresolved rowspan alignment conflicts. Padding changes on these rows are
+        annotated for audit traceability.
 
     Returns
     -------
@@ -290,20 +298,23 @@ def _process_table_normalization(
             after_cells = len(cells)
             after_effective = sum(cell.col_span for cell in cells)
 
-            table_changes.append(
-                {
-                    "type": "table_row_effective_cols_exceeds_n_cols",
-                    "page": page_index,
-                    "item_index": item_index,
-                    "row_index": row_index,
-                    "n_cols": n_cols,
-                    "before_cells": before_cells,
-                    "after_cells": after_cells,
-                    "before_effective_cols": before_effective,
-                    "after_effective_cols": after_effective,
-                    "trimmed_trailing_placeholders": trimmed,
-                }
-            )
+            change: dict[str, Any] = {
+                "type": "table_row_effective_cols_exceeds_n_cols",
+                "page": page_index,
+                "item_index": item_index,
+                "row_index": row_index,
+                "n_cols": n_cols,
+                "before_cells": before_cells,
+                "after_cells": after_cells,
+                "before_effective_cols": before_effective,
+                "after_effective_cols": after_effective,
+                "trimmed_trailing_placeholders": trimmed,
+            }
+
+            if (page_index, item_index, row_index) in rowspan_conflict_keys:
+                change["prior_rowspan_conflict"] = True
+
+            table_changes.append(change)
 
             # We do not attempt destructive fixes beyond trimming empty placeholders.
             continue
@@ -317,19 +328,22 @@ def _process_table_normalization(
         # Apply the fix.
         row.cells = (padding + cells) if pad_left else (cells + padding)
 
-        table_changes.append(
-            {
-                "after": n_cols,
-                "before_cells": len(cells),
-                "before_effective_cols": effective_cols,
-                "item_index": item_index,
-                "page": page_index,
-                "row_index": row_index,
-                "side": "left" if pad_left else "right",
-                "side_reason": side_reason,
-                "type": "pad_table_row_cells",
-            }
-        )
+        change = {
+            "after": n_cols,
+            "before_cells": len(cells),
+            "before_effective_cols": effective_cols,
+            "item_index": item_index,
+            "page": page_index,
+            "row_index": row_index,
+            "side": "left" if pad_left else "right",
+            "side_reason": side_reason,
+            "type": "pad_table_row_cells",
+        }
+
+        if (page_index, item_index, row_index) in rowspan_conflict_keys:
+            change["prior_rowspan_conflict"] = True
+
+        table_changes.append(change)
 
     return table_changes
 
@@ -882,7 +896,9 @@ def normalize_empty_table_cells(page_irs: dict[int, PageIR]) -> list[dict[str, A
 
 
 def normalize_table_row_cell_counts(
+    *,
     page_irs: dict[int, PageIR],
+    rowspan_conflict_keys: set[tuple[int, int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Ensure each table row has an effective width of n_cols columns (accounting for
     col_span). Fixes the common LLM error of dropping empty cells at the start/end of
@@ -892,6 +908,10 @@ def normalize_table_row_cell_counts(
     ----------
     page_irs
         Mapping of page index to PageIR dict.
+    rowspan_conflict_keys
+        Optional set of (page_index, item_index, row_index) keys identifying rows that
+        had unresolved rowspan alignment conflicts. When provided, padding changes on
+        these rows are annotated for audit traceability.
 
     Returns
     -------
@@ -899,6 +919,7 @@ def normalize_table_row_cell_counts(
         A list of change records describing the modifications made.
     """
 
+    conflict_keys = rowspan_conflict_keys or set()
     changes: list[dict[str, Any]] = []
 
     for page_index, page_ir in sorted(page_irs.items()):
@@ -908,7 +929,10 @@ def normalize_table_row_cell_counts(
 
             changes.extend(
                 _process_table_normalization(
-                    item=item, item_index=item_index, page_index=page_index
+                    item=item,
+                    item_index=item_index,
+                    page_index=page_index,
+                    rowspan_conflict_keys=conflict_keys,
                 )
             )
 
@@ -963,8 +987,20 @@ def postprocess_verified_page_irs(
     # rowspan repair does not bias the later left-vs-right padding decision.
     rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs)
 
+    # Build a set of (page, item_index, row_index) keys for rows that had unresolved
+    # rowspan conflicts so the padding step can annotate those rows in its change
+    # records. This preserves the full audit chain: "rowspan repair was skipped for
+    # this row, then padding was applied instead."
+    rowspan_conflict_keys: set[tuple[int, int, int]] = {
+        (change["page"], change["item_index"], change["row_index"])
+        for change in rowspan_alignment_changes
+        if change.get("type") == "rowspan_alignment_conflict_overflow"
+    }
+
     # Fix structural "empty cell" hallucinations from the extraction model.
-    pad_changes = normalize_table_row_cell_counts(page_irs)
+    pad_changes = normalize_table_row_cell_counts(
+        page_irs=page_irs, rowspan_conflict_keys=rowspan_conflict_keys
+    )
 
     # Persist what was changed for audit/debug.
     write_to_json(
