@@ -140,6 +140,10 @@ class TableCell(BaseSchema):
 
     col_span: int = Field(1, description="Number of columns this cell spans.", ge=1)
     row_span: int = Field(1, description="Number of rows this cell spans.", ge=1)
+    synthetic: bool = Field(
+        default=False,
+        description="True if this cell was inserted by a postprocess repair step (rowspan alignment or row padding). Never set during extraction.",
+    )
     text: Optional[TextUnit] = Field(
         None, description="The content of the cell. Null if visually empty."
     )
