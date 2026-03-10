@@ -20,7 +20,7 @@ from skg.page_ir_extraction.schemas import (
 )
 from skg.page_ir_verification.utils import PageIRVerificationDirs, is_artifact
 from skg.schemas import VerificationConfig
-from skg.utils.constants import BlockType, CaptionTablePrefixes
+from skg.utils.constants import BlockType, CaptionTablePrefixes, PageContinuationKind
 from skg.utils.general import write_to_json
 
 # Compiled regexes.
@@ -814,7 +814,7 @@ def load_verified_table_continuation_edges(
             continue
         if not edge.get("is_continuation", False):
             continue
-        if (edge.get("continuation_kind") or "").lower() != "table":
+        if edge.get("continuation_kind") != PageContinuationKind.TABLE.value:
             continue
 
         edges.add(
