@@ -214,43 +214,6 @@ def _brief_edge_record(record: EdgeVerdictRecord) -> dict[str, Any]:
     }
 
 
-def _collect_verified_table_continuation_edges(
-    applied_edges: list[dict[str, Any]],
-) -> set[tuple[int, int, int, int]]:
-    """Return the applied VERIFIED table-continuation edges in tuple form.
-
-    Parameters
-    ----------
-    applied_edges
-        The compile-time applied edge summaries.
-
-    Returns
-    -------
-    set[tuple[int, int, int, int]]
-        A set of (prev_page, prev_index, next_page, next_index) tuples for edges that
-        were actually applied and represent TABLE continuations.
-    """
-
-    verified_table_edges: set[tuple[int, int, int, int]] = set()
-
-    for edge in applied_edges:
-        if (
-            edge.get("applied")
-            and edge.get("is_continuation")
-            and (edge.get("continuation_kind") or "").lower() == "table"
-        ):
-            verified_table_edges.add(
-                (
-                    int(edge["prev_page"]),
-                    int(edge["prev_index"]),
-                    int(edge["next_page"]),
-                    int(edge["next_index"]),
-                )
-            )
-
-    return verified_table_edges
-
-
 def _deduplicate_and_sort_edge_records(
     edge_records: list[EdgeVerdictRecord],
 ) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
@@ -627,7 +590,7 @@ def _propagate_local_codes(
     record: EdgeVerdictRecord,
     verdict: PageIRContinuityVerdict,
 ) -> None:
-    """Propagate local_code across a TRUE continuation edge when one side is missing.
+    """Propagate local_code across a true continuation edge when one side is missing.
 
     Parameters
     ----------
@@ -725,10 +688,10 @@ def _reconcile_dirty_item_states(
         repeats_header review flags.
     """
 
+    all_keys = dirty_keys | set(repeats_header_patch.keys())
     boundary_changes: list[dict[str, Any]] = []
     repeats_header_changes: list[dict[str, Any]] = []
     repeats_header_review_flags: list[dict[str, Any]] = []
-    all_keys = dirty_keys | set(repeats_header_patch.keys())
 
     for page_index, item_index in sorted(all_keys):
         flags = bools[(page_index, item_index)]
@@ -798,12 +761,22 @@ def _reconcile_item_state(
     table: Table | None = item if is_table else None
     before_repeats = table.repeats_header if table is not None else None
 
-    # If a table is about to transition into a non-continuation boundary state, clear
-    # repeats_header BEFORE updating the boundary. This avoids transient invariant
-    # violations if validate_assignment is enabled on the schema.
+    # Clear repeats_header before changing a table into a non-resumed boundary state.
+    # table.repeats_header is only valid when the table boundary is RESUMED or BOTH.
+    # During in-place updates, updating the boundary first could create a transient
+    # invalid state such as:
+    #
+    #     boundary = COMPLETE/TRUNCATED
+    #     repeats_header = True/False
+    #
+    # even if repeats_header would be cleared immediately afterward.
+    #
+    # Clearing repeats_header to None first keeps the object schema-valid throughout
+    # the mutation sequence, which matters especially when assignment-time validation
+    # is enabled.
     if (
         is_table
-        and table is not None
+        and table is not None  # For mypy
         and after_boundary not in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
         and table.repeats_header is not None
     ):
@@ -820,7 +793,7 @@ def _reconcile_item_state(
         }
         item.boundary = after_boundary
 
-    if not is_table or table is None:
+    if not is_table or table is None:  # For mypy
         return boundary_change, header_change, header_review_flag
 
     # Connection broken -> repeats_header must be None. The only review case worth
@@ -845,15 +818,14 @@ def _reconcile_item_state(
                 "after_boundary": after_boundary.value,
                 "before_repeats_header": before_repeats,
                 "header_row_count": table.header_row_count,
-                "reason": (
-                    "boundary_downgraded_after_non_repeated_header_state_with_zero_header_rows"
-                ),
+                "reason": "boundary_downgraded_after_non_repeated_header_state_with_zero_header_rows",
             }
 
         return boundary_change, header_change, header_review_flag
 
-    # Connection exists -> Apply explicit patch if present.
+    # Connection exists -> apply explicit patch if present.
     key = (page_index, item_index)
+
     if key in repeats_header_patch:
         desired = repeats_header_patch[key]
 
@@ -931,6 +903,7 @@ def compile_continuity_from_edge_verdicts(
     edge_records: list[EdgeVerdictRecord],
     min_confidence_to_patch: float,
     min_confidence_to_select_positive: float,
+    min_confidence_to_stop_negative_search: float,
     page_irs: dict[int, PageIR],
     verification_dirs: PageIRVerificationDirs,
 ) -> set[tuple[int, int, int, int]]:
@@ -951,6 +924,10 @@ def compile_continuity_from_edge_verdicts(
         Verification-time selection threshold carried through for provenance in the
         compile report. Compile treats incoming edge_records as already
         verification-selected and does not re-rank per-boundary candidates.
+    min_confidence_to_stop_negative_search
+        Verification-time early-stop threshold carried through for provenance in the
+        compile report. Compile treats incoming edge_records as already
+        verification-selected and does not re-run boundary search.
     page_irs
         Mapping of page_index to PageIR objects.
     verification_dirs
@@ -1003,9 +980,9 @@ def compile_continuity_from_edge_verdicts(
 
     for (page_index, item_index), code in sorted(local_code_patch.items()):
         item = page_irs[page_index].items[item_index]
-        before = _normalize_local_code(getattr(item, "local_code", None))
+        before_code = _normalize_local_code(getattr(item, "local_code", None))
 
-        if before is None:
+        if before_code is None:
             item.local_code = code
             local_code_changes.append(
                 {
@@ -1015,11 +992,11 @@ def compile_continuity_from_edge_verdicts(
                     "page": page_index,
                 }
             )
-        elif before != code:
+        elif before_code != code:
             local_code_patch_skips.append(
                 {
                     "desired": code,
-                    "existing": before,
+                    "existing": before_code,
                     "item_index": item_index,
                     "page": page_index,
                     "reason": "item_already_has_local_code",
@@ -1027,7 +1004,7 @@ def compile_continuity_from_edge_verdicts(
             )
             logger.warning(
                 f"Page {page_index} item {item_index}: skipping local_code patch "
-                f"'{code}' because item already has local_code='{before}'."
+                f"'{code}' because item already has local_code='{before_code}'."
             )
 
     compile_report = {
@@ -1037,6 +1014,7 @@ def compile_continuity_from_edge_verdicts(
         "selection_policy": {
             "min_confidence_to_patch": min_confidence_to_patch,
             "min_confidence_to_select_positive": min_confidence_to_select_positive,
+            "min_confidence_to_stop_negative_search": min_confidence_to_stop_negative_search,
         },
         "local_code_changes": local_code_changes,
         "local_code_patch_skips": local_code_patch_skips,
@@ -1051,7 +1029,18 @@ def compile_continuity_from_edge_verdicts(
         json_info=compile_report,
     )
 
-    return _collect_verified_table_continuation_edges(applied_edges)
+    return {
+        (
+            int(edge["prev_page"]),
+            int(edge["prev_index"]),
+            int(edge["next_page"]),
+            int(edge["next_index"]),
+        )
+        for edge in applied_edges
+        if edge.get("applied")
+        and edge.get("is_continuation")
+        and (edge.get("continuation_kind") or "").lower() == "table"
+    }
 
 
 def run_compile_step(
@@ -1098,6 +1087,7 @@ def run_compile_step(
         edge_records=edge_records,
         min_confidence_to_patch=config.min_confidence_to_patch,
         min_confidence_to_select_positive=config.min_confidence_to_select_positive,
+        min_confidence_to_stop_negative_search=config.min_confidence_to_stop_negative_search,
         page_irs=page_irs,
         verification_dirs=verification_dirs,
     )

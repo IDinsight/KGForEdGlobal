@@ -130,16 +130,26 @@ def make_page_ir(*, items: list[Block | Table], page_index: int) -> PageIR:
     return PageIR(boundary_state="standalone", items=items, page_index=page_index)
 
 
-def make_table(*, boundary: ItemBoundary, local_code: str | None) -> Table:
+def make_table(
+    *,
+    boundary: ItemBoundary,
+    header_row_count: int = 0,
+    local_code: str | None,
+    repeats_header: bool | None = None,
+) -> Table:
     """Build a minimal valid table for continuity compilation tests.
 
     Parameters
     ----------
     boundary
         The boundary type to assign to the table.
+    header_row_count
+        The extracted header row count for the table.
     local_code
         The local code to assign to the table, which will be normalized by
         _initialize_states.
+    repeats_header
+        The extracted repeated-header signal for the table.
 
     Returns
     -------
@@ -153,9 +163,10 @@ def make_table(*, boundary: ItemBoundary, local_code: str | None) -> Table:
     return Table(
         bbox=(0.0, 40.0, 100.0, 100.0),
         boundary=boundary,
-        header_row_count=0,
+        header_row_count=header_row_count,
         kind="table",
         local_code=local_code,
+        repeats_header=repeats_header,
         rows=[TableRow(cells=[TableCell(text=TextUnit(language="en", text="cell"))])],
     )
 
@@ -604,6 +615,43 @@ def test_mutate_for_edge_sets_boundary_bits_and_table_header_patch_for_positive_
 
 
 @PARAM(
+    argnames=("before_repeats", "desired"),
+    argvalues=[(False, None), (None, True), (True, False)],
+)
+def test_patch_repeats_header_sets_requested_value_and_returns_change_summary(
+    *, before_repeats: bool | None, desired: bool | None
+) -> None:
+    """It should update repeats_header and return the applied change summary.
+
+    Parameters
+    ----------
+    before_repeats
+        The initial repeats_header value on the table.
+    desired
+        The desired repeats_header value to patch onto the table.
+    """
+
+    table = make_table(
+        boundary=ItemBoundary.RESUMED,
+        header_row_count=0,
+        local_code=None,
+        repeats_header=before_repeats,
+    )
+
+    change = compile_continuity._patch_repeats_header(
+        desired=desired, item_index=2, page_index=7, table=table
+    )
+
+    assert change == {
+        "after": desired,
+        "before": before_repeats,
+        "item_index": 2,
+        "page": 7,
+    }
+    assert table.repeats_header is desired
+
+
+@PARAM(
     ("continuation_kind", "should_propagate"),
     [
         (PageContinuationKind.TEXT, False),
@@ -744,6 +792,178 @@ def test_propagate_local_codes_records_conflict_when_both_sides_have_different_c
     ]
     assert not local_code_patch
     assert not local_code_propagation_conflicts
+
+
+def test_reconcile_dirty_item_states_reconciles_dirty_items_and_patch_only_items() -> (
+    None
+):
+    """It should reconcile dirty items and also process patch-only table keys."""
+
+    page_irs = {
+        0: make_page_ir(
+            items=[
+                make_block(
+                    boundary=ItemBoundary.COMPLETE, local_code=None, text="first block"
+                ),
+                make_table(
+                    boundary=ItemBoundary.RESUMED,
+                    header_row_count=0,
+                    local_code=None,
+                    repeats_header=False,
+                ),
+            ],
+            page_index=0,
+        ),
+        1: make_page_ir(
+            items=[
+                make_table(
+                    boundary=ItemBoundary.RESUMED,
+                    header_row_count=0,
+                    local_code=None,
+                    repeats_header=None,
+                )
+            ],
+            page_index=1,
+        ),
+    }
+
+    boundary_changes, repeats_header_changes, repeats_header_review_flags = (
+        compile_continuity._reconcile_dirty_item_states(
+            bools={
+                (0, 0): [False, True],
+                (0, 1): [False, False],
+                (1, 0): [True, False],
+            },
+            dirty_keys={(0, 0), (0, 1)},
+            page_irs=page_irs,
+            repeats_header_patch={(1, 0): True},
+        )
+    )
+
+    assert boundary_changes == [
+        {"after": "truncated", "before": "complete", "item_index": 0, "page": 0},
+        {"after": "complete", "before": "resumed", "item_index": 1, "page": 0},
+    ]
+    assert repeats_header_changes == [
+        {"after": None, "before": False, "item_index": 1, "page": 0},
+        {"after": True, "before": None, "item_index": 0, "page": 1},
+    ]
+    assert repeats_header_review_flags == [
+        {
+            "after_boundary": "complete",
+            "before_boundary": "resumed",
+            "before_repeats_header": False,
+            "header_row_count": 0,
+            "item_index": 1,
+            "page": 0,
+            "reason": (
+                "boundary_downgraded_after_non_repeated_header_state_with_zero_header_rows"
+            ),
+        }
+    ]
+    assert page_irs[0].items[0].boundary == ItemBoundary.TRUNCATED
+    assert page_irs[0].items[1].boundary == ItemBoundary.COMPLETE
+    assert page_irs[0].items[1].repeats_header is None
+    assert page_irs[1].items[0].boundary == ItemBoundary.RESUMED
+    assert page_irs[1].items[0].repeats_header is True
+
+
+def test_reconcile_item_state_applies_boundary_change_for_non_table_items() -> None:
+    """It should update block boundaries without emitting table-specific changes."""
+
+    block = make_block(
+        boundary=ItemBoundary.COMPLETE, local_code=None, text="body paragraph"
+    )
+
+    boundary_change, header_change, header_review_flag = (
+        compile_continuity._reconcile_item_state(
+            flags=[False, True],
+            item=block,
+            item_index=1,
+            page_index=3,
+            repeats_header_patch={},
+        )
+    )
+
+    assert boundary_change == {
+        "after": "truncated",
+        "before": "complete",
+        "item_index": 1,
+        "page": 3,
+    }
+    assert header_change is None
+    assert header_review_flag is None
+    assert block.boundary == ItemBoundary.TRUNCATED
+
+
+def test_reconcile_item_state_applies_explicit_repeats_header_patch_for_connected_table() -> (
+    None
+):
+    """It should apply an explicit repeats_header patch when continuity remains."""
+
+    table = make_table(
+        boundary=ItemBoundary.RESUMED,
+        header_row_count=0,
+        local_code=None,
+        repeats_header=None,
+    )
+    boundary_change, header_change, header_review_flag = (
+        compile_continuity._reconcile_item_state(
+            flags=[True, False],
+            item=table,
+            item_index=2,
+            page_index=5,
+            repeats_header_patch={(5, 2): True},
+        )
+    )
+
+    assert boundary_change is None
+    assert header_change == {"after": True, "before": None, "item_index": 2, "page": 5}
+    assert header_review_flag is None
+    assert table.boundary == ItemBoundary.RESUMED
+    assert table.repeats_header is True
+
+
+def test_reconcile_item_state_clears_repeats_header_and_flags_manual_review_on_downgrade() -> (
+    None
+):
+    """It should clear repeats_header and emit a review flag for the downgrade case."""
+
+    table = make_table(
+        boundary=ItemBoundary.RESUMED,
+        header_row_count=0,
+        local_code=None,
+        repeats_header=False,
+    )
+
+    boundary_change, header_change, header_review_flag = (
+        compile_continuity._reconcile_item_state(
+            flags=[False, False],
+            item=table,
+            item_index=4,
+            page_index=8,
+            repeats_header_patch={},
+        )
+    )
+
+    assert boundary_change == {
+        "after": "complete",
+        "before": "resumed",
+        "item_index": 4,
+        "page": 8,
+    }
+    assert header_change == {"after": None, "before": False, "item_index": 4, "page": 8}
+    assert header_review_flag == {
+        "after_boundary": "complete",
+        "before_boundary": "resumed",
+        "before_repeats_header": False,
+        "header_row_count": 0,
+        "item_index": 4,
+        "page": 8,
+        "reason": "boundary_downgraded_after_non_repeated_header_state_with_zero_header_rows",
+    }
+    assert table.boundary == ItemBoundary.COMPLETE
+    assert table.repeats_header is None
 
 
 def test_try_propagate_code_keeps_earlier_patch_when_new_code_conflicts() -> None:
