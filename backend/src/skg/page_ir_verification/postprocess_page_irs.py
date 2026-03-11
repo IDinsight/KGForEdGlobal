@@ -196,13 +196,19 @@ def _process_table_item(
         )
 
     # active_span[c] means for column c, how many rows are still occupied because of
-    # rowspans coming from earlier rows? For example, if active_span = [2, 0, 0, 0],
-    # this means that column 0 is occupied by a cell from above for the current row AND
-    # one more row after that.
+    # rowspans coming from earlier TRUSTED rows? For example, if active_span =
+    # [2, 0, 0, 0], this means that column 0 is occupied by a cell from above for the
+    # current row AND one more row after that.
+    #
+    # NB: When a row overflows during simulated alignment, we preserve it unchanged and
+    # do NOT propagate any new spans introduced by that row. Subsequent rows are then
+    # attempted against the decaying trusted span state only. This naturally keeps
+    # consecutive bad rows unchanged until a later row can be aligned safely again.
     active_span = [0] * n_cols
 
     for row_index, row in enumerate(item.rows):
-        # Process the row without decrementing active_span yet.
+        # Process the row against the current trusted span state without decrementing
+        # active_span yet.
         row_change = _process_table_row(active_span=active_span, n_cols=n_cols, row=row)
 
         if row_change:
@@ -395,11 +401,10 @@ def _process_table_row(
         }
 
     # Conflict path: preserve the original extracted row and avoid destructive repair.
-    # We still advance span state using the original row so later rows continue to be
-    # processed deterministically, but we surface the inconsistency explicitly for
-    # audit/review.
-    _update_spans_only(active_span=active_span, cells=old_cells, n_cols=n_cols)
-
+    # Crucially, we do NOT propagate any new spans introduced by this conflicted row.
+    # Later rows are processed only against span state inherited from previously
+    # trusted rows (after the caller's usual per-row decrement), which localizes the
+    # uncertainty instead of letting one bad row affect downstream repairs.
     conflict: dict[str, Any] = {
         "type": "rowspan_alignment_conflict_overflow",
         "before_cells": len(old_cells),
@@ -409,6 +414,7 @@ def _process_table_row(
         "active_span_snapshot": placement.get(
             "active_span_snapshot", list(active_span)
         ),
+        "conflict_policy": "preserve_row_ignore_new_spans",
     }
 
     overflow_cell_col_span = placement.get("overflow_cell_col_span")
@@ -418,7 +424,8 @@ def _process_table_row(
 
     logger.warning(
         f"Rowspan alignment conflict: preserving original row with {len(old_cells)} "
-        f"cell(s) because simulated placement overflowed n_cols={n_cols}."
+        f"cell(s) because simulated placement overflowed n_cols={n_cols}; new "
+        f"rowspans from this row will NOT be propagated."
     )
 
     return conflict
@@ -639,43 +646,6 @@ def _update_active_span(
 
             if target_col < n_cols:
                 active_span[target_col] = max(active_span[target_col], row_span)
-
-
-def _update_spans_only(
-    *, active_span: list[int], cells: list[Any], n_cols: int
-) -> None:
-    """Update active spans without inserting new placeholder cells.
-
-    Parameters
-    ----------
-    active_span
-        List tracking remaining rowspan counts for each column.
-    cells
-        The list of original table cells.
-    n_cols
-        The total number of columns in the table.
-    """
-
-    col = 0
-
-    for cell in cells:
-        while col < n_cols and active_span[col] > 0:
-            col += 1
-
-        if col >= n_cols:
-            break
-
-        col_span = cell.col_span
-        row_span = cell.row_span
-
-        _update_active_span(
-            active_span=active_span,
-            col=col,
-            col_span=col_span,
-            n_cols=n_cols,
-            row_span=row_span,
-        )
-        col += col_span
 
 
 def _validate_page_gap(
