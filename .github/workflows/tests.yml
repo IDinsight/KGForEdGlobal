@@ -16,20 +16,8 @@ on:
 
 env:
   CHAT_ENV: testing
-  FASTAPI_API_KEY: 4dfb52c17344877923e869b8ed283c29d6d94626cd0ac82d38472656228f7828
-  FASTAPI_DOCS_PASSWORD: vKaBzSHTDPWTe5B7xyJD7V5q4sKlWGpBJ5XGpCQTsUQ
-  FASTAPI_DOCS_USER: fake-user
-  LOGFIRE_SEND_TO_LOGFIRE: false
   LOGGING_LEVEL: DEBUG
   OPENAI_API_KEY: sk-fake  # pragma: allowlist secret
-  POSTGRES_DB: postgres-pg-vector-test
-  POSTGRES_HOST: localhost
-  POSTGRES_PASSWORD: pg-vector-test-pw  # pragma: allowlist secret
-  POSTGRES_PORT: 5433
-  POSTGRES_USER: pg-vector-test-user
-  PROMETHEUS_MULTIPROC_DIR: /tmp
-  REDIS_PORT: 6381
-  REDIS_URL: redis://localhost:6381
 
 jobs:
   changes:
@@ -62,30 +50,6 @@ jobs:
       run:
         shell: bash
         working-directory: backend
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg18
-        env:
-          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
-          POSTGRES_USER: ${{ env.POSTGRES_USER }}
-          POSTGRES_DB: ${{ env.POSTGRES_DB }}
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5433:5432
-      redis:
-        image: redis:8.2.2-alpine
-        options: >-
-          --health-cmd "redis-cli ping || exit 1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6381:6379
 
     steps:
       - name: Checkout repository

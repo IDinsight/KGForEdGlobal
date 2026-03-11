@@ -16,11 +16,8 @@ on:
 
 env:
   CHAT_ENV: testing
-  LOGFIRE_SEND_TO_LOGFIRE: false
   LOGGING_LEVEL: DEBUG
   OPENAI_API_KEY: sk-fake  # pragma: allowlist secret
-  PROMETHEUS_MULTIPROC_DIR: /tmp
-  REDIS_URL: redis://localhost:6381
 
 jobs:
   changes:
