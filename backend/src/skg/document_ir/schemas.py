@@ -6,10 +6,10 @@ single DocumentIR.
 from __future__ import annotations
 
 # Standard Library
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Self, Union
 
 # Third Party Library
-from pydantic import Field
+from pydantic import Field, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import ListItem, TableRow, TextUnit
@@ -55,6 +55,54 @@ class BlockSlice(BaseSchema):
         description="The textual content of this slice. If stitched, this may be concatenated with subsequent slices.",
     )
 
+    @model_validator(mode="after")
+    def validate_payload_by_block_type(self) -> Self:
+        """Validate mutually exclusive payload fields by block type.
+
+        Returns
+        -------
+        Self
+            The validated slice.
+
+        Raises
+        ------
+        ValueError
+            If the slice payload does not match its block type.
+        """
+
+        b_type = self.block_type
+
+        expected_field = {BlockType.FIGURE: "figure", BlockType.LIST: "list_items"}.get(
+            b_type, "text"
+        )
+
+        if expected_field == "figure" and self.figure is None:
+            raise ValueError(
+                f"BlockSlice block_type='{b_type}' requires figure metadata."
+            )
+
+        if expected_field == "list_items" and not self.list_items:
+            raise ValueError(
+                f"BlockSlice block_type='{b_type}' requires non-empty list_items."
+            )
+
+        if expected_field == "text" and (
+            self.text is None or not self.text.text.strip()
+        ):
+            raise ValueError(
+                f"BlockSlice block_type='{b_type}' requires non-empty text."
+            )
+
+        forbidden_fields = {"figure", "list_items", "text"} - {expected_field}
+
+        for field in forbidden_fields:
+            if getattr(self, field) is not None:
+                raise ValueError(
+                    f"BlockSlice block_type='{b_type}' requires {field}=null."
+                )
+
+        return self
+
 
 class TableSlice(BaseSchema):
     """A single page-slice of a (potentially multi-page) table segment."""
@@ -93,43 +141,116 @@ class TableSlice(BaseSchema):
         description="The raw rows extracted from this page (including any repeated headers). These are the source for the final stitched grid.",
     )
 
+    @model_validator(mode="after")
+    def validate_dropped_header_rows(self) -> Self:
+        """Validate dropped-header bookkeeping.
+
+        Returns
+        -------
+        Self
+            The validated slice.
+
+        Raises
+        ------
+        ValueError
+            If dropped-header counts are inconsistent.
+        """
+
+        if not self.rows:
+            raise ValueError("TableSlice.rows must contain at least one row.")
+
+        if self.dropped_header_rows > len(self.rows):
+            raise ValueError(
+                f"dropped_header_rows ({self.dropped_header_rows}) cannot exceed number of rows ({len(self.rows)})."
+            )
+
+        if self.dropped_header_rows > 0 and self.boundary not in {
+            ItemBoundary.BOTH,
+            ItemBoundary.RESUMED,
+        }:
+            raise ValueError(
+                "dropped_header_rows may only be > 0 when boundary is resumed or both."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_header_row_count(self) -> Self:
+        """Validate that header_row_count does not exceed the number of rows.
+
+        Returns
+        -------
+        Self
+            The validated slice.
+
+        Raises
+        ------
+        ValueError
+            If header_row_count is inconsistent with rows.
+        """
+
+        if self.header_row_count > len(self.rows):
+            raise ValueError(
+                f"header_row_count ({self.header_row_count}) cannot exceed number of rows ({len(self.rows)})."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_repeats_header_consistency(self) -> Self:
+        """Validate repeats_header consistency for continuation slices.
+
+        Returns
+        -------
+        Self
+            The validated slice.
+
+        Raises
+        ------
+        ValueError
+            If repeats_header is set on a non-continuation slice.
+        """
+
+        if self.repeats_header is not None and self.boundary not in {
+            ItemBoundary.BOTH,
+            ItemBoundary.RESUMED,
+        }:
+            raise ValueError(
+                "repeats_header is only allowed when boundary is resumed or both."
+            )
+
+        return self
+
 
 # Schemas for provenance.
 class SectionHeadingRef(BaseSchema):
-    """Semantic pointer to a prior heading that provides structural context for
-    downstream semantic canonicalization. This schema exists to give every stitched
-    DocumentIR segment a lightweight "where am I in the document right now?" context,
-    without doing any real semantics yet. When the stitching step hits a heading/local
-    code, we push this object onto a stack that contains human-readable text and is
-    traceable back to the source (i.e., page and item index).
-
-    Why Do We Need This
-    -------------------
-
-    When the canonical IR pipeline tries to build the CanonicalIR object
-    (e.g., grade → subject → topic → ...), it often needs extra context to interpret a
-    table or block, because the table itself might be ambiguous. For example: the table
-    just has competences, but doesn’t say the subject in the table cells. The subject
-    is in a heading above it. So Step 3 attaches something like:
-
-    section_path = ["Mathematics", "Number", "Addition"]
-
-    to the table segment, even if the table doesn’t repeat that text inside it. That
-    way, the canonical IR pipeline can deterministically infer structure using the
-    table content and the heading context without re-scanning backward across pages.
-
-    In other words, when we stitch a segment, we snapshot:
-
-    segment.section_path = copy(section_path_stack)
-
-    So every segment knows “the headings that were active when I started.”
-    """
+    """Lightweight heading pointer captured at segment start for downstream context."""
 
     item_index: int = Field(
         ..., description="0-based index of the heading item inside PageIR.items."
     )
     page_index: int = Field(..., description="0-based page index of the heading block.")
     text: str = Field(..., description="Heading text as extracted (no translation).")
+
+    @model_validator(mode="after")
+    def validate_text_not_whitespace_only(self) -> Self:
+        """Validate that heading text is not empty or whitespace-only.
+
+        Returns
+        -------
+        Self
+            The validated heading reference.
+
+        Raises
+        ------
+        ValueError
+            If heading text is empty or whitespace-only.
+        """
+
+        if not self.text.strip():
+            raise ValueError("SectionHeadingRef.text must not be whitespace-only.")
+
+        return self
 
 
 class SegmentProvenance(BaseSchema):
@@ -185,6 +306,45 @@ class TableRowProvenance(BaseSchema):
         ..., description="Total number of raw rows in the originating slice."
     )
 
+    @model_validator(mode="after")
+    def validate_row_indices(self) -> Self:
+        """Validate row-level provenance index relationships.
+
+        Returns
+        -------
+        Self
+            The validated row provenance entry.
+
+        Raises
+        ------
+        ValueError
+            If index bookkeeping is inconsistent.
+        """
+
+        if self.dropped_header_rows > self.slice_total_rows:
+            raise ValueError(
+                "dropped_header_rows cannot exceed slice_total_rows in TableRowProvenance."
+            )
+
+        if self.slice_row_index >= self.slice_total_rows:
+            raise ValueError(
+                "slice_row_index must be < slice_total_rows in TableRowProvenance."
+            )
+
+        expected_row_index_after_drop = self.slice_row_index - self.dropped_header_rows
+
+        if expected_row_index_after_drop != self.slice_row_index_after_drop:
+            raise ValueError(
+                "slice_row_index_after_drop must equal slice_row_index - dropped_header_rows."
+            )
+
+        if self.slice_row_index_after_drop < 0:
+            raise ValueError(
+                "slice_row_index_after_drop must be non-negative in TableRowProvenance."
+            )
+
+        return self
+
 
 # Schemas for stitched segments.
 class BlockSegment(BaseSchema):
@@ -237,6 +397,110 @@ class BlockSegment(BaseSchema):
         None,
         description="The structured text content (including language metadata). For multi-page segments, the `.text` field here matches the content of `combined_text`.",
     )
+
+    @model_validator(mode="after")
+    def validate_payload_by_block_type(self) -> Self:
+        """Validate mutually exclusive segment payload fields by block type.
+
+        Returns
+        -------
+        Self
+            The validated block segment.
+
+        Raises
+        ------
+        ValueError
+            If the segment payload does not match its block type.
+        """
+
+        b_type = self.block_type
+
+        expected_field = {BlockType.FIGURE: "figure", BlockType.LIST: "list_items"}.get(
+            b_type, "text"
+        )
+
+        if expected_field == "figure" and self.figure is None:
+            raise ValueError(
+                f"BlockSegment block_type='{b_type}' requires figure metadata."
+            )
+
+        if expected_field == "list_items" and not self.list_items:
+            raise ValueError(
+                f"BlockSegment block_type='{b_type}' requires non-empty list_items."
+            )
+
+        if expected_field == "text" and (
+            self.text is None or not self.text.text.strip()
+        ):
+            raise ValueError(
+                f"BlockSegment block_type='{b_type}' requires non-empty text."
+            )
+
+        forbidden_fields = {"figure", "list_items", "text"} - {expected_field}
+
+        for field in forbidden_fields:
+            if getattr(self, field) is not None:
+                raise ValueError(
+                    f"BlockSegment block_type='{b_type}' requires {field}=null."
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_slice_and_provenance_alignment(self) -> Self:
+        """Validate slice-level and provenance-level alignment.
+
+        Returns
+        -------
+        Self
+            The validated block segment.
+
+        Raises
+        ------
+        ValueError
+            If slices or provenance are missing or inconsistent.
+        """
+
+        if not self.slices:
+            raise ValueError("BlockSegment.slices must contain at least one slice.")
+
+        if not self.segment_provenance:
+            raise ValueError(
+                "BlockSegment.segment_provenance must contain at least one entry."
+            )
+
+        if len(self.segment_provenance) != len(self.slices):
+            raise ValueError(
+                "BlockSegment.segment_provenance length must equal len(slices)."
+            )
+
+        for provenance in self.segment_provenance:
+            if provenance.kind != "block":
+                raise ValueError(
+                    "BlockSegment.segment_provenance entries must all have kind='block'."
+                )
+
+        slice_positions = [
+            (slice_.page_index, slice_.item_index) for slice_ in self.slices
+        ]
+
+        if slice_positions != sorted(slice_positions):
+            raise ValueError(
+                "BlockSegment.slices must be ordered by (page_index, item_index)."
+            )
+
+        if any(slice_.block_type != self.block_type for slice_ in self.slices):
+            raise ValueError(
+                "All BlockSegment.slices must share the segment's block_type."
+            )
+
+        if self.text is not None and self.combined_text is not None:
+            if self.text.text != self.combined_text:
+                raise ValueError(
+                    "BlockSegment.text.text must equal combined_text when both are present."
+                )
+
+        return self
 
 
 class TableSegment(BaseSchema):
@@ -314,6 +578,152 @@ class TableSegment(BaseSchema):
         default_factory=list, description="Per-page slices in order."
     )
 
+    @model_validator(mode="after")
+    def validate_header_shapes(self) -> Self:
+        """Validate header-count and header-shape consistency.
+
+        Returns
+        -------
+        Self
+            The validated table segment.
+
+        Raises
+        ------
+        ValueError
+            If header rows or canonical headers are inconsistent.
+        """
+
+        if not self.rows:
+            raise ValueError("TableSegment.rows must contain at least one row.")
+
+        if self.header_row_count > len(self.rows):
+            raise ValueError(
+                f"header_row_count ({self.header_row_count}) cannot exceed number of rows ({len(self.rows)})."
+            )
+
+        if len(self.header_rows) != self.header_row_count:
+            raise ValueError(
+                "TableSegment.header_rows length must equal header_row_count."
+            )
+
+        if len(self.header_rows_canonical) != len(self.header_rows):
+            raise ValueError(
+                "TableSegment.header_rows_canonical length must equal len(header_rows)."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_optional_row_aligned_structures(self) -> Self:
+        """Validate optional row-aligned structures such as row_provenance and grids.
+
+        Returns
+        -------
+        Self
+            The validated table segment.
+
+        Raises
+        ------
+        ValueError
+            If any optional row-aligned structure is malformed.
+        """
+
+        n_rows = len(self.rows)
+        n_cols = self.n_cols
+
+        for attr in ("row_provenance", "rows_filldown", "rows_grid"):
+            val = getattr(self, attr)
+
+            if val is not None and len(val) != n_rows:
+                raise ValueError(f"TableSegment.{attr} length must equal len(rows).")
+
+        if self.grid_sources is not None:
+            if self.rows_grid is None:
+                raise ValueError(
+                    "TableSegment.grid_sources requires rows_grid to also be present."
+                )
+            if len(self.grid_sources) != len(self.rows_grid):
+                raise ValueError(
+                    "TableSegment.grid_sources length must equal len(rows_grid)."
+                )
+
+            bad_src_idx = next(
+                (i for i, row in enumerate(self.grid_sources) if len(row) != n_cols),
+                None,
+            )
+
+            if bad_src_idx is not None:
+                raise ValueError(
+                    f"grid_sources[{bad_src_idx}] must contain exactly n_cols={n_cols} entries."
+                )
+
+        if self.rows_grid is not None:
+            for i, row in enumerate(self.rows_grid):
+                if len(row.cells) != n_cols:
+                    raise ValueError(
+                        f"rows_grid[{i}] must contain exactly n_cols={n_cols} cells."
+                    )
+
+                bad_cell_idx = next(
+                    (
+                        j
+                        for j, cell in enumerate(row.cells)
+                        if cell.col_span != 1 or cell.row_span != 1
+                    ),
+                    None,
+                )
+
+                if bad_cell_idx is not None:
+                    raise ValueError(
+                        f"rows_grid[{i}].cells[{bad_cell_idx}] must have row_span=1 and col_span=1."
+                    )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_slice_and_provenance_alignment(self) -> Self:
+        """Validate slice-level and provenance-level alignment.
+
+        Returns
+        -------
+        Self
+            The validated table segment.
+
+        Raises
+        ------
+        ValueError
+            If slices or provenance are missing or inconsistent.
+        """
+
+        if not self.slices:
+            raise ValueError("TableSegment.slices must contain at least one slice.")
+
+        if not self.segment_provenance:
+            raise ValueError(
+                "TableSegment.segment_provenance must contain at least one entry."
+            )
+
+        if len(self.segment_provenance) != len(self.slices):
+            raise ValueError(
+                "TableSegment.segment_provenance length must equal len(slices)."
+            )
+
+        for provenance in self.segment_provenance:
+            if provenance.kind != "table":
+                raise ValueError(
+                    "TableSegment.segment_provenance entries must all have kind='table'."
+                )
+
+        slice_positions = [
+            (slice_.page_index, slice_.item_index) for slice_ in self.slices
+        ]
+        if slice_positions != sorted(slice_positions):
+            raise ValueError(
+                "TableSegment.slices must be ordered by (page_index, item_index)."
+            )
+
+        return self
+
 
 Segment = Annotated[Union[BlockSegment, TableSegment], Field(discriminator="kind")]
 
@@ -361,3 +771,23 @@ class DocumentIR(BaseSchema):
         default_factory=list,
         description="Any non-fatal issues detected during stitching.",
     )
+
+    @model_validator(mode="after")
+    def validate_page_count(self) -> Self:
+        """Validate top-level page-count consistency.
+
+        Returns
+        -------
+        Self
+            The validated DocumentIR.
+
+        Raises
+        ------
+        ValueError
+            If page_count does not match len(pages).
+        """
+
+        if self.page_count != len(self.pages):
+            raise ValueError("DocumentIR.page_count must equal len(pages).")
+
+        return self

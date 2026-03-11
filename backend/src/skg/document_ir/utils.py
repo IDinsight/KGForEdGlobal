@@ -284,6 +284,8 @@ def cross_check_verification_run(
     ------
     ValueError
         If the computed document key does not match the expected key.
+        If no verified PageIRs are found in the verification output directory.
+        If any verified PageIR has an invalid page_index (non-integer or negative).
     """
 
     if computed_doc_key != expected_doc_key:
@@ -308,6 +310,39 @@ def cross_check_verification_run(
     verified_page_irs = load_page_irs_from_verification(
         doc_key=expected_doc_key, verified_page_irs_dir=verified_page_irs_dir
     )
+
+    if not verified_page_irs:
+        raise ValueError(
+            "Cannot stitch a DocumentIR from an empty verified-page set. "
+            "Expected at least one verified PageIR JSON."
+        )
+
+    invalid_page_indices = [
+        page_ir.page_index
+        for page_ir in verified_page_irs
+        if not isinstance(page_ir.page_index, int) or page_ir.page_index < 0
+    ]
+
+    if invalid_page_indices:
+        raise ValueError(
+            f"Every verified PageIR must have a non-negative integer page_index before stitching. "
+            f"Got invalid page_index values: {invalid_page_indices}"
+        )
+
+    page_indices = [page_ir.page_index for page_ir in verified_page_irs]
+    duplicate_page_indices = sorted(
+        {
+            page_index
+            for page_index in page_indices
+            if page_indices.count(page_index) > 1
+        }
+    )
+
+    if duplicate_page_indices:
+        raise ValueError(
+            f"Duplicate page_index values detected in verified PageIRs: "
+            f"{duplicate_page_indices}"
+        )
 
     # Load verification verdicts for debugging and linking purposes.
     verdicts = load_verification_verdicts(verdict_dir=verdict_dir)

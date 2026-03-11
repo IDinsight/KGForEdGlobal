@@ -112,11 +112,6 @@ def stitch_document_ir(
     warnings: list[str] = []
 
     # 1.
-    page_indices = [p.page_index for p in page_irs]
-    assert len(page_indices) == len(set(page_indices)), (
-        f"Duplicate page_index values detected: "
-        f"{[x for x in page_indices if page_indices.count(x) > 1]}"
-    )
     items_mapping: dict[int, list[tuple[int, Block | Table]]] = {
         page_ir.page_index: normalize_page_items(
             keep_artifacts=config.keep_artifacts,
