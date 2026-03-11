@@ -41,11 +41,13 @@ from loguru import logger
 # the command line. However, it is not necessary if it is imported from a pip install.
 if __name__ == "__main__":
     PACKAGE_PATH = Path(__file__).resolve().parents[2]
+
     if PACKAGE_PATH not in sys.path:
         print(f"Appending '{PACKAGE_PATH}' to system path...")
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.document_ir.normalize_page_items import normalize_page_items
 from skg.document_ir.schemas import SectionHeadingRef, Segment
 from skg.document_ir.utils import (
     DocumentIRDirs,
@@ -54,7 +56,6 @@ from skg.document_ir.utils import (
     build_continuation_chain,
     compute_page_break_links,
     materialize_segment,
-    normalize_page_items,
     persist_stitching_run,
     save_document_ir,
     update_section_stack,
@@ -366,6 +367,7 @@ def stitch(
             verdicts=verdicts,
         )
         stitching_run.extra["status"] = "success"
+
         logger.success("Document IR stitching completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
         stitching_run.extra["status"] = "error"
