@@ -27,7 +27,6 @@ python src/skg/entries/stitch_document_ir.py ../examples/tanzania/config.json
 import sys
 import traceback
 
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -49,17 +48,13 @@ if __name__ == "__main__":
 # Package Library
 from skg.document_ir.compute_page_break_links import compute_page_break_links
 from skg.document_ir.normalize_page_items import normalize_page_items
-from skg.document_ir.schemas import SectionHeadingRef, Segment
+from skg.document_ir.stitch_segments import build_stitched_segments
 from skg.document_ir.utils import (
     DocumentIRDirs,
-    ItemKey,
     assert_page_items_consumed_exactly_once,
-    build_continuation_chain,
     cross_check_verification_run,
-    materialize_segment,
     persist_stitching_run,
     save_document_ir,
-    update_section_stack,
 )
 from skg.page_ir_extraction.schemas import Block, PageIR, Table
 from skg.page_ir_verification.utils import EdgeVerdictRecord
@@ -136,7 +131,7 @@ def stitch_document_ir(
     link_debug: list[dict[str, Any]] = []
     page_pair_debug: list[dict[str, Any]] = []
 
-    # Compute page break links based on verified boundary flags.
+    # 2.
     links = compute_page_break_links(
         items_mapping=items_mapping,
         link_debug=link_debug,
@@ -148,99 +143,22 @@ def stitch_document_ir(
         warnings=warnings,
     )
 
-    # Set of destination keys to identify items that are continuations.
-    continuations = set(links.values())
-
-    # Reverse map: destination -> list of sources that point to it (for debugging).
-    reverse_links: dict[ItemKey, list[ItemKey]] = defaultdict(list)
-    for src, dst in links.items():
-        reverse_links[dst].append(src)
-
-    # Maintain a semantic-light heading context for later canonicalization. This is
-    # intentionally simple: we keep the most recent headings in reading order (no
-    # heading-level inference at this stage).
-    items_lookup: dict[int, dict[int, Block | Table]] = {
-        page_index: dict(items) for page_index, items in items_mapping.items()
-    }
-    section_path_stack: list[SectionHeadingRef] = []
-    segments: list[Segment] = []
-    visited: set[ItemKey] = set()
-
-    # Iterate in document reading order: page order, then item order.
-    for page_ir in page_irs:
-        current_page_index = page_ir.page_index
-        current_page_items = items_mapping.get(current_page_index, [])
-
-        logger.info(f"Stitching page {current_page_index}...\n")
-
-        for orig_item_index, item in current_page_items:
-            key = (current_page_index, orig_item_index)
-
-            if key in visited:  # Skip if already processed
-                continue
-
-            # If this item is a continuation destination but wasn't actually consumed
-            # by a previous chain, treat it as an "orphan continuation" and process it
-            # as a standalone chain start (with a warning).
-            if key in continuations:
-                text = (
-                    f"Orphan continuation destination encountered; "
-                    f"it was pointed-to by a prior page-break link but not consumed in any chain. "
-                    f"dest={key}, sources={reverse_links.get(key, [])}. "
-                    f"Processing as standalone."
-                )
-                logger.warning(text)
-                warnings.append(text)
-
-            # Build the continuation chains.
-            chain = build_continuation_chain(
-                items_lookup=items_lookup,
-                links=links,
-                start_item=item,
-                start_key=key,
-                warnings=warnings,
-            )
-
-            # Mark all items in chain as visited.
-            for chain_page_index, chain_item_index, _ in chain:
-                visited.add((chain_page_index, chain_item_index))
-
-            # Snapshot section_path *before* materializing this segment. The current
-            # item should not appear in its own section path.
-            section_path_snapshot = list(section_path_stack)
-
-            # Materialize a stitched segment from the chain.
-            segments.append(
-                materialize_segment(
-                    chain=chain,
-                    doc_key=doc_key,
-                    item_index=orig_item_index,
-                    page_index=current_page_index,
-                    repair_hyphenation=config.repair_hyphenation,
-                    section_path=section_path_snapshot,
-                    table_filldown_enabled=config.table_filldown_enabled,
-                    table_filldown_group_cols_max=config.table_filldown_group_cols_max,
-                    warnings=warnings,
-                )
-            )
-
-            # Update section heading stack *after* processing a heading block. We use
-            # the first item in the chain (heading segments are standalone).
-            section_path_stack = update_section_stack(
-                chain=chain,
-                max_len=config.max_section_path_length,
-                section_path_stack=section_path_stack,
-                warnings=warnings,
-            )
-
-    logger.success("Successfully stitched page IRs!")
+    # 3.
+    segments = build_stitched_segments(
+        config=config,
+        doc_key=doc_key,
+        items_mapping=items_mapping,
+        links=links,
+        page_irs=page_irs,
+        warnings=warnings,
+    )
 
     # Check that very normalized PageIR item must be consumed exactly once.
     assert_page_items_consumed_exactly_once(
         items_mapping=items_mapping, segments=segments
     )
 
-    # Write results to file.
+    # 4. Write results to file.
     save_document_ir(
         doc_key=doc_key,
         document_ir_fp=document_ir_fp,
