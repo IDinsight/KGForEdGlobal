@@ -578,6 +578,92 @@ class TableSegment(BaseSchema):
         default_factory=list, description="Per-page slices in order."
     )
 
+    def _validate_grid_sources(self, n_cols: int) -> None:
+        """Validate the grid_sources constraints and column sizing.
+
+        Parameters
+        ----------
+        n_cols
+            The number of columns in the stitched table, used to validate the shape of
+            grid_sources.
+
+        Raises
+        ------
+        ValueError
+            If grid_sources is present but rows_grid is missing, or if their lengths
+            are inconsistent,
+        """
+
+        if self.grid_sources is None:
+            return
+
+        if self.rows_grid is None:
+            raise ValueError(
+                "TableSegment.grid_sources requires rows_grid to also be present."
+            )
+
+        if len(self.grid_sources) != len(self.rows_grid):
+            raise ValueError(
+                "TableSegment.grid_sources length must equal len(rows_grid)."
+            )
+
+        for i, row in enumerate(self.grid_sources):
+            if len(row) != n_cols:
+                raise ValueError(
+                    f"grid_sources[{i}] must contain exactly n_cols={n_cols} entries."
+                )
+
+    def _validate_row_lengths(self, n_rows: int) -> None:
+        """Ensure optional row attributes match the primary rows length.
+
+        Parameters
+        ----------
+        n_rows
+            The number of rows in the primary `rows` list, used as the reference length.
+
+        Raises
+        ------
+        ValueError
+            If any of the optional row-aligned attributes are present and do not match
+            `n_rows`.
+        """
+
+        for attr in ("row_provenance", "rows_filldown", "rows_grid"):
+            val = getattr(self, attr)
+
+            if val is not None and len(val) != n_rows:
+                raise ValueError(f"TableSegment.{attr} length must equal len(rows).")
+
+    def _validate_rows_grid(self, n_cols: int) -> None:
+        """Validate the rows_grid column sizing and cell spans.
+
+        Parameters
+        ----------
+        n_cols
+            The number of columns in the stitched table, used to validate the shape of
+            rows_grid.
+
+        Raises
+        ------
+        ValueError
+            If rows_grid is present but does not have the correct shape or cell spans.
+        """
+
+        if self.rows_grid is None:
+            return
+
+        for i, row in enumerate(self.rows_grid):
+            if len(row.cells) != n_cols:
+                raise ValueError(
+                    f"rows_grid[{i}] must contain exactly n_cols={n_cols} cells."
+                )
+
+            for j, cell in enumerate(row.cells):
+                if cell.col_span != 1 or cell.row_span != 1:
+                    raise ValueError(
+                        f"rows_grid[{i}].cells[{j}] must have row_span=1 and col_span=1."
+                    )
+
     @model_validator(mode="after")
     def validate_header_shapes(self) -> Self:
         """Validate header-count and header-shape consistency.
@@ -621,62 +707,14 @@ class TableSegment(BaseSchema):
         -------
         Self
             The validated table segment.
-
-        Raises
-        ------
-        ValueError
-            If any optional row-aligned structure is malformed.
         """
 
         n_rows = len(self.rows)
         n_cols = self.n_cols
 
-        for attr in ("row_provenance", "rows_filldown", "rows_grid"):
-            val = getattr(self, attr)
-
-            if val is not None and len(val) != n_rows:
-                raise ValueError(f"TableSegment.{attr} length must equal len(rows).")
-
-        if self.grid_sources is not None:
-            if self.rows_grid is None:
-                raise ValueError(
-                    "TableSegment.grid_sources requires rows_grid to also be present."
-                )
-            if len(self.grid_sources) != len(self.rows_grid):
-                raise ValueError(
-                    "TableSegment.grid_sources length must equal len(rows_grid)."
-                )
-
-            bad_src_idx = next(
-                (i for i, row in enumerate(self.grid_sources) if len(row) != n_cols),
-                None,
-            )
-
-            if bad_src_idx is not None:
-                raise ValueError(
-                    f"grid_sources[{bad_src_idx}] must contain exactly n_cols={n_cols} entries."
-                )
-
-        if self.rows_grid is not None:
-            for i, row in enumerate(self.rows_grid):
-                if len(row.cells) != n_cols:
-                    raise ValueError(
-                        f"rows_grid[{i}] must contain exactly n_cols={n_cols} cells."
-                    )
-
-                bad_cell_idx = next(
-                    (
-                        j
-                        for j, cell in enumerate(row.cells)
-                        if cell.col_span != 1 or cell.row_span != 1
-                    ),
-                    None,
-                )
-
-                if bad_cell_idx is not None:
-                    raise ValueError(
-                        f"rows_grid[{i}].cells[{bad_cell_idx}] must have row_span=1 and col_span=1."
-                    )
+        self._validate_row_lengths(n_rows)
+        self._validate_grid_sources(n_cols)
+        self._validate_rows_grid(n_cols)
 
         return self
 
