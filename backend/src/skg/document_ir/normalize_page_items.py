@@ -9,7 +9,6 @@ from typing import Optional
 from loguru import logger
 
 # Package Library
-from skg.document_ir.utils import normalize_local_code
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TextUnit
 from skg.page_ir_verification.utils import is_artifact
 from skg.utils.constants import (
@@ -302,30 +301,36 @@ def _try_fallback_scan(
     start_index: int,
     warnings: list[str],
 ) -> None:
-    """Scan forward from a specific index to find the nearest unassigned Table. Used as
-    a fallback when a Caption is not immediately followed by its Table. Stops scanning
-    if another Caption or Label is encountered.
+    """Scan forward for the nearest compatible unassigned table or figure target.
 
-    NB: Writes the **raw** code form (e.g., `"Tableau 4"`) to the target table's
+    This fallback is only invoked for true caption blocks after immediate adjacency
+    matching fails. Scanning stops when another explicit caption label is encountered,
+    which prevents a caption from "jumping over" the next labeled object.
+
+    NB: Writes the **raw** code form (e.g., `"Tableau 4"`) to the target item's
     `local_code`.
 
     Parameters
     ----------
     code
-        The code to assign to the next Table (raw form).
+        The raw caption code to assign.
     items
         The list of (original item index, item) tuples for the page.
     label_orig_index
-        The original item index of the label for logging context.
+        The original item index of the caption label for logging context.
     page_index
         The page index for logging context.
     start_index
-        The index to start scanning from (immediately after the label).
+        The list index to start scanning from.
     warnings
         A list to append warning messages to.
     """
 
-    eligible_stop_types = {BlockType.CAPTION, BlockType.HEADING, BlockType.PARAGRAPH}
+    code_canon = _extract_table_or_figure_local_code(code)
+    code_kind = _classify_code_kind(code)
+
+    if code_kind is None:
+        return
 
     for k in range(start_index, len(items)):
         k_orig_index, k_item = items[k]
@@ -334,27 +339,44 @@ def _try_fallback_scan(
             if k_item.block_type == BlockType.ARTIFACT:
                 continue
 
-            # Stop scanning if we hit another caption or potential label.
-            if k_item.block_type == BlockType.CAPTION:
-                break
-
             if (
-                k_item.block_type in eligible_stop_types
+                k_item.block_type == BlockType.CAPTION
                 and _resolve_label_code(k_item) is not None
             ):
                 break
 
-        if isinstance(k_item, Table):
-            if not normalize_local_code(k_item.local_code):
-                k_item.local_code = code
-                msg = (
-                    f"Propagated caption code '{code}' to nearest following table on page {page_index}: "
-                    f"caption_raw_index={label_orig_index}->table_raw_index={k_orig_index}."
-                )
-                logger.warning(msg)
-                warnings.append(msg)
+        is_compatible_target = (code_kind == "table" and isinstance(k_item, Table)) or (
+            code_kind == "figure"
+            and isinstance(k_item, Block)
+            and k_item.block_type == BlockType.FIGURE
+        )
 
+        if not is_compatible_target:
+            continue
+
+        existing_canon = _extract_table_or_figure_local_code(k_item.local_code)
+        target_kind = "table" if code_kind == "table" else "figure"
+
+        if not existing_canon:
+            k_item.local_code = code
+            msg = (
+                f"Propagated caption code '{code}' to nearest following {target_kind} on page {page_index}: "
+                f"caption_raw_index={label_orig_index}->{target_kind}_raw_index={k_orig_index}."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
             break
+
+        if existing_canon != code_canon:
+            msg = (
+                f"Caption/{target_kind} code conflict on page {page_index}: "
+                f"caption='{code}' caption_raw_index={label_orig_index}->"
+                f"{target_kind}_raw_index={k_orig_index} existing='{k_item.local_code}'."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        break
 
 
 def normalize_page_items(
@@ -445,18 +467,21 @@ def normalize_page_items(
             logger.warning(msg)
             warnings.append(msg)
 
-    propagate_caption_table_local_codes(
+    propagate_caption_local_codes(
         items=items_mapping, page_index=page_ir.page_index, warnings=warnings
     )
 
     return items_mapping
 
 
-def propagate_caption_table_local_codes(
+def propagate_caption_local_codes(
     *, items: list[tuple[int, Block | Table]], page_index: int, warnings: list[str]
 ) -> None:
-    """Propagate Table/Figure codes from label blocks to the appropriate content item
-    on the same page.
+    """Propagate caption-derived table and figure codes to the correct same-page item.
+
+    This function intentionally binds codes from true caption blocks only. Headings and
+    paragraphs are no longer treated as fallback label sources, which reduces false
+    positives from prose like "Table 4 shows ...".
 
     NB: This function **mutates** `local_code` on target items in-place. The propagated
     code preserves the original form from the caption (e.g., `"Tableau 4"` stays
@@ -472,12 +497,10 @@ def propagate_caption_table_local_codes(
         A list to append warning messages to.
     """
 
-    eligible_label_types = {BlockType.CAPTION, BlockType.HEADING, BlockType.PARAGRAPH}
-
     for i, (label_orig_index, label_item) in enumerate(items):
         if (
             not isinstance(label_item, Block)
-            or label_item.block_type not in eligible_label_types
+            or label_item.block_type != BlockType.CAPTION
         ):
             continue
 
@@ -501,24 +524,21 @@ def propagate_caption_table_local_codes(
         was_assigned = _try_assign_immediate(
             code=code,
             label_info=(label_orig_index, label_item),
-            target_info=(next_orig_index, next_item),
             page_index=page_index,
+            target_info=(next_orig_index, next_item),
             warnings=warnings,
         )
 
         if was_assigned:
             continue
 
-        # Fallback: scan forward for tables (only for Captions with table codes).
-        if (
-            label_item.block_type == BlockType.CAPTION
-            and _classify_code_kind(code) == "table"
-        ):
-            _try_fallback_scan(
-                code=code,
-                items=items,
-                label_orig_index=label_orig_index,
-                page_index=page_index,
-                start_index=next_idx + 1,
-                warnings=warnings,
-            )
+        # Fallback: scan forward for the nearest compatible target when the caption is
+        # not immediately adjacent to its table or figure.
+        _try_fallback_scan(
+            code=code,
+            items=items,
+            label_orig_index=label_orig_index,
+            page_index=page_index,
+            start_index=next_idx + 1,
+            warnings=warnings,
+        )
