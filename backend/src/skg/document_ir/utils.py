@@ -453,7 +453,7 @@ def persist_stitching_run(
     """
 
     stitching_dirs = create_document_ir_dirs(output_dir=output_dir)
-    exclude_keys = {"model", "overwrite"}
+    exclude_keys = {"overwrite"}
     stitching_run = RunCtx(
         extra={
             k: v
@@ -534,22 +534,45 @@ def save_document_ir(
         The stitching directories.
     warnings
         A list of warning messages.
+
+    Raises
+    ------
+    ValueError
+        If page_irs is empty.
+        If any PageIR in page_irs has an invalid page_index (non-integer or negative).
     """
+
+    if not page_irs:
+        raise ValueError(
+            "Cannot save a DocumentIR from an empty verified-page set. "
+            "Expected at least one stitched PageIR."
+        )
 
     # Write DocumentIR to file.
     first_page = page_irs[0]
     pages_meta: list[DocumentPageMeta] = []
 
-    for p in page_irs:
-        assert isinstance(p.page_index, int) and p.page_index >= 0, f"{p = }"
+    invalid_page_indices = [
+        page_ir.page_index
+        for page_ir in page_irs
+        if not isinstance(page_ir.page_index, int) or page_ir.page_index < 0
+    ]
+
+    if invalid_page_indices:
+        raise ValueError(
+            f"DocumentIR serialization requires every PageIR to have a non-negative integer page_index. "
+            f"Got invalid page_index values: {invalid_page_indices}"
+        )
+
+    for page_ir in page_irs:
         pages_meta.append(
             DocumentPageMeta(
-                coord_space=p.coord_space,
-                dpi=p.dpi,
-                image_height=p.image_height,
-                image_width=p.image_width,
-                is_blank=(len(p.items) == 0),
-                page_index=p.page_index,
+                coord_space=page_ir.coord_space,
+                dpi=page_ir.dpi,
+                image_height=page_ir.image_height,
+                image_width=page_ir.image_width,
+                is_blank=(len(page_ir.items) == 0),
+                page_index=page_ir.page_index,
             )
         )
 
