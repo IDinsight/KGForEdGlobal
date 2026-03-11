@@ -176,17 +176,29 @@ def _process_table_item(
     -------
     list[dict[str, Any]]
         List of changes made to this table.
+
+    Raises
+    ------
+    ValueError
+        If n_cols is not a positive integer.
     """
 
     item_changes: list[dict[str, Any]] = []
     n_cols = item.n_cols
 
-    if not isinstance(n_cols, int) or n_cols <= 0:
+    if n_cols is None:
         return item_changes
 
-    # active_span[c] = number of rows remaining (including the current row) that column
-    # c is occupied due to rowspans from prior rows. We decrement after processing each
-    # row.
+    if not (isinstance(n_cols, int) and n_cols >= 1):
+        raise ValueError(
+            f"Table n_cols must be a positive integer, "
+            f"got {n_cols} on page {page_index} item {item_index}"
+        )
+
+    # active_span[c] means for column c, how many rows are still occupied because of
+    # rowspans coming from earlier rows? For example, if active_span = [2, 0, 0, 0],
+    # this means that column 0 is occupied by a cell from above for the current row AND
+    # one more row after that.
     active_span = [0] * n_cols
 
     for row_index, row in enumerate(item.rows):
@@ -586,7 +598,9 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
     trimmed = 0
     effective_cols = sum(c.col_span for c in new_cells)
 
-    # Only trim *empty placeholders* and only until effective_cols fits n_cols.
+    # Only trim synthetic placeholders at the end of the row, and only if the effective
+    # column count exceeds n_cols. This is a narrow heuristic to fix the common case of
+    # trailing empty placeholders without risking over-trimming real cells.
     while effective_cols > n_cols and new_cells:
         tail = new_cells[-1]
 
@@ -972,8 +986,8 @@ def postprocess_verified_page_irs(
     # Insert placeholders under rowspans to prevent column drift.
     #
     # NB: This runs BEFORE normalize_table_row_cell_counts (padding). The padding
-    # heuristic now ignores synthetic leading placeholders inserted by this pass, so
-    # rowspan repair does not bias the later left-vs-right padding decision.
+    # heuristic ignores synthetic leading placeholders inserted by this pass, so
+    # rowspan repair does not bias the later left vs. right padding decision.
     rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs)
 
     # Build a set of (page, item_index, row_index) keys for rows that had unresolved
