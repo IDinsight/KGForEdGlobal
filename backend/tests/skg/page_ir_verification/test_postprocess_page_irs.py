@@ -309,15 +309,17 @@ class TestAlignTableRowsWithRowspans:
         table_a = make_table_from_rows(
             n_cols=2,
             rows=[
-                row(cell(row_span=2, text="span"), cell(text="b")),
-                row(cell(text="d")),
+                row(cell(text="a"), cell(text="a2")),  # Full-width anchor row
+                row(cell(text="b")),
+                row(cell(text="c")),
             ],
         )
         table_b = make_table_from_rows(
             n_cols=3,
             rows=[
-                row(cell(row_span=2, text="span"), cell(text="b"), cell(text="c")),
-                row(cell(text="e"), cell(text="f")),
+                row(cell(text="h1"), cell(text="h2"), cell(text="h3")),
+                # Full-width anchor row
+                row(cell(text="d")),
             ],
         )
         page_irs = {
@@ -325,17 +327,17 @@ class TestAlignTableRowsWithRowspans:
             1: make_page_ir(items=[table_b], page_index=1),
         }
 
-        changes = postprocess_page_irs.align_table_rows_with_rowspans(page_irs=page_irs)
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
 
-        assert len(changes) == 2
+        # table_a: 2 short rows, table_b: 1 short row.
+        assert len(changes) == 3
 
     def test_pages_with_no_tables(self) -> None:
         """Return no changes when pages contain only blocks."""
 
-        page_irs = {
-            0: make_page_ir(items=[make_block()], page_index=0),
-        }
-
+        page_irs = {0: make_page_ir(items=[make_block()], page_index=0)}
         changes = postprocess_page_irs.align_table_rows_with_rowspans(page_irs=page_irs)
 
         assert not changes
@@ -363,15 +365,17 @@ class TestAlignTableRowsWithRowspans:
         table = make_table_from_rows(
             n_cols=2,
             rows=[
-                row(cell(row_span=2, text="span"), cell(text="b")),
-                row(cell(text="d")),
+                row(cell(text="h1"), cell(text="h2")),  # Full-width anchor row
+                row(cell(text="a")),
             ],
         )
         page_irs = {
-            0: make_page_ir(items=[make_block(), table, make_block()], page_index=0),
+            0: make_page_ir(items=[make_block(), table, make_block()], page_index=0)
         }
 
-        changes = postprocess_page_irs.align_table_rows_with_rowspans(page_irs=page_irs)
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
 
         assert len(changes) == 1
         assert changes[0]["item_index"] == 1
@@ -484,6 +488,57 @@ class TestFindCaptionCode:
         assert postprocess_page_irs.find_caption_code(items=items) == "Jedwali 4"
 
 
+class TestGetHeaderEffectiveCols:
+    """Tests for _get_header_effective_cols()."""
+
+    def test_col_span_in_header(self) -> None:
+        """A header cell with col_span > 1 contributes its full span."""
+
+        rows = [row(cell(col_span=2, text="wide"), cell(text="b"))]
+        result = postprocess_page_irs._get_header_effective_cols(
+            header_row_count=1, rows=rows
+        )
+
+        assert result == 3
+
+    def test_max_across_multiple_header_rows(self) -> None:
+        """Return the maximum effective width across multiple header rows."""
+
+        rows = [
+            row(cell(text="a"), cell(text="b")),
+            row(cell(text="c"), cell(text="d"), cell(text="e")),
+            row(cell(text="f")),  # Body row, not counted
+        ]
+        result = postprocess_page_irs._get_header_effective_cols(
+            header_row_count=2, rows=rows
+        )
+
+        assert result == 3
+
+    def test_single_header_row(self) -> None:
+        """Return the effective column count of a single header row."""
+
+        rows = [
+            row(cell(text="a"), cell(text="b"), cell(text="c")),
+            row(cell(text="d")),
+        ]
+        result = postprocess_page_irs._get_header_effective_cols(
+            header_row_count=1, rows=rows
+        )
+
+        assert result == 3
+
+    def test_zero_header_rows(self) -> None:
+        """Return 0 when header_row_count is 0."""
+
+        rows = [row(cell(text="a"), cell(text="b"))]
+        result = postprocess_page_irs._get_header_effective_cols(
+            header_row_count=0, rows=rows
+        )
+
+        assert result == 0
+
+
 class TestNormalizeEmptyTableCells:
     """Tests for normalize_empty_table_cells()."""
 
@@ -500,9 +555,7 @@ class TestNormalizeEmptyTableCells:
     def test_change_record_has_correct_indices(self) -> None:
         """Change records carry the correct page, item, row, and cell indices."""
 
-        table = make_table_from_rows(
-            rows=[row(cell(text="ok")), row(cell(text="\t"))],
-        )
+        table = make_table_from_rows(rows=[row(cell(text="ok")), row(cell(text="\t"))])
         page_irs = {2: make_page_ir(items=[make_block(), table], page_index=2)}
 
         changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
@@ -524,8 +577,7 @@ class TestNormalizeEmptyTableCells:
         """Only whitespace-only cells are normalized; others are left alone."""
 
         table = make_table_from_rows(
-            n_cols=3,
-            rows=[row(cell(text="ok"), cell(text=" "), cell(text="fine"))],
+            n_cols=3, rows=[row(cell(text="ok"), cell(text=" "), cell(text="fine"))]
         )
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
@@ -578,9 +630,7 @@ class TestNormalizeEmptyTableCells:
     def test_whitespace_only_text_normalized_to_empty(self) -> None:
         """A cell with whitespace-only text is normalized to ''."""
 
-        table = make_table_from_rows(
-            rows=[row(cell(text="  \n  "))],
-        )
+        table = make_table_from_rows(rows=[row(cell(text="  \n  "))])
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
         changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
@@ -589,6 +639,351 @@ class TestNormalizeEmptyTableCells:
         assert changes[0]["type"] == "normalize_empty_string_cell_text"
         assert changes[0]["before_text"] == "  \n  "
         assert table.rows[0].cells[0].text.text == ""
+
+
+class TestNormalizeTableRowCellCounts:
+    """Tests for normalize_table_row_cell_counts()."""
+
+    def test_col_span_counted_in_effective_width(self) -> None:
+        """A row with col_span cells reaching n_cols is not padded."""
+
+        table = make_table_from_rows(
+            n_cols=4,
+            rows=[row(cell(col_span=2, text="wide"), cell(text="b"), cell(text="c"))],
+        )
+        page_irs = {0: make_page_ir(items=[table], page_index=0)}
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
+
+        assert not changes
+
+    def test_empty_page_irs(self) -> None:
+        """Return no changes when page_irs is empty."""
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(page_irs={})
+
+        assert not changes
+
+    def test_multiple_tables_across_pages(self) -> None:
+        """Tables on different pages are processed independently."""
+
+        table_a = make_table_from_rows(
+            n_cols=2,
+            rows=[
+                row(cell(text="a"), cell(text="a2")),
+                row(cell(text="b")),
+                row(cell(text="c")),
+            ],
+        )
+        table_b = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="h1"), cell(text="h2"), cell(text="h3")),
+                row(cell(text="d")),
+            ],
+        )
+        page_irs = {
+            0: make_page_ir(items=[table_a], page_index=0),
+            1: make_page_ir(items=[table_b], page_index=1),
+        }
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
+
+        assert len(changes) == 3
+
+    def test_n_cols_none_skipped(self) -> None:
+        """Tables with n_cols=None produce no changes."""
+
+        table = make_table_from_rows(n_cols=None, rows=[row(cell())])
+        page_irs = {0: make_page_ir(items=[table], page_index=0)}
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
+
+        assert not changes
+
+    def test_no_conflict_keys_defaults_to_empty(self) -> None:
+        """When rowspan_conflict_keys is None, no annotations are added."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),
+                row(cell(text="d")),
+            ],
+        )
+        page_irs = {0: make_page_ir(items=[table], page_index=0)}
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs, rowspan_conflict_keys=None
+        )
+
+        assert len(changes) == 1
+        assert "prior_rowspan_conflict" not in changes[0]
+
+    def test_no_tables(self) -> None:
+        """Return no changes when pages contain only blocks."""
+
+        page_irs = {0: make_page_ir(items=[make_block()], page_index=0)}
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
+
+        assert not changes
+
+    def test_pads_short_rows(self) -> None:
+        """Short rows are padded to n_cols."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),
+                row(cell(text="d")),
+            ],
+        )
+        page_irs = {0: make_page_ir(items=[table], page_index=0)}
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
+
+        assert len(changes) == 1
+        assert len(table.rows[1].cells) == 3
+
+    def test_rowspan_conflict_keys_passed_through(self) -> None:
+        """Rows with rowspan conflict keys are annotated in change records."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),
+                row(cell(text="d")),
+            ],
+        )
+        page_irs = {0: make_page_ir(items=[table], page_index=0)}
+        conflict_keys: set[tuple[int, int, int]] = {(0, 0, 1)}
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs, rowspan_conflict_keys=conflict_keys
+        )
+
+        assert len(changes) == 1
+        assert changes[0].get("prior_rowspan_conflict") is True
+
+    def test_skips_non_table_items(self) -> None:
+        """Non-table items on the same page are ignored."""
+
+        table = make_table_from_rows(
+            n_cols=2, rows=[row(cell(text="h1"), cell(text="h2")), row(cell(text="a"))]
+        )
+        page_irs = {
+            0: make_page_ir(items=[make_block(), table, make_block()], page_index=0)
+        }
+
+        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+            page_irs=page_irs
+        )
+
+        assert len(changes) == 1
+        assert changes[0]["item_index"] == 1
+
+
+class TestProcessTableNormalization:
+    """Tests for _process_table_normalization()."""
+
+    def test_already_correct_width_no_changes(self) -> None:
+        """Return no changes when all rows already match n_cols."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),
+                row(cell(text="d"), cell(text="e"), cell(text="f")),
+            ],
+        )
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+        )
+
+        assert not changes
+
+    def test_change_record_indices(self) -> None:
+        """Change records carry the correct page, item_index, and row_index."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),
+                row(cell(text="d")),
+            ],
+        )
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=4, page_index=7, rowspan_conflict_keys=set()
+        )
+
+        assert changes[0]["page"] == 7
+        assert changes[0]["item_index"] == 4
+        assert changes[0]["row_index"] == 1
+
+    def test_mixed_short_and_correct_rows(self) -> None:
+        """Only short rows produce changes; correct-width rows are skipped."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),  # Ok
+                row(cell(text="d")),  # Short
+                row(cell(text="e"), cell(text="f"), cell(text="g")),  # Ok
+                row(cell(text="h"), cell(text="i")),  # Short
+            ],
+        )
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+        )
+
+        assert len(changes) == 2
+        assert changes[0]["row_index"] == 1
+        assert changes[1]["row_index"] == 3
+
+    def test_n_cols_none_returns_empty(self) -> None:
+        """Return no changes when n_cols is None."""
+
+        table = make_table_from_rows(n_cols=None, rows=[row(cell(), cell())])
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+        )
+
+        assert not changes
+
+    def test_n_cols_zero_raises(self) -> None:
+        """Raise ValueError when n_cols is 0."""
+
+        table = make_table_from_rows(n_cols=3, rows=[row(cell(), cell(), cell())])
+        table.n_cols = 0
+
+        with pytest.raises(ValueError):
+            postprocess_page_irs._process_table_normalization(
+                item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+            )
+
+    def test_overwide_row_recorded_as_exceeds(self) -> None:
+        """An over-wide row is recorded but not destructively repaired."""
+
+        table = make_table_from_rows(
+            n_cols=None,
+            rows=[row(cell(text="a"), cell(text="b"), cell(text="c"))],
+        )
+        table.n_cols = 2
+
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+        )
+
+        assert len(changes) == 1
+        assert changes[0]["type"] == "table_row_effective_cols_exceeds_n_cols"
+        assert changes[0]["before_effective_cols"] == 3
+
+    def test_overwide_row_trimmed_if_trailing_synthetics(self) -> None:
+        """An over-wide row with trailing synthetics gets them trimmed."""
+
+        table = make_table_from_rows(
+            n_cols=None,
+            rows=[row(cell(text="a"), cell(text="b"), cell(synthetic=True, text=None))],
+        )
+        table.n_cols = 2
+
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+        )
+
+        assert len(changes) == 1
+        assert changes[0]["trimmed_trailing_placeholders"] == 1
+        assert changes[0]["after_effective_cols"] == 2
+        assert len(table.rows[0].cells) == 2
+
+    def test_pads_short_row_left_when_header_full_width(self) -> None:
+        """Pad left when the header row covers the full table width."""
+
+        table = make_table_from_rows(
+            header_row_count=1,
+            n_cols=3,
+            rows=[
+                row(cell(text="h1"), cell(text="h2"), cell(text="h3")),
+                row(cell(text="d"), cell(text="e")),  # Missing 1 cell
+            ],
+        )
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+        )
+
+        assert len(changes) == 1
+        assert changes[0]["side"] == "left"
+        assert changes[0]["side_reason"] == "header_full_width"
+        assert table.rows[1].cells[0].synthetic is True
+        assert table.rows[1].cells[1].text.text == "d"
+
+    def test_pads_short_row_right_by_default(self) -> None:
+        """A short row is right-padded with synthetic cells by default."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),
+                row(cell(text="d")),  # Missing 2 cells
+            ],
+        )
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=set()
+        )
+
+        assert len(changes) == 1
+        assert changes[0]["type"] == "pad_table_row_cells"
+        assert changes[0]["side"] == "right"
+        assert changes[0]["row_index"] == 1
+        assert len(table.rows[1].cells) == 3
+        assert table.rows[1].cells[1].synthetic is True
+        assert table.rows[1].cells[2].synthetic is True
+
+    def test_rowspan_conflict_key_annotated_on_overwide_row(self) -> None:
+        """Over-wide row changes on rows with prior rowspan conflicts are annotated."""
+
+        table = make_table_from_rows(
+            n_cols=None,
+            rows=[row(cell(text="a"), cell(text="b"), cell(text="c"))],
+        )
+        table.n_cols = 2
+        conflict_keys: set[tuple[int, int, int]] = {(5, 2, 0)}
+
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=2, page_index=5, rowspan_conflict_keys=conflict_keys
+        )
+
+        assert len(changes) == 1
+        assert changes[0].get("prior_rowspan_conflict") is True
+
+    def test_rowspan_conflict_key_annotated_on_pad_change(self) -> None:
+        """Padding changes on rows with prior rowspan conflicts are annotated."""
+
+        table = make_table_from_rows(
+            n_cols=3,
+            rows=[
+                row(cell(text="a"), cell(text="b"), cell(text="c")),
+                row(cell(text="d")),  # Short row
+            ],
+        )
+        conflict_keys: set[tuple[int, int, int]] = {(0, 0, 1)}
+
+        changes = postprocess_page_irs._process_table_normalization(
+            item=table, item_index=0, page_index=0, rowspan_conflict_keys=conflict_keys
+        )
+
+        assert len(changes) == 1
+        assert changes[0].get("prior_rowspan_conflict") is True
 
 
 class TestProcessPageTables:
@@ -1279,6 +1674,145 @@ class TestPropagateTableLocalCodes:
         assert not changes
 
 
+class TestShouldPadLeft:
+    """Tests for _should_pad_left()."""
+
+    def test_default_right_when_header_narrower_than_n_cols(self) -> None:
+        """Return False when header is narrower than n_cols and no modal signal."""
+
+        rows = [
+            row(cell(text="a"), cell(text="b")),  # Header: 2 cols
+            row(cell(text="c"), cell(text="d"), cell(text="e")),
+            row(cell(text="f"), cell(text="g"), cell(text="h")),
+            row(cell(text="i"), cell(text="j"), cell(text="k")),
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=1, n_cols=3, rows=rows
+        )
+
+        assert result is False
+
+    def test_default_right_when_no_headers_and_no_modal_signal(self) -> None:
+        """Return False when there are no headers and no modal leading-blank signal."""
+
+        rows = [
+            row(cell(text="a"), cell(text="b"), cell(text="c")),
+            row(cell(text="d"), cell(text="e"), cell(text="f")),
+            row(cell(text="g"), cell(text="h"), cell(text="i")),
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=0, n_cols=3, rows=rows
+        )
+
+        assert result is False
+
+    def test_header_full_width_triggers_left_pad(self) -> None:
+        """Return True when the header row covers the full n_cols width."""
+
+        rows = [
+            row(cell(text="h1"), cell(text="h2"), cell(text="h3")),  # Full width
+            row(cell(text="a"), cell(text="b")),  # Short body row
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=1, n_cols=3, rows=rows
+        )
+
+        assert result is True
+
+    def test_ignores_synthetic_leading_placeholders_for_modal(self) -> None:
+        """Synthetic leading cells are excluded from modal leading-blank analysis."""
+
+        # All body rows are full-width but their leading cell is synthetic (from
+        # rowspan repair). These should NOT count toward the modal leading-blank signal
+        # because they are repair artifacts.
+        body_rows = [
+            row(cell(synthetic=True, text=None), cell(text="b"), cell(text="c"))
+            for _ in range(5)
+        ]
+        rows = body_rows
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=0, n_cols=3, rows=rows
+        )
+
+        assert result is False
+
+    def test_modal_leading_blank_below_threshold_returns_false(self) -> None:
+        """Return False when leading-blank ratio is below 60%."""
+
+        # 1 out of 4 full-width rows = 25% < 60%.
+        rows = [
+            row(empty_cell(), cell(text="b"), cell(text="c")),
+            row(cell(text="d"), cell(text="e"), cell(text="f")),
+            row(cell(text="g"), cell(text="h"), cell(text="i")),
+            row(cell(text="j"), cell(text="k"), cell(text="l")),
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=0, n_cols=3, rows=rows
+        )
+
+        assert result is False
+
+    def test_modal_leading_blank_triggers_left_pad(self) -> None:
+        """Return True when >= 60% of full-width body rows have a blank leading cell."""
+
+        # 4 out of 5 full-width body rows have blank leading cell = 80% > 60%.
+        rows = [
+            row(empty_cell(), cell(text="b"), cell(text="c")),
+            row(empty_cell(), cell(text="e"), cell(text="f")),
+            row(empty_cell(), cell(text="h"), cell(text="i")),
+            row(empty_cell(), cell(text="k"), cell(text="l")),
+            row(cell(text="m"), cell(text="n"), cell(text="o")),
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=0, n_cols=3, rows=rows
+        )
+
+        assert result is True
+
+    def test_modal_requires_minimum_three_full_width_rows(self) -> None:
+        """Return False when fewer than 3 full-width body rows exist, even if all have
+        blank leading cells.
+        """
+
+        rows = [
+            row(empty_cell(), cell(text="b"), cell(text="c")),
+            row(empty_cell(), cell(text="e"), cell(text="f")),
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=0, n_cols=3, rows=rows
+        )
+
+        assert result is False
+
+    def test_no_full_width_body_rows_returns_false(self) -> None:
+        """Return False when no body rows reach n_cols."""
+
+        rows = [
+            row(cell(text="h1"), cell(text="h2")),  # Header, not full
+            row(cell(text="a")),  # body, not full
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=1, n_cols=3, rows=rows
+        )
+
+        assert result is False
+
+    def test_whitespace_only_text_counts_as_blank(self) -> None:
+        """A leading cell with whitespace-only text counts as blank for modal."""
+
+        rows = [
+            row(cell(text="  "), cell(text="b"), cell(text="c")),
+            row(cell(text="\n"), cell(text="e"), cell(text="f")),
+            row(cell(text="\t"), cell(text="h"), cell(text="i")),
+            row(cell(text="j"), cell(text="k"), cell(text="l")),
+        ]
+        result = postprocess_page_irs._should_pad_left(
+            header_row_count=0, n_cols=3, rows=rows
+        )
+
+        assert result is True
+
+
 class TestSimulateRowspanAlignment:
     """Tests for _simulate_rowspan_alignment()."""
 
@@ -1374,6 +1908,96 @@ class TestSimulateRowspanAlignment:
 
         assert result["status"] == "already_aligned"
         assert result["updated_active_span"][0] == 3
+
+
+class TestTrimExcessCells:
+    """Tests for _trim_excess_cells()."""
+
+    def test_col_span_respected_in_effective_count(self) -> None:
+        """Effective column count respects col_span when deciding whether to trim."""
+
+        # effective = 2 + 1 + 1 = 4, n_cols = 3. Tail is synthetic -> trim 1.
+        cells = [
+            cell(col_span=2, text="wide"),
+            cell(text="b"),
+            cell(synthetic=True, text=None),
+        ]
+        trimmed = postprocess_page_irs._trim_excess_cells(n_cols=3, new_cells=cells)
+
+        assert trimmed == 1
+        assert len(cells) == 2
+
+    def test_does_not_trim_non_synthetic_cells(self) -> None:
+        """Non-synthetic trailing cells are never trimmed even if row overflows."""
+
+        cells = [cell(text="a"), cell(text="b"), cell(text="c"), cell(text="d")]
+        trimmed = postprocess_page_irs._trim_excess_cells(n_cols=3, new_cells=cells)
+
+        assert trimmed == 0
+        assert len(cells) == 4
+
+    def test_no_trim_when_at_n_cols(self) -> None:
+        """No trimming when effective columns already equals n_cols."""
+
+        cells = [cell(text="a"), cell(text="b"), cell(text="c")]
+        trimmed = postprocess_page_irs._trim_excess_cells(n_cols=3, new_cells=cells)
+
+        assert trimmed == 0
+        assert len(cells) == 3
+
+    def test_no_trim_when_under_n_cols(self) -> None:
+        """No trimming when effective columns is below n_cols."""
+
+        cells = [cell(text="a"), cell(text="b")]
+        trimmed = postprocess_page_irs._trim_excess_cells(n_cols=3, new_cells=cells)
+
+        assert trimmed == 0
+        assert len(cells) == 2
+
+    def test_stops_at_first_non_synthetic_tail(self) -> None:
+        """Trimming stops when the tail cell is not synthetic."""
+
+        cells = [
+            cell(text="a"),
+            cell(text="b"),
+            cell(text="real"),
+            cell(synthetic=True, text=None),
+        ]
+        trimmed = postprocess_page_irs._trim_excess_cells(n_cols=3, new_cells=cells)
+
+        # Trims 1 synthetic, then hits "real" and stops. Still 3 cells, effective=3.
+        assert trimmed == 1
+        assert len(cells) == 3
+
+    def test_trims_multiple_trailing_synthetics(self) -> None:
+        """Multiple trailing synthetic cells are trimmed until n_cols is reached."""
+
+        cells = [
+            cell(text="a"),
+            cell(text="b"),
+            cell(text="c"),
+            cell(synthetic=True, text=None),
+            cell(synthetic=True, text=None),
+        ]
+        trimmed = postprocess_page_irs._trim_excess_cells(n_cols=3, new_cells=cells)
+
+        assert trimmed == 2
+        assert len(cells) == 3
+
+    def test_trims_only_enough_synthetics(self) -> None:
+        """Only trim enough synthetic cells to reach n_cols, leaving extras."""
+
+        cells = [
+            cell(text="a"),
+            cell(text="b"),
+            cell(synthetic=True, text=None),
+            cell(synthetic=True, text=None),
+            cell(synthetic=True, text=None),
+        ]
+        trimmed = postprocess_page_irs._trim_excess_cells(n_cols=3, new_cells=cells)
+
+        assert trimmed == 2
+        assert len(cells) == 3
 
 
 class TestUpdateActiveSpan:

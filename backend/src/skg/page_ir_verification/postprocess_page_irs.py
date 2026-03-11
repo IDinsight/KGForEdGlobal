@@ -1,7 +1,6 @@
 """This module contains utility functions related to post-processing verified page IRs."""
 
 # Standard Library
-import json
 import re
 
 from typing import Any
@@ -21,7 +20,7 @@ from skg.page_ir_extraction.schemas import (
 from skg.page_ir_verification.utils import PageIRVerificationDirs, is_artifact
 from skg.schemas import VerificationConfig
 from skg.utils.constants import BlockType, CaptionTablePrefixes, PageContinuationKind
-from skg.utils.general import write_to_json
+from skg.utils.general import open_json_type, write_to_json
 
 # Compiled regexes.
 TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
@@ -31,7 +30,8 @@ TABLE_CODE_RE = re.compile(
 
 
 def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int:
-    """Calculate the max width found in the header rows.
+    """Calculate the max width found in the header rows. If there are no header rows,
+    return 0.
 
     Parameters
     ----------
@@ -233,7 +233,24 @@ def _process_table_normalization(
     page_index: int,
     rowspan_conflict_keys: set[tuple[int, int, int]],
 ) -> list[dict[str, Any]]:
-    """Analyze a single table and normalizes its rows.
+    """Analyze a single table and normalize its rows.
+
+    In this function, for a single table:
+
+    1. If `n_cols` is None, we do nothing.
+    2. Calls `_should_pad_left()` once for the whole table to decide whether missing
+        cells should be inserted on the left or right.
+    3. Loops row by row and computes `effective_cols`.
+    4. Then it handles each row in one of three ways:
+        4a. If `effective_cols > n_cols`, we record the row as over-wide, try
+            `_trim_excess_cells()` to remove trailing synthetic placeholders, and stop
+            there.
+        4b. If `effective_cols == n_cols`, we do nothing.
+        4c. If `effective_cols < n_cols`, we insert synthetic placeholder cells either
+            left or right until the row reaches `n_cols`.
+
+    Thus, this function is trying to answer the quesiton: "Does this row have too many
+    effective columns, too few, or exactly the right amount?".
 
     Parameters
     ----------
@@ -445,6 +462,19 @@ def _process_table_row(
 def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
     """Decide if the table requires left-padding based on header and body signals.
 
+    This function uses two signals for padding:
+
+    1. Header full-width signal: If the table has header rows and the widest header row
+        reaches exactly `n_cols`, return True.
+    2. Modal leading-blank signal: Otherwise, look at body rows that are already
+        full-width and whose first cell is not synthetic. If at least 3 such rows
+        exist, and at least 60% of them have a blank first cell, return True (otherwise
+        False). Synthetic leading cells are ignored here because they may been inserted
+        by the earlier rowspan-repair pass and are not trustworthy extraction evidence.
+
+    In other words, this function asks the question: "When rows are short, is the
+    missing content probably on the **left** side of the row?"
+
     Parameters
     ----------
     header_row_count
@@ -599,6 +629,23 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
 
     NB: We trim based on *effective* columns (sum of col_span), not raw cell count.
     This avoids incorrect trimming when some real cells have col_span > 1.
+
+    This function:
+
+    1. Computes the row's effective width using `col_span`, then repeatedly removes the
+        **last** cell iff:
+            1a. Effective width is still greater than `n_cols`.
+            1b. The last cell is synthetic (i.e., a placeholder likely inserted by an
+                earlier repair pass).
+    2. As soon as the last cell is real rather than synthetic, it stops. Thus, this
+        function never trims real extracted content. Instead it only cleans up trailing
+        placeholder artifacts.
+
+    This function is conservative, meaning that it will not trim real cells even if
+    that means the row remains wider than `n_cols`. The heuristic is that trailing
+    synthetic placeholders are more likely to be over-extraction noise that can be
+    cleaned up, while real cells are less likely to be noise and should be preserved
+    for review rather than risk losing true content.
 
     Parameters
     ----------
@@ -801,7 +848,7 @@ def load_verified_table_continuation_edges(
     """
 
     fp = verification_dirs.root / "continuity_compile_report.json"
-    report = json.loads(fp.read_text())
+    report = open_json_type(fp)
     edges: set[tuple[int, int, int, int]] = set()
 
     for edge in report.get("applied_edges", []) or []:
@@ -884,9 +931,20 @@ def normalize_table_row_cell_counts(
     page_irs: dict[int, PageIR],
     rowspan_conflict_keys: set[tuple[int, int, int]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Ensure each table row has an effective width of n_cols columns (accounting for
-    col_span). Fixes the common LLM error of dropping empty cells at the start/end of
-    rows.
+    """Normalize table rows to have consistent cell counts matching the table's n_cols
+    by inserting synthetic placeholder cells on the left or right as needed.
+
+    This function:
+
+    1. Walks through every page in order and for every item on the page
+    2. Skips anything that is NOT a table
+    3. Calls _process_table_normalization() on each table
+    4. If `rowspan_conflict_keys` is None, it uses an empty set
+    5. At the end, it returns one flat list of change records for all pages/tables
+
+    This function runs **after** rowspan alignment, and rows that had unresolved
+    rowspan conflicts are passed in so their later padding changes can be annotated for
+    audit.
 
     Parameters
     ----------
