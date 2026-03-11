@@ -17,7 +17,7 @@ class BackendSettings(BaseSettings):
     """Pydantic settings for backend."""
 
     # Chat
-    CHAT_ENV: Literal["dev", "prod", "local"] = "local"
+    CHAT_ENV: Literal["dev", "prod", "local", "testing"] = "local"
 
     # Logging
     LOGGING_LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
