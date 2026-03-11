@@ -47,6 +47,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.document_ir.compute_page_break_links import compute_page_break_links
 from skg.document_ir.normalize_page_items import normalize_page_items
 from skg.document_ir.schemas import SectionHeadingRef, Segment
 from skg.document_ir.utils import (
@@ -54,7 +55,6 @@ from skg.document_ir.utils import (
     ItemKey,
     assert_page_items_consumed_exactly_once,
     build_continuation_chain,
-    compute_page_break_links,
     cross_check_verification_run,
     materialize_segment,
     persist_stitching_run,
