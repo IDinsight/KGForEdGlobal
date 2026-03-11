@@ -79,6 +79,7 @@ def make_segment(
 def make_slice(
     rows: list[TableRow],
     page_index: int,
+    boundary: ItemBoundary = ItemBoundary.COMPLETE,
     dropped_header_rows: int = 0,
     bbox: list[float] | None = None,
 ) -> TableSlice:
@@ -90,6 +91,8 @@ def make_slice(
         The list of TableRow instances for the slice.
     page_index
         The page index of the slice.
+    boundary
+        The boundary type of the slice.
     dropped_header_rows
         The number of dropped header rows in the slice.
     bbox
@@ -106,7 +109,7 @@ def make_slice(
 
     return TableSlice(
         bbox=bbox,
-        boundary=ItemBoundary.COMPLETE,
+        boundary=boundary,
         dropped_header_rows=dropped_header_rows,
         header_row_count=0,
         item_index=0,
@@ -2002,7 +2005,11 @@ def test__row_provenance_by_stitched_index_with_dropped_headers() -> None:
     # Slice 2 has 2 rows total, bbox height 20. Each row is 10 units high. Row 0 is
     # Header (0-10), Row 1 is Data B (10-20).
     slice_2 = make_slice(
-        s2_rows, page_index=2, dropped_header_rows=1, bbox=[0, 0, 10, 20]
+        bbox=[0, 0, 10, 20],
+        boundary=ItemBoundary.RESUMED,
+        dropped_header_rows=1,
+        page_index=2,
+        rows=s2_rows,
     )
 
     segment = make_segment(rows=stitched_rows, n_cols=1)
