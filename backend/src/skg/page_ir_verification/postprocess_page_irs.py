@@ -252,12 +252,23 @@ def _process_table_normalization(
     -------
     list[dict[str, Any]]
         A list of changes made to the table rows.
+
+    Raises
+    ------
+    ValueError
+        If n_cols is not a positive integer.
     """
 
     n_cols = item.n_cols
 
-    if not isinstance(n_cols, int) or n_cols <= 0:
+    if n_cols is None:
         return []
+
+    if not isinstance(n_cols, int) or n_cols <= 0:
+        raise ValueError(
+            f"Table n_cols must be a positive integer, "
+            f"got {n_cols} on page {page_index} item {item_index}"
+        )
 
     rows = item.rows
     header_row_count = item.header_row_count
