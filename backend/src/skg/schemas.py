@@ -368,6 +368,8 @@ class StitchingConfig(BaseSchema):
     verification_auto_stitch_confidence: float = Field(
         0.75,
         description="If a verified link has confidence >= this value, it will be automatically stitched.",
+        ge=0,
+        le=1,
     )
 
 
