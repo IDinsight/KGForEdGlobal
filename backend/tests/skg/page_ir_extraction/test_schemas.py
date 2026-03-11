@@ -20,8 +20,6 @@ from skg.page_ir_extraction.schemas import (
     TableCell,
     TableRow,
     TextUnit,
-    _next_free_column,
-    _occupied_columns_for_span,
     validate_validation_verdict_state,
 )
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary
@@ -285,41 +283,6 @@ def make_text_unit() -> Callable[..., TextUnit]:
         return TextUnit(language=language, text=text)
 
     return _make
-
-
-class TestNextFreeColumn:
-    """Tests for _next_free_column."""
-
-    def test_empty_set_returns_zero(self) -> None:
-        """If no columns are occupied, the next free column should be 0."""
-
-        assert _next_free_column(set()) == 0
-
-    def test_skips_occupied(self) -> None:
-        """If columns 0, 1, and 2 are occupied, the next free column should be 3."""
-
-        assert _next_free_column({0, 1, 2}) == 3
-
-    def test_finds_gap(self) -> None:
-        """If columns 0 and 2 are occupied, the next free column should be 1."""
-
-        assert _next_free_column({0, 2}) == 1
-
-
-class TestOccupiedColumnsForSpan:
-    """Tests for _occupied_columns_for_span."""
-
-    def test_single_column(self) -> None:
-        """A cell with col_span=1 starting at column 0 should occupy only column 0."""
-
-        assert _occupied_columns_for_span(col_span=1, start_col=0) == {0}
-
-    def test_multi_column(self) -> None:
-        """A cell with col_span=3 starting at column 2 should occupy columns 2, 3, and
-        4.
-        """
-
-        assert _occupied_columns_for_span(col_span=3, start_col=2) == {2, 3, 4}
 
 
 class TestValidateValidationVerdictState:

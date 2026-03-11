@@ -16,48 +16,6 @@ from skg.schemas import BaseSchema, BBox, LanguageField
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
 
 
-def _next_free_column(occupied_columns: set[int]) -> int:
-    """Return the leftmost unoccupied column index for the current row.
-
-    Parameters
-    ----------
-    occupied_columns
-        Columns already occupied in the current row, including carry-over occupancy
-        from row spans above.
-
-    Returns
-    -------
-    int
-        The next available column index.
-    """
-
-    column_index = 0
-
-    while column_index in occupied_columns:
-        column_index += 1
-
-    return column_index
-
-
-def _occupied_columns_for_span(*, col_span: int, start_col: int) -> set[int]:
-    """Return the set of columns covered by a cell span.
-
-    Parameters
-    ----------
-    col_span
-        Number of columns spanned by the cell.
-    start_col
-        Starting column index of the cell.
-
-    Returns
-    -------
-    set[int]
-        Covered column indices.
-    """
-
-    return set(range(start_col, start_col + col_span))
-
-
 def validate_validation_verdict_state(
     *, corrected_present: bool, issues: list[Any], passed: bool
 ) -> None:
@@ -148,6 +106,22 @@ class TableCell(BaseSchema):
         None, description="The content of the cell. Null if visually empty."
     )
 
+    def _get_occupied_columns(self, start_col: int) -> set[int]:
+        """Return the set of columns covered by this cell.
+
+        Parameters
+        ----------
+        start_col
+            Starting column index of the cell.
+
+        Returns
+        -------
+        set[int]
+            Covered column indices.
+        """
+
+        return set(range(start_col, start_col + self.col_span))
+
 
 class TableRow(BaseSchema):
     """A single horizontal row in a table."""
@@ -204,6 +178,29 @@ class Table(BaseSchema):
         description="All visual rows. Do NOT separate headers; extract the grid exactly as seen.",
         min_length=1,  # Enforce at least one row to avoid empty table hallucinations
     )
+
+    @staticmethod
+    def _next_free_column(occupied_columns: set[int]) -> int:
+        """Return the leftmost unoccupied column index for the current row.
+
+        Parameters
+        ----------
+        occupied_columns
+            Columns already occupied in the current row, including carry-over occupancy
+            from row spans above.
+
+        Returns
+        -------
+        int
+            The next available column index.
+        """
+
+        column_index = 0
+
+        while column_index in occupied_columns:
+            column_index += 1
+
+        return column_index
 
     @model_validator(mode="after")
     def validate_header_row_count(self) -> Self:
@@ -320,10 +317,8 @@ class Table(BaseSchema):
                         f"col_span={cell.col_span}, n_cols={self.n_cols}."
                     )
 
-                start_col = _next_free_column(occupied_by_row[row_index])
-                occupied_cols = _occupied_columns_for_span(
-                    col_span=cell.col_span, start_col=start_col
-                )
+                start_col = self._next_free_column(occupied_by_row[row_index])
+                occupied_cols = cell._get_occupied_columns(start_col=start_col)
                 stop_col = start_col + cell.col_span
 
                 if self.n_cols is not None and stop_col > self.n_cols:
