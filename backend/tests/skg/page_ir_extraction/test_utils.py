@@ -17,7 +17,7 @@ from tests.constants import FIXTURES_DIR, PARAM
 from tests.types_ import InstallLoguruMock
 
 
-def _make_table(extract_return: list[list[str | None]] | None = None) -> MagicMock:
+def make_table(extract_return: list[list[str | None]] | None = None) -> MagicMock:
     """Create a minimal table mock for `_extract_table_hint`.
 
     Parameters
@@ -36,7 +36,7 @@ def _make_table(extract_return: list[list[str | None]] | None = None) -> MagicMo
     return t
 
 
-def _mock_page_find_tables(tables: list[MagicMock] | None) -> MagicMock:
+def mock_page_find_tables(tables: list[MagicMock] | None) -> MagicMock:
     """Create a minimal page mock for `_extract_table_hint`.
 
     Parameters
@@ -55,7 +55,7 @@ def _mock_page_find_tables(tables: list[MagicMock] | None) -> MagicMock:
     return page
 
 
-def _mock_page_get_text_text(raw_text: str) -> MagicMock:
+def mock_page_get_text_text(raw_text: str) -> MagicMock:
     """Create a minimal page mock for `_extract_text_hint`.
 
     Parameters
@@ -92,14 +92,14 @@ def test__extract_table_hint_returns_none_if_all_tables_are_unusable(
     serializer = MagicMock(return_value="should-not-be-called")
     monkeypatch.setattr(utils, "_serialize_table", serializer)
 
-    t0 = _make_table(extract_return=[["ignored"]])
+    t0 = make_table(extract_return=[["ignored"]])
     t0.extract.side_effect = RuntimeError("explode")
 
-    t1 = _make_table(extract_return=[])
-    t2 = _make_table(extract_return=[[None, "   "]])  # 0 non-empty
-    t3 = _make_table(extract_return=[["only-one"], [None]])  # 1 non-empty
+    t1 = make_table(extract_return=[])
+    t2 = make_table(extract_return=[[None, "   "]])  # 0 non-empty
+    t3 = make_table(extract_return=[["only-one"], [None]])  # 1 non-empty
 
-    page = _mock_page_find_tables(tables=[t0, t1, t2, t3])
+    page = mock_page_find_tables(tables=[t0, t1, t2, t3])
 
     assert utils._extract_table_hint(page=page, page_index=4) is None
     serializer.assert_not_called()
@@ -175,7 +175,7 @@ def test__extract_table_hint_returns_none_when_no_tables_found(
     """
 
     calls = mock_loguru_logger(utils)
-    page = _mock_page_find_tables(tables=[])
+    page = mock_page_find_tables(tables=[])
 
     assert utils._extract_table_hint(page=page, page_index=7) is None
     assert calls == []
@@ -232,25 +232,25 @@ def test__extract_table_hint_skips_bad_tables_but_serializes_good_ones(
     monkeypatch.setattr(utils, "_serialize_table", _fake_serialize_table)
 
     # Extract raises.
-    t0 = _make_table(extract_return=[["ignored"]])
+    t0 = make_table(extract_return=[["ignored"]])
     t0.extract.side_effect = ValueError("bad table")
 
     # Extract returns None (skip).
-    t1 = _make_table(extract_return=None)
+    t1 = make_table(extract_return=None)
 
     # Trivially small after stripping (only 1 non-empty cell).
-    t2 = _make_table(extract_return=[[None, "   ", "x"], ["", None, "\t"]])
+    t2 = make_table(extract_return=[[None, "   ", "x"], ["", None, "\t"]])
 
     # Valid (two real cells, lots of whitespace).
-    t3 = _make_table(extract_return=[["x", "  ", None], [None, "y", "\n"]])
+    t3 = make_table(extract_return=[["x", "  ", None], [None, "y", "\n"]])
 
     # Valid large table with only two non-empty cells.
     big: list[list[str | None]] = [["   " for _ in range(20)] for _ in range(100)]
     big[0][0] = "A"
     big[-1][-1] = "B"
-    t4 = _make_table(extract_return=big)
+    t4 = make_table(extract_return=big)
 
-    page = _mock_page_find_tables(tables=[t0, t1, t2, t3, t4])
+    page = mock_page_find_tables(tables=[t0, t1, t2, t3, t4])
 
     out = utils._extract_table_hint(page=page, page_index=2)
 
@@ -323,7 +323,7 @@ def test__extract_text_hint_accepts_text_with_lots_of_newlines_tabs_and_returns_
     raw_text = seed + ("\n\t\r" * 2000) + "\n"  # Trailing newline gets stripped
 
     calls = mock_loguru_logger(utils)
-    page = _mock_page_get_text_text(raw_text=raw_text)
+    page = mock_page_get_text_text(raw_text=raw_text)
 
     out = utils._extract_text_hint(page=page, page_index=1)
 
@@ -376,7 +376,7 @@ def test__extract_text_hint_prioritizes_printable_ratio_check_over_replacement_r
     raw_text = ("A" * a) + ("\ufffd" * k_repl) + ("\x00" * n_nonprintable)
 
     calls = mock_loguru_logger(utils)
-    page = _mock_page_get_text_text(raw_text=raw_text)
+    page = mock_page_get_text_text(raw_text=raw_text)
 
     assert utils._extract_text_hint(page=page, page_index=0) is None
     assert len(calls) == 1
@@ -403,7 +403,7 @@ def test__extract_text_hint_rejects_empty_or_whitespace_text_layer_and_logs_debu
     """
 
     calls = mock_loguru_logger(utils)
-    page = _mock_page_get_text_text(raw_text=raw_text)
+    page = mock_page_get_text_text(raw_text=raw_text)
 
     assert utils._extract_text_hint(page=page, page_index=0) is None
 
@@ -442,7 +442,7 @@ def test__extract_text_hint_rejects_excessive_replacement_chars_and_logs_warning
     raw_text = printable_seed + ("\ufffd" * k_repl)
 
     calls = mock_loguru_logger(utils)
-    page = _mock_page_get_text_text(raw_text=raw_text)
+    page = mock_page_get_text_text(raw_text=raw_text)
 
     assert utils._extract_text_hint(page=page, page_index=9) is None
 
@@ -481,7 +481,7 @@ def test__extract_text_hint_rejects_low_printable_ratio_and_logs_warning(
     raw_text = printable_seed + ("\x00" * n_nonprintable)
 
     calls = mock_loguru_logger(utils)
-    page = _mock_page_get_text_text(raw_text=raw_text)
+    page = mock_page_get_text_text(raw_text=raw_text)
 
     assert utils._extract_text_hint(page=page, page_index=4) is None
 
@@ -510,7 +510,7 @@ def test__extract_text_hint_rejects_text_layer_below_min_length_threshold(
     # Build a string that is *just* under the threshold after stripping.
     below = "A" * max(min_len - 1, 0)
     calls = mock_loguru_logger(utils)
-    page = _mock_page_get_text_text(raw_text=below)
+    page = mock_page_get_text_text(raw_text=below)
 
     assert utils._extract_text_hint(page=page, page_index=6) is None
 
