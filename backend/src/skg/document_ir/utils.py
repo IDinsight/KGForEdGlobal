@@ -38,8 +38,13 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification.utils import EdgeVerdictRecord, is_artifact
-from skg.schemas import RunCtx, StitchingConfig
+from skg.page_ir_verification.utils import (
+    EdgeVerdictRecord,
+    is_artifact,
+    load_page_irs_from_verification,
+    load_verification_verdicts,
+)
+from skg.schemas import ExtractionConfig, RunCtx, StitchingConfig
 from skg.utils.constants import (
     BlockType,
     CaptionFigurePrefixes,
@@ -2345,6 +2350,67 @@ def create_item_addr(*, item_index: int, page_index: int) -> str:
     """
 
     return f"p{page_index}:raw{item_index}"
+
+
+def cross_check_verification_run(
+    *,
+    computed_doc_key: str,
+    expected_doc_key: str,
+    extraction_config: ExtractionConfig,
+    verified_page_irs_dir: Path,
+) -> tuple[dict[tuple[int, int], EdgeVerdictRecord], list[PageIR]]:
+    """Cross-check that the verification run matches expected parameters and load
+    verified page IRs and their verdicts.
+
+    Parameters
+    ----------
+    computed_doc_key
+        The document key computed from the source PDF bytes by the caller.
+    expected_doc_key
+        The expected document key (hex string) from the extraction run metadata.
+    extraction_config
+        The extraction configuration used for the run.
+    verified_page_irs_dir
+        The directory where verified page IRs are stored.
+
+    Returns
+    -------
+    tuple[dict[tuple[int, int], EdgeVerdictRecord], list[PageIR]]
+        The loaded verdicts and verified page IRs.
+
+    Raises
+    ------
+    ValueError
+        If the computed document key does not match the expected key.
+    """
+
+    if computed_doc_key != expected_doc_key:
+        raise ValueError(
+            f"PDF doc_key mismatch.\n"
+            f"  PDF provided to verify():   {extraction_config.pdf_fp}\n"
+            f"  computed doc_key:           {computed_doc_key}\n"
+            f"  extraction_run.json key:    {expected_doc_key}\n"
+            f"You are likely stitching against a different PDF than the one used for "
+            f"verification. Pass the same PDF used in the verification step or re-run "
+            f"verification."
+        )
+
+    verdict_dir = (
+        extraction_config.output_dir
+        / computed_doc_key
+        / "verification"
+        / "page_irs_pair_reports"
+    )
+
+    # Load and validate verified PageIR JSONs from the verification output directory.
+    verified_page_irs = load_page_irs_from_verification(
+        doc_key=expected_doc_key, verified_page_irs_dir=verified_page_irs_dir
+    )
+
+    # Load verification verdicts for debugging and linking purposes.
+    verdicts = load_verification_verdicts(verdict_dir=verdict_dir)
+
+    return verdicts, verified_page_irs
 
 
 def debug_features_for_pair(
