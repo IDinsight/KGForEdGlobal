@@ -55,17 +55,14 @@ from skg.document_ir.utils import (
     assert_page_items_consumed_exactly_once,
     build_continuation_chain,
     compute_page_break_links,
+    cross_check_verification_run,
     materialize_segment,
     persist_stitching_run,
     save_document_ir,
     update_section_stack,
 )
 from skg.page_ir_extraction.schemas import Block, PageIR, Table
-from skg.page_ir_verification.utils import (
-    EdgeVerdictRecord,
-    load_page_irs_from_verification,
-    load_verification_verdicts,
-)
+from skg.page_ir_verification.utils import EdgeVerdictRecord
 from skg.schemas import RunConfig, RunCtx, StitchingConfig
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
@@ -119,7 +116,7 @@ def stitch_document_ir(
 
     warnings: list[str] = []
 
-    # Normalize items per page.
+    # 1.
     page_indices = [p.page_index for p in page_irs]
     assert len(page_indices) == len(set(page_indices)), (
         f"Duplicate page_index values detected: "
@@ -274,12 +271,12 @@ def stitch(
 
     The process is as follows:
 
-    1. Load config and validate extraction run existence.
-    2. Check doc_key consistency.
-    3. Load and validate verified PageIR JSONs from the verification output directory.
-    4. Load verification verdicts for debugging and linking purposes.
-    5. Persist stitching run metadata.
-    6. Stitch PageIRs into a single layout-level DocumentIR by merging cross-page
+    1. Load the global run config and directory paths for the extraction and
+        verification run results.
+    2. Cross-check verification run results and load verified PageIRs and their
+        verdicts.
+    3. Persist stitching run metadata.
+    4. Stitch PageIRs into a single layout-level DocumentIR by merging cross-page
         continuations (tables and text/list blocks) and preserving provenance.
 
     Parameters
@@ -291,9 +288,6 @@ def stitch(
     ------
     Exception
         If any part of the stitching process fails.
-    ValueError
-        If the computed doc_key from the PDF does not match the doc_key in the
-        extraction run metadata.
     """
 
     # 1.
@@ -310,49 +304,29 @@ def stitch(
         / "verification"
         / "page_irs_verified"
     )
-    verdict_dir = (
-        extraction_config.output_dir
-        / computed_doc_key
-        / "verification"
-        / "page_irs_pair_reports"
-    )
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")
     )
-
-    # 2.
     expected_doc_key = extraction_run_config.extra["doc_key"]
 
-    if computed_doc_key != expected_doc_key:
-        raise ValueError(
-            f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify():   {extraction_config.pdf_fp}\n"
-            f"  computed doc_key:           {computed_doc_key}\n"
-            f"  extraction_run.json key:    {expected_doc_key}\n"
-            f"You are likely stitching against a different PDF than the one used for "
-            f"verification. Pass the same PDF used in the verification step or re-run "
-            f"verification."
-        )
-
-    stitching_results_dir = (
-        extraction_config.output_dir / expected_doc_key / "stitching"
+    # 2.
+    verdicts, verified_page_irs = cross_check_verification_run(
+        computed_doc_key=computed_doc_key,
+        expected_doc_key=expected_doc_key,
+        extraction_config=extraction_config,
+        verified_page_irs_dir=page_irs_verified_dir,
     )
 
     # 3.
-    verified_page_irs = load_page_irs_from_verification(
-        doc_key=expected_doc_key, verified_page_irs_dir=page_irs_verified_dir
+    stitching_results_dir = (
+        extraction_config.output_dir / expected_doc_key / "stitching"
     )
-
-    # 4.
-    verdicts = load_verification_verdicts(verdict_dir=verdict_dir)
-
-    # 5.
     stitching_dirs, stitching_run = persist_stitching_run(
         config=config, output_dir=stitching_results_dir
     )
 
     try:
-        # 6.
+        # 4.
         logger.info(
             f"Starting document IR stitching process using verified page IR JSONs from: "
             f"{page_irs_verified_dir}"

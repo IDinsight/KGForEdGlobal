@@ -198,9 +198,6 @@ def verify(
     ------
     Exception
         If any part of the verification fails.
-    ValueError
-        If the computed doc_key from the PDF does not match the doc_key in the
-        extraction run metadata.
     """
 
     # 1.
