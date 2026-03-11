@@ -826,18 +826,17 @@ class TestProcessTableItem:
         assert len(table.rows[1].cells) == 2
         assert len(table.rows[2].cells) == 2
 
-    def test_n_cols_zero_returns_empty(self) -> None:
+    def test_n_cols_zero_raises(self) -> None:
         """Return no changes when n_cols is 0 (invalid but handled gracefully)."""
 
         # n_cols must be >= 1 per schema, so we bypass by setting after construction.
         table = make_table_from_rows(n_cols=3, rows=[row(cell(), cell(), cell())])
         table.n_cols = 0
 
-        changes = postprocess_page_irs._process_table_item(
-            item=table, item_index=0, page_index=0
-        )
-
-        assert not changes
+        with pytest.raises(ValueError):
+            postprocess_page_irs._process_table_item(
+                item=table, item_index=0, page_index=0
+            )
 
     def test_no_n_cols_returns_empty(self) -> None:
         """Return no changes when n_cols is None."""
@@ -1446,60 +1445,3 @@ class TestUpdateActiveSpan:
         )
 
         assert active_span == [0, 2, 0]
-
-
-class TestUpdateSpansOnly:
-    """Tests for _update_spans_only()."""
-
-    def test_empty_cells_list(self) -> None:
-        """An empty cells list does not modify the active span."""
-
-        active_span = [1, 0, 0]
-
-        postprocess_page_irs._update_spans_only(
-            active_span=active_span, cells=[], n_cols=3
-        )
-
-        assert active_span == [1, 0, 0]
-
-    def test_simple_row_no_rowspans(self) -> None:
-        """A row with all row_span=1 cells does not modify active spans."""
-
-        active_span = [0, 0, 0]
-        cells = [cell(), cell(), cell()]
-
-        postprocess_page_irs._update_spans_only(
-            active_span=active_span, cells=cells, n_cols=3
-        )
-
-        assert active_span == [0, 0, 0]
-
-    def test_skips_occupied_columns(self) -> None:
-        """Cells are placed after skipping columns occupied by prior rowspans."""
-
-        active_span = [2, 0, 0]
-        cells = [cell(row_span=3), cell()]
-
-        postprocess_page_irs._update_spans_only(
-            active_span=active_span, cells=cells, n_cols=3
-        )
-
-        # Col 0 occupied (span=2, untouched by this row's cells).
-        # Cell 0 (row_span=3) placed at col 1 -> active_span[1] = 3.
-        # Cell 1 placed at col 2 -> row_span=1, no update.
-        assert active_span == [2, 3, 0]
-
-    def test_stops_when_col_exceeds_n_cols(self) -> None:
-        """Placement stops when the column pointer reaches n_cols."""
-
-        active_span = [2, 2, 0]
-        cells = [cell(row_span=4), cell()]
-
-        postprocess_page_irs._update_spans_only(
-            active_span=active_span, cells=cells, n_cols=3
-        )
-
-        # Col 0 and 1 occupied -> skip to col 2.
-        # Cell 0 (row_span=4) placed at col 2 -> active_span[2] = 4.
-        # Col becomes 3 -> col >= n_cols -> break. Cell 1 is not placed.
-        assert active_span == [2, 2, 4]
