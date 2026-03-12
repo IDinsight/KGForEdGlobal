@@ -30,7 +30,7 @@ from skg.page_ir_verification.utils import (
 )
 from skg.regexes import (
     CAPTION_IDENTIFIER_RE,
-    FIGURE_PREFIX_RE,
+    FIGURE_PREFIX_PATTERN,
     TABLE_PREFIX_PATTERN,
     WS_RE,
 )
@@ -523,7 +523,7 @@ def parse_caption_code(text: str) -> Optional[ParsedCaptionCode]:
         rf"""
         ^
         \s*
-        (?P<prefix>{FIGURE_PREFIX_RE})
+        (?P<prefix>{FIGURE_PREFIX_PATTERN})
         (?=
             \s*
             (?:(?:no|n|na)\.?\s*)?

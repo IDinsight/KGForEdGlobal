@@ -1936,13 +1936,13 @@ def test__row_provenance_by_stitched_index_multi_slice_stitching() -> None:
     assert provenance[2].dropped_header_rows == 0
 
 
-def test__row_provenance_by_stitched_index_no_slices_assertion() -> None:
-    """Test assertion failure if segment has no slices."""
+def test__row_provenance_by_stitched_index_no_slices_value_error() -> None:
+    """Test ValueError if segment has no slices."""
 
     segment = make_segment(rows=[], n_cols=1)
     segment.slices = []  # Empty
 
-    with pytest.raises(AssertionError, match="has no slices"):
+    with pytest.raises(ValueError, match="has no slices"):
         stitch_segments._row_provenance_by_stitched_index(segment=segment)
 
 

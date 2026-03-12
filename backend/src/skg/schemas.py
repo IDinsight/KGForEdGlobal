@@ -69,6 +69,84 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
     return [x0, y0, x1, y1]
 
 
+def validate_progression_role(*, field_name: str, role: NodeRole) -> NodeRole:
+    """Validate that a progression-role config field uses a concrete hierarchy role.
+
+    Parameters
+    ----------
+    field_name
+        The config field name for error messages.
+    role
+        The role value to validate.
+
+    Returns
+    -------
+    NodeRole
+        The validated role.
+
+    Raises
+    ------
+    ValueError
+        If the role is too generic to be useful for progression bucketing.
+    """
+
+    disallowed_roles = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
+
+    if role in disallowed_roles:
+        disallowed_values = ", ".join(sorted(item.value for item in disallowed_roles))
+        raise ValueError(
+            f"{field_name} cannot contain {role.value!r}. Use a concrete hierarchy role "
+            f"such as 'subject', 'learning_area', 'strand', or 'theme'. "
+            f"Disallowed roles: {disallowed_values}."
+        )
+
+    return role
+
+
+def validate_progression_roles(
+    *, field_name: str, roles: Optional[list[NodeRole]]
+) -> Optional[list[NodeRole]]:
+    """Validate a progression-role list for non-empty, unique, concrete roles.
+
+    Parameters
+    ----------
+    field_name
+        The config field name for error messages.
+    roles
+        The ordered role list to validate.
+
+    Returns
+    -------
+    Optional[list[NodeRole]]
+        The validated role list.
+
+    Raises
+    ------
+    ValueError
+        If the list contains duplicates or disallowed roles.
+    """
+
+    if roles is None:
+        return roles
+
+    validated_roles: list[NodeRole] = []
+    seen_roles: set[NodeRole] = set()
+
+    for role in roles:
+        validated_role = validate_progression_role(field_name=field_name, role=role)
+
+        if validated_role in seen_roles:
+            raise ValueError(
+                f"{field_name} must not contain duplicate roles. "
+                f"Duplicate value: {validated_role.value!r}."
+            )
+
+        seen_roles.add(validated_role)
+        validated_roles.append(validated_role)
+
+    return validated_roles
+
+
 def validate_bcp47(code: str) -> str:
     """Validates that a string is a valid BCP-47 language tag.
 
@@ -630,7 +708,7 @@ class CreateKGConfig(BaseSchema):
         default=True,
         description="Enable cross-grade buildsTowards progression inference between adjacent single-level grade buckets.",
     )
-    progressions_cross_grade_match_roles: Optional[list[str]] = Field(
+    progressions_cross_grade_match_roles: Optional[list[NodeRole]] = Field(
         default=None,
         description=(
             "Ordered list of canonical IR node roles whose labels form the "
@@ -702,7 +780,7 @@ class CreateKGConfig(BaseSchema):
         le=1.0,
         description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
     )
-    progressions_subject_role: Optional[str] = Field(
+    progressions_subject_role: Optional[NodeRole] = Field(
         default=None,
         description=(
             "Canonical IR node role to use as the 'subject' for Phase 3 "
@@ -820,31 +898,60 @@ class CreateKGConfig(BaseSchema):
 
         return v
 
-    @field_validator("progressions_subject_role")
+    @field_validator("progressions_cross_grade_match_roles")
     @classmethod
-    def _validate_subject_role_non_empty(cls, v: Optional[str]) -> Optional[str]:
-        """Ensure progressions_subject_role is non-empty when provided.
+    def _validate_progressions_cross_grade_match_roles(
+        cls, v: Optional[list[NodeRole]]
+    ) -> Optional[list[NodeRole]]:
+        """Validate progression thread-key roles.
 
         Parameters
         ----------
         v
-            The subject role string to validate.
+            The ordered role list that defines the cross-grade thread identity.
 
         Returns
         -------
-        Optional[str]
-            The validated subject role string.
+        Optional[list[NodeRole]]
+            The validated role list.
 
         Raises
         ------
         ValueError
-            If the value is an empty string.
+            If the role list contains duplicates or disallowed roles.
         """
 
-        if v is not None and not v.strip():
-            raise ValueError("progressions_subject_role must be non-empty when set")
+        return validate_progression_roles(
+            field_name="progressions_cross_grade_match_roles", roles=v
+        )
 
-        return v
+    @field_validator("progressions_subject_role")
+    @classmethod
+    def _validate_progressions_subject_role(
+        cls, v: Optional[NodeRole]
+    ) -> Optional[NodeRole]:
+        """Validate the configured subject-like bucketing role.
+
+        Parameters
+        ----------
+        v
+            The role used to derive subject buckets for progression inference.
+
+        Returns
+        -------
+        Optional[NodeRole]
+            The validated subject role.
+
+        Raises
+        ------
+        ValueError
+            If the role is too generic to support progression bucketing.
+        """
+
+        if v is None:
+            return v
+
+        return validate_progression_role(field_name="progressions_subject_role", role=v)
 
     @model_validator(mode="after")
     def _validate_grouping_role_policy(self) -> Self:

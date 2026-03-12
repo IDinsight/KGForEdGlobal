@@ -295,10 +295,29 @@ def _apply_verification_verdict(
 
     if kind == "table":
         kind_ok = isinstance(prev_item, Table) and isinstance(next_item, Table)
-    elif kind in ("text", "figure"):
-        kind_ok = isinstance(prev_item, Block) and isinstance(next_item, Block)
+    elif kind == "text":
+        kind_ok = (
+            isinstance(prev_item, Block)
+            and isinstance(next_item, Block)
+            and prev_item.block_type != BlockType.FIGURE
+            and next_item.block_type != BlockType.FIGURE
+        )
+    elif kind == "figure":
+        kind_ok = (
+            isinstance(prev_item, Block)
+            and isinstance(next_item, Block)
+            and prev_item.block_type == BlockType.FIGURE
+            and next_item.block_type == BlockType.FIGURE
+        )
 
-    assert kind_ok
+    assert kind_ok, (
+        f"Verification verdict continuation_kind does not match resolved items: "
+        f"kind={kind} "
+        f"prev_item_type={type(prev_item).__name__} "
+        f"prev_block_type={getattr(prev_item, 'block_type', None)} "
+        f"next_item_type={type(next_item).__name__} "
+        f"next_block_type={getattr(next_item, 'block_type', None)}"
+    )
 
     # Apply set_next_table_repeats_header to the raw item so downstream stitching uses
     # the verified value.
