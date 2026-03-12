@@ -1232,7 +1232,8 @@ def match_candidates(
         candidate_scores: list[dict[str, Any]] = []
         prev_orig_index, prev_item = prev_page_items[prev_index]
 
-        # Find first compatible next candidate not used.
+        # Evaluate this previous candidate against all next candidates and keep track
+        # of the best scoring match.
         for next_index in next_candidate_indices:
             if next_index in used_next_indices:
                 continue
