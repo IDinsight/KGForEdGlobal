@@ -27,6 +27,7 @@ from skg.kgs.schemas import (
     StandardsFrameworkItem,
 )
 from skg.kgs.utils import ExportContext, KGDirs, keyify, node_display_text
+from skg.regexes import ROMAN_RE
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import open_json_type, write_to_json
@@ -49,9 +50,6 @@ ROMAN_MAP = {
     "XIV": 14,
     "XV": 15,
 }
-ROMAN_RE = re.compile(
-    r"\b(XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)\b", re.IGNORECASE
-)
 STATEMENT_ROLE_VALUES: set[str] = {item.value for item in StatementRole}
 
 

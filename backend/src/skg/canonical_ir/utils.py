@@ -30,23 +30,12 @@ from skg.canonical_ir.schemas import (
 from skg.config import Settings
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
 from skg.page_ir_extraction.schemas import TextUnit
+from skg.regexes import DASH_RE, STRUCTURAL_CONTEXT_CUE_RE, WS_RE
 from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
 from skg.utils.constants import NodeRole, SegmentDecisionType, UnresolvedReason
 from skg.utils.general import QUOTES_TRANSLATION, make_dir, write_to_json
 
 T = TypeVar("T")
-
-# Compiled regexes.
-_DASH_RE = re.compile(r"[‐-‒–—−]+")  # Common unicode dash characters
-_STRUCTURAL_CONTEXT_CUE_RE = re.compile(
-    r"\b("
-    r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
-    r"learning\s+area|unit|week|term|chapter|module|p\s*[1-9]|std\s*[ivx]+"
-    r"|palier|jéego|j[ée]ego|semaine|étape|activit[ée]s|niveau|comp[ée]tence"
-    r")\b",
-    flags=re.IGNORECASE,
-)
-_WS_RE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
@@ -236,7 +225,7 @@ def _check_structural_warnings(
     ):
         path_str = " / ".join([p for p in section_path_text if p])
 
-        if path_str and _STRUCTURAL_CONTEXT_CUE_RE.search(path_str):
+        if path_str and STRUCTURAL_CONTEXT_CUE_RE.search(path_str):
             pages_str = ",".join(str(p) for p in page_indices) if page_indices else "-"
             msg = (
                 f"context_evidence_present_but_context_groupings_empty:"
@@ -1342,12 +1331,12 @@ def _normalize_text(text: Optional[str]) -> str:
 
     text = unicodedata.normalize("NFKC", text)
     text = text.translate(QUOTES_TRANSLATION)
-    text = _DASH_RE.sub("-", text)
-    text = _WS_RE.sub(" ", text).strip()
+    text = DASH_RE.sub("-", text)
+    text = WS_RE.sub(" ", text).strip()
 
     # Normalize colon spacing ONLY when a non-space follows the colon.
     text = re.sub(r":\s*(?=\S)", ": ", text)
-    text = _WS_RE.sub(" ", text).strip()
+    text = WS_RE.sub(" ", text).strip()
 
     return text.casefold()
 
@@ -1770,10 +1759,10 @@ def canonical_grade_level_title(title: str) -> str:
 
     # Normalize unicode + whitespace + dash variants for matching.
     t = unicodedata.normalize("NFKC", title).strip()
-    t = _WS_RE.sub(" ", t)
-    t = _DASH_RE.sub("-", t)  # Unify various dash chars
+    t = WS_RE.sub(" ", t)
+    t = DASH_RE.sub("-", t)  # Unify various dash chars
     t = re.sub(r"\s*-\s*", "-", t)  # Remove spaces around hyphen
-    t = _WS_RE.sub(" ", t).strip()
+    t = WS_RE.sub(" ", t).strip()
 
     # Numeric grade range: GRADE(S) 1 - 3,
     m = re.match(r"^(grades?|grade)\s+(\d+)-(\d+)$", t, flags=re.IGNORECASE)
@@ -1818,8 +1807,8 @@ def canonical_grouping_node_id(
     if code != "-":
         # Normalize local_code deterministically (whitespace + unicode dash).
         code = unicodedata.normalize("NFKC", code)
-        code = _DASH_RE.sub("-", code)
-        code = _WS_RE.sub(" ", code).strip()
+        code = DASH_RE.sub("-", code)
+        code = WS_RE.sub(" ", code).strip()
 
     title = canonical_grouping_title(role=grouping.role, title=grouping.title)
     text_hash = _normalized_text_hash(text=title)
@@ -1927,8 +1916,8 @@ def canonical_leaf_node_id(
     if code != "-":
         # Normalize local_code deterministically (whitespace + unicode dash).
         code = unicodedata.normalize("NFKC", code)
-        code = _DASH_RE.sub("-", code)
-        code = _WS_RE.sub(" ", code).strip()
+        code = DASH_RE.sub("-", code)
+        code = WS_RE.sub(" ", code).strip()
 
     text_hash = _normalized_text_hash(text=leaf.body)
 
@@ -1963,8 +1952,8 @@ def canonical_storage_text(text: Optional[str]) -> str:
         return ""
 
     text = unicodedata.normalize("NFKC", text)
-    text = _DASH_RE.sub("-", text)
-    text = _WS_RE.sub(" ", text).strip()
+    text = DASH_RE.sub("-", text)
+    text = WS_RE.sub(" ", text).strip()
 
     return text
 

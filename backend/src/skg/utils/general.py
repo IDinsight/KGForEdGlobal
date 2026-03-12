@@ -9,7 +9,6 @@ instead.
 # Standard Library
 import base64
 import json
-import re
 
 from copy import deepcopy
 from dataclasses import dataclass
@@ -21,9 +20,9 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai.result import RunUsage
 
-_TOKEN_RE = re.compile(
-    r"(?i)\b(?:bearer\s+)?([A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+)"
-)
+# Package Library
+from skg.regexes import TOKEN_RE
+
 QUOTES_TRANSLATION = str.maketrans(
     {
         "“": '"',
@@ -357,11 +356,11 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
     """
 
     record = deepcopy(record)
-    record["message"] = _TOKEN_RE.sub("<redacted>", record["message"])
+    record["message"] = TOKEN_RE.sub("<redacted>", record["message"])
 
     # Redact the same way inside extra dict if user code added a header dump.
     if "headers" in record["extra"]:
-        record["extra"]["headers"] = _TOKEN_RE.sub(
+        record["extra"]["headers"] = TOKEN_RE.sub(
             "<redacted>", str(record["extra"]["headers"])
         )
 
