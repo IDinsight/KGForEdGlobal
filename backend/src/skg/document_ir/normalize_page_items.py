@@ -80,6 +80,27 @@ def _find_next_non_artifact(
     return None
 
 
+def _item_display_kind(item: Block | Table) -> str:
+    """Return a human-readable kind string for logging.
+
+    Parameters
+    ----------
+    item
+        A `Block` or `Table` page IR item.
+
+    Returns
+    -------
+    str
+        The block type value for blocks (e.g., "heading", "figure"), or "table" for
+        tables.
+    """
+
+    if isinstance(item, Block):
+        return item.block_type.value
+
+    return "table"
+
+
 def _resolve_label_code(item: Block) -> Optional[str]:
     """Resolve a table/figure code from a label-like Block.
 
@@ -110,8 +131,8 @@ def _try_assign_immediate(
     *,
     code: str,
     label_info: tuple[int, Block],
-    target_info: tuple[int, Block | Table],
     page_index: int,
+    target_info: tuple[int, Block | Table],
     warnings: list[str],
 ) -> bool:
     """Attempt to assign the label code to the immediately following item. Check if the
@@ -128,10 +149,10 @@ def _try_assign_immediate(
         The resolved code to assign (raw form).
     label_info
         A tuple of (original item index, Block) for the label.
-    target_info
-        A tuple of (original item index, Block or Table) for the immediate next item.
     page_index
         The page index for logging context.
+    target_info
+        A tuple of (original item index, Block or Table) for the immediate next item.
     warnings
         A list to append warning messages to.
 
@@ -167,7 +188,7 @@ def _try_assign_immediate(
             conflict_msg = (
                 f"Caption/table code conflict on page {page_index}: "
                 f"caption='{code}' label_raw_index={label_orig_index}({label_item.block_type.value})->"
-                f"target_raw_index={next_orig_index}({next_item.kind}) existing='{next_item.local_code}'."
+                f"target_raw_index={next_orig_index}({_item_display_kind(next_item)}) existing='{next_item.local_code}'."
             )
             assigned = True
     elif (
@@ -188,7 +209,7 @@ def _try_assign_immediate(
             conflict_msg = (
                 f"Caption/figure code conflict on page {page_index}: "
                 f"caption='{code}' label_raw_index={label_orig_index}({label_item.block_type.value})->"
-                f"target_raw_index={next_orig_index}({next_item.kind}) existing='{next_item.local_code}'."
+                f"target_raw_index={next_orig_index}({_item_display_kind(next_item)}) existing='{next_item.local_code}'."
             )
             assigned = True
 
@@ -197,7 +218,7 @@ def _try_assign_immediate(
         msg = (
             f"Propagated label code '{code}' on page {page_index}: "
             f"label_raw_index={label_orig_index}({label_item.block_type.value})->"
-            f"target_raw_index={next_orig_index}({next_item.kind})."
+            f"target_raw_index={next_orig_index}({_item_display_kind(next_item)})."
         )
         logger.warning(msg)
         warnings.append(msg)

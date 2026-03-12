@@ -17,6 +17,63 @@ from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import BlockType, ItemBoundary
 
 
+def validate_block_payload(
+    *, block_type: BlockType, figure: Any, list_items: Any, owner_name: str, text: Any
+) -> None:
+    """Validate mutually exclusive payload fields by block type.
+
+    This shared helper is used by both `BlockSlice` and `BlockSegment` to enforce the
+    same invariant: exactly one of `figure`, `list_items`, or `text` must be populated,
+    determined by `block_type`.
+
+    Parameters
+    ----------
+    block_type
+        The block type that determines which payload field is expected.
+    figure
+        The figure metadata value (may be None).
+    list_items
+        The list items value (may be None or empty).
+    owner_name
+        Human-readable schema name for error messages (e.g., "BlockSlice").
+    text
+        The text value (may be None).
+
+    Raises
+    ------
+    ValueError
+        If the payload fields are inconsistent with `block_type`.
+    """
+
+    expected_field = {BlockType.FIGURE: "figure", BlockType.LIST: "list_items"}.get(
+        block_type, "text"
+    )
+
+    if expected_field == "figure" and figure is None:
+        raise ValueError(
+            f"{owner_name} block_type='{block_type}' requires figure metadata."
+        )
+
+    if expected_field == "list_items" and not list_items:
+        raise ValueError(
+            f"{owner_name} block_type='{block_type}' requires non-empty list_items."
+        )
+
+    if expected_field == "text" and (text is None or not text.text.strip()):
+        raise ValueError(
+            f"{owner_name} block_type='{block_type}' requires non-empty text."
+        )
+
+    forbidden_fields = {"figure", "list_items", "text"} - {expected_field}
+    payload_values = {"figure": figure, "list_items": list_items, "text": text}
+
+    for field in forbidden_fields:
+        if payload_values[field] is not None:
+            raise ValueError(
+                f"{owner_name} block_type='{block_type}' requires {field}=null."
+            )
+
+
 # Schemas for page slices.
 class BlockSlice(BaseSchema):
     """A single page-slice of a (potentially multi-page) block segment."""
@@ -70,36 +127,13 @@ class BlockSlice(BaseSchema):
             If the slice payload does not match its block type.
         """
 
-        b_type = self.block_type
-
-        expected_field = {BlockType.FIGURE: "figure", BlockType.LIST: "list_items"}.get(
-            b_type, "text"
+        validate_block_payload(
+            block_type=self.block_type,
+            figure=self.figure,
+            list_items=self.list_items,
+            owner_name="BlockSlice",
+            text=self.text,
         )
-
-        if expected_field == "figure" and self.figure is None:
-            raise ValueError(
-                f"BlockSlice block_type='{b_type}' requires figure metadata."
-            )
-
-        if expected_field == "list_items" and not self.list_items:
-            raise ValueError(
-                f"BlockSlice block_type='{b_type}' requires non-empty list_items."
-            )
-
-        if expected_field == "text" and (
-            self.text is None or not self.text.text.strip()
-        ):
-            raise ValueError(
-                f"BlockSlice block_type='{b_type}' requires non-empty text."
-            )
-
-        forbidden_fields = {"figure", "list_items", "text"} - {expected_field}
-
-        for field in forbidden_fields:
-            if getattr(self, field) is not None:
-                raise ValueError(
-                    f"BlockSlice block_type='{b_type}' requires {field}=null."
-                )
 
         return self
 
@@ -413,36 +447,13 @@ class BlockSegment(BaseSchema):
             If the segment payload does not match its block type.
         """
 
-        b_type = self.block_type
-
-        expected_field = {BlockType.FIGURE: "figure", BlockType.LIST: "list_items"}.get(
-            b_type, "text"
+        validate_block_payload(
+            block_type=self.block_type,
+            figure=self.figure,
+            list_items=self.list_items,
+            owner_name="BlockSegment",
+            text=self.text,
         )
-
-        if expected_field == "figure" and self.figure is None:
-            raise ValueError(
-                f"BlockSegment block_type='{b_type}' requires figure metadata."
-            )
-
-        if expected_field == "list_items" and not self.list_items:
-            raise ValueError(
-                f"BlockSegment block_type='{b_type}' requires non-empty list_items."
-            )
-
-        if expected_field == "text" and (
-            self.text is None or not self.text.text.strip()
-        ):
-            raise ValueError(
-                f"BlockSegment block_type='{b_type}' requires non-empty text."
-            )
-
-        forbidden_fields = {"figure", "list_items", "text"} - {expected_field}
-
-        for field in forbidden_fields:
-            if getattr(self, field) is not None:
-                raise ValueError(
-                    f"BlockSegment block_type='{b_type}' requires {field}=null."
-                )
 
         return self
 

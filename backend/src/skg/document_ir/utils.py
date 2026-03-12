@@ -247,14 +247,10 @@ def compatible_kinds_for_stitch(
             return True
 
         next_text = (
-            (next_item.text.text or "").strip()
-            if isinstance(next_item.text, TextUnit)
-            else ""
+            next_item.text.text.strip() if isinstance(next_item.text, TextUnit) else ""
         )
         prev_text = (
-            (prev_item.text.text or "").strip()
-            if isinstance(prev_item.text, TextUnit)
-            else ""
+            prev_item.text.text.strip() if isinstance(prev_item.text, TextUnit) else ""
         )
 
         next_ext_code = extract_table_or_figure_local_code(next_text)
@@ -372,13 +368,9 @@ def cross_check_verification_run(
             f"Got invalid page_index values: {invalid_page_indices}"
         )
 
-    page_indices = [page_ir.page_index for page_ir in verified_page_irs]
+    page_index_counts = Counter(page_ir.page_index for page_ir in verified_page_irs)
     duplicate_page_indices = sorted(
-        {
-            page_index
-            for page_index in page_indices
-            if page_indices.count(page_index) > 1
-        }
+        idx for idx, count in page_index_counts.items() if count > 1
     )
 
     if duplicate_page_indices:
