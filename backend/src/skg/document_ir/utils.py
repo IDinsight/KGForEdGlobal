@@ -35,14 +35,22 @@ from skg.utils.general import make_dir, write_to_json
 ItemKey = tuple[int, int]
 
 # Compiled regexes.
-_FIGURE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionFigurePrefixes)
-_TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
-_FIGURE_CODE_RE = re.compile(
-    rf"(?i)^\s*(?:{_FIGURE_PREFIX_RE})\s*(?:no\.?|n\.?|na\.)?\s*(?P<num>\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?"
+_CAPTION_NUMERIC_IDENTIFIER_RE = r"\d+(?:[./-][A-Za-z0-9]+)*"
+_CAPTION_ROMAN_NUMERAL_RE = r"[IVXLCDM]+"
+_CAPTION_SINGLE_LETTER_RE = r"[A-Z]"
+_CAPTION_IDENTIFIER_RE = (
+    rf"(?:"
+    rf"{_CAPTION_NUMERIC_IDENTIFIER_RE}"
+    rf"|{_CAPTION_ROMAN_NUMERAL_RE}"
+    rf"|{_CAPTION_SINGLE_LETTER_RE}"
+    rf")"
+)
+_FIGURE_PREFIX_PATTERN = "|".join(
+    re.escape(prefix) for prefix in sorted(CaptionFigurePrefixes, key=len, reverse=True)
 )
 _LOCAL_CODE_RE = re.compile(r"\s+")
-_TABLE_CODE_RE = re.compile(
-    rf"(?i)^\s*(?:{_TABLE_PREFIX_RE})\s*(?:no\.?|n\.?|na\.)?\s*(?P<num>\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?"
+_TABLE_PREFIX_PATTERN = "|".join(
+    re.escape(prefix) for prefix in sorted(CaptionTablePrefixes, key=len, reverse=True)
 )
 
 
@@ -51,6 +59,67 @@ class DocumentIRDirs:
     """Dataclass for document IR directories."""
 
     root: Path
+
+
+@dataclass(frozen=True)
+class ParsedCaptionCode:
+    """Parsed representation of a leading table/figure caption label.
+
+    Parameters
+    ----------
+    identifier_normalized
+        A comparison-safe normalization of `identifier_raw`.
+    identifier_raw
+        The identifier exactly as it appeared in the source label.
+    kind
+        The normalized caption kind: "table" or "figure".
+    label_raw
+        The full matched label surface form, preserving the original prefix and
+        identifier.
+    prefix_raw
+        The matched caption prefix exactly as it appeared in the source text.
+    """
+
+    identifier_normalized: str
+    identifier_raw: str
+    kind: str
+    label_raw: str
+    prefix_raw: str
+
+
+def _normalize_caption_identifier(identifier: str) -> str:
+    """Normalize a caption identifier for comparisons.
+
+    Parameters
+    ----------
+    identifier
+        The raw identifier token.
+
+    Returns
+    -------
+    str
+        The normalized identifier.
+    """
+
+    normalized_identifier = re.sub(r"\s+", "", identifier or "").strip()
+    return normalized_identifier.casefold()
+
+
+def _strip_caption_trailing_separator(text: str) -> str:
+    """Strip trailing caption punctuation from a matched label fragment.
+
+    Parameters
+    ----------
+    text
+        The matched label fragment.
+
+    Returns
+    -------
+    str
+        The cleaned label fragment.
+    """
+
+    return re.sub(r"[\s:.\-–—]+$", "", text).strip()
 
 
 def assert_page_items_consumed_exactly_once(
@@ -346,17 +415,13 @@ def cross_check_verification_run(
 
     # Load verification verdicts for debugging and linking purposes.
     verdicts = load_verification_verdicts(verdict_dir=verdict_dir)
+    sorted_page_irs = sorted(verified_page_irs, key=lambda page_ir: page_ir.page_index)
 
-    return verdicts, verified_page_irs
+    return verdicts, sorted_page_irs
 
 
 def extract_table_or_figure_local_code(text: str) -> Optional[str]:
-    """Extract a canonical table/figure local_code (e.g., 'Table 4', 'Figure 2') from a
-    label string.
-
-    Supports multilingual caption prefixes via
-    CaptionTablePrefixes/CaptionFigurePrefixes, and tolerates variants like
-    'Table No. 4:'.
+    """Extract a canonical table/figure local code from a label string.
 
     Parameters
     ----------
@@ -366,21 +431,17 @@ def extract_table_or_figure_local_code(text: str) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        The extracted local_code, or None if not found.
+        A canonicalized local code such as `"Table 2-1"` or `"Figure III"`, or `None`
+        when the text does not begin with a recognizable caption label.
     """
 
-    s = (text or "").strip()
+    parsed_caption_code = parse_caption_code(text=text)
 
-    if not s:
+    if parsed_caption_code is None:
         return None
 
-    if (m := _TABLE_CODE_RE.match(s)) is not None:
-        return f"Table {m.group('num')}"
-
-    if (m := _FIGURE_CODE_RE.match(s)) is not None:
-        return f"Figure {m.group('num')}"
-
-    return None
+    canonical_kind = "Table" if parsed_caption_code.kind == "table" else "Figure"
+    return f"{canonical_kind} {parsed_caption_code.identifier_raw}"
 
 
 def normalize_local_code(local_code: Optional[str]) -> Optional[str]:
@@ -432,6 +493,99 @@ def normalize_text(text: Optional[str]) -> str:
 
     # Collapse whitespace, strip, and lowercase.
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def parse_caption_code(text: str) -> Optional[ParsedCaptionCode]:
+    """Parse a caption label into structured parts.
+
+    NB: This parser is intentionally strict about the identifier token. It accepts
+    common caption-code forms such as `1`, `2.1`, `2-1`, `3/A`, `III`, and `A`, but
+    rejects plain words like `leau`. That prevents OCR/layout splits such as
+    `Tab leau 3` from being misread as a valid `tab + leau` caption label. The parser
+    also supports dotted abbreviations such as `Tab. 3` and `Fig. IV`.
+
+    Parameters
+    ----------
+    text
+        Candidate caption text.
+
+    Returns
+    -------
+    Optional[ParsedCaptionCode]
+        Parsed caption metadata if the text begins with a recognized caption label;
+        otherwise None.
+    """
+
+    normalized_text = (text or "").strip()
+
+    if not normalized_text:
+        return None
+
+    table_match = re.match(
+        rf"""
+        ^
+        \s*
+        (?P<prefix>{_TABLE_PREFIX_PATTERN})
+        (?=
+            \s*
+            (?:(?:no|n|na)\.?\s*)?
+            {_CAPTION_IDENTIFIER_RE}
+        )
+        \s*
+        (?:(?:no|n|na)\.?\s*)?
+        (?P<identifier>{_CAPTION_IDENTIFIER_RE})
+        (?:
+            \s*(?:[:.\-–—])\s*
+        )?
+        """,
+        normalized_text,
+        flags=re.IGNORECASE | re.VERBOSE,
+    )
+
+    if table_match is not None:
+        identifier_raw = table_match.group("identifier")
+        label_raw = _strip_caption_trailing_separator(table_match.group(0))
+        return ParsedCaptionCode(
+            identifier_normalized=_normalize_caption_identifier(identifier_raw),
+            identifier_raw=identifier_raw,
+            kind="table",
+            label_raw=label_raw,
+            prefix_raw=table_match.group("prefix"),
+        )
+
+    figure_match = re.match(
+        rf"""
+        ^
+        \s*
+        (?P<prefix>{_FIGURE_PREFIX_PATTERN})
+        (?=
+            \s*
+            (?:(?:no|n|na)\.?\s*)?
+            {_CAPTION_IDENTIFIER_RE}
+        )
+        \s*
+        (?:(?:no|n|na)\.?\s*)?
+        (?P<identifier>{_CAPTION_IDENTIFIER_RE})
+        (?:
+            \s*(?:[:.\-–—])\s*
+        )?
+        """,
+        normalized_text,
+        flags=re.IGNORECASE | re.VERBOSE,
+    )
+
+    if figure_match is not None:
+        identifier_raw = figure_match.group("identifier")
+        label_raw = _strip_caption_trailing_separator(figure_match.group(0))
+        return ParsedCaptionCode(
+            identifier_normalized=_normalize_caption_identifier(identifier_raw),
+            identifier_raw=identifier_raw,
+            kind="figure",
+            label_raw=label_raw,
+            prefix_raw=figure_match.group("prefix"),
+        )
+
+    return None
 
 
 def persist_stitching_run(
@@ -576,16 +730,16 @@ def save_document_ir(
             )
         )
 
-    # Warn if pages have heterogeneous dimensions (consumers should use pages[i]
-    # rather than top-level image_height/image_width).
+    # Warn if pages have heterogeneous dimensions so downstream consumers use per-page
+    # metadata from DocumentIR.pages[i] rather than assuming the first page's
+    # dimensions apply everywhere.
     unique_dims = {(pm.image_width, pm.image_height) for pm in pages_meta}
 
     if len(unique_dims) > 1:
         warnings.append(
             f"Heterogeneous page dimensions detected ({len(unique_dims)} distinct sizes): "
-            f"{sorted(unique_dims)}. Use pages[i].image_width / pages[i].image_height "
-            f"for per-page bbox interpretation; top-level image_width/image_height are "
-            f"from the first page only."
+            f"{sorted(unique_dims)}. Use DocumentIR.pages[i].image_width / "
+            f"DocumentIR.pages[i].image_height for per-page bbox interpretation."
         )
 
     # Check for page index gaps before constructing DocumentIR (so warnings are
