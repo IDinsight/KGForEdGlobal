@@ -605,7 +605,7 @@ def row_signature(row: TableRow) -> tuple[str, ...]:
 
     row_sig: list[str] = []
 
-    for cell in getattr(row, "cells", None) or []:
+    for cell in row.cells:
         text_or_none = cell.text
         text = (
             normalize_text(text_or_none.text)

@@ -79,6 +79,73 @@ def validate_block_payload(
             )
 
 
+def validate_segment_provenance_pairwise(
+    *,
+    owner_name: str,
+    segment_provenance: list[SegmentProvenance],
+    slices: list[BlockSlice | TableSlice],
+) -> None:
+    """Validate 1:1 pairwise alignment between slices and provenance entries.
+
+    Parameters
+    ----------
+    owner_name
+        Human-readable schema name for error messages.
+    segment_provenance
+        Provenance entries aligned positionally to `slices`.
+    slices
+        Block or table slices aligned positionally to `segment_provenance`.
+
+    Raises
+    ------
+    ValueError
+        If any provenance entry disagrees with its corresponding slice on shared
+        provenance fields.
+    """
+
+    for index, (provenance, slice_) in enumerate(zip(segment_provenance, slices)):
+        if provenance.page_index != slice_.page_index:
+            raise ValueError(
+                f"{owner_name}.segment_provenance[{index}].page_index must equal "
+                f"slices[{index}].page_index."
+            )
+
+        if provenance.item_index != slice_.item_index:
+            raise ValueError(
+                f"{owner_name}.segment_provenance[{index}].item_index must equal "
+                f"slices[{index}].item_index."
+            )
+
+        if provenance.boundary != slice_.boundary:
+            raise ValueError(
+                f"{owner_name}.segment_provenance[{index}].boundary must equal "
+                f"slices[{index}].boundary."
+            )
+
+        if provenance.local_code != slice_.local_code:
+            raise ValueError(
+                f"{owner_name}.segment_provenance[{index}].local_code must equal "
+                f"slices[{index}].local_code."
+            )
+
+        if provenance.bbox.model_dump(mode="python") != slice_.bbox.model_dump(
+            mode="python"
+        ):
+            raise ValueError(
+                f"{owner_name}.segment_provenance[{index}].bbox must equal "
+                f"slices[{index}].bbox."
+            )
+
+        if (
+            isinstance(slice_, TableSlice)
+            and provenance.repeats_header != slice_.repeats_header
+        ):
+            raise ValueError(
+                f"{owner_name}.segment_provenance[{index}].repeats_header must equal "
+                f"slices[{index}].repeats_header."
+            )
+
+
 # Schemas for page slices.
 class BlockSlice(BaseSchema):
     """A single page-slice of a (potentially multi-page) block segment."""
@@ -505,6 +572,12 @@ class BlockSegment(BaseSchema):
                 "BlockSegment.slices must be ordered by (page_index, item_index)."
             )
 
+        validate_segment_provenance_pairwise(
+            owner_name="BlockSegment",
+            segment_provenance=self.segment_provenance,
+            slices=self.slices,
+        )
+
         if any(slice_.block_type != self.block_type for slice_ in self.slices):
             raise ValueError(
                 "All BlockSegment.slices must share the segment's block_type."
@@ -594,6 +667,24 @@ class TableSegment(BaseSchema):
         default_factory=list, description="Per-page slices in order."
     )
 
+    @staticmethod
+    def _build_columns_signature(header_rows_canonical: list[list[str]]) -> str:
+        """Build the normalized columns signature from canonical header rows.
+
+        Parameters
+        ----------
+        header_rows_canonical
+            Canonical header rows where each inner list is already normalized and has
+            one entry per visual column.
+
+        Returns
+        -------
+        str
+            Columns signature using `|` between columns and `|||` between header rows.
+        """
+
+        return "|||".join("|".join(row) for row in header_rows_canonical)
+
     def _validate_grid_sources(self, n_cols: int) -> None:
         """Validate the grid_sources constraints and column sizing.
 
@@ -649,6 +740,42 @@ class TableSegment(BaseSchema):
 
             if val is not None and len(val) != n_rows:
                 raise ValueError(f"TableSegment.{attr} length must equal len(rows).")
+
+    def _validate_header_rows_canonical(self) -> None:
+        """Validate canonical header row shapes against the table width.
+
+        Raises
+        ------
+        ValueError
+            If any canonical header row has the wrong width.
+        """
+
+        for index, canonical_row in enumerate(self.header_rows_canonical):
+            if len(canonical_row) != self.n_cols:
+                raise ValueError(
+                    f"TableSegment.header_rows_canonical[{index}] must contain exactly "
+                    f"n_cols={self.n_cols} entries."
+                )
+
+    def _validate_header_rows_prefix(self) -> None:
+        """Validate that header_rows mirrors the first stitched rows exactly.
+
+        Raises
+        ------
+        ValueError
+            If `header_rows` is not identical to `rows[:header_row_count]`.
+        """
+
+        expected_header_rows = self.rows[: self.header_row_count]
+        actual_header_rows = [row.model_dump(mode="python") for row in self.header_rows]
+        expected_header_rows_dump = [
+            row.model_dump(mode="python") for row in expected_header_rows
+        ]
+
+        if actual_header_rows != expected_header_rows_dump:
+            raise ValueError(
+                "TableSegment.header_rows must equal rows[:header_row_count]."
+            )
 
     def _validate_rows_grid(self, n_cols: int) -> None:
         """Validate the rows_grid column sizing and cell spans.
@@ -713,6 +840,21 @@ class TableSegment(BaseSchema):
                 "TableSegment.header_rows_canonical length must equal len(header_rows)."
             )
 
+        self._validate_header_rows_canonical()
+        self._validate_header_rows_prefix()
+
+        expected_columns_signature = self._build_columns_signature(
+            header_rows_canonical=self.header_rows_canonical
+        )
+
+        if (
+            self.columns_signature is not None
+            and self.columns_signature != expected_columns_signature
+        ):
+            raise ValueError(
+                "TableSegment.columns_signature must be derived from header_rows_canonical."
+            )
+
         return self
 
     @model_validator(mode="after")
@@ -775,6 +917,12 @@ class TableSegment(BaseSchema):
             raise ValueError(
                 "TableSegment.slices must be ordered by (page_index, item_index)."
             )
+
+        validate_segment_provenance_pairwise(
+            owner_name="TableSegment",
+            segment_provenance=self.segment_provenance,
+            slices=self.slices,
+        )
 
         return self
 
