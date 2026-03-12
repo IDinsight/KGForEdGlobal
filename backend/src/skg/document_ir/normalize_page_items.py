@@ -1,42 +1,20 @@
 """This module contains utility functions for normalizing page items for the document IR."""
 
 # Standard Library
-import re
-
 from typing import Optional
 
 # Third Party Library
 from loguru import logger
 
 # Package Library
+from skg.document_ir.utils import extract_table_or_figure_local_code, parse_caption_code
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TextUnit
 from skg.page_ir_verification.utils import is_artifact
-from skg.utils.constants import (
-    BlockType,
-    CaptionFigurePrefixes,
-    CaptionTablePrefixes,
-    ItemBoundary,
-)
-
-# Compiled regexes.
-_FIGURE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionFigurePrefixes)
-_TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
-_FIGURE_CODE_RE = re.compile(
-    rf"(?i)^\s*(?:{_FIGURE_PREFIX_RE})\s*(?:no\.?|n\.?|na\.)?\s*(?P<num>\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?"
-)
-_TABLE_CODE_RE = re.compile(
-    rf"(?i)^\s*(?:{_TABLE_PREFIX_RE})\s*(?:no\.?|n\.?|na\.)?\s*(?P<num>\d+(?:\.\d+)*)\s*(?:[:.\-–—]\s*)?"
-)
-_TRAILING_SEP_RE = re.compile(r"[\s:.\-–—]+$")
+from skg.utils.constants import BlockType, ItemBoundary
 
 
 def _classify_code_kind(code: str) -> Optional[str]:
-    """Classify a local code as 'table', 'figure', or None.
-
-    Uses the multilingual regex patterns (_TABLE_CODE_RE, _FIGURE_CODE_RE) to determine
-    whether a code string refers to a table or figure, regardless of the language
-    prefix. Unlike `_extract_table_or_figure_local_code`, this function does **not**
-    canonicalize the code--it only classifies.
+    """Classify a local code as "table", "figure", or None.
 
     Parameters
     ----------
@@ -46,29 +24,15 @@ def _classify_code_kind(code: str) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        `"table"`, `"figure"`, or `None`.
+        The parsed caption kind when the code is recognizable, else None.
     """
 
-    s = (code or "").strip()
-
-    if not s:
-        return None
-
-    if _TABLE_CODE_RE.match(s) is not None:
-        return "table"
-
-    if _FIGURE_CODE_RE.match(s) is not None:
-        return "figure"
-
-    return None
+    parsed_caption_code = parse_caption_code(text=code)
+    return None if parsed_caption_code is None else parsed_caption_code.kind
 
 
 def _extract_raw_table_or_figure_code(text: str) -> Optional[str]:
-    """Extract a table/figure code from text, preserving the original prefix.
-
-    Like `_extract_table_or_figure_local_code`, but returns the matched portion in its
-    original form instead of canonicalizing (e.g., `"Tableau 4"` stays `"Tableau 4"`
-    and not `"Table 4"`).
+    """Extract a raw table/figure code from text, preserving the original prefix.
 
     Parameters
     ----------
@@ -78,55 +42,12 @@ def _extract_raw_table_or_figure_code(text: str) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        The extracted code in its original form, or `None` if not found.
+        The extracted label in its original surface form, or None when no leading
+        caption code is present.
     """
 
-    s = (text or "").strip()
-
-    if not s:
-        return None
-
-    for regex in (_TABLE_CODE_RE, _FIGURE_CODE_RE):
-        m = regex.match(s)
-
-        if m is not None:
-            # Strip trailing separators (:, ., -, —) that the regex may capture.
-            return _TRAILING_SEP_RE.sub("", m.group(0)).strip()
-
-    return None
-
-
-def _extract_table_or_figure_local_code(text: str) -> Optional[str]:
-    """Extract a canonical table/figure local_code (e.g., 'Table 4', 'Figure 2') from a
-    label string.
-
-    Supports multilingual caption prefixes via
-    CaptionTablePrefixes/CaptionFigurePrefixes, and tolerates variants like
-    'Table No. 4:'.
-
-    Parameters
-    ----------
-    text
-        The text to extract from.
-
-    Returns
-    -------
-    Optional[str]
-        The extracted local_code, or None if not found.
-    """
-
-    s = (text or "").strip()
-
-    if not s:
-        return None
-
-    if (m := _TABLE_CODE_RE.match(s)) is not None:
-        return f"Table {m.group('num')}"
-
-    if (m := _FIGURE_CODE_RE.match(s)) is not None:
-        return f"Figure {m.group('num')}"
-
-    return None
+    parsed_caption_code = parse_caption_code(text=text)
+    return None if parsed_caption_code is None else parsed_caption_code.label_raw
 
 
 def _find_next_non_artifact(
@@ -230,8 +151,8 @@ def _try_assign_immediate(
 
     if code_kind == "table" and isinstance(next_item, Table):
         # Use canonical forms for comparison only (never stored).
-        existing_canon = _extract_table_or_figure_local_code(next_item.local_code)
-        code_canon = _extract_table_or_figure_local_code(code)
+        existing_canon = extract_table_or_figure_local_code(next_item.local_code)
+        code_canon = extract_table_or_figure_local_code(code)
 
         if not existing_canon:
             next_item.local_code = code
@@ -254,8 +175,8 @@ def _try_assign_immediate(
         and isinstance(next_item, Block)
         and next_item.block_type == BlockType.FIGURE
     ):
-        existing_canon = _extract_table_or_figure_local_code(next_item.local_code)
-        code_canon = _extract_table_or_figure_local_code(code)
+        existing_canon = extract_table_or_figure_local_code(next_item.local_code)
+        code_canon = extract_table_or_figure_local_code(code)
 
         if not existing_canon:
             next_item.local_code = code
@@ -326,7 +247,7 @@ def _try_fallback_scan(
         A list to append warning messages to.
     """
 
-    code_canon = _extract_table_or_figure_local_code(code)
+    code_canon = extract_table_or_figure_local_code(code)
     code_kind = _classify_code_kind(code)
 
     if code_kind is None:
@@ -354,7 +275,7 @@ def _try_fallback_scan(
         if not is_compatible_target:
             continue
 
-        existing_canon = _extract_table_or_figure_local_code(k_item.local_code)
+        existing_canon = extract_table_or_figure_local_code(k_item.local_code)
         target_kind = "table" if code_kind == "table" else "figure"
 
         if not existing_canon:
