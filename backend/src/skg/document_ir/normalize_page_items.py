@@ -180,10 +180,10 @@ def _try_assign_immediate(
             assigned = True
             did_write_code = True
         elif existing_canon == code_canon:
-            # Already consistent--treat as success so we DO NOT fallback-scan.
+            # Already consistent -> treat as success so we DO NOT fallback-scan.
             assigned = True
         else:
-            # Conflict--do NOT overwrite; warn; treat as success to avoid
+            # Conflict -> do NOT overwrite; warn; treat as success to avoid
             # mis-propagating elsewhere.
             conflict_msg = (
                 f"Caption/table code conflict on page {page_index}: "
@@ -230,7 +230,7 @@ def _try_assign_immediate(
         warnings.append(conflict_msg)
         return True
 
-    # If already consistent, assigned=True and we return True silently.
+    # If already consistent, then assigned=True and we just return it.
     return assigned
 
 
@@ -254,6 +254,26 @@ def _try_fallback_scan(
 
     NB: Writes the **raw** code form (e.g., `"Tableau 4"`) to the target item's
     `local_code`.
+
+    Example:
+
+    1. Order on page:
+        caption "Figure 2"
+        paragraph explanation
+        figure block
+    2. Immediate assignment fails because item 2 is a paragraph, not a figure.
+    3. Fallback scan (this function) advances and finds item 3, which is a compatible
+        figure, so it assigns local_code="Figure 2" to that figure.
+
+    Example:
+
+    1. Order on page:
+        caption "Table 1"
+        paragraph
+        caption "Table 2"
+        table
+    2. For caption 1, fallback scan stops when it reaches caption 2. It will not jump
+        over caption 2 to attach to the later table. That is deliberate.
 
     Parameters
     ----------
@@ -284,7 +304,6 @@ def _try_fallback_scan(
         if isinstance(k_item, Block):
             if k_item.block_type == BlockType.ARTIFACT:
                 continue
-
             if (
                 k_item.block_type == BlockType.CAPTION
                 and _resolve_label_code(k_item) is not None
@@ -355,14 +374,22 @@ def normalize_page_items(
     items_mapping = []
 
     for index, item in enumerate(page_ir.items):
+        # repeats_header only makes sense for a continuation slice of a table that
+        # resumed from a prior page. The stitched table schema also enforces that
+        # repeats_header is only valid when a table slice boundary is RESUMED or BOTH.
+        # For example if the page item is a table with boundary="complete" and
+        # repeats_header=True, then this is a logical contradiction because a complete
+        # table is not a continuation and therefore cannot be repeating a header from a
+        # prior page. Thus, this if-statement proactively clears extractor noise before
+        # stitching.
         if (
             isinstance(item, Table)
             and item.boundary in {ItemBoundary.COMPLETE, ItemBoundary.TRUNCATED}
             and item.repeats_header is not None
         ):
             msg = (
-                f"Clearing repeats_header for table at index {index} on page {page_ir.page_index} "
-                f"because boundary is {item.boundary}."
+                f"Clearing repeats_header for table at index {index} "
+                f"on page {page_ir.page_index} because boundary is {item.boundary}."
             )
             logger.warning(msg)
             warnings.append(msg)
@@ -379,7 +406,8 @@ def normalize_page_items(
             pair: tuple[int, Block | Table],
         ) -> tuple[float, float, float, float, int]:
             """Sorting key for bounding box scanline order. Top-to-bottom, then
-            left-to-right.
+            left-to-right, with original index as a tiebreaker to ensure deterministic
+            order when bboxes are identical or nearly identical.
 
             Parameters
             ----------
@@ -394,7 +422,6 @@ def normalize_page_items(
 
             orig_index, item = pair
             x0, y0, x1, y1 = item.bbox
-
             return y0, x0, x1, y1, orig_index
 
         items_mapping.sort(key=_sort_key)
@@ -413,6 +440,9 @@ def normalize_page_items(
             logger.warning(msg)
             warnings.append(msg)
 
+    # Propagate caption-derived local codes to the correct same-page item. This is the
+    # last normalization step before the page items are consumed by the linker, which
+    # relies on local codes for accurate cross-page stitching of tables and figures.
     propagate_caption_local_codes(
         items=items_mapping, page_index=page_ir.page_index, warnings=warnings
     )
@@ -426,12 +456,23 @@ def propagate_caption_local_codes(
     """Propagate caption-derived table and figure codes to the correct same-page item.
 
     This function intentionally binds codes from true caption blocks only. Headings and
-    paragraphs are no longer treated as fallback label sources, which reduces false
-    positives from prose like "Table 4 shows ...".
+    paragraphs are not treated as fallback label sources, which reduces false positives
+    from prose like "Table 4 shows ...".
 
     NB: This function **mutates** `local_code` on target items in-place. The propagated
     code preserves the original form from the caption (e.g., `"Tableau 4"` stays
     `"Tableau 4"`; it is NOT canonicalized to `"Table 4"`).
+
+    For each normalized item, the flow is:
+
+    1. Only continue if it is a Block of type CAPTION.
+    2. Try to resolve a table/figure code from it.
+    3. If found, possibly write that code back onto the caption block itself.
+    4. Look at the next non-artifact item.
+    5. Try immediate assignment to that next item.
+    6. Stop early in certain cases to avoid “jumping” a caption over another labeled
+        caption.
+    7. If that fails, maybe scan farther forward for the nearest compatible target.
 
     Parameters
     ----------
@@ -444,29 +485,32 @@ def propagate_caption_local_codes(
     """
 
     for i, (label_orig_index, label_item) in enumerate(items):
+        # 1.
         if (
             not isinstance(label_item, Block)
             or label_item.block_type != BlockType.CAPTION
         ):
             continue
 
+        # 2.
         code = _resolve_label_code(label_item)
 
         if not code:
             continue
 
-        # Normalize label itself.
+        # 3.
         if not (label_item.local_code or "").strip():
             label_item.local_code = code
 
-        # Find immediate next content.
+        # 4.
         next_data = _find_next_non_artifact(items=items, start_index=i + 1)
-        if not next_data:
+
+        if not next_data:  # Nothing follows the caption except artifacts
             continue
 
         next_idx, next_orig_index, next_item = next_data
 
-        # Try immediate assignment (Table or Figure).
+        # 5.
         was_assigned = _try_assign_immediate(
             code=code,
             label_info=(label_orig_index, label_item),
@@ -478,8 +522,10 @@ def propagate_caption_local_codes(
         if was_assigned:
             continue
 
-        # If the immediate next non-artifact item is itself another labeled caption,
-        # don't let the current caption's code "jump over" it.
+        # 6.
+        #
+        # NB: If the immediate next non-artifact item is itself another labeled
+        # caption, don't let the current caption's code "jump over" it.
         if (
             isinstance(next_item, Block)
             and next_item.block_type == BlockType.CAPTION
@@ -487,8 +533,8 @@ def propagate_caption_local_codes(
         ):
             continue
 
-        # Fallback: scan forward for the nearest compatible target when the caption is
-        # not immediately adjacent to its table or figure. Start *past* next_idx
+        # 7. Fallback: scan forward for the nearest compatible target when the caption
+        # is not immediately adjacent to its table or figure. Start *past* next_idx
         # because _try_assign_immediate already rejected it.
         _try_fallback_scan(
             code=code,

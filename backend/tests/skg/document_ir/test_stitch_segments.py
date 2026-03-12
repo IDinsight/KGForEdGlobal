@@ -1,4 +1,4 @@
-"""This is the main module for testing document_ir/utils.py."""
+"""This is the main module for testing document_ir/stitch_segments.py."""
 
 # Standard Library
 from typing import Any, Callable
