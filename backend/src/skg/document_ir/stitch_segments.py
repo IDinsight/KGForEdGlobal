@@ -153,6 +153,100 @@ def _build_continuation_chain(
     return chain
 
 
+def _coerce_block_for_segment_type(
+    *,
+    block: Block,
+    page_index: int,
+    item_index: int,
+    segment_block_type: BlockType,
+    warnings: list[str],
+) -> tuple[
+    BlockType, Optional[TextUnit], Optional[list[ListItem]], Optional[FigureUnit]
+]:
+    """Coerce a block's payload to match the segment's resolved block_type.
+
+    This handles the PARAGRAPH <-> LIST cross-type case that
+    `compatible_kinds_for_stitch` explicitly allows. When the extractor flips between
+    PARAGRAPH and LIST across a page break, the minority-type slice's payload is
+    converted to match the segment type so that `BlockSegment` validators pass.
+
+    Parameters
+    ----------
+    block
+        The source Block item.
+    page_index
+        The page index (for logging).
+    item_index
+        The item index (for logging).
+    segment_block_type
+        The resolved block type for the entire segment (first slice's type).
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    tuple[BlockType, Optional[TextUnit], Optional[list[ListItem]], Optional[FigureUnit]]
+        (coerced_block_type, text, list_items, figure) ready for the slice and segment
+        collectors.
+
+    Raises
+    ------
+    ValueError
+        If the block cannot be coerced to the segment type (e.g., incompatible
+        cross-type pair, or missing payload for coercion).
+    """
+
+    if block.block_type == segment_block_type:
+        # No coercion needed.
+        block_figure = (
+            block.figure.model_copy(deep=True) if block.figure is not None else None
+        )
+        return (
+            block.block_type,
+            block.text,
+            block.list_items if block.list_items else None,
+            block_figure,
+        )
+
+    msg = (
+        f"Cross-type block continuation: coercing {block.block_type.value} slice to "
+        f"{segment_block_type.value} at page={page_index}, item_index={item_index}."
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+
+    # LIST slice → PARAGRAPH segment: join list item texts into a single TextUnit.
+    if segment_block_type == BlockType.PARAGRAPH and block.block_type == BlockType.LIST:
+        if not block.list_items:
+            raise ValueError(
+                f"LIST block at page={page_index}, item_index={item_index} has no "
+                f"list_items; cannot coerce to {segment_block_type.value}."
+            )
+
+        joined = "\n".join(
+            li.text.text for li in block.list_items if li.text and li.text.text
+        )
+        lang = block.list_items[0].text.language
+        coerced_text = TextUnit(language=lang, text=joined, text_en=None)
+        return segment_block_type, coerced_text, None, None
+
+    # PARAGRAPH slice -> LIST segment: wrap text as a single synthetic ListItem.
+    if segment_block_type == BlockType.LIST and block.block_type == BlockType.PARAGRAPH:
+        if block.text and block.text.text and block.text.text.strip():
+            coerced_items = [ListItem(marker=None, text=block.text)]
+        else:
+            coerced_items = None
+
+        return segment_block_type, None, coerced_items, None
+
+    # Unhandled cross-type pair (should not happen given compatible_kinds_for_stitch
+    # constraints, but fail loudly if it does).
+    raise ValueError(
+        f"Unsupported cross-type block coercion: {block.block_type.value} -> "
+        f"{segment_block_type.value} at page={page_index}, item_index={item_index}."
+    )
+
+
 def _compute_segment_id(
     *, doc_key: str, item_index: int, kind: str, page_index: int
 ) -> str:
@@ -202,7 +296,7 @@ def _create_item_addr(*, item_index: int, page_index: int) -> str:
 
 
 def _drop_repeated_header(
-    *, base_header_rows: list[TableRow], header_row_count: int, next_table: Table
+    *, base_header_rows: list[TableRow], match_header_count: int, next_table: Table
 ) -> tuple[list[TableRow], int]:
     """Return next_table.rows with repeated header removed if warranted.
 
@@ -215,9 +309,11 @@ def _drop_repeated_header(
     Parameters
     ----------
     base_header_rows
-        Header rows from the first slice.
-    header_row_count
-        Number of header rows (from the base slice).
+        Header rows from the first slice to match against.
+    match_header_count
+        The negotiated number of header rows to attempt to match and drop. This is
+        typically min(segment_header_row_count, next_slice_header_row_count) as
+        resolved by the caller. It is NOT necessarily the segment's full header count.
     next_table
         The next table slice.
 
@@ -260,19 +356,19 @@ def _drop_repeated_header(
         )
 
     # Determine how many rows to drop.
-    if header_row_count > 0:
+    if match_header_count > 0:
         # Does the full base header match exactly? Applies if repeats_header is True OR
         # Unknown (None). We skip this only if repeats_header is explicitly False.
         if next_table.repeats_header is not False and _base_matches_first_k(
-            header_row_count
+            match_header_count
         ):
-            dropped_count = header_row_count
+            dropped_count = match_header_count
 
         # Fallback check: partial match for explicit repeats. Only runs if
         # repeats_header is True AND the full match above failed.
         elif next_table.repeats_header is True:
             k = int(getattr(next_table, "header_row_count", 0) or 0)
-            k = min(k, header_row_count)
+            k = min(k, match_header_count)
 
             if k > 0 and _base_matches_first_k(k):
                 dropped_count = k
@@ -880,6 +976,7 @@ def _materialize_segment(
         doc_key=doc_key,
         repair_hyphenation=repair_hyphenation,
         section_path=section_path,
+        warnings=warnings,
     )
 
 
@@ -1051,11 +1148,19 @@ def _process_next_table_slice(
     # the table grid (common in many curricula), even if the verifier marked
     # repeats_header=True.
     match_k = segment_header_row_count
+
     if 0 < next_hrc < segment_header_row_count:
-        # If next slice has *fewer* headers declared than the segment, use the smaller
-        # number.
+        # Next slice declares *fewer* headers than the segment. This is the common case
+        # for continuation pages where the extractor undercounts repeated headers. Use
+        # the smaller number without warning--this is expected, not anomalous.
+        #
+        # NB: The result (match_k = next_hrc) is the same as min(segment, next) below,
+        # but this branch suppresses the warning intentionally.
         match_k = next_hrc
     elif next_hrc > 0 and next_hrc != segment_header_row_count:
+        # Next slice declares *more* headers than the segment. This is unusual and
+        # worth flagging--it may indicate a miscount by the extractor. Use min() to be
+        # conservative (same formula as above, but with a warning).
         match_k = min(segment_header_row_count, next_hrc)
         msg = (
             f"header_row_count mismatch: seg={segment_header_row_count} vs next={next_hrc}. "
@@ -1066,7 +1171,7 @@ def _process_next_table_slice(
 
     rows_to_add, dropped_header_rows = _drop_repeated_header(
         base_header_rows=segment_header_rows[:match_k],
-        header_row_count=match_k,
+        match_header_count=match_k,
         next_table=next_item,
     )
 
@@ -1396,6 +1501,7 @@ def _stitch_block_chain(
     doc_key: str,
     repair_hyphenation: bool,
     section_path: list[SectionHeadingRef],
+    warnings: list[str],
 ) -> BlockSegment:
     """Stitch a chain of block slices.
 
@@ -1410,6 +1516,8 @@ def _stitch_block_chain(
     3. Figures (`Block.figure`) remain typed `FigureUnit` payloads. They are not merged
         across slices; the first non-null figure is preserved at the segment level and
         each slice keeps its own figure payload for provenance fidelity.
+    4. Cross-type PARAGRAPH↔LIST chains (allowed by `compatible_kinds_for_stitch`) are
+        resolved by coercing minority-type slices to match the first slice's type.
 
     Parameters
     ----------
@@ -1422,6 +1530,8 @@ def _stitch_block_chain(
         If True, repair hyphenation at line breaks when combining text units.
     section_path
         The section path for the segment.
+    warnings
+        A list to append warning messages to.
 
     Returns
     -------
@@ -1430,6 +1540,7 @@ def _stitch_block_chain(
     """
 
     first_chain_page_index, first_chain_item_index, first_chain_item = chain[0]
+    segment_block_type = first_chain_item.block_type
     segment_id = _compute_segment_id(
         doc_key=doc_key,
         item_index=first_chain_item_index,
@@ -1451,21 +1562,30 @@ def _stitch_block_chain(
             if lc := _strip_local_code(block.local_code):
                 resolved_local_code = lc
 
-        block_figure = (
-            block.figure.model_copy(deep=True) if block.figure is not None else None
+        # Coerce cross-type slices (PARAGRAPH↔LIST) to match the segment's resolved
+        # block_type. This returns payload fields already normalized to the segment
+        # type.
+        coerced_type, coerced_text, coerced_list_items, coerced_figure = (
+            _coerce_block_for_segment_type(
+                block=block,
+                page_index=page_index,
+                item_index=item_index,
+                segment_block_type=segment_block_type,
+                warnings=warnings,
+            )
         )
-        block_list_items = block.list_items if block.list_items else None
+
         slices.append(
             BlockSlice(
                 bbox=block.bbox,
-                block_type=block.block_type,
+                block_type=coerced_type,
                 boundary=block.boundary,
-                figure=block_figure,
+                figure=coerced_figure,
                 item_index=item_index,
-                list_items=block_list_items,
+                list_items=coerced_list_items,
                 local_code=block.local_code,
                 page_index=page_index,
-                text=block.text,
+                text=coerced_text,
             )
         )
         segment_provenance.append(
@@ -1483,12 +1603,12 @@ def _stitch_block_chain(
             )
         )
 
-        if block.text is not None:
-            text_units.append(block.text)
-        if block_list_items:
-            list_items.extend(block_list_items)
-        if figure_payload is None and block_figure is not None:
-            figure_payload = block_figure.model_copy(deep=True)
+        if coerced_text is not None:
+            text_units.append(coerced_text)
+        if coerced_list_items:
+            list_items.extend(coerced_list_items)
+        if figure_payload is None and coerced_figure is not None:
+            figure_payload = coerced_figure
 
     combined_text: str | None = None
     stitched_text: TextUnit | None = first_chain_item.text
@@ -1509,7 +1629,7 @@ def _stitch_block_chain(
             stitched_text = TextUnit(language=lang, text=combined_text, text_en=None)
 
     return BlockSegment(
-        block_type=first_chain_item.block_type,
+        block_type=segment_block_type,
         combined_text=combined_text,
         figure=figure_payload,
         list_items=list_items or None,
@@ -1536,16 +1656,18 @@ def _stitch_table_chain(
     The table stitcher resolves the segment state up front and then appends each later
     slice deterministically:
 
-    1. Compute a stable segment ID from the first slice pointer.
-    2. Resolve the initial segment `local_code` as the first non-empty code anywhere in
-        the chain, before building slices/provenance.
-    3. Resolve the segment header row count from the first slice, with deterministic
-        inference only when the extractor left it at zero.
-    4. Append later slices via `_process_next_table_slice()`, which preserves the
+    1. Resolve initial state: compute a stable segment ID, resolve the initial
+        `local_code` (first non-empty code in the chain), and resolve the header row
+        count (with deterministic inference when the extractor left it at zero).
+    2. Build the first slice and provenance from the chain's first item.
+    3. Append later slices via `_process_next_table_slice()`, which preserves the
         segment `local_code`, records any dropped repeated-header rows, and contributes
         only the rows that should survive into the stitched table.
-    5. Finalize table structure, repair short continuation rows into trailing colspans,
-        then derive grid/provenance/fill-down outputs from the stitched result.
+    4. Finalize table structure: compute n_cols, canonicalize headers, and repair short
+        continuation rows into trailing colspans.
+    5. Build the `TableSegment` from the accumulated state.
+    6. Post-process: derive the span-expanded grid, row provenance, and fill-down
+        outputs from the stitched result.
 
     Parameters
     ----------
@@ -1642,7 +1764,7 @@ def _stitch_table_chain(
         segment_provenance.append(slice_result["provenance"])
         stitched_rows.extend(slice_result["rows_to_add"])
 
-    # Finalize columns.
+    # 4.
     n_cols, columns_signature, header_rows_canonical = _finalize_table_structure(
         chain=chain,
         stitched_rows=stitched_rows,
@@ -1668,7 +1790,7 @@ def _stitch_table_chain(
         stitched_rows_for_segment[:header_row_count] if header_row_count > 0 else []
     )
 
-    # 5. Build objects.
+    # 5.
     table_segment = TableSegment(
         columns_signature=columns_signature,
         header_row_count=header_row_count,
@@ -1684,17 +1806,15 @@ def _stitch_table_chain(
         slices=slices,
     )
 
-    # 6. Post-processing (grid and provenance).
+    # 6.
     rows_grid, grid_sources = _expand_table_rows_to_rows_grid(segment=table_segment)
     row_provenance = _row_provenance_by_stitched_index(segment=table_segment)
-
     rows_filldown = None
+
     if table_filldown_enabled:
-        # Prefer grid if available, else raw rows.
-        target_rows = rows_grid if rows_grid is not None else stitched_rows
         rows_filldown = _fill_down_table_rows(
             header_row_count=header_row_count,
-            rows=target_rows,
+            rows=rows_grid,
             table_filldown_group_cols_max=table_filldown_group_cols_max,
         )
 
@@ -1761,11 +1881,6 @@ def _summarize_chain_items(chain: list[ChainItem]) -> str:
 
         if isinstance(item, Block) and isinstance(item.text, TextUnit):
             snippet = re.sub(r"\s+", " ", (item.text.text or "").strip())[:80]
-        elif isinstance(item, Table):
-            cap = getattr(item, "caption", None)
-
-            if isinstance(cap, TextUnit):
-                snippet = re.sub(r"\s+", " ", (cap.text or "").strip())[:80]
 
         parts.append(
             f"(page={p_i}, item={item_i}, kind={kind}, boundary={boundary_val}, code={local_code!r}, snip={snippet!r})"
