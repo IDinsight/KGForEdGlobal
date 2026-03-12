@@ -128,9 +128,7 @@ def validate_segment_provenance_pairwise(
                 f"slices[{index}].local_code."
             )
 
-        if provenance.bbox.model_dump(mode="python") != slice_.bbox.model_dump(
-            mode="python"
-        ):
+        if provenance.bbox != slice_.bbox:
             raise ValueError(
                 f"{owner_name}.segment_provenance[{index}].bbox must equal "
                 f"slices[{index}].bbox."
