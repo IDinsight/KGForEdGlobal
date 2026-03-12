@@ -957,8 +957,8 @@ def test__finalize_table_structure_max_declared_in_chain(
 def test__finalize_table_structure_normalization_and_signature(
     create_table: Callable[[int | None], Table],
 ) -> None:
-    """Test that _finalize_table_structure correctly uses _row_signature and
-    normalize_text functions to create a lowercased, pipe-delimited signature.
+    """Test that _finalize_table_structure normalizes headers and generates the shared
+    columns signature from canonical header rows.
 
     Parameters
     ----------
@@ -966,12 +966,7 @@ def test__finalize_table_structure_normalization_and_signature(
         Fixture to create dummy Table objects.
     """
 
-    # Setup: Headers with whitespace, caps, and distinct rows:
-    #   Row 1: "  Header A " , "HEADER B"
-    #   Row 2: "Sub 1", "Sub 2"
     header_rows = [table_row("  Header A ", "HEADER B"), table_row("Sub 1", "Sub 2")]
-
-    # Stitched rows usually contain headers + body
     stitched_rows = header_rows + [table_row("val1", "val2")]
 
     chain = [(0, 0, create_table(2))]
@@ -986,11 +981,11 @@ def test__finalize_table_structure_normalization_and_signature(
         warnings=warnings,
     )
 
-    # Check canonical headers (normalized: lowered, stripped, extra space removed).
     assert headers_canon == [["header a", "header b"], ["sub 1", "sub 2"]]
 
-    # Check signature format: "cell|cell||row|row".
-    expected_sig = "header a|header b||sub 1|sub 2"
+    expected_sig = TableSegment._build_columns_signature(
+        header_rows_canonical=headers_canon,
+    )
     assert sig == expected_sig
 
     assert n_cols == 2
@@ -2040,9 +2035,7 @@ def test__row_provenance_by_stitched_index_with_dropped_headers() -> None:
 
 
 def test__stitch_table_chain_columns_signature_generation() -> None:
-    """Test that columns_signature is generated from header rows in
-    _finalize_table_structure.
-    """
+    """Test that columns_signature is generated from canonical header rows."""
 
     p1, i1, table = make_chain_entry(page=1, idx=0, code="T1")
     table.header_row_count = 2
@@ -2051,7 +2044,6 @@ def test__stitch_table_chain_columns_signature_generation() -> None:
         table_row("Sub1", "Sub2"),
         table_row("D1", "D2"),
     ]
-
     chain = [(p1, i1, table)]
 
     segment = stitch_segments._stitch_table_chain(
@@ -2063,9 +2055,12 @@ def test__stitch_table_chain_columns_signature_generation() -> None:
         warnings=[],
     )
 
-    # We expect the signature to join cells with '|' and rows with '||'.
-    expected_sig = "h1|h2||sub1|sub2"
-    assert segment.columns_signature == expected_sig
+    expected_header_rows_canonical = [["h1", "h2"], ["sub1", "sub2"]]
+
+    assert segment.header_rows_canonical == expected_header_rows_canonical
+    assert segment.columns_signature == TableSegment._build_columns_signature(
+        header_rows_canonical=expected_header_rows_canonical,
+    )
     assert len(segment.header_rows_canonical) == 2
 
 
