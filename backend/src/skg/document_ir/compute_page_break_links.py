@@ -363,6 +363,73 @@ def _apply_verification_verdict(
     return {link_key: link_val}
 
 
+def _block_edge_fraction(*, next_item: Block, prev_item: Block) -> float:
+    """Return the edge-fraction threshold used for Block continuation geometry.
+
+    Parameters
+    ----------
+    next_item
+        The next block.
+    prev_item
+        The previous block.
+
+    Returns
+    -------
+    float
+        The edge-fraction threshold used for block continuation checks.
+    """
+
+    boundary_aligned = prev_item.boundary in {
+        ItemBoundary.TRUNCATED,
+        ItemBoundary.BOTH,
+    } and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+
+    return 0.20 if boundary_aligned else 0.17
+
+
+def _build_edge_proximity_debug(
+    *,
+    edge_frac: float,
+    next_bbox: list[float],
+    next_page_h: int,
+    prev_bbox: list[float],
+    prev_page_h: int,
+) -> dict[str, bool | float] | None:
+    """Build a deterministic edge-proximity debug payload.
+
+    Parameters
+    ----------
+    edge_frac
+        The edge-fraction threshold used for continuity checks.
+    next_bbox
+        The next item's bounding box [x0, y0, x1, y1].
+    next_page_h
+        The next page height in pixels.
+    prev_bbox
+        The previous item's bounding box [x0, y0, x1, y1].
+    prev_page_h
+        The previous page height in pixels.
+
+    Returns
+    -------
+    dict[str, bool | float] | None
+        A debug payload describing whether each item is close enough to the page edge,
+        or None when either page height is unavailable.
+    """
+
+    if not prev_page_h or not next_page_h:
+        return None
+
+    prev_near_bottom = prev_bbox[3] >= (prev_page_h * (1.0 - edge_frac))
+    next_near_top = next_bbox[1] <= (next_page_h * edge_frac)
+
+    return {
+        "edge_frac": edge_frac,
+        "next_near_top": next_near_top,
+        "prev_near_bottom": prev_near_bottom,
+    }
+
+
 def _caption_anchor(item: Block) -> str:
     """Get the caption anchor.
 
@@ -771,14 +838,7 @@ def _score_block_match(
 
     # Geometric evidence.
     if _is_vertical_continuation(
-        edge_frac=(
-            0.20
-            if (
-                prev_item.boundary in {ItemBoundary.TRUNCATED, ItemBoundary.BOTH}
-                and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-            )
-            else 0.17
-        ),
+        edge_frac=_block_edge_fraction(next_item=next_item, prev_item=prev_item),
         next_bbox=next_item.bbox,
         next_page_h=next_page_h,
         prev_bbox=prev_item.bbox,
@@ -871,16 +931,7 @@ def _score_table_match(
 
     # Geometric evidence.
     if _is_vertical_continuation(
-        edge_frac=(
-            0.25
-            if prev_item.boundary
-            in {
-                ItemBoundary.TRUNCATED,
-                ItemBoundary.BOTH,
-            }
-            and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-            else 0.20
-        ),
+        edge_frac=_table_edge_fraction(next_item=next_item, prev_item=prev_item),
         next_bbox=next_item.bbox,
         next_page_h=next_page_h,
         prev_bbox=prev_item.bbox,
@@ -914,6 +965,30 @@ def _score_table_match(
         score += 0.5
 
     return score
+
+
+def _table_edge_fraction(*, next_item: Table, prev_item: Table) -> float:
+    """Return the edge-fraction threshold used for Table continuation geometry.
+
+    Parameters
+    ----------
+    next_item
+        The next table.
+    prev_item
+        The previous table.
+
+    Returns
+    -------
+    float
+        The edge-fraction threshold used for table continuation checks.
+    """
+
+    boundary_aligned = prev_item.boundary in {
+        ItemBoundary.TRUNCATED,
+        ItemBoundary.BOTH,
+    } and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+
+    return 0.25 if boundary_aligned else 0.20
 
 
 def bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
@@ -1066,6 +1141,13 @@ def debug_features_for_pair(
         output["same_columns_signature_strong"] = bool(
             prev_sig_strong and next_sig_strong and prev_sig_strong == next_sig_strong
         )
+        output["edge_proximity"] = _build_edge_proximity_debug(
+            edge_frac=_table_edge_fraction(next_item=next_item, prev_item=prev_item),
+            next_bbox=next_item.bbox,
+            next_page_h=next_page_h,
+            prev_bbox=prev_item.bbox,
+            prev_page_h=prev_page_h,
+        )
 
         if not output["same_columns_signature_strong"]:
             prev_sig_weak = _column_signature(mode="weak", table=prev_item)
@@ -1077,22 +1159,13 @@ def debug_features_for_pair(
     # block_type signal (blocks only).
     if isinstance(prev_item, Block) and isinstance(next_item, Block):
         output["same_block_type"] = prev_item.block_type == next_item.block_type
-
-        # Edge proximity: use the same boundary-aware edge_frac as _score_block_match
-        # so debug output reflects the actual scoring threshold.
-        if prev_page_h and next_page_h:
-            boundary_aligned = prev_item.boundary in {
-                ItemBoundary.TRUNCATED,
-                ItemBoundary.BOTH,
-            } and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
-            edge_frac = 0.20 if boundary_aligned else 0.17
-            prev_near_bottom = prev_item.bbox[3] >= (prev_page_h * (1.0 - edge_frac))
-            next_near_top = next_item.bbox[1] <= (next_page_h * edge_frac)
-            output["edge_proximity"] = {
-                "edge_frac": edge_frac,
-                "prev_near_bottom": prev_near_bottom,
-                "next_near_top": next_near_top,
-            }
+        output["edge_proximity"] = _build_edge_proximity_debug(
+            edge_frac=_block_edge_fraction(next_item=next_item, prev_item=prev_item),
+            next_bbox=next_item.bbox,
+            next_page_h=next_page_h,
+            prev_bbox=prev_item.bbox,
+            prev_page_h=prev_page_h,
+        )
 
     return output
 
