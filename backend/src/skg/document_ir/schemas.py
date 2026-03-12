@@ -163,6 +163,7 @@ class BlockSlice(BaseSchema):
     )
     item_index: int = Field(
         ...,
+        ge=0,
         description="The 0-based index of this item in the source PageIR.items list. Used for backtracking provenance.",
     )
     list_items: Optional[list[ListItem]] = Field(
@@ -175,6 +176,7 @@ class BlockSlice(BaseSchema):
     )
     page_index: int = Field(
         ...,
+        ge=0,
         description="The 0-based page index where this slice is located.",
     )
     text: Optional[TextUnit] = Field(
@@ -219,14 +221,17 @@ class TableSlice(BaseSchema):
     dropped_header_rows: int = Field(
         0,
         description="Number of header rows dropped from this slice during stitching (0 for first slice). This is calculated in `_process_next_table_slice` based on `repeats_header` or canonical header matching.",
+        ge=0,
     )
     header_row_count: int = Field(
         ...,
         description="The number of rows on *this specific slice* that function as headers. Note: A continuation slice might visually have 0 headers, or N repeated headers.",
+        ge=0,
     )
     item_index: int = Field(
         ...,
         description="The 0-based index of this item in the source PageIR.items list.",
+        ge=0,
     )
     local_code: Optional[str] = Field(
         None,
@@ -235,6 +240,7 @@ class TableSlice(BaseSchema):
     page_index: int = Field(
         ...,
         description="The 0-based page index where this table slice is located.",
+        ge=0,
     )
     repeats_header: Optional[bool] = Field(
         None,
@@ -331,9 +337,11 @@ class SectionHeadingRef(BaseSchema):
     """Lightweight heading pointer captured at segment start for downstream context."""
 
     item_index: int = Field(
-        ..., description="0-based index of the heading item inside PageIR.items."
+        ..., description="0-based index of the heading item inside PageIR.items.", ge=0
     )
-    page_index: int = Field(..., description="0-based page index of the heading block.")
+    page_index: int = Field(
+        ..., description="0-based page index of the heading block.", ge=0
+    )
     text: str = Field(..., description="Heading text as extracted (no translation).")
 
     @model_validator(mode="after")
@@ -366,13 +374,13 @@ class SegmentProvenance(BaseSchema):
     )
     item_addr: str = Field(..., description="Address of the original PageIR item.")
     item_index: int = Field(
-        ..., description="0-based index of the item inside PageIR.items."
+        ..., description="0-based index of the item inside PageIR.items.", ge=0
     )
     kind: Literal["block", "table"] = Field(..., description="Original item kind.")
     local_code: Optional[str] = Field(
         None, description="Item local code (e.g., 'Table 4', '2.5.1')."
     )
-    page_index: int = Field(..., description="0-based page index in the PDF.")
+    page_index: int = Field(..., description="0-based page index in the PDF.", ge=0)
     repeats_header: Optional[bool] = Field(
         None,
         description="For table slices: whether header rows are repeated on this page slice (null if unknown).",
@@ -388,26 +396,30 @@ class TableRowProvenance(BaseSchema):
     dropped_header_rows: int = Field(
         ...,
         description="How many header rows were dropped from this slice during stitching.",
+        ge=0,
     )
     page_index: int = Field(
-        ..., description="0-based page index for the slice that contributed this row."
+        ...,
+        description="0-based page index for the slice that contributed this row.",
+        ge=0,
     )
     row_bbox: Optional[BBox] = Field(
         default=None,
         description="Approximate bbox for the stitched row in the table (may equal bbox).",
     )
     slice_index: int = Field(
-        ..., description="0-based slice index within the stitched TableSegment."
+        ..., description="0-based slice index within the stitched TableSegment.", ge=0
     )
     slice_row_index: int = Field(
-        ..., description="0-based row index within the original slice rows list."
+        ..., description="0-based row index within the original slice rows list.", ge=0
     )
     slice_row_index_after_drop: int = Field(
         ...,
         description="Row index after dropping repeated headers on continuation slices.",
+        ge=0,
     )
     slice_total_rows: int = Field(
-        ..., description="Total number of raw rows in the originating slice."
+        ..., description="Total number of raw rows in the originating slice.", ge=1
     )
 
     @model_validator(mode="after")
@@ -604,6 +616,7 @@ class TableSegment(BaseSchema):
     header_row_count: int = Field(
         ...,
         description="The number of rows at the top of the stitched table that function as headers. Determined from the first slice or inferred via heuristic if missing.",
+        ge=0,
     )
     header_rows: list[TableRow] = Field(
         default_factory=list, description="Header rows (first header_row_count rows)."
@@ -620,7 +633,9 @@ class TableSegment(BaseSchema):
         None,
         description="The resolved table identifier (e.g., 'Table 1') for this segment. Computed by scanning the slice chain for the first non-null code.",
     )
-    n_cols: int = Field(..., description="Max number of columns across stitched rows.")
+    n_cols: int = Field(
+        ..., ge=1, description="Max number of columns across stitched rows."
+    )
     row_provenance: Optional[list[TableRowProvenance]] = Field(
         default=None,
         description=(
@@ -935,13 +950,13 @@ class DocumentPageMeta(BaseSchema):
     coord_space: str = Field(
         "px", description="Coordinate space for bboxes on this page."
     )
-    dpi: int = Field(..., description="DPI used to render this page.")
-    image_height: int = Field(..., description="Rendered page height in pixels.")
-    image_width: int = Field(..., description="Rendered page width in pixels.")
+    dpi: int = Field(..., ge=1, description="DPI used to render this page.")
+    image_height: int = Field(..., ge=1, description="Rendered page height in pixels.")
+    image_width: int = Field(..., ge=1, description="Rendered page width in pixels.")
     is_blank: bool = Field(
         False, description="True if the page contains no extracted items."
     )
-    page_index: int = Field(..., description="0-based page index in the PDF.")
+    page_index: int = Field(..., description="0-based page index in the PDF.", ge=0)
 
 
 class DocumentIR(BaseSchema):
@@ -956,9 +971,10 @@ class DocumentIR(BaseSchema):
     )
     dpi: int = Field(
         ...,
+        ge=1,
         description="DPI used to render the page image that these pixel bboxes refer to.",
     )
-    page_count: int = Field(..., description="Total number of pages stitched.")
+    page_count: int = Field(..., ge=1, description="Total number of pages stitched.")
     pages: list[DocumentPageMeta] = Field(
         default_factory=list,
         description="Per-page rendering and extraction metadata. Use this for bbox interpretation.",
