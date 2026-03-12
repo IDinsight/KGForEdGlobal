@@ -249,6 +249,9 @@ def _try_fallback_scan(
     matching fails. Scanning stops when another explicit caption label is encountered,
     which prevents a caption from "jumping over" the next labeled object.
 
+    NB: The caller is responsible for the immediate-next-item caption guard and for
+    passing a start_index that skips the already-rejected immediate neighbor.
+
     NB: Writes the **raw** code form (e.g., `"Tableau 4"`) to the target item's
     `local_code`.
 
@@ -263,9 +266,8 @@ def _try_fallback_scan(
     page_index
         The page index for logging context.
     start_index
-        The list index to start scanning from. Pass the immediate next normalized item
-        index (not the item after it) so the scan can stop if that next item is itself
-        another explicit caption.
+        The list index to start scanning from (should be past the immediate neighbor
+        that was already rejected by _try_assign_immediate).
     warnings
         A list to append warning messages to.
     """
@@ -476,13 +478,23 @@ def propagate_caption_local_codes(
         if was_assigned:
             continue
 
+        # If the immediate next non-artifact item is itself another labeled caption,
+        # don't let the current caption's code "jump over" it.
+        if (
+            isinstance(next_item, Block)
+            and next_item.block_type == BlockType.CAPTION
+            and _resolve_label_code(next_item) is not None
+        ):
+            continue
+
         # Fallback: scan forward for the nearest compatible target when the caption is
-        # not immediately adjacent to its table or figure.
+        # not immediately adjacent to its table or figure. Start *past* next_idx
+        # because _try_assign_immediate already rejected it.
         _try_fallback_scan(
             code=code,
             items=items,
             label_orig_index=label_orig_index,
             page_index=page_index,
-            start_index=next_idx,
+            start_index=next_idx + 1,
             warnings=warnings,
         )
