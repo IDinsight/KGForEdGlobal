@@ -14,7 +14,7 @@ from skg.regexes import (
     CAPTION_ROMAN_NUMERAL_RE,
     DASH_RE,
     DIGIT_RE,
-    FIGURE_PREFIX_RE,
+    FIGURE_PREFIX_PATTERN,
     ROMAN_RE,
     STRUCTURAL_CONTEXT_CUE_RE,
     TABLE_CODE_RE,
@@ -342,18 +342,18 @@ class TestFigurePrefixRe:
             Compiled pattern anchored to start/end, case-insensitive.
         """
 
-        return re.compile(rf"^(?:{FIGURE_PREFIX_RE})$", re.IGNORECASE)
+        return re.compile(rf"^(?:{FIGURE_PREFIX_PATTERN})$", re.IGNORECASE)
 
     def test_is_nonempty_string(self) -> None:
         """Verify that `FIGURE_PREFIX_RE` is a non-empty string."""
 
-        assert isinstance(FIGURE_PREFIX_RE, str)
-        assert len(FIGURE_PREFIX_RE) > 0
+        assert isinstance(FIGURE_PREFIX_PATTERN, str)
+        assert len(FIGURE_PREFIX_PATTERN) > 0
 
     def test_longer_prefixes_ordered_first(self) -> None:
         """Verify that the OR alternation lists longer prefixes before shorter ones."""
 
-        parts = FIGURE_PREFIX_RE.split("|")
+        parts = FIGURE_PREFIX_PATTERN.split("|")
         lengths = [len(p) for p in parts]
         assert lengths == sorted(lengths, reverse=True)
 

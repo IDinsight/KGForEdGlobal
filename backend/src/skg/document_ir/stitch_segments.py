@@ -9,7 +9,6 @@ from typing import Any, Optional
 
 # Third Party Library
 from loguru import logger
-from pydantic import BaseModel
 
 # Package Library
 from skg.document_ir.schemas import (
@@ -31,6 +30,7 @@ from skg.document_ir.utils import (
 )
 from skg.page_ir_extraction.schemas import (
     Block,
+    FigureUnit,
     ListItem,
     PageIR,
     Table,
@@ -53,7 +53,14 @@ def _build_continuation_chain(
     start_key: ItemKey,
     warnings: list[str],
 ) -> list[ChainItem]:
-    """Follow links to build a list of items belonging to one logical segment.
+    """Follow page-break links to build one logical continuation chain.
+
+    The walker is intentionally defensive:
+
+    1. Broken destination pages/items terminate the chain with a warning.
+    2. Cycles raise immediately instead of risking an infinite loop.
+    3. Cross-kind hops raise immediately because the upstream linker should have
+        filtered them out already.
 
     Parameters
     ----------
@@ -75,18 +82,34 @@ def _build_continuation_chain(
     list[ChainItem]
         A list of (page_index, item_index, item) tuples representing the chain of
         continuation items.
+
+    Raises
+    ------
+    ValueError
+        If the link graph contains a cycle or an incompatible cross-kind hop.
     """
 
     chain: list[ChainItem] = []
     current_page_index, current_item_index = start_key
     current_item = start_item
+    seen_keys: set[ItemKey] = set()
 
     while True:
+        current_key = (current_page_index, current_item_index)
         chain.append((current_page_index, current_item_index, current_item))
-        next_link = links.get((current_page_index, current_item_index), None)
+        seen_keys.add(current_key)
 
-        if not next_link:
+        next_link = links.get(current_key, None)
+
+        if next_link is None:
             break
+
+        if next_link in seen_keys:
+            raise ValueError(
+                f"Cycle detected while building continuation chain: "
+                f"start={start_key}, current={current_key}, next={next_link}, "
+                f"chain={_summarize_chain_items(chain)}"
+            )
 
         next_page_index, next_item_index = next_link
         next_page_map = items_lookup.get(next_page_index, None)
@@ -94,7 +117,7 @@ def _build_continuation_chain(
         # Broken link (page missing).
         if next_page_map is None:
             msg = (
-                f"Broken link from {(current_page_index, current_item_index)}->{next_link}: "
+                f"Broken link from {current_key}->{next_link}: "
                 f"Page {next_page_index} not found in lookup."
             )
             logger.warning(msg)
@@ -107,22 +130,25 @@ def _build_continuation_chain(
         # Broken link (item missing on page).
         if next_item is None:
             msg = (
-                f"Broken link from {(current_page_index, current_item_index)}->{next_link}: "
+                f"Broken link from {current_key}->{next_link}: "
                 f"Item {next_item_index} not found on page {next_page_index}."
             )
             logger.warning(msg)
             warnings.append(msg)
             break
 
-        # Assert compatible kinds. NB: This is strictly a sanity check at this point
-        # compatible kinds should have been checked in match_candidates (which is
-        # upstream of this function call). However, it's cheap and worth checking again
-        # to ensure nothing broke.
-        assert compatible_kinds_for_stitch(next_item=next_item, prev_item=current_item)
+        if not compatible_kinds_for_stitch(next_item=next_item, prev_item=current_item):
+            raise ValueError(
+                f"Incompatible page-break link while building continuation chain: "
+                f"current={current_key}, next={next_link}, "
+                f"current_type={type(current_item).__name__}, "
+                f"next_type={type(next_item).__name__}"
+            )
 
         # Advance to next item.
-        current_page_index, current_item_index = next_page_index, next_item_index
         current_item = next_item
+        current_item_index = next_item_index
+        current_page_index = next_page_index
 
     return chain
 
@@ -349,9 +375,11 @@ def _expand_table_rows_to_rows_grid(
     n_cols = segment.n_cols
     n_rows = len(segment.rows)
 
-    assert (
-        n_cols > 0
-    ), f"Cannot expand spans: invalid n_cols={segment.n_cols} (segment_id={segment.segment_id})"
+    if n_cols <= 0:
+        raise ValueError(
+            f"Cannot expand spans: invalid n_cols={segment.n_cols} "
+            f"(segment_id={segment.segment_id})"
+        )
 
     # Initialize empty grid: grid[row][col] = {"text": TextUnit | None, "source_row": int}
     grid: list[list[dict[str, Any]]] = [
@@ -438,7 +466,7 @@ def _fill_down_table_rows(
 
             if is_empty:
                 last_non_empty_text_unit = last_non_empty[ci]
-                if isinstance(last_non_empty_text_unit, BaseModel):
+                if isinstance(last_non_empty_text_unit, TextUnit):
                     cell.text = last_non_empty_text_unit.model_copy(deep=True)
             else:
                 last_non_empty[ci] = cell.text
@@ -771,7 +799,12 @@ def _materialize_segment(
     table_filldown_group_cols_max: int,
     warnings: list[str],
 ) -> Segment:
-    """Dispatch the continuation chain to the correct merging logic based on item type.
+    """Materialize one homogeneous continuation chain as a stitched segment.
+
+    The chain is expected to be type-homogeneous because page-break linking already
+    enforces stitch-compatible item kinds. If a mixed block/table chain reaches this
+    function, that indicates an upstream invariant failure and we raise immediately
+    rather than silently dropping already-visited items.
 
     Parameters
     ----------
@@ -799,27 +832,27 @@ def _materialize_segment(
     -------
     Segment
         The merged Segment (BlockSegment or TableSegment).
+
+    Raises
+    ------
+    ValueError
+        If the chain contains a mix of Block and Table items.
     """
 
     first_chain_item = chain[0][2]
 
     if isinstance(first_chain_item, Table):
+        if not all(isinstance(item, Table) for _, _, item in chain):
+            raise ValueError(
+                f"Mixed-kind chain reached _materialize_segment for table start: "
+                f"start={(page_index, item_index)}, chain={_summarize_chain_items(chain)}"
+            )
+
         table_chain = [
-            (page_index, item_index, item)
-            for page_index, item_index, item in chain
+            (chain_page_index, chain_item_index, item)
+            for chain_page_index, chain_item_index, item in chain
             if isinstance(item, Table)
         ]
-
-        if len(table_chain) != len(chain):
-            msg = (
-                f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone. "
-                f"chain={_summarize_chain_items(chain)}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-
-            # Fallback: treat first item standalone.
-            table_chain = [(page_index, item_index, first_chain_item)]
 
         return _stitch_table_chain(
             chain=table_chain,
@@ -830,22 +863,17 @@ def _materialize_segment(
             warnings=warnings,
         )
 
+    if not all(isinstance(item, Block) for _, _, item in chain):
+        raise ValueError(
+            f"Mixed-kind chain reached _materialize_segment for block start: "
+            f"start={(page_index, item_index)}, chain={_summarize_chain_items(chain)}"
+        )
+
     block_chain = [
-        (page_index, item_index, item)
-        for page_index, item_index, item in chain
+        (chain_page_index, chain_item_index, item)
+        for chain_page_index, chain_item_index, item in chain
         if isinstance(item, Block)
     ]
-
-    if len(block_chain) != len(chain):
-        msg = (
-            f"Mixed-kind chain starting at {(page_index, item_index)}; kept as standalone. "
-            f"chain={_summarize_chain_items(chain)}"
-        )
-        logger.warning(msg)
-        warnings.append(msg)
-
-        # Fallback: treat first item standalone.
-        block_chain = [(page_index, item_index, first_chain_item)]
 
     return _stitch_block_chain(
         chain=block_chain,
@@ -1275,17 +1303,13 @@ def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional
 def _row_provenance_by_stitched_index(
     *, segment: TableSegment
 ) -> list[TableRowProvenance]:
-    """Return a list of length len(segment.rows) where each entry contains the
-    provenance info (at least bbox + page_index + slice_index) for the stitched row.
-    This is computed deterministically from `segment.slices` using the same
-    header-dropping logic as stitching.
+    """Derive stitched-row provenance deterministically from `segment.slices`.
 
-    NB:
-
-    1. repeats_header=True -> drop header_row_count rows on that slice
-    2. repeats_header=False -> drop nothing
-    3. repeats_header=None -> *infer* repeated header by matching the slice's first
-        header rows against the segment's header rows (conservative).
+    The mapping replays the already-decided slice-level header dropping recorded on
+    each `TableSlice` via `dropped_header_rows`; it does not re-infer repeated headers
+    from `repeats_header`. Each stitched row receives the parent slice bbox plus an
+    approximate `row_bbox` produced by evenly splitting the slice bbox over the slice's
+    visual rows.
 
     Parameters
     ----------
@@ -1300,22 +1324,25 @@ def _row_provenance_by_stitched_index(
     Raises
     ------
     ValueError
-        If the mapping length mismatches.
+        If the segment has no slices, a slice bbox is invalid, or the mapping length
+        mismatches.
     """
 
-    assert (
-        segment.slices
-    ), f"TableSegment {segment.segment_id} has no slices; cannot derive row provenance."
+    if not segment.slices:
+        raise ValueError(
+            f"TableSegment {segment.segment_id} has no slices; cannot derive row provenance."
+        )
 
     mapping: list[TableRowProvenance] = []
 
     for slice_index, sl in enumerate(segment.slices):
         bbox = sl.bbox
 
-        assert isinstance(bbox, list) and len(bbox) == 4, (
-            f"Missing/invalid bbox for TableSlice (segment_id={segment.segment_id}, "
-            f"slice_index={slice_index}, page_index={sl.page_index}): {bbox}"
-        )
+        if not (isinstance(bbox, list) and len(bbox) == 4):
+            raise ValueError(
+                f"Missing/invalid bbox for TableSlice (segment_id={segment.segment_id}, "
+                f"slice_index={slice_index}, page_index={sl.page_index}): {bbox}"
+            )
 
         # Use the actual number of header rows dropped during stitching. This avoids
         # provenance drift when slice.header_row_count is missing/0 but the stitcher
@@ -1372,21 +1399,17 @@ def _stitch_block_chain(
 ) -> BlockSegment:
     """Stitch a chain of block slices.
 
-    NB: Block continuation chains can carry different payload types. We treat them
-    differently:
+    Block continuation chains can carry different payload types, so the stitcher
+    handles each one deliberately:
 
-    1. Text (`Block.text`/`TextUnit`) is additive across slices: a paragraph can be
-        split across pages (truncated/resumed). We therefore collect all slice
-        TextUnits and join them deterministically into a single segment-level
-        `combined_text`/`text`.
-    2. Lists (`Block.list_items`) are also additive: list items may continue on the
-        next page. We therefore concatenate list items from all slices into one
-        segment-level list.
-    3. Figures (`Block.figure`) are NOT merged across slices. Figure payloads are
-        structured objects and merging arbitrary dicts is not reliable or
-        deterministic. We keep the first non-null figure payload as the segment-level
-        representative (`BlockSegment.figure`) and preserve per-slice figure payloads
-        in `slices[].figure` for full fidelity.
+    1. Text (`Block.text`/`TextUnit`) is additive across slices, so all slice text
+        units are joined deterministically into one segment-level `combined_text` and
+        `text`.
+    2. Lists (`Block.list_items`) are additive across slices, so list items are
+        concatenated into one segment-level list.
+    3. Figures (`Block.figure`) remain typed `FigureUnit` payloads. They are not merged
+        across slices; the first non-null figure is preserved at the segment level and
+        each slice keeps its own figure payload for provenance fidelity.
 
     Parameters
     ----------
@@ -1414,9 +1437,9 @@ def _stitch_block_chain(
         page_index=first_chain_page_index,
     )
 
-    figure_payload: Optional[dict[str, Any]] = None
+    figure_payload: FigureUnit | None = None
     list_items: list[ListItem] = []
-    resolved_local_code: Optional[str] = None
+    resolved_local_code: str | None = None
     segment_provenance: list[SegmentProvenance] = []
     slices: list[BlockSlice] = []
     text_units: list[TextUnit] = []
@@ -1429,7 +1452,7 @@ def _stitch_block_chain(
                 resolved_local_code = lc
 
         block_figure = (
-            block.figure.model_dump(mode="json") if block.figure is not None else None
+            block.figure.model_copy(deep=True) if block.figure is not None else None
         )
         block_list_items = block.list_items if block.list_items else None
         slices.append(
@@ -1464,11 +1487,11 @@ def _stitch_block_chain(
             text_units.append(block.text)
         if block_list_items:
             list_items.extend(block_list_items)
-        if figure_payload is None and block_figure:
-            figure_payload = block_figure
+        if figure_payload is None and block_figure is not None:
+            figure_payload = block_figure.model_copy(deep=True)
 
-    combined_text: Optional[str] = None
-    stitched_text: Optional[TextUnit] = first_chain_item.text
+    combined_text: str | None = None
+    stitched_text: TextUnit | None = first_chain_item.text
 
     if text_units:
         combined_text = _join_text_unit_texts(
@@ -1489,8 +1512,7 @@ def _stitch_block_chain(
         block_type=first_chain_item.block_type,
         combined_text=combined_text,
         figure=figure_payload,
-        list_items=list_items
-        or (first_chain_item.list_items if first_chain_item.list_items else None),
+        list_items=list_items or None,
         local_code=resolved_local_code,
         section_path=section_path,
         segment_id=segment_id,
@@ -1511,20 +1533,25 @@ def _stitch_table_chain(
 ) -> TableSegment:
     """Stitch a chain of table slices.
 
-    For local_code determination, the process is as follows:
+    The table stitcher resolves the segment state up front and then appends each later
+    slice deterministically:
 
-    1. If first.local_code is None but a later slice has one, promote the first
-        non-null code that we encounter.
-    2. Once a code is known, carry it forward to later slices that are missing it.
-    3. After the loop, if local_code was discovered mid-chain, then backfill
-        slices[0].local_code and provenance[0].local_code if missing.
-
+    1. Compute a stable segment ID from the first slice pointer.
+    2. Resolve the initial segment `local_code` as the first non-empty code anywhere in
+        the chain, before building slices/provenance.
+    3. Resolve the segment header row count from the first slice, with deterministic
+        inference only when the extractor left it at zero.
+    4. Append later slices via `_process_next_table_slice()`, which preserves the
+        segment `local_code`, records any dropped repeated-header rows, and contributes
+        only the rows that should survive into the stitched table.
+    5. Finalize table structure, repair short continuation rows into trailing colspans,
+        then derive grid/provenance/fill-down outputs from the stitched result.
 
     Parameters
     ----------
     chain
-        List of (page_index, item_index, Table) tuples representing the
-        slices to stitch.
+        List of (page_index, item_index, Table) tuples representing the slices to
+        stitch.
     doc_key
         Deterministic hash key of the PDF bytes (SHA-256 hex).
     section_path
@@ -1666,9 +1693,9 @@ def _stitch_table_chain(
         # Prefer grid if available, else raw rows.
         target_rows = rows_grid if rows_grid is not None else stitched_rows
         rows_filldown = _fill_down_table_rows(
-            table_filldown_group_cols_max=table_filldown_group_cols_max,
             header_row_count=header_row_count,
             rows=target_rows,
+            table_filldown_group_cols_max=table_filldown_group_cols_max,
         )
 
     return table_segment.model_copy(

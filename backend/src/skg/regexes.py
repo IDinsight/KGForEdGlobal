@@ -52,7 +52,7 @@ DIGIT_RE = re.compile(r"\d")
 # Dynamically builds an OR-separated string of escaped figure prefixes (like "Figure",
 # "Fig.", "Fig"). Sorting by length in reverse ensures longer prefixes ("Figure") are
 # checked before shorter ones ("Fig"), preventing partial matches.
-FIGURE_PREFIX_RE = "|".join(
+FIGURE_PREFIX_PATTERN = "|".join(
     re.escape(prefix) for prefix in sorted(CaptionFigurePrefixes, key=len, reverse=True)
 )
 

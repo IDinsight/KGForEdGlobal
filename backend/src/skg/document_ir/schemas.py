@@ -12,13 +12,18 @@ from typing import Annotated, Any, Literal, Optional, Self, Union
 from pydantic import Field, model_validator
 
 # Package Library
-from skg.page_ir_extraction.schemas import ListItem, TableRow, TextUnit
+from skg.page_ir_extraction.schemas import FigureUnit, ListItem, TableRow, TextUnit
 from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import BlockType, ItemBoundary
 
 
 def validate_block_payload(
-    *, block_type: BlockType, figure: Any, list_items: Any, owner_name: str, text: Any
+    *,
+    block_type: BlockType,
+    figure: FigureUnit | None,
+    list_items: list[ListItem] | None,
+    owner_name: str,
+    text: TextUnit | None,
 ) -> None:
     """Validate mutually exclusive payload fields by block type.
 
@@ -87,9 +92,9 @@ class BlockSlice(BaseSchema):
         ...,
         description="Indicates structural continuity (e.g., if this block flows from the previous page or continues to the next).",
     )
-    figure: Optional[dict[str, Any]] = Field(
+    figure: Optional[FigureUnit] = Field(
         None,
-        description="Raw figure metadata if this slice represents an image/chart.",
+        description="Typed figure metadata if this slice represents an image/chart.",
     )
     item_index: int = Field(
         ...,
@@ -396,9 +401,9 @@ class BlockSegment(BaseSchema):
         description="Concatenated text across page slices when continuation occurs.",
     )
 
-    figure: Optional[dict[str, Any]] = Field(
+    figure: Optional[FigureUnit] = Field(
         None,
-        description="Metadata and content if this segment represents an image, chart, or diagram. Null for text/list blocks.",
+        description="Typed figure metadata and content if this segment represents an image, chart, or diagram. Null for text/list blocks.",
     )
     kind: Literal["block"] = Field(
         "block",
