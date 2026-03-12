@@ -242,7 +242,9 @@ def _try_fallback_scan(
     page_index
         The page index for logging context.
     start_index
-        The list index to start scanning from.
+        The list index to start scanning from. Pass the immediate next normalized item
+        index (not the item after it) so the scan can stop if that next item is itself
+        another explicit caption.
     warnings
         A list to append warning messages to.
     """
@@ -460,6 +462,6 @@ def propagate_caption_local_codes(
             items=items,
             label_orig_index=label_orig_index,
             page_index=page_index,
-            start_index=next_idx + 1,
+            start_index=next_idx,
             warnings=warnings,
         )

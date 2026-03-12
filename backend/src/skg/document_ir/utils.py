@@ -207,13 +207,10 @@ def compatible_kinds_for_stitch(
 ) -> bool:
     """Return True if two items are stitch-compatible.
 
-    NB: This purpose of this function is to act as a gate that determines whether two
-    items are stitchable. For example:
-
-    1. Table <-> Table: stitchable
-    2. Paragraph <-> Paragraph: stitchable
-    3. Caption <-> Caption: stitchable
-    4. Heading: unstitchable
+    NB: This function is a conservative gate for cross-page continuation. It allows
+    exact-type matches for like-with-like stitching (for example, table-to-table or
+    figure-to-figure), plus a narrow paragraph/list fallback because extraction can
+    legitimately flip between those two text block types across a page break.
 
     Parameters
     ----------
@@ -228,64 +225,54 @@ def compatible_kinds_for_stitch(
         True if the two items are stitch-compatible.
     """
 
-    if isinstance(prev_item, Block) and isinstance(next_item, Block):
-        # Allow CAPTION <-> CAPTION *only* when strongly anchored.
-        if (
-            prev_item.block_type == BlockType.CAPTION
-            and next_item.block_type == BlockType.CAPTION
-        ):
-            # local_code match.
-            prev_code = normalize_local_code(prev_item.local_code)
-            next_code = normalize_local_code(next_item.local_code)
-            if prev_code and next_code and prev_code == next_code:
-                return True
+    # If either isn't a Block, they must both be Tables to stitch.
+    if not (isinstance(prev_item, Block) and isinstance(next_item, Block)):
+        return isinstance(next_item, Table) and isinstance(prev_item, Table)
 
-            # Caption text begins with same "Table X"/"Figure Y".
-            prev_text = (
-                (prev_item.text.text or "").strip()
-                if isinstance(prev_item.text, TextUnit)
-                else ""
-            )
-            next_text = (
-                (next_item.text.text or "").strip()
-                if isinstance(next_item.text, TextUnit)
-                else ""
-            )
+    # Cache block types to reduce visual clutter.
+    prev_type = prev_item.block_type
+    next_type = next_item.block_type
 
-            prev_code = extract_table_or_figure_local_code(prev_text)
-            next_code = extract_table_or_figure_local_code(next_text)
+    # Headings should never stitch.
+    if BlockType.HEADING in (prev_type, next_type):
+        return False
 
-            if (
-                prev_code
-                and next_code
-                and normalize_local_code(prev_code) == normalize_local_code(next_code)
-            ):
-                return True
+    # Allow CAPTION <-> CAPTION *only* when strongly anchored.
+    if prev_type == BlockType.CAPTION and next_type == BlockType.CAPTION:
+        next_code = normalize_local_code(next_item.local_code)
+        prev_code = normalize_local_code(prev_item.local_code)
 
-            # Otherwise, too risky.
-            return False
+        # Short-circuit early to avoid text extraction overhead if possible.
+        if next_code and prev_code and next_code == prev_code:
+            return True
 
-        # Headings should still never stitch.
-        if (
-            prev_item.block_type == BlockType.HEADING
-            or next_item.block_type == BlockType.HEADING
-        ):
-            return False
-
-        # For all other blocks:
-        #   - Allow exact block_type matches (e.g., FIGURE<->FIGURE).
-        #   - Allow "text-like" continuation between PARAGRAPH and LIST (extractor can
-        #       flip across pages).
-        textlike = {BlockType.FOOTNOTE, BlockType.LIST, BlockType.PARAGRAPH}
-        is_textlike_continuation = (
-            prev_item.block_type in textlike and next_item.block_type in textlike
+        next_text = (
+            (next_item.text.text or "").strip()
+            if isinstance(next_item.text, TextUnit)
+            else ""
         )
-        return is_textlike_continuation or (
-            prev_item.block_type == next_item.block_type
+        prev_text = (
+            (prev_item.text.text or "").strip()
+            if isinstance(prev_item.text, TextUnit)
+            else ""
         )
 
-    # Table <-> Table allowed at this point but all others are not.
-    return isinstance(prev_item, Table) and isinstance(next_item, Table)
+        next_ext_code = extract_table_or_figure_local_code(next_text)
+        prev_ext_code = extract_table_or_figure_local_code(prev_text)
+
+        # Return the boolean result of the text match directly.
+        return bool(
+            next_ext_code
+            and prev_ext_code
+            and normalize_local_code(next_ext_code)
+            == normalize_local_code(prev_ext_code)
+        )
+
+    # Final catch-all: Exact type match OR Paragraph/List fallback.
+    paragraph_list_types = {BlockType.LIST, BlockType.PARAGRAPH}
+    return (prev_type == next_type) or (
+        prev_type in paragraph_list_types and next_type in paragraph_list_types
+    )
 
 
 def create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
@@ -642,6 +629,7 @@ def save_document_ir(
     *,
     doc_key: str,
     document_ir_fp: Path,
+    items_mapping: dict[int, list[tuple[int, Block | Table]]],
     link_debug: list[dict[str, Any]],
     links: dict[tuple[int, int], tuple[int, int]],
     page_irs: list[PageIR],
@@ -659,6 +647,9 @@ def save_document_ir(
         Deterministic hash key of the PDF bytes (SHA-256 hex).
     document_ir_fp
         The output file path for the DocumentIR JSON.
+    items_mapping
+        Mapping of page_index to normalized retained items after artifact filtering and
+        page-level normalization.
     link_debug
         List of per-link debug info.
     links
@@ -712,7 +703,7 @@ def save_document_ir(
                 dpi=page_ir.dpi,
                 image_height=page_ir.image_height,
                 image_width=page_ir.image_width,
-                is_blank=(len(page_ir.items) == 0),
+                is_blank=(len(items_mapping.get(page_ir.page_index, [])) == 0),
                 page_index=page_ir.page_index,
             )
         )
