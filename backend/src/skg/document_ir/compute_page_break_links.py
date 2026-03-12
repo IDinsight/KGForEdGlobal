@@ -3,8 +3,6 @@ document IR.
 """
 
 # Standard Library
-import hashlib
-
 from typing import Any
 
 # Third Party Library
@@ -172,6 +170,12 @@ def _apply_page_boundary_state_guardrails(
         return prev_candidate_indices, next_candidate_indices, True
 
     # Exception: allow *table* stitching when there is a strong local_code match.
+    #
+    # NB: This exception is intentionally restricted to Tables. Block continuations
+    # (e.g., two caption slices for "Table 4") are not rescued here because a matching
+    # caption local_code is weaker evidence than a matching table local_code--captions
+    # are short, frequently duplicated, and less likely to represent true cross-page
+    # continuations when neither page claims boundary continuity.
     prev_codes = {
         normalize_local_code(prev_page_items[prev_index][1].local_code)
         for prev_index in prev_candidate_indices
@@ -531,6 +535,12 @@ def _find_paired_candidates(
     prev_signal = [i for i in prev_signal_all if i in prev_edge]
     next_signal = [i for i in next_signal_all if i in next_edge]
 
+    # NB: Partner-compatibility below is checked against `next_signal`/`prev_signal`
+    # (edge-window-filtered), not the full `*_signal_all` lists. This means a candidate
+    # can be rejected if its true partner exists on the other page but falls outside the
+    # edge window. This is intentional: the edge window is a safety bound to prevent
+    # stitching items in the middle of a page, and accepting a partner outside it would
+    # defeat that purpose.
     prev_valid, prev_rejected = [], [i for i in prev_signal_all if i not in prev_edge]
 
     for i in prev_signal:
@@ -836,7 +846,9 @@ def _score_table_match(
         score += 5
 
     # Column signature match (only when local_code is missing). This helps in cases
-    # where PDFs omit table numbering but reuse the same header.
+    # where PDFs omit table numbering but reuse the same header. This is the single
+    # header-text-similarity signal--we intentionally avoid double-counting via a
+    # separate hash.
     if not normalize_local_code(prev_item.local_code) and not normalize_local_code(
         next_item.local_code
     ):
@@ -844,20 +856,18 @@ def _score_table_match(
         next_sig_strong = _column_signature(mode="strong", table=next_item)
 
         if prev_sig_strong and next_sig_strong and prev_sig_strong == next_sig_strong:
-            score += 2
+            score += 4
         else:
             # Fallback if header_row_count is wrong/noisy.
             prev_sig_weak = _column_signature(mode="weak", table=prev_item)
             next_sig_weak = _column_signature(mode="weak", table=next_item)
 
             if prev_sig_weak and next_sig_weak and prev_sig_weak == next_sig_weak:
-                score += 1
+                score += 2
 
-    if encode_table(prev_item) == encode_table(next_item):
-        score += 4
-
-    if prev_item.header_row_count == next_item.header_row_count:
-        score += 1
+    # NB: header_row_count equality is intentionally NOT scored here. It is already
+    # captured by _column_signature (which uses header_row_count to select rows), and
+    # a standalone bonus would reward coincidental matches (most tables have hrc=1).
 
     # Geometric evidence.
     if _is_vertical_continuation(
@@ -1005,26 +1015,6 @@ def compute_page_break_links(
     return all_page_pair_links
 
 
-def compute_sha256_hex(*, n_hex: int = 16, s: str) -> str:
-    """Compute the SHA-256 hex digest of a string and return the first `n_hex`
-    characters.
-
-    Parameters
-    ----------
-    n_hex
-        Number of hex characters to return from the digest.
-    s
-        The input string to hash.
-
-    Returns
-    -------
-    str
-        The first `n_hex` characters of the SHA-256 hex digest of `s`.
-    """
-
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n_hex]
-
-
 def debug_features_for_pair(
     *,
     next_item: Block | Table,
@@ -1057,9 +1047,9 @@ def debug_features_for_pair(
         "next_kind": next_item.kind,
         "edge_proximity": None,
         "same_block_type": False,
-        "same_columns_signature": False,
+        "same_columns_signature_strong": False,
+        "same_columns_signature_weak": False,
         "same_local_code": False,
-        "same_schema": False,
     }
 
     # local_code signal (works for both blocks and tables if present).
@@ -1068,61 +1058,43 @@ def debug_features_for_pair(
             prev_item.local_code
         ) == normalize_local_code(next_item.local_code)
 
-    # Schema signal (tables only).
+    # Column signature signals (tables only). Mirrors _score_table_match: strong first,
+    # weak fallback.
     if isinstance(prev_item, Table) and isinstance(next_item, Table):
-        prev_sig = _column_signature(mode="strong", table=prev_item)
-        next_sig = _column_signature(mode="strong", table=next_item)
-        output["same_columns_signature"] = bool(
-            prev_sig and next_sig and prev_sig == next_sig
+        prev_sig_strong = _column_signature(mode="strong", table=prev_item)
+        next_sig_strong = _column_signature(mode="strong", table=next_item)
+        output["same_columns_signature_strong"] = bool(
+            prev_sig_strong and next_sig_strong and prev_sig_strong == next_sig_strong
         )
-        output["same_schema"] = encode_table(prev_item) == encode_table(next_item)
+
+        if not output["same_columns_signature_strong"]:
+            prev_sig_weak = _column_signature(mode="weak", table=prev_item)
+            next_sig_weak = _column_signature(mode="weak", table=next_item)
+            output["same_columns_signature_weak"] = bool(
+                prev_sig_weak and next_sig_weak and prev_sig_weak == next_sig_weak
+            )
 
     # block_type signal (blocks only).
     if isinstance(prev_item, Block) and isinstance(next_item, Block):
         output["same_block_type"] = prev_item.block_type == next_item.block_type
 
-        # Edge proximity (blocks only; helpful for text continuation).
+        # Edge proximity: use the same boundary-aware edge_frac as _score_block_match
+        # so debug output reflects the actual scoring threshold.
         if prev_page_h and next_page_h:
-            edge_frac = 0.17
+            boundary_aligned = prev_item.boundary in {
+                ItemBoundary.TRUNCATED,
+                ItemBoundary.BOTH,
+            } and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
+            edge_frac = 0.20 if boundary_aligned else 0.17
             prev_near_bottom = prev_item.bbox[3] >= (prev_page_h * (1.0 - edge_frac))
             next_near_top = next_item.bbox[1] <= (next_page_h * edge_frac)
             output["edge_proximity"] = {
+                "edge_frac": edge_frac,
                 "prev_near_bottom": prev_near_bottom,
                 "next_near_top": next_near_top,
             }
 
     return output
-
-
-def encode_table(table: Table) -> str:
-    """Create a stable fingerprint for a table's schema using header rows. Used for
-    matching table continuations when local_code is missing.
-
-    Parameters
-    ----------
-    table
-        The curriculum table.
-
-    Returns
-    -------
-    str
-        The table schema fingerprint.
-    """
-
-    hrc = int(table.header_row_count)
-    header_rows = table.rows[:hrc] if hrc > 0 else []
-
-    # Fall back to first row if header_count is 0.
-    if not header_rows and table.rows:
-        header_rows = [table.rows[0]]
-
-    sig_rows = [",".join(row_signature(hr)) for hr in header_rows]
-    n_cols = max(
-        (sum(cell.col_span for cell in row.cells) for row in table.rows), default=0
-    )
-    base = f"hrc={hrc}|ncols={n_cols}|rows={'||'.join(sig_rows)}"
-
-    return compute_sha256_hex(n_hex=24, s=base)
 
 
 def match_candidates(
