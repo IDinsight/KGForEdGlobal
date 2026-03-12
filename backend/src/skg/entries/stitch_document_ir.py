@@ -157,6 +157,7 @@ def stitch_document_ir(
     save_document_ir(
         doc_key=doc_key,
         document_ir_fp=document_ir_fp,
+        items_mapping=items_mapping,
         link_debug=link_debug,
         links=links,
         page_irs=page_irs,
