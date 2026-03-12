@@ -1,8 +1,6 @@
 """This module contains utility functions related to post-processing verified page IRs."""
 
 # Standard Library
-import re
-
 from typing import Any
 
 # Third Party Library
@@ -18,15 +16,10 @@ from skg.page_ir_extraction.schemas import (
     TextUnit,
 )
 from skg.page_ir_verification.utils import PageIRVerificationDirs, is_artifact
+from skg.regexes import TABLE_CODE_RE
 from skg.schemas import VerificationConfig
-from skg.utils.constants import BlockType, CaptionTablePrefixes, PageContinuationKind
+from skg.utils.constants import BlockType, PageContinuationKind
 from skg.utils.general import open_json_type, write_to_json
-
-# Compiled regexes.
-TABLE_PREFIX_RE = "|".join(re.escape(t) for t in CaptionTablePrefixes)
-TABLE_CODE_RE = re.compile(
-    rf"^\s*(?:{TABLE_PREFIX_RE})\s+(?P<num>\d+(?:\.\d+)*)\b", re.IGNORECASE
-)
 
 
 def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int:

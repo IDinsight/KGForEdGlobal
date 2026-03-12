@@ -23,9 +23,10 @@ from skg.canonical_ir.schemas import (
     RowDecision,
     SegmentDecision,
 )
-from skg.canonical_ir.utils import _WS_RE, CanonicalIRDirs, extract_block_segment_text
+from skg.canonical_ir.utils import CanonicalIRDirs, extract_block_segment_text
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
 from skg.page_ir_extraction.schemas import TableRow, TextUnit
+from skg.regexes import WS_RE
 from skg.utils.constants import (
     DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
     BlockType,
@@ -633,7 +634,7 @@ def _normalize_match_text(text: str) -> str:
     text = "".join(c for c in text if unicodedata.category(c) != "Mn")
 
     text = text.casefold()
-    text = _WS_RE.sub(" ", text).strip()
+    text = WS_RE.sub(" ", text).strip()
 
     return text
 

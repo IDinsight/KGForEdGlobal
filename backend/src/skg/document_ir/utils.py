@@ -28,30 +28,17 @@ from skg.page_ir_verification.utils import (
     load_page_irs_from_verification,
     load_verification_verdicts,
 )
+from skg.regexes import (
+    CAPTION_IDENTIFIER_RE,
+    FIGURE_PREFIX_RE,
+    TABLE_PREFIX_PATTERN,
+    WS_RE,
+)
 from skg.schemas import ExtractionConfig, RunCtx, StitchingConfig
-from skg.utils.constants import BlockType, CaptionFigurePrefixes, CaptionTablePrefixes
+from skg.utils.constants import BlockType
 from skg.utils.general import make_dir, write_to_json
 
 ItemKey = tuple[int, int]
-
-# Compiled regexes.
-_CAPTION_NUMERIC_IDENTIFIER_RE = r"\d+(?:[./-][A-Za-z0-9]+)*"
-_CAPTION_ROMAN_NUMERAL_RE = r"[IVXLCDM]+"
-_CAPTION_SINGLE_LETTER_RE = r"[A-Z]"
-_CAPTION_IDENTIFIER_RE = (
-    rf"(?:"
-    rf"{_CAPTION_NUMERIC_IDENTIFIER_RE}"
-    rf"|{_CAPTION_ROMAN_NUMERAL_RE}"
-    rf"|{_CAPTION_SINGLE_LETTER_RE}"
-    rf")"
-)
-_FIGURE_PREFIX_PATTERN = "|".join(
-    re.escape(prefix) for prefix in sorted(CaptionFigurePrefixes, key=len, reverse=True)
-)
-_LOCAL_CODE_RE = re.compile(r"\s+")
-_TABLE_PREFIX_PATTERN = "|".join(
-    re.escape(prefix) for prefix in sorted(CaptionTablePrefixes, key=len, reverse=True)
-)
 
 
 @dataclass(frozen=True)
@@ -466,7 +453,7 @@ def normalize_local_code(local_code: Optional[str]) -> Optional[str]:
         return None
 
     # Collapse internal whitespace then case-fold.
-    normalized_local_code = _LOCAL_CODE_RE.sub(" ", normalized_local_code.strip())
+    normalized_local_code = WS_RE.sub(" ", normalized_local_code.strip())
     return normalized_local_code.casefold()
 
 
@@ -525,15 +512,15 @@ def parse_caption_code(text: str) -> Optional[ParsedCaptionCode]:
         rf"""
         ^
         \s*
-        (?P<prefix>{_TABLE_PREFIX_PATTERN})
+        (?P<prefix>{TABLE_PREFIX_PATTERN})
         (?=
             \s*
             (?:(?:no|n|na)\.?\s*)?
-            {_CAPTION_IDENTIFIER_RE}
+            {CAPTION_IDENTIFIER_RE}
         )
         \s*
         (?:(?:no|n|na)\.?\s*)?
-        (?P<identifier>{_CAPTION_IDENTIFIER_RE})
+        (?P<identifier>{CAPTION_IDENTIFIER_RE})
         (?:
             \s*(?:[:.\-–—])\s*
         )?
@@ -557,15 +544,15 @@ def parse_caption_code(text: str) -> Optional[ParsedCaptionCode]:
         rf"""
         ^
         \s*
-        (?P<prefix>{_FIGURE_PREFIX_PATTERN})
+        (?P<prefix>{FIGURE_PREFIX_RE})
         (?=
             \s*
             (?:(?:no|n|na)\.?\s*)?
-            {_CAPTION_IDENTIFIER_RE}
+            {CAPTION_IDENTIFIER_RE}
         )
         \s*
         (?:(?:no|n|na)\.?\s*)?
-        (?P<identifier>{_CAPTION_IDENTIFIER_RE})
+        (?P<identifier>{CAPTION_IDENTIFIER_RE})
         (?:
             \s*(?:[:.\-–—])\s*
         )?

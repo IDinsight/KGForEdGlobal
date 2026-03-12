@@ -38,14 +38,11 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
+from skg.regexes import ALPHA_RE, DIGIT_RE
 from skg.schemas import StitchingConfig
 from skg.utils.constants import BlockType
 
 ChainItem = tuple[int, int, Block | Table]
-
-# Compiled regexes.
-_ALPHA_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]")
-_DIGIT_RE = re.compile(r"\d")
 
 
 def _build_continuation_chain(
@@ -627,8 +624,8 @@ def _infer_header_row_count_from_rows(
         total = max(1, len(compact))
 
         # Calculate content ratios.
-        alpha = len(_ALPHA_RE.findall(text))
-        digits = len(_DIGIT_RE.findall(text))
+        alpha = len(ALPHA_RE.findall(text))
+        digits = len(DIGIT_RE.findall(text))
 
         alpha_ratio = alpha / total
         digit_ratio = digits / total
