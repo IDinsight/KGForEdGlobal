@@ -72,7 +72,7 @@ STRUCTURAL_CONTEXT_CUE_RE = re.compile(
     r"\b("
     r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
     r"learning\s+area|unit|week|term|chapter|module|p\s*[1-9]|std\s*[ivx]+"
-    r"|palier|jéego|j[ée]ego|semaine|étape|activit[ée]s|niveau|comp[ée]tence"
+    r"|palier|j[ée]ego|semaine|étape|activit[ée]s|niveau|comp[ée]tence"
     r")\b",
     flags=re.IGNORECASE,
 )

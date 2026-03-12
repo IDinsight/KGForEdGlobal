@@ -79,10 +79,11 @@ def stitch_document_ir(
 
     The process is as follows:
 
-    1. Normalize items per page.
-    2. Link cross-page continuations using boundary flags.
+    1. Normalize items per page (filter artifacts, sort by bbox, propagate captions).
+    2. Link cross-page continuations using boundary flags and verification verdicts.
     3. Merge chains of continuations into stitched segments.
-    4. Preserve provenance.
+    4. Assert that every normalized item is consumed exactly once.
+    5. Persist the DocumentIR and stitch report to disk.
 
     Parameters
     ----------
@@ -122,11 +123,9 @@ def stitch_document_ir(
         for page_ir in page_irs
     }
 
-    # Debug collectors for report output.
+    # 2.
     link_debug: list[dict[str, Any]] = []
     page_pair_debug: list[dict[str, Any]] = []
-
-    # 2.
     links = compute_page_break_links(
         items_mapping=items_mapping,
         link_debug=link_debug,
@@ -148,12 +147,12 @@ def stitch_document_ir(
         warnings=warnings,
     )
 
-    # Check that very normalized PageIR item must be consumed exactly once.
+    # 4.
     assert_page_items_consumed_exactly_once(
         items_mapping=items_mapping, segments=segments
     )
 
-    # 4. Write results to file.
+    # 5.
     save_document_ir(
         doc_key=doc_key,
         document_ir_fp=document_ir_fp,
