@@ -81,7 +81,7 @@ class BlockSlice(BaseSchema):
     bbox: BBox
     block_type: BlockType = Field(
         ...,
-        description="The extracted type of the block (e.g., Paragraph, List, Heading).",
+        description="The extracted type of the block (e.g., paragraph, list, heading).",
     )
     boundary: ItemBoundary = Field(
         ...,
@@ -386,7 +386,7 @@ class BlockSegment(BaseSchema):
 
     block_type: BlockType = Field(
         ...,
-        description="The structural category of this segment (e.g., 'Paragraph', 'List', 'Heading'). Derived from the constituent slices.",
+        description="The structural category of this segment (e.g., 'paragraph', 'list', 'heading'). Derived from the constituent slices.",
     )
 
     # We keep both the structured field(s) and a convenience "combined_text". For
