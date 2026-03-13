@@ -614,10 +614,9 @@ def test__find_paired_candidates_marks_valid_boundary_pair() -> None:
         ],
     )
 
-    prev_rejected, prev_valid, next_rejected, next_valid = (
+    prev_rejected, prev_valid, _, next_rejected, next_valid, _ = (
         compute_page_break_links._find_paired_candidates(
-            next_items=next_items,
-            prev_items=prev_items,
+            next_items=next_items, prev_items=prev_items
         )
     )
 
@@ -656,10 +655,9 @@ def test__find_paired_candidates_rejects_when_nonignorable_content_intervenes() 
         ],
     )
 
-    prev_rejected, prev_valid, next_rejected, next_valid = (
+    prev_rejected, prev_valid, _, next_rejected, next_valid, _ = (
         compute_page_break_links._find_paired_candidates(
-            next_items=next_items,
-            prev_items=prev_items,
+            next_items=next_items, prev_items=prev_items
         )
     )
 
@@ -860,7 +858,7 @@ def test__score_table_match_rewards_local_code_structure_and_geometry() -> None:
         prev_page_h=1000,
     )
 
-    assert score == pytest.approx(8.0)
+    assert score == pytest.approx(8.5)
 
 
 def test__score_table_match_uses_column_signature_without_local_codes() -> None:
