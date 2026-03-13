@@ -1903,23 +1903,26 @@ def build_stitched_segments(
     page_irs: list[PageIR],
     warnings: list[str],
 ) -> list[Segment]:
-    """Builds stitched document segments from normalized page items and cross-page links.
+    """Builds stitched document segments from normalized page items and cross-page
+    links.
 
     Iterates through the document in reading order, resolves cross-page continuation
-    chains using the provided links, and materializes them into fully stitched segments.
-    Maintains a semantic-light heading context to preserve the section path.
+    chains using the provided links, and materializes them into fully stitched
+    segments. Maintains a semantic-light heading context to preserve the section path.
 
     Parameters
     ----------
     config
-        The stitching run configuration containing parameters for segment materialization.
+        The stitching run configuration containing parameters for segment
+        materialization.
     doc_key
         The expected document key for all page IRs.
     items_mapping
         A mapping of page indices to a list of tuples containing the original item
         index and the item itself (Block or Table).
     links
-        A mapping of source item keys to destination item keys representing cross-page links.
+        A mapping of source item keys to destination item keys representing cross-page
+        links.
     page_irs
         Validated PageIR list in page order.
     warnings
@@ -1930,11 +1933,13 @@ def build_stitched_segments(
     list[Segment]
         A list of materialized segments representing the fully stitched document IR.
     """
+
     # Set of destination keys to identify items that are continuations.
     continuations = set(links.values())
 
     # Reverse map: destination -> list of sources that point to it (for debugging).
     reverse_links: dict[ItemKey, list[ItemKey]] = defaultdict(list)
+
     for src, dst in links.items():
         reverse_links[dst].append(src)
 
