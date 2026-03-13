@@ -347,6 +347,7 @@ def cross_check_verification_run(
         If the computed document key does not match the expected key.
         If no verified PageIRs are found in the verification output directory.
         If any verified PageIR has an invalid page_index (non-integer or negative).
+        If the verified PageIRs do not have consecutive page_index values.
     """
 
     if computed_doc_key != expected_doc_key:
@@ -402,8 +403,17 @@ def cross_check_verification_run(
         )
 
     # Load verification verdicts for debugging and linking purposes.
-    verdicts = load_verification_verdicts(verdict_dir=verdict_dir)
+    verdicts = load_verification_verdicts(verdict_dir)
     sorted_page_irs = sorted(verified_page_irs, key=lambda page_ir: page_ir.page_index)
+
+    for current_page_ir, next_page_ir in zip(sorted_page_irs, sorted_page_irs[1:]):
+        expected_next_page_index = current_page_ir.page_index + 1
+
+        if next_page_ir.page_index != expected_next_page_index:
+            raise ValueError(
+                f"Page-break stitching requires consecutive page numbers, but "
+                f"received {current_page_ir.page_index}->{next_page_ir.page_index}."
+            )
 
     return verdicts, sorted_page_irs
 

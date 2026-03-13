@@ -3,7 +3,7 @@ document IR.
 """
 
 # Standard Library
-from typing import Any
+from typing import Any, Literal
 
 # Third Party Library
 from loguru import logger
@@ -20,6 +20,9 @@ from skg.page_ir_verification.utils import EdgeVerdictRecord, is_artifact
 from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 
 ItemKey = tuple[int, int]
+RejectionReason = Literal[
+    "blocked_by_intervening_content", "no_compatible_partner", "outside_edge_window"
+]
 
 
 def _append_rejected_warnings(
@@ -28,20 +31,23 @@ def _append_rejected_warnings(
     items: list[tuple[int, Block | Table]],
     page_ir: PageIR,
     rejected_indices: list[int],
+    rejection_reasons: dict[int, RejectionReason],
     warnings: list[str],
 ) -> None:
-    """Append warnings for candidates rejected due to unsafe content ordering.
+    """Append warnings for rejected candidates using precise rejection reasons.
 
     Parameters
     ----------
     is_prev
-        If True, logging for previous-page candidates; else next-page candidates.
+        If True, log previous-page candidates; else next-page candidates.
     items
         The page's normalized items list.
     page_ir
         The PageIR.
     rejected_indices
         A list of indices of rejected candidates.
+    rejection_reasons
+        Mapping from rejected candidate index to the reason it was rejected.
     warnings
         A list to append warning messages to.
     """
@@ -49,18 +55,43 @@ def _append_rejected_warnings(
     if not rejected_indices:
         return
 
-    reason = "followed" if is_prev else "preceded"
+    page_label = "previous" if is_prev else "next"
 
-    for r_index in rejected_indices:
-        orig_index, item = items[r_index]
-        msg = (
-            f"Skipped stitching candidate on {'previous' if is_prev else 'next'} "
-            f"page because it is {reason} by non-artifact content (would reorder content): "
-            f"page={page_ir.page_index} "
-            f"item_index={orig_index} "
-            f"kind={item.kind} "
-            f"boundary={item.boundary.value}"
+    for rejected_index in rejected_indices:
+        orig_index, item = items[rejected_index]
+        rejection_reason = rejection_reasons.get(
+            rejected_index, "blocked_by_intervening_content"
         )
+
+        if rejection_reason == "outside_edge_window":
+            msg = (
+                f"Skipped stitching candidate on {page_label} page because it falls "
+                f"outside the configured edge window: "
+                f"page={page_ir.page_index} "
+                f"item_index={orig_index} "
+                f"kind={item.kind} "
+                f"boundary={item.boundary.value}"
+            )
+        elif rejection_reason == "no_compatible_partner":
+            msg = (
+                f"Skipped stitching candidate on {page_label} page because no "
+                f"stitch-compatible partner was found on the adjacent page: "
+                f"page={page_ir.page_index} "
+                f"item_index={orig_index} "
+                f"kind={item.kind} "
+                f"boundary={item.boundary.value}"
+            )
+        else:
+            relation = "followed" if is_prev else "preceded"
+            msg = (
+                f"Skipped stitching candidate on {page_label} page because it is "
+                f"{relation} by non-artifact content (would reorder content): "
+                f"page={page_ir.page_index} "
+                f"item_index={orig_index} "
+                f"kind={item.kind} "
+                f"boundary={item.boundary.value}"
+            )
+
         logger.warning(msg)
         warnings.append(msg)
 
@@ -364,8 +395,7 @@ def _apply_verification_verdict(
         kind_ok = (
             isinstance(prev_item, Block)
             and isinstance(next_item, Block)
-            and prev_item.block_type != BlockType.FIGURE
-            and next_item.block_type != BlockType.FIGURE
+            and compatible_kinds_for_stitch(next_item=next_item, prev_item=prev_item)
         )
     elif kind == "figure":
         kind_ok = (
@@ -624,45 +654,25 @@ def _find_paired_candidates(
     *,
     next_items: list[tuple[int, Block | Table]],
     prev_items: list[tuple[int, Block | Table]],
-) -> tuple[list[int], list[int], list[int], list[int]]:
-    """Paired candidate discovery across a page boundary.
+) -> tuple[
+    list[int],
+    list[int],
+    dict[int, RejectionReason],
+    list[int],
+    list[int],
+    dict[int, RejectionReason],
+]:
+    """Discover paired candidates across a page boundary with explicit rejection
+    reasons.
 
     Rules are:
 
     1. Previous candidates must have boundary in {TRUNCATED, BOTH}.
     2. Next candidates must have boundary in {RESUMED, BOTH}.
     3. A previous candidate is valid iff (same idea for next candidates with prior
-        items):
-         - It has at least one stitch-compatible partner on the next page, AND
-         - Everything after it on the prev page is ignorable.
-
-    This function basically does the following:
-
-    - For each previous boundary-marked candidate near the bottom edge, it checks:
-        - Does it have any compatible next-side partner in the next edge window?
-        - Is everything after it ignorable?
-    - If so, only then is it valid.
-    - Otherwise, it is rejected.
-    - It also does the symmetric thing for next-side candidates using content before
-        them.
-
-    Example:
-
-    Suppose page 4 ends with:
-        - item A: truncated paragraph
-        - item B: complete heading
-        - and page 5 starts with:
-        - item C: resumed paragraph
-
-    Then:
-        - A is boundary-marked
-        - C is boundary-marked
-        - A and C are compatible
-        - The heading after A (item B) is ignorable
-        - So A and C become valid candidates
-
-    But if item B were a complete paragraph instead of a heading, A would be rejected,
-    because non-ignorable content appears after the alleged continuation source.
+       items):
+        - It has at least one stitch-compatible partner on the next page, AND
+        - Everything after it on the previous page is ignorable.
 
     Parameters
     ----------
@@ -673,12 +683,14 @@ def _find_paired_candidates(
 
     Returns
     -------
-    tuple[list[int], list[int], list[int], list[int]]
+    tuple[list[int], list[int], dict[int, RejectionReason], list[int], list[int], dict[int, RejectionReason]]
         A tuple containing:
-            - A list of indices of rejected previous-page candidates.
-            - A list of indices of valid previous-page candidates.
-            - A list of indices of rejected next-page candidates.
-            - A list of indices of valid next-page candidates.
+            - Rejected previous-page candidate indices.
+            - Valid previous-page candidate indices.
+            - Rejection reasons for previous-page candidates.
+            - Rejected next-page candidate indices.
+            - Valid next-page candidate indices.
+            - Rejection reasons for next-page candidates.
     """
 
     # Only consider boundary-marked candidates near the page edges. This reduces risk
@@ -689,74 +701,87 @@ def _find_paired_candidates(
     )
 
     prev_signal_all = [
-        i
-        for i, (_, item) in enumerate(prev_items)
+        index
+        for index, (_, item) in enumerate(prev_items)
         if item.boundary in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
     ]
     next_signal_all = [
-        i
-        for i, (_, item) in enumerate(next_items)
+        index
+        for index, (_, item) in enumerate(next_items)
         if item.boundary in (ItemBoundary.RESUMED, ItemBoundary.BOTH)
     ]
 
     # Only evaluate edge window candidates; everything else is treated as rejected so
     # that we can still see warnings/debug output.
-    prev_signal = [i for i in prev_signal_all if i in prev_edge]
-    next_signal = [i for i in next_signal_all if i in next_edge]
+    prev_signal = [index for index in prev_signal_all if index in prev_edge]
+    next_signal = [index for index in next_signal_all if index in next_edge]
 
-    # NB: Partner-compatibility below is checked against `next_signal`/`prev_signal`
-    # (edge window filtered), not the full `*_signal_all` lists. This means a candidate
-    # can be rejected if its true partner exists on the other page but falls outside
-    # the edge window. This is intentional: the edge window is a safety bound to
-    # prevent stitching items in the middle of a page, and accepting a partner outside
-    # it would defeat that purpose.
-    prev_valid, prev_rejected = [], [i for i in prev_signal_all if i not in prev_edge]
+    prev_valid: list[int] = []
+    prev_rejection_reasons: dict[int, RejectionReason] = {
+        i: "outside_edge_window" for i in prev_signal_all if i not in prev_edge
+    }
+    prev_rejected: list[int] = list(prev_rejection_reasons.keys())
 
-    for i in prev_signal:
-        prev_item = prev_items[i][1]
+    for index in prev_signal:
+        prev_item = prev_items[index][1]
         has_next_partner = any(
-            compatible_kinds_for_stitch(prev_item=prev_item, next_item=next_items[j][1])
-            for j in next_signal
+            compatible_kinds_for_stitch(
+                next_item=next_items[next_index][1], prev_item=prev_item
+            )
+            for next_index in next_signal
         )
 
         if not has_next_partner:
-            prev_rejected.append(i)
-
+            prev_rejected.append(index)
+            prev_rejection_reasons[index] = "no_compatible_partner"
             continue
 
-        # Anything after it must be ignorable (artifacts or COMPLETE blocks).
         if all(
-            _safe_to_ignore_between_pages_relative(anchor=prev_item, item=later)
-            for _, later in prev_items[i + 1 :]
+            _safe_to_ignore_between_pages_relative(anchor=prev_item, item=later_item)
+            for _, later_item in prev_items[index + 1 :]
         ):
-            prev_valid.append(i)
+            prev_valid.append(index)
         else:
-            prev_rejected.append(i)
+            prev_rejected.append(index)
+            prev_rejection_reasons[index] = "blocked_by_intervening_content"
 
-    next_valid, next_rejected = [], [i for i in next_signal_all if i not in next_edge]
+    next_valid: list[int] = []
+    next_rejection_reasons: dict[int, RejectionReason] = {
+        i: "outside_edge_window" for i in next_signal_all if i not in next_edge
+    }
+    next_rejected: list[int] = list(next_rejection_reasons.keys())
 
-    for i in next_signal:
-        next_item = next_items[i][1]
+    for index in next_signal:
+        next_item = next_items[index][1]
         has_prev_partner = any(
-            compatible_kinds_for_stitch(prev_item=prev_items[j][1], next_item=next_item)
-            for j in prev_signal
+            compatible_kinds_for_stitch(
+                next_item=next_item, prev_item=prev_items[prev_index][1]
+            )
+            for prev_index in prev_signal
         )
 
         if not has_prev_partner:
-            next_rejected.append(i)
-
+            next_rejected.append(index)
+            next_rejection_reasons[index] = "no_compatible_partner"
             continue
 
-        # Anything before it must be ignorable (artifacts or COMPLETE blocks).
         if all(
-            _safe_to_ignore_between_pages_relative(anchor=next_item, item=prior)
-            for _, prior in next_items[:i]
+            _safe_to_ignore_between_pages_relative(anchor=next_item, item=prior_item)
+            for _, prior_item in next_items[:index]
         ):
-            next_valid.append(i)
+            next_valid.append(index)
         else:
-            next_rejected.append(i)
+            next_rejected.append(index)
+            next_rejection_reasons[index] = "blocked_by_intervening_content"
 
-    return prev_rejected, prev_valid, next_rejected, next_valid
+    return (
+        prev_rejected,
+        prev_valid,
+        prev_rejection_reasons,
+        next_rejected,
+        next_valid,
+        next_rejection_reasons,
+    )
 
 
 def _is_embedded_overlay_figure(
@@ -1020,35 +1045,43 @@ def _score_table_match(
 ) -> float:
     """Calculate match score specifically for Table <-> Table pairs.
 
+    This scorer combines table-specific anchors in three tiers:
+
+    1. A shared normalized `local_code` is the strongest textual anchor.
+    2. Header/column signatures remain useful even when only one side has a
+        `local_code`; this fixes the prior blind spot where a one-sided code suppressed
+        header evidence completely.
+    3. Geometry and structural similarity provide backstop evidence.
+
     Example: strongly anchored table continuation
 
     Page 9 ends with a truncated table whose propagated code is "Tableau 4".
     Page 10 starts with a resumed table whose caption normalization yields "Table 4".
 
     Possible score:
-        - same normalized local_code → +5
-        - near edge on both sides → +1
-        - same number of columns → +1
-        - boundary aligned and equal cols → +0.5
-        - similar width → +0.5
+        - same normalized local_code -> +5
+        - matching strong header signature -> +0.5
+        - near edge on both sides -> +1
+        - same number of columns -> +1
+        - boundary aligned and equal cols -> +0.5
+        - similar width -> +0.5
 
-    Total = 8.0, which is extremely strong.
+    Total = 8.5, which is extremely strong.
 
-    Example: no table code, but same header
+    Example: one-sided table code plus same header
 
-    Page 14 ends with a truncated table and no visible numbering.
-    Page 15 starts with a resumed table, also no visible numbering.
-    Both have header rows like Topic | Specific Competence | Expected Standard.
+    Page 14 ends with a truncated table with a propagated code.
+    Page 15 starts with a resumed table whose code is missing, but the headers match.
 
     Possible score:
-        - no local_code
-        - strong column signature match → +4
-        - near edge on both sides → +1
-        - same column count → +1
-        - width similarity → +0.5
+        - one-sided local_code availability
+        - strong column signature match -> +3
+        - near edge on both sides -> +1
+        - same number of columns -> +1
+        - width similarity -> +0.5
 
-    Total = 6.5. That is still a good heuristic stitch even without explicit table
-    numbering.
+    Total = 5.5 before boundary bonus, which is strong enough to recover the
+    previously missed continuation.
 
     Parameters
     ----------
@@ -1069,34 +1102,37 @@ def _score_table_match(
 
     score = 0.0
 
+    prev_local_code = normalize_local_code(prev_item.local_code)
+    next_local_code = normalize_local_code(next_item.local_code)
+
     # Strong textual/schema signals.
-    if (
-        prev_item.local_code
-        and next_item.local_code
-        and normalize_local_code(prev_item.local_code)
-        == normalize_local_code(next_item.local_code)
-    ):
+    if prev_local_code and next_local_code and prev_local_code == next_local_code:
         score += 5
 
-    # Column signature match (only when local_code is missing). This helps in cases
-    # where PDFs omit table numbering but reuse the same header. This is the single
-    # header-text-similarity signal--we intentionally avoid double-counting via a
-    # separate hash.
-    if not normalize_local_code(prev_item.local_code) and not normalize_local_code(
-        next_item.local_code
-    ):
-        prev_sig_strong = _column_signature(mode="strong", table=prev_item)
-        next_sig_strong = _column_signature(mode="strong", table=next_item)
+    # Column-signature evidence remains useful even when only one side has a local
+    # code. That situation commonly arises when caption propagation anchored just one
+    # table slice. Keep the signal, but weight it below a two-sided local_code match.
+    prev_sig_strong = _column_signature(mode="strong", table=prev_item)
+    next_sig_strong = _column_signature(mode="strong", table=next_item)
+    prev_sig_weak = _column_signature(mode="weak", table=prev_item)
+    next_sig_weak = _column_signature(mode="weak", table=next_item)
 
-        if prev_sig_strong and next_sig_strong and prev_sig_strong == next_sig_strong:
-            score += 4
-        else:
-            # Fallback if header_row_count is wrong/noisy.
-            prev_sig_weak = _column_signature(mode="weak", table=prev_item)
-            next_sig_weak = _column_signature(mode="weak", table=next_item)
+    has_strong_signature_match = bool(
+        prev_sig_strong and next_sig_strong and prev_sig_strong == next_sig_strong
+    )
+    has_weak_signature_match = bool(
+        prev_sig_weak and next_sig_weak and prev_sig_weak == next_sig_weak
+    )
 
-            if prev_sig_weak and next_sig_weak and prev_sig_weak == next_sig_weak:
-                score += 2
+    # Count how many local codes are present (results in 0, 1, or 2).
+    local_code_count = bool(prev_local_code) + bool(next_local_code)
+
+    if has_strong_signature_match:
+        # Index 0: no codes (4.0), Index 1: one code (3.0), Index 2: both codes (0.5).
+        score += (4.0, 3.0, 0.5)[local_code_count]
+    elif has_weak_signature_match:
+        # Index 0: no codes (2.0), Index 1: one code (1.5), Index 2: both codes (0.25).
+        score += (2.0, 1.5, 0.25)[local_code_count]
 
     # NB: header_row_count equality is intentionally NOT scored here. It is already
     # captured by _column_signature (which uses header_row_count to select rows), and a
@@ -1230,6 +1266,9 @@ def compute_page_break_links(
         6. Matching is one-to-one and score-based
         7. Output is a sparse link graph used to build stitched multi-page segments.
 
+    This function first validates that `page_irs` is consecutive by `page_index` and
+    that every adjacent page pair has a verifier entry.
+
     Example:
 
     If the verified pages are [0,1,2], this function will process:
@@ -1272,21 +1311,28 @@ def compute_page_break_links(
 
     all_page_pair_links: dict[tuple[int, int], tuple[int, int]] = {}
 
-    # Process one pair of pages at a time.
-    for i in range(len(page_irs) - 1):
-        cur_page_index = page_irs[i].page_index
-        next_page_index = page_irs[i + 1].page_index
+    for current_page_ir, next_page_ir in zip(page_irs, page_irs[1:]):
+        cur_page_index = current_page_ir.page_index
+        next_page_index = next_page_ir.page_index
 
         logger.info(
             f"Computing page break links for pages {cur_page_index} -> {next_page_index}..."
         )
 
+        edge_record = verdicts.get((cur_page_index, next_page_index))
+
+        if edge_record is None:
+            raise ValueError(
+                f"Missing edge verdict for adjacent page pair "
+                f"{cur_page_index}->{next_page_index}."
+            )
+
         page_pair_links = process_page_pair(
-            current_page_ir=page_irs[i],
-            edge_record=verdicts[(cur_page_index, next_page_index)],
+            current_page_ir=current_page_ir,
+            edge_record=edge_record,
             link_debug=link_debug,
             min_link_score=min_link_score,
-            next_page_ir=page_irs[i + 1],
+            next_page_ir=next_page_ir,
             next_page_items=items_mapping[next_page_index],
             page_pair_debug=page_pair_debug,
             prev_page_items=items_mapping[cur_page_index],
@@ -1722,9 +1768,11 @@ def process_page_pair(
     (
         prev_rejected_indices,
         prev_candidate_indices,
+        prev_rejection_reasons,
         next_rejected_indices,
         next_candidate_indices,
-    ) = _find_paired_candidates(prev_items=prev_page_items, next_items=next_page_items)
+        next_rejection_reasons,
+    ) = _find_paired_candidates(next_items=next_page_items, prev_items=prev_page_items)
 
     # 3.
     prev_candidate_indices, next_candidate_indices, allow_stitching = (
@@ -1775,19 +1823,25 @@ def process_page_pair(
             for i in next_candidate_indices
         ],
         "prev_rejected": [
-            summarize_item_for_debug(
-                item=prev_page_items[i][1],
-                orig_item_index=prev_page_items[i][0],
-                page_index=current_page_ir.page_index,
-            )
+            {
+                **summarize_item_for_debug(
+                    item=prev_page_items[i][1],
+                    orig_item_index=prev_page_items[i][0],
+                    page_index=current_page_ir.page_index,
+                ),
+                "rejection_reason": prev_rejection_reasons.get(i),
+            }
             for i in prev_rejected_indices
         ],
         "next_rejected": [
-            summarize_item_for_debug(
-                item=next_page_items[i][1],
-                orig_item_index=next_page_items[i][0],
-                page_index=next_page_ir.page_index,
-            )
+            {
+                **summarize_item_for_debug(
+                    item=next_page_items[i][1],
+                    orig_item_index=next_page_items[i][0],
+                    page_index=next_page_ir.page_index,
+                ),
+                "rejection_reason": next_rejection_reasons.get(i),
+            }
             for i in next_rejected_indices
         ],
         "chosen_links": [],
@@ -1799,6 +1853,7 @@ def process_page_pair(
         items=prev_page_items,
         page_ir=current_page_ir,
         rejected_indices=prev_rejected_indices,
+        rejection_reasons=prev_rejection_reasons,
         warnings=warnings,
     )
     _append_rejected_warnings(
@@ -1806,6 +1861,7 @@ def process_page_pair(
         items=next_page_items,
         page_ir=next_page_ir,
         rejected_indices=next_rejected_indices,
+        rejection_reasons=next_rejection_reasons,
         warnings=warnings,
     )
 
@@ -1845,10 +1901,6 @@ def process_page_pair(
                 f"next_candidates={len(next_candidate_indices)} next_rejected={len(next_rejected_indices)}."
             )
             logger.warning(msg)
-            logger.warning(f"{prev_candidate_indices = }")
-            logger.warning(f"{next_candidate_indices = }")
-            logger.warning(f"{prev_rejected_indices = }")
-            logger.warning(f"{next_rejected_indices = }")
             warnings.append(msg)
 
         page_pair_debug.append(pair_debug)
