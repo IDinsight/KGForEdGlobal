@@ -1588,7 +1588,7 @@ def _stitch_block_chain(
         if block_list_items:
             list_items.extend(block_list_items)
         if figure_payload is None and block_figure is not None:
-            figure_payload = block_figure.model_copy(deep=True)
+            figure_payload = block_figure
 
     combined_text: str | None = None
     stitched_text: TextUnit | None = first_chain_item.text
@@ -1787,14 +1787,13 @@ def _stitch_table_chain(
     # 6. Post-processing (grid and provenance).
     rows_grid, grid_sources = _expand_table_rows_to_rows_grid(segment=table_segment)
     row_provenance = _row_provenance_by_stitched_index(segment=table_segment)
-
     rows_filldown = None
+
     if table_filldown_enabled:
-        # Prefer grid if available, else raw rows.
-        target_rows = rows_grid if rows_grid is not None else stitched_rows
+        # Fill down on the span-expanded rectangular grid.
         rows_filldown = _fill_down_table_rows(
             header_row_count=header_row_count,
-            rows=target_rows,
+            rows=rows_grid,
             table_filldown_group_cols_max=table_filldown_group_cols_max,
         )
 
