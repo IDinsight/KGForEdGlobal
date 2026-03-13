@@ -392,10 +392,8 @@ def _apply_verification_verdict(
     if kind == "table":
         kind_ok = isinstance(prev_item, Table) and isinstance(next_item, Table)
     elif kind == "text":
-        kind_ok = (
-            isinstance(prev_item, Block)
-            and isinstance(next_item, Block)
-            and compatible_kinds_for_stitch(next_item=next_item, prev_item=prev_item)
+        kind_ok = _are_items_compatible_for_emitted_link(
+            next_item=next_item, prev_item=prev_item
         )
     elif kind == "figure":
         kind_ok = (
@@ -452,6 +450,49 @@ def _apply_verification_verdict(
     )
 
     return {link_key: link_val}
+
+
+def _are_items_compatible_for_emitted_link(
+    *, next_item: Block | Table, prev_item: Block | Table
+) -> bool:
+    """Return whether a page-break continuation can be emitted as a final link.
+
+    This is intentionally stricter than broad candidate compatibility. The linker may
+    use semantic-light heuristics to notice that two items *could* be related across a
+    page break, but any emitted link must also be materializable later by
+    `build_stitched_segments()` into one stitched segment.
+
+    Rules:
+
+    1. Tables may link only to tables.
+    2. Blocks may link only to blocks with the exact same `block_type`.
+    3. Cross-kind links are never allowed.
+    4. Broader fallback matches such as `PARAGRAPH <-> LIST` are rejected here, even if
+        `compatible_kinds_for_stitch()` treats them as plausible continuation evidence.
+
+    Parameters
+    ----------
+    next_item
+        The candidate continuation item.
+    prev_item
+        The current item.
+
+    Returns
+    -------
+    bool
+        True if the link is safe to emit into the page-break link graph.
+    """
+
+    if not compatible_kinds_for_stitch(next_item=next_item, prev_item=prev_item):
+        return False
+
+    if isinstance(prev_item, Table) and isinstance(next_item, Table):
+        return True
+
+    if isinstance(prev_item, Block) and isinstance(next_item, Block):
+        return prev_item.block_type == next_item.block_type
+
+    return False
 
 
 def _block_edge_fraction(*, next_item: Block, prev_item: Block) -> float:
@@ -725,7 +766,7 @@ def _find_paired_candidates(
     for index in prev_signal:
         prev_item = prev_items[index][1]
         has_next_partner = any(
-            compatible_kinds_for_stitch(
+            _are_items_compatible_for_emitted_link(
                 next_item=next_items[next_index][1], prev_item=prev_item
             )
             for next_index in next_signal
@@ -754,7 +795,7 @@ def _find_paired_candidates(
     for index in next_signal:
         next_item = next_items[index][1]
         has_prev_partner = any(
-            compatible_kinds_for_stitch(
+            _are_items_compatible_for_emitted_link(
                 next_item=next_item, prev_item=prev_items[prev_index][1]
             )
             for prev_index in prev_signal
@@ -866,10 +907,7 @@ def _safe_to_ignore_between_pages(item: Block | Table) -> bool:
     Rules are:
 
     1. Artifacts are always ignorable.
-    2. Complete headings, captions, and footnotes are ignorable because they are less
-        likely to represent critical content that would be reordered by stitching, and
-        they frequently appear near page edges and can be visually associated with
-        content on either page.
+    2. Blocks are ignorable if they are COMPLETE (not themselves continuing).
     3. Tables are NOT ignorable.
 
     NB: If a truncated paragraph is followed by a complete paragraph before page end,
@@ -1306,7 +1344,8 @@ def compute_page_break_links(
     Returns
     -------
     dict[tuple[int, int], tuple[int, int]]
-        Forward links for items that continue across a page break.
+        Forward links for items that continue across a page break and are safe for
+        stitched-segment materialization.
     """
 
     all_page_pair_links: dict[tuple[int, int], tuple[int, int]] = {}
@@ -1526,7 +1565,7 @@ def match_candidates(
 
             next_item = next_page_items[next_index][1]
 
-            if not compatible_kinds_for_stitch(
+            if not _are_items_compatible_for_emitted_link(
                 next_item=next_item, prev_item=prev_item
             ):
                 continue
