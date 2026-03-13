@@ -217,6 +217,11 @@ def _compute_segment_id(
     stable across reruns and (ideally) globally unique across PDFs, so we include the
     PDF doc_key plus the first source item pointer.
 
+    Example:
+
+    If a table starts at (page=4, item=6), the segment ID will be based on that exact
+    origin, even if the table continues for 3 more pages.
+
     Parameters
     ----------
     doc_key
@@ -341,11 +346,47 @@ def _drop_repeated_header(
 ) -> tuple[list[TableRow], int]:
     """Return next_table.rows with repeated header removed if warranted.
 
+    This function compares the top k rows of the continuation slice against the base
+    header rows using row_signature(). It is intentionally conservative:
+        - If full header match is found, drop those rows
+        - If full match fails but repeats_header=True, it may try a smaller partial
+            match
+        - If the header rows do not actually match, it does not drop them just because
+            a hint said repeats_header=True
+
+    This is a good guard against losing real rows like checkpoint rows or section rows
+    at the top of continuation pages.
+
     NB: Never drop "header" rows solely because the verifier says `repeats_header=True`
     if the continuation slice does not itself contain header rows (or if the would-be
     header rows do not match the base header). This avoids losing real content when a
     page begins with a checkpoint/section row inside the table grid (common in many
     curricula).
+
+    Example 1: repeated header really matches
+
+    Base header row from first slice:
+
+    | Topic | Specific Competence | Expected Standard |
+
+    Next page begins with the exact same row.
+
+    Then:
+        - dropped_header_rows = 1
+        - rows_to_add = next_item.rows[1:]
+
+    So the repeated header is removed from the stitched table.
+
+    Example 2: extractor says repeated header, but it actually is a checkpoint row
+
+    Suppose next page starts with:
+
+    | Palier 2 Assessment | | |
+
+    and repeats_header=True.
+
+    Because that row does not match the base header, nothing is dropped. The code warns
+    and keeps all rows to avoid content loss.
 
     Parameters
     ----------
@@ -485,15 +526,45 @@ def _expand_header_row_to_n_cols(
 
 
 def _expand_table_rows_to_rows_grid(
-    *, segment: TableSegment
+    segment: TableSegment,
 ) -> tuple[list[TableRow], list[list[dict[str, Any]]]]:
     """Expand a stitched table's ragged rows with row_span/col_span into a rectangular
     grid of shape (n_rows x n_cols). Output rows have exactly n_cols cells each, and
     every output TableCell has row_span=1, col_span=1.
 
+    This function converts ragged rows with row_span/col_span into a rectangular grid
+    where:
+        - Every row has exactly n_cols cells
+        - Every output cell has row_span=1 and col_span=1
+        - Empty grid cells get TextUnit(language="und", text="")
+        - A parallel grid_sources matrix records which stitched source row each grid
+            cell came from
+
     NB: For downstream stability, visually empty grid cells are normalized to an
     explicit empty TextUnit (language='und', text='') rather than null. This ensures
     every TableCell in `rows_grid` has a `text` payload in JSON (even if blank).
+
+    Example: rowspan expansion
+
+    Suppose stitched rows contain:
+
+    Row 0:
+        - "Topic" col_span=1
+        - "Competence" col_span=2
+
+    Row 1:
+        - "Numbers" row_span=2
+        - "Count objects" col_span=1
+        - "Expected Standard" col_span=1
+
+    Row 2:
+        - blank padding cell
+        - "Recognize numerals"
+        - "Reads numerals correctly"
+
+    rows_grid becomes a clean rectangular 3-column table with the rowspan expanded
+    across both affected rows, and grid_sources shows which original stitched row
+    populated each cell.
 
     Parameters
     ----------
@@ -505,6 +576,12 @@ def _expand_table_rows_to_rows_grid(
     tuple[list[TableRow], list[list[dict[str, Any]]]]
         A tuple where the first element is the list of expanded TableRows, and the
         second element is the grid_sources mapping (per-cell source row index).
+
+    Raises
+    ------
+    ValueError
+        If the segment has invalid n_cols or if overlapping spans are detected during
+        grid population.
     """
 
     n_cols = segment.n_cols
@@ -516,7 +593,7 @@ def _expand_table_rows_to_rows_grid(
             f"(segment_id={segment.segment_id})"
         )
 
-    # Initialize empty grid: grid[row][col] = {"text": TextUnit | None, "source_row": int}
+    # Initialize empty grid: grid[row][col] = {"text": TextUnit | None, "source_row": int}.
     grid: list[list[dict[str, Any]]] = [
         [{"text": None, "source_row": -1} for _ in range(n_cols)] for _ in range(n_rows)
     ]
@@ -526,7 +603,7 @@ def _expand_table_rows_to_rows_grid(
 
     # Convert grid to TableRow list and aligned grid_sources.
     grid_sources: list[list[dict[str, Any]]] = []
-    out_rows: list[TableRow] = []
+    rows_grid: list[TableRow] = []
 
     for r in range(n_rows):
         out_cells: list[TableCell] = []
@@ -538,10 +615,10 @@ def _expand_table_rows_to_rows_grid(
             out_cells.append(TableCell(col_span=1, row_span=1, text=cell_text))
             src_row.append({"source_row": grid[r][c]["source_row"]})
 
-        out_rows.append(TableRow(cells=out_cells))
+        rows_grid.append(TableRow(cells=out_cells))
         grid_sources.append(src_row)
 
-    return out_rows, grid_sources
+    return rows_grid, grid_sources
 
 
 def _fill_down_table_rows(
@@ -551,12 +628,37 @@ def _fill_down_table_rows(
     This reconstructs the implicit semantics of merged cells/rowspans often used in
     curriculum tables (e.g., Topic/Sub-topic cells left blank on subsequent rows).
 
+    This function only fills empty cells in the first table_filldown_group_cols_max
+    columns, never header rows, and never overwrites non-empty cells. It is meant to
+    reconstruct implicit grouping semantics common in curriculum tables.
+
     The process is as follows:
 
     1. Header rows are NOT filled down.
     2. Only fills if the target cell is empty (None or whitespace).
     3. Never overwrites non-empty cells.
     4. Returns a deep-copied row list (does not mutate input).
+
+    Example:
+
+    Suppose rows_grid is:
+
+    Topic   Sub-topic	Competence
+    Numbers	Counting	Count objects
+    ""	    Numerals	Read numerals
+    Shapes	Circles	    Identify circles
+    ""	    Squares	    Identify squares
+
+    If filldown is enabled for the first 2 columns, rows_filldown becomes:
+
+    Topic	Sub-topic	Competence
+    Numbers	Counting	Count objects
+    Numbers	Numerals	Read numerals
+    Shapes	Circles	    Identify circles
+    Shapes	Squares	    Identify squares
+
+    The original stitched rows remain unchanged; rows_filldown is just a convenience
+    normalization.
 
     Parameters
     ----------
@@ -662,6 +764,25 @@ def _finalize_table_structure(
     warnings: list[str],
 ) -> tuple[int, Optional[str], list[list[str]]]:
     """Compute final n_cols and header signatures.
+
+    Example:
+
+    If slices declare n_cols=3, but one stitched row actually sums to 4 because of a
+    wide continuation row, final n_cols = 4 and a warning is emitted.
+
+    Example:
+
+    Header row:
+
+    | Specific Competence | Expected Standard |
+
+    with col_spans [1,2] and n_cols=3
+
+    might canonicalize to something like:
+
+    ["specific competence", "expected standard", ""]
+
+    then columns signature becomes a normalized joined string
 
     Parameters
     ----------
@@ -1027,6 +1148,10 @@ def _populate_grid_spans(
 ) -> None:
     """Handle cell parsing, cursor placement, and span explosion.
 
+    This function walks the stitched rows, places cells into the first available slots,
+    respects row/col spans, and prevents overlap. It treats truly blank padding cells
+    specially so they do not incorrectly right-shift later cells.
+
     Parameters
     ----------
     grid
@@ -1165,30 +1290,31 @@ def _process_next_table_slice(
     # 1.
     next_local_code = _strip_local_code(next_item.local_code)
 
-    if next_local_code and current_local_code:
-        if normalize_local_code(next_local_code) != normalize_local_code(
-            current_local_code
-        ):
-            msg = (
-                f"Conflicting local_code in table chain {segment_id}: "
-                f"{current_local_code!r} vs. {next_local_code!r} "
-                f"(page={next_page_index}, item_index={next_item_index}). "
-                f"Keeping {current_local_code!r}."
-            )
-            logger.warning(msg)
-            warnings.append(msg)
+    if (
+        next_local_code
+        and current_local_code
+        and normalize_local_code(next_local_code)
+        != normalize_local_code(current_local_code)
+    ):
+        msg = (
+            f"Conflicting local_code in table chain {segment_id}: "
+            f"{current_local_code!r} vs. {next_local_code!r} "
+            f"(page={next_page_index}, item_index={next_item_index}). "
+            f"Keeping {current_local_code!r}."
+        )
+        logger.warning(msg)
+        warnings.append(msg)
 
     # Carry forward the segment code; only adopt the next code if missing.
     slice_local_code = current_local_code or next_local_code
 
     # 2.
-    next_hrc = int(next_item.header_row_count or 0)
-
-    # Determine how many header rows we should attempt to match/drop. We ALWAYS require
-    # a match against the base header before dropping anything. This prevents losing
-    # real content when a continuation page begins with a checkpoint/section row inside
-    # the table grid (common in many curricula), even if the verifier marked
+    # NB: Determine how many header rows we should attempt to match/drop. We ALWAYS
+    # require a match against the base header before dropping anything. This prevents
+    # losing real content when a continuation page begins with a checkpoint/section row
+    # inside the table grid (common in many curricula), even if the verifier marked
     # repeats_header=True.
+    next_hrc = int(next_item.header_row_count or 0)
     match_k = segment_header_row_count
 
     if 0 < next_hrc < segment_header_row_count:
@@ -1307,6 +1433,29 @@ def _repair_short_rows_missing_trailing_cols_as_colspan(
     row's col_span total is < n_cols, treat the missing columns as a colspan on the
     last cell.
 
+    This function only repairs a narrow case:
+        - Not a header row
+        - Row has 1 or 2 cells
+        - All row spans are 1
+        - Last cell has non-blank text
+        - Total col_span is still less than n_cols
+
+    Then it expands the last cell to fill the missing trailing columns.
+
+    Example:
+
+    Suppose n_cols = 4, and we have a body row:
+
+    | Palier 1 |
+
+    extracted as one cell with col_span = 1.
+
+    The repair turns it into:
+
+    | Palier 1 | (spans remaining 3 columns) |
+
+    by increasing the last cell’s col_span from 1 to 4.
+
     Parameters
     ----------
     header_row_count
@@ -1379,6 +1528,20 @@ def _resolve_header_row_count(
 ) -> int:
     """Determine header row count, using inference if extractor provided none.
 
+    This function starts with first_item.header_row_count. If that is <= 0, it runs a
+    deterministic fallback heuristic over the first few rows and only adopts the
+    inferred value if confidence is at least 0.65. So the first slice defines the
+    segment’s header model.
+
+    Example: extractor left header row count at 0
+
+    Suppose the first row is clearly word-heavy and header-like:
+
+    | Topic | Sub-topic | Expected Standard |
+    | numbers | ... | ... |
+
+    The heuristic may infer header_row_count=1 and warn that it was inferred.
+
     Parameters
     ----------
     first_item
@@ -1417,9 +1580,16 @@ def _resolve_header_row_count(
 def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional[str]:
     """Return the first non-null local code found in the chain.
 
-    NB: Returns the raw (stripped) local code as extracted — no canonicalization
-    (e.g., "Tableau 4" stays "Tableau 4"). Canonicalization is deferred to
-    post-stitching.
+    NB: Returns the raw (stripped) local code as extracted--no canonicalization (e.g.,
+    "Tableau 4" stays "Tableau 4"). Canonicalization is deferred to post-stitching.
+
+    This matters because same-page caption propagation may already have written a code
+    onto one table slice during normalization.
+
+    Example:
+
+    If page 4 table has local_code=None and page 5 table has local_code="Table 4", the
+    segment adopts "Table 4" immediately.
 
     Parameters
     ----------
@@ -1442,7 +1612,7 @@ def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional
 
 
 def _row_provenance_by_stitched_index(
-    *, segment: TableSegment
+    segment: TableSegment,
 ) -> list[TableRowProvenance]:
     """Derive stitched-row provenance deterministically from `segment.slices`.
 
@@ -1685,6 +1855,11 @@ def _stitch_table_chain(
 ) -> TableSegment:
     """Stitch a chain of table slices.
 
+    DISCLAIMER: Listen, I'm not gonna lie---this function is complicated. If you don't
+    understand what is going on here even after reading through all the docstrings and
+    comments, then just ask Tony (he'll have no choice but to explain wth he wrote such
+    a piece of code to begin with).
+
     This function is where a linked chain of page-level Table items turns into one
     stitched TableSegment, with both raw stitched rows and derived structural views. It
     does not decide the links itself. By the time this runs, the chain is already known
@@ -1766,7 +1941,7 @@ def _stitch_table_chain(
             dropped_header_rows=0,
             header_row_count=header_row_count,
             item_index=first_item_index,
-            local_code=local_code,
+            local_code=local_code,  # Potentially resolved local code for the segment
             page_index=first_page_index,
             repeats_header=first_item.repeats_header,
             rows=first_item.rows,
@@ -1781,7 +1956,7 @@ def _stitch_table_chain(
             ),
             item_index=first_item_index,
             kind=first_item.kind,
-            local_code=local_code,
+            local_code=local_code,  # Potentially resolved local code for the segment
             page_index=first_page_index,
             repeats_header=first_item.repeats_header,
         )
@@ -1800,8 +1975,9 @@ def _stitch_table_chain(
             warnings=warnings,
         )
 
-        # Update state.
-        local_code = slice_result["local_code"]  # Carry forward potentially new code
+        # Update state. Also carry forward potentially new local code for subsequent
+        # table slices.
+        local_code = slice_result["local_code"]
         slices.append(slice_result["slice"])
         segment_provenance.append(slice_result["provenance"])
         stitched_rows.extend(slice_result["rows_to_add"])
@@ -1845,8 +2021,8 @@ def _stitch_table_chain(
     )
 
     # 9.
-    rows_grid, grid_sources = _expand_table_rows_to_rows_grid(segment=table_segment)
-    row_provenance = _row_provenance_by_stitched_index(segment=table_segment)
+    rows_grid, grid_sources = _expand_table_rows_to_rows_grid(table_segment)
+    row_provenance = _row_provenance_by_stitched_index(table_segment)
     rows_filldown = None
 
     if table_filldown_enabled:

@@ -749,7 +749,7 @@ class TestExpandTableRowsToRowsGrid:
         ]
         segment = make_table_segment(n_cols=2, rows=rows)
 
-        rows_grid, grid_sources = _expand_table_rows_to_rows_grid(segment=segment)
+        rows_grid, grid_sources = _expand_table_rows_to_rows_grid(segment)
 
         assert [cell.text.text for cell in rows_grid[0].cells] == ["Topic", "Outcome 1"]
         assert [cell.text.text for cell in rows_grid[1].cells] == ["Topic", "Outcome 2"]
