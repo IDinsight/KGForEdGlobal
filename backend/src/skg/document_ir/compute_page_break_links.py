@@ -181,8 +181,8 @@ def _apply_page_boundary_state_guardrails(
 
     Example:
 
-    Suppose page 10 says boundary_state="complete" and page 11 also says
-    boundary_state="complete". Normally that blocks all linking. But if page 10 has a
+    Suppose page 10 says boundary_state="standalone" and page 11 also says
+    boundary_state="standalone". Normally that blocks all linking. But if page 10 has a
     truncated table with local_code="Tableau 4" and page 11 has a resumed table with
     local_code="Table 4" after normalization/canonical comparison, the shared
     normalized code rescues table stitching even though page-level boundary states are
