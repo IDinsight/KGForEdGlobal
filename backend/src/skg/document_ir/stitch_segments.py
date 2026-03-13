@@ -45,6 +45,43 @@ from skg.utils.constants import BlockType
 ChainItem = tuple[int, int, Block | Table]
 
 
+def _are_items_compatible_for_segment_stitching(
+    *, next_item: Block | Table, prev_item: Block | Table
+) -> bool:
+    """Return whether two linked items can be materialized into one stitched segment.
+
+    This is intentionally stricter than page-break candidate compatibility. The
+    page-break linker may allow some fallback block matches (for example, Paragraph
+    <-> List) to support uncertain continuation evidence, but BlockSegment
+    materialization requires all block slices to share the same `block_type`.
+    Therefore, block links are only segment-stitchable when both slices are Blocks and
+    their `block_type` values match exactly.
+
+    Parameters
+    ----------
+    next_item
+        The candidate continuation item.
+    prev_item
+        The current item in the chain.
+
+    Returns
+    -------
+    bool
+        True if the link is safe for segment materialization, False otherwise.
+    """
+
+    if not compatible_kinds_for_stitch(next_item=next_item, prev_item=prev_item):
+        return False
+
+    if isinstance(prev_item, Table) and isinstance(next_item, Table):
+        return True
+
+    if isinstance(prev_item, Block) and isinstance(next_item, Block):
+        return prev_item.block_type == next_item.block_type
+
+    return False
+
+
 def _build_continuation_chain(
     *,
     items_lookup: dict[int, dict[int, Block | Table]],
@@ -86,7 +123,8 @@ def _build_continuation_chain(
     Raises
     ------
     ValueError
-        If the link graph contains a cycle or an incompatible cross-kind hop.
+        If the link graph contains a cycle or an incompatible continuation hop for
+        segment materialization.
     """
 
     chain: list[ChainItem] = []
@@ -137,12 +175,16 @@ def _build_continuation_chain(
             warnings.append(msg)
             break
 
-        if not compatible_kinds_for_stitch(next_item=next_item, prev_item=current_item):
+        if not _are_items_compatible_for_segment_stitching(
+            next_item=next_item, prev_item=current_item
+        ):
             raise ValueError(
                 f"Incompatible page-break link while building continuation chain: "
                 f"current={current_key}, next={next_link}, "
                 f"current_type={type(current_item).__name__}, "
-                f"next_type={type(next_item).__name__}"
+                f"next_type={type(next_item).__name__}, "
+                f"current_block_type={getattr(current_item, 'block_type', None)!r}, "
+                f"next_block_type={getattr(next_item, 'block_type', None)!r}"
             )
 
         # Advance to next item.
@@ -199,6 +241,56 @@ def _create_item_addr(*, item_index: int, page_index: int) -> str:
     """
 
     return f"p{page_index}:raw{item_index}"
+
+
+def _dfs(
+    *,
+    links: dict[ItemKey, ItemKey],
+    node_key: ItemKey,
+    path: list[ItemKey],
+    visit_state: dict[ItemKey, int],
+) -> None:
+    """Depth-first search to detect cycles in the link graph.
+
+    Parameters
+    ----------
+    links
+        Mapping of source item key to destination item key.
+    node_key
+        The current node key being visited.
+    path
+        The path of node keys taken to reach the current node, used for cycle reporting.
+    visit_state
+        Dictionary tracking the visit status of nodes (1 = visiting, 2 = visited).
+
+    Raises
+    ------
+    ValueError
+        If a cycle is detected in the graph.
+    """
+
+    state = visit_state.get(node_key, 0)
+
+    if state == 1:
+        cycle_start = path.index(node_key) if node_key in path else 0
+        cycle_path = path[cycle_start:] + [node_key]
+        raise ValueError(f"Cycle detected in page-break link graph: {cycle_path}.")
+
+    if state == 2:
+        return
+
+    visit_state[node_key] = 1
+    next_key = links.get(node_key)
+
+    if next_key is not None:
+        _dfs(
+            links=links,
+            node_key=next_key,
+            path=path + [node_key],
+            visit_state=visit_state,
+        )
+
+    visit_state[node_key] = 2
 
 
 def _drop_repeated_header(
@@ -800,10 +892,11 @@ def _materialize_segment(
 ) -> Segment:
     """Materialize one homogeneous continuation chain as a stitched segment.
 
-    The chain is expected to be type-homogeneous because page-break linking already
-    enforces stitch-compatible item kinds. If a mixed block/table chain reaches this
-    function, that indicates an upstream invariant failure and we raise immediately
-    rather than silently dropping already-visited items.
+    The chain is expected to be segment-stitchable because page-break linking should
+    already have enforced compatible continuation edges. If a mixed block/table chain
+    or a mixed block-type chain reaches this function, that indicates an upstream
+    invariant failure and we raise immediately rather than silently dropping already
+    visited items.
 
     Parameters
     ----------
@@ -873,6 +966,14 @@ def _materialize_segment(
         for chain_page_index, chain_item_index, item in chain
         if isinstance(item, Block)
     ]
+
+    first_block_type = block_chain[0][2].block_type
+
+    if any(block.block_type != first_block_type for _, _, block in block_chain):
+        raise ValueError(
+            f"Mixed block_type chain reached _materialize_segment: start={(page_index, item_index)}, "
+            f"expected_block_type={first_block_type!r}, chain={_summarize_chain_items(chain)}"
+        )
 
     return _stitch_block_chain(
         chain=block_chain,
@@ -1847,6 +1948,84 @@ def _update_section_stack(
     return section_path_stack[-max_len:]
 
 
+def _validate_link_graph(
+    *,
+    items_mapping: dict[int, list[tuple[int, Block | Table]]],
+    links: dict[ItemKey, ItemKey],
+) -> None:
+    """Validate the cross-page link graph before segment stitching begins.
+
+    The stitcher expects a functional acyclic graph over existing items:
+
+    1. Every source key must exist in `items_mapping`.
+    2. Every destination key must exist in `items_mapping`.
+    3. Every destination must have in-degree exactly 1.
+    4. Every link must be safe for segment materialization.
+    5. The graph must be acyclic.
+
+    Parameters
+    ----------
+    items_mapping
+        Mapping of page_index to original item tuples.
+    links
+        Mapping of source item key to destination item key.
+
+    Raises
+    ------
+    ValueError
+        If the link graph is broken, ambiguous, incompatible, or cyclic.
+    """
+
+    items_lookup: dict[int, dict[int, Block | Table]] = {
+        page_index: dict(items) for page_index, items in items_mapping.items()
+    }
+    indegree_by_dest: defaultdict[ItemKey, int] = defaultdict(int)
+
+    for src_key, dst_key in links.items():
+        src_page_index, src_item_index = src_key
+        dst_page_index, dst_item_index = dst_key
+        src_page_items = items_lookup.get(src_page_index)
+
+        if src_page_items is None or src_item_index not in src_page_items:
+            raise ValueError(
+                f"Invalid page-break link source: src={src_key} was not found in items_mapping."
+            )
+
+        dst_page_items = items_lookup.get(dst_page_index)
+
+        if dst_page_items is None or dst_item_index not in dst_page_items:
+            raise ValueError(
+                f"Invalid page-break link destination: dst={dst_key} was not found in items_mapping."
+            )
+
+        src_item = src_page_items[src_item_index]
+        dst_item = dst_page_items[dst_item_index]
+
+        if not _are_items_compatible_for_segment_stitching(
+            next_item=dst_item, prev_item=src_item
+        ):
+            raise ValueError(
+                f"Page-break link is not segment-stitchable: src={src_key}, dst={dst_key}, "
+                f"src_type={type(src_item).__name__}, dst_type={type(dst_item).__name__}, "
+                f"src_block_type={getattr(src_item, 'block_type', None)!r}, "
+                f"dst_block_type={getattr(dst_item, 'block_type', None)!r}."
+            )
+
+        indegree_by_dest[dst_key] += 1
+
+        if indegree_by_dest[dst_key] > 1:
+            raise ValueError(
+                f"Page-break link graph is not functional: destination {dst_key} has "
+                f"indegree={indegree_by_dest[dst_key]}."
+            )
+
+    visit_state: dict[ItemKey, int] = {}
+
+    for src_key in links:
+        if visit_state.get(src_key, 0) == 0:
+            _dfs(links=links, node_key=src_key, path=[], visit_state=visit_state)
+
+
 def _validate_span_bounds(
     *,
     col_span: int,
@@ -1903,8 +2082,7 @@ def build_stitched_segments(
     page_irs: list[PageIR],
     warnings: list[str],
 ) -> list[Segment]:
-    """Builds stitched document segments from normalized page items and cross-page
-    links.
+    """Build stitched document segments from normalized page items and cross-page links.
 
     Iterates through the document in reading order, resolves cross-page continuation
     chains using the provided links, and materializes them into fully stitched
@@ -1932,7 +2110,14 @@ def build_stitched_segments(
     -------
     list[Segment]
         A list of materialized segments representing the fully stitched document IR.
+
+    Raises
+    ------
+    ValueError
+        If the page-break link graph is invalid for segment stitching.
     """
+
+    _validate_link_graph(items_mapping=items_mapping, links=links)
 
     # Set of destination keys to identify items that are continuations.
     continuations = set(links.values())
