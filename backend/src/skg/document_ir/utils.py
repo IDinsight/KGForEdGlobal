@@ -208,9 +208,32 @@ def compatible_kinds_for_stitch(
     """Return True if two items are stitch-compatible.
 
     NB: This function is a conservative gate for cross-page continuation. It allows
-    exact-type matches for like-with-like stitching (for example, table-to-table or
+    exact type matches for like-with-like stitching (for example, table-to-table or
     figure-to-figure), plus a narrow paragraph/list fallback because extraction can
     legitimately flip between those two text block types across a page break.
+
+    Rules:
+
+    1. If either item is not a Block, then both must be Table to stitch.
+    2. Headings never stitch.
+    3. Caption-to-caption stitching is only allowed if they have the same anchored
+        table/figure code, either from local_code or parsed text.
+    4. Otherwise, exact block-type matches are allowed.
+    5. Paragraph/list is also allowed as a fallback pair, because extraction can flip
+        those across pages.
+
+    Example:
+
+    Allowed:
+        Table <-> Table
+        Paragraph <-> Paragraph
+        Paragraph <-> List
+        Caption("Table 4") <-> Caption("Table 4")
+
+    Blocked:
+        Heading <-> anything
+        Caption("Table 4") <-> Caption("Figure 4")
+        Table <-> Figure
 
     Parameters
     ----------
@@ -229,7 +252,6 @@ def compatible_kinds_for_stitch(
     if not (isinstance(prev_item, Block) and isinstance(next_item, Block)):
         return isinstance(next_item, Table) and isinstance(prev_item, Table)
 
-    # Cache block types to reduce visual clutter.
     prev_type = prev_item.block_type
     next_type = next_item.block_type
 
