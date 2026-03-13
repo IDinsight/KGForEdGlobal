@@ -5,7 +5,7 @@ import re
 import uuid
 
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 # Third Party Library
 from loguru import logger
@@ -530,9 +530,6 @@ def _fill_down_table_rows(
         The filled-down table rows.
     """
 
-    if table_filldown_group_cols_max <= 0:
-        return [row.model_copy(deep=True) for row in rows]
-
     # Don't mutate input rows.
     output_rows: list[TableRow] = [row.model_copy(deep=True) for row in rows]
 
@@ -940,11 +937,7 @@ def _materialize_segment(
                 f"start={(page_index, item_index)}, chain={_summarize_chain_items(chain)}"
             )
 
-        table_chain = [
-            (chain_page_index, chain_item_index, item)
-            for chain_page_index, chain_item_index, item in chain
-            if isinstance(item, Table)
-        ]
+        table_chain = cast(list[tuple[int, int, Table]], chain)
 
         return _stitch_table_chain(
             chain=table_chain,
@@ -961,18 +954,15 @@ def _materialize_segment(
             f"start={(page_index, item_index)}, chain={_summarize_chain_items(chain)}"
         )
 
-    block_chain = [
-        (chain_page_index, chain_item_index, item)
-        for chain_page_index, chain_item_index, item in chain
-        if isinstance(item, Block)
-    ]
-
+    block_chain = cast(list[tuple[int, int, Block]], chain)
     first_block_type = block_chain[0][2].block_type
 
     if any(block.block_type != first_block_type for _, _, block in block_chain):
         raise ValueError(
-            f"Mixed block_type chain reached _materialize_segment: start={(page_index, item_index)}, "
-            f"expected_block_type={first_block_type!r}, chain={_summarize_chain_items(chain)}"
+            f"Mixed block_type chain reached _materialize_segment: "
+            f"start={(page_index, item_index)}, "
+            f"expected_block_type={first_block_type!r}, "
+            f"chain={_summarize_chain_items(chain)}"
         )
 
     return _stitch_block_chain(
@@ -1323,10 +1313,12 @@ def _repair_short_rows_missing_trailing_cols_as_colspan(
         new_last = last.model_copy(update={"col_span": last.col_span + missing})
         new_row = TableRow(cells=cells[:-1] + [new_last])
 
-        warnings.append(
+        msg = (
             f"[table_colspan_repair] segment_id={segment_id} row={r_idx}: "
             f"extended last cell col_span by +{missing} to fill n_cols={n_cols}."
         )
+        logger.warning(msg)
+        warnings.append(msg)
         out.append(new_row)
 
     return out
