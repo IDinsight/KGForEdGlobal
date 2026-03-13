@@ -99,6 +99,21 @@ def _build_continuation_chain(
     3. Cross-kind hops raise immediately because the upstream linker should have
         filtered them out already.
 
+    This function starts from the current item and repeatedly follows
+    links[current_key] until there is no next link. While walking, it:
+        - Appends each item to the chain
+        - Guards against cycles
+        - Warns and stops on broken destination lookups
+        - Raises if a hop is not safe for segment stitching
+
+    So, for a paragraph that flows across three pages, the output is a list like:
+
+        [
+          (0, 9, paragraph_block_page0),
+          (1, 0, paragraph_block_page1),
+          (2, 1, paragraph_block_page2),
+        ]
+
     Parameters
     ----------
     items_lookup
@@ -250,7 +265,35 @@ def _dfs(
     path: list[ItemKey],
     visit_state: dict[ItemKey, int],
 ) -> None:
-    """Depth-first search to detect cycles in the link graph.
+    """Depth-first search to detect cycles in the link graph. This function implements
+    the 3-color DFS algorithm to detect cycles.
+
+    Example: A Valid Linear Path (with no cycles)
+
+    # A points to B, B points to C, C points to D.
+    good_links = {
+        'A': 'B',
+        'B': 'C',
+        'C': 'D'
+    }
+
+    The function visits A, marks it as visiting (state 1), and moves to B. It continues
+    to C and D. Since D has no next key, it resolves and is marked as fully visited
+    (state 2). The function then traces back, marking C, B, and A as state 2. No node
+    is ever encountered while it is in state 1.
+
+    Example: A Simple Circular Cycle
+
+    # A points to B, B points to C, C points back to A.
+    simple_cycle = {
+        'A': 'B',
+        'B': 'C',
+        'C': 'A'
+    }
+
+    The function visits A, B, and C (all currently state 1). When it looks at C's
+    target, it sees A. Because A is already in state 1 (currently being visited in the
+    current path stack), it knows it has hit a cycle and stops execution.
 
     Parameters
     ----------
@@ -832,13 +875,11 @@ def _join_text_unit_texts(
 
         if not prev_strip:
             output[-1] = next_strip
-
             continue
 
         if not next_strip:
             # Keep previous as-is; skip empty continuation chunk.
             output[-1] = prev_strip
-
             continue
 
         prev_last = prev_strip[-1]
@@ -862,7 +903,6 @@ def _join_text_unit_texts(
         if prev_strip.endswith(sentence_terminators):
             output[-1] = prev_strip
             output.append(next_strip)
-
             continue
 
         # Default join (flowing text). If no terminator and no hyphen, we assume it's a
@@ -894,6 +934,15 @@ def _materialize_segment(
     or a mixed block-type chain reaches this function, that indicates an upstream
     invariant failure and we raise immediately rather than silently dropping already
     visited items.
+
+    This function inspects the first item in the chain and chooses a path:
+        - If the first item is a Table, the whole chain must be tables, and it calls
+            _stitch_table_chain().
+        - Otherwise the whole chain must be Blocks, and all blocks must share the same
+            block_type, then it calls _stitch_block_chain().
+
+    If a mixed chain somehow reaches this point, it raises immediately because that
+    indicates an upstream invariant failure.
 
     Parameters
     ----------
@@ -1141,6 +1190,7 @@ def _process_next_table_slice(
     # the table grid (common in many curricula), even if the verifier marked
     # repeats_header=True.
     match_k = segment_header_row_count
+
     if 0 < next_hrc < segment_header_row_count:
         # If next slice has *fewer* headers declared than the segment, use the smaller
         # number.
@@ -1385,7 +1435,6 @@ def _resolve_initial_local_code(chain: list[tuple[int, int, Table]]) -> Optional
 
     _, _, first_item = chain[0]
     first_code = _strip_local_code(first_item.local_code)
-
     return first_code or next(
         (c for *_, item in chain[1:] if (c := _strip_local_code(item.local_code))),
         None,
@@ -1503,6 +1552,18 @@ def _stitch_block_chain(
         across slices; the first non-null figure is preserved at the segment level and
         each slice keeps its own figure payload for provenance fidelity.
 
+    In other words, this function:
+        - Computes a deterministic segment ID from doc_key + first slice pointer
+        - Accumulates BlockSlice objects, one per source slice
+        - Accumulates SegmentProvenance, one per source slice
+        - Promotes the first non-empty local_code across the chain
+        - Concatenates list items across slices
+        - Preserves the first non-null figure payload
+        - Combines all TextUnits into one segment-level text object
+
+    If multiple slice languages appear, the stitched segment text gets language "mul";
+    otherwise it keeps the one language.
+
     Parameters
     ----------
     chain
@@ -1539,9 +1600,8 @@ def _stitch_block_chain(
     for page_index, item_index, block in chain:
         # Promote local_code across the stitched chain: take the first non-empty code
         # encountered in any slice. NB: preserves original form (no canonicalization).
-        if resolved_local_code is None:
-            if lc := _strip_local_code(block.local_code):
-                resolved_local_code = lc
+        if resolved_local_code is None and (lc := _strip_local_code(block.local_code)):
+            resolved_local_code = lc
 
         block_figure = (
             block.figure.model_copy(deep=True) if block.figure is not None else None
@@ -1625,19 +1685,33 @@ def _stitch_table_chain(
 ) -> TableSegment:
     """Stitch a chain of table slices.
 
+    This function is where a linked chain of page-level Table items turns into one
+    stitched TableSegment, with both raw stitched rows and derived structural views. It
+    does not decide the links itself. By the time this runs, the chain is already known
+    to be a homogeneous table chain and segment-stitchable. When this function is
+    called, _materialize_segment() has already confirmed the chain is all tables, not
+    mixed block/table content.
+
     The table stitcher resolves the segment state up front and then appends each later
     slice deterministically:
 
     1. Compute a stable segment ID from the first slice pointer.
     2. Resolve the initial segment `local_code` as the first non-empty code anywhere in
-        the chain, before building slices/provenance.
+       the chain, before building slices/provenance.
     3. Resolve the segment header row count from the first slice, with deterministic
-        inference only when the extractor left it at zero.
-    4. Append later slices via `_process_next_table_slice()`, which preserves the
-        segment `local_code`, records any dropped repeated-header rows, and contributes
-        only the rows that should survive into the stitched table.
-    5. Finalize table structure, repair short continuation rows into trailing colspans,
-        then derive grid/provenance/fill-down outputs from the stitched result.
+       inference only when the extractor left it at zero.
+    4. Start stitched_rows from the first slice and create the first-slice TableSlice +
+       SegmentProvenance.
+    5. Process each later slice via `_process_next_table_slice()`, which preserves the
+       segment `local_code`, records any dropped repeated-header rows, and contributes
+       only the rows that should survive into the stitched table.
+    6. Finalize n_cols, canonical header rows, and columns signature.
+    7. Repair short continuation rows into trailing colspans.
+    8. Build the TableSegment.
+    9. Derive rows_grid, grid_sources, row_provenance, and optional rows_filldown.
+
+    So the returned table segment is richer than the block segment: it includes both
+    the stitched visual rows and normalized structural views of the table.
 
     Parameters
     ----------
@@ -1671,10 +1745,10 @@ def _stitch_table_chain(
         page_index=first_page_index,
     )
 
-    # Resolve local code (look ahead if missing in first slice).
+    # 2.
     local_code = _resolve_initial_local_code(chain)
 
-    # Resolve header row count (inference if missing).
+    # 3.
     header_row_count = _resolve_header_row_count(
         first_item=first_item,
         item_index=first_item_index,
@@ -1682,11 +1756,9 @@ def _stitch_table_chain(
         warnings=warnings,
     )
 
-    # 2.
+    # 4.
     stitched_rows: list[TableRow] = list(first_item.rows)
     header_rows = stitched_rows[:header_row_count] if header_row_count > 0 else []
-
-    # Create first slice and provenance.
     slices: list[TableSlice] = [
         TableSlice(
             bbox=first_item.bbox,
@@ -1715,7 +1787,7 @@ def _stitch_table_chain(
         )
     ]
 
-    # 3.
+    # 5.
     for next_page, next_item_idx, next_item in chain[1:]:
         slice_result = _process_next_table_slice(
             current_local_code=local_code,
@@ -1734,7 +1806,7 @@ def _stitch_table_chain(
         segment_provenance.append(slice_result["provenance"])
         stitched_rows.extend(slice_result["rows_to_add"])
 
-    # Finalize columns.
+    # 6.
     n_cols, columns_signature, header_rows_canonical = _finalize_table_structure(
         chain=chain,
         stitched_rows=stitched_rows,
@@ -1744,8 +1816,7 @@ def _stitch_table_chain(
         warnings=warnings,
     )
 
-    # Structural repair: short continuation rows often represent a colspan label (e.g.,
-    # "Intégration" spanning remaining columns). Repair before building TableSegment.
+    # 7.
     stitched_rows_for_segment = [r.model_copy(deep=True) for r in stitched_rows]
     stitched_rows_for_segment = _repair_short_rows_missing_trailing_cols_as_colspan(
         header_row_count=header_row_count,
@@ -1755,16 +1826,13 @@ def _stitch_table_chain(
         warnings=warnings,
     )
 
-    # Keep header_rows consistent with the repaired row objects
-    header_rows = (
-        stitched_rows_for_segment[:header_row_count] if header_row_count > 0 else []
-    )
-
-    # 5. Build objects.
+    # 8.
     table_segment = TableSegment(
         columns_signature=columns_signature,
         header_row_count=header_row_count,
-        header_rows=header_rows,
+        header_rows=(
+            stitched_rows_for_segment[:header_row_count] if header_row_count > 0 else []
+        ),
         header_rows_canonical=header_rows_canonical,
         kind="table",
         local_code=local_code,
@@ -1776,7 +1844,7 @@ def _stitch_table_chain(
         slices=slices,
     )
 
-    # 6. Post-processing (grid and provenance).
+    # 9.
     rows_grid, grid_sources = _expand_table_rows_to_rows_grid(segment=table_segment)
     row_provenance = _row_provenance_by_stitched_index(segment=table_segment)
     rows_filldown = None
@@ -1874,6 +1942,11 @@ def _update_section_stack(
 ) -> list[SectionHeadingRef]:
     """Update the section path stack if the current chain represents a heading.
 
+    This function only changes the stack if the chain’s first item is a HEADING block.
+    If so, it extracts heading text (or falls back to local_code), de-dupes consecutive
+    identical headings, appends a new SectionHeadingRef, and truncates the stack to
+    max_section_path_length. If the chain is not a heading, the stack is left unchanged.
+
     Parameters
     ----------
     chain
@@ -1930,9 +2003,7 @@ def _update_section_stack(
 
     section_path_stack.append(
         SectionHeadingRef(
-            item_index=chain[0][1],
-            page_index=chain[0][0],
-            text=new_heading_text,
+            item_index=chain[0][1], page_index=chain[0][0], text=new_heading_text
         )
     )
 
@@ -1953,6 +2024,11 @@ def _validate_link_graph(
     3. Every destination must have in-degree exactly 1.
     4. Every link must be safe for segment materialization.
     5. The graph must be acyclic.
+
+    This function checks that every link source exists, every destination exists, each
+    destination has in-degree 1, every link is safe for segment materialization, and the
+    graph is acyclic. If any of that fails, stitching stops before any segments are
+    built.
 
     Parameters
     ----------
@@ -1976,14 +2052,12 @@ def _validate_link_graph(
         src_page_index, src_item_index = src_key
         dst_page_index, dst_item_index = dst_key
         src_page_items = items_lookup.get(src_page_index)
+        dst_page_items = items_lookup.get(dst_page_index)
 
         if src_page_items is None or src_item_index not in src_page_items:
             raise ValueError(
                 f"Invalid page-break link source: src={src_key} was not found in items_mapping."
             )
-
-        dst_page_items = items_lookup.get(dst_page_index)
-
         if dst_page_items is None or dst_item_index not in dst_page_items:
             raise ValueError(
                 f"Invalid page-break link destination: dst={dst_key} was not found in items_mapping."
@@ -2079,6 +2153,17 @@ def build_stitched_segments(
     chains using the provided links, and materializes them into fully stitched
     segments. Maintains a semantic-light heading context to preserve the section path.
 
+    This function is called from stitch_document_ir() after two earlier stages have
+    already happened:
+
+    1. Each page’s items were normalized into items_mapping, and
+    2. compute_page_break_links() produced a sparse forward link map like
+        (page_i, item_j) -> (page_i + 1, item_k).
+
+    So build_stitched_segments() is not deciding whether two items continue across
+    pages; it is consuming a link graph that has already been decided and turning it
+    into final stitched segments.
+
     Parameters
     ----------
     config
@@ -2119,15 +2204,22 @@ def build_stitched_segments(
     for src, dst in links.items():
         reverse_links[dst].append(src)
 
-    # Maintain a semantic-light heading context for later canonicalization. This is
-    # intentionally simple: we keep the most recent headings in reading order (no
-    # heading-level inference at this stage).
+    # items_lookup is a page-index -> item-index -> item lookup so the chain walker can
+    # jump directly to linked destinations.
     items_lookup: dict[int, dict[int, Block | Table]] = {
         page_index: dict(items) for page_index, items in items_mapping.items()
     }
+
+    # section_path_stack holds the current heading breadcrumbs as we iterate through
+    # the document. When we encounter a heading block, we push it onto the stack, and
+    # we snapshot the current stack as the section path for any segments we stitch from
+    # that point until the next heading. This allows us to maintain a semantic-light
+    # section context without needing an explicit section parser or a separate heading
+    # detection pass.
     section_path_stack: list[SectionHeadingRef] = []
+
     segments: list[Segment] = []
-    visited: set[ItemKey] = set()
+    visited: set[ItemKey] = set()  # Ensure an item is only consumed once
 
     # Iterate in document reading order: page order, then item order.
     for page_ir in page_irs:
@@ -2148,8 +2240,8 @@ def build_stitched_segments(
             if key in continuations:
                 text = (
                     f"Orphan continuation destination encountered; "
-                    f"it was pointed-to by a prior page-break link but not consumed in any chain. "
-                    f"dest={key}, sources={reverse_links.get(key, [])}. "
+                    f"it was pointed-to by a prior page-break link but not consumed in "
+                    f"any chain. dest={key}, sources={reverse_links.get(key, [])}. "
                     f"Processing as standalone."
                 )
                 logger.warning(text)
