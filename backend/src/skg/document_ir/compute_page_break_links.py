@@ -133,6 +133,31 @@ def _apply_page_boundary_state_guardrails(
     """Check page-level boundary states: only stitch across this page break when both
     pages claim continuity in the appropriate direction.
 
+    After candidate discovery, process_page_pair() asks whether the pages themselves
+    claim continuity. It computes:
+        - allowed_forward: current page boundary state must be CONTINUES_TO_NEXT or BOTH
+        - allowed_backward: next page boundary state must be CONTINUES_FROM_PREV or BOTH
+        - If both are true, the candidates pass unchanged.
+
+    If not, there is one rescue path:
+        - Table stitching can still proceed if there is a strong shared normalized
+            local_code on both sides.
+        - In that case, it filters candidates down to the tables sharing that common
+            code.
+
+    Otherwise it blocks stitching across that page break entirely and returns
+    success=False.
+
+    Example:
+
+    Suppose page 10 says boundary_state="complete" and page 11 also says
+    boundary_state="complete". Normally that blocks all linking. But if page 10 has a
+    truncated table with local_code="Tableau 4" and page 11 has a resumed table with
+    local_code="Table 4" after normalization/canonical comparison, the shared
+    normalized code rescues table stitching even though page-level boundary states are
+    not supportive. The rescue is intentionally restricted to tables. Caption blocks
+    are not rescued this way.
+
     Parameters
     ----------
     current_page_ir
@@ -231,10 +256,47 @@ def _apply_verification_verdict(
 ) -> dict[ItemKey, ItemKey]:
     """Attempt to create a stitching link from a high-confidence verification verdict.
 
-    This is called only when edge_record.verdict.confidence >= threshold and
+    NB: This is called only when edge_record.verdict.confidence >= threshold and
     edge_record.verdict.is_continuation is True. It validates that the verdict's item
     indices resolve to compatible items in the normalized item lists, applies
     `set_next_table_repeats_header` when present, and returns a direct link dict.
+
+    NB: The normalized lists are tuples like (orig_index, item). That means
+    sorting/filtering may have changed list position, but the code still links using
+    the original item indices from the PageIR. This function resolves the verifier’s
+    chosen original indices back into the normalized items via dict(prev_page_items)
+    and dict(next_page_items).
+
+    This function takes the verifier’s chosen item indices and turns them into a direct
+    link as follows:
+
+    1. Builds a verdict-oriented debug record.
+    2. Reads prev_item_index and next_item_index from edge_record.
+    3. Builds orig_index -> item lookups from the normalized page item lists.
+    4. Resolves those indices against the normalized lists.
+    5. Validates that the resolved items match the verdict’s continuation kind.
+    6. If the verdict includes set_next_table_repeats_header, it mutates the next table
+        item in place.
+    7. Appends link debug + page-pair debug.
+    8. Returns a single-entry link dict {(prev_page, prev_idx): (next_page, next_idx)}.
+
+    Example:
+
+    Suppose the verifier emits:
+        - prev_item_index = 8
+        - next_item_index = 0
+        - continuation_kind = "table"
+        - set_next_table_repeats_header = True
+
+    Then _apply_verification_verdict() will:
+        - find original item 8 on the previous normalized page
+        - find original item 0 on the next normalized page
+        - confirm they are both tables
+        - set next_item.repeats_header = True
+        - return {(prev_page, 8): (next_page, 0)}.
+
+    This is one reason normalization happens first and linking second: the verdict
+    patch mutates the same table object that downstream stitching will later consume.
 
     Parameters
     ----------
@@ -260,13 +322,13 @@ def _apply_verification_verdict(
     """
 
     verdict = edge_record.verdict
-    prev_page = current_page_ir.page_index
-    next_page = next_page_ir.page_index
+    prev_page_index = current_page_ir.page_index
+    next_page_index = next_page_ir.page_index
 
     # Shared debug record for verdict-based decisions.
     pair_debug: dict[str, Any] = {
-        "from_page": prev_page,
-        "to_page": next_page,
+        "from_page": prev_page_index,
+        "to_page": next_page_index,
         "verdict_override": True,
         "verdict_confidence": verdict.confidence,
         "verdict_is_continuation": verdict.is_continuation,
@@ -288,7 +350,6 @@ def _apply_verification_verdict(
     # Build lookup: orig_item_index -> item (from the normalized items list).
     prev_lookup: dict[int, Block | Table] = dict(prev_page_items)
     next_lookup: dict[int, Block | Table] = dict(next_page_items)
-
     prev_item = prev_lookup.get(prev_idx)
     next_item = next_lookup.get(next_idx)
     assert prev_item and next_item
@@ -331,13 +392,13 @@ def _apply_verification_verdict(
         next_item.repeats_header = verdict.set_next_table_repeats_header
 
     # Create the direct link.
-    link_key: ItemKey = (prev_page, prev_idx)
-    link_val: ItemKey = (next_page, next_idx)
+    link_key: ItemKey = (prev_page_index, prev_idx)
+    link_val: ItemKey = (next_page_index, next_idx)
 
     link_debug.append(
         {
-            "from_page": prev_page,
-            "to_page": next_page,
+            "from_page": prev_page_index,
+            "to_page": next_page_index,
             "prev_item_orig_index": prev_idx,
             "next_item_orig_index": next_idx,
             "score": verdict.confidence,
@@ -356,7 +417,7 @@ def _apply_verification_verdict(
     page_pair_debug.append(pair_debug)
 
     logger.info(
-        f"Verdict override: linked ({prev_page}, {prev_idx})->({next_page}, {next_idx}) "
+        f"Verdict override: linked ({prev_page_index}, {prev_idx})->({next_page_index}, {next_idx}) "
         f"kind={kind} confidence={verdict.confidence}"
     )
 
@@ -431,13 +492,15 @@ def _build_edge_proximity_debug(
 
 
 def _caption_anchor(item: Block) -> str:
-    """Get the caption anchor.
+    """For caption blocks, this extracts the strongest comparable anchor.
+
+    First try normalized local_code. If missing, parse a table/figure code from caption
+    text. Return empty string if nothing recognizable exists.
 
     Parameters
     ----------
     item
         The item to get the caption anchor for.
-
 
     Returns
     -------
@@ -491,7 +554,7 @@ def _column_signature(*, mode: str, table: Table) -> str:
     n = (hrc if hrc > 0 else 1) if mode == "strong" else 1
     header_rows = table.rows[:n]
 
-    # Canonicalize: use the same normalization as _row_signature().
+    # Canonicalize: use the same normalization as row_signature().
     canonical_rows = [list(row_signature(r)) for r in header_rows]
 
     # Join rows with "||" and cells with "|".
@@ -503,6 +566,17 @@ def _edge_window_indices(
 ) -> set[int]:
     """Get the indices of up to k stitch-relevant items from the start or end of the
     items list.
+
+    Example:
+
+    Suppose the previous page ends with:
+        - footnote
+        - caption
+        - truncated table
+        - footer artifact
+
+    The edge window will try not to waste slots on the footnote/caption/footer and will
+    still pick the truncated table as a stitch-relevant edge item.
 
     Parameters
     ----------
@@ -562,6 +636,34 @@ def _find_paired_candidates(
          - It has at least one stitch-compatible partner on the next page, AND
          - Everything after it on the prev page is ignorable.
 
+    This function basically does the following:
+
+    - For each previous boundary-marked candidate near the bottom edge, it checks:
+        - Does it have any compatible next-side partner in the next edge window?
+        - Is everything after it ignorable?
+    - If so, only then is it valid.
+    - Otherwise, it is rejected.
+    - It also does the symmetric thing for next-side candidates using content before
+        them.
+
+    Example:
+
+    Suppose page 4 ends with:
+        - item A: truncated paragraph
+        - item B: complete heading
+        - and page 5 starts with:
+        - item C: resumed paragraph
+
+    Then:
+        - A is boundary-marked
+        - C is boundary-marked
+        - A and C are compatible
+        - The heading after A (item B) is ignorable
+        - So A and C become valid candidates
+
+    But if item B were a complete paragraph instead of a heading, A would be rejected,
+    because non-ignorable content appears after the alleged continuation source.
+
     Parameters
     ----------
     next_items
@@ -603,11 +705,11 @@ def _find_paired_candidates(
     next_signal = [i for i in next_signal_all if i in next_edge]
 
     # NB: Partner-compatibility below is checked against `next_signal`/`prev_signal`
-    # (edge-window-filtered), not the full `*_signal_all` lists. This means a candidate
-    # can be rejected if its true partner exists on the other page but falls outside the
-    # edge window. This is intentional: the edge window is a safety bound to prevent
-    # stitching items in the middle of a page, and accepting a partner outside it would
-    # defeat that purpose.
+    # (edge window filtered), not the full `*_signal_all` lists. This means a candidate
+    # can be rejected if its true partner exists on the other page but falls outside
+    # the edge window. This is intentional: the edge window is a safety bound to
+    # prevent stitching items in the middle of a page, and accepting a partner outside
+    # it would defeat that purpose.
     prev_valid, prev_rejected = [], [i for i in prev_signal_all if i not in prev_edge]
 
     for i in prev_signal:
@@ -662,6 +764,11 @@ def _is_embedded_overlay_figure(
 ) -> bool:
     """Check if a figure Block is an embedded overlay within any Table's bounding box.
 
+    This special-case helper checks whether a complete figure block is geometrically
+    contained inside any same-page table bbox. If so, it is treated as an embedded
+    overlay and does not consume edge-window budget. bbox_contains() does the geometry
+    check.
+
     Parameters
     ----------
     item
@@ -699,7 +806,9 @@ def _is_vertical_continuation(
     next_page_h: int,
     edge_frac: float,
 ) -> bool:
-    """Check if items are visually contiguous across a page break.
+    """Check if items are visually contiguous across a page break. Previous item must
+    be close enough to the bottom of its page, and next item close enough to the top of
+    its page, according to the chosen edge fraction.
 
     Parameters
     ----------
@@ -722,7 +831,6 @@ def _is_vertical_continuation(
 
     prev_near_bottom = prev_bbox[3] >= (prev_page_h * (1.0 - edge_frac))
     next_near_top = next_bbox[1] <= (next_page_h * edge_frac)
-
     return prev_near_bottom and next_near_top
 
 
@@ -735,6 +843,10 @@ def _safe_to_ignore_between_pages(item: Block | Table) -> bool:
     1. Artifacts are always ignorable.
     2. Blocks are ignorable if they are COMPLETE (not themselves continuing).
     3. Tables are NOT ignorable.
+
+    NB: If a truncated paragraph is followed by a complete paragraph before page end,
+    the truncated paragraph is NOT a safe continuation candidate, because stitching it
+    would reorder actual content.
 
     Parameters
     ----------
@@ -766,6 +878,17 @@ def _safe_to_ignore_between_pages_relative(
     """Similar to _safe_to_ignore_between_pages(), but allows certain items that are
     geometrically contained inside the anchor (e.g., overlay figures inside a table).
 
+    It inherits the basic ignorable rules and adds one extra allowance: if the anchor
+    is a Table, then a complete figure block geometrically inside that table is also
+    ignorable.
+
+    Example:
+
+    Imagine page N ends with a truncated table, and near the bottom of the page there
+    is also a complete embedded figure sitting inside that table’s bbox. This helper
+    lets the table still count as a valid candidate, because that overlaid figure is
+    treated as part of the table’s visual footprint rather than intervening content.
+
     Parameters
     ----------
     anchor
@@ -782,7 +905,7 @@ def _safe_to_ignore_between_pages_relative(
     if _safe_to_ignore_between_pages(item):
         return True
 
-    # Allow complete FIGURE overlays *inside* a candidate TABLE
+    # Allow complete FIGURE overlays *inside* a candidate TABLE.
     if (
         isinstance(anchor, Table)
         and isinstance(item, Block)
@@ -799,6 +922,26 @@ def _score_block_match(
     *, next_item: Block, next_page_h: int, prev_item: Block, prev_page_h: int
 ) -> float:
     """Calculate match score specifically for Block <-> Block pairs.
+
+    Example: paragraph continuation
+
+    Page 6 ends with a truncated paragraph near the bottom.
+    Page 7 starts with a resumed list near the top.
+
+    Possible score:
+        - Both text-like -> +2
+        - Boundary aligned and text-like -> +1
+        - Near edge on both sides -> +1
+        - No local-code signal
+
+    Total = 4. If min_link_score is below 4, this is a strong match.
+
+    Example: caption continuation
+
+    Page 20 ends with caption text Table 3 (continued...) and page 21 starts with
+    caption text Table 3. Even if there is little other evidence, matching caption
+    anchors give +4, plus any edge/type evidence already accumulated, and the function
+    returns early from the caption branch.
 
     Parameters
     ----------
@@ -877,6 +1020,36 @@ def _score_table_match(
 ) -> float:
     """Calculate match score specifically for Table <-> Table pairs.
 
+    Example: strongly anchored table continuation
+
+    Page 9 ends with a truncated table whose propagated code is "Tableau 4".
+    Page 10 starts with a resumed table whose caption normalization yields "Table 4".
+
+    Possible score:
+        - same normalized local_code → +5
+        - near edge on both sides → +1
+        - same number of columns → +1
+        - boundary aligned and equal cols → +0.5
+        - similar width → +0.5
+
+    Total = 8.0, which is extremely strong.
+
+    Example: no table code, but same header
+
+    Page 14 ends with a truncated table and no visible numbering.
+    Page 15 starts with a resumed table, also no visible numbering.
+    Both have header rows like Topic | Specific Competence | Expected Standard.
+
+    Possible score:
+        - no local_code
+        - strong column signature match → +4
+        - near edge on both sides → +1
+        - same column count → +1
+        - width similarity → +0.5
+
+    Total = 6.5. That is still a good heuristic stitch even without explicit table
+    numbering.
+
     Parameters
     ----------
     next_item
@@ -926,8 +1099,8 @@ def _score_table_match(
                 score += 2
 
     # NB: header_row_count equality is intentionally NOT scored here. It is already
-    # captured by _column_signature (which uses header_row_count to select rows), and
-    # a standalone bonus would reward coincidental matches (most tables have hrc=1).
+    # captured by _column_signature (which uses header_row_count to select rows), and a
+    # standalone bonus would reward coincidental matches (most tables have hrc=1).
 
     # Geometric evidence.
     if _is_vertical_continuation(
@@ -1028,13 +1201,49 @@ def compute_page_break_links(
     verdicts: dict[tuple[int, int], EdgeVerdictRecord],
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
-    """Compute a mapping of (page_i, item_index) -> (page_i+1, item_index) links for
+    """Compute a mapping of (page_i, item_index) -> (page_i + 1, item_index) links for
     continuations.
 
     With `verdicts`, high-confidence verdicts take priority over heuristic scoring. If
     a verdict's confidence is at or above `verdict_confidence_threshold`, the verdict's
-    decision (stitch or skip) is applied directly. Otherwise the existing boundary-flag
-    and scoring heuristics are used.
+    decision (stitch or skip) is applied directly. Otherwise, the existing boundary
+    flag and scoring heuristics are used.
+
+    NB: compute_page_break_links() does not operate on raw PageIR.items. It operates on
+    items_mapping, which is created immediately before linking by
+    normalize_page_items() for each page. That normalization can filter artifacts,
+    reorder items by bbox, clear contradictory repeats_header, and propagate
+    caption-derived local_code values onto same-page tables/figures. So the linker is
+    working on a cleaned, sometimes mutated view of the page.
+
+    After all adjacent page pairs are processed, compute_page_break_links() returns one
+    merged dict of forward continuation links across the whole document. That link map
+    is then passed to build_stitched_segments() in the next stage of
+    stitch_document_ir().
+
+    The overall flow is:
+        1. Normalization prepares "trustworthy" page items
+        2. Caption propagation strengthens local anchors
+        3. Page-pair processing either trusts the verifier or runs heuristics
+        4. Candidate discovery is conservative
+        5. Page-level guardrails may veto the whole boundary
+        6. Matching is one-to-one and score-based
+        7. Output is a sparse link graph used to build stitched multi-page segments.
+
+    Example:
+
+    If the verified pages are [0,1,2], this function will process:
+        - page 0 -> page 1
+        - page 1 -> page 2
+
+    and return something like:
+
+        {
+            (0, 12): (1, 0),
+            (1, 7): (2, 1),
+        }
+
+    meaning “item 12 on page 0 continues as item 0 on page 1,” and so on.
 
     Parameters
     ----------
@@ -1067,6 +1276,7 @@ def compute_page_break_links(
     for i in range(len(page_irs) - 1):
         cur_page_index = page_irs[i].page_index
         next_page_index = page_irs[i + 1].page_index
+
         logger.info(
             f"Computing page break links for pages {cur_page_index} -> {next_page_index}..."
         )
@@ -1077,9 +1287,9 @@ def compute_page_break_links(
             link_debug=link_debug,
             min_link_score=min_link_score,
             next_page_ir=page_irs[i + 1],
-            next_page_items=items_mapping[page_irs[i + 1].page_index],
+            next_page_items=items_mapping[next_page_index],
             page_pair_debug=page_pair_debug,
-            prev_page_items=items_mapping[page_irs[i].page_index],
+            prev_page_items=items_mapping[cur_page_index],
             verdict_confidence_threshold=verdict_confidence_threshold,
             warnings=warnings,
         )
@@ -1184,6 +1394,36 @@ def match_candidates(
     warnings: list[str],
 ) -> dict[tuple[int, int], tuple[int, int]]:
     """Sort candidates by proximity and find the best matches.
+
+    If both sides have valid candidates, this function tries to pair them. It does the
+    following in order:
+
+    1. Sort previous-page candidates by bottom edge descending
+    2. Sort next-page candidates by top edge ascending
+    3. For each previous candidate:
+        - Scan unused next candidates
+        - Keep only stitch-compatible ones
+        - Compute a score with match_score()
+        - Keep the best-scoring unused next candidate
+    4. Reject the best if it is below min_link_score
+    5. Otherwise, create the link and mark the next candidate as used
+
+    This is greedy one-to-one matching. Each previous candidate gets at most one next
+    candidate and each next candidate can be used only once.
+
+    Example:
+
+    Suppose page N has two valid candidates near the bottom:
+        - P1 = paragraph
+        - T1 = table
+
+    and page N + 1 has two valid candidates near the top:
+        - P2 = paragraph
+        - T2 = table
+
+    match_candidates() will score P1 against the compatible next candidates, score T1
+    against the remaining compatible next candidates, and output two links if both best
+    scores clear min_link_score.
 
     Parameters
     ----------
@@ -1484,13 +1724,10 @@ def process_page_pair(
         prev_candidate_indices,
         next_rejected_indices,
         next_candidate_indices,
-    ) = _find_paired_candidates(
-        prev_items=prev_page_items,
-        next_items=next_page_items,
-    )
+    ) = _find_paired_candidates(prev_items=prev_page_items, next_items=next_page_items)
 
     # 3.
-    prev_candidate_indices, next_candidate_indices, success = (
+    prev_candidate_indices, next_candidate_indices, allow_stitching = (
         _apply_page_boundary_state_guardrails(
             current_page_ir=current_page_ir,
             next_candidate_indices=next_candidate_indices,
@@ -1502,7 +1739,7 @@ def process_page_pair(
         )
     )
 
-    if not success:
+    if not allow_stitching:
         return {}
 
     # 4.
@@ -1607,11 +1844,11 @@ def process_page_pair(
                 f"prev_candidates={len(prev_candidate_indices)} prev_rejected={len(prev_rejected_indices)} "
                 f"next_candidates={len(next_candidate_indices)} next_rejected={len(next_rejected_indices)}."
             )
+            logger.warning(msg)
             logger.warning(f"{prev_candidate_indices = }")
             logger.warning(f"{next_candidate_indices = }")
             logger.warning(f"{prev_rejected_indices = }")
             logger.warning(f"{next_rejected_indices = }")
-            logger.warning(msg)
             warnings.append(msg)
 
         page_pair_debug.append(pair_debug)
