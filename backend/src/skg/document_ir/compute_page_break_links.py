@@ -866,7 +866,10 @@ def _safe_to_ignore_between_pages(item: Block | Table) -> bool:
     Rules are:
 
     1. Artifacts are always ignorable.
-    2. Blocks are ignorable if they are COMPLETE (not themselves continuing).
+    2. Complete headings, captions, and footnotes are ignorable because they are less
+        likely to represent critical content that would be reordered by stitching, and
+        they frequently appear near page edges and can be visually associated with
+        content on either page.
     3. Tables are NOT ignorable.
 
     NB: If a truncated paragraph is followed by a complete paragraph before page end,
@@ -1265,9 +1268,6 @@ def compute_page_break_links(
         5. Page-level guardrails may veto the whole boundary
         6. Matching is one-to-one and score-based
         7. Output is a sparse link graph used to build stitched multi-page segments.
-
-    This function first validates that `page_irs` is consecutive by `page_index` and
-    that every adjacent page pair has a verifier entry.
 
     Example:
 
