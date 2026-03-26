@@ -88,7 +88,7 @@ def _normalize_caption_identifier(identifier: str) -> str:
         The normalized identifier.
     """
 
-    normalized_identifier = re.sub(r"\s+", "", identifier or "").strip()
+    normalized_identifier = re.sub(r"\s+", "", identifier or "")
     return normalized_identifier.casefold()
 
 
