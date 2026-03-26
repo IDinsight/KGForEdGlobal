@@ -628,6 +628,12 @@ def _fill_down_table_rows(
     This reconstructs the implicit semantics of merged cells/rowspans often used in
     curriculum tables (e.g., Topic/Sub-topic cells left blank on subsequent rows).
 
+    NB: The caller passes the span-expanded `rows_grid` (from
+    `_expand_table_rows_to_rows_grid`), **not** the raw stitched `rows`. Every cell in
+    the input therefore has `row_span=1` and `col_span=1`, and every row has exactly
+    `n_cols` cells. This means the fill-down logic only needs to check for empty text;
+    it does not need to account for row/col spans.
+
     This function only fills empty cells in the first table_filldown_group_cols_max
     columns, never header rows, and never overwrites non-empty cells. It is meant to
     reconstruct implicit grouping semantics common in curriculum tables.
@@ -641,31 +647,31 @@ def _fill_down_table_rows(
 
     Example:
 
-    Suppose rows_grid is:
+    Suppose the span-expanded rows_grid is (all spans already resolved to 1×1 cells):
 
-    Topic   Sub-topic	Competence
-    Numbers	Counting	Count objects
-    ""	    Numerals	Read numerals
-    Shapes	Circles	    Identify circles
-    ""	    Squares	    Identify squares
+    Topic   Sub-topic   Competence
+    Numbers Counting    Count objects
+    ""      Numerals    Read numerals
+    Shapes  Circles     Identify circles
+    ""      Squares     Identify squares
 
-    If filldown is enabled for the first 2 columns, rows_filldown becomes:
+    If filldown is enabled for the first 2 columns, the returned rows_filldown becomes:
 
-    Topic	Sub-topic	Competence
-    Numbers	Counting	Count objects
-    Numbers	Numerals	Read numerals
-    Shapes	Circles	    Identify circles
-    Shapes	Squares	    Identify squares
+    Topic   Sub-topic   Competence
+    Numbers Counting    Count objects
+    Numbers Numerals    Read numerals
+    Shapes  Circles     Identify circles
+    Shapes  Squares     Identify squares
 
-    The original stitched rows remain unchanged; rows_filldown is just a convenience
-    normalization.
+    The input rows_grid remains unchanged; the output is a convenience normalization.
 
     Parameters
     ----------
     header_row_count
         The number of header rows at the top of the table.
     rows
-        The list of table rows to fill.
+        The span-expanded rectangular table rows (from `rows_grid`). Every row must
+        have the same number of cells, each with `row_span=1` and `col_span=1`.
     table_filldown_group_cols_max
         The maximum number of leading group columns to fill down.
 
@@ -1317,11 +1323,7 @@ def _process_next_table_slice(
     next_hrc = int(next_item.header_row_count or 0)
     match_k = segment_header_row_count
 
-    if 0 < next_hrc < segment_header_row_count:
-        # If next slice has *fewer* headers declared than the segment, use the smaller
-        # number.
-        match_k = next_hrc
-    elif next_hrc > 0 and next_hrc != segment_header_row_count:
+    if next_hrc > 0 and next_hrc != segment_header_row_count:
         match_k = min(segment_header_row_count, next_hrc)
         msg = (
             f"header_row_count mismatch: seg={segment_header_row_count} vs next={next_hrc}. "
@@ -1776,7 +1778,11 @@ def _stitch_block_chain(
         block_figure = (
             block.figure.model_copy(deep=True) if block.figure is not None else None
         )
-        block_list_items = block.list_items if block.list_items else None
+        block_list_items = (
+            [li.model_copy(deep=True) for li in block.list_items]
+            if block.list_items
+            else None
+        )
         slices.append(
             BlockSlice(
                 bbox=block.bbox,
@@ -2188,15 +2194,15 @@ def _update_section_stack(
 
 def _validate_link_graph(
     *,
-    items_mapping: dict[int, list[tuple[int, Block | Table]]],
+    items_lookup: dict[int, dict[int, Block | Table]],
     links: dict[ItemKey, ItemKey],
 ) -> None:
     """Validate the cross-page link graph before segment stitching begins.
 
     The stitcher expects a functional acyclic graph over existing items:
 
-    1. Every source key must exist in `items_mapping`.
-    2. Every destination key must exist in `items_mapping`.
+    1. Every source key must exist in `items_lookup`.
+    2. Every destination key must exist in `items_lookup`.
     3. Every destination must have in-degree exactly 1.
     4. Every link must be safe for segment materialization.
     5. The graph must be acyclic.
@@ -2208,8 +2214,8 @@ def _validate_link_graph(
 
     Parameters
     ----------
-    items_mapping
-        Mapping of page_index to original item tuples.
+    items_lookup
+        Pre-built mapping of page_index to {item_index: item} dicts.
     links
         Mapping of source item key to destination item key.
 
@@ -2219,9 +2225,6 @@ def _validate_link_graph(
         If the link graph is broken, ambiguous, incompatible, or cyclic.
     """
 
-    items_lookup: dict[int, dict[int, Block | Table]] = {
-        page_index: dict(items) for page_index, items in items_mapping.items()
-    }
     indegree_by_dest: defaultdict[ItemKey, int] = defaultdict(int)
 
     for src_key, dst_key in links.items():
@@ -2369,7 +2372,13 @@ def build_stitched_segments(
         If the page-break link graph is invalid for segment stitching.
     """
 
-    _validate_link_graph(items_mapping=items_mapping, links=links)
+    # items_lookup is a page-index -> item-index -> item lookup so the chain walker can
+    # jump directly to linked destinations. Built once and shared with validation.
+    items_lookup: dict[int, dict[int, Block | Table]] = {
+        page_index: dict(items) for page_index, items in items_mapping.items()
+    }
+
+    _validate_link_graph(items_lookup=items_lookup, links=links)
 
     # Set of destination keys to identify items that are continuations.
     continuations = set(links.values())
@@ -2379,12 +2388,6 @@ def build_stitched_segments(
 
     for src, dst in links.items():
         reverse_links[dst].append(src)
-
-    # items_lookup is a page-index -> item-index -> item lookup so the chain walker can
-    # jump directly to linked destinations.
-    items_lookup: dict[int, dict[int, Block | Table]] = {
-        page_index: dict(items) for page_index, items in items_mapping.items()
-    }
 
     # section_path_stack holds the current heading breadcrumbs as we iterate through
     # the document. When we encounter a heading block, we push it onto the stack, and

@@ -350,6 +350,13 @@ def _apply_verification_verdict(
     -------
     dict[ItemKey, ItemKey]
         A single-entry link dict `{(prev_page, prev_item) : (next_page, next_item)}`.
+
+    Raises
+    ------
+    ValueError
+        If the verdict's item indices do not resolve to compatible items in the
+        normalized item lists, or if the verdict's continuation_kind is incompatible
+        with the resolved items.
     """
 
     verdict = edge_record.verdict
@@ -401,14 +408,38 @@ def _apply_verification_verdict(
             and next_item.block_type == BlockType.FIGURE
         )
 
-    assert kind_ok, (
-        f"Verification verdict continuation_kind does not match resolved items: "
-        f"kind={kind} "
-        f"prev_item_type={type(prev_item).__name__} "
-        f"prev_block_type={getattr(prev_item, 'block_type', None)} "
-        f"next_item_type={type(next_item).__name__} "
-        f"next_block_type={getattr(next_item, 'block_type', None)}"
-    )
+    if not kind_ok:
+        raise ValueError(
+            f"Verification verdict continuation_kind does not match resolved items: "
+            f"kind={kind} "
+            f"prev_item_type={type(prev_item).__name__} "
+            f"prev_block_type={getattr(prev_item, 'block_type', None)} "
+            f"next_item_type={type(next_item).__name__} "
+            f"next_block_type={getattr(next_item, 'block_type', None)}"
+        )
+
+    # Coerce paragraph <-> list block_type mismatch so that downstream segment
+    # stitching sees a homogeneous chain. The verifier has already confirmed these
+    # items are a true continuation; the extractor simply classified the block_type
+    # differently across the page break (a known extraction artifact). We normalize the
+    # next item to match the previous item's block_type, mirroring the in-place
+    # mutation pattern used for repeats_header below.
+    text_like_types = {BlockType.PARAGRAPH, BlockType.LIST}
+
+    if (
+        kind == "text"
+        and isinstance(prev_item, Block)
+        and isinstance(next_item, Block)
+        and prev_item.block_type != next_item.block_type
+        and prev_item.block_type in text_like_types
+        and next_item.block_type in text_like_types
+    ):
+        logger.info(
+            f"Verdict coercion: normalizing next_item block_type from "
+            f"{next_item.block_type.value!r} to {prev_item.block_type.value!r} "
+            f"for verdict link ({prev_page_index}, {prev_idx})->({next_page_index}, {next_idx})"
+        )
+        next_item.block_type = prev_item.block_type
 
     # Apply set_next_table_repeats_header to the raw item so downstream stitching uses
     # the verified value.
