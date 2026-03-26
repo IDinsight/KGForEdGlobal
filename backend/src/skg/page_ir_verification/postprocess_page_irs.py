@@ -663,9 +663,10 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
         tail = new_cells[-1]
 
         if tail.synthetic:
+            assert tail.col_span == 1, f"{tail.col_span = }"
             new_cells.pop()
             trimmed += 1
-            effective_cols -= 1  # Placeholder is guaranteed col_span==1 above
+            effective_cols -= tail.col_span
         else:
             break
 

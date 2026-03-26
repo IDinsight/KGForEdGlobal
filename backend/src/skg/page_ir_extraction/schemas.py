@@ -98,6 +98,17 @@ class TableCell(BaseSchema):
 
     col_span: int = Field(1, description="Number of columns this cell spans.", ge=1)
     row_span: int = Field(1, description="Number of rows this cell spans.", ge=1)
+    rowspan_placeholder: bool = Field(
+        default=False,
+        description=(
+            "True if this cell was inserted by the rowspan alignment repair step to "
+            "explicitly materialize a column position occupied by a rowspan from a "
+            "previous row. The Table grid validator skips these cells during placement "
+            "simulation because the occupied position is already tracked implicitly "
+            "via rowspan carry-over. Always implies synthetic=True. Never set during "
+            "extraction."
+        ),
+    )
     synthetic: bool = Field(
         default=False,
         description="True if this cell was inserted by a postprocess repair step (rowspan alignment or row padding). Never set during extraction.",
@@ -105,6 +116,30 @@ class TableCell(BaseSchema):
     text: Optional[TextUnit] = Field(
         None, description="The content of the cell. Null if visually empty."
     )
+
+    @model_validator(mode="after")
+    def validate_rowspan_placeholder_requires_synthetic(self) -> Self:
+        """Validate that rowspan_placeholder cells are also marked synthetic.
+
+        Returns
+        -------
+        Self
+            The validated TableCell.
+
+        Raises
+        ------
+        ValueError
+            If rowspan_placeholder=True but synthetic=False.
+        """
+
+        if self.rowspan_placeholder and not self.synthetic:
+            raise ValueError(
+                "rowspan_placeholder=True requires synthetic=True. Rowspan placeholders "
+                "are always synthetic cells inserted by the postprocess rowspan "
+                "alignment step."
+            )
+
+        return self
 
     def _get_occupied_columns(self, start_col: int) -> set[int]:
         """Return the set of columns covered by this cell.
@@ -298,7 +333,13 @@ class Table(BaseSchema):
         row_widths: list[int] = []
 
         for row_index, row in enumerate(self.rows):
-            for cell_index, cell in enumerate(row.cells):
+            # Rowspan placeholder cells explicitly materialize column positions
+            # occupied by rowspans from previous rows. The grid simulation already
+            # tracks this occupancy via occupied_by_row, so placing these cells would
+            # double count the position and cause spurious overflow errors.
+            for cell_index, cell in (
+                (idx, c) for idx, c in enumerate(row.cells) if not c.rowspan_placeholder
+            ):
                 if row_index + cell.row_span > n_rows:
                     raise ValueError(
                         f"row_span exceeds table bounds at rows[{row_index}].cells[{cell_index}]: "
