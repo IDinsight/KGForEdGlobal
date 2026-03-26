@@ -392,9 +392,7 @@ def _apply_verification_verdict(
     if kind == "table":
         kind_ok = isinstance(prev_item, Table) and isinstance(next_item, Table)
     elif kind == "text":
-        kind_ok = _are_items_compatible_for_emitted_link(
-            next_item=next_item, prev_item=prev_item
-        )
+        kind_ok = compatible_kinds_for_stitch(next_item=next_item, prev_item=prev_item)
     elif kind == "figure":
         kind_ok = (
             isinstance(prev_item, Block)

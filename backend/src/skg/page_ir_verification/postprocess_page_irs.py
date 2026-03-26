@@ -561,7 +561,13 @@ def _simulate_rowspan_alignment(
     for idx, cell in enumerate(cells):
         while col < n_cols and simulated_active_span[col] > 0:
             proposed_cells.append(
-                TableCell(col_span=1, row_span=1, synthetic=True, text=None)
+                TableCell(
+                    col_span=1,
+                    row_span=1,
+                    rowspan_placeholder=True,
+                    synthetic=True,
+                    text=None,
+                )
             )
             inserted_placeholders += 1
             col += 1
@@ -601,7 +607,13 @@ def _simulate_rowspan_alignment(
 
     while col < n_cols and simulated_active_span[col] > 0:
         proposed_cells.append(
-            TableCell(col_span=1, row_span=1, synthetic=True, text=None)
+            TableCell(
+                col_span=1,
+                row_span=1,
+                rowspan_placeholder=True,
+                synthetic=True,
+                text=None,
+            )
         )
         inserted_placeholders += 1
         col += 1
@@ -659,11 +671,17 @@ def _trim_excess_cells(*, n_cols: int, new_cells: list[TableCell]) -> int:
     # Only trim synthetic placeholders at the end of the row, and only if the effective
     # column count exceeds n_cols. This is a narrow heuristic to fix the common case of
     # trailing empty placeholders without risking over-trimming real cells.
+    #
+    # NB: Rowspan placeholder cells are never trimmed. They materialize column
+    # positions occupied by rowspans from previous rows, so removing them would corrupt
+    # the grid.
     while effective_cols > n_cols and new_cells:
         tail = new_cells[-1]
 
-        if tail.synthetic:
-            assert tail.col_span == 1, f"{tail.col_span = }"
+        if tail.synthetic and not tail.rowspan_placeholder:
+            if tail.col_span != 1:
+                break
+
             new_cells.pop()
             trimmed += 1
             effective_cols -= tail.col_span

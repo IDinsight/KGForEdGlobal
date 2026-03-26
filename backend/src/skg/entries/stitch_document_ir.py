@@ -105,7 +105,7 @@ def stitch_document_ir(
 
     if not config.overwrite and document_ir_fp.exists():
         logger.warning(
-            f"Document IR JSON already exists at {document_ir_fp}. Skipping stitching."
+            f"Document IR JSON already exists at {document_ir_fp}. Skipping stitching. "
             f"If you wish to overwrite, pass the --overwrite flag."
         )
         return
