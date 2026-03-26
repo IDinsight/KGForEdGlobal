@@ -1035,6 +1035,7 @@ def execute_verification_attempts(
 
         try:
             next_item_json = spec.next_item.model_dump(mode="json")
+            prev_item_json = spec.prev_item.model_dump(mode="json")
             verdict = verify_page_ir_pairs(
                 min_confidence_to_patch=config.min_confidence_to_patch,
                 min_confidence_to_select_positive=config.min_confidence_to_select_positive,
@@ -1048,9 +1049,9 @@ def execute_verification_attempts(
                 ),
                 next_page_index=page_index + 1,
                 next_png=crop_fp,
-                prev_item=spec.prev_item.model_dump(mode="json"),
+                prev_item=prev_item_json,
                 prev_item_excerpt=make_verification_excerpt(
-                    item=strip_continuity_hints(spec.prev_item.model_dump(mode="json"))
+                    item=strip_continuity_hints(prev_item_json)
                 ),
                 prev_page_index=page_index,
                 prev_png=next_page_image_fp.parent / f"{page_index:04}.png",
