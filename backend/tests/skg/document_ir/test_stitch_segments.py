@@ -1247,9 +1247,10 @@ class TestValidateLinkGraph:
             0: [(0, make_block(boundary=ItemBoundary.TRUNCATED, text="A"))],
             1: [(0, make_block(boundary=ItemBoundary.RESUMED, text="B"))],
         }
+        items_lookup = {page: dict(items) for page, items in items_mapping.items()}
         links = {(0, 0): (1, 0)}
 
-        _validate_link_graph(items_mapping=items_mapping, links=links)
+        _validate_link_graph(items_lookup=items_lookup, links=links)
 
     def test_rejects_destination_with_indegree_greater_than_one(self) -> None:
         """It should raise when two sources point to the same destination."""
@@ -1261,10 +1262,11 @@ class TestValidateLinkGraph:
             ],
             1: [(0, make_block(boundary=ItemBoundary.RESUMED, text="C"))],
         }
+        items_lookup = {page: dict(items) for page, items in items_mapping.items()}
         links = {(0, 0): (1, 0), (0, 1): (1, 0)}
 
         with pytest.raises(ValueError, match="indegree=2"):
-            _validate_link_graph(items_mapping=items_mapping, links=links)
+            _validate_link_graph(items_lookup=items_lookup, links=links)
 
     def test_rejects_incompatible_block_link(self) -> None:
         """It should raise when a block continuation changes block type."""
@@ -1273,10 +1275,11 @@ class TestValidateLinkGraph:
             0: [(0, make_block(block_type=BlockType.PARAGRAPH, text="A"))],
             1: [(0, make_block(block_type=BlockType.LIST))],
         }
+        items_lookup = {page: dict(items) for page, items in items_mapping.items()}
         links = {(0, 0): (1, 0)}
 
         with pytest.raises(ValueError, match="not segment-stitchable"):
-            _validate_link_graph(items_mapping=items_mapping, links=links)
+            _validate_link_graph(items_lookup=items_lookup, links=links)
 
 
 class TestUpdateSectionStack:
