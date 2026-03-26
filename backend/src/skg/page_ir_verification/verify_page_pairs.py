@@ -1034,6 +1034,7 @@ def execute_verification_attempts(
         )
 
         try:
+            next_item_json = spec.next_item.model_dump(mode="json")
             verdict = verify_page_ir_pairs(
                 min_confidence_to_patch=config.min_confidence_to_patch,
                 min_confidence_to_select_positive=config.min_confidence_to_select_positive,
@@ -1041,9 +1042,9 @@ def execute_verification_attempts(
                     config.min_confidence_to_stop_negative_search
                 ),
                 model=config.model,
-                next_item=spec.next_item.model_dump(mode="json"),
+                next_item=next_item_json,
                 next_item_excerpt=make_verification_excerpt(
-                    item=strip_continuity_hints(spec.next_item.model_dump(mode="json"))
+                    item=strip_continuity_hints(next_item_json)
                 ),
                 next_page_index=page_index + 1,
                 next_png=crop_fp,
