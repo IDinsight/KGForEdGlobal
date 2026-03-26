@@ -5,26 +5,28 @@
 		"end_page": null,
 		"languages": [
 			"fr",
-			"wo"
+			"fuc"
 		],
 		"model": "openai:gpt-5.2-2025-12-11",
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
 		"overwrite": false,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/week_4_day_2.pdf",
-		"start_page": 0,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/math_guide_pulaar_section_5.pdf",
+		"start_page": 34,
 		"use_extracted_hints": true,
 		"year": 2024
 	},
 	"page_ir_verification": {
-		"always_double_check_first_attempt": false,
 		"end_page": null,
-		"min_confidence_to_patch": 0.5,
-		"model": "gpt-5.2-2025-12-11",
+		"min_confidence_to_patch": 0.50,
+		"min_confidence_to_select_positive": 0.50,
+		"min_confidence_to_stop_negative_search": 0.90,
+		"model": "openai:gpt-5.2-2025-12-11",
 		"next_page_crop_padding_px": 120,
+		"overwrite": true,
 		"start_page": 0
 	},
 	"document_ir": {
-		"keep_artifacts": true,
+		"keep_artifacts": false,
 		"max_section_path_length": 12,
 		"min_link_score": 1.0,
 		"overwrite": true,

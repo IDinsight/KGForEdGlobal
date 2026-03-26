@@ -450,7 +450,7 @@ class FigureUnit(BaseSchema):
             If alt_text is None, empty, or whitespace-only.
         """
 
-        if self.alt_text is None or not self.alt_text.strip():
+        if not self.alt_text.strip():
             raise ValueError(
                 "figure.alt_text must be present and non-empty. "
                 "Provide a short surface description (e.g., 'bar chart', "
