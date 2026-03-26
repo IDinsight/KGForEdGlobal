@@ -464,7 +464,7 @@ def test__apply_verification_verdict_raises_for_kind_mismatch() -> None:
         ],
     )
 
-    with pytest.raises(ValueError, match="continuation_kind"):
+    with pytest.raises(AssertionError, match="continuation_kind"):
         compute_page_break_links._apply_verification_verdict(
             current_page_ir=current_page_ir,
             edge_record=edge_record,

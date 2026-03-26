@@ -15,7 +15,7 @@ from skg.document_ir.utils import (
     normalize_local_code,
     row_signature,
 )
-from skg.page_ir_extraction.schemas import Block, PageIR, Table, TextUnit
+from skg.page_ir_extraction.schemas import Block, ListItem, PageIR, Table, TextUnit
 from skg.page_ir_verification.utils import EdgeVerdictRecord, is_artifact
 from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 
@@ -350,13 +350,6 @@ def _apply_verification_verdict(
     -------
     dict[ItemKey, ItemKey]
         A single-entry link dict `{(prev_page, prev_item) : (next_page, next_item)}`.
-
-    Raises
-    ------
-    ValueError
-        If the verdict's item indices do not resolve to compatible items in the
-        normalized item lists, or if the verdict's continuation_kind is incompatible
-        with the resolved items.
     """
 
     verdict = edge_record.verdict
@@ -408,22 +401,22 @@ def _apply_verification_verdict(
             and next_item.block_type == BlockType.FIGURE
         )
 
-    if not kind_ok:
-        raise ValueError(
-            f"Verification verdict continuation_kind does not match resolved items: "
-            f"kind={kind} "
-            f"prev_item_type={type(prev_item).__name__} "
-            f"prev_block_type={getattr(prev_item, 'block_type', None)} "
-            f"next_item_type={type(next_item).__name__} "
-            f"next_block_type={getattr(next_item, 'block_type', None)}"
-        )
+    assert kind_ok, (
+        f"Verification verdict continuation_kind does not match resolved items: "
+        f"kind={kind} "
+        f"prev_item_type={type(prev_item).__name__} "
+        f"prev_block_type={getattr(prev_item, 'block_type', None)} "
+        f"next_item_type={type(next_item).__name__} "
+        f"next_block_type={getattr(next_item, 'block_type', None)}"
+    )
 
     # Coerce paragraph <-> list block_type mismatch so that downstream segment
     # stitching sees a homogeneous chain. The verifier has already confirmed these
     # items are a true continuation; the extractor simply classified the block_type
     # differently across the page break (a known extraction artifact). We normalize the
-    # next item to match the previous item's block_type, mirroring the in-place
-    # mutation pattern used for repeats_header below.
+    # next item to match the previous item's block_type AND convert the payload to
+    # satisfy BlockSlice validators, mirroring the in-place mutation pattern used for
+    # repeats_header below.
     text_like_types = {BlockType.PARAGRAPH, BlockType.LIST}
 
     if (
@@ -434,12 +427,42 @@ def _apply_verification_verdict(
         and prev_item.block_type in text_like_types
         and next_item.block_type in text_like_types
     ):
+        src_type = next_item.block_type
+        tgt_type = prev_item.block_type
+
         logger.info(
             f"Verdict coercion: normalizing next_item block_type from "
-            f"{next_item.block_type.value!r} to {prev_item.block_type.value!r} "
+            f"{src_type.value!r} to {tgt_type.value!r} "
             f"for verdict link ({prev_page_index}, {prev_idx})->({next_page_index}, {next_idx})"
         )
-        next_item.block_type = prev_item.block_type
+
+        # Convert payload to match the target block_type. BlockSlice validators enforce
+        # mutual exclusivity: PARAGRAPH requires text + no list_items, LIST requires
+        # list_items + no text.
+        if src_type == BlockType.LIST and tgt_type == BlockType.PARAGRAPH:
+            # LIST -> PARAGRAPH: join list item texts into a single TextUnit.
+            if next_item.list_items and not next_item.text:
+                parts = [
+                    li.text.text
+                    for li in next_item.list_items
+                    if li.text and li.text.text
+                ]
+                lang = (
+                    next_item.list_items[0].text.language
+                    if next_item.list_items
+                    else "und"
+                )
+                next_item.text = TextUnit(
+                    language=lang, text="\n".join(parts), text_en=None
+                )
+                next_item.list_items = None
+        elif src_type == BlockType.PARAGRAPH and tgt_type == BlockType.LIST:
+            # PARAGRAPH -> LIST: wrap text into a single ListItem.
+            if next_item.text and not next_item.list_items:
+                next_item.list_items = [ListItem(marker=None, text=next_item.text)]
+                next_item.text = None
+
+        next_item.block_type = tgt_type
 
     # Apply set_next_table_repeats_header to the raw item so downstream stitching uses
     # the verified value.
