@@ -1,1796 +1,1838 @@
 {
-	"metadata": {
-		"academic_subject": "Langue et Communication",
-		"context_groupings_role_order": [
-			"stage",
-			"grade_level",
-			"learning_area",
-			"subject",
-			"strand",
-			"substrand",
-			"theme",
-			"subtheme",
-			"term",
-			"unit",
-			"substage",
-			"section",
-			"week",
-			"topic",
-			"subtopic"
-		],
-		"country": "Sénégal",
-		"grades": [
-			"CE1"
-		],
-		"languages": [
-			"fr",
-			"wo"
-		],
-		"ministry": "Ministère de l'Éducation nationale",
-		"primary_language": "fr",
-		"stage": "Étape 2",
-		"year": 2024
-	},
-	"root": {
-		"id": "root",
-		"canonical_name": {
-			"primary": "Langue et Communication, Deuxième Étape (CE1)",
-			"translations": {
-				"wo": "Jokkoo ci Làkk, Tolluwaay 2 (CE1)"
-			}
-		},
-		"emit": "container_only",
-		"grouping_role": "framework",
-		"doc_note": "Framework root. CONTAINER_ONLY because the compiler creates the framework root node independently.",
-		"match_phrases": [],
-		"children": [
-			{
-				"id": "front-matter",
-				"canonical_name": {
-					"primary": "Page de couverture",
-					"translations": {}
-				},
-				"emit": "ignore",
-				"doc_note": "Cover page: Republic, ministry, document title block. No curricular content.",
-				"allow_multiple_segments": true,
-				"match_phrases": [
-					"république du sénégal",
-					"ministère",
-					"référentiel bilingue",
-					"langue et communication",
-					"curriculum bilingue",
-					"cbeb"
-				]
-			},
-			{
-				"id": "schema-integrateur",
-				"canonical_name": {
-					"primary": "Schéma intégrateur",
-					"translations": {}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "section",
-				"doc_note": "Section 1.1. Contains cycle/stage competencies and base competencies overview tables.",
-				"match_phrases": [
-					"schéma intégrateur",
-					"1.1"
-				],
-				"children": [
-					{
-						"id": "tableau-1.1.1",
-						"canonical_name": {
-							"primary": "Tableau 1.1.1 — Compétence de cycle",
-							"translations": {}
-						},
-						"emit": "emit_table_rows",
-						"leaf_role": "expectation",
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)manooreb|comp[ée]tence",
-								"role": "leaf:expectation",
-								"source_label_override": "Compétence"
-							},
-							{
-								"header_pattern": "(?i).*",
-								"role": "skip"
-							}
-						],
-						"doc_note": "Two-column table. First column holds cycle competency, stage competency, and sous-domaine competencies as consecutive row blocks. Second column is largely empty or holds sous-domaine 2 text.",
-						"allow_multiple_segments": true,
-						"match_phrases": [
-							"tableau 1.1.1"
-						],
-						"match_target": "caption"
-					},
-					{
-						"id": "tableau-1.1.2",
-						"canonical_name": {
-							"primary": "Tableau 1.1.2 — Compétences de base",
-							"translations": {}
-						},
-						"emit": "emit_table_rows",
-						"leaf_role": "expectation",
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)expression orale|waxinu làmmiñ",
-								"role": "leaf:expectation",
-								"source_label_override": "Compétence de base — Expression orale"
-							},
-							{
-								"header_pattern": "(?i)r[ée]citation|tari",
-								"role": "leaf:expectation",
-								"source_label_override": "Compétence de base — Récitation"
-							},
-							{
-								"header_pattern": "(?i)lecture.*[ée]criture|njàng",
-								"role": "leaf:expectation",
-								"source_label_override": "Compétence de base — Lecture-Écriture"
-							},
-							{
-								"header_pattern": "(?i)production|nasum",
-								"role": "leaf:expectation",
-								"source_label_override": "Compétence de base — Production d'écrits"
-							}
-						],
-						"doc_note": "4-column overview table: base competencies for each of the 4 activities (Expression orale, Récitation, Lecture-Écriture, Production d'écrits).",
-						"match_phrases": [
-							"tableau 1.1.2"
-						],
-						"match_target": "caption"
-					}
-				]
-			},
-			{
-				"id": "planification-oral-lecture",
-				"canonical_name": {
-					"primary": "Planification des apprentissages du CE1",
-					"translations": {}
-				},
-				"emit": "container_only",
-				"grouping_role": "section",
-				"doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers.",
-				"match_phrases": [
-					"1.2",
-					"tableau de planification des apprentissages"
-				],
-				"children": [
-					{
-						"id": "tableau-1.2.1",
-						"canonical_name": {
-							"primary": "Tableau 1.2.1 — Planification des apprentissages du CE1",
-							"translations": {}
-						},
-						"emit": "emit_table_rows",
-						"leaf_role": "expectation",
-						"allow_multiple_segments": true,
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)activit[ée]s|semaine|manoore|comp[ée]tences?\\s+de\\s+base",
-								"role": "grouping:week",
-								"grouping_role_overrides": [
-									{
-										"cell_pattern": "(?i)^\\\\s*(j[ée]ego|palier|semaines)",
-										"role": "grouping:substage"
-									}
-								]
-							},
-							{
-								"header_pattern": "(?i)waxinu làmmiñ|expression orale",
-								"role": "leaf:expectation",
-								"source_label_override": "Expression orale"
-							},
-							{
-								"header_pattern": "(?i)tari|r[ée]citation",
-								"role": "leaf:expectation",
-								"source_label_override": "Récitation"
-							},
-							{
-								"header_pattern": "(?i)njàng|lecture",
-								"role": "leaf:expectation",
-								"source_label_override": "Lecture"
-							}
-						],
-						"doc_note": "25-week planning grid across 3 paliers. 4 main columns: Activités (week/palier), Expression orale, Récitation, Lecture. Header rows repeat per palier block. Table may appear as multiple segments.",
-						"match_phrases": [
-							"tableau 1.2.1"
-						],
-						"match_target": "caption"
-					}
-				]
-			},
-			{
-				"id": "strand-oral",
-				"canonical_name": {
-					"primary": "Communication orale — Expression orale et Récitation",
-					"translations": {
-						"wo": "Jokkoo ci wax — Waxinu làmmiñ ak Tari"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "strand",
-				"doc_note": "Section 1.3. Sous-domaine: Communication orale. Activities: Expression orale + Récitation. 3 paliers, 2 tables per palier (one for each activity).",
-				"match_phrases": [
-					"activités - oral",
-					"1.3",
-					"communication orale",
-					"jokkoo ci wax"
-				],
-				"children": [
-					{
-						"id": "oral-sous-domaine-heading",
-						"canonical_name": {
-							"primary": "Sous-domaine : Communication orale",
-							"translations": {}
-						},
-						"emit": "ignore",
-						"doc_note": "Consumes 'Pàccu fànn : Jokkoo ci wax / SOUS-DOMAINE : COMMUNICATION ORALE' heading.",
-						"match_phrases": [
-							"pàccu fànn",
-							"sous-domaine",
-							"jokkoo ci wax"
-						]
-					},
-					{
-						"id": "oral-activite-heading",
-						"canonical_name": {
-							"primary": "Activité : Expression orale et Récitation",
-							"translations": {}
-						},
-						"emit": "ignore",
-						"doc_note": "Consumes 'Yëngute : Waxinu làmmiñ ak tari / ACTIVITÉ : EXPRESSION ORALE ET RÉCITATION' heading.",
-						"match_phrases": [
-							"yëngute",
-							"expression orale et récitation",
-							"waxinu làmmiñ ak tari"
-						]
-					},
-					{
-						"id": "oral-niveau-heading-1",
-						"canonical_name": {
-							"primary": "Niveau 1",
-							"translations": {}
-						},
-						"emit": "ignore",
-						"doc_note": "Consumes 'JEEGO 1 / NIVEAU 1' heading before Palier 1.",
-						"match_phrases": [
-							"jeego 1",
-							"niveau 1"
-						]
-					},
-					{
-						"id": "oral-palier-1",
-						"canonical_name": {
-							"primary": "Palier 1 — Communication orale",
-							"translations": {
-								"wo": "Sumb 1"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 1,
-						"doc_note": "Palier 1: narratif (Semaines 1-9).",
-						"match_phrases": [
-							"sumb 1",
-							"palier 1"
-						],
-						"children": [
-							{
-								"id": "oral-palier-1-def",
-								"canonical_name": {
-									"primary": "Palier 1",
-									"translations": {
-										"wo": "Sumb 1"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for narratif.",
-								"match_phrases": [
-									"sumb 1",
-									"palier 1",
-									"nettali"
-								]
-							},
-							{
-								"id": "oral-ap-heading-1",
-								"canonical_name": {
-									"primary": "Apprentissages ponctuels (Palier 1)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Njàngum bennat / APPRENTISSAGES PONCTUELS' heading.",
-								"match_phrases": [
-									"njàngum bennat",
-									"apprentissages ponctuels"
-								]
-							},
-							{
-								"id": "tableau-1.3.1",
-								"canonical_name": {
-									"primary": "Tableau 1.3.1 — Expression Orale, Palier 1 (Semaines 1-9)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 1,
-								"topic": {
-									"primary": "Expression orale",
-									"translations": {
-										"wo": "Waxinu làmmiñ"
-									}
-								},
-								"doc_note": "Expression Orale table for Palier 1.",
-								"match_phrases": [
-									"tableau 1.3.1"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "tableau-1.3.2",
-								"canonical_name": {
-									"primary": "Tableau 1.3.2 — Récitation, Palier 1 (Semaines 1-9)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 1,
-								"topic": {
-									"primary": "Récitation",
-									"translations": {
-										"wo": "Tari"
-									}
-								},
-								"doc_note": "Récitation table for Palier 1.",
-								"match_phrases": [
-									"tableau 1.3.2"
-								],
-								"match_target": "caption"
-							}
-						]
-					},
-					{
-						"id": "oral-palier-2",
-						"canonical_name": {
-							"primary": "Palier 2 — Communication orale",
-							"translations": {
-								"wo": "Sumb 2"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 2,
-						"doc_note": "Palier 2: descriptif (Semaines 10-17).",
-						"match_phrases": [
-							"sumb 2",
-							"palier 2"
-						],
-						"children": [
-							{
-								"id": "oral-palier-2-def",
-								"canonical_name": {
-									"primary": "Palier 2",
-									"translations": {
-										"wo": "Sumb 2"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for descriptif.",
-								"match_phrases": [
-									"sumb 2",
-									"palier 2",
-									"melool"
-								]
-							},
-							{
-								"id": "oral-ap-heading-2",
-								"canonical_name": {
-									"primary": "Apprentissages ponctuels (Palier 2)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Njàngum bennat / APPRENTISSAGES PONCTUELS' heading.",
-								"match_phrases": [
-									"njàngum bennat",
-									"apprentissages ponctuels"
-								]
-							},
-							{
-								"id": "tableau-1.3.3",
-								"canonical_name": {
-									"primary": "Tableau 1.3.3 — Expression Orale, Palier 2 (Semaines 10-17)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 2,
-								"topic": {
-									"primary": "Expression orale",
-									"translations": {
-										"wo": "Waxinu làmmiñ"
-									}
-								},
-								"doc_note": "Expression Orale table for Palier 2.",
-								"match_phrases": [
-									"tableau 1.3.3"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "tableau-1.3.4",
-								"canonical_name": {
-									"primary": "Tableau 1.3.4 — Récitation, Palier 2 (Semaines 10-17)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 2,
-								"topic": {
-									"primary": "Récitation",
-									"translations": {
-										"wo": "Tari"
-									}
-								},
-								"doc_note": "Récitation table for Palier 2.",
-								"match_phrases": [
-									"tableau 1.3.4"
-								],
-								"match_target": "caption"
-							}
-						]
-					},
-					{
-						"id": "oral-palier-3",
-						"canonical_name": {
-							"primary": "Palier 3 — Communication orale",
-							"translations": {
-								"wo": "Sumb 3"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 3,
-						"doc_note": "Palier 3: injonctif (Semaines 18-25).",
-						"match_phrases": [
-							"sumb 3",
-							"palier 3"
-						],
-						"children": [
-							{
-								"id": "oral-palier-3-def",
-								"canonical_name": {
-									"primary": "Palier 3",
-									"translations": {
-										"wo": "Sumb 3"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for injonctif.",
-								"match_phrases": [
-									"sumb 3",
-									"palier 3",
-									"digle ak santaane"
-								]
-							},
-							{
-								"id": "oral-ap-heading-3",
-								"canonical_name": {
-									"primary": "Apprentissages ponctuels (Palier 3)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Njàngum bennat / APPRENTISSAGES PONCTUELS' heading.",
-								"match_phrases": [
-									"njàngum bennat",
-									"apprentissages ponctuels"
-								]
-							},
-							{
-								"id": "tableau-1.3.5",
-								"canonical_name": {
-									"primary": "Tableau 1.3.5 — Expression Orale, Palier 3 (Semaines 18-25)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 3,
-								"topic": {
-									"primary": "Expression orale",
-									"translations": {
-										"wo": "Waxinu làmmiñ"
-									}
-								},
-								"doc_note": "Expression Orale table for Palier 3.",
-								"match_phrases": [
-									"tableau 1.3.5"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "tableau-1.3.6",
-								"canonical_name": {
-									"primary": "Tableau 1.3.6 — Récitation, Palier 3 (Semaines 18-25)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 3,
-								"topic": {
-									"primary": "Récitation",
-									"translations": {
-										"wo": "Tari"
-									}
-								},
-								"doc_note": "Récitation table for Palier 3.",
-								"match_phrases": [
-									"tableau 1.3.6"
-								],
-								"match_target": "caption"
-							}
-						]
-					}
-				]
-			},
-			{
-				"id": "strand-lecture",
-				"canonical_name": {
-					"primary": "Communication écrite — Lecture",
-					"translations": {
-						"wo": "Jokkoo ci mbind — Njàng"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "strand",
-				"doc_note": "Section 1.4. Sous-domaine: Communication écrite. Activity: Lecture. 3 paliers, 1 table per palier covering comprehension, graphophonology, frequent words, and fluency.",
-				"match_phrases": [
-					"activités - lecture",
-					"1.4",
-					"activités de lecture",
-					"yëngute njàng"
-				],
-				"children": [
-					{
-						"id": "lecture-sous-domaine-heading",
-						"canonical_name": {
-							"primary": "Sous-domaine : Communication écrite",
-							"translations": {}
-						},
-						"emit": "ignore",
-						"doc_note": "Consumes 'Pàccu fànn : JOKKOO CI MBIND / SOUS-DOMAINE : COMMUNICATION ECRITE' heading.",
-						"match_phrases": [
-							"jokkoo ci mbind",
-							"sous-domaine",
-							"communication ecrite"
-						]
-					},
-					{
-						"id": "lecture-activite-heading",
-						"canonical_name": {
-							"primary": "Activités de Lecture",
-							"translations": {}
-						},
-						"emit": "ignore",
-						"doc_note": "Consumes 'YËNGUTE NJÀNG / ACTIVITÉS DE LECTURE' heading.",
-						"match_phrases": [
-							"yëngute njàng",
-							"activités de lecture"
-						]
-					},
-					{
-						"id": "lecture-niveau-heading-1",
-						"canonical_name": {
-							"primary": "Niveau 1",
-							"translations": {}
-						},
-						"emit": "ignore",
-						"doc_note": "Consumes 'JÉEGO 1 / NIVEAU 1' heading.",
-						"match_phrases": [
-							"jéego 1",
-							"niveau 1"
-						]
-					},
-					{
-						"id": "lecture-palier-1",
-						"canonical_name": {
-							"primary": "Palier 1 — Lecture",
-							"translations": {
-								"wo": "Sumb 1"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 1,
-						"doc_note": "Palier 1: lecture de textes narratifs (Semaines 1-9).",
-						"match_phrases": [
-							"sumb 1",
-							"palier 1"
-						],
-						"children": [
-							{
-								"id": "lecture-palier-1-def",
-								"canonical_name": {
-									"primary": "Palier 1",
-									"translations": {
-										"wo": "Sumb 1"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for lecture de textes narratifs.",
-								"match_phrases": [
-									"sumb 1",
-									"palier 1",
-									"jéego 1"
-								]
-							},
-							{
-								"id": "tableau-1.4.1",
-								"canonical_name": {
-									"primary": "Tableau 1.4.1 — Lecture, Palier 1 (Semaines 1-9)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 1,
-								"topic": {
-									"primary": "Lecture — textes narratifs",
-									"translations": {}
-								},
-								"doc_note": "Lecture table for Palier 1: comprehension, graphophonology, frequent words, fluency.",
-								"match_phrases": [
-									"tableau 1.4.1"
-								],
-								"match_target": "caption"
-							}
-						]
-					},
-					{
-						"id": "lecture-palier-2",
-						"canonical_name": {
-							"primary": "Palier 2 — Lecture",
-							"translations": {
-								"wo": "Sumb 2"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 2,
-						"doc_note": "Palier 2: lecture de textes descriptifs (Semaines 10-17).",
-						"match_phrases": [
-							"sumb 2",
-							"palier 2"
-						],
-						"children": [
-							{
-								"id": "lecture-palier-2-def",
-								"canonical_name": {
-									"primary": "Palier 2",
-									"translations": {
-										"wo": "Sumb 2"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for lecture de textes descriptifs.",
-								"match_phrases": [
-									"sumb 2",
-									"palier 2",
-									"jéego 2"
-								]
-							},
-							{
-								"id": "tableau-1.4.2",
-								"canonical_name": {
-									"primary": "Tableau 1.4.2 — Lecture, Palier 2 (Semaines 10-17)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 2,
-								"topic": {
-									"primary": "Lecture — textes descriptifs",
-									"translations": {}
-								},
-								"doc_note": "Lecture table for Palier 2: comprehension, graphophonology, frequent words, fluency.",
-								"match_phrases": [
-									"tableau 1.4.2"
-								],
-								"match_target": "caption"
-							}
-						]
-					},
-					{
-						"id": "lecture-palier-3",
-						"canonical_name": {
-							"primary": "Palier 3 — Lecture",
-							"translations": {
-								"wo": "Sumb 3"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 3,
-						"doc_note": "Palier 3: lecture de textes injonctifs (Semaines 18-25).",
-						"match_phrases": [
-							"sumb 3",
-							"palier 3"
-						],
-						"children": [
-							{
-								"id": "lecture-palier-3-def",
-								"canonical_name": {
-									"primary": "Palier 3",
-									"translations": {
-										"wo": "Sumb 3"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for lecture de textes injonctifs.",
-								"match_phrases": [
-									"sumb 3",
-									"palier 3",
-									"jéego 3"
-								]
-							},
-							{
-								"id": "tableau-1.4.3",
-								"canonical_name": {
-									"primary": "Tableau 1.4.3 — Lecture, Palier 3 (Semaines 18-25)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
-										"role": "skip",
-										"source_label_override": "Objectif d'apprentissage"
-									},
-									{
-										"header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|k[ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 3,
-								"topic": {
-									"primary": "Lecture — textes injonctifs",
-									"translations": {}
-								},
-								"doc_note": "Lecture table for Palier 3: comprehension, graphophonology, frequent words, fluency.",
-								"match_phrases": [
-									"tableau 1.4.3"
-								],
-								"match_target": "caption"
-							}
-						]
-					}
-				]
-			},
-			{
-				"id": "planification-ecrite",
-				"canonical_name": {
-					"primary": "Planification — Communication écrite",
-					"translations": {}
-				},
-				"emit": "container_only",
-				"grouping_role": "section",
-				"doc_note": "Section 1.5. Week-by-week planning overview tables for all written communication sub-activities (Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, Production d'écrits). One table per palier.",
-				"match_phrases": [
-					"1.5",
-					"compétences communication écrite"
-				],
-				"children": [
-					{
-						"id": "tableau-1.5.1",
-						"canonical_name": {
-							"primary": "Tableau 1.5.1 — Communication Écrite, Palier 1 (Semaines 1-9)",
-							"translations": {}
-						},
-						"emit": "emit_table_rows",
-						"leaf_role": "expectation",
-						"allow_multiple_segments": true,
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)b[ée]s|semaine",
-								"role": "grouping:week"
-							},
-							{
-								"header_pattern": "(?i)baataan|vocabulaire",
-								"role": "leaf:expectation",
-								"source_label_override": "Vocabulaire"
-							},
-							{
-								"header_pattern": "(?i)r[oó]ofoo.*baat|grammaire",
-								"role": "leaf:expectation",
-								"source_label_override": "Grammaire"
-							},
-							{
-								"header_pattern": "(?i)demalinu|conjugaison",
-								"role": "leaf:expectation",
-								"source_label_override": "Conjugaison"
-							},
-							{
-								"header_pattern": "(?i)t[ëe]ralinu|orthographe",
-								"role": "leaf:expectation",
-								"source_label_override": "Orthographe"
-							},
-							{
-								"header_pattern": "(?i)mbindin|sotti|[ée]criture|copie",
-								"role": "leaf:expectation",
-								"source_label_override": "Écriture / Copie"
-							},
-							{
-								"header_pattern": "(?i)nasum|production",
-								"role": "leaf:expectation",
-								"source_label_override": "Production d'écrits"
-							}
-						],
-						"substage_index": 1,
-						"doc_note": "7-column overview table for Communication Écrite Palier 1: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, Production d'écrits.",
-						"match_phrases": [
-							"tableau 1.5.1"
-						],
-						"match_target": "caption"
-					},
-					{
-						"id": "tableau-1.5.2",
-						"canonical_name": {
-							"primary": "Tableau 1.5.2 — Communication Écrite, Palier 2 (Semaines 10-17)",
-							"translations": {}
-						},
-						"emit": "emit_table_rows",
-						"leaf_role": "expectation",
-						"allow_multiple_segments": true,
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)b[ée]s|semaine",
-								"role": "grouping:week"
-							},
-							{
-								"header_pattern": "(?i)baataan|vocabulaire",
-								"role": "leaf:expectation",
-								"source_label_override": "Vocabulaire"
-							},
-							{
-								"header_pattern": "(?i)r[oó]ofoo.*baat|grammaire",
-								"role": "leaf:expectation",
-								"source_label_override": "Grammaire"
-							},
-							{
-								"header_pattern": "(?i)demalinu|conjugaison",
-								"role": "leaf:expectation",
-								"source_label_override": "Conjugaison"
-							},
-							{
-								"header_pattern": "(?i)t[ëe]ralinu|orthographe",
-								"role": "leaf:expectation",
-								"source_label_override": "Orthographe"
-							},
-							{
-								"header_pattern": "(?i)mbindin|sotti|[ée]criture|copie",
-								"role": "leaf:expectation",
-								"source_label_override": "Écriture / Copie"
-							},
-							{
-								"header_pattern": "(?i)nasum|production",
-								"role": "leaf:expectation",
-								"source_label_override": "Production d'écrits"
-							}
-						],
-						"substage_index": 2,
-						"doc_note": "7-column overview table for Communication Écrite Palier 2: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, Production d'écrits.",
-						"match_phrases": [
-							"tableau 1.5.2"
-						],
-						"match_target": "caption"
-					},
-					{
-						"id": "tableau-1.5.3",
-						"canonical_name": {
-							"primary": "Tableau 1.5.3 — Communication Écrite, Palier 3 (Semaines 18-25)",
-							"translations": {}
-						},
-						"emit": "emit_table_rows",
-						"leaf_role": "expectation",
-						"allow_multiple_segments": true,
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)b[ée]s|semaine",
-								"role": "grouping:week"
-							},
-							{
-								"header_pattern": "(?i)baataan|vocabulaire",
-								"role": "leaf:expectation",
-								"source_label_override": "Vocabulaire"
-							},
-							{
-								"header_pattern": "(?i)r[oó]ofoo.*baat|grammaire",
-								"role": "leaf:expectation",
-								"source_label_override": "Grammaire"
-							},
-							{
-								"header_pattern": "(?i)demalinu|conjugaison",
-								"role": "leaf:expectation",
-								"source_label_override": "Conjugaison"
-							},
-							{
-								"header_pattern": "(?i)t[ëe]ralinu|orthographe",
-								"role": "leaf:expectation",
-								"source_label_override": "Orthographe"
-							},
-							{
-								"header_pattern": "(?i)mbindin|sotti|[ée]criture|copie",
-								"role": "leaf:expectation",
-								"source_label_override": "Écriture / Copie"
-							},
-							{
-								"header_pattern": "(?i)nasum|production",
-								"role": "leaf:expectation",
-								"source_label_override": "Production d'écrits"
-							}
-						],
-						"substage_index": 3,
-						"doc_note": "7-column overview table for Communication Écrite Palier 3: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, Production d'écrits.",
-						"match_phrases": [
-							"tableau 1.5.3"
-						],
-						"match_target": "caption"
-					}
-				]
-			},
-			{
-				"id": "strand-production",
-				"canonical_name": {
-					"primary": "Communication écrite — Production d'écrits",
-					"translations": {
-						"wo": "Jokkoo ci mbind — Nasum mbind"
-					}
-				},
-				"emit": "emit_grouping",
-				"grouping_role": "strand",
-				"doc_note": "Section 1.6. Sous-domaine: Communication écrite. Activity: Production d'écrits. 3 paliers, each with 3 sub-tables: Outils de langue, Produire des textes, Copie.",
-				"match_phrases": [
-					"activités de production",
-					"1.6",
-					"production d'écrits",
-					"nasum mbind"
-				],
-				"children": [
-					{
-						"id": "production-palier-1",
-						"canonical_name": {
-							"primary": "Palier 1 — Production d'écrits",
-							"translations": {
-								"wo": "Jéego 1"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 1,
-						"doc_note": "Palier 1: production de textes narratifs (Semaines 1-9). Contains 3 sub-sections: Outils de langue, Produire des textes, Copie.",
-						"match_phrases": [
-							"jéego 1",
-							"palier 1"
-						],
-						"children": [
-							{
-								"id": "production-palier-1-def",
-								"canonical_name": {
-									"primary": "Palier 1",
-									"translations": {
-										"wo": "Jéego 1"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for production de textes narratifs.",
-								"match_phrases": [
-									"jéego 1",
-									"palier 1",
-									"nasum mbind"
-								]
-							},
-							{
-								"id": "production-ap-heading-1",
-								"canonical_name": {
-									"primary": "Apprentissages ponctuels (Palier 1)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'NJÀNGUM BÉS BI / APPRENTISSAGES PONCTUELS' heading.",
-								"match_phrases": [
-									"njàngum bés bi",
-									"apprentissages ponctuels"
-								]
-							},
-							{
-								"id": "production-oa1-heading-1",
-								"canonical_name": {
-									"primary": "OA 1 — Maîtriser les outils de langue (Palier 1)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng1 : Peeg Jumtukaayi làkk... / Objectif d'apprentissage 1 : Maîtriser les outils de langue...' heading.",
-								"match_phrases": [
-									"nisaru njàng1",
-									"objectif d'apprentissage 1",
-									"peeg jumtukaayi",
-									"outils de langue"
-								]
-							},
-							{
-								"id": "tableau-1.6.1",
-								"canonical_name": {
-									"primary": "Tableau 1.6.1 — Outils de langue, Palier 1 (Semaines 1-9)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)jumtukaayi|outils de langue",
-										"role": "leaf:descriptor",
-										"source_label_override": "Outils de langue"
-									},
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 1,
-								"topic": {
-									"primary": "Outils de langue",
-									"translations": {
-										"wo": "Jumtukaayi làkk"
-									}
-								},
-								"doc_note": "Outils de langue table for Palier 1: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
-								"match_phrases": [
-									"tableau 1.6.1"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "production-oa2-heading-1",
-								"canonical_name": {
-									"primary": "OA 2 — Produire des textes narratifs (Palier 1)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng 2 : ... / Objectif d'apprentissage 2 : Produire des textes narratifs' heading.",
-								"match_phrases": [
-									"nisaru njàng 2",
-									"objectif d'apprentissage 2",
-									"textes narratifs",
-									"nettali"
-								]
-							},
-							{
-								"id": "tableau-1.6.2",
-								"canonical_name": {
-									"primary": "Tableau 1.6.2 — Produire des textes narratifs, Palier 1 (Semaines 1-9)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 1,
-								"topic": {
-									"primary": "Produire des textes narratifs",
-									"translations": {}
-								},
-								"doc_note": "Production table for Palier 1: identifying characteristics, building word banks, criteria sheets, writing practice.",
-								"match_phrases": [
-									"tableau 1.6.2"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "production-oa3-heading-1",
-								"canonical_name": {
-									"primary": "OA 3 — Copie (Palier 1)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
-								"match_phrases": [
-									"nisaru njàng 3",
-									"objectif d'apprentissage 3",
-									"copier",
-									"sotti"
-								]
-							},
-							{
-								"id": "tableau-1.6.3",
-								"canonical_name": {
-									"primary": "Tableau 1.6.3 — Copie, Palier 1 (Semaines 1-9)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 1,
-								"topic": {
-									"primary": "Copie",
-									"translations": {
-										"wo": "Sotti"
-									}
-								},
-								"doc_note": "Copie table for Palier 1: cursive majuscules, text copying exercises.",
-								"match_phrases": [
-									"tableau 1.6.3"
-								],
-								"match_target": "caption"
-							}
-						]
-					},
-					{
-						"id": "production-palier-2",
-						"canonical_name": {
-							"primary": "Palier 2 — Production d'écrits",
-							"translations": {
-								"wo": "Jéego 2"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 2,
-						"doc_note": "Palier 2: production de textes descriptifs (Semaines 10-17). Contains 3 sub-sections: Outils de langue, Produire des textes, Copie.",
-						"match_phrases": [
-							"jéego 2",
-							"palier 2"
-						],
-						"children": [
-							{
-								"id": "production-palier-2-def",
-								"canonical_name": {
-									"primary": "Palier 2",
-									"translations": {
-										"wo": "Jéego 2"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for production de textes descriptifs.",
-								"match_phrases": [
-									"jéego 2",
-									"palier 2",
-									"nasum mbind"
-								]
-							},
-							{
-								"id": "production-ap-heading-2",
-								"canonical_name": {
-									"primary": "Apprentissages ponctuels (Palier 2)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'NJÀNGUM BÉS BI / APPRENTISSAGES PONCTUELS' heading.",
-								"match_phrases": [
-									"njàngum bés bi",
-									"apprentissages ponctuels"
-								]
-							},
-							{
-								"id": "production-oa1-heading-2",
-								"canonical_name": {
-									"primary": "OA 1 — Maîtriser les outils de langue (Palier 2)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng1 : Peeg Jumtukaayi làkk... / Objectif d'apprentissage 1 : Maîtriser les outils de langue...' heading.",
-								"match_phrases": [
-									"nisaru njàng1",
-									"objectif d'apprentissage 1",
-									"peeg jumtukaayi",
-									"outils de langue"
-								]
-							},
-							{
-								"id": "tableau-1.6.4",
-								"canonical_name": {
-									"primary": "Tableau 1.6.4 — Outils de langue, Palier 2 (Semaines 10-17)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)jumtukaayi|outils de langue",
-										"role": "leaf:descriptor",
-										"source_label_override": "Outils de langue"
-									},
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 2,
-								"topic": {
-									"primary": "Outils de langue",
-									"translations": {
-										"wo": "Jumtukaayi làkk"
-									}
-								},
-								"doc_note": "Outils de langue table for Palier 2: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
-								"match_phrases": [
-									"tableau 1.6.4"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "production-oa2-heading-2",
-								"canonical_name": {
-									"primary": "OA 2 — Produire des textes descriptifs (Palier 2)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng 2 : ... / Objectif d'apprentissage 2 : Produire des textes descriptifs' heading.",
-								"match_phrases": [
-									"nisaru njàng 2",
-									"objectif d'apprentissage 2",
-									"textes descriptifs",
-									"meloo"
-								]
-							},
-							{
-								"id": "tableau-1.6.5",
-								"canonical_name": {
-									"primary": "Tableau 1.6.5 — Produire des textes descriptifs, Palier 2 (Semaines 10-17)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 2,
-								"topic": {
-									"primary": "Produire des textes descriptifs",
-									"translations": {}
-								},
-								"doc_note": "Production table for Palier 2: identifying characteristics, building word banks, criteria sheets, writing practice.",
-								"match_phrases": [
-									"tableau 1.6.5"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "production-oa3-heading-2",
-								"canonical_name": {
-									"primary": "OA 3 — Copie (Palier 2)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
-								"match_phrases": [
-									"nisaru njàng 3",
-									"objectif d'apprentissage 3",
-									"copier",
-									"sotti"
-								]
-							},
-							{
-								"id": "tableau-1.6.6",
-								"canonical_name": {
-									"primary": "Tableau 1.6.6 — Copie, Palier 2 (Semaines 10-17)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 2,
-								"topic": {
-									"primary": "Copie",
-									"translations": {
-										"wo": "Sotti"
-									}
-								},
-								"doc_note": "Copie table for Palier 2: cursive majuscules, text copying exercises.",
-								"match_phrases": [
-									"tableau 1.6.6"
-								],
-								"match_target": "caption"
-							}
-						]
-					},
-					{
-						"id": "production-palier-3",
-						"canonical_name": {
-							"primary": "Palier 3 — Production d'écrits",
-							"translations": {
-								"wo": "Jéego 3"
-							}
-						},
-						"emit": "emit_grouping",
-						"grouping_role": "substage",
-						"substage_index": 3,
-						"doc_note": "Palier 3: production de textes injonctifs (Semaines 18-25). Contains 3 sub-sections: Outils de langue, Produire des textes, Copie.",
-						"match_phrases": [
-							"jéego 3",
-							"palier 3"
-						],
-						"children": [
-							{
-								"id": "production-palier-3-def",
-								"canonical_name": {
-									"primary": "Palier 3",
-									"translations": {
-										"wo": "Jéego 3"
-									}
-								},
-								"emit": "emit_leaf",
-								"leaf_role": "expectation",
-								"allow_multiple_segments": true,
-								"doc_note": "Palier definition: bilingual competency statement for production de textes injonctifs.",
-								"match_phrases": [
-									"jéego 3",
-									"palier 3",
-									"nasum mbind"
-								]
-							},
-							{
-								"id": "production-ap-heading-3",
-								"canonical_name": {
-									"primary": "Apprentissages ponctuels (Palier 3)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'NJÀNGUM BÉS BI / APPRENTISSAGES PONCTUELS' heading.",
-								"match_phrases": [
-									"njàngum bés bi",
-									"apprentissages ponctuels"
-								]
-							},
-							{
-								"id": "production-oa1-heading-3",
-								"canonical_name": {
-									"primary": "OA 1 — Maîtriser les outils de langue (Palier 3)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng1 : Peeg Jumtukaayi làkk... / Objectif d'apprentissage 1 : Maîtriser les outils de langue...' heading.",
-								"match_phrases": [
-									"nisaru njàng1",
-									"objectif d'apprentissage 1",
-									"peeg jumtukaayi",
-									"outils de langue"
-								]
-							},
-							{
-								"id": "tableau-1.6.7",
-								"canonical_name": {
-									"primary": "Tableau 1.6.7 — Outils de langue, Palier 3 (Semaines 18-25)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)jumtukaayi|outils de langue",
-										"role": "leaf:descriptor",
-										"source_label_override": "Outils de langue"
-									},
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 3,
-								"topic": {
-									"primary": "Outils de langue",
-									"translations": {
-										"wo": "Jumtukaayi làkk"
-									}
-								},
-								"doc_note": "Outils de langue table for Palier 3: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
-								"match_phrases": [
-									"tableau 1.6.7"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "production-oa2-heading-3",
-								"canonical_name": {
-									"primary": "OA 2 — Produire des textes injonctifs (Palier 3)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng 2 : ... / Objectif d'apprentissage 2 : Produire des textes injonctifs' heading.",
-								"match_phrases": [
-									"nisaru njàng 2",
-									"objectif d'apprentissage 2",
-									"textes injonctifs",
-									"digle"
-								]
-							},
-							{
-								"id": "tableau-1.6.8",
-								"canonical_name": {
-									"primary": "Tableau 1.6.8 — Produire des textes injonctifs, Palier 3 (Semaines 18-25)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 3,
-								"topic": {
-									"primary": "Produire des textes injonctifs",
-									"translations": {}
-								},
-								"doc_note": "Production table for Palier 3: identifying characteristics, building word banks, criteria sheets, writing practice.",
-								"match_phrases": [
-									"tableau 1.6.8"
-								],
-								"match_target": "caption"
-							},
-							{
-								"id": "production-oa3-heading-3",
-								"canonical_name": {
-									"primary": "OA 3 — Copie (Palier 3)",
-									"translations": {}
-								},
-								"emit": "ignore",
-								"doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
-								"match_phrases": [
-									"nisaru njàng 3",
-									"objectif d'apprentissage 3",
-									"copier",
-									"sotti"
-								]
-							},
-							{
-								"id": "tableau-1.6.9",
-								"canonical_name": {
-									"primary": "Tableau 1.6.9 — Copie, Palier 3 (Semaines 18-25)",
-									"translations": {}
-								},
-								"emit": "emit_table_rows",
-								"leaf_role": "expectation",
-								"column_mappings": [
-									{
-										"header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
-										"role": "leaf:expectation",
-										"source_label_override": "Objectif spécifique"
-									},
-									{
-										"header_pattern": "(?i)contenus?|limu [ëe]mb",
-										"role": "leaf:guidance",
-										"source_label_override": "Contenus"
-									},
-									{
-										"header_pattern": "(?i)dur[ée]e|diir",
-										"role": "leaf:descriptor",
-										"source_label_override": "Durée"
-									}
-								],
-								"substage_index": 3,
-								"topic": {
-									"primary": "Copie",
-									"translations": {
-										"wo": "Sotti"
-									}
-								},
-								"doc_note": "Copie table for Palier 3: cursive majuscules, text copying exercises.",
-								"match_phrases": [
-									"tableau 1.6.9"
-								],
-								"match_target": "caption"
-							}
-						]
-					}
-				]
-			}
-		]
-	},
-	"schema_version": "1.0",
-	"skeleton_id": "senegal-reading-etape2-ce1-wolof-fr"
+  "metadata": {
+    "academic_subject": "Langue et Communication",
+    "context_groupings_role_order": [
+      "stage",
+      "grade_level",
+      "learning_area",
+      "subject",
+      "strand",
+      "substrand",
+      "theme",
+      "subtheme",
+      "term",
+      "unit",
+      "substage",
+      "section",
+      "week",
+      "topic",
+      "subtopic"
+    ],
+    "country": "Sénégal",
+    "grades": [
+      "CE1"
+    ],
+    "languages": [
+      "fr",
+      "wo"
+    ],
+    "ministry": "Ministère de l'Éducation nationale",
+    "primary_language": "fr",
+    "stage": "Étape 2",
+    "year": 2024
+  },
+  "root": {
+    "id": "root",
+    "canonical_name": {
+      "primary": "Langue et Communication, Deuxième Étape (CE1)",
+      "translations": {
+        "wo": "Jokkoo ci Làkk, Tolluwaay 2 (CE1)"
+      }
+    },
+    "emit": "container_only",
+    "grouping_role": "framework",
+    "doc_note": "Framework root. CONTAINER_ONLY because the compiler creates the framework root node independently.",
+    "match_phrases": [],
+    "children": [
+      {
+        "id": "front-matter",
+        "canonical_name": {
+          "primary": "Page de couverture",
+          "translations": {}
+        },
+        "emit": "ignore",
+        "doc_note": "Cover page: Republic, ministry, document title block. No curricular content.",
+        "allow_multiple_segments": true,
+        "match_phrases": [
+          "république du sénégal",
+          "ministère",
+          "référentiel bilingue",
+          "langue et communication",
+          "curriculum bilingue",
+          "cbeb"
+        ]
+      },
+      {
+        "id": "schema-integrateur",
+        "canonical_name": {
+          "primary": "Schéma intégrateur",
+          "translations": {}
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "section",
+        "doc_note": "Section 1.1. Contains cycle/stage competencies and base competencies overview tables.",
+        "match_phrases": [
+          "schéma intégrateur",
+          "1.1"
+        ],
+        "children": [
+          {
+            "id": "tableau-1.1.1-label",
+            "canonical_name": {
+              "primary": "Tableau 1.1.1 — Compétence de cycle",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes the Tableau 1.1.1 caption. The content that follows is not a regular extractable row table; it is a stacked competency block followed by two side-by-side sous-domaine competencies.",
+            "match_phrases": [
+              "tableau 1.1.1"
+            ]
+          },
+          {
+            "id": "competence-cycle",
+            "canonical_name": {
+              "primary": "Compétence de cycle",
+              "translations": {
+                "wo": "Manooreb diirub njàng mi"
+              }
+            },
+            "emit": "emit_leaf",
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true,
+            "doc_note": "Cycle competency block under Tableau 1.1.1. Match the bilingual heading and the Wolof/French competency paragraphs.",
+            "match_phrases": [
+              "compétence de cycle",
+              "manooreb diirub njàng mi"
+            ]
+          },
+          {
+            "id": "competence-etape",
+            "canonical_name": {
+              "primary": "Compétence de l'étape",
+              "translations": {
+                "wo": "Manooreb tolluwaay bi"
+              }
+            },
+            "emit": "emit_leaf",
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true,
+            "doc_note": "Stage competency block under Tableau 1.1.1. Match the ETAPE 2 marker, the bilingual heading, and the Wolof/French competency paragraphs.",
+            "match_phrases": [
+              "compétence de l'étape",
+              "manooreb tolluwaay bi",
+              "étape 2"
+            ]
+          },
+          {
+            "id": "competences-sous-domaines-heading",
+            "canonical_name": {
+              "primary": "Compétences de sous-domaines",
+              "translations": {
+                "wo": "Manoorey pàcci fànn yi"
+              }
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes the subdomain competency heading between the stage competency and the two subdomain competency blocks.",
+            "match_phrases": [
+              "compétences de sous-domaines",
+              "manoorey pàcci fànn yi"
+            ]
+          },
+          {
+            "id": "competence-sous-domaine-oral",
+            "canonical_name": {
+              "primary": "Compétence de sous-domaine — Communication orale",
+              "translations": {
+                "wo": "Manoore paccu fànn 1 — Jokkoo ci wax"
+              }
+            },
+            "emit": "emit_leaf",
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true,
+            "doc_note": "Sous-domaine 1 competency block for Communication orale under Tableau 1.1.1. The layout is side-by-side with the written subdomain, so model it explicitly instead of as a table row.",
+            "match_phrases": [
+              "sous-domaine 1",
+              "communication orale",
+              "pàccu fànn 1",
+              "jokkoo ci wax"
+            ]
+          },
+          {
+            "id": "competence-sous-domaine-ecrit",
+            "canonical_name": {
+              "primary": "Compétence de sous-domaine — Communication écrite",
+              "translations": {
+                "wo": "Manoore paccu fànn 2 — Jokkoo ci mbind"
+              }
+            },
+            "emit": "emit_leaf",
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true,
+            "doc_note": "Sous-domaine 2 competency block for Communication écrite under Tableau 1.1.1. The layout is side-by-side with the oral subdomain, so model it explicitly instead of as a table row.",
+            "match_phrases": [
+              "sous-domaine 2",
+              "communication écrite",
+              "pàccu fànn 2",
+              "jokkoo ci mbind"
+            ]
+          },
+          {
+            "id": "tableau-1.1.2",
+            "canonical_name": {
+              "primary": "Tableau 1.1.2 — Compétences de base",
+              "translations": {}
+            },
+            "emit": "emit_table_rows",
+            "leaf_role": "expectation",
+            "column_mappings": [
+              {
+                "header_pattern": "(?i)expression orale|waxinu làmmiñ",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Expression orale"
+              },
+              {
+                "header_pattern": "(?i)r[ée]citation|tari",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Récitation"
+              },
+              {
+                "header_pattern": "(?i)lecture.*[ée]criture|njàng",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Lecture-Écriture"
+              },
+              {
+                "header_pattern": "(?i)production|nasum",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence de base — Production d'écrits"
+              }
+            ],
+            "doc_note": "4-column overview table: base competencies for each of the 4 activities (Expression orale, Récitation, Lecture-Écriture, Production d'écrits).",
+            "match_phrases": [
+              "tableau 1.1.2"
+            ],
+            "match_target": "caption"
+          }
+        ]
+      },
+      {
+        "id": "planification-oral-lecture",
+        "canonical_name": {
+          "primary": "Planification des apprentissages du CE1",
+          "translations": {}
+        },
+        "emit": "container_only",
+        "grouping_role": "section",
+        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers.",
+        "match_phrases": [
+          "1.2",
+          "tableau de planification des apprentissages"
+        ],
+        "children": [
+          {
+            "id": "tableau-1.2.1",
+            "canonical_name": {
+              "primary": "Tableau 1.2.1 — Planification des apprentissages du CE1",
+              "translations": {}
+            },
+            "emit": "emit_table_rows",
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true,
+            "column_mappings": [
+              {
+                "header_pattern": "(?i)activit[ée]s",
+                "role": "grouping:week",
+                "grouping_role_overrides": [
+                  {
+                    "cell_pattern": "(?i)^\\s*(manoore|comp[ée]tences?\\s+de\\s+base)\\b",
+                    "role": "skip"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*(j[ée]ego|palier|semaines)\\b",
+                    "role": "grouping:substage"
+                  }
+                ]
+              },
+              {
+                "header_pattern": "(?i)waxinu làmmiñ|expression orale",
+                "role": "leaf:expectation",
+                "source_label_override": "Expression orale"
+              },
+              {
+                "header_pattern": "(?i)tari|r[ée]citation",
+                "role": "leaf:expectation",
+                "source_label_override": "Récitation"
+              },
+              {
+                "header_pattern": "(?i)njàng|lecture",
+                "role": "leaf:expectation",
+                "source_label_override": "Lecture"
+              }
+            ],
+            "doc_note": "25-week planning grid across 3 paliers. First column is the activities/week axis; the duplicated 'Manoore yi lalu / Compétences de base' row should be skipped because base competencies are already captured in Tableau 1.1.2. Rows beginning with Jéego/Palier/Semaines anchor substage transitions.",
+            "match_phrases": [
+              "tableau 1.2.1"
+            ],
+            "match_target": "caption"
+          }
+        ]
+      },
+      {
+        "id": "strand-oral",
+        "canonical_name": {
+          "primary": "Communication orale — Expression orale et Récitation",
+          "translations": {
+            "wo": "Jokkoo ci wax — Waxinu làmmiñ ak Tari"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "strand",
+        "doc_note": "Section 1.3. Sous-domaine: Communication orale. Activities: Expression orale + Récitation. 3 paliers, 2 tables per palier (one for each activity).",
+        "match_phrases": [
+          "activités - oral",
+          "1.3",
+          "communication orale",
+          "jokkoo ci wax"
+        ],
+        "children": [
+          {
+            "id": "oral-sous-domaine-heading",
+            "canonical_name": {
+              "primary": "Sous-domaine : Communication orale",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes 'Pàccu fànn : Jokkoo ci wax / SOUS-DOMAINE : COMMUNICATION ORALE' heading.",
+            "match_phrases": [
+              "pàccu fànn",
+              "sous-domaine",
+              "jokkoo ci wax"
+            ]
+          },
+          {
+            "id": "oral-activite-heading",
+            "canonical_name": {
+              "primary": "Activité : Expression orale et Récitation",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes 'Yëngute : Waxinu làmmiñ ak tari / ACTIVITÉ : EXPRESSION ORALE ET RÉCITATION' heading.",
+            "match_phrases": [
+              "yëngute",
+              "expression orale et récitation",
+              "waxinu làmmiñ ak tari"
+            ]
+          },
+          {
+            "id": "oral-niveau-heading-1",
+            "canonical_name": {
+              "primary": "Niveau 1",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes 'JEEGO 1 / NIVEAU 1' heading before Palier 1.",
+            "match_phrases": [
+              "jeego 1",
+              "niveau 1"
+            ]
+          },
+          {
+            "id": "oral-palier-1",
+            "canonical_name": {
+              "primary": "Palier 1 — Communication orale",
+              "translations": {
+                "wo": "Sumb 1"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 1,
+            "doc_note": "Palier 1 heading doubles as the grouping and the expectation leaf: bilingual competency statement for narratif (Semaines 1-9).",
+            "match_phrases": [
+              "sumb 1",
+              "palier 1",
+              "nettali"
+            ],
+            "children": [
+              {
+                "id": "oral-ap-heading-1",
+                "canonical_name": {
+                  "primary": "Apprentissages ponctuels (Palier 1)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Njàngum bennat / APPRENTISSAGES PONCTUELS' heading.",
+                "match_phrases": [
+                  "njàngum bennat",
+                  "apprentissages ponctuels"
+                ]
+              },
+              {
+                "id": "tableau-1.3.1",
+                "canonical_name": {
+                  "primary": "Tableau 1.3.1 — Expression Orale, Palier 1 (Semaines 1-9)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 1,
+                "topic": {
+                  "primary": "Expression orale",
+                  "translations": {
+                    "wo": "Waxinu làmmiñ"
+                  }
+                },
+                "doc_note": "Expression Orale table for Palier 1.",
+                "match_phrases": [
+                  "tableau 1.3.1"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "tableau-1.3.2",
+                "canonical_name": {
+                  "primary": "Tableau 1.3.2 — Récitation, Palier 1 (Semaines 1-9)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 1,
+                "topic": {
+                  "primary": "Récitation",
+                  "translations": {
+                    "wo": "Tari"
+                  }
+                },
+                "doc_note": "Récitation table for Palier 1.",
+                "match_phrases": [
+                  "tableau 1.3.2"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "oral-palier-2",
+            "canonical_name": {
+              "primary": "Palier 2 — Communication orale",
+              "translations": {
+                "wo": "Sumb 2"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 2,
+            "doc_note": "Palier 2 heading doubles as the grouping and the expectation leaf: bilingual competency statement for descriptif (Semaines 10-17).",
+            "match_phrases": [
+              "sumb 2",
+              "palier 2",
+              "melool"
+            ],
+            "children": [
+              {
+                "id": "oral-ap-heading-2",
+                "canonical_name": {
+                  "primary": "Apprentissages ponctuels (Palier 2)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Njàngum bennat / APPRENTISSAGES PONCTUELS' heading.",
+                "match_phrases": [
+                  "njàngum bennat",
+                  "apprentissages ponctuels"
+                ]
+              },
+              {
+                "id": "tableau-1.3.3",
+                "canonical_name": {
+                  "primary": "Tableau 1.3.3 — Expression Orale, Palier 2 (Semaines 10-17)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 2,
+                "topic": {
+                  "primary": "Expression orale",
+                  "translations": {
+                    "wo": "Waxinu làmmiñ"
+                  }
+                },
+                "doc_note": "Expression Orale table for Palier 2.",
+                "match_phrases": [
+                  "tableau 1.3.3"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "tableau-1.3.4",
+                "canonical_name": {
+                  "primary": "Tableau 1.3.4 — Récitation, Palier 2 (Semaines 10-17)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 2,
+                "topic": {
+                  "primary": "Récitation",
+                  "translations": {
+                    "wo": "Tari"
+                  }
+                },
+                "doc_note": "Récitation table for Palier 2.",
+                "match_phrases": [
+                  "tableau 1.3.4"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "oral-palier-3",
+            "canonical_name": {
+              "primary": "Palier 3 — Communication orale",
+              "translations": {
+                "wo": "Sumb 3"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 3,
+            "doc_note": "Palier 3 heading doubles as the grouping and the expectation leaf: bilingual competency statement for injonctif (Semaines 18-25).",
+            "match_phrases": [
+              "sumb 3",
+              "palier 3",
+              "digle ak santaane"
+            ],
+            "children": [
+              {
+                "id": "oral-ap-heading-3",
+                "canonical_name": {
+                  "primary": "Apprentissages ponctuels (Palier 3)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Njàngum bennat / APPRENTISSAGES PONCTUELS' heading.",
+                "match_phrases": [
+                  "njàngum bennat",
+                  "apprentissages ponctuels"
+                ]
+              },
+              {
+                "id": "tableau-1.3.5",
+                "canonical_name": {
+                  "primary": "Tableau 1.3.5 — Expression Orale, Palier 3 (Semaines 18-25)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 3,
+                "topic": {
+                  "primary": "Expression orale",
+                  "translations": {
+                    "wo": "Waxinu làmmiñ"
+                  }
+                },
+                "doc_note": "Expression Orale table for Palier 3.",
+                "match_phrases": [
+                  "tableau 1.3.5"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "tableau-1.3.6",
+                "canonical_name": {
+                  "primary": "Tableau 1.3.6 — Récitation, Palier 3 (Semaines 18-25)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 3,
+                "topic": {
+                  "primary": "Récitation",
+                  "translations": {
+                    "wo": "Tari"
+                  }
+                },
+                "doc_note": "Récitation table for Palier 3.",
+                "match_phrases": [
+                  "tableau 1.3.6"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          }
+        ]
+      },
+      {
+        "id": "strand-lecture",
+        "canonical_name": {
+          "primary": "Communication écrite — Lecture",
+          "translations": {
+            "wo": "Jokkoo ci mbind — Njàng"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "strand",
+        "doc_note": "Section 1.4. Sous-domaine: Communication écrite. Activity: Lecture. 3 paliers, 1 table per palier covering comprehension, graphophonology, frequent words, and fluency.",
+        "match_phrases": [
+          "activités - lecture",
+          "1.4",
+          "activités de lecture",
+          "yëngute njàng"
+        ],
+        "children": [
+          {
+            "id": "lecture-sous-domaine-heading",
+            "canonical_name": {
+              "primary": "Sous-domaine : Communication écrite",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes 'Pàccu fànn : JOKKOO CI MBIND / SOUS-DOMAINE : COMMUNICATION ECRITE' heading.",
+            "match_phrases": [
+              "jokkoo ci mbind",
+              "sous-domaine",
+              "communication ecrite"
+            ]
+          },
+          {
+            "id": "lecture-activite-heading",
+            "canonical_name": {
+              "primary": "Activités de Lecture",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes 'YËNGUTE NJÀNG / ACTIVITÉS DE LECTURE' heading.",
+            "match_phrases": [
+              "yëngute njàng",
+              "activités de lecture"
+            ]
+          },
+          {
+            "id": "lecture-niveau-heading-1",
+            "canonical_name": {
+              "primary": "Niveau 1",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "doc_note": "Consumes 'JÉEGO 1 / NIVEAU 1' heading.",
+            "match_phrases": [
+              "jéego 1",
+              "niveau 1"
+            ]
+          },
+          {
+            "id": "lecture-palier-1",
+            "canonical_name": {
+              "primary": "Palier 1 — Lecture",
+              "translations": {
+                "wo": "Sumb 1"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 1,
+            "doc_note": "Palier 1 heading doubles as the grouping and the expectation leaf: lecture de textes narratifs (Semaines 1-9).",
+            "match_phrases": [
+              "sumb 1",
+              "palier 1",
+              "textes narratifs"
+            ],
+            "children": [
+              {
+                "id": "tableau-1.4.1",
+                "canonical_name": {
+                  "primary": "Tableau 1.4.1 — Lecture, Palier 1 (Semaines 1-9)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 1,
+                "topic": {
+                  "primary": "Lecture — textes narratifs",
+                  "translations": {}
+                },
+                "doc_note": "Lecture table for Palier 1: comprehension, graphophonology, frequent words, fluency.",
+                "match_phrases": [
+                  "tableau 1.4.1"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "lecture-palier-2",
+            "canonical_name": {
+              "primary": "Palier 2 — Lecture",
+              "translations": {
+                "wo": "Jéego 2"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 2,
+            "doc_note": "Palier 2 heading doubles as the grouping and the expectation leaf: lecture de textes descriptifs (Semaines 10-17).",
+            "match_phrases": [
+              "jéego 2",
+              "sumb 2",
+              "palier 2",
+              "textes descriptifs"
+            ],
+            "children": [
+              {
+                "id": "tableau-1.4.2",
+                "canonical_name": {
+                  "primary": "Tableau 1.4.2 — Lecture, Palier 2 (Semaines 10-17)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 2,
+                "topic": {
+                  "primary": "Lecture — textes descriptifs",
+                  "translations": {}
+                },
+                "doc_note": "Lecture table for Palier 2: comprehension, graphophonology, frequent words, fluency.",
+                "match_phrases": [
+                  "tableau 1.4.2"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "lecture-palier-3",
+            "canonical_name": {
+              "primary": "Palier 3 — Lecture",
+              "translations": {
+                "wo": "Sumb 3"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 3,
+            "doc_note": "Palier 3 heading doubles as the grouping and the expectation leaf: lecture de textes injonctifs (Semaines 18-25).",
+            "match_phrases": [
+              "sumb 3",
+              "palier 3",
+              "textes injonctifs"
+            ],
+            "children": [
+              {
+                "id": "tableau-1.4.3",
+                "canonical_name": {
+                  "primary": "Tableau 1.4.3 — Lecture, Palier 3 (Semaines 18-25)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectif d.?apprentissage|nisaru njàng\\b",
+                    "role": "skip",
+                    "source_label_override": "Objectif d'apprentissage"
+                  },
+                  {
+                    "header_pattern": "(?i)(?!.*objectif d.?apprentissage)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|k[ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 3,
+                "topic": {
+                  "primary": "Lecture — textes injonctifs",
+                  "translations": {}
+                },
+                "doc_note": "Lecture table for Palier 3: comprehension, graphophonology, frequent words, fluency.",
+                "match_phrases": [
+                  "tableau 1.4.3"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          }
+        ]
+      },
+      {
+        "id": "planification-ecrite",
+        "canonical_name": {
+          "primary": "Compétences Communication écrite — Paliers 1 à 3",
+          "translations": {}
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "section",
+        "doc_note": "Section 1.5. Three overview tables for communication écrite, one per palier. Each table begins with a repeated bilingual heading, the shared communication-écrite base competency, then the palier competency statement, followed by the week-by-week grid for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d’écrits. This section is the trickiest part of the document because the caption appears before the repeated heading/preamble block.",
+        "match_phrases": [
+          "1.5",
+          "compétences communication écrite"
+        ],
+        "children": [
+          {
+            "id": "ecrite-heading-repeat",
+            "canonical_name": {
+              "primary": "Communication écrite (en-tête répété)",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "allow_multiple_segments": true,
+            "doc_note": "Consumes only the repeated full bilingual heading 'JOKKOO CI MBIND / COMMUNICATION ÉCRITE' inside each section 1.5 table. Tightened to avoid colliding with the tableau captions, which also contain 'Communication Écrite'.",
+            "match_phrases": [
+              "jokkoo ci mbind / communication écrite",
+              "jokkoo ci mbind / communication ecrite"
+            ]
+          },
+          {
+            "id": "ecrite-base-competency-repeat",
+            "canonical_name": {
+              "primary": "Compétence de base répétée — Communication écrite",
+              "translations": {}
+            },
+            "emit": "ignore",
+            "allow_multiple_segments": true,
+            "doc_note": "Consumes the repeated 'Manoore gi lalu / CB' preamble in section 1.5 to avoid duplicating the base competency already captured in Tableau 1.1.2.",
+            "match_phrases": [
+              "manoore gi lalu",
+              "cb : intégrer le vocabulaire adéquat, les indices significatifs"
+            ]
+          },
+          {
+            "id": "ecrite-palier-1",
+            "canonical_name": {
+              "primary": "Palier 1 — Communication écrite",
+              "translations": {
+                "wo": "Jéego 1"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 1,
+            "doc_note": "Palier 1 statement inside section 1.5 is a real competency statement for narrative written production; emit it as both grouping and expectation leaf.",
+            "match_phrases": [
+              "jéego 1",
+              "palier 1",
+              "textes narratifs"
+            ],
+            "children": [
+              {
+                "id": "tableau-1.5.1",
+                "canonical_name": {
+                  "primary": "Tableau 1.5.1 — Communication Écrite, Palier 1 (Semaines 1-9)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "allow_multiple_segments": true,
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)b[ée]s|semaine",
+                    "role": "grouping:week"
+                  },
+                  {
+                    "header_pattern": "(?i)baataan|vocabulaire",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Vocabulaire"
+                  },
+                  {
+                    "header_pattern": "(?i)r[oó]ofoo.*baat|grammaire",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Grammaire"
+                  },
+                  {
+                    "header_pattern": "(?i)demalinu|conjugaison",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Conjugaison"
+                  },
+                  {
+                    "header_pattern": "(?i)t[ëe]ralinu|orthographe",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Orthographe"
+                  },
+                  {
+                    "header_pattern": "(?i)mbindin|sotti|[ée]criture|copie",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Écriture / Copie"
+                  },
+                  {
+                    "header_pattern": "(?i)nasum|production",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Production d'écrits"
+                  }
+                ],
+                "substage_index": 1,
+                "doc_note": "7-column overview table for Communication Écrite Palier 1: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 1 wrapper.",
+                "match_phrases": [
+                  "tableau 1.5.1"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "ecrite-palier-2",
+            "canonical_name": {
+              "primary": "Palier 2 — Communication écrite",
+              "translations": {
+                "wo": "Jéego 2"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 2,
+            "doc_note": "Palier 2 statement inside section 1.5 is a real competency statement for descriptive written production; emit it as both grouping and expectation leaf.",
+            "match_phrases": [
+              "jéego 2",
+              "palier 2",
+              "descriptifs"
+            ],
+            "children": [
+              {
+                "id": "tableau-1.5.2",
+                "canonical_name": {
+                  "primary": "Tableau 1.5.2 — Communication Écrite, Palier 2 (Semaines 10-17)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "allow_multiple_segments": true,
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)b[ée]s|semaine",
+                    "role": "grouping:week"
+                  },
+                  {
+                    "header_pattern": "(?i)baataan|vocabulaire",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Vocabulaire"
+                  },
+                  {
+                    "header_pattern": "(?i)r[oó]ofoo.*baat|grammaire",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Grammaire"
+                  },
+                  {
+                    "header_pattern": "(?i)demalinu|conjugaison",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Conjugaison"
+                  },
+                  {
+                    "header_pattern": "(?i)t[ëe]ralinu|orthographe",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Orthographe"
+                  },
+                  {
+                    "header_pattern": "(?i)mbindin|sotti|[ée]criture|copie",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Écriture / Copie"
+                  },
+                  {
+                    "header_pattern": "(?i)nasum|production",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Production d'écrits"
+                  }
+                ],
+                "substage_index": 2,
+                "doc_note": "7-column overview table for Communication Écrite Palier 2: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 2 wrapper.",
+                "match_phrases": [
+                  "tableau 1.5.2"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "ecrite-palier-3",
+            "canonical_name": {
+              "primary": "Palier 3 — Communication écrite",
+              "translations": {
+                "wo": "Jéego 3"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 3,
+            "doc_note": "Palier 3 statement inside section 1.5 is a real competency statement for cumulative written production (narrative, descriptive, injonctive); emit it as both grouping and expectation leaf.",
+            "match_phrases": [
+              "jéego 3",
+              "palier 3",
+              "injonctifs"
+            ],
+            "children": [
+              {
+                "id": "tableau-1.5.3",
+                "canonical_name": {
+                  "primary": "Tableau 1.5.3 — Communication Écrite, Palier 3 (Semaines 18-25)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "allow_multiple_segments": true,
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)b[ée]s|semaine",
+                    "role": "grouping:week"
+                  },
+                  {
+                    "header_pattern": "(?i)baataan|vocabulaire",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Vocabulaire"
+                  },
+                  {
+                    "header_pattern": "(?i)r[oó]ofoo.*baat|grammaire",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Grammaire"
+                  },
+                  {
+                    "header_pattern": "(?i)demalinu|conjugaison",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Conjugaison"
+                  },
+                  {
+                    "header_pattern": "(?i)t[ëe]ralinu|orthographe",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Orthographe"
+                  },
+                  {
+                    "header_pattern": "(?i)mbindin|sotti|[ée]criture|copie",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Écriture / Copie"
+                  },
+                  {
+                    "header_pattern": "(?i)nasum|production",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Production d'écrits"
+                  }
+                ],
+                "substage_index": 3,
+                "doc_note": "7-column overview table for Communication Écrite Palier 3: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 3 wrapper.",
+                "match_phrases": [
+                  "tableau 1.5.3"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          }
+        ]
+      },
+      {
+        "id": "strand-production",
+        "canonical_name": {
+          "primary": "Communication écrite — Production d'écrits",
+          "translations": {
+            "wo": "Jokkoo ci mbind — Nasum mbind"
+          }
+        },
+        "emit": "emit_grouping",
+        "grouping_role": "strand",
+        "doc_note": "Section 1.6. Sous-domaine: Communication écrite. Activity: Production d'écrits. 3 paliers, each with 3 sub-tables: Outils de langue, Produire des textes, Copie.",
+        "match_phrases": [
+          "activités de production",
+          "1.6",
+          "production d'écrits",
+          "nasum mbind"
+        ],
+        "children": [
+          {
+            "id": "production-palier-1",
+            "canonical_name": {
+              "primary": "Palier 1 — Production d'écrits",
+              "translations": {
+                "wo": "Jéego 1"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 1,
+            "doc_note": "Palier 1 heading doubles as the grouping and the expectation leaf: production de textes narratifs (Semaines 1-9). Contains 3 sub-sections: Outils de langue, Produire des textes, Copie.",
+            "match_phrases": [
+              "jéego 1",
+              "palier 1",
+              "textes narratifs"
+            ],
+            "children": [
+              {
+                "id": "production-ap-heading-1",
+                "canonical_name": {
+                  "primary": "Apprentissages ponctuels (Palier 1)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'NJÀNGUM BÉS BI / APPRENTISSAGES PONCTUELS' heading.",
+                "match_phrases": [
+                  "njàngum bés bi",
+                  "apprentissages ponctuels"
+                ]
+              },
+              {
+                "id": "production-oa1-heading-1",
+                "canonical_name": {
+                  "primary": "OA 1 — Maîtriser les outils de langue (Palier 1)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng1 : Peeg Jumtukaayi làkk... / Objectif d'apprentissage 1 : Maîtriser les outils de langue...' heading.",
+                "match_phrases": [
+                  "nisaru njàng1",
+                  "nisaru njàng 1",
+                  "objectif d'apprentissage 1",
+                  "peeg jumtukaayi",
+                  "outils de langue"
+                ]
+              },
+              {
+                "id": "tableau-1.6.1",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.1 — Outils de langue, Palier 1 (Semaines 1-9)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)jumtukaayi|outils de langue",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Outils de langue"
+                  },
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 1,
+                "topic": {
+                  "primary": "Outils de langue",
+                  "translations": {
+                    "wo": "Jumtukaayi làkk"
+                  }
+                },
+                "doc_note": "Outils de langue table for Palier 1: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
+                "match_phrases": [
+                  "tableau 1.6.1"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "production-oa2-heading-1",
+                "canonical_name": {
+                  "primary": "OA 2 — Produire des textes narratifs (Palier 1)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng 2 : ... / Objectif d'apprentissage 2 : Produire des textes narratifs' heading.",
+                "match_phrases": [
+                  "nisaru njàng 2",
+                  "objectif d'apprentissage 2",
+                  "textes narratifs",
+                  "nettali"
+                ]
+              },
+              {
+                "id": "tableau-1.6.2",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.2 — Produire des textes narratifs, Palier 1 (Semaines 1-9)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 1,
+                "topic": {
+                  "primary": "Produire des textes narratifs",
+                  "translations": {}
+                },
+                "doc_note": "Production table for Palier 1: identifying characteristics, building word banks, criteria sheets, writing practice.",
+                "match_phrases": [
+                  "tableau 1.6.2"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "production-oa3-heading-1",
+                "canonical_name": {
+                  "primary": "OA 3 — Copie (Palier 1)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
+                "match_phrases": [
+                  "nisaru njàng 3",
+                  "objectif d'apprentissage 3",
+                  "copier",
+                  "sotti"
+                ]
+              },
+              {
+                "id": "tableau-1.6.3",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.3 — Copie, Palier 1 (Semaines 1-9)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 1,
+                "topic": {
+                  "primary": "Copie",
+                  "translations": {
+                    "wo": "Sotti"
+                  }
+                },
+                "doc_note": "Copie table for Palier 1: cursive majuscules, text copying exercises.",
+                "match_phrases": [
+                  "tableau 1.6.3"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "production-palier-2",
+            "canonical_name": {
+              "primary": "Palier 2 — Production d'écrits",
+              "translations": {
+                "wo": "Jéego 2"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 2,
+            "doc_note": "Palier 2 heading doubles as the grouping and the expectation leaf: production de textes descriptifs (Semaines 10-17). Contains 3 sub-sections: Outils de langue, Produire des textes, Copie.",
+            "match_phrases": [
+              "jéego 2",
+              "palier 2",
+              "textes descriptifs"
+            ],
+            "children": [
+              {
+                "id": "production-ap-heading-2",
+                "canonical_name": {
+                  "primary": "Apprentissages ponctuels (Palier 2)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'NJÀNGUM BÉS BI / APPRENTISSAGES PONCTUELS' heading.",
+                "match_phrases": [
+                  "njàngum bés bi",
+                  "apprentissages ponctuels"
+                ]
+              },
+              {
+                "id": "production-oa1-heading-2",
+                "canonical_name": {
+                  "primary": "OA 1 — Maîtriser les outils de langue (Palier 2)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng1 : Peeg Jumtukaayi làkk... / Objectif d'apprentissage 1 : Maîtriser les outils de langue...' heading.",
+                "match_phrases": [
+                  "nisaru njàng1",
+                  "nisaru njàng 1",
+                  "objectif d'apprentissage 1",
+                  "peeg jumtukaayi",
+                  "outils de langue"
+                ]
+              },
+              {
+                "id": "tableau-1.6.4",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.4 — Outils de langue, Palier 2 (Semaines 10-17)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)jumtukaayi|outils de langue",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Outils de langue"
+                  },
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 2,
+                "topic": {
+                  "primary": "Outils de langue",
+                  "translations": {
+                    "wo": "Jumtukaayi làkk"
+                  }
+                },
+                "doc_note": "Outils de langue table for Palier 2: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
+                "match_phrases": [
+                  "tableau 1.6.4"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "production-oa2-heading-2",
+                "canonical_name": {
+                  "primary": "OA 2 — Produire des textes descriptifs (Palier 2)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng 2 : ... / Objectif d'apprentissage 2 : Produire des textes descriptifs' heading.",
+                "match_phrases": [
+                  "nisaru njàng 2",
+                  "objectif d'apprentissage 2",
+                  "textes descriptifs",
+                  "meloo"
+                ]
+              },
+              {
+                "id": "tableau-1.6.5",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.5 — Produire des textes descriptifs, Palier 2 (Semaines 10-17)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 2,
+                "topic": {
+                  "primary": "Produire des textes descriptifs",
+                  "translations": {}
+                },
+                "doc_note": "Production table for Palier 2: identifying characteristics, building word banks, criteria sheets, writing practice.",
+                "match_phrases": [
+                  "tableau 1.6.5"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "production-oa3-heading-2",
+                "canonical_name": {
+                  "primary": "OA 3 — Copie (Palier 2)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
+                "match_phrases": [
+                  "nisaru njàng 3",
+                  "nisaru njàng.3",
+                  "objectif d'apprentissage 3",
+                  "copier",
+                  "sotti"
+                ]
+              },
+              {
+                "id": "tableau-1.6.6",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.6 — Copie, Palier 2 (Semaines 10-17)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 2,
+                "topic": {
+                  "primary": "Copie",
+                  "translations": {
+                    "wo": "Sotti"
+                  }
+                },
+                "doc_note": "Copie table for Palier 2: cursive majuscules, text copying exercises.",
+                "match_phrases": [
+                  "tableau 1.6.6"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          },
+          {
+            "id": "production-palier-3",
+            "canonical_name": {
+              "primary": "Palier 3 — Production d'écrits",
+              "translations": {
+                "wo": "Jéego 3"
+              }
+            },
+            "emit": "emit_grouping_and_leaf",
+            "grouping_role": "substage",
+            "substage_index": 3,
+            "doc_note": "Palier 3 heading doubles as the grouping and the expectation leaf: production de textes injonctifs (Semaines 18-25). Contains 3 sub-sections: Outils de langue, Produire des textes, Copie.",
+            "match_phrases": [
+              "jéego 3",
+              "palier 3",
+              "textes injonctifs"
+            ],
+            "children": [
+              {
+                "id": "production-ap-heading-3",
+                "canonical_name": {
+                  "primary": "Apprentissages ponctuels (Palier 3)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'NJÀNGUM BÉS BI / APPRENTISSAGES PONCTUELS' heading.",
+                "match_phrases": [
+                  "njàngum bés bi",
+                  "apprentissages ponctuels"
+                ]
+              },
+              {
+                "id": "production-oa1-heading-3",
+                "canonical_name": {
+                  "primary": "OA 1 — Maîtriser les outils de langue (Palier 3)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng1 : Peeg Jumtukaayi làkk... / Objectif d'apprentissage 1 : Maîtriser les outils de langue...' heading.",
+                "match_phrases": [
+                  "nisaru njàng1",
+                  "nisaru njàng 1",
+                  "objectif d'apprentissage 1",
+                  "peeg jumtukaayi",
+                  "outils de langue"
+                ]
+              },
+              {
+                "id": "tableau-1.6.7",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.7 — Outils de langue, Palier 3 (Semaines 18-25)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)jumtukaayi|outils de langue",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Outils de langue"
+                  },
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 3,
+                "topic": {
+                  "primary": "Outils de langue",
+                  "translations": {
+                    "wo": "Jumtukaayi làkk"
+                  }
+                },
+                "doc_note": "Outils de langue table for Palier 3: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
+                "match_phrases": [
+                  "tableau 1.6.7"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "production-oa2-heading-3",
+                "canonical_name": {
+                  "primary": "OA 2 — Produire des textes injonctifs (Palier 3)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng 2 : ... / Objectif d'apprentissage 2 : Produire des textes injonctifs' heading.",
+                "match_phrases": [
+                  "nisaru njàng 2",
+                  "objectif d'apprentissage 2",
+                  "textes injonctifs",
+                  "digle"
+                ]
+              },
+              {
+                "id": "tableau-1.6.8",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.8 — Produire des textes injonctifs, Palier 3 (Semaines 18-25)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 3,
+                "topic": {
+                  "primary": "Produire des textes injonctifs",
+                  "translations": {}
+                },
+                "doc_note": "Production table for Palier 3: identifying characteristics, building word banks, criteria sheets, writing practice.",
+                "match_phrases": [
+                  "tableau 1.6.8"
+                ],
+                "match_target": "caption"
+              },
+              {
+                "id": "production-oa3-heading-3",
+                "canonical_name": {
+                  "primary": "OA 3 — Copie (Palier 3)",
+                  "translations": {}
+                },
+                "emit": "ignore",
+                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
+                "match_phrases": [
+                  "nisaru njàng 3",
+                  "objectif d'apprentissage 3",
+                  "copier",
+                  "sotti"
+                ]
+              },
+              {
+                "id": "tableau-1.6.9",
+                "canonical_name": {
+                  "primary": "Tableau 1.6.9 — Copie, Palier 3 (Semaines 18-25)",
+                  "translations": {}
+                },
+                "emit": "emit_table_rows",
+                "leaf_role": "expectation",
+                "column_mappings": [
+                  {
+                    "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                    "role": "leaf:expectation",
+                    "source_label_override": "Objectif spécifique"
+                  },
+                  {
+                    "header_pattern": "(?i)contenus?|limu [ëe]mb",
+                    "role": "leaf:guidance",
+                    "source_label_override": "Contenus"
+                  },
+                  {
+                    "header_pattern": "(?i)dur[ée]e|diir",
+                    "role": "leaf:descriptor",
+                    "source_label_override": "Durée"
+                  }
+                ],
+                "substage_index": 3,
+                "topic": {
+                  "primary": "Copie",
+                  "translations": {
+                    "wo": "Sotti"
+                  }
+                },
+                "doc_note": "Copie table for Palier 3: cursive majuscules, text copying exercises.",
+                "match_phrases": [
+                  "tableau 1.6.9"
+                ],
+                "match_target": "caption"
+              }
+            ],
+            "leaf_role": "expectation",
+            "allow_multiple_segments": true
+          }
+        ]
+      }
+    ]
+  },
+  "schema_version": "1.0",
+  "skeleton_id": "senegal-reading-etape2-ce1-wolof-fr"
 }
