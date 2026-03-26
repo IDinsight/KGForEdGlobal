@@ -7,7 +7,6 @@ instead.
 """
 
 # Standard Library
-import base64
 import json
 
 from copy import deepcopy
@@ -230,24 +229,6 @@ def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     return False
 
 
-def encode_png_to_data_url(png_fp: Path) -> str:
-    """Encode a PNG file to a base64 data URL.
-
-    Parameters
-    ----------
-    png_fp
-        Path to the PNG file.
-
-    Returns
-    -------
-    str
-        The base64 data URL of the PNG file.
-    """
-
-    b64 = base64.b64encode(png_fp.read_bytes()).decode("utf-8")
-    return f"data:image/png;base64,{b64}"
-
-
 def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
     """Create a directory.
 
@@ -263,10 +244,13 @@ def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
     """
 
     dir_ = Path(dir_)
+
     if not Path.is_dir(dir_):
         if verbose:
             logger.info(f"Creating directory: {dir_}")
+
         Path.mkdir(dir_, exist_ok=True, mode=mode, parents=True)
+
         if verbose:
             logger.success(f"Created directory: {dir_}")
 
