@@ -222,11 +222,8 @@
         },
         "emit": "container_only",
         "grouping_role": "section",
-        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers.",
-        "match_phrases": [
-          "1.2",
-          "tableau de planification des apprentissages"
-        ],
+        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers. CONTAINER_ONLY: no match_phrases (child tableau-1.2.1 handles matching via caption).",
+        "match_phrases": [],
         "children": [
           {
             "id": "tableau-1.2.1",
@@ -236,7 +233,7 @@
             },
             "emit": "emit_table_rows",
             "leaf_role": "expectation",
-            "allow_multiple_segments": true,
+            "allow_multiple_segments": false,
             "column_mappings": [
               {
                 "header_pattern": "(?i)activit[ée]s",
@@ -958,11 +955,8 @@
         },
         "emit": "container_only",
         "grouping_role": "section",
-        "doc_note": "Section 1.5. Three overview tables for communication écrite, one per palier. Each table contains an internal preamble (repeated bilingual heading, repeated base competency, palier competency statement, then the internal 'Étude des outils de la langue' heading) before the week-by-week grid for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d’écrits. Treat this as an overview/planning container rather than a semantic leaf-bearing section node.",
-        "match_phrases": [
-          "1.5",
-          "compétences communication écrite"
-        ],
+        "doc_note": "Section 1.5. Three overview tables for communication écrite, one per palier. Each table contains an internal preamble (repeated bilingual heading, repeated base competency, palier competency statement, then the internal 'Étude des outils de la langue' heading) before the week-by-week grid for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d’écrits. Treat this as an overview/planning container rather than a semantic leaf-bearing section node. [FIX: cleared match_phrases — CONTAINER_ONLY must not have match_phrases.]",
+        "match_phrases": [],
         "children": [
           {
             "id": "ecrite-heading-repeat",
@@ -1035,7 +1029,7 @@
                 },
                 "emit": "emit_table_rows",
                 "leaf_role": "expectation",
-                "allow_multiple_segments": true,
+                "allow_multiple_segments": false,
                 "column_mappings": [
                   {
                     "header_pattern": "(?i)b[ée]s|semaine",
@@ -1073,7 +1067,7 @@
                   }
                 ],
                 "substage_index": 1,
-                "doc_note": "7-column overview table for Communication Écrite Palier 1: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 1 wrapper.",
+                "doc_note": "7-column overview table for Communication Écrite Palier 1: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 1 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
                 "match_phrases": [
                   "tableau 1.5.1"
                 ],
@@ -1109,7 +1103,7 @@
                 },
                 "emit": "emit_table_rows",
                 "leaf_role": "expectation",
-                "allow_multiple_segments": true,
+                "allow_multiple_segments": false,
                 "column_mappings": [
                   {
                     "header_pattern": "(?i)b[ée]s|semaine",
@@ -1147,7 +1141,7 @@
                   }
                 ],
                 "substage_index": 2,
-                "doc_note": "7-column overview table for Communication Écrite Palier 2: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 2 wrapper.",
+                "doc_note": "7-column overview table for Communication Écrite Palier 2: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 2 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
                 "match_phrases": [
                   "tableau 1.5.2"
                 ],
@@ -1183,7 +1177,7 @@
                 },
                 "emit": "emit_table_rows",
                 "leaf_role": "expectation",
-                "allow_multiple_segments": true,
+                "allow_multiple_segments": false,
                 "column_mappings": [
                   {
                     "header_pattern": "(?i)b[ée]s|semaine",
@@ -1221,7 +1215,7 @@
                   }
                 ],
                 "substage_index": 3,
-                "doc_note": "7-column overview table for Communication Écrite Palier 3: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 3 wrapper.",
+                "doc_note": "7-column overview table for Communication Écrite Palier 3: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 3 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
                 "match_phrases": [
                   "tableau 1.5.3"
                 ],
@@ -1334,12 +1328,12 @@
                     "wo": "Jumtukaayi làkk"
                   }
                 },
-                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration.",
+                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
                 "match_phrases": [
                   "tableau 1.6.1"
                 ],
                 "match_target": "caption",
-                "allow_multiple_segments": true
+                "allow_multiple_segments": false
               },
               {
                 "id": "production-oa2-heading-1",
@@ -1532,12 +1526,12 @@
                     "wo": "Jumtukaayi làkk"
                   }
                 },
-                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration.",
+                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
                 "match_phrases": [
                   "tableau 1.6.4"
                 ],
                 "match_target": "caption",
-                "allow_multiple_segments": true
+                "allow_multiple_segments": false
               },
               {
                 "id": "production-oa2-heading-2",
@@ -1731,12 +1725,12 @@
                     "wo": "Jumtukaayi làkk"
                   }
                 },
-                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration.",
+                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
                 "match_phrases": [
                   "tableau 1.6.7"
                 ],
                 "match_target": "caption",
-                "allow_multiple_segments": true
+                "allow_multiple_segments": false
               },
               {
                 "id": "production-oa2-heading-3",

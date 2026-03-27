@@ -608,6 +608,97 @@ def _extract_row_content(
     return groupings, leaves
 
 
+def _handle_pending_caption_binding(
+    *,
+    caption_bindings: dict[str, CaptionBinding],
+    current_index: int,
+    current_page_index: int,
+    max_gap_segments: int,
+    max_page_distance: int,
+    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int],
+    segment: BlockSegment,
+    warnings: list[str],
+) -> tuple[tuple[BlockSegment, str, CaptionKind, int, int] | None, bool]:
+    """Process a pending caption by either binding it to a table or expiring it.
+
+    This function checks if the current segment is a valid table for the pending
+    caption. If it is not a table, it checks if the caption has exceeded the maximum
+    allowed gap and should be discarded.
+
+    Parameters
+    ----------
+    caption_bindings
+        The dictionary of existing table-to-caption bindings to update.
+    current_index
+        The current iteration index in the document segments.
+    current_page_index
+        The page index of the current segment.
+    max_gap_segments
+        The maximum number of non-table segments allowed between caption and table.
+    max_page_distance
+        The maximum page distance allowed between caption and table.
+    pending_caption
+        The metadata of the caption currently awaiting a table.
+    segment
+        The current document segment being evaluated.
+    warnings
+        The list of warning messages to append to.
+
+    Returns
+    -------
+    tuple[tuple[BlockSegment, str, CaptionKind, int, int] | None, bool]
+        A tuple containing:
+            1. The updated pending_caption (None if bound or expired).
+            2. A boolean 'should_continue' indicating if the main loop should skip
+               further processing for this segment.
+    """
+
+    cap_seg, cap_text, cap_kind, cap_page, cap_index = pending_caption
+    gap = max(0, current_index - cap_index - 1)
+
+    # Case 1: Attempt to bind to a table.
+    if segment.kind == "table":
+        page_dist = abs(current_page_index - cap_page)
+
+        if gap <= max_gap_segments and page_dist <= max_page_distance:
+            caption_bindings[segment.segment_id] = CaptionBinding(
+                caption_kind=cap_kind,
+                caption_page_index=cap_page,
+                caption_segment_id=cap_seg.segment_id,
+                caption_text=cap_text,
+                gap_segments=gap,
+                table_page_index=current_page_index,
+                table_segment_id=segment.segment_id,
+            )
+        else:
+            msg = (
+                f"Dangling caption dropped:\n"
+                f"caption={cap_seg.segment_id}\n"
+                f"gap={gap}\n"
+                f"page_index={current_page_index}\n"
+                f"segment_index={current_index}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # Whether bound or dropped for distance, the caption is no longer pending.
+        return None, True
+
+    # Case 2: Expire pending caption if the gap is too large.
+    if gap > max_gap_segments:
+        msg = (
+            f"Dangling caption dropped:\n"
+            f"caption={cap_seg.segment_id} gap_exceeded={gap}\n"
+            f"page_index={current_page_index}\n"
+            f"segment_index={current_index}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        return None, False
+
+    return pending_caption, False
+
+
 def _normalize_match_text(text: str) -> str:
     """Normalize text for phrase matching.
 
@@ -691,6 +782,94 @@ def _probe_nodes(
             return idx, node
 
     return None
+
+
+def _process_segments_for_bindings(
+    *,
+    bind_unknown_caption: bool,
+    document_ir: DocumentIR,
+    max_gap_segments: int,
+    max_page_distance: int,
+) -> tuple[dict[str, CaptionBinding], list[str]]:
+    """Iterate through document segments to pair captions with their corresponding
+    tables.
+
+    Parameters
+    ----------
+    bind_unknown_caption
+        Whether to bind captions of unknown kind.
+    document_ir
+        The DocumentIR to process.
+    max_gap_segments
+        The maximum number of non-table segments allowed between caption and table.
+    max_page_distance
+        The maximum page distance allowed between caption and table.
+
+    Returns
+    -------
+    tuple[dict[str, CaptionBinding], list[str]]
+        A tuple containing:
+            1. The computed caption bindings (table_id -> CaptionBinding).
+            2. A list of warning messages generated during processing.
+
+    Raises
+    ------
+    ValueError
+        If a segment lacks slices or contains an invalid page index.
+    """
+
+    caption_bindings: dict[str, CaptionBinding] = {}
+    warnings: list[str] = []
+
+    # (caption_segment, caption_text, caption_kind, caption_page, caption_index).
+    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
+
+    for index, segment in enumerate(document_ir.segments):
+        assert segment.slices, f"Segment {segment.segment_id} has no slices."
+        page_index = segment.slices[0].page_index
+        assert isinstance(page_index, int) and page_index >= 0
+
+        if segment.kind == "block":
+            caption_text = extract_block_segment_text(segment)
+
+            if segment.block_type == BlockType.CAPTION and caption_text:
+                kind = _classify_caption_kind(caption_text)
+
+                if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
+                    continue
+
+                if pending_caption is not None:
+                    prev_seg = pending_caption[0]
+                    msg = f"Pending caption overwritten: {prev_seg.segment_id}"
+                    logger.warning(msg)
+                    warnings.append(msg)
+
+                pending_caption = (segment, caption_text, kind, page_index, index)
+                continue
+
+        if pending_caption is not None:
+            pending_caption, should_continue = _handle_pending_caption_binding(
+                caption_bindings=caption_bindings,
+                current_index=index,
+                current_page_index=page_index,
+                max_gap_segments=max_gap_segments,
+                max_page_distance=max_page_distance,
+                pending_caption=pending_caption,
+                segment=segment,
+                warnings=warnings,
+            )
+
+            if should_continue:
+                continue
+
+    # Cleanup dangling caption at end of document.
+    if pending_caption is not None:
+        cap_seg = pending_caption[0]
+        msg = f"Dangling caption dropped: caption={cap_seg.segment_id} end_of_document"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    return caption_bindings, warnings
 
 
 def _record_match(
@@ -909,9 +1088,20 @@ def _translate_table_rows(
     -------
     SegmentDecision
         A table decision with per-row RowDecisions.
+
+    Raises
+    ------
+    TypeError
+        If the segment's raw_segment is not a TableSegment, which is required for row
+        extraction.
     """
 
-    assert isinstance(seg.raw_segment, TableSegment)
+    if not isinstance(seg.raw_segment, TableSegment):
+        raise TypeError(
+            f"EMIT_TABLE_ROWS matched a non-table segment: {seg.segment_id}. "
+            f"raw_segment type: {type(seg.raw_segment).__name__}"
+        )
+
     table_seg: TableSegment = seg.raw_segment
 
     # Build column index -> role mapping from skeleton + table headers.
@@ -936,10 +1126,8 @@ def _translate_table_rows(
     header_n = table_seg.header_row_count or 0
     row_decisions: list[RowDecision] = []
 
-    for abs_i, row in enumerate(rows_source):
-        if abs_i < header_n:
-            continue  # Skip header rows
-
+    # Skip header rows.
+    for abs_i, row in enumerate(rows_source[header_n:], start=header_n):
         row_groupings, row_leaves = _extract_row_content(
             col_map=col_map, default_leaf_role=node.leaf_role, row=row
         )
@@ -1113,107 +1301,23 @@ def build_caption_bindings(
     -------
     dict[str, CaptionBinding]
         The computed caption bindings, keyed by table segment ID.
+
+    Raises
+    ------
+    ValueError
+        If a segment has no slices or an invalid page index, which are required for
+        page-based binding.
     """
 
-    caption_bindings: dict[str, CaptionBinding] = {}
     caption_bindings_fp = creation_dirs.caption_binding / "caption_bindings.json"
-    warnings: list[str] = []
     warnings_fp = creation_dirs.caption_binding / "caption_binding_warnings.json"
 
-    # (caption_segment, caption_text, caption_kind, caption_page, caption_index)
-    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
-
-    for index, segment in enumerate(document_ir.segments):
-        assert (
-            segment.slices
-        ), f"Segment {segment.segment_id} has no slices; cannot determine page index."
-        page_index = segment.slices[0].page_index
-        assert isinstance(page_index, int) and page_index >= 0
-
-        # Explicit caption candidate.
-        if segment.kind == "block":
-            caption_text = extract_block_segment_text(segment)
-
-            # Only explicit captions bind to tables; headings provide context via
-            # section_path/heading_levels instead.
-            if segment.block_type == BlockType.CAPTION and caption_text:
-                kind = _classify_caption_kind(caption_text)
-
-                # Don't bind figure captions to tables.
-                if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
-                    continue
-
-                # Warn if a previous caption is being overwritten before it could bind
-                # to a table. This can happen when two captions appear in sequence
-                # (e.g. multi-caption annotations), and means the earlier caption's
-                # context is silently lost.
-                if pending_caption is not None:
-                    prev_seg, _, _, _, _ = pending_caption
-                    msg = (
-                        f"Pending caption overwritten before binding:\n"
-                        f"  overwritten_caption={prev_seg.segment_id}\n"
-                        f"  replaced_by={segment.segment_id}\n"
-                        f"  page_index={page_index}\n"
-                        f"  segment_index={index}"
-                    )
-                    logger.warning(msg)
-                    warnings.append(msg)
-
-                pending_caption = (segment, caption_text, kind, page_index, index)
-                continue
-
-        # Bind to next table if eligible.
-        if segment.kind == "table" and pending_caption is not None:
-            cap_seg, cap_text, cap_kind, cap_page, cap_index = pending_caption
-            gap = max(0, index - cap_index - 1)
-            page_dist = abs(page_index - cap_page)
-
-            if gap <= max_gap_segments and page_dist <= max_page_distance:
-                caption_bindings[segment.segment_id] = CaptionBinding(
-                    caption_kind=cap_kind,
-                    caption_page_index=cap_page,
-                    caption_segment_id=cap_seg.segment_id,
-                    caption_text=cap_text,
-                    gap_segments=gap,
-                    table_page_index=page_index,
-                    table_segment_id=segment.segment_id,
-                )
-            else:
-                msg = (
-                    f"Dangling caption dropped:\n"
-                    f"caption={cap_seg.segment_id}\n"
-                    f"gap={gap}\n"
-                    f"page_index={page_index}\n"
-                    f"segment_index={index}"
-                )
-                logger.warning(msg)
-                warnings.append(msg)
-
-            pending_caption = None
-
-            continue
-
-        # Expire pending caption if too far. NB: pending_caption[4] is cap_index.
-        if (
-            pending_caption is not None
-            and max(0, index - pending_caption[4] - 1) > max_gap_segments
-        ):
-            cap_seg, _, _, _, cap_index = pending_caption
-            msg = (
-                f"Dangling caption dropped:\n"
-                f"caption={cap_seg.segment_id} gap_exceeded={max(0, index - cap_index - 1)}\n"
-                f"page_index={page_index}\n"
-                f"segment_index={index}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-            pending_caption = None
-
-    if pending_caption is not None:
-        cap_seg, *_ = pending_caption
-        msg = f"Dangling caption dropped: caption={cap_seg.segment_id} end_of_document"
-        logger.warning(msg)
-        warnings.append(msg)
+    caption_bindings, warnings = _process_segments_for_bindings(
+        bind_unknown_caption=bind_unknown_caption,
+        document_ir=document_ir,
+        max_gap_segments=max_gap_segments,
+        max_page_distance=max_page_distance,
+    )
 
     write_to_json(
         fp=caption_bindings_fp,
@@ -1634,6 +1738,15 @@ def prepare_matchable_segments(
     -------
     list[CurriculumMatchableSegment]
         Segments in document order, ready for the matching engine.
+
+    Raises
+    ------
+    TypeError
+        If a segment's kind does not match its actual type (e.g., a segment with
+        kind="table" that is not a TableSegment).
+    ValueError
+        If a segment has no slices or an invalid page index, which are required for
+        page-based binding.
     """
 
     logger.info("Preparing matchable segments from DocumentIR...")
@@ -1659,7 +1772,12 @@ def prepare_matchable_segments(
         page_index = segment.slices[0].page_index
 
         if segment.kind == "block":
-            assert isinstance(segment, BlockSegment)
+            if not isinstance(segment, BlockSegment):
+                raise TypeError(
+                    f"Segment {segment.segment_id} has kind='block' but is "
+                    f"{type(segment).__name__}, not BlockSegment."
+                )
+
             block_type_val = segment.block_type.value if segment.block_type else None
 
             # Bound caption blocks have their content transferred to the table
@@ -1689,7 +1807,12 @@ def prepare_matchable_segments(
                 )
             )
         elif segment.kind == "table":
-            assert isinstance(segment, TableSegment)
+            if not isinstance(segment, TableSegment):
+                raise TypeError(
+                    f"Segment {segment.segment_id} has kind='table' but is "
+                    f"{type(segment).__name__}, not TableSegment."
+                )
+
             binding = caption_bindings.get(segment.segment_id)
 
             # Convert header_rows_canonical to immutable tuples for frozen dataclass.
