@@ -956,9 +956,9 @@
           "primary": "Compétences Communication écrite — Paliers 1 à 3",
           "translations": {}
         },
-        "emit": "emit_grouping",
+        "emit": "container_only",
         "grouping_role": "section",
-        "doc_note": "Section 1.5. Three overview tables for communication écrite, one per palier. Each table begins with a repeated bilingual heading, the shared communication-écrite base competency, then the palier competency statement, followed by the week-by-week grid for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d’écrits. This section is the trickiest part of the document because the caption appears before the repeated heading/preamble block.",
+        "doc_note": "Section 1.5. Three overview tables for communication écrite, one per palier. Each table contains an internal preamble (repeated bilingual heading, repeated base competency, palier competency statement, then the internal 'Étude des outils de la langue' heading) before the week-by-week grid for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d’écrits. Treat this as an overview/planning container rather than a semantic leaf-bearing section node.",
         "match_phrases": [
           "1.5",
           "compétences communication écrite"
@@ -990,6 +990,23 @@
             "match_phrases": [
               "manoore gi lalu",
               "cb : intégrer le vocabulaire adéquat, les indices significatifs"
+            ]
+          },
+          {
+            "id": "ecrite-outils-heading-repeat",
+            "canonical_name": {
+              "primary": "Étude des outils de la langue (en-tête répété)",
+              "translations": {
+                "wo": "Njàngum jumtukaayi làkk"
+              }
+            },
+            "emit": "ignore",
+            "allow_multiple_segments": true,
+            "doc_note": "Consumes the repeated internal heading 'NJÀNGUM JUMTUKAAYI LÀKK / ETUDE DES OUTILS DE LA LANGUE' that appears inside each section 1.5 overview table before the actual week-grid header row.",
+            "match_phrases": [
+              "njàngum jumtukaayi làkk",
+              "etude des outils de la langue",
+              "étude des outils de la langue"
             ]
           },
           {
@@ -1292,8 +1309,7 @@
                 "column_mappings": [
                   {
                     "header_pattern": "(?i)jumtukaayi|outils de langue",
-                    "role": "leaf:descriptor",
-                    "source_label_override": "Outils de langue"
+                    "role": "grouping:subtopic"
                   },
                   {
                     "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
@@ -1318,11 +1334,12 @@
                     "wo": "Jumtukaayi làkk"
                   }
                 },
-                "doc_note": "Outils de langue table for Palier 1: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
+                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration.",
                 "match_phrases": [
                   "tableau 1.6.1"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "allow_multiple_segments": true
               },
               {
                 "id": "production-oa2-heading-1",
@@ -1490,8 +1507,7 @@
                 "column_mappings": [
                   {
                     "header_pattern": "(?i)jumtukaayi|outils de langue",
-                    "role": "leaf:descriptor",
-                    "source_label_override": "Outils de langue"
+                    "role": "grouping:subtopic"
                   },
                   {
                     "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
@@ -1516,11 +1532,12 @@
                     "wo": "Jumtukaayi làkk"
                   }
                 },
-                "doc_note": "Outils de langue table for Palier 2: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
+                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration.",
                 "match_phrases": [
                   "tableau 1.6.4"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "allow_multiple_segments": true
               },
               {
                 "id": "production-oa2-heading-2",
@@ -1689,8 +1706,7 @@
                 "column_mappings": [
                   {
                     "header_pattern": "(?i)jumtukaayi|outils de langue",
-                    "role": "leaf:descriptor",
-                    "source_label_override": "Outils de langue"
+                    "role": "grouping:subtopic"
                   },
                   {
                     "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
@@ -1715,11 +1731,12 @@
                     "wo": "Jumtukaayi làkk"
                   }
                 },
-                "doc_note": "Outils de langue table for Palier 3: Vocabulaire, Grammaire, Conjugaison, Orthographe rows with objectives, contents, duration.",
+                "doc_note": "Outils de langue table for this palier. The first column contains the language-tool category labels (e.g. Vocabulaire, Grammaire, Conjugaison, Orthographe), so treat it as a subtopic grouping; the second column contains specific objectives, the third contents, and the fourth duration.",
                 "match_phrases": [
                   "tableau 1.6.7"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "allow_multiple_segments": true
               },
               {
                 "id": "production-oa2-heading-3",

@@ -45,10 +45,10 @@
 		"overwrite": false
 	},
 	"kgs": {
-		"academic_subject_default": "Mathématiques",
+		"academic_subject_default": "Langue et Communication",
 		"adoption_status": "Adopted",
 		"always_double_check_first_attempt": false,
-		"attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Mathematiques, 2eme etape (CE1 - CE2).",
+		"attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Langue et Communication, 2eme etape (CE1).",
 		"author": "Ministère de l’Éducation nationale",
 		"aux_statement_parenting": "under_expectation",
 		"case_uri_base": "urn:lc:case:",
@@ -76,7 +76,7 @@
 		"lc_max_splits_per_standard": 5,
 		"learning_component_policy": "llm_atomic_skills",
 		"license": "All rights reserved (source PDF)",
-		"model": "gpt-5.2-2025-12-11",
+		"model": "openai:gpt-5.2-2025-12-11",
 		"non_grouping_role_handling": "drop",
 		"non_standard_columns_signature": [],
 		"non_standard_decision_types": [
