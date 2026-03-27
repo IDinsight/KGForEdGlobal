@@ -257,14 +257,18 @@ class CurriculumGroupingRoleOverride(BaseSchema):
     role: str = Field(
         ...,
         description=(
-            "Override semantic role: 'grouping:{NodeRole.value}' or "
-            "'leaf:{StatementRole.value}'. Must NOT be 'skip'."
+            "Override semantic role: 'grouping:{NodeRole.value}', "
+            "'leaf:{StatementRole.value}', or 'skip' (to suppress the cell)."
         ),
     )
 
     @model_validator(mode="after")
     def validate_override_role_format(self) -> CurriculumGroupingRoleOverride:
-        """Ensure the override `role` is a valid 'kind:value' string (not 'skip').
+        """Ensure the override `role` is a valid 'kind:value' string or 'skip'.
+
+        'skip' is allowed at the override level to suppress specific cells in a
+        grouping column (e.g., when a cell contains an embedded competency restatement
+        rather than the expected grouping label).
 
         Returns
         -------
@@ -274,21 +278,18 @@ class CurriculumGroupingRoleOverride(BaseSchema):
         Raises
         ------
         ValueError
-            If `role` is 'skip' or not in the correct 'kind:value' format.
+            If `role` is not in the correct 'kind:value' format or 'skip'.
         """
 
         if self.role == "skip":
-            raise ValueError(
-                "CurriculumGroupingRoleOverride.role must not be 'skip'. "
-                "Use column-level 'skip' instead."
-            )
+            return self
 
         parts = self.role.split(":", 1)
 
         if len(parts) != 2 or parts[0] not in ("grouping", "leaf"):
             raise ValueError(
                 f"CurriculumGroupingRoleOverride.role must be "
-                f"'grouping:{{role}}' or 'leaf:{{role}}'. Got: {self.role!r}"
+                f"'grouping:{{role}}', 'leaf:{{role}}', or 'skip'. Got: {self.role!r}"
             )
 
         kind, value = parts
