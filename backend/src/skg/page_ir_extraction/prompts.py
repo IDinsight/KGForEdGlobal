@@ -90,13 +90,19 @@ Omit these fields (Python fills them after extraction): boundary_state, doc_key,
 
 ## BLOCK CLASSIFICATIONS
 Valid block_type values: {allowed_block_types}
-  - "{BlockType.HEADING.value}": Section titles.
+  - "{BlockType.HEADING.value}": Section titles and structural headers that organize document content. Use for headings that introduce sections, subsections, chapters, units, themes, topics, or similar structure. Do NOT use for labels that identify a specific nearby table or figure.
   - "{BlockType.PARAGRAPH.value}": Prose text.
   - "{BlockType.LIST.value}": Bulleted/numbered/outlined items (use `list_items`, `text=null`).
-  - "{BlockType.CAPTION.value}": Labels for figures/tables (e.g., "Table 1: …").
+  - "{BlockType.CAPTION.value}": Labels/titles attached to a specific table or figure. Use CAPTION whenever a standalone line identifies a nearby table/figure, even if it is bold, centered, numbered, or visually styled like a heading. This applies across languages/scripts. Typical cues include a generic object label plus a number/code and optional title, placed immediately above or below the table/figure.
   - "{BlockType.FOOTNOTE.value}": Bottom-of-page footnotes (not page numbers). Must be near the bottom of the page.
   - "{BlockType.ARTIFACT.value}": ONLY running headers/footers and page numbers. Never use for true section headings.
   - "{BlockType.FIGURE.value}": Diagrams/illustrations/charts that are NOT a ruled table grid.
+
+## HEADING vs CAPTION TIE-BREAKER
+If a block could plausibly be either a heading or a caption, prefer the block's semantic role over its typography:
+  - If it labels or names a specific adjacent table/figure, classify it as CAPTION.
+  - If it organizes the document structure without labeling a specific adjacent table/figure, classify it as HEADING.
+  - Do NOT classify a table/figure label as HEADING just because it is bold, centered, isolated on its own line, or uses numbering/codes.
 
 ## BLOCK CONTENT RULES
 1. Do not emit blocks with no content.
@@ -227,10 +233,12 @@ Compare the extraction against the image for each of the following:
 3. **Text fidelity**: Is the extracted text faithful to what is visible? Check for missing words, added words, or significant transcription errors. Minor whitespace differences are acceptable.
 4. **Block classification**:
    - Ruled grids/cells -> TABLE (not FIGURE).
-   - Section titles -> HEADING (not ARTIFACT).
+   - Labels that identify a specific nearby table or figure -> CAPTION, even if bold/centered/numbered or styled like a heading.
+   - Section titles and structural headers that organize document content (but do not label a specific nearby table/figure) -> HEADING (not ARTIFACT).
    - Running headers/footers/page numbers -> ARTIFACT (not HEADING).
    - Prose text -> PARAGRAPH.
    - Bulleted/numbered items -> LIST.
+   - When in doubt between HEADING and CAPTION, use semantic role over typography.
 5. **Reading order**: Are items ordered top-to-bottom within each column (left column before right for multi-column layouts)?
 6. **Table structure**:
    - Are rows and cells captured faithfully?
