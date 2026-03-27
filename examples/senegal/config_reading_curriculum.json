@@ -11,7 +11,7 @@
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
 		"overwrite": false,
 		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/reading_wolof_CE1_fixed.pdf",
-		"start_page": 79,
+		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2024
 	},

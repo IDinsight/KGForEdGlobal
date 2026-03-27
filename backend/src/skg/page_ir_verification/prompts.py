@@ -109,17 +109,23 @@ against the source images and candidate excerpts. Return a `ContinuityValidation
 Visual borders (closed boxes, ruled edges) are NEVER evidence of table discontinuity.
 Judge continuity exclusively by content, not by visual framing.
 
-### B. TABLE continuation (SAME table)
-Strong positive cues: matching column structure, continuing row sequence, repeated headers.
-However, same-schema similarity is NOT sufficient when IMAGE B shows a local start-of-table signal immediately above or attached to the next table.
-Treat the following as strong evidence that IMAGE B starts a NEW table rather than continuing the prior one:
-- a new table title/caption/number directly introducing the table,
-- a fresh section/heading immediately followed by a table caption/title,
-- a fresh section/heading or label that clearly introduces the top table as a new block,
-- a structurally different header row redefining the column schema.
-These start signals outweigh repeated headers and schema similarity.
-Things that do NOT by themselves indicate a new table: row numbering restarts, topic shifts inside the same grid, checkpoint/section rows inside the grid, fully boxed fragments, language switches between rows.
-A table has truly ENDED only with explicit content evidence such as a new table title/caption/number, a start-of-table heading/label directly introducing the next table, a structurally different header row, or an explicit concluding row followed by non-tabular content.
+### B. TABLE continuation (SAME table) — DECISION PROCEDURE
+When BOTH candidates are tables, evaluate these checks IN ORDER. Do NOT skip ahead.
+
+STEP 1 — Column structure: Does the column count and alignment match between the two tables?
+  - If NO → is_continuation=false (different table schema). STOP.
+  - If YES → proceed to Step 2.
+
+STEP 2 — External start-of-table signal: Is there any NON-TABULAR content (caption, heading, title, paragraph) OUTSIDE the table grid, between the top of page N+1 and the table's first ruled border?
+  - If YES (e.g., "Tableau 3", a section heading introducing a new table) → is_continuation=false (new table explicitly introduced). STOP.
+  - If NO (table grid starts at or near the top of page N+1 with nothing above it) → proceed to Step 3.
+
+STEP 3 — Structurally different header: Does the top of the table on IMAGE B show a header row that redefines the column schema (different column names/types than the table on IMAGE A)?
+  - If YES → is_continuation=false. STOP.
+  - If NO → proceed to Step 4.
+
+STEP 4 — CONTINUATION CONFIRMED. If you reached this step, the table IS a continuation across the page break. Set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}".
+Content differences INSIDE the grid do NOT override this structural conclusion. This includes: topic or skill-area shifts, week/row numbering resets, duration or timing labels in cells, checkpoint/section rows, language switches between rows, fully boxed table fragments.
 
 ### C. TEXT continuation
 Only with strong visual evidence: truncated bottom of IMAGE A and resumed top of IMAGE B (hyphenated word, dangling punctuation, mid-sentence start).
@@ -249,33 +255,23 @@ Visual borders (closed boxes, ruled edges, cell outlines) are NEVER evidence of 
 Many document traditions draw full closed borders around EVERY page's portion of the same logical table.
 Judge continuity exclusively by content, not by visual framing.
 
-### B. TABLE continuation (SAME table)
-Strong positive cues:
-- Column structure matches: same number of columns, aligned vertical gridlines/widths.
-- Row sequence logically continues (e.g., "Semaine 3" -> "Semaine 4", week numbering, ordered sections).
-- Header rows repeat (common in scope-and-sequence curricula).
+### B. TABLE continuation (SAME table) — DECISION PROCEDURE
+When BOTH candidates are tables, evaluate these checks IN ORDER. Do NOT skip ahead.
 
-Before deciding SAME table, inspect the local context immediately above the top table on IMAGE B.
-Treat the following as strong evidence that IMAGE B starts a NEW table rather than continuing IMAGE A, even when the schema matches and headers repeat:
-- a new table title/number/caption (e.g., "Tableau 3", "Table 4") directly introducing the table,
-- a fresh section/heading immediately followed by a table caption/title,
-- a fresh section/heading or label that clearly introduces the top table as a new block,
-- a structurally different header row redefining the column schema.
-These start-of-table signals outweigh same-schema similarity and repeated headers.
+STEP 1 — Column structure: Does the column count and alignment match between the two tables?
+  - If NO → is_continuation=false (different table schema). STOP.
+  - If YES → proceed to Step 2.
 
-Things that do NOT by themselves indicate a new table:
-- Row numbering/labels restart (e.g., "Week 27" then "Week 1") — common when sections/terms change.
-- Topic or skill-area shifts inside a continuous grid.
-- Checkpoint/section rows (merged rows naming a unit/term/assessment) appearing inside the grid.
-- A header-like or merged row at the top of IMAGE B does not by itself mean the repeated table header is present. Distinguish repeated column headers from section/checkpoint rows.
-- Fully boxed table fragments on consecutive pages (see rule A above).
-- Language switches between rows (e.g., Wolof -> French) — normal bilingual formatting.
+STEP 2 — External start-of-table signal: Is there any NON-TABULAR content (caption, heading, title, paragraph) OUTSIDE the table grid, between the top of page N+1 and the table's first ruled border?
+  - If YES (e.g., "Tableau 3", a section heading introducing a new table) → is_continuation=false (new table explicitly introduced). STOP.
+  - If NO (table grid starts at or near the top of page N+1 with nothing above it) → proceed to Step 3.
 
-A table has truly ENDED only when you see explicit content evidence such as:
-- A new table title/number/caption directly introducing the next table, OR
-- a start-of-table heading/label directly introducing the next table, OR
-- A structurally different header row redefining the column schema, OR
-- An explicit concluding row (e.g., "EVALUATIONS FINALES") followed by non-tabular content.
+STEP 3 — Structurally different header: Does the top of the table on IMAGE B show a header row that redefines the column schema (different column names/types than the table on IMAGE A)?
+  - If YES → is_continuation=false. STOP.
+  - If NO → proceed to Step 4.
+
+STEP 4 — CONTINUATION CONFIRMED. If you reached this step, the table IS a continuation across the page break. Set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}".
+Content differences INSIDE the grid do NOT override this structural conclusion. This includes: topic or skill-area shifts, week/row numbering resets, duration or timing labels in cells, checkpoint/section rows, language switches between rows, fully boxed table fragments.
 
 ### C. TEXT continuation
 Use "{PageContinuationKind.TEXT.value}" only with strong visual evidence:
@@ -287,8 +283,8 @@ Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes o
 
 ## UNCERTAINTY POLICY
 - Default when uncertain: is_continuation=false, continuation_kind="{PageContinuationKind.NONE.value}", set_next_table_repeats_header=null.
-- Exception — TABLE<->TABLE with matching schema: when BOTH candidates are tables and column structure matches visually (same column count + aligned gridlines) AND there is NO local start-of-table marker above the next table (no new caption/title/number, no fresh heading/label introducing that table, no restructured header row), you are NOT uncertain. Set is_continuation=true, continuation_kind="{PageContinuationKind.TABLE.value}", confidence ~0.60–0.80.
-- If IMAGE B shows an explicit local start signal for the next table, prefer is_continuation=false even when schema matches and headers repeat.
+- Exception — TABLE<->TABLE: when BOTH candidates are tables, follow the DECISION PROCEDURE in section B above. If you reach Step 4, you are NOT uncertain — the table is a continuation regardless of content differences inside the grid. Set confidence ~0.60–0.80.
+- If you STOP at Step 2 or Step 3 (explicit external start signal or restructured header), prefer is_continuation=false even when schema matches and headers repeat.
 
 ## CONFIDENCE CALIBRATION
 - >= 0.50: clear or plausible visual evidence supports your decision.
