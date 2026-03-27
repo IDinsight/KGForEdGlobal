@@ -576,28 +576,18 @@ def _extract_row_content(
         if col_role.col_index >= len(cells) or col_role.kind == "skip":
             continue
 
-        cell_text = _cell_to_text(cells[col_role.col_index])
-
-        if not cell_text or not (cell_text_stripped := cell_text.strip()):
+        if not (cell_text := (_cell_to_text(cells[col_role.col_index]) or "").strip()):
             continue
 
-        # Apply per-cell grouping role overrides (first match wins).
-        effective_col_role = col_role
+        effective_col_role = _resolve_effective_role(
+            cell_text=cell_text, col_role=col_role
+        )
 
-        if col_role.kind == "grouping" and col_role.grouping_role_overrides:
-            for override in col_role.grouping_role_overrides:
-                if re.search(override.cell_pattern, cell_text_stripped, re.UNICODE):
-                    override_kind, override_value = override.role.split(":", 1)
-                    effective_col_role = CurriculumResolvedColumnRole(
-                        col_index=col_role.col_index,
-                        kind=override_kind,
-                        role_value=override_value,
-                        source_label=col_role.source_label,
-                    )
-                    break
+        if effective_col_role.kind == "skip":
+            continue
 
         decision = _create_decision_from_role(
-            cell_text=cell_text_stripped, col_role=effective_col_role
+            cell_text=cell_text, col_role=effective_col_role
         )
 
         if isinstance(decision, GroupingDecision):
@@ -1062,6 +1052,50 @@ def _resolve_column_mappings(
         )
 
     return resolved
+
+
+def _resolve_effective_role(
+    *, cell_text: str, col_role: CurriculumResolvedColumnRole
+) -> CurriculumResolvedColumnRole:
+    """Resolve per-cell grouping role overrides. Returns the original role if no match.
+
+    Parameters
+    ----------
+    cell_text
+        The extracted and stripped text from the cell.
+    col_role
+        The resolved column role definition, which may contain grouping_role_overrides.
+
+    Returns
+    -------
+    CurriculumResolvedColumnRole
+        The effective column role after applying any matching grouping_role_overrides.
+    """
+
+    if col_role.kind != "grouping" or not col_role.grouping_role_overrides:
+        return col_role
+
+    for override in col_role.grouping_role_overrides:
+        if not re.search(override.cell_pattern, cell_text, re.UNICODE):
+            continue
+
+        if override.role == "skip":
+            return CurriculumResolvedColumnRole(
+                col_index=col_role.col_index,
+                kind="skip",
+                role_value="",
+                source_label=col_role.source_label,
+            )
+
+        override_kind, override_value = override.role.split(":", 1)
+        return CurriculumResolvedColumnRole(
+            col_index=col_role.col_index,
+            kind=override_kind,
+            role_value=override_value,
+            source_label=col_role.source_label,
+        )
+
+    return col_role
 
 
 def _translate_table_rows(
