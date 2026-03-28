@@ -42,7 +42,7 @@
 		"caption_max_page_distance": 1,
 		"curriculum_skeleton_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/senegal/curriculum_skeleton_reading.json",
 		"max_skip_distance": 5,
-		"overwrite": false
+		"overwrite": true
 	},
 	"kgs": {
 		"academic_subject_default": "Langue et Communication",

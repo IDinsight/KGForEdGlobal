@@ -12,8 +12,8 @@
       "subtheme",
       "term",
       "unit",
-      "substage",
       "section",
+      "substage",
       "week",
       "topic",
       "subtopic"
@@ -51,7 +51,7 @@
           "translations": {}
         },
         "emit": "ignore",
-        "doc_note": "Cover page: Republic, ministry, document title block. No curricular content.",
+        "doc_note": "Cover page: Republic, motto, ministry, document title block. No curricular content. [FIX: added 'un peuple' for motto line.]",
         "allow_multiple_segments": true,
         "match_phrases": [
           "république du sénégal",
@@ -59,7 +59,8 @@
           "référentiel bilingue",
           "langue et communication",
           "curriculum bilingue",
-          "cbeb"
+          "cbeb",
+          "un peuple"
         ]
       },
       {
@@ -70,111 +71,32 @@
         },
         "emit": "emit_grouping",
         "grouping_role": "section",
-        "doc_note": "Section 1.1. Contains cycle/stage competencies and base competencies overview tables.",
+        "doc_note": "Section 1.1. Contains cycle/stage competencies and base competencies overview tables. [FIX: removed text-target nodes for content that lives inside tables (competence-cycle, competence-etape, sous-domaine nodes); replaced with EMIT_TABLE_ROWS via caption binding. Removed tableau-1.1.1-label — caption binding already handles caption blocks.]",
         "match_phrases": [
           "schéma intégrateur",
           "1.1"
         ],
         "children": [
           {
-            "id": "tableau-1.1.1-label",
+            "id": "tableau-1.1.1",
             "canonical_name": {
-              "primary": "Tableau 1.1.1 — Compétence de cycle",
+              "primary": "Tableau 1.1.1 — Compétences de cycle, étape et sous-domaines",
               "translations": {}
             },
-            "emit": "ignore",
-            "doc_note": "Consumes the Tableau 1.1.1 caption. The content that follows is not a regular extractable row table; it is a stacked competency block followed by two side-by-side sous-domaine competencies.",
+            "emit": "emit_table_rows",
+            "leaf_role": "expectation",
+            "column_mappings": [
+              {
+                "header_pattern": "(?i)compétence|manoore",
+                "role": "leaf:expectation",
+                "source_label_override": "Compétence (cycle / étape / sous-domaine)"
+              }
+            ],
+            "doc_note": "Stacked 2-column overview table containing cycle competency, stage competency, and sous-domaine competencies in bilingual rows. First column contains the competency text; second column is typically empty. [FIX: replaces separate text-target nodes (competence-cycle, competence-etape, etc.) that could never match because the content lives inside table rows, not standalone blocks.]",
             "match_phrases": [
               "tableau 1.1.1"
-            ]
-          },
-          {
-            "id": "competence-cycle",
-            "canonical_name": {
-              "primary": "Compétence de cycle",
-              "translations": {
-                "wo": "Manooreb diirub njàng mi"
-              }
-            },
-            "emit": "emit_leaf",
-            "leaf_role": "expectation",
-            "allow_multiple_segments": true,
-            "doc_note": "Cycle competency block under Tableau 1.1.1. Match the bilingual heading and the Wolof/French competency paragraphs.",
-            "match_phrases": [
-              "compétence de cycle",
-              "manooreb diirub njàng mi"
-            ]
-          },
-          {
-            "id": "competence-etape",
-            "canonical_name": {
-              "primary": "Compétence de l'étape",
-              "translations": {
-                "wo": "Manooreb tolluwaay bi"
-              }
-            },
-            "emit": "emit_leaf",
-            "leaf_role": "expectation",
-            "allow_multiple_segments": true,
-            "doc_note": "Stage competency block under Tableau 1.1.1. Match the ETAPE 2 marker, the bilingual heading, and the Wolof/French competency paragraphs.",
-            "match_phrases": [
-              "compétence de l'étape",
-              "manooreb tolluwaay bi",
-              "étape 2"
-            ]
-          },
-          {
-            "id": "competences-sous-domaines-heading",
-            "canonical_name": {
-              "primary": "Compétences de sous-domaines",
-              "translations": {
-                "wo": "Manoorey pàcci fànn yi"
-              }
-            },
-            "emit": "ignore",
-            "doc_note": "Consumes the subdomain competency heading between the stage competency and the two subdomain competency blocks.",
-            "match_phrases": [
-              "compétences de sous-domaines",
-              "manoorey pàcci fànn yi"
-            ]
-          },
-          {
-            "id": "competence-sous-domaine-oral",
-            "canonical_name": {
-              "primary": "Compétence de sous-domaine — Communication orale",
-              "translations": {
-                "wo": "Manoore paccu fànn 1 — Jokkoo ci wax"
-              }
-            },
-            "emit": "emit_leaf",
-            "leaf_role": "expectation",
-            "allow_multiple_segments": true,
-            "doc_note": "Sous-domaine 1 competency block for Communication orale under Tableau 1.1.1. The layout is side-by-side with the written subdomain, so model it explicitly instead of as a table row.",
-            "match_phrases": [
-              "sous-domaine 1",
-              "communication orale",
-              "pàccu fànn 1",
-              "jokkoo ci wax"
-            ]
-          },
-          {
-            "id": "competence-sous-domaine-ecrit",
-            "canonical_name": {
-              "primary": "Compétence de sous-domaine — Communication écrite",
-              "translations": {
-                "wo": "Manoore paccu fànn 2 — Jokkoo ci mbind"
-              }
-            },
-            "emit": "emit_leaf",
-            "leaf_role": "expectation",
-            "allow_multiple_segments": true,
-            "doc_note": "Sous-domaine 2 competency block for Communication écrite under Tableau 1.1.1. The layout is side-by-side with the oral subdomain, so model it explicitly instead of as a table row.",
-            "match_phrases": [
-              "sous-domaine 2",
-              "communication écrite",
-              "pàccu fànn 2",
-              "jokkoo ci mbind"
-            ]
+            ],
+            "match_target": "caption"
           },
           {
             "id": "tableau-1.1.2",
@@ -222,7 +144,7 @@
         },
         "emit": "container_only",
         "grouping_role": "section",
-        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers. CONTAINER_ONLY: no match_phrases (child tableau-1.2.1 handles matching via caption).",
+        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers. CONTAINER_ONLY: no match_phrases (child tableau-1.2.1 handles matching via caption). Marked implicit so this container-only section is preserved in context_groupings for descendant table matches.",
         "match_phrases": [],
         "children": [
           {
@@ -271,7 +193,8 @@
             ],
             "match_target": "caption"
           }
-        ]
+        ],
+        "implicit": true
       },
       {
         "id": "strand-oral",
@@ -283,12 +206,10 @@
         },
         "emit": "emit_grouping",
         "grouping_role": "strand",
-        "doc_note": "Section 1.3. Sous-domaine: Communication orale. Activities: Expression orale + Récitation. 3 paliers, 2 tables per palier (one for each activity).",
+        "doc_note": "Section 1.3. Sous-domaine: Communication orale. Activities: Expression orale + Récitation. 3 paliers, 2 tables per palier. [FIX: removed 'communication orale' and 'jokkoo ci wax' from match_phrases — too broad, collide with sous-domaine headings in other sections. '1.3' and 'activités - oral' are sufficient.]",
         "match_phrases": [
           "activités - oral",
-          "1.3",
-          "communication orale",
-          "jokkoo ci wax"
+          "1.3"
         ],
         "children": [
           {
@@ -298,11 +219,10 @@
               "translations": {}
             },
             "emit": "ignore",
-            "doc_note": "Consumes 'Pàccu fànn : Jokkoo ci wax / SOUS-DOMAINE : COMMUNICATION ORALE' heading.",
+            "doc_note": "Consumes 'Pàccu fànn : Jokkoo ci wax / SOUS-DOMAINE : COMMUNICATION ORALE' heading. [FIX: tightened phrases — removed generic 'sous-domaine' and 'jokkoo ci wax' to avoid cross-section collisions.]",
             "match_phrases": [
-              "pàccu fànn",
-              "sous-domaine",
-              "jokkoo ci wax"
+              "pàccu fànn : jokkoo ci wax",
+              "sous-domaine : communication orale"
             ]
           },
           {
@@ -722,11 +642,11 @@
               "translations": {}
             },
             "emit": "ignore",
-            "doc_note": "Consumes 'Pàccu fànn : JOKKOO CI MBIND / SOUS-DOMAINE : COMMUNICATION ECRITE' heading.",
+            "doc_note": "Consumes 'Pàccu fànn : JOKKOO CI MBIND / SOUS-DOMAINE : COMMUNICATION ECRITE' heading at start of section 1.4. [FIX: tightened phrases to avoid collision with oral-sous-domaine-heading's 'sous-domaine' phrase.]",
             "match_phrases": [
-              "jokkoo ci mbind",
-              "sous-domaine",
-              "communication ecrite"
+              "jokkoo ci mbind / sous-domaine",
+              "sous-domaine : communication écrite",
+              "sous-domaine : communication ecrite"
             ]
           },
           {
@@ -955,52 +875,20 @@
         },
         "emit": "container_only",
         "grouping_role": "section",
-        "doc_note": "Section 1.5. Three overview tables for communication écrite, one per palier. Each table contains an internal preamble (repeated bilingual heading, repeated base competency, palier competency statement, then the internal 'Étude des outils de la langue' heading) before the week-by-week grid for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d’écrits. Treat this as an overview/planning container rather than a semantic leaf-bearing section node. [FIX: cleared match_phrases — CONTAINER_ONLY must not have match_phrases.]",
+        "doc_note": "Section 1.5. Three overview tables for communication écrite, one per palier. [FIX: removed dead IGNORE nodes that targeted text inside tables; added ecrite-section-heading to consume the section heading; converted ecrite-palier-* to CONTAINER_ONLY + implicit since no standalone palier headings exist in the document.] Marked implicit so this container-only section is preserved in context_groupings for descendant table matches.",
         "match_phrases": [],
         "children": [
           {
-            "id": "ecrite-heading-repeat",
+            "id": "ecrite-section-heading",
             "canonical_name": {
-              "primary": "Communication écrite (en-tête répété)",
+              "primary": "Section 1.5 — Communication écrite",
               "translations": {}
             },
             "emit": "ignore",
-            "allow_multiple_segments": true,
-            "doc_note": "Consumes only the repeated full bilingual heading 'JOKKOO CI MBIND / COMMUNICATION ÉCRITE' inside each section 1.5 table. Tightened to avoid colliding with the tableau captions, which also contain 'Communication Écrite'.",
+            "doc_note": "Consumes the '1.5 Compétences Communication Écrite Paliers 1 - 3 (CE 1)' section heading. [FIX: replaces ecrite-heading-repeat, ecrite-base-competency-repeat, ecrite-outils-heading-repeat which targeted text embedded inside tables (never standalone blocks).]",
             "match_phrases": [
-              "jokkoo ci mbind / communication écrite",
-              "jokkoo ci mbind / communication ecrite"
-            ]
-          },
-          {
-            "id": "ecrite-base-competency-repeat",
-            "canonical_name": {
-              "primary": "Compétence de base répétée — Communication écrite",
-              "translations": {}
-            },
-            "emit": "ignore",
-            "allow_multiple_segments": true,
-            "doc_note": "Consumes the repeated 'Manoore gi lalu / CB' preamble in section 1.5 to avoid duplicating the base competency already captured in Tableau 1.1.2.",
-            "match_phrases": [
-              "manoore gi lalu",
-              "cb : intégrer le vocabulaire adéquat, les indices significatifs"
-            ]
-          },
-          {
-            "id": "ecrite-outils-heading-repeat",
-            "canonical_name": {
-              "primary": "Étude des outils de la langue (en-tête répété)",
-              "translations": {
-                "wo": "Njàngum jumtukaayi làkk"
-              }
-            },
-            "emit": "ignore",
-            "allow_multiple_segments": true,
-            "doc_note": "Consumes the repeated internal heading 'NJÀNGUM JUMTUKAAYI LÀKK / ETUDE DES OUTILS DE LA LANGUE' that appears inside each section 1.5 overview table before the actual week-grid header row.",
-            "match_phrases": [
-              "njàngum jumtukaayi làkk",
-              "etude des outils de la langue",
-              "étude des outils de la langue"
+              "compétences communication écrite",
+              "1.5 compétences"
             ]
           },
           {
@@ -1011,15 +899,11 @@
                 "wo": "Jéego 1"
               }
             },
-            "emit": "emit_grouping_and_leaf",
+            "emit": "container_only",
             "grouping_role": "substage",
             "substage_index": 1,
-            "doc_note": "Palier 1 statement inside section 1.5 is a real competency statement for narrative written production; emit it as both grouping and expectation leaf.",
-            "match_phrases": [
-              "jéego 1",
-              "palier 1",
-              "textes narratifs"
-            ],
+            "doc_note": "Palier 1 — Communication écrite. [FIX: converted to CONTAINER_ONLY + implicit because the document has no standalone palier heading for section 1.5 — the palier structure is embedded in the table headers. implicit=True ensures this grouping still appears in context_groupings of child tableau matches.]",
+            "match_phrases": [],
             "children": [
               {
                 "id": "tableau-1.5.1",
@@ -1074,8 +958,7 @@
                 "match_target": "caption"
               }
             ],
-            "leaf_role": "expectation",
-            "allow_multiple_segments": true
+            "implicit": true
           },
           {
             "id": "ecrite-palier-2",
@@ -1085,15 +968,11 @@
                 "wo": "Jéego 2"
               }
             },
-            "emit": "emit_grouping_and_leaf",
+            "emit": "container_only",
             "grouping_role": "substage",
             "substage_index": 2,
-            "doc_note": "Palier 2 statement inside section 1.5 is a real competency statement for descriptive written production; emit it as both grouping and expectation leaf.",
-            "match_phrases": [
-              "jéego 2",
-              "palier 2",
-              "descriptifs"
-            ],
+            "doc_note": "Palier 2 — Communication écrite. [FIX: converted to CONTAINER_ONLY + implicit because the document has no standalone palier heading for section 1.5 — the palier structure is embedded in the table headers. implicit=True ensures this grouping still appears in context_groupings of child tableau matches.]",
+            "match_phrases": [],
             "children": [
               {
                 "id": "tableau-1.5.2",
@@ -1148,8 +1027,7 @@
                 "match_target": "caption"
               }
             ],
-            "leaf_role": "expectation",
-            "allow_multiple_segments": true
+            "implicit": true
           },
           {
             "id": "ecrite-palier-3",
@@ -1159,15 +1037,11 @@
                 "wo": "Jéego 3"
               }
             },
-            "emit": "emit_grouping_and_leaf",
+            "emit": "container_only",
             "grouping_role": "substage",
             "substage_index": 3,
-            "doc_note": "Palier 3 statement inside section 1.5 is a real competency statement for cumulative written production (narrative, descriptive, injonctive); emit it as both grouping and expectation leaf.",
-            "match_phrases": [
-              "jéego 3",
-              "palier 3",
-              "injonctifs"
-            ],
+            "doc_note": "Palier 3 — Communication écrite. [FIX: converted to CONTAINER_ONLY + implicit because the document has no standalone palier heading for section 1.5 — the palier structure is embedded in the table headers. implicit=True ensures this grouping still appears in context_groupings of child tableau matches.]",
+            "match_phrases": [],
             "children": [
               {
                 "id": "tableau-1.5.3",
@@ -1222,10 +1096,10 @@
                 "match_target": "caption"
               }
             ],
-            "leaf_role": "expectation",
-            "allow_multiple_segments": true
+            "implicit": true
           }
-        ]
+        ],
+        "implicit": true
       },
       {
         "id": "strand-production",
@@ -1393,12 +1267,13 @@
                   "translations": {}
                 },
                 "emit": "ignore",
-                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
+                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading. [FIX: added 'nisaru ñàng 3' variant — document uses ñ (tilde-n) which normalizes to 'nang', not 'njang'.]",
                 "match_phrases": [
                   "nisaru njàng 3",
                   "objectif d'apprentissage 3",
                   "copier",
-                  "sotti"
+                  "sotti",
+                  "nisaru ñàng 3"
                 ]
               },
               {
@@ -1591,13 +1466,14 @@
                   "translations": {}
                 },
                 "emit": "ignore",
-                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
+                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading. [FIX: added 'nisaru ñàng 3' variant — document uses ñ (tilde-n) which normalizes to 'nang', not 'njang'.]",
                 "match_phrases": [
                   "nisaru njàng 3",
                   "nisaru njàng.3",
                   "objectif d'apprentissage 3",
                   "copier",
-                  "sotti"
+                  "sotti",
+                  "nisaru ñàng 3"
                 ]
               },
               {
@@ -1790,12 +1666,13 @@
                   "translations": {}
                 },
                 "emit": "ignore",
-                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading.",
+                "doc_note": "Consumes 'Nisaru njàng 3 : sotti... / Objectif d'apprentissage 3 : Copier un texte...' heading. [FIX: added 'nisaru ñàng 3' variant — document uses ñ (tilde-n) which normalizes to 'nang', not 'njang'.]",
                 "match_phrases": [
                   "nisaru njàng 3",
                   "objectif d'apprentissage 3",
                   "copier",
-                  "sotti"
+                  "sotti",
+                  "nisaru ñàng 3"
                 ]
               },
               {
