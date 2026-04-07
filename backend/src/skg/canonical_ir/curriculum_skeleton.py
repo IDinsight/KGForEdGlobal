@@ -401,37 +401,6 @@ def _classify_caption_kind(text: str) -> CaptionKind:
     return "unknown"
 
 
-def _count_skipped_between(
-    *,
-    consumed_node_ids: set[str],
-    end: int,
-    matchable_nodes: list[CurriculumSkeletonNode],
-    start: int,
-) -> int:
-    """Count un-consumed nodes in [start, end) for jump detection.
-
-    Parameters
-    ----------
-    consumed_node_ids
-        Set of node IDs that have already been matched and consumed.
-    end
-        The end index (exclusive) for the count window.
-    matchable_nodes
-        The full list of matchable skeleton nodes in DFS order.
-    start
-        The start index (inclusive) for the count window.
-
-    Returns
-    -------
-    int
-        The number of skipped (un-consumed) nodes within the specified window.
-    """
-
-    return sum(
-        1 for i in range(start, end) if matchable_nodes[i].id not in consumed_node_ids
-    )
-
-
 def _create_decision_from_role(
     *, cell_text: str, col_role: CurriculumResolvedColumnRole
 ) -> GroupingDecision | LeafDecision | None:
@@ -481,8 +450,95 @@ def _drain_cursor(
 ) -> int:
     """Advance the cursor past consecutive consumed nodes at the head of the list.
 
-    A pinned node blocks draining so that it stays within the probe window for
-    subsequent multi-segment matches.
+    Draining only removes already-consumed nodes that sit at the *front* of the
+    remaining DFS-ordered node list. A pinned node blocks draining even if it has
+    already been consumed, so that it remains probeable for `allow_multiple_segments`
+    continuations.
+
+    Examples
+    --------
+    1. Drain across consecutive consumed nodes
+        Suppose:
+
+            matchable_nodes = [n0, n1, n2, n3]
+            cursor = 0
+            consumed_node_ids = {"n0", "n1"}
+            pinned_node_id = None
+
+        The function sees that `n0` and `n1` are both already consumed, so it advances
+        twice and stops at `n2`.
+
+        Result:
+            Returns `2`
+
+    2. Stop at the first unconsumed node
+        Suppose:
+
+            matchable_nodes = [n0, n1, n2, n3]
+            cursor = 1
+            consumed_node_ids = {"n0", "n1"}
+            pinned_node_id = None
+
+        The node at index 1 (`n1`) is consumed, so the cursor advances to index 2.
+        The node at index 2 (`n2`) is not consumed, so draining stops there.
+
+        Result:
+            Returns `2`
+
+    3. Pinned node blocks draining
+        Suppose:
+
+            matchable_nodes = [n0, n1, n2]
+            cursor = 1
+            consumed_node_ids = {"n0", "n1"}
+            pinned_node_id = "n1"
+
+        Even though `n1` is already in `consumed_node_ids`, it is pinned, so draining
+        must stop at index 1.
+
+        Result:
+            Returns `1`
+
+    4. Drain after pin release
+        Suppose a node had been pinned earlier, but the caller has just released the
+        pin and calls:
+
+            matchable_nodes = [n0, n1, n2]
+            cursor = 1
+            consumed_node_ids = {"n0", "n1"}
+            pinned_node_id = None
+
+        Now `n1` no longer blocks draining, so the cursor advances to the next
+        unconsumed node.
+
+        Result:
+            Returns `2`
+
+    5. Cursor already at an active node
+        Suppose:
+
+            matchable_nodes = [n0, n1, n2]
+            cursor = 2
+            consumed_node_ids = {"n0", "n1"}
+            pinned_node_id = None
+
+        The node at index 2 is not consumed, so no draining happens.
+
+        Result:
+            Returns `2`
+
+    6. Cursor at end of list
+        Suppose:
+
+            matchable_nodes = [n0, n1]
+            cursor = 2
+            consumed_node_ids = {"n0", "n1"}
+            pinned_node_id = None
+
+        Since `cursor == len(matchable_nodes)`, the loop does not run.
+
+        Result:
+            Returns `2`
 
     Parameters
     ----------
@@ -502,9 +558,9 @@ def _drain_cursor(
     """
 
     while cursor < len(matchable_nodes):
-        nid = matchable_nodes[cursor].id
+        node_id = matchable_nodes[cursor].id
 
-        if nid in consumed_node_ids and nid != pinned_node_id:
+        if node_id in consumed_node_ids and node_id != pinned_node_id:
             cursor += 1
         else:
             break
@@ -713,7 +769,7 @@ def _handle_pending_caption_binding(
 
 
 def _normalize_match_text(text: str) -> str:
-    """Normalize text for phrase matching.
+    """Normalize match phrase text for phrase matching.
 
     Applies: NFKD unicode decomposition, accent/diacritical mark stripping,
     casefolding, and whitespace collapsing. This ensures matching is robust to
@@ -731,7 +787,7 @@ def _normalize_match_text(text: str) -> str:
         The normalized, accent-free text ready for substring matching.
     """
 
-    # NFKD decomposes accented characters into base char + combining mark.
+    # NFKD decomposes accented characters into base character + combining mark.
     text = unicodedata.normalize("NFKD", text)
 
     # Strip combining diacritical marks (category "Mn").
@@ -739,7 +795,6 @@ def _normalize_match_text(text: str) -> str:
 
     text = text.casefold()
     text = WS_RE.sub(" ", text).strip()
-
     return text
 
 
@@ -748,15 +803,17 @@ def _probe_nodes(
     consumed_node_ids: set[str],
     end: int,
     matchable_nodes: list[CurriculumSkeletonNode],
-    normalized_phrases_cache: dict[str, list[str]] | None = None,
+    normalized_match_phrases: dict[str, list[str]] | None = None,
     pinned_node_id: str | None,
     segment: CurriculumMatchableSegment,
     start: int,
 ) -> tuple[int, CurriculumSkeletonNode] | None:
-    """Find the first matching un-consumed node in [start, end).
+    """Find the first matching **unconsumed** node in the half-open window [start, end).
 
-    Already-consumed nodes are skipped except the currently pinned node, which must
-    remain matchable for multi-segment continuations.
+    Already-consumed nodes are skipped except for the currently pinned node, which must
+    remain matchable for multi-segment continuations. Matching is deterministic and
+    first-hit-wins: the first node in DFS-probe order whose phrases match the segment
+    is returned immediately.
 
     Parameters
     ----------
@@ -766,7 +823,7 @@ def _probe_nodes(
         The end index (exclusive) for the probe window.
     matchable_nodes
         The full list of matchable skeleton nodes in DFS order.
-    normalized_phrases_cache
+    normalized_match_phrases
         Optional pre-computed mapping from node.id to normalized match phrases.
     pinned_node_id
         The ID of the node currently pinned, or None if no node is pinned.
@@ -778,20 +835,64 @@ def _probe_nodes(
     Returns
     -------
     tuple[int, CurriculumSkeletonNode] | None
-        A tuple of (matched_index, matched_node) if a match is found, else None.
+        A tuple of `(matched_index, matched_node)` if a match is found, else None.
     """
 
+    # Cache normalized texts to avoid redundant normalizations inside the loop.
+    normalized_segment_text = None
+    normalized_segment_caption = None
+
+    # Test whether a segment matches a skeleton node via the normalized match phrases.
+    # Any matching phrase is sufficient (OR logic). The target text comes from
+    # `segment.text` for ordinary text-target nodes, or `segment.caption_text` for
+    # caption-target nodes. Nodes with no phrases, container-only nodes, and segments
+    # whose relevant target text is empty are non-matches.
     for idx in range(start, min(end, len(matchable_nodes))):
         node = matchable_nodes[idx]
 
-        if node.id in consumed_node_ids and node.id != pinned_node_id:
+        if (
+            (node.id in consumed_node_ids and node.id != pinned_node_id)
+            or node.emit == CurriculumEmitPolicy.CONTAINER_ONLY
+            or not node.match_phrases
+        ):
             continue
 
-        if segment_matches_node(
-            node=node,
-            normalized_phrases_cache=normalized_phrases_cache,
-            segment=segment,
-        ):
+        # Determine the segment text to match against based on match_target.
+        if node.match_target == "caption":
+            target_text = segment.caption_text
+
+            if not target_text:
+                continue
+
+            normalized_segment_caption = (
+                normalized_segment_caption or _normalize_match_text(target_text)
+            )
+            normalized_target = normalized_segment_caption
+        else:
+            target_text = segment.text
+
+            if not target_text:
+                continue
+
+            normalized_segment_text = normalized_segment_text or _normalize_match_text(
+                target_text
+            )
+            normalized_target = normalized_segment_text
+
+        # Use pre-computed normalized phrases when available; fall back to on-the-fly
+        # normalization for callers that don't supply the cache.
+        if normalized_match_phrases is not None and node.id in normalized_match_phrases:
+            is_match = any(
+                phrase in normalized_target
+                for phrase in normalized_match_phrases[node.id]
+            )
+        else:
+            is_match = any(
+                _normalize_match_text(phrase) in normalized_target
+                for phrase in node.match_phrases
+            )
+
+        if is_match:
             return idx, node
 
     return None
@@ -812,6 +913,79 @@ def _record_match(
 ) -> tuple[int, str | None]:
     """Handle a successful match: record the result, manage the pin, and drain the
     cursor.
+
+    Examples
+    --------
+    1. Normal single-segment match
+        Suppose the current state is:
+
+            cursor = 3
+            consumed_node_ids = {"n0", "n1", "n2"}
+            pinned_node_id = None
+
+        and the current segment matches node `n3`, with `probe_idx=3` and
+        `node.allow_multiple_segments=False`.
+
+        Result:
+            - A new `CurriculumMatchedSegment` is appended to `results`
+            - "n3" is added to `consumed_node_ids`
+            - `pinned_node_id` stays `None`
+            - `_drain_cursor()` advances the cursor past `n3` if it is now the next
+                consecutive consumed node
+
+    2. Multi-segment continuation on the same node
+        Suppose the previous result already matched node `tableau-1.1.1`, and that node
+        has `allow_multiple_segments=True`. A new segment also matches the same node.
+
+        Before:
+            results[-1].node.id == "tableau-1.1.1"
+            node.id == "tableau-1.1.1"
+            pinned_node_id == "tableau-1.1.1"
+
+        Result:
+            - The new segment is appended to `results[-1].additional_segments`
+            - No new top-level result is created
+            - `consumed_node_ids` is unchanged
+            - `cursor` is unchanged
+            - The pin stays active
+
+    3. Matching a later node records a cursor jump
+        Suppose:
+
+            cursor = 5
+            consumed_node_ids = {"n0", "n1", "n2", "n3", "n4"}
+            probe_idx = 8
+
+        and nodes `n5`, `n6`, and `n7` are still unconsumed. If the segment matches
+        node `n8`, then `_count_skipped_between()` returns 3 for the window `[5, 8)`.
+
+        Result:
+            - A `CurriculumCursorJump` is appended, because more than 1 unconsumed
+                node was skipped
+            - The match for `n8` is still recorded normally
+            - "n8" is added to `consumed_node_ids`
+
+    4. Matching a node that allows multiple segments creates a new pin
+        Suppose the segment matches node `tableau-1.2.1`, and that node has
+        `allow_multiple_segments=True`.
+
+        Result:
+            - A new `CurriculumMatchedSegment` is appended
+            - "tableau-1.2.1" is added to `consumed_node_ids`
+            - `pinned_node_id` becomes `"tableau-1.2.1"`
+            - `_drain_cursor()` does NOT drain past that pinned node, even though it is
+                already consumed
+
+    5. Matching a non-pinned node releases any previous pin
+        Suppose the previous pin was "tableau-1.1.1", but the current segment now
+        matches "tableau-1.1.2", and "tableau-1.1.2" does not allow multiple segments.
+
+        Result:
+            - The new node is recorded as a normal match
+            - The previous pin is released
+            - `pinned_node_id` becomes `None`
+            - `_drain_cursor()` can now advance past any consecutive consumed nodes at
+                the head of the list
 
     Parameters
     ----------
@@ -848,18 +1022,21 @@ def _record_match(
     if node.allow_multiple_segments and results and results[-1].node.id == node.id:
         results[-1].additional_segments.append(segment)
 
-        # Pin stays; consumed_node_ids unchanged; cursor stays.
+        # Pin stays, consumed_node_ids unchanged, and cursor stays.
         return cursor, pinned_node_id
 
-    # Record a cursor jump when > 1 un-consumed node was skipped.
-    skipped_count = _count_skipped_between(
-        consumed_node_ids=consumed_node_ids,
-        end=probe_idx,
-        matchable_nodes=matchable_nodes,
-        start=cursor,
+    # Record a cursor jump when more than one unconsumed node was skipped.
+    skipped_count = sum(
+        1
+        for i in range(cursor, probe_idx)
+        if matchable_nodes[i].id not in consumed_node_ids
     )
 
     if skipped_count > 1 and cursor < len(matchable_nodes):
+        logger.warning(
+            f"Cursor jump: skipped {skipped_count} nodes to match segment "
+            f"{segment.segment_id} to node {node.id}."
+        )
         cursor_jumps.append(
             CurriculumCursorJump(
                 from_node_id=matchable_nodes[cursor].id,
@@ -874,12 +1051,10 @@ def _record_match(
     )
     consumed_node_ids.add(node.id)
 
-    # Update pin.
     if node.allow_multiple_segments:
-        pinned_node_id = node.id
+        pinned_node_id = node.id  # Update pin to the newly matched node
     else:
-        # Release any previous pin.
-        pinned_node_id = None
+        pinned_node_id = None  # Release pin since node doesn't allow multiple segments
 
     cursor = _drain_cursor(
         consumed_node_ids=consumed_node_ids,
@@ -1180,10 +1355,16 @@ def build_ancestry_map(
 ) -> dict[str, list[CurriculumSkeletonNode]]:
     """Build node_id -> full ancestry chain (root -> node, inclusive).
 
+    The reason this function exists is that later, when `match_curriculum()` finds that
+    a segment matched some node, `_record_match()` grabs
+    `ancestry = ancestry_map[node.id]` and stores it on the `CurriculumMatchedSegment`.
+    That ancestry is then used downstream to build context groupings and keep the
+    matched segment attached to the right structural path.
+
     Parameters
     ----------
     root
-        The root SkeletonNode.
+        The root `CurriculumSkeletonNode`.
 
     Returns
     -------
@@ -1207,6 +1388,9 @@ def build_ancestry_map(
         """
 
         chain = ancestors + [node]
+        assert (
+            node.id not in result
+        ), f"Duplicate node ID detected in skeleton: {result}"
         result[node.id] = chain
 
         for child in node.children:
@@ -1563,19 +1747,20 @@ def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
 
 
 def dfs_matchable(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
-    """Flatten skeleton into DFS order, keeping only matchable nodes.
+    """Flatten the skeleton into DFS order, keeping only matchable nodes.
 
-    A node is matchable if it is NOT `CONTAINER_ONLY` and has at least one
-    `match_rule`. The framework root is excluded (it has no match rules).
+    A node is matchable if it is not `CONTAINER_ONLY` and has at least one
+    `match_phrase`. This includes `IGNORE` nodes, because they still need to consume
+    matching document segments deterministically.
 
     Parameters
     ----------
     root
-        The root SkeletonNode.
+        The root `CurriculumSkeletonNode`.
 
     Returns
     -------
-    list[SkeletonNode]
+    list[CurriculumSkeletonNode]
         Matchable nodes in DFS traversal order.
     """
 
@@ -1717,73 +1902,277 @@ def match_curriculum(
     max_skip_distance: int,
     segments: list[CurriculumMatchableSegment],
 ) -> CurriculumMatchResult:
-    """Deterministic forward-only matching of document segments to skeleton nodes.
+    """Deterministically match document segments to curriculum skeleton nodes.
 
-    The engine walks document segments in order and probes up to `max_skip_distance`
-    skeleton nodes ahead of the cursor for each segment. When a match is found the node
-    is marked as consumed, but the cursor only advances past *consecutive* consumed
-    nodes at the head of the remaining list (the cursor "drains" rather than "jumps").
+    The function walks `segments` in document order and maintains a cursor into the
+    DFS-ordered list of matchable skeleton nodes. For each segment it probes a bounded,
+    half-open window `[cursor, cursor + max_skip_distance)`. Because the end of the
+    window is exclusive, this means the function checks **at most `max_skip_distance`
+    nodes total, including the node currently at the cursor**.
 
-    This design decouples the **lookahead distance** (how far ahead to search) from the
-    **cursor advancement** (which nodes are permanently passed over). A distant match
-    consumes the matched node but does NOT permanently skip the intermediate unmatched
-    nodes--they remain available for later segments.
+    When a match is found, the node is marked as consumed, but the cursor does not jump
+    straight to the matched index. Instead, it only drains past *consecutive* consumed
+    nodes at the head of the remaining list. This keeps skipped-but-unconsumed nodes
+    available for later segments.
 
-    For `allow_multiple_segments` nodes the cursor is pinned (the consumed node is not
-    drained) until a different node matches or no match is found, at which point the
-    pin is released and the cursor drains normally.
+    For `allow_multiple_segments` nodes the matched node is pinned. A pinned node is
+    not drained even after being consumed, which allows later segments to continue
+    matching the same node. If a later segment finds no hit while a pin is active, the
+    pin is released, the cursor drains, and this function retries that same segment
+    once against the newly exposed window.
+
+    Matching is deterministic and first-hit-wins within each probe window. That means
+    an earlier ambiguous node can shadow a later, more specific node if both phrases
+    match the same segment (see examples below).
+
+    Examples
+    --------
+
+    1. Straightforward hit in the current window
+
+    Suppose the matchable skeleton nodes are:
+
+    * index 0: `schema-integrateur`
+    * index 1: `tableau-1.1.1`
+    * index 2: `tableau-1.1.2`
+
+    And the current state is:
+
+    * `cursor = 0`
+    * `consumed_node_ids = {}`
+    * `pinned_node_id = None`
+    * `max_skip_distance = 3`
+
+    Now the current segment is a table whose bound caption text is:
+
+    * `"Tableau 1.1.1 : Compétence de cycle"`
+
+    Because this is a caption-target table node, `segment_matches_node()` checks
+    `segment.caption_text`, not `segment.text`. It normalizes the target text and
+    checks whether any normalized `match_phrases` are contained in it.
+
+    So the loop does this:
+
+    * Probes nodes `[0, 3)` -> indices 0, 1, 2
+    * `_probe_nodes()` finds that index 1 matches
+    * `_record_match()` adds a `CurriculumMatchedSegment`
+    * Node `tableau-1.1.1` is added to `consumed_node_ids`
+    * `_drain_cursor()` advances past any consumed nodes at the head of the list, but
+        only consecutive ones from the current cursor position
+
+    So after this iteration, we have one recorded match, and the cursor may or may not
+    move much depending on whether earlier nodes were already consumed.
+
+    2. First-hit-wins inside the probe window
+
+    Suppose the current probe window contains these nodes:
+
+    * index 5: `strand-oral`
+    * index 6: `oral-palier-1`
+    * index 7: `tableau-1.3.1`
+
+    And suppose the current segment text is something broad like:
+
+    * `"Palier 1 — Communication orale"`
+
+    If both index 5 and index 6 have phrases that happen to match this segment,
+    `_probe_nodes()` returns the **first** one it encounters in DFS/probe order. It
+    does not score them or pick the “best” one. It just returns the first matching node.
+
+    So the loop behavior is:
+
+    * Probe window opened
+    * First matching node found
+    * Stop scanning
+    * `_record_match()` is called on that node
+    * Later possible matches in the same window are ignored for this segment
+
+    This is why broad earlier phrases can shadow later more specific ones.
+
+    3. Multi-segment continuation on a pinned node (subtle case)
+
+    Suppose node `tableau-1.1.1` has `allow_multiple_segments=True`, and the first
+    segment that matched it has already been recorded. That means `_record_match()`
+    pinned that node by setting `pinned_node_id = node.id`.
+
+    Now the next segment comes in and also matches the same node.
+
+    What happens?
+
+    * `_probe_nodes()` is allowed to consider the pinned node even if it is already
+        consumed
+    * It finds the same node again
+    * `_record_match()` notices:
+      * `node.allow_multiple_segments` is true
+      * There is already a previous result
+      * The previous result’s node is the same node
+    * Instead of creating a new top-level match, it appends this segment to
+        `results[-1].additional_segments`
+    * The cursor does not move
+    * The pin stays active
+
+    So conceptually:
+
+    * First segment = “Start match for this node”
+    * Second segment = “Same node continues, attach it as additional content”
+
+    That is how bilingual pairs or split-across-segments content get merged into one
+    logical match.
+
+    4. Miss in the first pass, then success after unpinning
+
+    Suppose the currently pinned node is `tableau-1.1.1`, because the previous segment
+    matched it as part of a multi-segment sequence.
+
+    Now the next segment is actually the start of a different node, say `tableau-1.1.2`.
+
+    First pass:
+
+    * `_probe_nodes()` scans with the pin still active
+    * Maybe the pinned node blocks draining and keeps the cursor earlier than it
+        otherwise would be
+    * No hit is found in that primary window
+
+    At that point the loop does this:
+
+    * If `pinned_node_id is not None`, it clears the pin
+    * Calls `_drain_cursor(...)`
+    * Recomputes the probe window
+    * Retries `_probe_nodes(...)` once more
+
+    If the second probe now hits `tableau-1.1.2`, then `_record_match()` records it and
+    the loop continues normally.
+
+    So this pattern means:
+
+    * “Maybe the current segment was still part of the pinned node”
+    * “If not, release the pin and try again as a new match”
+
+    That retry is the bridge between “continuation mode” and “move on to the next node.”
+
+    5. Complete miss
+
+    Suppose the segment is just unrelated front-matter prose, or some curriculum
+    content the skeleton does not know how to match.
+
+    Then:
+
+    * `_probe_nodes()` finds no hit
+    * Either there is no pin, or the unpin-and-retry also finds no hit
+    * The loop executes `unmatched.append(segment)`
+
+    Later, in translation:
+
+    * Unmatched bound caption blocks become `IGNORE`
+    * Other unmatched segments become `UNRESOLVED`
+
+    So the main loop itself does not decide ignore vs. unresolved. It just says: “This
+    segment found no skeleton node.”
+
+    6. Cursor jump warning
+
+    Suppose:
+
+    * `cursor` currently points at node index 10
+    * The segment does not match nodes 10 or 11
+    * It does match node 13
+    * Nodes 10–12 were not already consumed
+
+    Then `_record_match()` calls `_count_skipped_between(...)` for the range
+    `[cursor, probe_idx)`. If that skipped count is greater than 1, it records a
+    `CurriculumCursorJump`.
+
+    This does **not** stop the match. It is just diagnostics saying:
+
+    * “We matched something noticeably later than where we expected to be”
+
+    That often points to ambiguous phrases or ordering drift.
 
     Parameters
     ----------
     curriculum_skeleton
-        A validated CurriculumSkeleton.
+        A validated `CurriculumSkeleton`.
     max_skip_distance
-        Maximum skeleton nodes to probe ahead from the current cursor position. The
-        engine will NOT scan beyond this window (bounded probe).
+        Maximum number of skeleton nodes to inspect per probe window.
     segments
-        CurriculumMatchableSegment in document order.
+        `CurriculumMatchableSegment` objects in document order.
 
     Returns
     -------
     CurriculumMatchResult
-        Matched segments, unmatched segments, skipped node IDs, and jumps.
+        Matched segments, unmatched segments, and recorded cursor jumps.
+
+    Raises
+    ------
+    ValueError
+        If `max_skip_distance` is less than 1.
     """
 
     logger.info("Running curriculum skeleton matching engine...")
 
+    if max_skip_distance < 1:
+        raise ValueError(f"max_skip_distance must be >= 1. Got: {max_skip_distance}.")
+
     matchable_nodes = dfs_matchable(curriculum_skeleton.root)
-    ancestry_map = build_ancestry_map(curriculum_skeleton.root)
+    assert matchable_nodes, "Curriculum skeleton contains 0 matchable nodes."
 
     # Pre-compute normalized match phrases for all matchable nodes once, avoiding
-    # redundant _normalize_match_text() calls during the O(segments × window) probe
+    # redundant `_normalize_match_text()` calls during the O(segments × window) probe
     # loop.
-    normalized_phrases_cache: dict[str, list[str]] = {
+    normalized_match_phrases: dict[str, list[str]] = {
         node.id: [_normalize_match_text(phrase) for phrase in node.match_phrases]
         for node in matchable_nodes
         if node.match_phrases
     }
 
+    ancestry_map = build_ancestry_map(curriculum_skeleton.root)
+
+    # Where in the skeleton we currently are.
     cursor: int = 0
+
+    # Nodes already matched.
     consumed_node_ids: set[str] = set()
+
+    # Keep this node available because it may absorb multiple segments.
     pinned_node_id: str | None = None
 
+    # Diagnostics about non-sequential matches.
     cursor_jumps: list[CurriculumCursorJump] = []
+
+    # Matches we found, and segments we couldn't match at all.
     results: list[CurriculumMatchedSegment] = []
     unmatched: list[CurriculumMatchableSegment] = []
 
-    for segment in segments:
+    # For each segment, this loop is basically doing something like: "Look a little bit
+    # ahead from where we currently are in the curriculum skeleton, and see what is the
+    # first node this segment can belong to.". If we find a match, we record it. If it
+    # was in continuation mode, we give ourselves an extra chance after releasing the
+    # pin. If we still find nothing, the segment is left unmatched.
+    for seg_idx, segment in enumerate(segments):
+        # If the cursor has advanced past all matchable nodes and there's no active
+        # pin, the remaining segments cannot possibly match anything, so we can
+        # short-circuit and mark them all as unmatched immediately.
+        if cursor >= len(matchable_nodes) and pinned_node_id is None:
+            unmatched.extend(segments[seg_idx:])
+            break
+
+        # Probe a bounded half-open window [cursor, probe_end). Because probe_end is
+        # exclusive, a max_skip_distance of N checks at most N nodes total, including
+        # the node currently at the cursor.
         probe_end = min(cursor + max_skip_distance, len(matchable_nodes))
 
+        # Scan the current probe window and return the first matching node.
         hit = _probe_nodes(
             consumed_node_ids=consumed_node_ids,
             end=probe_end,
             matchable_nodes=matchable_nodes,
-            normalized_phrases_cache=normalized_phrases_cache,
+            normalized_match_phrases=normalized_match_phrases,
             pinned_node_id=pinned_node_id,
             segment=segment,
             start=cursor,
         )
 
+        # Save the hit, maybe pin it, maybe drain the cursor forward.
         if hit is not None:
             cursor, pinned_node_id = _record_match(
                 ancestry_map=ancestry_map,
@@ -1808,13 +2197,12 @@ def match_curriculum(
                 matchable_nodes=matchable_nodes,
                 pinned_node_id=pinned_node_id,
             )
-
             retry_end = min(cursor + max_skip_distance, len(matchable_nodes))
             hit = _probe_nodes(
                 consumed_node_ids=consumed_node_ids,
                 end=retry_end,
                 matchable_nodes=matchable_nodes,
-                normalized_phrases_cache=normalized_phrases_cache,
+                normalized_match_phrases=normalized_match_phrases,
                 pinned_node_id=pinned_node_id,
                 segment=segment,
                 start=cursor,
@@ -1835,18 +2223,20 @@ def match_curriculum(
                 )
                 continue
 
+        # At this point, we have definitively ruled out a match for this segment. Mark
+        # it unmatched and move on.
         unmatched.append(segment)
 
-    curriculum_matches = CurriculumMatchResult(
+    curriculum_match_results = CurriculumMatchResult(
         cursor_jumps=cursor_jumps, matched=results, unmatched=unmatched
     )
 
     logger.info(
-        f"Curriculum matching complete: {len(curriculum_matches.matched)} matched, "
-        f"{len(curriculum_matches.unmatched)} unmatched."
+        f"Curriculum matching complete: {len(curriculum_match_results.matched)} matched, "
+        f"{len(curriculum_match_results.unmatched)} unmatched."
     )
 
-    return curriculum_matches
+    return curriculum_match_results
 
 
 def prepare_matchable_segments(
@@ -2057,61 +2447,6 @@ def prepare_matchable_segments(
     logger.success(f"Prepared {len(result)} matchable segments.")
 
     return result
-
-
-def segment_matches_node(
-    *,
-    node: CurriculumSkeletonNode,
-    normalized_phrases_cache: dict[str, list[str]] | None = None,
-    segment: CurriculumMatchableSegment,
-) -> bool:
-    """Test whether a document segment matches a skeleton node using normalized
-    phrase containment. Any match_phrase matching is sufficient (OR logic).
-
-    Parameters
-    ----------
-    node
-        The SkeletonNode to test against.
-    normalized_phrases_cache
-        Optional pre-computed mapping from node.id to normalized match phrases. When
-        provided, avoids redundant re-normalization of static skeleton phrases.
-    segment
-        The MatchableSegment to test.
-
-    Returns
-    -------
-    bool
-        True if any of the node's match_phrases match the segment.
-    """
-
-    if node.emit == CurriculumEmitPolicy.CONTAINER_ONLY:
-        return False
-
-    if not node.match_phrases:
-        return False
-
-    # Determine the segment text to match against based on match_target.
-    if node.match_target == "caption":
-        target_text = segment.caption_text
-    else:
-        target_text = segment.text
-
-    if not target_text:
-        return False
-
-    normalized_target = _normalize_match_text(target_text)
-
-    # Use pre-computed normalized phrases when available; fall back to on-the-fly
-    # normalization for callers that don't supply the cache.
-    if normalized_phrases_cache is not None and node.id in normalized_phrases_cache:
-        return any(
-            phrase in normalized_target for phrase in normalized_phrases_cache[node.id]
-        )
-
-    return any(
-        _normalize_match_text(phrase) in normalized_target
-        for phrase in node.match_phrases
-    )
 
 
 def translate_matched_segment(
