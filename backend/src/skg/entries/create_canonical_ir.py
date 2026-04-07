@@ -143,7 +143,7 @@ def create_canonical_ir(
     )
 
     # 6.
-    decision_set = SegmentDecisionSet.model_validate(
+    segment_decision_set = SegmentDecisionSet.model_validate(
         {
             "decision_set_id": compute_decision_set_id(decisions=segment_decisions),
             "decisions": [d.model_dump(mode="json") for d in segment_decisions],
@@ -152,7 +152,7 @@ def create_canonical_ir(
             "pdf_name": document_ir.pdf_name,
         }
     )
-    write_to_json(fp=segment_decisions_fp, json_info=decision_set)
+    write_to_json(fp=segment_decisions_fp, json_info=segment_decision_set)
 
     logger.success(f"Saved segment decisions to: {segment_decisions_fp}")
 
@@ -161,7 +161,7 @@ def create_canonical_ir(
         canonical_ir_fp=canonical_ir_fp,
         doc_key=doc_key,
         document_ir=document_ir,
-        segment_decisions=decision_set,
+        segment_decisions=segment_decision_set,
     )
 
     # 8.
