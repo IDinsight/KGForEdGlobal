@@ -90,7 +90,7 @@ class CurriculumMatchableSegment:
 
 @dataclass
 class CurriculumMatchReport:
-    """Structured diagnostics from a skeleton matching run.
+    """Structured diagnostics from a curriculum skeleton matching run.
 
     Attributes
     ----------
@@ -153,8 +153,9 @@ class CurriculumMatchReport:
 
     @property
     def is_healthy(self) -> bool:
-        """A match is healthy when > 90% of matchable nodes received at least one
-        segment match AND no matchable (non-IGNORE) nodes were unexpectedly skipped.
+        """A curriculum skeleton match is healthy when > 90% of matchable nodes
+        received at least one segment match AND no matchable (non-IGNORE) nodes were
+        unexpectedly skipped.
 
         Cursor jumps are tracked separately via `has_ordering_warnings` and do NOT
         affect the health signal. Jumps typically indicate cross-strand phrase
@@ -181,6 +182,7 @@ class CurriculumMatchReport:
 
         if self.total_matchable_nodes == 0:
             return 0.0
+
         return self.matched_nodes / self.total_matchable_nodes
 
     @property
@@ -196,6 +198,7 @@ class CurriculumMatchReport:
 
         if self.total_segments == 0:
             return 0.0
+
         return self.matched_segments / self.total_segments
 
     def summary(self) -> str:
@@ -1713,7 +1716,7 @@ def build_context_groupings(
 
 
 def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
-    """Flatten ALL skeleton nodes into DFS order (including CONTAINER_ONLY).
+    """Flatten **all** skeleton nodes into DFS order (including CONTAINER_ONLY).
 
     Parameters
     ----------
@@ -1734,7 +1737,7 @@ def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
         Parameters
         ----------
         node
-            Current SkeletonNode being visited.
+            Current skeleton node being visited.
         """
 
         nodes.append(node)
@@ -1772,7 +1775,7 @@ def dfs_matchable(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
         Parameters
         ----------
         node
-            Current SkeletonNode being visited.
+            Current skeleton node being visited.
         """
 
         if node.emit != CurriculumEmitPolicy.CONTAINER_ONLY and node.match_phrases:
@@ -1809,13 +1812,12 @@ def generate_curriculum_match_report(
     all_nodes = dfs_all(curriculum_skeleton.root)
     matchable_nodes = dfs_matchable(curriculum_skeleton.root)
     matched_node_ids = {m.node.id for m in curriculum_match_results.matched}
-
-    container_only = [
+    container_only_nodes = [
         n for n in all_nodes if n.emit == CurriculumEmitPolicy.CONTAINER_ONLY
     ]
+    unexpected_skipped: list[str] = []
 
     # "Unexpected" skipped = matchable nodes that didn't match AND aren't IGNORE.
-    unexpected_skipped: list[str] = []
     for node in matchable_nodes:
         if node.id not in matched_node_ids and node.emit != CurriculumEmitPolicy.IGNORE:
             unexpected_skipped.append(node.id)
@@ -1827,7 +1829,7 @@ def generate_curriculum_match_report(
 
     report = CurriculumMatchReport(
         caption_blocks_ignored=caption_blocks_ignored,
-        container_only_nodes=len(container_only),
+        container_only_nodes=len(container_only_nodes),
         cursor_jumps=curriculum_match_results.cursor_jumps,
         matched_nodes=len(matched_node_ids),
         matched_segments=len(curriculum_match_results.matched),
@@ -1840,12 +1842,9 @@ def generate_curriculum_match_report(
         ],
         unmatched_segments=len(curriculum_match_results.unmatched),
     )
-
-    logger.info(f"\n{report.summary()}")
-
-    # Save the match report.
     write_to_json(fp=curriculum_match_report_fp, json_info=report.to_dict())
 
+    logger.info(f"\n{report.summary()}")
     logger.success(f"Saved curriculum match report to: {curriculum_match_report_fp}")
 
     if not report.is_healthy:
