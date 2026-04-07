@@ -40,6 +40,9 @@ from skg.utils.constants import (
 )
 from skg.utils.general import open_json_type, write_to_json
 
+# (caption_segment, caption_text, caption_kind, caption_page_index, segment_index).
+PendingCaption = tuple[BlockSegment, str, CaptionKind, int, int]
+
 
 @dataclass
 class CurriculumCursorJump:
@@ -366,7 +369,12 @@ def _cell_to_text(cell: TextUnit | dict[str, Any]) -> str:
 
 
 def _classify_caption_kind(text: str) -> CaptionKind:
-    """Classify caption kind based on text prefixes.
+    """Classify a caption as table, figure, or unknown using normalized prefixes.
+
+    The classifier is intentionally lightweight: it trims the text, lowercases it,
+    collapses repeated whitespace, and then checks whether the caption begins with any
+    known table or figure prefix from constants. The first matching family wins; if no
+    prefix matches, the caption is classified as "unknown".
 
     Parameters
     ----------
@@ -605,15 +613,20 @@ def _handle_pending_caption_binding(
     current_page_index: int,
     max_gap_segments: int,
     max_page_distance: int,
-    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int],
-    segment: BlockSegment,
+    pending_caption: PendingCaption,
+    segment: Segment,
     warnings: list[str],
-) -> tuple[tuple[BlockSegment, str, CaptionKind, int, int] | None, bool]:
+) -> tuple[PendingCaption | None, bool]:
     """Process a pending caption by either binding it to a table or expiring it.
 
-    This function checks if the current segment is a valid table for the pending
-    caption. If it is not a table, it checks if the caption has exceeded the maximum
-    allowed gap and should be discarded.
+    The function is evaluated against *every* subsequent segment after a caption is
+    seen. A pending caption is kept only while both of these remain true:
+
+    1. The number of intervening non-table segments is within `max_gap_segments`.
+    2. The forward page distance is within `max_page_distance`.
+
+    When the current segment is a table and both limits still hold, the caption is
+    bound to that table. Otherwise, the caption is dropped with a diagnostic warning.
 
     Parameters
     ----------
@@ -626,7 +639,7 @@ def _handle_pending_caption_binding(
     max_gap_segments
         The maximum number of non-table segments allowed between caption and table.
     max_page_distance
-        The maximum page distance allowed between caption and table.
+        The maximum forward page distance allowed between caption and table.
     pending_caption
         The metadata of the caption currently awaiting a table.
     segment
@@ -636,21 +649,32 @@ def _handle_pending_caption_binding(
 
     Returns
     -------
-    tuple[tuple[BlockSegment, str, CaptionKind, int, int] | None, bool]
+    tuple[PendingCaption | None, bool]
         A tuple containing:
-            1. The updated pending_caption (None if bound or expired).
-            2. A boolean 'should_continue' indicating if the main loop should skip
-               further processing for this segment.
+            1. The updated pending_caption (`None` if bound or expired).
+            2. A boolean `should_continue` indicating whether the main loop should
+               skip further processing for this segment because it was consumed as the
+               table target.
     """
 
     cap_seg, cap_text, cap_kind, cap_page, cap_index = pending_caption
     gap = max(0, current_index - cap_index - 1)
+    page_dist = current_page_index - cap_page
 
-    # Case 1: Attempt to bind to a table.
+    if page_dist > max_page_distance:
+        msg = (
+            f"Dangling caption dropped:\n"
+            f"caption={cap_seg.segment_id} page_distance_exceeded={page_dist}\n"
+            f"page_index={current_page_index}\n"
+            f"segment_index={current_index}"
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        return None, False
+
+    # Attempt to bind to the next eligible table.
     if segment.kind == "table":
-        page_dist = abs(current_page_index - cap_page)
-
-        if gap <= max_gap_segments and page_dist <= max_page_distance:
+        if gap <= max_gap_segments:
             caption_bindings[segment.segment_id] = CaptionBinding(
                 caption_kind=cap_kind,
                 caption_page_index=cap_page,
@@ -663,18 +687,17 @@ def _handle_pending_caption_binding(
         else:
             msg = (
                 f"Dangling caption dropped:\n"
-                f"caption={cap_seg.segment_id}\n"
-                f"gap={gap}\n"
+                f"caption={cap_seg.segment_id} gap_exceeded={gap}\n"
                 f"page_index={current_page_index}\n"
                 f"segment_index={current_index}"
             )
             logger.warning(msg)
             warnings.append(msg)
 
-        # Whether bound or dropped for distance, the caption is no longer pending.
+        # Whether bound or dropped for gap, the caption is no longer pending once a
+        # candidate table is reached.
         return None, True
 
-    # Case 2: Expire pending caption if the gap is too large.
     if gap > max_gap_segments:
         msg = (
             f"Dangling caption dropped:\n"
@@ -1201,39 +1224,144 @@ def build_caption_bindings(
     max_gap_segments: int,
     max_page_distance: int,
 ) -> dict[str, CaptionBinding]:
-    """Build deterministic caption-to-table bindings *before* curriculum skeleton
-    engine.
+    """Build deterministic caption-to-table bindings before curriculum skeleton
+    matching.
 
-    Many curriculum PDFs place a short caption/label block immediately before a table.
-    That caption is usually not curriculum content itself, but it often contains
-    critical context (grade, subject, theme/unit, table meaning) needed to interpret
-    the table.
+    Many curriculum PDFs place a short caption or label block immediately before a
+    table. That caption is usually not curriculum content itself, but it often carries
+    critical context (grade, subject, theme, table meaning) needed to interpret the
+    table.
 
-    This function:
+    This function scans `document_ir.segments` in document order and maintains at most
+    one pending caption at a time. A pending caption is bound to the first later table
+    segment that falls within the configured gap/page limits. If another bindable
+    caption appears first, the older pending caption is intentionally overwritten and a
+    warning is emitted. Figure captions are ignored, and unknown captions are bound
+    only when `bind_unknown_caption=True`.
 
-    1. Scans DocumentIR.segments[] in order and one-shot binds each CAPTION block to
-        the *next* table segment (within configured gap/page limits).
-    2. Produces a stable mapping: table_segment_id -> CaptionBinding(...).
-    3. Emits warnings for captions that cannot be bound (e.g., dangling captions).
+    The resulting bindings are persisted to disk and later injected into
+    `CurriculumMatchableSegment` table payloads as provenance/context.
 
-    We call this function before calling the curriculum skeleton engine so that we can:
+    Examples
+    --------
+    1. Immediate same-page binding
+        If a caption block is followed directly by a table, the caption binds to that
+        table with `gap_segments=0`.
 
-    1. Improve the engine accuracy by injecting caption context into table payloads,
-        helping it choose correct context_groupings[] and statement roles.
-    2. Avoid having to infer cross-segment relationships, keeping behavior
-        deterministic and replayable.
-    3. Enforce the policy that captions are provenance-only: captions provide evidence
-        but never become canonical nodes.
-    4. Stabilize chunked-table processing by ensuring all chunks of a table receive the
-        same caption metadata.
+        Segment order:
+            0. caption("Tableau 1.2.1")
+            1. table("tbl-001")
 
-    The resulting bindings are applied when constructing inputs for table segments and
-    are stored as provenance/audit context (or attached to unresolved items).
+        Result:
+            `caption_bindings["tbl-001"]` points to the caption from segment 0.
+
+    2. Binding across intervening non-table segments
+        A caption may still bind when a small number of non-table segments appear
+        between the caption and the table, as long as the gap is within
+        `max_gap_segments`.
+
+        Segment order:
+            0. caption("Tableau 3")
+            1. paragraph("Intro text")
+            2. table("tbl-002")
+
+        Result:
+            With `max_gap_segments >= 1`, the caption binds to `tbl-002` with
+            `gap_segments=1`.
+
+    3. Cross-page binding
+        A caption on one page may bind to a table on the next page when the forward
+        page distance is within `max_page_distance`.
+
+        Segment order:
+            10. caption("Table 4") on page 5
+            11. paragraph(...) on page 5
+            12. table("tbl-003") on page 6
+
+        Result:
+            With `max_page_distance >= 1` and an allowed gap, the caption binds to
+            `tbl-003`.
+
+    4. Figure captions are ignored
+        Captions classified as figures do not become pending captions and are never
+        bound to tables.
+
+        Segment order:
+            0. caption("Figure 2: ...")
+            1. table("tbl-004")
+
+        Result:
+            No caption binding is created for `tbl-004`.
+
+    5. Unknown captions are optional
+        Captions whose kind cannot be classified are only considered bindable when
+        `bind_unknown_caption=True`.
+
+        Segment order:
+            0. caption("Bilingual competency overview")
+            1. table("tbl-005")
+
+        Result:
+            - If `bind_unknown_caption=True`, the caption may bind to `tbl-005`.
+            - If `bind_unknown_caption=False`, no binding is created.
+
+    6. Caption dropped when the gap is too large
+        A pending caption is dropped once the next candidate table is too far away in
+        non-table segments.
+
+        Segment order:
+            0. caption("Table 7")
+            1. paragraph(...)
+            2. paragraph(...)
+            3. table("tbl-006")
+
+        Result:
+            With `max_gap_segments=1`, the caption is dropped and a warning is
+            recorded. No binding is created for `tbl-006`.
+
+    7. Caption dropped when the page distance is too large
+        A pending caption is dropped once the current segment is beyond the allowed
+        forward page distance, even if a matching table appears later.
+
+        Segment order:
+            0. caption("Table 8") on page 2
+            ...
+            8. table("tbl-007") on page 5
+
+        Result:
+            With `max_page_distance=1`, the caption is dropped before reaching
+            `tbl-007`, and a warning is recorded.
+
+    8. New caption overwrites an older pending caption
+        If a second bindable caption appears before the first pending caption reaches a
+        table, the older pending caption is replaced. This is intentional: only one
+        pending caption is tracked at a time.
+
+        Segment order:
+            0. caption("Tableau A")
+            1. caption("Tableau B")
+            2. table("tbl-008")
+
+        Result:
+            `tbl-008` binds to "Tableau B". The older pending caption ("Tableau A") is
+            overwritten and a warning is recorded.
+
+    9. End-of-document cleanup
+        If the document ends while a caption is still pending, the caption is dropped
+        and a warning is written.
+
+        Segment order:
+            0. caption("Table 9")
+            1. paragraph("Closing remarks")
+
+        Result:
+            No binding is created, and the pending caption is reported as dangling at
+            end of document.
 
     Parameters
     ----------
     bind_unknown_caption
-        Whether to bind captions of unknown kind.
+        Whether to bind captions whose kind cannot be confidently classified.
     creation_dirs
         The canonical IR creation directories.
     document_ir
@@ -1241,18 +1369,12 @@ def build_caption_bindings(
     max_gap_segments
         The maximum number of non-table segments allowed between caption and table.
     max_page_distance
-        The maximum page distance allowed between caption and table.
+        The maximum forward page distance allowed between caption and table.
 
     Returns
     -------
     dict[str, CaptionBinding]
         The computed caption bindings, keyed by table segment ID.
-
-    Raises
-    ------
-    ValueError
-        If a segment has no slices or an invalid page index, which are required for
-        page-based binding.
     """
 
     caption_bindings_fp = creation_dirs.caption_binding / "caption_bindings.json"
@@ -1260,33 +1382,29 @@ def build_caption_bindings(
 
     caption_bindings: dict[str, CaptionBinding] = {}
     warnings: list[str] = []
-
-    # (caption_segment, caption_text, caption_kind, caption_page, caption_index).
-    pending_caption: tuple[BlockSegment, str, CaptionKind, int, int] | None = None
+    pending_caption: PendingCaption | None = None
 
     for index, segment in enumerate(document_ir.segments):
         assert segment.slices, f"Segment {segment.segment_id} has no slices."
         page_index = segment.slices[0].page_index
-        assert isinstance(page_index, int) and page_index >= 0
+        assert (
+            isinstance(page_index, int) and page_index >= 0
+        ), f"Segment {segment.segment_id} has invalid page index: {page_index!r}"
 
-        if segment.kind == "block":
-            caption_text = extract_block_segment_text(segment)
+        assert (
+            segment.kind == "block"
+            and isinstance(segment, BlockSegment)
+            or segment.kind == "table"
+            and isinstance(segment, TableSegment)
+        ), (
+            f"Segment {segment.segment_id} has invalid kind/type combination: "
+            f"declared kind={segment.kind}, actual type={type(segment).__name__}"
+        )
 
-            if segment.block_type == BlockType.CAPTION and caption_text:
-                kind = _classify_caption_kind(caption_text)
-
-                if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
-                    continue
-
-                if pending_caption is not None:
-                    prev_seg = pending_caption[0]
-                    msg = f"Pending caption overwritten: {prev_seg.segment_id}"
-                    logger.warning(msg)
-                    warnings.append(msg)
-
-                pending_caption = (segment, caption_text, kind, page_index, index)
-                continue
-
+        # First, give any existing pending caption a chance to bind or expire against
+        # the current segment. Doing this before processing a new caption block keeps
+        # overwrite behavior explicit and ensures page/gap expiry is checked against
+        # every subsequent segment, including ignored figure captions.
         if pending_caption is not None:
             pending_caption, should_continue = _handle_pending_caption_binding(
                 caption_bindings=caption_bindings,
@@ -1301,6 +1419,30 @@ def build_caption_bindings(
 
             if should_continue:
                 continue
+
+        if segment.kind != "block":
+            continue
+
+        caption_text = extract_block_segment_text(segment)
+
+        if segment.block_type != BlockType.CAPTION or not caption_text:
+            continue
+
+        kind = _classify_caption_kind(caption_text)
+
+        if kind == "figure" or (kind == "unknown" and not bind_unknown_caption):
+            continue
+
+        if pending_caption is not None:
+            prev_seg = pending_caption[0]
+            msg = (
+                f"Pending caption overwritten: {prev_seg.segment_id} -> "
+                f"{segment.segment_id}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        pending_caption = (segment, caption_text, kind, page_index, index)
 
     # Cleanup dangling caption at end of document.
     if pending_caption is not None:

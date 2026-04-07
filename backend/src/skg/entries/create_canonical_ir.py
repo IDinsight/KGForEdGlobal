@@ -75,9 +75,9 @@ def create_canonical_ir(
 
     The process is as follows:
 
-    1. Build or load deterministic caption -> table bindings.
-    2. Load and validate the CurriculumSkeleton.
-    3. Adapt DocumentIR segments into CurriculumMatchableSegment.
+    1. Build deterministic caption -> table bindings.
+    2. Adapt DocumentIR segments into CurriculumMatchableSegment.
+    3. Load and validate the curriculum skeleton file.
     4. Run the forward-only curriculum skeleton matching engine.
     5. Translate curriculum matches into a list of SegmentDecisions (one decision per
         segment).
@@ -120,12 +120,12 @@ def create_canonical_ir(
     )
 
     # 2.
-    curriculum_skeleton = load_curriculum_skeleton(config.curriculum_skeleton_fp)
-
-    # 3.
     matchable_segments = prepare_matchable_segments(
         caption_bindings=caption_bindings, document_ir=document_ir
     )
+
+    # 3.
+    curriculum_skeleton = load_curriculum_skeleton(config.curriculum_skeleton_fp)
 
     # 4.
     curriculum_match_results = match_curriculum(
