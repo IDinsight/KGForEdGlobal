@@ -142,10 +142,13 @@
           "primary": "Planification des apprentissages du CE1",
           "translations": {}
         },
-        "emit": "container_only",
+        "emit": "emit_grouping",
         "grouping_role": "section",
-        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers. CONTAINER_ONLY: no match_phrases (child tableau-1.2.1 handles matching via caption). Marked implicit so this container-only section is preserved in context_groupings for descendant table matches.",
-        "match_phrases": [],
+        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers. [FIX: converted from CONTAINER_ONLY + implicit to an explicit matched section because the source document has a real standalone heading '1.2 TABLEAU DE PLANIFICATION DES APPRENTISSAGES'. The child tableau-1.2.1 still matches the table via caption.]",
+        "match_phrases": [
+          "1.2 tableau de planification des apprentissages",
+          "tableau de planification des apprentissages"
+        ],
         "children": [
           {
             "id": "tableau-1.2.1",
@@ -193,8 +196,7 @@
             ],
             "match_target": "caption"
           }
-        ],
-        "implicit": true
+        ]
       },
       {
         "id": "strand-oral",

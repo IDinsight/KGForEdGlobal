@@ -105,7 +105,8 @@ class CurriculumMatchReport:
     matched_nodes
         Number of distinct matchable nodes that received at least one match.
     matched_segments
-        Number of segments that matched a skeleton node.
+        Number of source segments consumed by successful skeleton matches, including
+        any `additional_segments` attached via multi-segment matching.
     total_matchable_nodes
         Nodes that participate in matching (not CONTAINER_ONLY).
     total_segments
@@ -1811,7 +1812,8 @@ def generate_curriculum_match_report(
     curriculum_skeleton
         The CurriculumSkeleton used for matching.
     total_segments
-        Total number of document segments passed to the engine.
+        Total number of document segments passed to the engine. This count may include
+        bound caption blocks, which are excluded from the effective denominator below.
     """
 
     all_nodes = dfs_all(curriculum_skeleton.root)
@@ -1841,12 +1843,20 @@ def generate_curriculum_match_report(
     # Exclude intentionally ignored bound captions from segment coverage/noise counts.
     effective_total_segments = max(0, total_segments - caption_blocks_ignored)
 
+    # Count all source segments consumed by successful matches, including any
+    # additional segments attached via allow_multiple_segments (e.g., bilingual
+    # heading/body pairs). Counting only the primary matched objects understates
+    # segment coverage and can make healthy runs look incomplete.
+    matched_segment_count = sum(
+        1 + len(m.additional_segments) for m in curriculum_match_results.matched
+    )
+
     report = CurriculumMatchReport(
         caption_blocks_ignored=caption_blocks_ignored,
         container_only_nodes=len(container_only_nodes),
         cursor_jumps=curriculum_match_results.cursor_jumps,
         matched_nodes=len(matched_node_ids),
-        matched_segments=len(curriculum_match_results.matched),
+        matched_segments=matched_segment_count,
         total_matchable_nodes=len(matchable_nodes),
         total_segments=effective_total_segments,
         total_skeleton_nodes=len(all_nodes),
