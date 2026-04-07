@@ -79,11 +79,11 @@ def create_canonical_ir(
     2. Adapt DocumentIR segments into CurriculumMatchableSegment.
     3. Load and validate the curriculum skeleton file.
     4. Run the forward-only curriculum skeleton matching engine.
-    5. Translate curriculum matches into a list of SegmentDecisions (one decision per
+    5. Generate a curriculum skeleton match report for diagnostics.
+    6. Translate curriculum matches into a list of SegmentDecisions (one decision per
         segment).
-    6. Wrap SegmentDecisions into a SegmentDecisionSet and persist to disk.
-    7. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
-    8. Generate a curriculum skeleton match report for diagnostics.
+    7. Wrap SegmentDecisions into a SegmentDecisionSet and persist to disk.
+    8. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
 
     Parameters
     ----------
@@ -135,6 +135,14 @@ def create_canonical_ir(
     )
 
     # 5.
+    generate_curriculum_match_report(
+        curriculum_match_report_fp=curriculum_match_report_fp,
+        curriculum_match_results=curriculum_match_results,
+        curriculum_skeleton=curriculum_skeleton,
+        total_segments=len(matchable_segments),
+    )
+
+    # 6.
     segment_decisions = translate_segments(
         curriculum_match_results=curriculum_match_results,
         doc_key=doc_key,
@@ -142,7 +150,7 @@ def create_canonical_ir(
         role_order=curriculum_skeleton.metadata.context_groupings_role_order,
     )
 
-    # 6.
+    # 7.
     segment_decision_set = SegmentDecisionSet.model_validate(
         {
             "decision_set_id": compute_decision_set_id(decisions=segment_decisions),
@@ -156,20 +164,12 @@ def create_canonical_ir(
 
     logger.success(f"Saved segment decisions to: {segment_decisions_fp}")
 
-    # 7.
+    # 8.
     compile_canonical_ir(
         canonical_ir_fp=canonical_ir_fp,
         doc_key=doc_key,
         document_ir=document_ir,
         segment_decisions=segment_decision_set,
-    )
-
-    # 8.
-    generate_curriculum_match_report(
-        curriculum_match_report_fp=curriculum_match_report_fp,
-        curriculum_match_results=curriculum_match_results,
-        curriculum_skeleton=curriculum_skeleton,
-        total_segments=len(matchable_segments),
     )
 
 
