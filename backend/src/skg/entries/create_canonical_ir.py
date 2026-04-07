@@ -1,5 +1,5 @@
-"""This module contains the entry point for converting the DocumentIR JSON (layout)
-from step 3 into CanonicalIR (semantic). This is step 4.
+"""This module contains the entry point for converting the document IR JSON (layout)
+from step 3 into a canonical IR JSON (semantic). This is step 4.
 
 Step 4 does the following:
 
@@ -34,6 +34,7 @@ from loguru import logger
 # the command line. However, it is not necessary if it is imported from a pip install.
 if __name__ == "__main__":
     PACKAGE_PATH = Path(__file__).resolve().parents[2]
+
     if PACKAGE_PATH not in sys.path:
         print(f"Appending '{PACKAGE_PATH}' to system path...")
         sys.path.append(str(PACKAGE_PATH))
@@ -51,6 +52,7 @@ from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     compile_canonical_ir,
+    cross_check_stitching_run,
     persist_canonical_run,
 )
 from skg.document_ir.schemas import DocumentIR
@@ -67,23 +69,21 @@ def create_canonical_ir(
     config: CreateCanonicalConfig,
     creation_dirs: CanonicalIRDirs,
     doc_key: str,
-    document_ir_fp: Path,
+    document_ir: DocumentIR,
 ) -> None:
     """Create a CanonicalIR JSON from a single DocumentIR JSON.
 
     The process is as follows:
 
-    1. Load and validate the DocumentIR.
-    2. Build or load deterministic caption -> table bindings.
-    3. Load and validate the CurriculumSkeleton.
-    4. Adapt DocumentIR segments into CurriculumMatchableSegment.
-    5. Run the forward-only curriculum skeleton matching engine.
-    6. Translate curriculum matches into a list of SegmentDecisions (one decision
-        per segment).
-    7. Wrap SegmentDecisions into a SegmentDecisionSet and persist to disk.
-    8. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the
-        compiler.
-    9. Generate a curriculum skeleton match report for diagnostics.
+    1. Build or load deterministic caption -> table bindings.
+    2. Load and validate the CurriculumSkeleton.
+    3. Adapt DocumentIR segments into CurriculumMatchableSegment.
+    4. Run the forward-only curriculum skeleton matching engine.
+    5. Translate curriculum matches into a list of SegmentDecisions (one decision per
+        segment).
+    6. Wrap SegmentDecisions into a SegmentDecisionSet and persist to disk.
+    7. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
+    8. Generate a curriculum skeleton match report for diagnostics.
 
     Parameters
     ----------
@@ -93,8 +93,8 @@ def create_canonical_ir(
         The canonical IR creation directories.
     doc_key
         The expected document key for all page IRs.
-    document_ir_fp
-        The file path to the DocumentIR JSON.
+    document_ir
+        The validated DocumentIR to convert into a CanonicalIR.
     """
 
     canonical_ir_fp = creation_dirs.canonical_ir / "canonical_ir.json"
@@ -111,9 +111,6 @@ def create_canonical_ir(
         return
 
     # 1.
-    document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
-
-    # 2.
     caption_bindings = build_caption_bindings(
         bind_unknown_caption=config.bind_unknown_caption,
         creation_dirs=creation_dirs,
@@ -122,22 +119,22 @@ def create_canonical_ir(
         max_page_distance=config.caption_max_page_distance,
     )
 
-    # 3.
+    # 2.
     curriculum_skeleton = load_curriculum_skeleton(config.curriculum_skeleton_fp)
 
-    # 4.
+    # 3.
     matchable_segments = prepare_matchable_segments(
         caption_bindings=caption_bindings, document_ir=document_ir
     )
 
-    # 5.
+    # 4.
     curriculum_match_results = match_curriculum(
         curriculum_skeleton=curriculum_skeleton,
         max_skip_distance=config.max_skip_distance,
         segments=matchable_segments,
     )
 
-    # 6.
+    # 5.
     segment_decisions = translate_segments(
         curriculum_match_results=curriculum_match_results,
         doc_key=doc_key,
@@ -145,7 +142,7 @@ def create_canonical_ir(
         role_order=curriculum_skeleton.metadata.context_groupings_role_order,
     )
 
-    # 7.
+    # 6.
     decision_set = SegmentDecisionSet.model_validate(
         {
             "decision_set_id": compute_decision_set_id(decisions=segment_decisions),
@@ -159,7 +156,7 @@ def create_canonical_ir(
 
     logger.success(f"Saved segment decisions to: {segment_decisions_fp}")
 
-    # 8.
+    # 7.
     compile_canonical_ir(
         canonical_ir_fp=canonical_ir_fp,
         doc_key=doc_key,
@@ -167,7 +164,7 @@ def create_canonical_ir(
         segment_decisions=decision_set,
     )
 
-    # 9.
+    # 8.
     generate_curriculum_match_report(
         curriculum_match_report_fp=curriculum_match_report_fp,
         curriculum_match_results=curriculum_match_results,
@@ -188,14 +185,14 @@ def create(
         resolve_path=True,
     )
 ) -> None:
-    """Create a CanonicalIR JSON from a single DocumentIR JSON.
+    """Create a semantic CanonicalIR JSON from a single DocumentIR JSON.
 
     The process is as follows:
 
     1. Load config and validate extraction run existence.
-    2. Check doc_key consistency.
+    2. Cross-check stitching run results.
     3. Persist canonical IR creation run metadata.
-    4. Create canonical IR from DocumentIR JSON.
+    4. Create canonical IR from the document IR JSON.
 
     Parameters
     ----------
@@ -206,9 +203,6 @@ def create(
     ------
     Exception
         If any part of the canonical IR creation process fails.
-    ValueError
-        If the computed doc_key from the PDF does not match the doc_key in the
-        stitching run metadata.
     """
 
     # 1.
@@ -228,24 +222,19 @@ def create(
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")
     )
-
-    # 2.
     expected_doc_key = extraction_run_config.extra["doc_key"]
 
-    if computed_doc_key != expected_doc_key:
-        raise ValueError(
-            f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
-            f"  computed doc_key:          {computed_doc_key}\n"
-            f"  extraction_run.json key:   {expected_doc_key}\n"
-            f"You are likely creating a canonical IR against a different PDF than the "
-            f"one used for stitching. Pass the same PDF used in the stitching run or "
-            f"re-run stitching."
-        )
-
-    creation_results_dir = extraction_config.output_dir / expected_doc_key / "canonical"
+    # 2.
+    document_ir = cross_check_stitching_run(
+        canonical_ir_config=config,
+        computed_doc_key=computed_doc_key,
+        expected_doc_key=expected_doc_key,
+        extraction_config=extraction_config,
+        document_ir_fp=document_ir_fp,
+    )
 
     # 3.
+    creation_results_dir = extraction_config.output_dir / expected_doc_key / "canonical"
     creation_dirs, creation_run = persist_canonical_run(
         config=config, output_dir=creation_results_dir
     )
@@ -261,9 +250,10 @@ def create(
             config=config,
             creation_dirs=creation_dirs,
             doc_key=expected_doc_key,
-            document_ir_fp=document_ir_fp,
+            document_ir=document_ir,
         )
         creation_run.extra["status"] = "success"
+
         logger.success("Canonical IR creation completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
         creation_run.extra["status"] = "error"

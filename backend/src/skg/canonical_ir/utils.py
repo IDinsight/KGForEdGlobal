@@ -31,9 +31,14 @@ from skg.config import Settings
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.regexes import DASH_RE, STRUCTURAL_CONTEXT_CUE_RE, WS_RE
-from skg.schemas import BBox, CreateCanonicalConfig, RunCtx
+from skg.schemas import BBox, CreateCanonicalConfig, ExtractionConfig, RunCtx
 from skg.utils.constants import NodeRole, SegmentDecisionType, UnresolvedReason
-from skg.utils.general import QUOTES_TRANSLATION, make_dir, write_to_json
+from skg.utils.general import (
+    QUOTES_TRANSLATION,
+    make_dir,
+    open_json_type,
+    write_to_json,
+)
 
 T = TypeVar("T")
 
@@ -2186,6 +2191,60 @@ def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
         caption_binding=caption_binding,
         segment_decisions=segment_decisions,
     )
+
+
+def cross_check_stitching_run(
+    *,
+    canonical_ir_config: CreateCanonicalConfig | None,
+    computed_doc_key: str,
+    expected_doc_key: str,
+    extraction_config: ExtractionConfig,
+    document_ir_fp: Path,
+) -> DocumentIR:
+    """Cross-check that the verification run matches expected parameters and load
+    verified page IRs and their verdicts.
+
+    Parameters
+    ----------
+    canonical_ir_config
+        The canonical IR configuration used for the run.
+    computed_doc_key
+        The document key computed from the source PDF bytes by the caller.
+    expected_doc_key
+        The expected document key (hex string) from the extraction run metadata.
+    extraction_config
+        The extraction configuration used for the run.
+    document_ir_fp
+        The file path to the DocumentIR JSON to load.
+
+    Returns
+    -------
+    tuple[dict[tuple[int, int], EdgeVerdictRecord], list[PageIR]]
+        The loaded verdicts and verified page IRs.
+
+    Raises
+    ------
+    ValueError
+        If canonical_ir_config is not provided.
+        If the computed doc_key from the PDF does not match the doc_key in the
+        stitching run metadata.
+    """
+
+    if not canonical_ir_config:
+        raise ValueError("Canonical IR config is required")
+
+    if computed_doc_key != expected_doc_key:
+        raise ValueError(
+            f"PDF doc_key mismatch.\n"
+            f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
+            f"  computed doc_key:          {computed_doc_key}\n"
+            f"  extraction_run.json key:   {expected_doc_key}\n"
+            f"You are likely creating a canonical IR against a different PDF than the "
+            f"one used for stitching. Pass the same PDF used in the stitching run or "
+            f"re-run stitching."
+        )
+
+    return DocumentIR.model_validate(open_json_type(document_ir_fp))
 
 
 def dedupe_edges_postpass(
