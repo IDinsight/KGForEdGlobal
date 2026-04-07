@@ -109,16 +109,18 @@ class CurriculumMatchReport:
     total_matchable_nodes
         Nodes that participate in matching (not CONTAINER_ONLY).
     total_segments
-        Total number of matchable segments in the document.
+        Total number of diagnostic segments considered for coverage in the document,
+        excluding bound caption blocks that were intentionally neutralized and ignored.
     total_skeleton_nodes
         Total nodes in the skeleton (all types).
     unexpected_skipped_node_ids
         IDs of matchable nodes that expected a match but received none. CONTAINER_ONLY
         and IGNORE nodes are excluded from this list.
     unmatched_segment_ids
-        IDs of document segments that found no match.
+        IDs of genuinely unmatched document segments, excluding bound caption blocks
+        that were intentionally transferred to table captions and ignored.
     unmatched_segments
-        Number of segments that did NOT match any node.
+        Number of genuinely unmatched segments (same exclusion rule as above).
     """
 
     caption_blocks_ignored: int = 0
@@ -187,7 +189,10 @@ class CurriculumMatchReport:
 
     @property
     def segment_coverage(self) -> float:
-        """Fraction of document segments that matched a skeleton node.
+        """Fraction of diagnostic segments that matched a skeleton node.
+
+        Bound caption blocks intentionally transferred to table captions and ignored
+        are excluded from the denominator.
 
         Returns
         -------
@@ -1822,10 +1827,19 @@ def generate_curriculum_match_report(
         if node.id not in matched_node_ids and node.emit != CurriculumEmitPolicy.IGNORE:
             unexpected_skipped.append(node.id)
 
-    # Count bound caption blocks that correctly fell through to IGNORE.
-    caption_blocks_ignored = sum(
-        1 for s in curriculum_match_results.unmatched if s.is_bound_caption
-    )
+    # Bound caption blocks are intentionally neutralized and later translated to IGNORE
+    # decisions, so they should not count as genuinely unmatched content in the
+    # diagnostics.
+    ignored_bound_captions = [
+        s for s in curriculum_match_results.unmatched if s.is_bound_caption
+    ]
+    genuine_unmatched = [
+        s for s in curriculum_match_results.unmatched if not s.is_bound_caption
+    ]
+    caption_blocks_ignored = len(ignored_bound_captions)
+
+    # Exclude intentionally ignored bound captions from segment coverage/noise counts.
+    effective_total_segments = max(0, total_segments - caption_blocks_ignored)
 
     report = CurriculumMatchReport(
         caption_blocks_ignored=caption_blocks_ignored,
@@ -1834,13 +1848,11 @@ def generate_curriculum_match_report(
         matched_nodes=len(matched_node_ids),
         matched_segments=len(curriculum_match_results.matched),
         total_matchable_nodes=len(matchable_nodes),
-        total_segments=total_segments,
+        total_segments=effective_total_segments,
         total_skeleton_nodes=len(all_nodes),
         unexpected_skipped_node_ids=unexpected_skipped,
-        unmatched_segment_ids=[
-            s.segment_id for s in curriculum_match_results.unmatched
-        ],
-        unmatched_segments=len(curriculum_match_results.unmatched),
+        unmatched_segment_ids=[s.segment_id for s in genuine_unmatched],
+        unmatched_segments=len(genuine_unmatched),
     )
     write_to_json(fp=curriculum_match_report_fp, json_info=report.to_dict())
 
