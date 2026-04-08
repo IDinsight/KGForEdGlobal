@@ -188,29 +188,12 @@ def test_make_dir_create_dir_if_not_exists(
     tmp_path
         Temporary directory provided by pytest for creating test files and directories.
     """
+
     dir1 = tmp_path / "dir1"
     make_dir(dir_=dir1, verbose=True)
     assert dir1.is_dir()
     assert any("Creating directory" in msg for msg in fixture_loguru_capture)
     assert any("Created directory" in msg for msg in fixture_loguru_capture)
-
-
-def test_make_dir_does_nothing_if_dir_exitsts(
-    fixture_loguru_capture: list[str], tmp_path: Path
-) -> None:
-    """If the directory already exists, the function does nothing.
-
-    Parameters
-    ----------
-    fixture_loguru_capture
-        Captured log messages from the `loguru` logger during the test.
-    tmp_path
-        Temporary directory provided by pytest for creating test files and directories.
-    """
-    dir1 = tmp_path / "dir1"
-    dir1.mkdir()
-    make_dir(dir_=dir1, verbose=True)
-    assert len(fixture_loguru_capture) == 0
 
 
 def test_make_dir_create_no_logs_when_verbose_false(
@@ -225,6 +208,7 @@ def test_make_dir_create_no_logs_when_verbose_false(
     tmp_path
         Temporary directory provided by pytest for creating test files and directories.
     """
+
     dir1 = tmp_path / "dir1"
     make_dir(dir_=dir1, verbose=False)
     assert dir1.is_dir()
@@ -245,6 +229,25 @@ def test_open_json_type_raises_on_invalid_suffix(tmp_path: Path) -> None:
 
     with pytest.raises(expected_exception=AssertionError):
         _ = open_json_type(filepath=fp)
+
+
+def test_make_dir_does_nothing_if_dir_exitsts(
+    fixture_loguru_capture: list[str], tmp_path: Path
+) -> None:
+    """If the directory already exists, the function does nothing.
+
+    Parameters
+    ----------
+    fixture_loguru_capture
+        Captured log messages from the `loguru` logger during the test.
+    tmp_path
+        Temporary directory provided by pytest for creating test files and directories.
+    """
+
+    dir1 = tmp_path / "dir1"
+    dir1.mkdir()
+    make_dir(dir_=dir1, verbose=True)
+    assert len(fixture_loguru_capture) == 0
 
 
 def test_open_json_type_raises_on_missing_file(tmp_path: Path) -> None:
