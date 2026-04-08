@@ -11,8 +11,7 @@ Step 4 does the following:
 5. Generates a curriculum skeleton match report for diagnostics.
 6. Translates matches into a list of SegmentDecisions (one per matched result, plus
     unmatched segments; multi-segment continuations may merge into one decision).
-7. Wraps SegmentDecisions into a SegmentDecisionSet and persists to disk.
-8. Compiles a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
+7. Compiles a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
 
 Invoke from the backend directory via:
 
@@ -49,7 +48,6 @@ from skg.canonical_ir.curriculum_skeleton import (
     prepare_matchable_segments,
     translate_segments,
 )
-from skg.canonical_ir.schemas import SegmentDecisionSet, compute_decision_set_id
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
     compile_canonical_ir,
@@ -84,8 +82,7 @@ def create_canonical_ir(
     6. Translate curriculum matches into a list of SegmentDecisions (one decision per
         matched result; `allow_multiple_segments` continuations are merged into the
         primary decision).
-    7. Wrap SegmentDecisions into a SegmentDecisionSet and persist to disk.
-    8. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
+    7. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
 
     Parameters
     ----------
@@ -145,28 +142,17 @@ def create_canonical_ir(
     )
 
     # 6.
-    segment_decisions = translate_segments(
+    segment_decision_set = translate_segments(
+        context_groupings_role_order=curriculum_skeleton.metadata.context_groupings_role_order,
         curriculum_match_results=curriculum_match_results,
+        curriculum_skeleton=curriculum_skeleton,
         doc_key=doc_key,
         matchable_segments=matchable_segments,
-        role_order=curriculum_skeleton.metadata.context_groupings_role_order,
+        pdf_name=document_ir.pdf_name,
+        segment_decisions_fp=segment_decisions_fp,
     )
 
     # 7.
-    segment_decision_set = SegmentDecisionSet.model_validate(
-        {
-            "decision_set_id": compute_decision_set_id(decisions=segment_decisions),
-            "decisions": [d.model_dump(mode="json") for d in segment_decisions],
-            "doc_key": doc_key,
-            "generator": f"curriculum_skeleton:{curriculum_skeleton.skeleton_id}",
-            "pdf_name": document_ir.pdf_name,
-        }
-    )
-    write_to_json(fp=segment_decisions_fp, json_info=segment_decision_set)
-
-    logger.success(f"Saved segment decisions to: {segment_decisions_fp}")
-
-    # 8.
     compile_canonical_ir(
         canonical_ir_fp=canonical_ir_fp,
         doc_key=doc_key,

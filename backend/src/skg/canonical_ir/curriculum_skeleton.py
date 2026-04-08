@@ -22,6 +22,8 @@ from skg.canonical_ir.schemas import (
     LeafDecision,
     RowDecision,
     SegmentDecision,
+    SegmentDecisionSet,
+    compute_decision_set_id,
 )
 from skg.canonical_ir.utils import CanonicalIRDirs, extract_block_segment_text
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
@@ -47,7 +49,8 @@ PendingCaption = tuple[BlockSegment, str, CaptionKind, int, int]
 @dataclass
 class CurriculumCursorJump:
     """Represents a large jump in the curriculum skeleton matching cursor, which may
-    indicate a significant ordering misalignment between the document and skeleton.
+    indicate a significant ordering misalignment between the document and curriculum
+    skeleton.
     """
 
     from_node_id: str
@@ -74,8 +77,8 @@ class CurriculumMatchableSegment:
     text: Optional[str]  # Combined text for blocks; None for tables
 
     # True when this block is a caption bound to a table via caption_bindings. Bound
-    # captions have text="" so they cannot accidentally match structural skeleton
-    # rules; they fall through to IGNORE as expected.
+    # captions have text="" so they cannot accidentally match structural curriculum
+    # skeleton rules; they fall through to IGNORE as expected.
     is_bound_caption: bool = False
 
     # Table-specific (populated from caption_bindings + TableSegment).
@@ -101,19 +104,20 @@ class CurriculumMatchReport:
     container_only_nodes
         Number of CONTAINER_ONLY nodes (structural-only, never matched).
     cursor_jumps
-        List of large cursor jumps (potential document/skeleton ordering issues).
+        List of large cursor jumps (potential document/curriculum skeleton ordering issues).
     matched_nodes
         Number of distinct matchable nodes that received at least one match.
     matched_segments
-        Number of source segments consumed by successful skeleton matches, including
-        any `additional_segments` attached via multi-segment matching.
+        Number of source segments consumed by successful curriculum skeleton matches,
+        including any `additional_segments` attached via multi-segment matching.
+    total_curriculum_skeleton_nodes
+        Total nodes in the curriculum skeleton (all types).
     total_matchable_nodes
         Nodes that participate in matching (not CONTAINER_ONLY).
     total_segments
         Total number of diagnostic segments considered for coverage in the document,
         excluding bound caption blocks that were intentionally neutralized and ignored.
-    total_skeleton_nodes
-        Total nodes in the skeleton (all types).
+
     unexpected_skipped_node_ids
         IDs of matchable nodes that expected a match but received none. CONTAINER_ONLY
         and IGNORE nodes are excluded from this list.
@@ -129,21 +133,21 @@ class CurriculumMatchReport:
     cursor_jumps: list[CurriculumCursorJump] = field(default_factory=list)
     matched_nodes: int = 0
     matched_segments: int = 0
+    total_curriculum_skeleton_nodes: int = 0
     total_matchable_nodes: int = 0
     total_segments: int = 0
-    total_skeleton_nodes: int = 0
     unexpected_skipped_node_ids: list[str] = field(default_factory=list)
     unmatched_segment_ids: list[str] = field(default_factory=list)
     unmatched_segments: int = 0
 
     @property
     def has_ordering_warnings(self) -> bool:
-        """True when cursor jumps were recorded, indicating the document and skeleton
-        ordering diverged at one or more points.
+        """True when cursor jumps were recorded, indicating the document and curriculum
+        skeleton ordering diverged at one or more points.
 
         Ordering warnings are informational--they often indicate cross-strand phrase
-        collisions in the skeleton (ambiguous match phrases that match nodes in a
-        different strand) rather than algorithm failures. Review the `cursor_jumps`
+        collisions in the curriculum skeleton (ambiguous match phrases that match nodes
+        in a different strand) rather than algorithm failures. Review the `cursor_jumps`
         list for details.
 
         Returns
@@ -162,7 +166,7 @@ class CurriculumMatchReport:
 
         Cursor jumps are tracked separately via `has_ordering_warnings` and do NOT
         affect the health signal. Jumps typically indicate cross-strand phrase
-        ambiguity in the skeleton rather than a fundamental matching failure.
+        ambiguity in the curriculum skeleton rather than a fundamental matching failure.
 
         Returns
         -------
@@ -190,7 +194,7 @@ class CurriculumMatchReport:
 
     @property
     def segment_coverage(self) -> float:
-        """Fraction of diagnostic segments that matched a skeleton node.
+        """Fraction of diagnostic segments that matched a curriculum skeleton node.
 
         Bound caption blocks intentionally transferred to table captions and ignored
         are excluded from the denominator.
@@ -220,7 +224,7 @@ class CurriculumMatchReport:
 
         lines = [
             f"{'═' * 60}",
-            "  Skeleton Match Report",
+            "  Curriculum Skeleton Match Report",
             f"{'═' * 60}",
             f"  Segments:  {self.matched_segments}/{self.total_segments} matched "
             f"({self.segment_coverage:.1%})",
@@ -283,7 +287,7 @@ class CurriculumMatchReport:
             "total_segments": self.total_segments,
             "matched_segments": self.matched_segments,
             "unmatched_segments": self.unmatched_segments,
-            "total_skeleton_nodes": self.total_skeleton_nodes,
+            "total_curriculum_skeleton_nodes": self.total_curriculum_skeleton_nodes,
             "total_matchable_nodes": self.total_matchable_nodes,
             "matched_nodes": self.matched_nodes,
             "container_only_nodes": self.container_only_nodes,
@@ -435,6 +439,7 @@ def _create_decision_from_role(
                 source_label=col_role.source_label,
                 title=cell_text,
             )
+
         if col_role.kind == "leaf":
             return LeafDecision(
                 body=cell_text,
@@ -556,7 +561,7 @@ def _drain_cursor(
     cursor
         The current cursor position index.
     matchable_nodes
-        The full list of matchable skeleton nodes in DFS order.
+        The full list of matchable curriculum skeleton nodes in DFS order.
     pinned_node_id
         The ID of the node currently pinned, or None if no node is pinned.
 
@@ -635,7 +640,7 @@ def _extract_row_content(
         Row-level groupings and leaves.
     """
 
-    cells = getattr(row, "cells", [])
+    cells = row.cells
 
     if not col_map:
         return _extract_fallback_content(
@@ -831,7 +836,7 @@ def _probe_nodes(
     end
         The end index (exclusive) for the probe window.
     matchable_nodes
-        The full list of matchable skeleton nodes in DFS order.
+        The full list of matchable curriculum skeleton nodes in DFS order.
     normalized_match_phrases
         Optional pre-computed mapping from node.id to normalized match phrases.
     pinned_node_id
@@ -851,11 +856,12 @@ def _probe_nodes(
     normalized_segment_text = None
     normalized_segment_caption = None
 
-    # Test whether a segment matches a skeleton node via the normalized match phrases.
-    # Any matching phrase is sufficient (OR logic). The target text comes from
-    # `segment.text` for ordinary text-target nodes, or `segment.caption_text` for
-    # caption-target nodes. Nodes with no phrases, container-only nodes, and segments
-    # whose relevant target text is empty are non-matches.
+    # Test whether a segment matches a curriculum skeleton node via the normalized
+    # match phrases. Any matching phrase is sufficient (OR logic). The target text
+    # comes from `segment.text` for ordinary text-target nodes, or
+    # `segment.caption_text` for caption-target nodes. Nodes with no phrases,
+    # container-only nodes, and segments whose relevant target text is empty are
+    # non-matches.
     for idx in range(start, min(end, len(matchable_nodes))):
         node = matchable_nodes[idx]
 
@@ -1007,7 +1013,7 @@ def _record_match(
     cursor_jumps
         List tracking node jumps (modified in place).
     matchable_nodes
-        The full list of matchable skeleton nodes in DFS order.
+        The full list of matchable curriculum skeleton nodes in DFS order.
     node
         The successfully matched curriculum skeleton node.
     pinned_node_id
@@ -1080,19 +1086,168 @@ def _resolve_column_mappings(
     column_mappings: list[CurriculumColumnMapping],
     header_rows_canonical: list[list[str]],
 ) -> list[CurriculumResolvedColumnRole]:
-    """Match skeleton column_mappings against actual table headers.
+    """Match curriculum skeleton `column_mappings` against actual table headers.
 
     Builds per-column header signatures by joining all non-empty header-row cells for
     each column using the literal separator " / ". Each column is tested against every
     mapping in order; first match wins. Unmatched columns default to `skip`.
 
-    Note: `column_mappings` patterns use inline `(?i)` flags (self-contained), so this
+    This function is basically making a schema for a table:
+
+    [
+        "column 0 = week",
+        "column 1 = expectation",
+        "column 2 = guidance",
+        "column 3 = descriptor",
+    ]
+
+    It does not emit any curriculum content itself. It just prepares the lookup table
+    that row parsing will use next.
+
+    NB: `column_mappings` patterns use inline `(?i)` flags (self-contained), so this
     function compiles with `re.UNICODE` only, not `re.IGNORECASE`.
+
+    Examples
+    --------
+    1. Simple one-row header mapping
+        Suppose the table header is:
+
+            [
+                ["Semaine", "Vocabulaire", "Grammaire", "Production"]
+            ]
+
+        and the curriculum skeleton provides:
+
+            [
+                {"header_pattern": "(?i)semaine", "role": "grouping:week"},
+                {"header_pattern": "(?i)vocabulaire", "role": "leaf:expectation"},
+                {"header_pattern": "(?i)grammaire", "role": "leaf:expectation"},
+                {"header_pattern": "(?i)production", "role": "leaf:expectation"},
+            ]
+
+        Then the function returns:
+
+            [
+                CurriculumResolvedColumnRole(
+                    col_index=0,
+                    kind="grouping",
+                    role_value="week",
+                    source_label="Semaine",
+                ),
+                CurriculumResolvedColumnRole(
+                    col_index=1,
+                    kind="leaf",
+                    role_value="expectation",
+                    source_label="Vocabulaire",
+                ),
+                CurriculumResolvedColumnRole(
+                    col_index=2,
+                    kind="leaf",
+                    role_value="expectation",
+                    source_label="Grammaire",
+                ),
+                CurriculumResolvedColumnRole(
+                    col_index=3,
+                    kind="leaf",
+                    role_value="expectation",
+                    source_label="Production",
+                ),
+            ]
+
+        This means later row parsing will treat the first column as a grouping and the
+        other three as emitted leaves.
+
+    2. Multi-row header collapse
+        Suppose the table has two header rows:
+
+            [
+                ["Activités", "Expression orale", "Expression orale", "Lecture"],
+                ["Semaines", "Objectifs", "Contenus", "Objectifs"],
+            ]
+
+        The function builds one header signature per column by joining the non-empty
+        header cells for that column with " / ":
+
+            [
+                "Activités / Semaines",
+                "Expression orale / Objectifs",
+                "Expression orale / Contenus",
+                "Lecture / Objectifs",
+            ]
+
+        Matching is performed against those joined signatures, not against each header
+        row separately.
+
+    3. Unmatched column becomes skip
+        Suppose the header is:
+
+            [
+                ["Semaine", "Notes de bas de page", "Production"]
+            ]
+
+        and no curriculum skeleton mapping matches "Notes de bas de page".
+
+        Then that column resolves to:
+
+            CurriculumResolvedColumnRole(
+                col_index=1,
+                kind="skip",
+                role_value="",
+                source_label="Notes de bas de page",
+            )
+
+        This means later row parsing will ignore that column completely.
+
+    4. First match wins when multiple patterns match
+        Suppose the header string is:
+
+            "Objectif spécifique"
+
+        and two mappings both match it:
+
+            [
+                {"header_pattern": "(?i)objectif", "role": "leaf:guidance"},
+                {"header_pattern": "(?i)objectif spécifique", "role": "leaf:expectation"},
+            ]
+
+        The function logs a warning and uses the first match only. So this column would
+        resolve to `leaf:guidance`, even though the second mapping is more specific.
+
+        This means the order of `column_mappings` in the curriculum skeleton matters.
+
+    5. source_label_override replaces the actual header text
+        Suppose the header is:
+
+            "nisaru jukki"
+
+        and the matching curriculum skeleton rule is:
+
+            {
+                "header_pattern": "(?i)objectifs? sp[ée]cifiques?|nisaru jukki",
+                "role": "leaf:expectation",
+                "source_label_override": "Objectif spécifique",
+            }
+
+        Then the resolved role uses:
+
+            source_label="Objectif spécifique"
+
+        rather than the raw extracted header text "nisaru jukki".
+
+        This is useful when bilingual or noisy headers should normalize to a cleaner
+        source label.
+
+    6. No headers or zero-width header rows
+        If `header_rows_canonical` is empty, or all header rows are empty, the function
+        returns an empty list.
+
+        In that case, later row parsing falls back to default row handling rather than
+        column-aware extraction.
 
     Parameters
     ----------
     column_mappings
-        Column-to-role mappings from the skeleton node.
+        Column-to-role mappings from the curriculum skeleton node.
     header_rows_canonical
         Canonical header rows as `list[list[str]]` from the table segment.
 
@@ -1102,13 +1257,10 @@ def _resolve_column_mappings(
         One entry per column in the (widest) header row.
     """
 
-    if not header_rows_canonical:
-        return []
-
     # Determine column count from the widest header row.
     n_cols = max(len(row) for row in header_rows_canonical)
 
-    if n_cols == 0:
+    if not header_rows_canonical or n_cols == 0:
         return []
 
     # Build per-column header signature by joining all header rows.
@@ -1176,19 +1328,160 @@ def _resolve_column_mappings(
 def _resolve_effective_role(
     *, cell_text: str, col_role: CurriculumResolvedColumnRole
 ) -> CurriculumResolvedColumnRole:
-    """Resolve per-cell grouping role overrides. Returns the original role if no match.
+    """Resolve the effective semantic role for one table cell.
+
+    This function applies per-cell overrides to a column's already-resolved role.
+
+    It is used after `_resolve_column_mappings()`. At that earlier stage, the pipeline
+    has already decided what each column *usually* means based on the table headers.
+    However, some grouping columns contain mixed content across rows. For example, a
+    column may usually represent `week`, but certain row values such as "Palier 2" or
+    "Compétences de base" should be treated differently.
+
+    This function handles those cases by checking the cell's text against the column's
+    `grouping_role_overrides` in order. The first matching override wins.
+
+    What this function does
+    -----------------------
+
+    1. If the resolved column role is not a grouping role, return it unchanged.
+    2. If the grouping column has no overrides, return it unchanged.
+    3. Otherwise, test each override's `cell_pattern` against the current cell text.
+    4. On the first match:
+        - If the override role is `skip`, return a skip role for this cell
+        - Otherwise return a new `CurriculumResolvedColumnRole` using the override role
+    5. If no override matches, return the original column role unchanged.
+
+    NB:
+
+    1. Overrides are evaluated in order; first match wins.
+    2. This function only applies overrides to grouping columns.
+    3. It does not emit any decisions itself. It only chooses the effective role that
+        `_create_decision_from_role()` will use next.
+    4. The returned object keeps the original `col_index` and `source_label`.
+    5. Without `_resolve_effective_role()` (or something similar), we would have to
+        split one physical column into multiple separate column mappings based on row
+        type, which is awkward and often impossible. This function lets us say: “This
+        column is usually weeks, except when a particular row text tells us it is
+        really a substage marker or noise we should drop.”
+
+    Examples
+    --------
+    1. No overrides -> keep original role
+        Suppose the resolved column role is:
+
+            CurriculumResolvedColumnRole(
+                col_index=0,
+                kind="grouping",
+                role_value="week",
+                source_label="Semaine",
+                grouping_role_overrides=[],
+            )
+
+        and the current cell text is:
+
+            "Semaine 3"
+
+        Since there are no overrides, the function returns the original role unchanged:
+
+            kind="grouping", role_value="week"
+
+    2. Override grouping:week -> grouping:substage
+        Suppose the resolved column role is:
+
+            CurriculumResolvedColumnRole(
+                col_index=0,
+                kind="grouping",
+                role_value="week",
+                source_label="Activités",
+                grouping_role_overrides=[
+                    CurriculumGroupingRoleOverride(
+                        cell_pattern="(?i)^\\s*(j[ée]ego|palier|semaines)\\b",
+                        role="grouping:substage",
+                    )
+                ],
+            )
+
+        and the cell text is:
+
+            "Palier 2"
+
+        The override matches, so the function returns a new effective role:
+
+            CurriculumResolvedColumnRole(
+                col_index=0,
+                kind="grouping",
+                role_value="substage",
+                source_label="Activités",
+            )
+
+        This means the cell will be treated as a `substage` grouping rather than a
+        `week` grouping.
+
+    3. Override to skip
+        Suppose the same grouping column has an override:
+
+            CurriculumGroupingRoleOverride(
+                cell_pattern="(?i)^\\s*(manoore|comp[ée]tences?\\s+de\\s+base)\\b",
+                role="skip",
+            )
+
+        and the cell text is:
+
+            "Compétences de base"
+
+        Then the function returns:
+
+            CurriculumResolvedColumnRole(
+                col_index=0,
+                kind="skip",
+                role_value="",
+                source_label="Activités",
+            )
+
+        This means the cell is ignored and produces no grouping or leaf.
+
+    4. No override matches -> keep original grouping role
+        Suppose the base column role is still `grouping:week`, and the cell text is:
+
+            "Semaine 12"
+
+        If none of the overrides match that text, the function returns the original role:
+
+            kind="grouping", role_value="week"
+
+        So the cell is treated normally as a week grouping.
+
+    5. Leaf columns are never overridden here
+        Suppose the resolved column role is:
+
+            CurriculumResolvedColumnRole(
+                col_index=2,
+                kind="leaf",
+                role_value="expectation",
+                source_label="Objectif spécifique",
+            )
+
+        and the cell text is:
+
+            "Lire un texte court"
+
+        Even if overrides were present on the object, this function would return the
+        role unchanged because only grouping columns are eligible for per-cell
+        overrides.
 
     Parameters
     ----------
     cell_text
-        The extracted and stripped text from the cell.
+        The extracted and stripped text from the current table cell.
     col_role
-        The resolved column role definition, which may contain grouping_role_overrides.
+        The resolved column role for this column, possibly including
+        `grouping_role_overrides`.
 
     Returns
     -------
     CurriculumResolvedColumnRole
-        The effective column role after applying any matching grouping_role_overrides.
+        The effective role to use for this specific cell.
     """
 
     if col_role.kind != "grouping" or not col_role.grouping_role_overrides:
@@ -1224,29 +1517,193 @@ def _translate_table_rows(
     node: CurriculumSkeletonNode,
     seg: CurriculumMatchableSegment,
 ) -> SegmentDecision:
-    """Build a SegmentDecision with RowDecision[] from a table segment.
+    """Build a SegmentDecision with RowDecision[] from a matched table segment.
+
+    This function is used when a curriculum skeleton node has `emit=EMIT_TABLE_ROWS`.
+    Instead of treating the whole table as one big leaf, it parses the table row by row
+    and turns each usable row into a `RowDecision`.
+
+    What this function does
+    -----------------------
+
+    1. Confirm that the matched segment is really a `TableSegment`.
+    2. Resolve the curriculum skeleton node's `column_mappings` against the table's
+        actual header rows, producing a column-by-column semantic role map.
+    3. Choose the best available row source in this order:
+        `rows_filldown` -> `rows_grid` -> raw `rows`.
+    4. Skip the table's header rows.
+    5. For each remaining row:
+        - Extract row-level groupings and leaves using the resolved column map
+        - Skip rows that produce no usable content
+        - Emit a `RowDecision` for rows that do produce content
+    6. Optionally add one segment-level grouping from `node.grouping_role`. This is
+        useful when the whole table itself represents a container such as a unit, week
+        band, or substage.
+    7. Set the final `decision_type` from the actual outputs:
+        - Groupings + leaves -> `EMIT_GROUPINGS_AND_LEAVES`
+        - Leaves only -> `EMIT_LEAVES_ONLY`
+        - Groupings only -> `EMIT_GROUPINGS_ONLY`
+        - Nothing at all -> `UNRESOLVED`
+
+    NB:
+
+    1. `context_groupings` are outer ancestors that were already built before this
+        function is called.
+    2. `groupings` on the returned `SegmentDecision` are segment-level outputs for the
+      matched table as a whole.
+    3. `rows` contain the row-by-row curriculum content extracted from the table body.
+    4. Even though `context_groupings` is passed in, they do not determine the decision
+        type. The decision type is computed only from the segment-level grouping plus
+        the row outputs. That matches the SegmentDecision validators, which do not
+        allow a pretend emit decision whose only content is context.
+
+    Examples
+    --------
+    1. Weekly plan table with one grouping column and several expectation columns
+        Suppose the table looks like this:
+
+            | Semaine | Vocabulaire | Grammaire | Production |
+            |---------|-------------|-----------|------------|
+            | S1      | ...         | ...       | ...        |
+            | S2      | ...         | ...       | ...        |
+
+        and the curriculum skeleton maps:
+            - "Semaine" -> grouping:week
+            - "Vocabulaire" -> leaf:expectation
+            - "Grammaire" -> leaf:expectation
+            - "Production" -> leaf:expectation
+
+        Then each body row becomes something like:
+
+            RowDecision(
+                row_index=1,
+                groupings=[GroupingDecision(role="week", title="S1")],
+                leaves=[
+                    LeafDecision(role="expectation", body="..."),
+                    LeafDecision(role="expectation", body="..."),
+                    LeafDecision(role="expectation", body="..."),
+                ],
+            )
+
+        Because the rows produce both groupings and leaves, the returned
+        `SegmentDecision.decision_type` becomes `EMIT_GROUPINGS_AND_LEAVES`.
+
+    2. Table with only leaf columns
+        Suppose the table looks like this:
+
+            | Objectif spécifique | Contenu |
+            |---------------------|---------|
+            | Lire des mots ...   | ...     |
+            | Identifier ...      | ...     |
+
+        and both columns map to leaf roles.
+
+        Then each row produces leaves but no row-level groupings, for example:
+
+            RowDecision(
+                row_index=1,
+                groupings=[],
+                leaves=[
+                    LeafDecision(role="expectation", body="Lire des mots ..."),
+                    LeafDecision(role="guidance", body="..."),
+                ],
+            )
+
+        If the node also has no `grouping_role`, the overall decision type becomes
+        `EMIT_LEAVES_ONLY`.
+
+    3. Table with only grouping output
+        Suppose the table body is acting like a structural index rather than carrying
+        actual statement text, for example:
+
+            | Palier |
+            |--------|
+            | Palier 1 |
+            | Palier 2 |
+
+        and the curriculum skeleton maps the only column to `grouping:substage`.
+
+        Then rows may produce only row-level groupings:
+
+            RowDecision(
+                row_index=1,
+                groupings=[GroupingDecision(role="substage", title="Palier 1")],
+                leaves=[],
+            )
+
+        In that case the overall decision type becomes `EMIT_GROUPINGS_ONLY`.
+
+    4. Segment-level grouping plus row-level leaves
+        Suppose the matched table node itself has `grouping_role="unit"` and
+        `canonical_name.primary="Communication écrite"`, and the rows produce only leaf
+        expectations.
+
+        Then the returned decision contains:
+            - One top-level `GroupingDecision(role="unit", title="Communication écrite")`
+            - Many row-level leaves inside `rows`
+
+        Even if rows have no row-level groupings, the presence of the segment-level
+        grouping plus row-level leaves means the decision type becomes
+        `EMIT_GROUPINGS_AND_LEAVES`.
+
+    5. Fallback when no column mappings match
+        If `_resolve_column_mappings()` cannot match any headers, row extraction falls
+        back to `_extract_fallback_content()`. In that fallback mode, the function joins
+        all non-empty cells in a row into one leaf body using the node's default
+        `leaf_role`.
+
+        So a row like:
+
+            | S1 | Les voyelles | Lecture orale |
+
+        may become:
+
+            RowDecision(
+                row_index=1,
+                groupings=[],
+                leaves=[
+                    LeafDecision(
+                        role=node.leaf_role,
+                        body="S1\\n\\nLes voyelles\\n\\nLecture orale",
+                    )
+                ],
+            )
+
+        This is a recovery path for badly mapped tables, not the preferred behavior.
+
+    6. Empty or badly mapped table -> UNRESOLVED
+        If no body row produces any groupings or leaves at all, the function does not
+        return an empty emit decision. Instead it marks the table as `UNRESOLVED` and
+        clears `context_groupings`, `groupings`, and `rows` so the result satisfies the
+        `SegmentDecision` schema.
+
+        This usually means:
+            - The wrong table was matched
+            - The header patterns did not match the real headers
+            - The table body was empty
+            - Or the table structure was too broken for row extraction
 
     Parameters
     ----------
     context
-        Pre-built context_groupings from skeleton ancestry.
+        Pre-built context_groupings from curriculum skeleton ancestry.
     decision_id
-        The decision ID string.
+        Stable decision ID for this table decision.
     node
-        The skeleton node that matched (has column_mappings).
+        The matched curriculum skeleton node. Must provide `column_mappings`, and may
+        optionally provide a segment-level `grouping_role`.
     seg
-        The MatchableSegment wrapper.
+        The matched table segment wrapper.
 
     Returns
     -------
     SegmentDecision
-        A table decision with per-row RowDecisions.
+        A table-backed decision whose main payload is usually stored in `rows[]`.
 
     Raises
     ------
     TypeError
-        If the segment's raw_segment is not a TableSegment, which is required for row
-        extraction.
+        If `seg.raw_segment` is not a `TableSegment`.
     """
 
     if not isinstance(seg.raw_segment, TableSegment):
@@ -1257,7 +1714,7 @@ def _translate_table_rows(
 
     table_seg: TableSegment = seg.raw_segment
 
-    # Build column index -> role mapping from skeleton + table headers.
+    # Build column index -> role mapping from curriculum skeleton + table headers.
     col_map = _resolve_column_mappings(
         column_mappings=node.column_mappings,
         header_rows_canonical=list(list(row) for row in seg.header_rows_canonical),
@@ -1276,11 +1733,11 @@ def _translate_table_rows(
         )
         rows_source = table_seg.rows
 
-    header_n = table_seg.header_row_count or 0
+    hrc = table_seg.header_row_count or 0
     row_decisions: list[RowDecision] = []
 
     # Skip header rows.
-    for abs_i, row in enumerate(rows_source[header_n:], start=header_n):
+    for abs_i, row in enumerate(rows_source[hrc:], start=hrc):
         row_groupings, row_leaves = _extract_row_content(
             col_map=col_map, default_leaf_role=node.leaf_role, row=row
         )
@@ -1320,9 +1777,9 @@ def _translate_table_rows(
     else:
         logger.warning(
             f"Table {seg.segment_id}: no groupings or leaves produced from "
-            f"{len(rows_source) - header_n} data rows "
+            f"{len(rows_source) - hrc} data rows "
             f"(bad column mapping or empty table body). "
-            f"Marking as UNRESOLVED (skeleton node '{node.id}' matched but "
+            f"Marking as UNRESOLVED (curriculum skeleton node '{node.id}' matched but "
             f"extraction failed)."
         )
         dt = SegmentDecisionType.UNRESOLVED
@@ -1345,12 +1802,12 @@ def _translate_table_rows(
         groupings=segment_groupings if not is_noop else [],
         leaves=[],
         rationale=(
-            f"Skeleton TABLE: '{node.id}' → {len(row_decisions)} data rows."
+            f"Curriculum skeleton TABLE: '{node.id}' → {len(row_decisions)} data rows."
             if not is_noop
             else (
-                f"Skeleton TABLE UNRESOLVED: '{node.id}' matched but column "
+                f"Curriculum skeleton TABLE UNRESOLVED: '{node.id}' matched but column "
                 f"extraction produced 0 groupings and 0 leaves from "
-                f"{len(rows_source) - header_n} data rows."
+                f"{len(rows_source) - hrc} data rows."
             )
         ),
         rows=row_decisions if not is_noop else [],
@@ -1399,7 +1856,7 @@ def build_ancestry_map(
         chain = ancestors + [node]
         assert (
             node.id not in result
-        ), f"Duplicate node ID detected in skeleton: {result}"
+        ), f"Duplicate node ID detected in curriculum skeleton: {result}"
         result[node.id] = chain
 
         for child in node.children:
@@ -1659,29 +2116,29 @@ def build_caption_bindings(
 def build_context_groupings(
     *,
     ancestry: list[CurriculumSkeletonNode],
+    context_groupings_role_order: list[NodeRole] | None = None,
     matched_node: CurriculumSkeletonNode,
-    role_order: list[NodeRole] | None = None,
 ) -> list[GroupingDecision]:
-    """Build context_groupings from the skeleton ancestry chain.
+    """Build context groupings from the curriculum skeleton ancestry chain.
 
-    Includes ancestors that:
+    We include ancestors that:
 
-    1. Have a `grouping_role` (not None, not FRAMEWORK).
+    1. Have a `grouping_role` (i.e., not None, FRAMEWORK, etc.).
     2. Are NOT the matched node itself (that goes in `groupings`).
-    3. Are `EMIT_GROUPING`/`EMIT_GROUPING_AND_LEAF`/`EMIT_TABLE_ROWS` (visible in
+    3. Are `EMIT_GROUPING`/`EMIT_GROUPING_AND_LEAF`/`EMIT_TABLE_ROWS` (i.e., visible in
         document), OR are `CONTAINER_ONLY` with `implicit=True`.
 
-    The result is sorted by role precedence (outer → inner).
+    The result is sorted by role precedence (outer -> inner).
 
     Parameters
     ----------
     ancestry
         Full ancestry chain from root to matched node (inclusive).
+    context_groupings_role_order
+        Custom role precedence order. Falls back to
+        `DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER` if not provided.
     matched_node
         The node that was matched (excluded from context).
-    role_order
-        Custom role precedence order. Falls back to
-        `DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER`.
 
     Returns
     -------
@@ -1691,7 +2148,9 @@ def build_context_groupings(
 
     precedence = {
         role: i
-        for i, role in enumerate(role_order or DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER)
+        for i, role in enumerate(
+            context_groupings_role_order or DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER
+        )
     }
     context: list[GroupingDecision] = []
 
@@ -1736,16 +2195,16 @@ def build_context_groupings(
 
 
 def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
-    """Flatten **all** skeleton nodes into DFS order (including CONTAINER_ONLY).
+    """Flatten **all** curriculum skeleton nodes into DFS order (including CONTAINER_ONLY).
 
     Parameters
     ----------
     root
-        The root SkeletonNode.
+        The root CurriculumSkeletonNode.
 
     Returns
     -------
-    list[SkeletonNode]
+    list[CurriculumSkeletonNode]
         All nodes in DFS traversal order.
     """
 
@@ -1757,7 +2216,7 @@ def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
         Parameters
         ----------
         node
-            Current skeleton node being visited.
+            Current curriculum skeleton node being visited.
         """
 
         nodes.append(node)
@@ -1770,7 +2229,7 @@ def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
 
 
 def dfs_matchable(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
-    """Flatten the skeleton into DFS order, keeping only matchable nodes.
+    """Flatten the curriculum skeleton into DFS order, keeping only matchable nodes.
 
     A node is matchable if it is not `CONTAINER_ONLY` and has at least one
     `match_phrase`. This includes `IGNORE` nodes, because they still need to consume
@@ -1795,7 +2254,7 @@ def dfs_matchable(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
         Parameters
         ----------
         node
-            Current skeleton node being visited.
+            Current curriculum skeleton node being visited.
         """
 
         if node.emit != CurriculumEmitPolicy.CONTAINER_ONLY and node.match_phrases:
@@ -1871,9 +2330,9 @@ def generate_curriculum_match_report(
         cursor_jumps=curriculum_match_results.cursor_jumps,
         matched_nodes=len(matched_node_ids),
         matched_segments=matched_segment_count,
+        total_curriculum_skeleton_nodes=len(all_nodes),
         total_matchable_nodes=len(matchable_nodes),
         total_segments=effective_total_segments,
-        total_skeleton_nodes=len(all_nodes),
         unexpected_skipped_node_ids=unexpected_skipped,
         unmatched_segment_ids=[s.segment_id for s in genuine_unmatched],
         unmatched_segments=len(genuine_unmatched),
@@ -1895,8 +2354,8 @@ def generate_curriculum_match_report(
         logger.warning(
             f"Curriculum skeleton match has ordering warnings: "
             f"{len(report.cursor_jumps)} cursor jump(s) detected. "
-            f"This often indicates cross-strand phrase collisions in the skeleton "
-            f"(ambiguous match_phrases that match nodes in a different strand). "
+            f"This often indicates cross-strand phrase collisions in the curriculum "
+            f"skeleton (ambiguous match_phrases that match nodes in a different strand). "
             f"Review cursor_jumps in: {curriculum_match_report_fp}"
         )
 
@@ -1907,12 +2366,12 @@ def load_curriculum_skeleton(curriculum_skeleton_fp: Path) -> CurriculumSkeleton
     Parameters
     ----------
     curriculum_skeleton_fp
-        Path to the skeleton JSON file.
+        Path to the curriculum skeleton JSON file.
 
     Returns
     -------
     CurriculumSkeleton
-        A validated skeleton.
+        A validated curriculum skeleton.
     """
 
     logger.info(
@@ -1940,10 +2399,10 @@ def match_curriculum(
     """Deterministically match document segments to curriculum skeleton nodes.
 
     The function walks `segments` in document order and maintains a cursor into the
-    DFS-ordered list of matchable skeleton nodes. For each segment it probes a bounded,
-    half-open window `[cursor, cursor + max_skip_distance)`. Because the end of the
-    window is exclusive, this means the function checks **at most `max_skip_distance`
-    nodes total, including the node currently at the cursor**.
+    DFS-ordered list of matchable curriculum skeleton nodes. For each segment it probes
+    a bounded, half-open window `[cursor, cursor + max_skip_distance)`. Because the end
+    of the window is exclusive, this means the function checks **at most
+    `max_skip_distance` nodes total, including the node currently at the cursor**.
 
     When a match is found, the node is marked as consumed, but the cursor does not jump
     straight to the matched index. Instead, it only drains past *consecutive* consumed
@@ -1965,7 +2424,7 @@ def match_curriculum(
 
     1. Straightforward hit in the current window
 
-    Suppose the matchable skeleton nodes are:
+    Suppose the matchable curriculum skeleton nodes are:
 
     * index 0: `schema-integrateur`
     * index 1: `tableau-1.1.1`
@@ -2088,7 +2547,7 @@ def match_curriculum(
     5. Complete miss
 
     Suppose the segment is just unrelated front-matter prose, or some curriculum
-    content the skeleton does not know how to match.
+    content the curriculum skeleton does not know how to match.
 
     Then:
 
@@ -2102,7 +2561,7 @@ def match_curriculum(
     * Other unmatched segments become `UNRESOLVED`
 
     So the main loop itself does not decide ignore vs. unresolved. It just says: “This
-    segment found no skeleton node.”
+    segment found no curriculum skeleton node.”
 
     6. Cursor jump warning
 
@@ -2128,7 +2587,7 @@ def match_curriculum(
     curriculum_skeleton
         A validated `CurriculumSkeleton`.
     max_skip_distance
-        Maximum number of skeleton nodes to inspect per probe window.
+        Maximum number of curriculum skeleton nodes to inspect per probe window.
     segments
         `CurriculumMatchableSegment` objects in document order.
 
@@ -2162,7 +2621,7 @@ def match_curriculum(
 
     ancestry_map = build_ancestry_map(curriculum_skeleton.root)
 
-    # Where in the skeleton we currently are.
+    # Where in the curriculum skeleton we currently are.
     cursor: int = 0
 
     # Nodes already matched.
@@ -2306,7 +2765,7 @@ def prepare_matchable_segments(
     1. Block segments keep their extracted text, except bound caption blocks.
     2. Bound caption blocks are retained as block segments but their `text` is
        neutralized to `""` and `is_bound_caption=True` so they cannot accidentally
-       match structural skeleton phrases.
+       match structural curriculum skeleton phrases.
     3. Table segments receive any bound caption provenance (`caption_text`,
        `caption_segment_id`, `caption_page_index`, `caption_gap_segments`) and set
        `text=None` because table matching is driven by caption text and/or segment kind
@@ -2396,15 +2855,15 @@ def prepare_matchable_segments(
 
             # NB: Bound caption blocks have their content transferred to the table
             # CurriculumMatchableSegment's caption_text field. Neutralize the block's
-            # text so it cannot accidentally match structural skeleton rules. In other
-            # words, we do this because otherwise a caption like
+            # text so it cannot accidentally match structural curriculum skeleton
+            # rules. In other words, we do this because otherwise a caption like
             # "Tableau 1.3.1 -- Expression Orale -- Palier 1" might accidentally match
-            # a structural skeleton node just because it contains words like "Palier 1"
-            # or "Expression orale". And we do **not** want the caption block itself
-            # to become curriculum content. Instead, we want the **table** to carry the
-            # caption as context. Thus, the caption block stays in the pipeline for
-            # provenance and ordering, but its text is intentionally blanked out so it
-            # will later fall through to IGNORE.
+            # a structural curriculum skeleton node just because it contains words like
+            # "Palier 1" or "Expression orale". And we do **not** want the caption
+            # block itself to become curriculum content. Instead, we want the **table**
+            # to carry the caption as context. Thus, the caption block stays in the
+            # pipeline for provenance and ordering, but its text is intentionally
+            # blanked out so it will later fall through to IGNORE.
             is_bound = segment.segment_id in bound_caption_sids
             extracted_text = extract_block_segment_text(segment) or ""
             text = "" if is_bound else extracted_text
@@ -2428,9 +2887,9 @@ def prepare_matchable_segments(
                 )
             )
         # For tables, the matcher does not match against table body text. Instead,
-        # table nodes in the skeleton are expected to match via **bound caption text**.
-        # In other words, table segments match by their attached caption text (and
-        # header rows).
+        # table nodes in the curriculum skeleton are expected to match via **bound
+        # caption text**. In other words, table segments match by their attached
+        # caption text (and header rows).
         elif segment.kind == "table":
             if not isinstance(segment, TableSegment):
                 raise TypeError(
@@ -2486,50 +2945,230 @@ def prepare_matchable_segments(
 
 def translate_matched_segment(
     *,
+    context_groupings_role_order: list[NodeRole] | None = None,
     doc_key: str,
     matched: CurriculumMatchedSegment,
-    role_order: list[NodeRole] | None = None,
 ) -> SegmentDecision:
-    """Convert a CurriculumMatchedSegment into a SegmentDecision.
+    """Convert one successful curriculum skeleton match into a SegmentDecision.
+
+    This function is the main bridge between the matching stage and the canonical IR
+    decision stage. Given a `CurriculumMatchedSegment`, it looks at the matched
+    curriculum skeleton node and turns that match into the appropriate
+    `SegmentDecision` shape. This function answers the question: "Now that this
+    document segment matched this curriculum skeleton node, what should we emit for the
+    canonical IR?"
+
+    High-level behavior
+    -------------------
+    1. Build `context_groupings` from the matched node's ancestry in the curriculum
+        skeleton. These are outer structural containers such as grade, section, strand,
+        or substage that provide context for the matched content.
+    2. Create a deterministic `decision_id` using the document key and the primary
+        matched segment ID.
+    3. Merge text from the primary matched segment plus any
+        `matched.additional_segments`. This is mainly used for cases like bilingual
+        pairs or multi-segment headings/body content that should become one leaf
+        statement.
+    4. Dispatch based on the matched node's `emit` policy:
+        - `IGNORE`: Return an IGNORE decision with no emitted content.
+        - `EMIT_GROUPING`: Emit one top-level `GroupingDecision`.
+        - `EMIT_LEAF`: Emit one top-level `LeafDecision`.
+        - `EMIT_GROUPING_AND_LEAF`: Emit both one grouping and one leaf.
+        - `EMIT_TABLE_ROWS`: Delegate table translation to `_translate_table_rows()`,
+            which produces row-level decisions from the matched table segment.
+
+    NB:
+
+    1. The returned decision is anchored to the **primary** matched segment
+        (`matched.segment.segment_id`), even when `additional_segments` were merged into
+        the text.
+    2. `context_groupings` come from ancestor curriculum skeleton nodes, while
+        `groupings` and `leaves` describe what this matched node itself emits.
+    3. For table-emitting nodes, this function does not parse rows directly; it passes
+        the work to `_translate_table_rows()`.
+    4. The practical difference between EMIT_GROUPING and EMIT_GROUPING_AND_LEAF is:
+        Suppose the matched heading is: Palier 1 — Communication orale. If we use
+        EMIT_GROUPING, then we are saying: “This heading is only structural. Make a
+        substage node for Palier 1, but do not treat the heading text itself as a
+        standard.”. If we use EMIT_GROUPING_AND_LEAF, then we are saying: “This heading
+        is structural, but it also carries a real curriculum expectation that we want
+        preserved as a leaf.”
+
+    Examples
+    --------
+    1. IGNORE
+        This is used when the matched segment should be consumed so it does not remain
+        unmatched, but it should not create any canonical content. The function returns
+        decision_type=IGNORE with empty context_groupings, groupings, leaves, and rows.
+
+        * Source heading: APPRENTISSAGES PONCTUELS
+        * Why ignore it: It is just a repeated document heading, not a curriculum node
+            or standard.
+        * Output shape:
+            SegmentDecision(
+                decision_type=IGNORE,
+                context_groupings=[],
+                groupings=[],
+                leaves=[],
+                rows=[],
+            )
+
+    2. EMIT_GROUPING
+        This is used when the matched segment is a structural container like a section,
+        strand, or unit, and we want it to become a node in the canonical IR hierarchy,
+        but we do not want the matched text itself to become a standard/expectation
+        leaf. The function emits one top-level GroupingDecision and no leaves.
+
+        * Source heading: 1.2 Tableau de planification des apprentissages
+        * Intended meaning: Create a section node called “Planification des
+            apprentissages du CE1”
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_GROUPINGS_ONLY,
+                context_groupings=[...],
+                groupings=[
+                    GroupingDecision(
+                        role="section",
+                        title="Planification des apprentissages du CE1",
+                    )
+                ],
+                leaves=[],
+                rows=[],
+            )
+
+        This is the right choice when the heading is just a container and the real
+        curricular content lives underneath it in child tables or child statements. For
+        example, in the Senegal reading curriculum skeleton, nodes like
+        schema-integrateur and planification-oral-lecture are set up this way.
+
+    3. EMIT_LEAF
+        This is used when the matched segment is a statement only. It should produce a
+        LeafDecision, but it should not create a new grouping node. The function emits
+        decision_type=EMIT_LEAVES_ONLY, no top-level groupings, and one
+        LeafDecision(body=combined_text).
+
+        * Source paragraph: The learner identifies vowels and consonants in simple
+            words.
+        * Intended meaning: This is directly a standard/expectation statement, not a
+            new container.
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_LEAVES_ONLY,
+                context_groupings=[...],   # e.g. Grade 1 > Literacy > Phonics
+                groupings=[],
+                leaves=[
+                    LeafDecision(
+                        role="expectation",
+                        body="The learner identifies vowels and consonants in simple words.",
+                    )
+                ],
+                rows=[],
+            )
+
+    4. EMIT_GROUPING_AND_LEAF1
+        This is used when the matched segment is doing two jobs at once: it names a
+        structural grouping and the heading itself carries a meaningful curriculum
+        statement. The function emits one GroupingDecision plus one
+        LeafDecision(body=combined_text).
+
+        * Source heading: Palier 1 — Production d’écrits : production de textes
+            narratifs
+        * Intended meaning: Create a substage grouping for Palier 1 and also preserve
+            the actual expectation text carried by that heading
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_GROUPINGS_AND_LEAVES,
+                context_groupings=[...],
+                groupings=[
+                    GroupingDecision(
+                        role="substage",
+                        title="Palier 1 — Production d'écrits",
+                    )
+                ],
+                leaves=[
+                    LeafDecision(
+                        role="expectation",
+                        body="Palier 1 ... production de textes narratifs",
+                    )
+                ],
+                rows=[],
+            )
+
+    5. EMIT_TABLE_ROWS
+        This is used when the matched segment is a table and the content should be
+        interpreted row by row rather than as one big leaf.
+        `translate_matched_segment()` does not parse the table itself in this case; it
+        hands off to `_translate_table_rows()`, which uses the curriculum skeleton’s
+        `column_mappings` to build RowDecision[]. Those row decisions may contain
+        row-level groupings and leaves, and the overall decision type is chosen based
+        on what the rows actually produced.
+
+        * Source table caption: Tableau 1.6.1 — Outils de langue, Palier 1
+            Table columns:
+                Outils de langue -> grouping subtopic
+                Objectif spécifique -> leaf expectation
+                Contenus -> leaf guidance
+                Durée -> leaf descriptor
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_GROUPINGS_AND_LEAVES,   # Assuming rows produce both
+                context_groupings=[...],
+                groupings=[],   # Maybe a segment-level grouping, maybe not
+                leaves=[],
+                rows=[
+                    RowDecision(
+                        row_index=0,
+                        groupings=[GroupingDecision(role="subtopic", title="Vocabulaire")],
+                        leaves=[
+                            LeafDecision(role="expectation", body="..."),
+                            LeafDecision(role="guidance", body="..."),
+                            LeafDecision(role="descriptor", body="30 min"),
+                        ],
+                    ),
+                    ...
+                ],
+            )
 
     Parameters
     ----------
+    context_groupings_role_order
+        Optional custom role ordering used when sorting `context_groupings`.
     doc_key
-        Document key for decision ID generation.
+        Stable document key used to build the deterministic decision ID.
     matched
-        The matched curriculum segment from the engine.
-    role_order
-        Custom role precedence for context_groupings sorting.
+        The successful match produced by the curriculum matching engine. This includes
+        the matched curriculum skeleton node, the primary matched segment, its
+        ancestry, and any additional continuation segments.
 
     Returns
     -------
     SegmentDecision
-        A valid SegmentDecision ready for canonical IR compilation.
+        The canonical decision corresponding to this matched segment and curriculum
+        skeleton node.
 
     Raises
     ------
     ValueError
-        If the matched node has an unhandled emit policy.
+        If the matched node uses an emit policy that this function does not handle.
     """
 
     node = matched.node
-    seg = matched.segment
+    segment = matched.segment
     context = build_context_groupings(
-        ancestry=matched.ancestry, matched_node=node, role_order=role_order
+        ancestry=matched.ancestry,
+        context_groupings_role_order=context_groupings_role_order,
+        matched_node=node,
     )
-    decision_id = f"skeleton:{doc_key}:{seg.segment_id}"
-    block_type = BlockType(seg.block_type) if seg.block_type else None
+    decision_id = f"curriculum_skeleton:{doc_key}:{segment.segment_id}"
+    block_type = BlockType(segment.block_type) if segment.block_type else None
 
     # Combine text from bilingual pairs.
-    all_texts = [seg.text or ""]
-
-    for extra in matched.additional_segments:
-        if extra.text:
-            all_texts.append(extra.text)
-
+    all_texts = [segment.text or ""] + [
+        extra.text for extra in matched.additional_segments if extra.text
+    ]
     combined_text = "\n\n".join(t for t in all_texts if t.strip())
 
-    # Ignore.
+    # IGNORE.
     if node.emit == CurriculumEmitPolicy.IGNORE:
         return SegmentDecision(
             block_type=block_type,
@@ -2539,10 +3178,10 @@ def translate_matched_segment(
             decision_type=SegmentDecisionType.IGNORE,
             groupings=[],
             leaves=[],
-            rationale=f"Skeleton IGNORE: '{node.id}'.",
+            rationale=f"Curriculum skeleton IGNORE: '{node.id}'.",
             rows=[],
-            segment_id=seg.segment_id,
-            segment_kind=seg.segment_kind,
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
         )
 
     # EMIT_GROUPING.
@@ -2555,19 +3194,20 @@ def translate_matched_segment(
             decision_type=SegmentDecisionType.EMIT_GROUPINGS_ONLY,
             groupings=[
                 GroupingDecision(
-                    role=node.grouping_role,
-                    title=node.canonical_name.primary,
-                    source_label=node.source_label,
                     local_code=node.local_code,
+                    role=node.grouping_role,
+                    source_label=node.source_label,
+                    title=node.canonical_name.primary,
                 )
             ],
             leaves=[],
             rationale=(
-                f"Skeleton EMIT_GROUPING: '{node.id}' " f"→ {node.grouping_role.value}."
+                f"Curriculum skeleton EMIT_GROUPING: '{node.id}' "
+                f"-> {node.grouping_role.value}."
             ),
             rows=[],
-            segment_id=seg.segment_id,
-            segment_kind=seg.segment_kind,
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
         )
 
     # EMIT_LEAF.
@@ -2581,15 +3221,17 @@ def translate_matched_segment(
             groupings=[],
             leaves=[
                 LeafDecision(
-                    role=node.leaf_role,
                     body=combined_text,
+                    role=node.leaf_role,
                     source_label=node.source_label,
                 )
             ],
-            rationale=(f"Skeleton EMIT_LEAF: '{node.id}' → {node.leaf_role.value}."),
+            rationale=(
+                f"Curriculum skeleton EMIT_LEAF: '{node.id}' → {node.leaf_role.value}."
+            ),
             rows=[],
-            segment_id=seg.segment_id,
-            segment_kind=seg.segment_kind,
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
         )
 
     # EMIT_GROUPING_AND_LEAF.
@@ -2602,29 +3244,29 @@ def translate_matched_segment(
             decision_type=SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
             groupings=[
                 GroupingDecision(
-                    role=node.grouping_role,
-                    title=node.canonical_name.primary,
-                    source_label=node.source_label,
                     local_code=node.local_code,
+                    role=node.grouping_role,
+                    source_label=node.source_label,
+                    title=node.canonical_name.primary,
                 )
             ],
             leaves=[
                 LeafDecision(
-                    role=node.leaf_role,
                     body=combined_text,
+                    role=node.leaf_role,
                     source_label=node.source_label,
                 )
             ],
-            rationale=f"Skeleton EMIT_GROUPING_AND_LEAF: '{node.id}'.",
+            rationale=f"Curriculum skeleton EMIT_GROUPING_AND_LEAF: '{node.id}'.",
             rows=[],
-            segment_id=seg.segment_id,
-            segment_kind=seg.segment_kind,
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
         )
 
     # EMIT_TABLE_ROWS.
     if node.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS:
         return _translate_table_rows(
-            context=context, decision_id=decision_id, node=node, seg=seg
+            context=context, decision_id=decision_id, node=node, seg=segment
         )
 
     raise ValueError(f"Unhandled emit policy: {node.emit}")
@@ -2632,11 +3274,14 @@ def translate_matched_segment(
 
 def translate_segments(
     *,
+    context_groupings_role_order: list[NodeRole] | None,
     curriculum_match_results: CurriculumMatchResult,
+    curriculum_skeleton: CurriculumSkeleton,
     doc_key: str,
     matchable_segments: list[CurriculumMatchableSegment],
-    role_order: list[NodeRole] | None,
-) -> list[SegmentDecision]:
+    pdf_name: str,
+    segment_decisions_fp: Path,
+) -> SegmentDecisionSet:
     """Translate CurriculumMatchResult into a list of SegmentDecisions.
 
     NB: `allow_multiple_segments=True` matches are merged into a single decision for
@@ -2646,45 +3291,71 @@ def translate_segments(
 
     Parameters
     ----------
+    context_groupings_role_order
+        Custom role precedence for context groupings sorting.
     curriculum_match_results
         The raw CurriculumMatchResult from the matching engine.
+    curriculum_skeleton
+        The CurriculumSkeleton used for matching, needed to interpret emit policies and
+        column mappings.
     doc_key
         Document key for decision ID generation.
     matchable_segments
         The original list of matchable segments, used to determine document order and
         to translate unmatched segments.
-    role_order
-        Custom role precedence for context_groupings sorting.
+    pdf_name
+        PDF name for metadata in the saved SegmentDecisions JSON.
+    segment_decisions_fp
+        File path where the resulting SegmentDecisions JSON should be saved for
+        downstream consumption by the compiler and for human review.
 
     Returns
     -------
-    list[SegmentDecision]
-        A list of SegmentDecisions in document order.
+    SegmentDecisionSet
+        The set of SegmentDecisions corresponding to the curriculum match results,
+        ready for compilation into a CanonicalIR.
     """
 
     logger.info("Translating curriculum match results to SegmentDecisions...")
 
-    decisions: list[SegmentDecision] = []
+    segment_decisions: list[SegmentDecision] = []
 
     for matched_seg in curriculum_match_results.matched:
         decision = translate_matched_segment(
-            doc_key=doc_key, matched=matched_seg, role_order=role_order
+            context_groupings_role_order=context_groupings_role_order,
+            doc_key=doc_key,
+            matched=matched_seg,
         )
-        decisions.append(decision)
+        segment_decisions.append(decision)
 
     for unmatched_seg in curriculum_match_results.unmatched:
         decision = translate_unmatched(doc_key=doc_key, seg=unmatched_seg)
-        decisions.append(decision)
+        segment_decisions.append(decision)
 
     # Sort by document order for consistency.
     seg_order: dict[str, int] = {
         s.segment_id: s.document_order for s in matchable_segments
     }
-    decisions.sort(key=lambda d: seg_order.get(d.segment_id or "", 999_999))
+    segment_decisions.sort(key=lambda d: seg_order.get(d.segment_id or "", 999_999))
 
-    logger.success(f"Translated {len(decisions)} total SegmentDecisions.")
+    logger.success(f"Translated {len(segment_decisions)} total SegmentDecisions.")
 
-    return decisions
+    # Save segment decisions to a JSON file for downstream consumption by the compiler
+    # and for human review.
+    segment_decision_set = SegmentDecisionSet.model_validate(
+        {
+            "decision_set_id": compute_decision_set_id(decisions=segment_decisions),
+            "decisions": [d.model_dump(mode="json") for d in segment_decisions],
+            "doc_key": doc_key,
+            "generator": f"curriculum_skeleton:{curriculum_skeleton.skeleton_id}",
+            "pdf_name": pdf_name,
+        }
+    )
+    write_to_json(fp=segment_decisions_fp, json_info=segment_decision_set)
+
+    logger.success(f"Saved segment decisions to: {segment_decisions_fp}")
+
+    return segment_decision_set
 
 
 def translate_unmatched(
@@ -2697,7 +3368,7 @@ def translate_unmatched(
 
     All other unmatched segments are marked UNRESOLVED so they surface in the canonical
     IR's `unresolved` list for human review. This prevents genuine curriculum content
-    that the skeleton failed to match from being silently dropped.
+    that the curriculum skeleton failed to match from being silently dropped.
 
     Parameters
     ----------
@@ -2713,14 +3384,14 @@ def translate_unmatched(
         unmatched segments.
     """
 
-    # Bound captions are intentionally neutralized; they are not missing content and
-    # should be silently ignored.
+    # Bound captions are intentionally neutralized; they are not missing content and can
+    # be (safely) silently ignored.
     if seg.is_bound_caption:
         return SegmentDecision(
             block_type=BlockType(seg.block_type) if seg.block_type else None,
             confidence=1.0,
             context_groupings=[],
-            decision_id=f"skeleton:{doc_key}:{seg.segment_id}:bound_caption",
+            decision_id=f"curriculum_skeleton:{doc_key}:{seg.segment_id}:bound_caption",
             decision_type=SegmentDecisionType.IGNORE,
             groupings=[],
             leaves=[],
@@ -2735,11 +3406,11 @@ def translate_unmatched(
         block_type=BlockType(seg.block_type) if seg.block_type else None,
         confidence=1.0,
         context_groupings=[],
-        decision_id=f"skeleton:{doc_key}:{seg.segment_id}:unmatched",
+        decision_id=f"curriculum_skeleton:{doc_key}:{seg.segment_id}:unmatched",
         decision_type=SegmentDecisionType.UNRESOLVED,
         groupings=[],
         leaves=[],
-        rationale="No skeleton node matched this segment; flagged for human review.",
+        rationale="No curriculum skeleton node matched this segment; flagged for human review.",
         rows=[],
         segment_id=seg.segment_id,
         segment_kind=seg.segment_kind,
