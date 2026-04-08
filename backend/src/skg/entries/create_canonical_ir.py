@@ -40,6 +40,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.canonical_ir.compile_canonical_ir import compile_and_save_canonical_ir
 from skg.canonical_ir.create_segment_decisions import (
     build_caption_bindings,
     generate_curriculum_match_report,
@@ -50,7 +51,6 @@ from skg.canonical_ir.create_segment_decisions import (
 )
 from skg.canonical_ir.utils import (
     CanonicalIRDirs,
-    compile_canonical_ir,
     cross_check_stitching_run,
     persist_canonical_run,
 )
@@ -153,7 +153,7 @@ def create_canonical_ir(
     )
 
     # 7.
-    compile_canonical_ir(
+    compile_and_save_canonical_ir(
         canonical_ir_fp=canonical_ir_fp,
         doc_key=doc_key,
         document_ir=document_ir,
