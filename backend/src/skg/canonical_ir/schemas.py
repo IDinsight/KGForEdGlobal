@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from typing import Literal, Optional, Self
 
 # Third Party Library
-from loguru import logger
 from pydantic import Field, model_validator
 
 # Package Library
@@ -862,14 +861,19 @@ class RowDecision(BaseSchema):
 
     1. Additional grouping nodes (e.g., subject/strand values repeated by row).
     2. One or more leaf decisions (expectations/descriptors/guidance).
+
+    NB: A single physical table row may produce multiple RowDecision objects when the
+    table contains parallel branches by column. In those cases, `col_index`
+    distinguishes the independent column-scoped output, while `groupings` may include
+    carried-forward active grouping context for that branch.
     """
 
     col_index: int | None = Field(
         default=None,
         description=(
             "Optional 0-based column index into the ORIGINAL stitched table columns that this RowDecision applies to. "
-            "Use this when a single table row contains multiple independent statements by column (e.g., one strand per column). "
-            "When provided, row-local groupings may be grounded against header_rows_canonical[*][col_index] and leaves must come from that column's cell."
+            "Use this when a single physical row contains multiple independent curriculum branches by column (e.g., one strand per column or one activity column per branch). "
+            "When provided, compilers should preserve column-scoped leaf identity and may treat row groupings as the active grouping context for that column branch."
         ),
         ge=0,
     )
@@ -1173,25 +1177,21 @@ class SegmentDecision(BaseSchema):
                 "Use RowDecision.groupings[] for row-local containers if needed."
             )
 
-        # Some upstream policies (e.g., spine correction) may legitimately drop either
-        # groupings or leaves. Rather than failing validation (and demoting to
-        # UNRESOLVED), coerce to the most specific compatible emit type.
+        # emit_groupings_and_leaves must have both groupings and leaves.
         if self.decision_type == SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES:
             if has_any_groupings and not has_any_leaves:
-                logger.warning(
-                    f"SegmentDecision '{self.decision_id}': declared "
-                    f"'emit_groupings_and_leaves' but contains no leaves; "
-                    f"coerced to 'emit_groupings_only'.",
+                raise ValueError(
+                    "Decision type 'emit_groupings_and_leaves' has groupings but no "
+                    "leaves. Use coerce_decision_type() before constructing the "
+                    "SegmentDecision to auto-narrow to 'emit_groupings_only'."
                 )
-                self.decision_type = SegmentDecisionType.EMIT_GROUPINGS_ONLY
-            elif has_any_leaves and not has_any_groupings:
-                logger.warning(
-                    f"SegmentDecision '{self.decision_id}': declared "
-                    f"'emit_groupings_and_leaves' but contains no groupings; "
-                    f"coerced to 'emit_leaves_only'.",
+            if has_any_leaves and not has_any_groupings:
+                raise ValueError(
+                    "Decision type 'emit_groupings_and_leaves' has leaves but no "
+                    "groupings. Use coerce_decision_type() before constructing the "
+                    "SegmentDecision to auto-narrow to 'emit_leaves_only'."
                 )
-                self.decision_type = SegmentDecisionType.EMIT_LEAVES_ONLY
-            elif not has_any_groupings and not has_any_leaves:
+            if not has_any_groupings and not has_any_leaves:
                 raise ValueError(
                     "Decision type 'emit_groupings_and_leaves' produced no groupings or leaves."
                 )
