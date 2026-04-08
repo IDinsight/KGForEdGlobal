@@ -457,6 +457,33 @@ def _create_decision_from_role(
     return None
 
 
+def _decision_signature(
+    *, decision: GroupingDecision | LeafDecision
+) -> tuple[str, str, str | None, str]:
+    """Return a stable intra-row signature for deduplicating emitted decisions.
+
+    This is used to suppress duplicate emissions caused by grid/filldown expansion of
+    merged cells. In those cases, the same logical row value can appear in multiple
+    physical columns with identical role + source label, and emitting both would create
+    duplicate row outputs.
+
+    Parameters
+    ----------
+    decision
+        The emitted row-level decision.
+
+    Returns
+    -------
+    tuple[str, str, str | None, str]
+        A tuple of (decision kind, role value, source label, normalized content).
+    """
+
+    if isinstance(decision, GroupingDecision):
+        return "grouping", decision.role.value, decision.source_label, decision.title
+
+    return "leaf", decision.role.value, decision.source_label, decision.body
+
+
 def _drain_cursor(
     *,
     consumed_node_ids: set[str],
@@ -627,6 +654,12 @@ def _extract_row_content(
 ) -> tuple[list[GroupingDecision], list[LeafDecision], bool, set[int]]:
     """Extract groupings and leaves from a single table row using column map.
 
+    NB: Grid/filldown table normalization can duplicate merged-cell text across
+    multiple columns. When that duplicated text resolves to the same semantic role and
+    source label, emitting every copy would create duplicate row outputs. We therefore
+    deduplicate emitted decisions *within the row* by semantic signature while still
+    tracking which source leaf columns contributed.
+
     Parameters
     ----------
     col_map
@@ -641,7 +674,7 @@ def _extract_row_content(
     tuple[list[GroupingDecision], list[LeafDecision], bool, set[int]]
         Row-level groupings, row-level leaves, a flag indicating whether a grouping
         override explicitly requested that the entire row be suppressed, and the set of
-        leaf-bearing source column indexes that contributed emitted leaves.
+        source column indices that produced emitted leaves.
     """
 
     cells = row.cells
@@ -654,13 +687,15 @@ def _extract_row_content(
 
     groupings: list[GroupingDecision] = []
     leaves: list[LeafDecision] = []
-    leaf_source_col_indexes: set[int] = set()
+    emitted_leaf_col_indices: set[int] = set()
+    seen_signatures: set[tuple[str, str, str | None, str]] = set()
 
     for col_role in col_map:
-        if col_role.col_index >= len(cells) or col_role.kind in {"skip", "skip_row"}:
-            continue
-
-        if not (cell_text := (_cell_to_text(cells[col_role.col_index]) or "").strip()):
+        if (
+            col_role.col_index >= len(cells) or col_role.kind in {"skip", "skip_row"}
+        ) or not (
+            cell_text := (_cell_to_text(cells[col_role.col_index]) or "").strip()
+        ):
             continue
 
         effective_col_role = _resolve_effective_role(
@@ -677,13 +712,23 @@ def _extract_row_content(
             cell_text=cell_text, col_role=effective_col_role
         )
 
+        if decision is None:
+            continue
+
+        signature = _decision_signature(decision=decision)
+
+        if signature in seen_signatures:
+            continue
+
+        seen_signatures.add(signature)
+
         if isinstance(decision, GroupingDecision):
             groupings.append(decision)
         elif isinstance(decision, LeafDecision):
             leaves.append(decision)
-            leaf_source_col_indexes.add(col_role.col_index)
+            emitted_leaf_col_indices.add(col_role.col_index)
 
-    return groupings, leaves, False, leaf_source_col_indexes
+    return groupings, leaves, False, emitted_leaf_col_indices
 
 
 def _handle_pending_caption_binding(
@@ -1523,6 +1568,38 @@ def _resolve_effective_role(
     return col_role
 
 
+def _row_matches_skip_patterns(*, patterns: list[str], row: TableRow) -> bool:
+    """Return True when any non-empty cell in the row matches a configured skip regex.
+
+    Parameters
+    ----------
+    patterns
+        Regex patterns to test against each non-empty cell text.
+    row
+        The source table row.
+
+    Returns
+    -------
+    bool
+        True if any non-empty cell matches at least one pattern, otherwise False.
+    """
+
+    if not patterns:
+        return False
+
+    for cell in row.cells:
+        cell_text = (_cell_to_text(cell) or "").strip()
+
+        if not cell_text:
+            continue
+
+        for pattern in patterns:
+            if re.search(pattern, cell_text, re.UNICODE):
+                return True
+
+    return False
+
+
 def _translate_table_rows(
     *,
     context: list[GroupingDecision],
@@ -1547,11 +1624,8 @@ def _translate_table_rows(
     4. Skip the table's header rows.
     5. For each remaining row:
         - Extract row-level groupings and leaves using the resolved column map
-        - Track which leaf-bearing source columns contributed emitted leaves
         - Skip rows that produce no usable content
         - Emit a `RowDecision` for rows that do produce content
-        - Set `RowDecision.col_index` only when all emitted leaves came from one source
-            column; otherwise leave it null
     6. Optionally add one segment-level grouping from `node.grouping_role`. This is
         useful when the whole table itself represents a container such as a unit, week
         band, or substage.
@@ -1721,7 +1795,6 @@ def _translate_table_rows(
         f"EMIT_TABLE_ROWS matched a non-table segment: {seg.segment_id}. "
         f"raw_segment type: {type(seg.raw_segment).__name__}"
     )
-
     table_seg: TableSegment = seg.raw_segment
 
     # Build column index -> role mapping from curriculum skeleton + table headers.
@@ -1748,26 +1821,25 @@ def _translate_table_rows(
 
     # Skip header rows.
     for abs_i, row in enumerate(rows_source[hrc:], start=hrc):
-        (
-            row_groupings,
-            row_leaves,
-            skip_row,
-            leaf_source_col_indexes,
-        ) = _extract_row_content(
-            col_map=col_map, default_leaf_role=node.leaf_role, row=row
+        if _row_matches_skip_patterns(patterns=node.row_skip_cell_patterns, row=row):
+            continue
+
+        row_groupings, row_leaves, skip_row, emitted_leaf_col_indices = (
+            _extract_row_content(
+                col_map=col_map, default_leaf_role=node.leaf_role, row=row
+            )
         )
 
         if skip_row or (not row_groupings and not row_leaves):
             continue
 
-        row_col_index = None
-
-        if len(leaf_source_col_indexes) == 1:
-            row_col_index = next(iter(leaf_source_col_indexes))
-
         row_decisions.append(
             RowDecision(
-                col_index=row_col_index,
+                col_index=(
+                    next(iter(emitted_leaf_col_indices))
+                    if len(emitted_leaf_col_indices) == 1
+                    else None
+                ),
                 groupings=row_groupings,
                 leaves=row_leaves,
                 row_index=abs_i,

@@ -87,12 +87,53 @@
             "leaf_role": "expectation",
             "column_mappings": [
               {
-                "header_pattern": "(?i)compétence|manoore",
-                "role": "leaf:expectation",
-                "source_label_override": "Compétence (cycle / étape / sous-domaine)"
+                "header_pattern": "(?i)comp[ée]tence|manoore",
+                "role": "grouping:section",
+                "source_label_override": "Compétence / libellé structurel",
+                "grouping_role_overrides": [
+                  {
+                    "cell_pattern": "(?is)^\\s*boole\\s+mooñ\\b",
+                    "role": "leaf:expectation"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*[ée]tape\\s*2\\s*$",
+                    "role": "grouping:stage"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*manoore\\b",
+                    "role": "skip"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*p[àa]ccu\\s+f[àa]nn\\b|^\\s*sous-domaine\\b",
+                    "role": "grouping:strand"
+                  }
+                ]
+              },
+              {
+                "header_pattern": "^$",
+                "role": "grouping:section",
+                "source_label_override": "Compétence / libellé structurel",
+                "grouping_role_overrides": [
+                  {
+                    "cell_pattern": "(?is)^\\s*boole\\s+mooñ\\b",
+                    "role": "leaf:expectation"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*[ée]tape\\s*2\\s*$",
+                    "role": "grouping:stage"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*manoore\\b",
+                    "role": "skip"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*p[àa]ccu\\s+f[àa]nn\\b|^\\s*sous-domaine\\b",
+                    "role": "grouping:strand"
+                  }
+                ]
               }
             ],
-            "doc_note": "Stacked 2-column overview table containing cycle competency, stage competency, and sous-domaine competencies in bilingual rows. First column contains the competency text; second column is typically empty. [FIX: replaces separate text-target nodes (competence-cycle, competence-etape, etc.) that could never match because the content lives inside table rows, not standalone blocks.]",
+            "doc_note": "Stacked 2-column overview table containing cycle competency, stage competency, and sous-domaine competencies in bilingual rows. [FIX: remapped both columns, including the blank second header column, so the table can emit mixed structural rows and expectation rows. Rows beginning with 'Boole mooñ' become expectation leaves; 'ÉTAPE 2' becomes a stage grouping; 'PÀCCU FÀNN … / Sous-domaine …' rows become strand groupings; label rows beginning with 'MANOORE…' are skipped.]",
             "match_phrases": [
               "tableau 1.1.1"
             ],
@@ -169,7 +210,11 @@
                     "role": "skip_row"
                   },
                   {
-                    "cell_pattern": "(?i)^\\s*(j[ée]ego|palier|semaines)\\b",
+                    "cell_pattern": "(?i)^\\s*semaines\\s*$",
+                    "role": "skip"
+                  },
+                  {
+                    "cell_pattern": "(?i)^\\s*(j[ée]ego|palier)\\b",
                     "role": "grouping:substage"
                   }
                 ]
@@ -190,11 +235,15 @@
                 "source_label_override": "Lecture"
               }
             ],
-            "doc_note": "25-week planning grid across 3 paliers. First column is the activities/week axis; the duplicated 'Manoore yi lalu / Compétences de base' row should be skipped because base competencies are already captured in Tableau 1.1.2. Rows beginning with Jéego/Palier/Semaines anchor substage transitions.",
+            "doc_note": "25-week planning grid across 3 paliers. First column is the week axis; the duplicated 'Manoore yi lalu / Compétences de base' row is skipped because base competencies are already captured in Tableau 1.1.2. [FIX: 'Semaines' now skips instead of becoming a bogus substage grouping. Checkpoint rows whose cells are exactly INTÉGRATION or EVALUATION are suppressed via row_skip_cell_patterns.]",
             "match_phrases": [
               "tableau 1.2.1"
             ],
-            "match_target": "caption"
+            "match_target": "caption",
+            "row_skip_cell_patterns": [
+              "(?is)^\\s*int[ée]gration\\s*$",
+              "(?is)^\\s*evaluation\\s*$"
+            ]
           }
         ]
       },
@@ -322,11 +371,17 @@
                     "wo": "Waxinu làmmiñ"
                   }
                 },
-                "doc_note": "Expression Orale table for Palier 1.",
+                "doc_note": "Expression Orale table for Palier 1. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.3.1"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               },
               {
                 "id": "tableau-1.3.2",
@@ -365,11 +420,17 @@
                     "wo": "Tari"
                   }
                 },
-                "doc_note": "Récitation table for Palier 1.",
+                "doc_note": "Récitation table for Palier 1. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.3.2"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "leaf_role": "expectation",
@@ -443,11 +504,17 @@
                     "wo": "Waxinu làmmiñ"
                   }
                 },
-                "doc_note": "Expression Orale table for Palier 2.",
+                "doc_note": "Expression Orale table for Palier 2. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.3.3"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               },
               {
                 "id": "tableau-1.3.4",
@@ -486,11 +553,17 @@
                     "wo": "Tari"
                   }
                 },
-                "doc_note": "Récitation table for Palier 2.",
+                "doc_note": "Récitation table for Palier 2. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.3.4"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "leaf_role": "expectation",
@@ -564,11 +637,17 @@
                     "wo": "Waxinu làmmiñ"
                   }
                 },
-                "doc_note": "Expression Orale table for Palier 3.",
+                "doc_note": "Expression Orale table for Palier 3. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.3.5"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               },
               {
                 "id": "tableau-1.3.6",
@@ -607,11 +686,17 @@
                     "wo": "Tari"
                   }
                 },
-                "doc_note": "Récitation table for Palier 3.",
+                "doc_note": "Récitation table for Palier 3. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.3.6"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "leaf_role": "expectation",
@@ -730,11 +815,17 @@
                   "primary": "Lecture — textes narratifs",
                   "translations": {}
                 },
-                "doc_note": "Lecture table for Palier 1: comprehension, graphophonology, frequent words, fluency.",
+                "doc_note": "Lecture table for Palier 1: comprehension, graphophonology, frequent words, fluency. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.4.1"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "leaf_role": "expectation",
@@ -794,11 +885,17 @@
                   "primary": "Lecture — textes descriptifs",
                   "translations": {}
                 },
-                "doc_note": "Lecture table for Palier 2: comprehension, graphophonology, frequent words, fluency.",
+                "doc_note": "Lecture table for Palier 2: comprehension, graphophonology, frequent words, fluency. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.4.2"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "leaf_role": "expectation",
@@ -857,11 +954,17 @@
                   "primary": "Lecture — textes injonctifs",
                   "translations": {}
                 },
-                "doc_note": "Lecture table for Palier 3: comprehension, graphophonology, frequent words, fluency.",
+                "doc_note": "Lecture table for Palier 3: comprehension, graphophonology, frequent words, fluency. [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.4.3"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "leaf_role": "expectation",
@@ -953,11 +1056,17 @@
                   }
                 ],
                 "substage_index": 1,
-                "doc_note": "7-column overview table for Communication Écrite Palier 1: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 1 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
+                "doc_note": "7-column overview table for Communication Écrite Palier 1: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 1 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.] [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.5.1"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "implicit": true
@@ -1022,11 +1131,17 @@
                   }
                 ],
                 "substage_index": 2,
-                "doc_note": "7-column overview table for Communication Écrite Palier 2: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 2 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
+                "doc_note": "7-column overview table for Communication Écrite Palier 2: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 2 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.] [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.5.2"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "implicit": true
@@ -1091,11 +1206,17 @@
                   }
                 ],
                 "substage_index": 3,
-                "doc_note": "7-column overview table for Communication Écrite Palier 3: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 3 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.]",
+                "doc_note": "7-column overview table for Communication Écrite Palier 3: week-by-week content for Vocabulaire, Grammaire, Conjugaison, Orthographe, Écriture/Copie, and Production d'écrits. Parsed under the explicit Palier 3 wrapper. [FIX: set allow_multiple_segments=false — EMIT_TABLE_ROWS is incompatible with allow_multiple_segments=true.] [FIX: suppress checkpoint rows whose cells are exactly INTÉGRATION / MOOÑAALE-INTÉGRATION / EVALUATION so they do not materialize as normal leaves.]",
                 "match_phrases": [
                   "tableau 1.5.3"
                 ],
-                "match_target": "caption"
+                "match_target": "caption",
+                "row_skip_cell_patterns": [
+                  "(?is)^\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñaale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*mooñale\\s*/\\s*int[ée]gration\\s*$",
+                  "(?is)^\\s*evaluation\\s*$"
+                ]
               }
             ],
             "implicit": true
