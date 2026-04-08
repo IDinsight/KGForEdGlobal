@@ -6,7 +6,9 @@ curriculum skeleton JSON.
 import re
 import unicodedata
 
+from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -46,6 +48,10 @@ from skg.utils.general import open_json_type, write_to_json
 
 # (caption_segment, caption_text, caption_kind, caption_page_index, segment_index).
 PendingCaption = tuple[BlockSegment, str, CaptionKind, int, int]
+
+# Sentinel value returned by _process_column_cell when a skip_row override fires. Using
+# a dedicated constant avoids returning a misleading tuple with decision=None.
+_SKIP_ROW_SENTINEL = "SKIP_ROW"
 
 
 @dataclass
@@ -347,6 +353,33 @@ class CurriculumResolvedColumnRole:
     )
 
 
+def _build_segment_groupings(node: CurriculumSkeletonNode) -> list[GroupingDecision]:
+    """Build segment-level groupings from the curriculum skeleton node metadata.
+
+    Parameters
+    ----------
+    node
+        The matched curriculum skeleton node.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The extracted segment-level groupings, if any.
+    """
+
+    if not node.grouping_role:
+        return []
+
+    return [
+        GroupingDecision(
+            local_code=node.local_code,
+            role=node.grouping_role,
+            source_label=node.source_label,
+            title=node.canonical_name.primary,
+        )
+    ]
+
+
 def _cell_to_text(cell: TextUnit | dict[str, Any]) -> str:
     """Extract plain text from a table cell.
 
@@ -416,6 +449,55 @@ def _classify_caption_kind(text: str) -> CaptionKind:
     return "unknown"
 
 
+def _column_supports_leaf_override(col_role: CurriculumResolvedColumnRole) -> bool:
+    """True when a grouping column can also emit leaf content via overrides.
+
+    Parameters
+    ----------
+    col_role
+        The resolved column role to evaluate.
+
+    Returns
+    -------
+    bool
+        True if the column supports leaf overrides, False otherwise.
+    """
+
+    if col_role.kind != "grouping":
+        return False
+
+    return any(
+        override.role.startswith("leaf:")
+        for override in col_role.grouping_role_overrides
+    )
+
+
+def _combine_grouping_contexts(
+    *grouping_lists: list[GroupingDecision],
+) -> list[GroupingDecision]:
+    """Concatenate grouping contexts and deduplicate them in encounter order.
+
+    Parameters
+    ----------
+    *grouping_lists
+        Multiple lists of grouping decisions to combine into a single list, preserving
+        the order of first occurrence across all lists.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        A single list of grouping decisions with duplicates removed, preserving the
+        order of first occurrence across all input lists.
+    """
+
+    combined: list[GroupingDecision] = []
+
+    for grouping_list in grouping_lists:
+        combined.extend(grouping_list)
+
+    return _dedupe_groupings_preserve_order(groupings=combined)
+
+
 def _create_decision_from_role(
     *, cell_text: str, col_role: CurriculumResolvedColumnRole
 ) -> GroupingDecision | LeafDecision | None:
@@ -482,6 +564,93 @@ def _decision_signature(
         return "grouping", decision.role.value, decision.source_label, decision.title
 
     return "leaf", decision.role.value, decision.source_label, decision.body
+
+
+def _dedupe_groupings_preserve_order(
+    groupings: list[GroupingDecision],
+) -> list[GroupingDecision]:
+    """Deduplicate grouping decisions while preserving first-seen order.
+
+    Parameters
+    ----------
+    groupings
+        The list of grouping decisions to deduplicate.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        A new list of grouping decisions with duplicates removed, preserving the order
+        of first occurrence.
+    """
+
+    output: list[GroupingDecision] = []
+    seen: set[tuple[str, str | None, str | None, str]] = set()
+
+    for grouping in groupings:
+        # Create a stable signature for deduplication.
+        signature = (
+            grouping.role.value,
+            grouping.source_label,
+            grouping.local_code,
+            grouping.title,
+        )
+
+        if signature not in seen:
+            seen.add(signature)
+            output.append(grouping)
+
+    return output
+
+
+def _determine_segment_decision_type(
+    *,
+    node_id: str,
+    row_decisions: list[RowDecision],
+    segment_groupings: list[GroupingDecision],
+    segment_id: str,
+    total_data_rows: int,
+) -> SegmentDecisionType:
+    """Determine the final segment decision type from the actual outputs.
+
+    Parameters
+    ----------
+    node_id
+        The ID of the curriculum skeleton node.
+    row_decisions
+        The list of extracted row decisions.
+    segment_groupings
+        The segment-level groupings.
+    segment_id
+        The ID of the table segment.
+    total_data_rows
+        The total number of data rows evaluated.
+
+    Returns
+    -------
+    SegmentDecisionType
+        The determined decision type.
+    """
+
+    has_any_groupings = bool(segment_groupings) or any(
+        r.groupings for r in row_decisions
+    )
+    has_any_leaves = any(r.leaves for r in row_decisions)
+
+    if has_any_groupings and has_any_leaves:
+        return SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES
+    if has_any_leaves:
+        return SegmentDecisionType.EMIT_LEAVES_ONLY
+    if has_any_groupings:
+        return SegmentDecisionType.EMIT_GROUPINGS_ONLY
+
+    logger.warning(
+        f"Table {segment_id}: no groupings or leaves produced from "
+        f"{total_data_rows} data rows "
+        f"(bad column mapping or empty table body). "
+        f"Marking as UNRESOLVED (curriculum skeleton node '{node_id}' matched but "
+        f"extraction failed)."
+    )
+    return SegmentDecisionType.UNRESOLVED
 
 
 def _drain_cursor(
@@ -731,6 +900,293 @@ def _extract_row_content(
     return groupings, leaves, False, emitted_leaf_col_indices
 
 
+def _extract_row_content_by_column(
+    *, col_map: list[CurriculumResolvedColumnRole], row: TableRow
+) -> tuple[
+    list[GroupingDecision],
+    dict[int, list[GroupingDecision]],
+    dict[int, list[LeafDecision]],
+    bool,
+]:
+    """Extract row content while preserving per-column semantic buckets.
+
+    `_extract_row_content()` flattens all emitted groupings and leaves into a single
+    row, which loses information for tables whose columns represent parallel branches,
+    such as side-by-side strands or competencies. This extractor keeps:
+
+    1. Shared row groupings from pure grouping columns (e.g., week/topic columns).
+    2. Column-scoped groupings from mixed grouping columns that later emit leaves in
+        the same physical column.
+    3. Leaves bucketed by their source column.
+
+    Parameters
+    ----------
+    col_map
+        Resolved column-to-role mapping.
+    row
+        A TableRow object from DocumentIR.
+
+    Returns
+    -------
+    tuple[
+        list[GroupingDecision],
+        dict[int, list[GroupingDecision]],
+        dict[int, list[LeafDecision]],
+        bool,
+    ]
+        A tuple containing:
+            1. Shared groupings from pure grouping columns (not associated with any
+                specific column).
+            2. A mapping of column index to groupings from mixed grouping columns that
+                also emitted leaves in the same column.
+            3. A mapping of column index to emitted leaves.
+            4. A flag indicating whether a grouping override explicitly requested that
+                the entire row be suppressed.
+    """
+
+    shared_groupings: list[GroupingDecision] = []
+    column_groupings: dict[int, list[GroupingDecision]] = defaultdict(list)
+    column_leaves: dict[int, list[LeafDecision]] = defaultdict(list)
+    seen_signatures_by_scope: dict[
+        tuple[str, int | None], set[tuple[str, str, str | None, str]]
+    ] = defaultdict(set)
+
+    for col_role in col_map:
+        # 1. Process the cell to get a valid decision and its scope
+        result = _process_column_cell(col_role=col_role, row=row)
+
+        if result is None:
+            continue
+
+        # Handle the early exit signal for 'skip_row'
+        if result is _SKIP_ROW_SENTINEL:
+            return [], {}, {}, True
+
+        assert not isinstance(result, str)
+        decision, scope_key, col_index, _ = result
+
+        # 2. Deduplicate based on signature and scope
+        signature = _decision_signature(decision=decision)
+        if signature in seen_signatures_by_scope[scope_key]:
+            continue
+        seen_signatures_by_scope[scope_key].add(signature)
+
+        # 3. Categorize the validated decision
+        if isinstance(decision, GroupingDecision):
+            if scope_key[0] == "shared":
+                shared_groupings.append(decision)
+            else:
+                column_groupings[col_index].append(decision)
+        elif isinstance(decision, LeafDecision):
+            column_leaves[col_index].append(decision)
+
+    return shared_groupings, dict(column_groupings), dict(column_leaves), False
+
+
+def _generate_mapped_row_decisions(
+    *,
+    abs_i: int,
+    active_column_groupings: dict[int, list[GroupingDecision]],
+    active_shared_groupings: list[GroupingDecision],
+    column_row_groupings: dict[int, list[GroupingDecision]],
+    column_row_leaves: dict[int, list[LeafDecision]],
+    shared_row_groupings: list[GroupingDecision],
+) -> list[RowDecision]:
+    """Generate RowDecisions for a mapped row based on extracted columns.
+
+    Parameters
+    ----------
+    abs_i
+        The absolute row index.
+    active_column_groupings
+        The currently active column-specific groupings.
+    active_shared_groupings
+        The currently active shared groupings.
+    column_row_groupings
+        Groupings extracted from the row, mapped by column index.
+    column_row_leaves
+        Leaves extracted from the row, mapped by column index.
+    shared_row_groupings
+        Shared groupings extracted from the row.
+
+    Returns
+    -------
+    list[RowDecision]
+        The generated row decisions.
+    """
+
+    row_decisions: list[RowDecision] = []
+    expectation_cols = sorted(
+        col_index
+        for col_index, leaves in column_row_leaves.items()
+        if any(
+            _statement_role_value(role=leaf.role) == "expectation" for leaf in leaves
+        )
+    )
+    aux_only_cols = sorted(
+        col_index
+        for col_index, leaves in column_row_leaves.items()
+        if leaves and col_index not in expectation_cols
+    )
+    grouping_only_cols = sorted(
+        col_index
+        for col_index, groupings in column_row_groupings.items()
+        if groupings and col_index not in column_row_leaves
+    )
+    emitted_any = False
+
+    if len(expectation_cols) == 1:
+        anchor_col = expectation_cols[0]
+        merged_anchor_leaves = list(column_row_leaves[anchor_col])
+
+        for aux_col in aux_only_cols:
+            merged_anchor_leaves.extend(column_row_leaves[aux_col])
+
+        row_decisions.append(
+            RowDecision(
+                col_index=anchor_col,
+                groupings=_get_row_groupings_for_col(
+                    active_column_groupings=active_column_groupings,
+                    active_shared_groupings=active_shared_groupings,
+                    col_index=anchor_col,
+                ),
+                leaves=merged_anchor_leaves,
+                row_index=abs_i,
+            )
+        )
+        emitted_any = True
+    else:
+        for col_index in expectation_cols + aux_only_cols:
+            row_decisions.append(
+                RowDecision(
+                    col_index=col_index,
+                    groupings=_get_row_groupings_for_col(
+                        active_column_groupings=active_column_groupings,
+                        active_shared_groupings=active_shared_groupings,
+                        col_index=col_index,
+                    ),
+                    leaves=column_row_leaves[col_index],
+                    row_index=abs_i,
+                )
+            )
+            emitted_any = True
+
+    for col_index in grouping_only_cols:
+        row_decisions.append(
+            RowDecision(
+                col_index=col_index,
+                groupings=_get_row_groupings_for_col(
+                    active_column_groupings=active_column_groupings,
+                    active_shared_groupings=active_shared_groupings,
+                    col_index=col_index,
+                ),
+                leaves=[],
+                row_index=abs_i,
+            )
+        )
+        emitted_any = True
+
+    if not emitted_any and active_shared_groupings and shared_row_groupings:
+        row_decisions.append(
+            RowDecision(
+                col_index=None,
+                groupings=list(active_shared_groupings),
+                leaves=[],
+                row_index=abs_i,
+            )
+        )
+
+    return row_decisions
+
+
+def _get_row_groupings_for_col(
+    *,
+    active_column_groupings: dict[int, list[GroupingDecision]],
+    active_shared_groupings: list[GroupingDecision],
+    col_index: int,
+) -> list[GroupingDecision]:
+    """Get the full active grouping context for a particular column.
+
+    Parameters
+    ----------
+    active_column_groupings
+        The currently active column-specific groupings.
+    active_shared_groupings
+        The currently active shared groupings.
+    col_index
+        The column index to get groupings for.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The combined list of active shared groupings and column-specific groupings.
+    """
+
+    return _combine_grouping_contexts(
+        active_shared_groupings, active_column_groupings.get(col_index, [])
+    )
+
+
+def _get_table_rows_source(*, segment_id: str, table_seg: TableSegment) -> list[Any]:
+    """Determine the best available row source from a table segment.
+
+    Parameters
+    ----------
+    segment_id
+        The ID of the table segment.
+    table_seg
+        The raw table segment.
+
+    Returns
+    -------
+    list[Any]
+        The preferred rows source (filldown, grid, or raw).
+    """
+
+    if table_seg.rows_filldown is not None:
+        return table_seg.rows_filldown
+
+    if table_seg.rows_grid is not None:
+        return table_seg.rows_grid
+
+    logger.warning(
+        f"Table {segment_id}: falling back to raw rows "
+        f"(rows_filldown and rows_grid are both None). "
+        f"Column-index alignment may be broken due to col_span > 1 cells."
+    )
+    return table_seg.rows
+
+
+def _grouping_precedence_index(
+    role: NodeRole,
+    role_order: (
+        tuple[NodeRole, ...] | list[NodeRole]
+    ) = DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
+) -> int:
+    """Return a stable precedence index for grouping roles.
+
+    Parameters
+    ----------
+    role
+        The grouping role to evaluate.
+    role_order
+        The role precedence order to use. Defaults to
+        DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER.
+
+    Returns
+    -------
+    int
+        The precedence index of the role, where lower values indicate higher
+        precedence. Roles not in the order are assigned an index after all known roles,
+        in no particular order.
+    """
+
+    if role in role_order:
+        return list(role_order).index(role)
+
+    return len(role_order)
+
+
 def _handle_pending_caption_binding(
     *,
     caption_bindings: dict[str, CaptionBinding],
@@ -835,6 +1291,60 @@ def _handle_pending_caption_binding(
         return None, False
 
     return pending_caption, False
+
+
+def _merge_persistent_grouping_context(
+    *,
+    active_groupings: list[GroupingDecision],
+    new_groupings: list[GroupingDecision],
+    role_order: (
+        tuple[NodeRole, ...] | list[NodeRole]
+    ) = DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
+) -> list[GroupingDecision]:
+    """Merge newly seen groupings into an active carried-forward grouping context.
+
+    Rules
+    -----
+    1. New groupings replace any active grouping at the same role precedence level.
+    2. New higher-level groupings also clear deeper active groupings.
+    3. First-seen order is preserved after precedence-aware replacement.
+
+    Parameters
+    ----------
+    active_groupings
+        The current list of active groupings carried forward from previous rows.
+    new_groupings
+        The newly extracted groupings from the current row, which should be merged into
+        the active context according to the rules above.
+    role_order
+        The role precedence order to use. Defaults to
+        DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER.
+
+    Returns
+    -------
+    list[GroupingDecision]
+        The updated list of active groupings after merging in the new groupings, with
+        duplicates removed and order preserved.
+    """
+
+    if not new_groupings:
+        return list(active_groupings)
+
+    result = list(active_groupings)
+
+    for grouping in sorted(
+        new_groupings,
+        key=lambda g: (_grouping_precedence_index(g.role, role_order), g.role.value),
+    ):
+        new_prec = _grouping_precedence_index(grouping.role, role_order)
+        result = [
+            existing
+            for existing in result
+            if _grouping_precedence_index(existing.role, role_order) < new_prec
+        ]
+        result.append(grouping)
+
+    return _dedupe_groupings_preserve_order(groupings=result)
 
 
 def _normalize_match_text(text: str) -> str:
@@ -966,6 +1476,112 @@ def _probe_nodes(
             return idx, node
 
     return None
+
+
+def _process_column_cell(
+    *, col_role: CurriculumResolvedColumnRole, row: TableRow
+) -> (
+    tuple[GroupingDecision | LeafDecision, tuple[str, int | None], int, bool]
+    | str
+    | None
+):
+    """Determine the decision type and scope for a specific table cell.
+
+    Parameters
+    ----------
+    col_role
+        Resolved column-to-role mapping.
+    row
+        A TableRow object from DocumentIR.
+
+    Returns
+    -------
+    tuple | str | None
+        A tuple of (decision, scope_key, col_index, False) for normal decisions, the
+        _SKIP_ROW_SENTINEL string when the entire row should be suppressed, or None if
+        the cell should be ignored.
+    """
+
+    cells = row.cells
+    idx = col_role.col_index
+
+    # Boundary and basic skip checks.
+    if idx >= len(cells) or col_role.kind in {"skip", "skip_row"}:
+        return None
+
+    cell_text = (_cell_to_text(cells[idx]) or "").strip()
+
+    if not cell_text:
+        return None
+
+    effective_role = _resolve_effective_role(cell_text=cell_text, col_role=col_role)
+
+    if effective_role.kind == "skip_row":
+        return _SKIP_ROW_SENTINEL
+
+    if effective_role.kind == "skip":
+        return None
+
+    decision = _create_decision_from_role(cell_text=cell_text, col_role=effective_role)
+
+    if decision is None:
+        return None
+
+    # Determine scope.
+    is_grouping = isinstance(decision, GroupingDecision)
+    supports_override = _column_supports_leaf_override(col_role=col_role)
+
+    if is_grouping and not supports_override:
+        scope_key: tuple[str, int | None] = ("shared", None)
+    else:
+        scope_key = ("column", idx)
+
+    return decision, scope_key, idx, False
+
+
+def _process_unmapped_row(
+    *,
+    abs_i: int,
+    col_map: list[CurriculumResolvedColumnRole],
+    node: CurriculumSkeletonNode,
+    row: TableRow,
+) -> RowDecision | None:
+    """Processe a row when no column mappings match.
+
+    Parameters
+    ----------
+    abs_i
+        The absolute row index.
+    col_map
+        The resolved column mappings.
+    node
+        The curriculum skeleton node.
+    row
+        The row data to process.
+
+    Returns
+    -------
+    RowDecision | None
+        A RowDecision if content was extracted, otherwise None.
+    """
+
+    row_groupings, row_leaves, skip_row, emitted_leaf_col_indices = (
+        _extract_row_content(col_map=col_map, default_leaf_role=node.leaf_role, row=row)
+    )
+
+    if skip_row or (not row_groupings and not row_leaves):
+        return None
+
+    return RowDecision(
+        col_index=(
+            next(iter(emitted_leaf_col_indices))
+            if len(emitted_leaf_col_indices) == 1
+            else None
+        ),
+        groupings=row_groupings,
+        leaves=row_leaves,
+        row_index=abs_i,
+    )
 
 
 def _record_match(
@@ -1600,9 +2216,27 @@ def _row_matches_skip_patterns(*, patterns: list[str], row: TableRow) -> bool:
     return False
 
 
+def _statement_role_value(role: StatementRole | str) -> str:
+    """Return a normalized string value for a statement role.
+
+    Parameters
+    ----------
+    role
+        The statement role, either as a `StatementRole` enum member or a raw string.
+
+    Returns
+    -------
+    str
+        The normalized role value as a lowercase string.
+    """
+
+    return str(getattr(role, "value", role)).casefold()
+
+
 def _translate_table_rows(
     *,
     context: list[GroupingDecision],
+    context_groupings_role_order: list[NodeRole] | None = None,
     decision_id: str,
     node: CurriculumSkeletonNode,
     seg: CurriculumMatchableSegment,
@@ -1738,8 +2372,8 @@ def _translate_table_rows(
 
     5. Fallback when no column mappings match
         If `_resolve_column_mappings()` cannot match any headers, row extraction falls
-        back to `_extract_fallback_content()`. In that fallback mode, the function joins
-        all non-empty cells in a row into one leaf body using the node's default
+        back to `_extract_fallback_content()`. In that fallback mode, the function
+        joins all non-empty cells in a row into one leaf body using the node's default
         `leaf_role`.
 
         So a row like:
@@ -1797,91 +2431,84 @@ def _translate_table_rows(
     )
     table_seg: TableSegment = seg.raw_segment
 
-    # Build column index -> role mapping from curriculum skeleton + table headers.
     col_map = _resolve_column_mappings(
         column_mappings=node.column_mappings,
         header_rows_canonical=list(list(row) for row in seg.header_rows_canonical),
     )
 
-    # Row source fallback chain (rows_filldown -> rows_grid -> rows).
-    if table_seg.rows_filldown is not None:
-        rows_source = table_seg.rows_filldown
-    elif table_seg.rows_grid is not None:
-        rows_source = table_seg.rows_grid
-    else:
-        logger.warning(
-            f"Table {seg.segment_id}: falling back to raw rows "
-            f"(rows_filldown and rows_grid are both None). "
-            f"Column-index alignment may be broken due to col_span > 1 cells."
-        )
-        rows_source = table_seg.rows
+    rows_source = _get_table_rows_source(
+        segment_id=seg.segment_id,
+        table_seg=table_seg,
+    )
 
     hrc = table_seg.header_row_count or 0
     row_decisions: list[RowDecision] = []
+    active_shared_groupings: list[GroupingDecision] = []
+    active_column_groupings: dict[int, list[GroupingDecision]] = {}
 
-    # Skip header rows.
     for abs_i, row in enumerate(rows_source[hrc:], start=hrc):
         if _row_matches_skip_patterns(patterns=node.row_skip_cell_patterns, row=row):
             continue
 
-        row_groupings, row_leaves, skip_row, emitted_leaf_col_indices = (
-            _extract_row_content(
-                col_map=col_map, default_leaf_role=node.leaf_role, row=row
+        if not col_map:
+            unmapped_decision = _process_unmapped_row(
+                abs_i=abs_i,
+                col_map=col_map,
+                node=node,
+                row=row,
             )
-        )
-
-        if skip_row or (not row_groupings and not row_leaves):
+            if unmapped_decision:
+                row_decisions.append(unmapped_decision)
             continue
 
-        row_decisions.append(
-            RowDecision(
-                col_index=(
-                    next(iter(emitted_leaf_col_indices))
-                    if len(emitted_leaf_col_indices) == 1
-                    else None
+        (
+            shared_row_groupings,
+            column_row_groupings,
+            column_row_leaves,
+            skip_row,
+        ) = _extract_row_content_by_column(col_map=col_map, row=row)
+
+        if skip_row:
+            continue
+
+        if shared_row_groupings:
+            active_shared_groupings = _merge_persistent_grouping_context(
+                active_groupings=active_shared_groupings,
+                new_groupings=shared_row_groupings,
+                role_order=(
+                    context_groupings_role_order or DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER
                 ),
-                groupings=row_groupings,
-                leaves=row_leaves,
-                row_index=abs_i,
             )
-        )
 
-    # Build segment-level groupings from node metadata.
-    segment_groupings: list[GroupingDecision] = []
-
-    if node.grouping_role:
-        segment_groupings.append(
-            GroupingDecision(
-                local_code=node.local_code,
-                role=node.grouping_role,
-                source_label=node.source_label,
-                title=node.canonical_name.primary,
+        for col_index, new_groupings in sorted(column_row_groupings.items()):
+            active_column_groupings[col_index] = _merge_persistent_grouping_context(
+                active_groupings=active_column_groupings.get(col_index, []),
+                new_groupings=new_groupings,
+                role_order=(
+                    context_groupings_role_order or DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER
+                ),
             )
-        )
 
-    # Determine decision type from actual row outputs (not node metadata).
-    has_any_groupings = bool(segment_groupings) or any(
-        r.groupings for r in row_decisions
+        decisions = _generate_mapped_row_decisions(
+            abs_i=abs_i,
+            active_column_groupings=active_column_groupings,
+            active_shared_groupings=active_shared_groupings,
+            column_row_groupings=column_row_groupings,
+            column_row_leaves=column_row_leaves,
+            shared_row_groupings=shared_row_groupings,
+        )
+        row_decisions.extend(decisions)
+
+    segment_groupings = _build_segment_groupings(node=node)
+
+    dt = _determine_segment_decision_type(
+        node_id=node.id,
+        row_decisions=row_decisions,
+        segment_groupings=segment_groupings,
+        segment_id=seg.segment_id,
+        total_data_rows=len(rows_source) - hrc,
     )
-    has_any_leaves = any(r.leaves for r in row_decisions)
 
-    if has_any_groupings and has_any_leaves:
-        dt = SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES
-    elif has_any_leaves:
-        dt = SegmentDecisionType.EMIT_LEAVES_ONLY
-    elif has_any_groupings:
-        dt = SegmentDecisionType.EMIT_GROUPINGS_ONLY
-    else:
-        logger.warning(
-            f"Table {seg.segment_id}: no groupings or leaves produced from "
-            f"{len(rows_source) - hrc} data rows "
-            f"(bad column mapping or empty table body). "
-            f"Marking as UNRESOLVED (curriculum skeleton node '{node.id}' matched but "
-            f"extraction failed)."
-        )
-        dt = SegmentDecisionType.UNRESOLVED
-
-    # UNRESOLVED decisions must have all output arrays empty (schema invariant).
     is_noop = dt == SegmentDecisionType.UNRESOLVED
 
     return SegmentDecision(
@@ -3363,7 +3990,11 @@ def translate_matched_segment(
     # EMIT_TABLE_ROWS.
     if node.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS:
         return _translate_table_rows(
-            context=context, decision_id=decision_id, node=node, seg=segment
+            context=context,
+            context_groupings_role_order=context_groupings_role_order,
+            decision_id=decision_id,
+            node=node,
+            seg=segment,
         )
 
     raise ValueError(f"Unhandled emit policy: {node.emit}")
@@ -3441,6 +4072,7 @@ def translate_segments(
     # and for human review.
     segment_decision_set = SegmentDecisionSet.model_validate(
         {
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "decision_set_id": compute_decision_set_id(decisions=segment_decisions),
             "decisions": [d.model_dump(mode="json") for d in segment_decisions],
             "doc_key": doc_key,

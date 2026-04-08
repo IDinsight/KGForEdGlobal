@@ -1034,6 +1034,304 @@ def _materialize_leaves(
         )
 
 
+def _materialize_row_groupings(
+    *,
+    child_to_parent: dict[str, str],
+    decision_id: str,
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
+    groupings: list[Any],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    row_ancestor_keys: list[str],
+    row_bbox: Any,
+    row_parent_id: str,
+    section_path_text: list[str],
+    segment_id: str,
+    warnings: list[str],
+) -> str:
+    """Process groupings for a table row and emit corresponding nodes and edges.
+
+    Parameters
+    ----------
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision_id
+        The ID of the decision being materialized.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
+    groupings
+        The list of groupings for the row.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    row_ancestor_keys
+        The current ancestor keys for the row (mutated in place).
+    row_bbox
+        The bounding box for the row.
+    row_parent_id
+        The parent node ID for the row.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+
+    Returns
+    -------
+    str
+        The effective parent ID after processing all groupings.
+    """
+
+    for g in groupings:
+        g_title = canonical_grouping_title(role=g.role, title=g.title)
+        node_id = canonical_grouping_node_id(
+            ancestor_grouping_keys=row_ancestor_keys, doc_key=doc_key, grouping=g
+        )
+        node = CanonicalNode(
+            bbox=row_bbox,
+            body=None,
+            list_marker=None,
+            local_code=g.local_code,
+            node_id=node_id,
+            normalized_text=_normalize_text(text=g_title),
+            page_indices=page_indices,
+            role=g.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision_id],
+            source_label=g.source_label,
+            source_segment_ids=[segment_id],
+            source_type="table",
+            title=TextUnit(language="und", text=canonical_storage_text(g_title)),
+        )
+        effective_node_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=effective_node_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=row_parent_id,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
+
+        row_parent_id = effective_node_id
+        row_ancestor_keys.append(_grouping_key(g))
+
+    return row_parent_id
+
+
+def _materialize_row_leaves(
+    *,
+    child_to_parent: dict[str, str],
+    decision_id: str,
+    doc_key: str,
+    edges: list[CanonicalEdge],
+    edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
+    next_order_index: dict[str, int],
+    nodes_by_id: dict[str, CanonicalNode],
+    page_indices: list[int],
+    row: Any,
+    row_ancestor_keys: list[str],
+    row_bbox: Any,
+    row_parent_id: str,
+    section_path_text: list[str],
+    segment_id: str,
+    warnings: list[str],
+) -> None:
+    """Process and materialize leaves for a table row, handling expectation anchoring.
+
+    Parameters
+    ----------
+    child_to_parent
+        The mapping of child_id to parent_id.
+    decision_id
+        The ID of the decision being materialized.
+    doc_key
+        The document key.
+    edges
+        The list of CanonicalEdges to append to.
+    edges_by_key
+        The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
+    next_order_index
+        The mapping of parent_id to next order_index.
+    nodes_by_id
+        The mapping of node_id to CanonicalNode.
+    page_indices
+        The list of page indices for the segment.
+    row
+        The row object containing leaves to process.
+    row_ancestor_keys
+        The current ancestor keys for the row.
+    row_bbox
+        The bounding box for the row.
+    row_parent_id
+        The parent node ID for the row.
+    section_path_text
+        The section path text for the segment.
+    segment_id
+        The segment ID.
+    warnings
+        The list of warnings to append to.
+    """
+
+    row_disambiguator = (
+        f"table_row:{segment_id}:{row.row_index}:"
+        f"{row.col_index if row.col_index is not None else '-'}"
+    )
+    expectation_leaves = [
+        leaf for leaf in row.leaves if _role_value(role=leaf.role) == "expectation"
+    ]
+    column_scope_key = (
+        f"table_col:{segment_id}:{row.col_index}" if row.col_index is not None else None
+    )
+    legacy_leaf_ancestor_keys = list(row_ancestor_keys)
+
+    if column_scope_key is not None:
+        legacy_leaf_ancestor_keys.append(column_scope_key)
+
+    legacy_leaf_ancestor_keys.append(row_disambiguator)
+    anchored_expectation_id: Optional[str] = None
+    expectation_anchor_key: Optional[str] = None
+
+    if len(expectation_leaves) == 1:
+        expectation = expectation_leaves[0]
+        expectation_ancestor_keys = list(row_ancestor_keys)
+
+        if column_scope_key is not None:
+            expectation_ancestor_keys.append(column_scope_key)
+
+        anchored_leaf_id = canonical_leaf_node_id(
+            ancestor_grouping_keys=expectation_ancestor_keys,
+            doc_key=doc_key,
+            leaf=expectation,
+        )
+        expectation_node = CanonicalNode(
+            bbox=row_bbox,
+            body=TextUnit(
+                language="und", text=canonical_storage_text(expectation.body)
+            ),
+            list_marker=expectation.list_marker,
+            local_code=expectation.local_code,
+            node_id=anchored_leaf_id,
+            normalized_text=_normalize_text(text=expectation.body),
+            page_indices=page_indices,
+            role=expectation.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision_id],
+            source_label=expectation.source_label,
+            source_segment_ids=[segment_id],
+            source_type="table",
+            title=None,
+        )
+        anchored_expectation_id = ensure_node(
+            node=expectation_node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=anchored_expectation_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=row_parent_id,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
+        expectation_anchor_key = f"expectation_anchor:{anchored_leaf_id}"
+    elif len(expectation_leaves) > 1:
+        aux_leaves = [
+            leaf
+            for leaf in row.leaves
+            if _role_value(role=leaf.role) in {"descriptor", "guidance"}
+        ]
+
+        if aux_leaves:
+            msg = (
+                f"table_row_multiple_expectations_unanchored_aux:"
+                f"segment={segment_id} row={row.row_index} "
+                f"expectations={len(expectation_leaves)} "
+                f"aux_leaves={len(aux_leaves)}"
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+    for leaf in row.leaves:
+        role_value = _role_value(role=leaf.role)
+
+        if anchored_expectation_id is not None and role_value == "expectation":
+            continue
+
+        is_aux = role_value in {"descriptor", "guidance"}
+        parent_for_leaf = (
+            anchored_expectation_id
+            if anchored_expectation_id is not None and is_aux
+            else row_parent_id
+        )
+
+        if (
+            parent_for_leaf == anchored_expectation_id
+            and expectation_anchor_key is not None
+        ):
+            leaf_ancestor_keys = list(row_ancestor_keys)
+
+            if column_scope_key is not None:
+                leaf_ancestor_keys.append(column_scope_key)
+
+            leaf_ancestor_keys.append(expectation_anchor_key)
+            leaf_ancestor_keys.append(row_disambiguator)
+        else:
+            leaf_ancestor_keys = legacy_leaf_ancestor_keys
+
+        leaf_id = canonical_leaf_node_id(
+            ancestor_grouping_keys=leaf_ancestor_keys, doc_key=doc_key, leaf=leaf
+        )
+        node = CanonicalNode(
+            bbox=row_bbox,
+            body=TextUnit(language="und", text=canonical_storage_text(leaf.body)),
+            list_marker=leaf.list_marker,
+            local_code=leaf.local_code,
+            node_id=leaf_id,
+            normalized_text=_normalize_text(text=leaf.body),
+            page_indices=page_indices,
+            role=leaf.role,
+            section_path_text=section_path_text,
+            source_decision_ids=[decision_id],
+            source_label=leaf.source_label,
+            source_segment_ids=[segment_id],
+            source_type="table",
+            title=None,
+        )
+        effective_leaf_id = ensure_node(
+            node=node, nodes_by_id=nodes_by_id, warnings=warnings
+        )
+        _emit_edge(
+            child_id=effective_leaf_id,
+            child_to_parent=child_to_parent,
+            decision_id=decision_id,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            parent_id=parent_for_leaf,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
+
+
 def _materialize_table_rows(
     *,
     ancestor_keys: list[str],
@@ -1085,223 +1383,49 @@ def _materialize_table_rows(
         The list of warnings to append to.
     """
 
-    for row in sorted(decision.rows, key=lambda r: r.row_index):
+    for row in sorted(
+        decision.rows,
+        key=lambda r: (
+            r.row_index,
+            r.col_index if r.col_index is not None else 2**31 - 1,
+        ),
+    ):
         row_ancestor_keys = list(ancestor_keys)
         row_bbox = _table_row_bbox(row_index=row.row_index, table_segment=table_segment)
-        row_parent_id = parent_id
-
-        # Row groupings.
-        for g in row.groupings:
-            g_title = canonical_grouping_title(role=g.role, title=g.title)
-            node_id = canonical_grouping_node_id(
-                ancestor_grouping_keys=row_ancestor_keys, doc_key=doc_key, grouping=g
-            )
-
-            node = CanonicalNode(
-                bbox=row_bbox,
-                body=None,
-                list_marker=None,
-                local_code=g.local_code,
-                node_id=node_id,
-                normalized_text=_normalize_text(text=g_title),
-                page_indices=page_indices,
-                role=g.role,
-                section_path_text=section_path_text,
-                source_decision_ids=[decision.decision_id],
-                source_label=g.source_label,
-                source_segment_ids=[segment_id],
-                source_type="table",
-                title=TextUnit(language="und", text=canonical_storage_text(g_title)),
-            )
-
-            effective_node_id = ensure_node(
-                node=node, nodes_by_id=nodes_by_id, warnings=warnings
-            )
-            _emit_edge(
-                child_id=effective_node_id,
-                child_to_parent=child_to_parent,
-                decision_id=decision.decision_id,
-                edges=edges,
-                edges_by_key=edges_by_key,
-                next_order_index=next_order_index,
-                parent_id=row_parent_id,
-                segment_id=segment_id,
-                warnings=warnings,
-            )
-
-            row_parent_id = effective_node_id
-            row_ancestor_keys.append(_grouping_key(g))
-
-        # Row leaves.
-        #
-        # Tables sometimes repeat the *same* expectation text across multiple
-        # consecutive rows while varying supporting fields. In that case, we want
-        # exactly one expectation node per (section path + grouping context + field
-        # text), and we want *all* row-specific guidance/descriptor leaves to attach
-        # under that shared expectation.
-        #
-        # Strategy:
-        #
-        # 1. If a row contains exactly one expectation leaf, treat it as the row anchor.
-        #    - Expectation IDs are computed WITHOUT the row-level disambiguator so
-        #       repeated OA text merges into a single node.
-        #    - Guidance/descriptor IDs keep a row-level disambiguator so each row
-        #       produces distinct aux nodes (even if the text repeats).
-        # 2. Otherwise (0 or > 1 expectation leaves), fall back to:
-        #    - Emit all leaves as children of the row parent, with the row-level
-        #       disambiguator applied to all leaves.
-        row_disambiguator = (
-            f"table_row:{segment_id}:{row.row_index}:"
-            f"{row.col_index if row.col_index is not None else '-'}"
+        row_parent_id = _materialize_row_groupings(
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            doc_key=doc_key,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            groupings=row.groupings,
+            next_order_index=next_order_index,
+            nodes_by_id=nodes_by_id,
+            page_indices=page_indices,
+            row_ancestor_keys=row_ancestor_keys,
+            row_bbox=row_bbox,
+            row_parent_id=parent_id,
+            section_path_text=section_path_text,
+            segment_id=segment_id,
+            warnings=warnings,
         )
-
-        expectation_leaves = [
-            leaf for leaf in row.leaves if _role_value(role=leaf.role) == "expectation"
-        ]
-
-        # Precompute the "legacy" ancestor key chain for leaves that must remain unique
-        # per row (or when we cannot confidently anchor to a single expectation).
-        legacy_leaf_ancestor_keys = list(row_ancestor_keys)
-        legacy_leaf_ancestor_keys.append(row_disambiguator)
-
-        anchored_expectation_id: Optional[str] = None
-        expectation_anchor_key: Optional[str] = None
-
-        if len(expectation_leaves) == 1:
-            # Emit (or re-use) the anchored expectation node without row disambiguation.
-            expectation = expectation_leaves[0]
-            anchored_leaf_id = canonical_leaf_node_id(
-                ancestor_grouping_keys=row_ancestor_keys,
-                doc_key=doc_key,
-                leaf=expectation,
-            )
-
-            expectation_node = CanonicalNode(
-                bbox=row_bbox,
-                body=TextUnit(
-                    language="und", text=canonical_storage_text(expectation.body)
-                ),
-                list_marker=expectation.list_marker,
-                local_code=expectation.local_code,
-                node_id=anchored_leaf_id,
-                normalized_text=_normalize_text(text=expectation.body),
-                page_indices=page_indices,
-                role=expectation.role,
-                section_path_text=section_path_text,
-                source_decision_ids=[decision.decision_id],
-                source_label=expectation.source_label,
-                source_segment_ids=[segment_id],
-                source_type="table",
-                title=None,
-            )
-
-            anchored_expectation_id = ensure_node(
-                node=expectation_node, nodes_by_id=nodes_by_id, warnings=warnings
-            )
-            _emit_edge(
-                child_id=anchored_expectation_id,
-                child_to_parent=child_to_parent,
-                decision_id=decision.decision_id,
-                edges=edges,
-                edges_by_key=edges_by_key,
-                next_order_index=next_order_index,
-                parent_id=row_parent_id,
-                segment_id=segment_id,
-                warnings=warnings,
-            )
-
-            # Aux leaves will be scoped under the expectation via an anchor key that is
-            # stable across reruns and does not depend on child insertion order.
-            expectation_anchor_key = f"expectation_anchor:{anchored_leaf_id}"
-
-        elif len(expectation_leaves) > 1:
-            # Only warn when aux leaves (guidance/descriptor) are present--those are
-            # the leaves that lose their anchored parent relationship when we cannot
-            # pick a single expectation anchor. When every leaf is an expectation (no
-            # aux leaves), per-row disambiguation produces the same flat-sibling
-            # structure the anchoring path would, so the fallback is a no-op.
-            aux_leaves = [
-                leaf
-                for leaf in row.leaves
-                if _role_value(role=leaf.role) in {"descriptor", "guidance"}
-            ]
-
-            if aux_leaves:
-                msg = (
-                    f"table_row_multiple_expectations_unanchored_aux:"
-                    f"segment={segment_id} row={row.row_index} "
-                    f"expectations={len(expectation_leaves)} "
-                    f"aux_leaves={len(aux_leaves)}"
-                )
-                logger.warning(msg)
-                warnings.append(msg)
-
-        # Emit leaves.
-        for leaf in row.leaves:
-            role_value = _role_value(role=leaf.role)
-
-            # Skip: expectation leaf already emitted as the anchor node (if applicable).
-            if anchored_expectation_id is not None and role_value == "expectation":
-                continue
-
-            is_aux = role_value in {"descriptor", "guidance"}
-            parent_for_leaf = (
-                anchored_expectation_id
-                if anchored_expectation_id is not None and is_aux
-                else row_parent_id
-            )
-
-            # Ancestor key chain:
-            # 1. Anchored aux leaves: row context + expectation anchor + row
-            #   disambiguator.
-            # 2. Everything else: row context + row disambiguator
-            if (
-                parent_for_leaf == anchored_expectation_id
-                and expectation_anchor_key is not None
-            ):
-                leaf_ancestor_keys = list(row_ancestor_keys)
-                leaf_ancestor_keys.append(expectation_anchor_key)
-                leaf_ancestor_keys.append(row_disambiguator)
-            else:
-                leaf_ancestor_keys = legacy_leaf_ancestor_keys
-
-            leaf_id = canonical_leaf_node_id(
-                ancestor_grouping_keys=leaf_ancestor_keys,
-                doc_key=doc_key,
-                leaf=leaf,
-            )
-
-            node = CanonicalNode(
-                bbox=row_bbox,
-                body=TextUnit(language="und", text=canonical_storage_text(leaf.body)),
-                list_marker=leaf.list_marker,
-                local_code=leaf.local_code,
-                node_id=leaf_id,
-                normalized_text=_normalize_text(text=leaf.body),
-                page_indices=page_indices,
-                role=leaf.role,
-                section_path_text=section_path_text,
-                source_decision_ids=[decision.decision_id],
-                source_label=leaf.source_label,
-                source_segment_ids=[segment_id],
-                source_type="table",
-                title=None,
-            )
-
-            effective_leaf_id = ensure_node(
-                node=node, nodes_by_id=nodes_by_id, warnings=warnings
-            )
-            _emit_edge(
-                child_id=effective_leaf_id,
-                child_to_parent=child_to_parent,
-                decision_id=decision.decision_id,
-                edges=edges,
-                edges_by_key=edges_by_key,
-                next_order_index=next_order_index,
-                parent_id=parent_for_leaf,
-                segment_id=segment_id,
-                warnings=warnings,
-            )
+        _materialize_row_leaves(
+            child_to_parent=child_to_parent,
+            decision_id=decision.decision_id,
+            doc_key=doc_key,
+            edges=edges,
+            edges_by_key=edges_by_key,
+            next_order_index=next_order_index,
+            nodes_by_id=nodes_by_id,
+            page_indices=page_indices,
+            row=row,
+            row_ancestor_keys=row_ancestor_keys,
+            row_bbox=row_bbox,
+            row_parent_id=row_parent_id,
+            section_path_text=section_path_text,
+            segment_id=segment_id,
+            warnings=warnings,
+        )
 
 
 def _normalize_text(text: Optional[str]) -> str:

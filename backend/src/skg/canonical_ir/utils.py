@@ -83,8 +83,8 @@ def cross_check_stitching_run(
 
     Returns
     -------
-    tuple[dict[tuple[int, int], EdgeVerdictRecord], list[PageIR]]
-        The loaded verdicts and verified page IRs.
+    DocumentIR
+        The loaded DocumentIR for the canonical IR creation run.
 
     Raises
     ------
