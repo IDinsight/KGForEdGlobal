@@ -856,9 +856,13 @@ class RowDecision(BaseSchema):
     col_index: int | None = Field(
         default=None,
         description=(
-            "Optional 0-based column index into the ORIGINAL stitched table columns that this RowDecision applies to. "
-            "Use this when a single table row contains multiple independent statements by column (e.g., one strand per column). "
-            "When provided, row-local groupings may be grounded against header_rows_canonical[*][col_index] and leaves must come from that column's cell."
+            "Optional 0-based column index into the ORIGINAL stitched table columns "
+            "that anchors this RowDecision's leaf provenance. "
+            "Populate this when all emitted leaves in the RowDecision come from the "
+            "same source column (even if row-local groupings came from other "
+            "columns). Leave it null when the RowDecision aggregates leaves from "
+            "multiple source columns or when no single leaf-bearing column can be "
+            "identified deterministically."
         ),
         ge=0,
     )
