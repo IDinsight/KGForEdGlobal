@@ -166,7 +166,7 @@
                 "grouping_role_overrides": [
                   {
                     "cell_pattern": "(?i)^\\s*(manoore|comp[ée]tences?\\s+de\\s+base)\\b",
-                    "role": "skip"
+                    "role": "skip_row"
                   },
                   {
                     "cell_pattern": "(?i)^\\s*(j[ée]ego|palier|semaines)\\b",
