@@ -1,4 +1,6 @@
-"""This module contains utility functions for the curriculum skeleton pipeline."""
+"""This module contains utility functions for creating segment decisions from a
+curriculum skeleton JSON.
+"""
 
 # Standard Library
 import re
@@ -1257,10 +1259,13 @@ def _resolve_column_mappings(
         One entry per column in the (widest) header row.
     """
 
+    if not header_rows_canonical:
+        return []
+
     # Determine column count from the widest header row.
     n_cols = max(len(row) for row in header_rows_canonical)
 
-    if not header_rows_canonical or n_cols == 0:
+    if n_cols == 0:
         return []
 
     # Build per-column header signature by joining all header rows.

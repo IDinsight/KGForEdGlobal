@@ -40,7 +40,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.curriculum_skeleton import (
+from skg.canonical_ir.create_segment_decisions import (
     build_caption_bindings,
     generate_curriculum_match_report,
     load_curriculum_skeleton,

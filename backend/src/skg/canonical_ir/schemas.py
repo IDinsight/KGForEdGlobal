@@ -418,13 +418,20 @@ class CurriculumSkeletonNode(BaseSchema):
     )
     leaf_role: Optional[StatementRole] = Field(
         default=None,
-        description="StatementRole for leaf output. Set for nodes that emit leaves.",
+        description=(
+            "StatementRole for leaf output. Required for emit=EMIT_LEAF and "
+            "emit=EMIT_GROUPING_AND_LEAF. Optional for emit=EMIT_TABLE_ROWS, "
+            "because table rows may emit groupings only."
+        ),
     )
 
     # Column mappings (required for EMIT_TABLE_ROWS).
     column_mappings: list[CurriculumColumnMapping] = Field(
         default_factory=list,
-        description="Column-to-role mappings. Required when emit=EMIT_TABLE_ROWS.",
+        description=(
+            "Column-to-role mappings. Required when emit=EMIT_TABLE_ROWS. "
+            "These mappings may resolve to grouping columns, leaf columns, or both."
+        ),
     )
 
     # Metadata (inherited downward unless overridden by a descendant).
@@ -529,15 +536,13 @@ class CurriculumSkeletonNode(BaseSchema):
                     f"Node '{self.id}': EMIT_GROUPING_AND_LEAF requires leaf_role."
                 )
 
-        if self.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS:
-            if self.leaf_role is None:
-                raise ValueError(
-                    f"Node '{self.id}': EMIT_TABLE_ROWS requires leaf_role."
-                )
-            if not self.column_mappings:
-                raise ValueError(
-                    f"Node '{self.id}': EMIT_TABLE_ROWS requires >=1 column_mapping."
-                )
+        if (
+            self.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS
+            and not self.column_mappings
+        ):
+            raise ValueError(
+                f"Node '{self.id}': EMIT_TABLE_ROWS requires >=1 column_mapping."
+            )
 
         return self
 
