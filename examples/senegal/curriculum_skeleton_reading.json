@@ -100,7 +100,7 @@
                     "role": "grouping:stage"
                   },
                   {
-                    "cell_pattern": "(?i)^\\s*manoore\\b",
+                    "cell_pattern": "(?i)^\\s*manoore\\w*\\b",
                     "role": "skip"
                   },
                   {
@@ -123,7 +123,7 @@
                     "role": "grouping:stage"
                   },
                   {
-                    "cell_pattern": "(?i)^\\s*manoore\\b",
+                    "cell_pattern": "(?i)^\\s*manoore\\w*\\b",
                     "role": "skip"
                   },
                   {
@@ -133,7 +133,7 @@
                 ]
               }
             ],
-            "doc_note": "Stacked 2-column overview table containing cycle competency, stage competency, and sous-domaine competencies in bilingual rows. [FIX: remapped both columns, including the blank second header column, so the table can emit mixed structural rows and expectation rows. Rows beginning with 'Boole mooñ' become expectation leaves; 'ÉTAPE 2' becomes a stage grouping; 'PÀCCU FÀNN … / Sous-domaine …' rows become strand groupings; label rows beginning with 'MANOORE…' are skipped.]",
+            "doc_note": "Stacked 2-column overview table containing cycle competency, stage competency, and sous-domaine competencies in bilingual rows. [FIX: remapped both columns, including the blank second header column, so the table can emit mixed structural rows and expectation rows. Rows beginning with 'Boole mooñ' become expectation leaves; 'ÉTAPE 2' becomes a stage grouping; 'PÀCCU FÀNN … / Sous-domaine …' rows become strand groupings; label rows beginning with 'MANOORE…' are skipped. Updated the skip regex to match MANOOREB / MANOOREY forms, not just the bare token 'MANOORE'.]",
             "match_phrases": [
               "tableau 1.1.1"
             ],
@@ -185,7 +185,7 @@
         },
         "emit": "emit_grouping",
         "grouping_role": "section",
-        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers. [FIX: converted from CONTAINER_ONLY + implicit to an explicit matched section because the source document has a real standalone heading '1.2 TABLEAU DE PLANIFICATION DES APPRENTISSAGES'. The child tableau-1.2.1 still matches the table via caption.]",
+        "doc_note": "Section 1.2. Contains the week-by-week planning table for Expression orale, Récitation, and Lecture across all 3 paliers. [FIX: converted from CONTAINER_ONLY + implicit to an explicit matched section because the source document has a real standalone heading '1.2 TABLEAU DE PLANIFICATION DES APPRENTISSAGES'. The child tableau-1.2.1 still matches the table via caption. NB: the palier markers are embedded inside expectation cells in the planning table, so they are not recoverable as explicit substage groupings from the skeleton alone under the current translator behavior.]",
         "match_phrases": [
           "1.2 tableau de planification des apprentissages",
           "tableau de planification des apprentissages"
@@ -212,10 +212,6 @@
                   {
                     "cell_pattern": "(?i)^\\s*semaines\\s*$",
                     "role": "skip"
-                  },
-                  {
-                    "cell_pattern": "(?i)^\\s*(j[ée]ego|palier)\\b",
-                    "role": "grouping:substage"
                   }
                 ]
               },
@@ -235,7 +231,7 @@
                 "source_label_override": "Lecture"
               }
             ],
-            "doc_note": "25-week planning grid across 3 paliers. First column is the week axis; the duplicated 'Manoore yi lalu / Compétences de base' row is skipped because base competencies are already captured in Tableau 1.1.2. [FIX: 'Semaines' now skips instead of becoming a bogus substage grouping. Checkpoint rows whose cells are exactly INTÉGRATION or EVALUATION are suppressed via row_skip_cell_patterns.]",
+            "doc_note": "25-week planning grid across 3 paliers. First column is the week axis; the duplicated 'Manoore yi lalu / Compétences de base' row is skipped because base competencies are already captured in Tableau 1.1.2. [FIX: 'Semaines' now skips instead of becoming a bogus grouping. Checkpoint rows whose cells are exactly INTÉGRATION or EVALUATION are suppressed via row_skip_cell_patterns. Removed an ineffective grouping:substage override for Jéego/Palier because, in this table, the palier markers live in the expectation columns rather than the grouping column; they cannot be promoted to row-level substage groupings via the current skeleton-only override model.]",
             "match_phrases": [
               "tableau 1.2.1"
             ],
