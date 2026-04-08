@@ -338,7 +338,7 @@ class CurriculumResolvedColumnRole:
     """Resolved role for a single table column."""
 
     col_index: int
-    kind: str  # "grouping", "leaf", or "skip"
+    kind: str  # "grouping", "leaf", "skip", or "skip_row"
     role_value: str  # e.g., "strand", "expectation"
     source_label: str  # Column header text (for source_label)
 
@@ -624,7 +624,7 @@ def _extract_row_content(
     col_map: list[CurriculumResolvedColumnRole],
     default_leaf_role: StatementRole | None,
     row: TableRow,
-) -> tuple[list[GroupingDecision], list[LeafDecision]]:
+) -> tuple[list[GroupingDecision], list[LeafDecision], bool]:
     """Extract groupings and leaves from a single table row using column map.
 
     Parameters
@@ -638,22 +638,24 @@ def _extract_row_content(
 
     Returns
     -------
-    tuple[list[GroupingDecision], list[LeafDecision]]
-        Row-level groupings and leaves.
+    tuple[list[GroupingDecision], list[LeafDecision], bool]
+        Row-level groupings, row-level leaves, and a flag indicating whether a grouping
+        override explicitly requested that the entire row be suppressed.
     """
 
     cells = row.cells
 
     if not col_map:
-        return _extract_fallback_content(
+        fallback_groupings, fallback_leaves = _extract_fallback_content(
             cells=cells, default_leaf_role=default_leaf_role
         )
+        return fallback_groupings, fallback_leaves, False
 
     groupings: list[GroupingDecision] = []
     leaves: list[LeafDecision] = []
 
     for col_role in col_map:
-        if col_role.col_index >= len(cells) or col_role.kind == "skip":
+        if col_role.col_index >= len(cells) or col_role.kind in {"skip", "skip_row"}:
             continue
 
         if not (cell_text := (_cell_to_text(cells[col_role.col_index]) or "").strip()):
@@ -662,6 +664,9 @@ def _extract_row_content(
         effective_col_role = _resolve_effective_role(
             cell_text=cell_text, col_role=col_role
         )
+
+        if effective_col_role.kind == "skip_row":
+            return [], [], True
 
         if effective_col_role.kind == "skip":
             continue
@@ -675,7 +680,7 @@ def _extract_row_content(
         elif isinstance(decision, LeafDecision):
             leaves.append(decision)
 
-    return groupings, leaves
+    return groupings, leaves, False
 
 
 def _handle_pending_caption_binding(
@@ -1496,10 +1501,10 @@ def _resolve_effective_role(
         if not re.search(override.cell_pattern, cell_text, re.UNICODE):
             continue
 
-        if override.role == "skip":
+        if override.role in {"skip", "skip_row"}:
             return CurriculumResolvedColumnRole(
                 col_index=col_role.col_index,
-                kind="skip",
+                kind=override.role,
                 role_value="",
                 source_label=col_role.source_label,
             )
@@ -1743,11 +1748,11 @@ def _translate_table_rows(
 
     # Skip header rows.
     for abs_i, row in enumerate(rows_source[hrc:], start=hrc):
-        row_groupings, row_leaves = _extract_row_content(
+        row_groupings, row_leaves, skip_row = _extract_row_content(
             col_map=col_map, default_leaf_role=node.leaf_role, row=row
         )
 
-        if not row_groupings and not row_leaves:
+        if skip_row or (not row_groupings and not row_leaves):
             continue
 
         row_decisions.append(

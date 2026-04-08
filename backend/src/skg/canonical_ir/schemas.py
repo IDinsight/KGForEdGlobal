@@ -258,17 +258,20 @@ class CurriculumGroupingRoleOverride(BaseSchema):
         ...,
         description=(
             "Override semantic role: 'grouping:{NodeRole.value}', "
-            "'leaf:{StatementRole.value}', or 'skip' (to suppress the cell)."
+            "'leaf:{StatementRole.value}', 'skip' (to suppress only the cell), "
+            "or 'skip_row' (to suppress the entire row)."
         ),
     )
 
     @model_validator(mode="after")
     def validate_override_role_format(self) -> CurriculumGroupingRoleOverride:
-        """Ensure the override `role` is a valid 'kind:value' string or 'skip'.
+        """Ensure the override `role` is a valid directive.
 
-        'skip' is allowed at the override level to suppress specific cells in a
-        grouping column (e.g., when a cell contains an embedded competency restatement
-        rather than the expected grouping label).
+        Allowed forms are:
+            - 'grouping:{NodeRole.value}'
+            - 'leaf:{StatementRole.value}'
+            - 'skip' (suppress only the matched cell)
+            - 'skip_row' (suppress the entire row)
 
         Returns
         -------
@@ -278,10 +281,10 @@ class CurriculumGroupingRoleOverride(BaseSchema):
         Raises
         ------
         ValueError
-            If `role` is not in the correct 'kind:value' format or 'skip'.
+            If `role` is not in the correct format.
         """
 
-        if self.role == "skip":
+        if self.role in {"skip", "skip_row"}:
             return self
 
         parts = self.role.split(":", 1)
@@ -289,7 +292,8 @@ class CurriculumGroupingRoleOverride(BaseSchema):
         if len(parts) != 2 or parts[0] not in ("grouping", "leaf"):
             raise ValueError(
                 f"CurriculumGroupingRoleOverride.role must be "
-                f"'grouping:{{role}}', 'leaf:{{role}}', or 'skip'. Got: {self.role!r}"
+                f"'grouping:{{role}}', 'leaf:{{role}}', 'skip', or 'skip_row'. "
+                f"Got: {self.role!r}"
             )
 
         kind, value = parts
