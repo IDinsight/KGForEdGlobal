@@ -624,7 +624,7 @@ def _extract_row_content(
     col_map: list[CurriculumResolvedColumnRole],
     default_leaf_role: StatementRole | None,
     row: TableRow,
-) -> tuple[list[GroupingDecision], list[LeafDecision], bool]:
+) -> tuple[list[GroupingDecision], list[LeafDecision], bool, set[int]]:
     """Extract groupings and leaves from a single table row using column map.
 
     Parameters
@@ -638,9 +638,10 @@ def _extract_row_content(
 
     Returns
     -------
-    tuple[list[GroupingDecision], list[LeafDecision], bool]
-        Row-level groupings, row-level leaves, and a flag indicating whether a grouping
-        override explicitly requested that the entire row be suppressed.
+    tuple[list[GroupingDecision], list[LeafDecision], bool, set[int]]
+        Row-level groupings, row-level leaves, a flag indicating whether a grouping
+        override explicitly requested that the entire row be suppressed, and the set of
+        leaf-bearing source column indexes that contributed emitted leaves.
     """
 
     cells = row.cells
@@ -649,10 +650,11 @@ def _extract_row_content(
         fallback_groupings, fallback_leaves = _extract_fallback_content(
             cells=cells, default_leaf_role=default_leaf_role
         )
-        return fallback_groupings, fallback_leaves, False
+        return fallback_groupings, fallback_leaves, False, set()
 
     groupings: list[GroupingDecision] = []
     leaves: list[LeafDecision] = []
+    leaf_source_col_indexes: set[int] = set()
 
     for col_role in col_map:
         if col_role.col_index >= len(cells) or col_role.kind in {"skip", "skip_row"}:
@@ -666,7 +668,7 @@ def _extract_row_content(
         )
 
         if effective_col_role.kind == "skip_row":
-            return [], [], True
+            return [], [], True, set()
 
         if effective_col_role.kind == "skip":
             continue
@@ -679,8 +681,9 @@ def _extract_row_content(
             groupings.append(decision)
         elif isinstance(decision, LeafDecision):
             leaves.append(decision)
+            leaf_source_col_indexes.add(col_role.col_index)
 
-    return groupings, leaves, False
+    return groupings, leaves, False, leaf_source_col_indexes
 
 
 def _handle_pending_caption_binding(
@@ -1544,8 +1547,11 @@ def _translate_table_rows(
     4. Skip the table's header rows.
     5. For each remaining row:
         - Extract row-level groupings and leaves using the resolved column map
+        - Track which leaf-bearing source columns contributed emitted leaves
         - Skip rows that produce no usable content
         - Emit a `RowDecision` for rows that do produce content
+        - Set `RowDecision.col_index` only when all emitted leaves came from one source
+            column; otherwise leave it null
     6. Optionally add one segment-level grouping from `node.grouping_role`. This is
         useful when the whole table itself represents a container such as a unit, week
         band, or substage.
@@ -1709,18 +1715,12 @@ def _translate_table_rows(
     -------
     SegmentDecision
         A table-backed decision whose main payload is usually stored in `rows[]`.
-
-    Raises
-    ------
-    TypeError
-        If `seg.raw_segment` is not a `TableSegment`.
     """
 
-    if not isinstance(seg.raw_segment, TableSegment):
-        raise TypeError(
-            f"EMIT_TABLE_ROWS matched a non-table segment: {seg.segment_id}. "
-            f"raw_segment type: {type(seg.raw_segment).__name__}"
-        )
+    assert isinstance(seg.raw_segment, TableSegment), (
+        f"EMIT_TABLE_ROWS matched a non-table segment: {seg.segment_id}. "
+        f"raw_segment type: {type(seg.raw_segment).__name__}"
+    )
 
     table_seg: TableSegment = seg.raw_segment
 
@@ -1748,15 +1748,30 @@ def _translate_table_rows(
 
     # Skip header rows.
     for abs_i, row in enumerate(rows_source[hrc:], start=hrc):
-        row_groupings, row_leaves, skip_row = _extract_row_content(
+        (
+            row_groupings,
+            row_leaves,
+            skip_row,
+            leaf_source_col_indexes,
+        ) = _extract_row_content(
             col_map=col_map, default_leaf_role=node.leaf_role, row=row
         )
 
         if skip_row or (not row_groupings and not row_leaves):
             continue
 
+        row_col_index = None
+
+        if len(leaf_source_col_indexes) == 1:
+            row_col_index = next(iter(leaf_source_col_indexes))
+
         row_decisions.append(
-            RowDecision(groupings=row_groupings, leaves=row_leaves, row_index=abs_i)
+            RowDecision(
+                col_index=row_col_index,
+                groupings=row_groupings,
+                leaves=row_leaves,
+                row_index=abs_i,
+            )
         )
 
     # Build segment-level groupings from node metadata.

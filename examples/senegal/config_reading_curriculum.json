@@ -66,7 +66,7 @@
 			"week"
 		],
 		"guidance_handling": "attach_to_expectation_metadata",
-		"jurisdiction_default": "Senegal",
+		"jurisdiction_default": "Sénégal",
 		"language_default": "mul",
     "lc_atomic_skills_batch_size": 5,
 		"lc_atomic_skills_include_aux_statements": true,
