@@ -8,10 +8,11 @@ Step 4 does the following:
 3. Loads and validates the CurriculumSkeleton JSON.
 4. Runs the curriculum skeleton matching engine (deterministic segment -> skeleton-node
     matching).
-5. Translates matches into a list of SegmentDecisions (one per segment, no chunking).
-6. Wraps SegmentDecisions into a SegmentDecisionSet and persists to disk.
-7. Compiles a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
-8. Generates a curriculum skeleton match report for diagnostics.
+5. Generates a curriculum skeleton match report for diagnostics.
+6. Translates matches into a list of SegmentDecisions (one per matched result, plus
+    unmatched segments; multi-segment continuations may merge into one decision).
+7. Wraps SegmentDecisions into a SegmentDecisionSet and persists to disk.
+8. Compiles a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
 
 Invoke from the backend directory via:
 
@@ -81,7 +82,8 @@ def create_canonical_ir(
     4. Run the forward-only curriculum skeleton matching engine.
     5. Generate a curriculum skeleton match report for diagnostics.
     6. Translate curriculum matches into a list of SegmentDecisions (one decision per
-        segment).
+        matched result; `allow_multiple_segments` continuations are merged into the
+        primary decision).
     7. Wrap SegmentDecisions into a SegmentDecisionSet and persist to disk.
     8. Compile a CanonicalIR from DocumentIR + SegmentDecisionSet using the compiler.
 

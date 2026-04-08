@@ -1082,9 +1082,9 @@ def _resolve_column_mappings(
 ) -> list[CurriculumResolvedColumnRole]:
     """Match skeleton column_mappings against actual table headers.
 
-    Builds per-column header signatures by joining all header rows for each column
-    using `HEADER_SIGNATURE_SEPARATOR`. Each column is tested against every mapping in
-    order; first match wins. Unmatched columns default to `skip`.
+    Builds per-column header signatures by joining all non-empty header-row cells for
+    each column using the literal separator " / ". Each column is tested against every
+    mapping in order; first match wins. Unmatched columns default to `skip`.
 
     Note: `column_mappings` patterns use inline `(?i)` flags (self-contained), so this
     function compiles with `re.UNICODE` only, not `re.IGNORECASE`.
@@ -1695,17 +1695,31 @@ def build_context_groupings(
     }
     context: list[GroupingDecision] = []
 
+    visible_grouping_emits = {
+        CurriculumEmitPolicy.EMIT_GROUPING,
+        CurriculumEmitPolicy.EMIT_GROUPING_AND_LEAF,
+        CurriculumEmitPolicy.EMIT_TABLE_ROWS,
+    }
+
     for node in ancestry:
         # Stop before the matched node itself.
         if node.id == matched_node.id:
             break
 
         # Skip nodes without grouping roles.
-        if node.grouping_role is None or node.grouping_role == NodeRole.FRAMEWORK:
+        if node.grouping_role in (None, NodeRole.FRAMEWORK):
             continue
 
-        # CONTAINER_ONLY nodes are invisible UNLESS implicit=True.
-        if node.emit == CurriculumEmitPolicy.CONTAINER_ONLY and not node.implicit:
+        # CONTAINER_ONLY nodes are invisible UNLESS implicit=True. Other ancestor node
+        # types only contribute context when they are grouping-bearing visible emits.
+        # This keeps IGNORE/EMIT_LEAF ancestors from leaking into context_groupings
+        # when a curriculum skeleton accidentally sets grouping_role.
+        is_implicit_container = (
+            node.emit == CurriculumEmitPolicy.CONTAINER_ONLY and node.implicit
+        )
+        is_visible_emit = node.emit in visible_grouping_emits
+
+        if not (is_implicit_container or is_visible_emit):
             continue
 
         context.append(
@@ -2625,6 +2639,11 @@ def translate_segments(
 ) -> list[SegmentDecision]:
     """Translate CurriculumMatchResult into a list of SegmentDecisions.
 
+    NB: `allow_multiple_segments=True` matches are merged into a single decision for
+    the primary matched segment, with any continuation segments carried on
+    `CurriculumMatchedSegment.additional_segments`. So this function does **not**
+    guarantee one decision per original document segment.
+
     Parameters
     ----------
     curriculum_match_results
@@ -2640,7 +2659,7 @@ def translate_segments(
     Returns
     -------
     list[SegmentDecision]
-        A list of SegmentDecisions corresponding to the matched and unmatched segments.
+        A list of SegmentDecisions in document order.
     """
 
     logger.info("Translating curriculum match results to SegmentDecisions...")
@@ -2685,7 +2704,7 @@ def translate_unmatched(
     doc_key
         Document key for decision ID generation.
     seg
-        The unmatched MatchableSegment.
+        The unmatched `CurriculumMatchableSegment`.
 
     Returns
     -------
