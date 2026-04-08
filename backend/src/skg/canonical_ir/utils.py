@@ -65,8 +65,8 @@ def cross_check_stitching_run(
     extraction_config: ExtractionConfig,
     document_ir_fp: Path,
 ) -> DocumentIR:
-    """Cross-check that the verification run matches expected parameters and load
-    verified page IRs and their verdicts.
+    """Cross-check that the stitching run matches expected parameters and load the
+    document IR for the canonical IR creation run.
 
     Parameters
     ----------
