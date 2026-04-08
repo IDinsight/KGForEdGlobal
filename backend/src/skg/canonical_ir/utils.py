@@ -3072,6 +3072,7 @@ def save_canonical_ir(*, canonical_ir: CanonicalIR, canonical_ir_fp: Path) -> No
     """
 
     write_to_json(fp=canonical_ir_fp, json_info=canonical_ir)
+
     logger.success(f"Saved canonical IR to: {canonical_ir_fp}")
 
 
