@@ -16,7 +16,6 @@ from skg.regexes import (
     DIGIT_RE,
     FIGURE_PREFIX_PATTERN,
     ROMAN_RE,
-    STRUCTURAL_CONTEXT_CUE_RE,
     TABLE_CODE_RE,
     TABLE_PREFIX_PATTERN,
     TOKEN_RE,
@@ -408,76 +407,6 @@ class TestRomanRe:
         """Verify that `\\b` prevents matching inside longer words."""
 
         _assert_no_match(pattern=ROMAN_RE, text="MIXING")
-
-
-class TestStructuralContextCueRe:
-    """Tests for `STRUCTURAL_CONTEXT_CUE_RE`. structural/educational keywords."""
-
-    def test_case_insensitive(self) -> None:
-        """Verify that matching is case-insensitive."""
-
-        assert STRUCTURAL_CONTEXT_CUE_RE.search("CHAPTER") is not None
-        assert STRUCTURAL_CONTEXT_CUE_RE.search("Chapter") is not None
-        assert STRUCTURAL_CONTEXT_CUE_RE.search("chapter") is not None
-
-    @PARAM(
-        "text",
-        [
-            "grade",
-            "Grade",
-            "GRADE",
-            "class",
-            "primary",
-            "standard",
-            "std",
-            "std.",
-            "stage",
-            "theme",
-            "sub-theme",
-            "sub theme",
-            "subtheme",
-            "strand",
-            "subject",
-            "learning area",
-            "unit",
-            "week",
-            "term",
-            "chapter",
-            "module",
-            "p 1",
-            "p1",
-            "std iv",
-            "palier",
-            "semaine",
-            "étape",
-            "niveau",
-            "compétence",
-        ],
-    )
-    def test_matches_known_keywords(self, text: str) -> None:
-        """Verify that known structural/educational keywords match.
-
-        Parameters
-        ----------
-        text
-            Keyword or phrase expected to match.
-        """
-
-        assert (
-            STRUCTURAL_CONTEXT_CUE_RE.search(text) is not None
-        ), f"Expected match for {text!r}"
-
-    @PARAM("text", ["classic", "terminate", "graduation"])
-    def test_word_boundary_prevents_partial(self, text: str) -> None:
-        r"""Verify `\\b` prevents matching keywords embedded in longer words.
-
-        Parameters
-        ----------
-        text
-            Word that contains a keyword as a substring but should not match.
-        """
-
-        _assert_no_match(pattern=STRUCTURAL_CONTEXT_CUE_RE, text=text)
 
 
 class TestTablePrefixPattern:

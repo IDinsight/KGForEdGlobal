@@ -32,7 +32,7 @@ from skg.canonical_ir.utils import extract_block_segment_text
 from skg.config import Settings
 from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.regexes import DASH_RE, STRUCTURAL_CONTEXT_CUE_RE, WS_RE
+from skg.regexes import DASH_RE, WS_RE
 from skg.schemas import BBox
 from skg.utils.constants import NodeRole, SegmentDecisionType, UnresolvedReason
 from skg.utils.general import QUOTES_TRANSLATION, write_to_json
@@ -204,10 +204,18 @@ def _check_structural_warnings(
     """
 
     # Audit-only warning: segment.section_path suggests strong curriculum structure,
-    # but we were provided an empty context_groupings snapshot. This does NOT
+    # but we were provided an empty `context_groupings` snapshot. This does NOT
     # materialize any hierarchy; it only flags likely missed context.
-    leaf_count = _count_decision_leaves(decision)
+    leaf_count = len(decision.leaves) + sum(len(row.leaves) for row in decision.rows)
 
+    # Checks for the scenario: "Did we emit real curriculum leaves, but without any
+    # context about where they belong in the hierarchy, even though the document's own
+    # heading trail suggests there IS structural context available?". If the
+    # if-statement triggers, then this means we are emitting orphaned leaves that will
+    # land directly under whatever the current context stack tip is (possibly the
+    # framework root) but the document's own headings suggest this content sits inside
+    # some other structure. In other words, the curriculum skeleton probably missed
+    # assigning `context_groupings` for this match.
     if (
         decision.decision_type
         not in (SegmentDecisionType.IGNORE, SegmentDecisionType.UNRESOLVED)
@@ -217,7 +225,7 @@ def _check_structural_warnings(
     ):
         path_str = " / ".join([p for p in section_path_text if p])
 
-        if path_str and STRUCTURAL_CONTEXT_CUE_RE.search(path_str):
+        if path_str:
             pages_str = ",".join(str(p) for p in page_indices) if page_indices else "-"
             msg = (
                 f"context_evidence_present_but_context_groupings_empty:"
@@ -230,10 +238,10 @@ def _check_structural_warnings(
     if decision.confidence >= structural_leaf_warn_threshold:
         return
 
-    if leaf_count <= 0:
+    if leaf_count == 0:
         return
 
-    pages_str = _format_page_indices(page_indices)
+    pages_str = "-" if not page_indices else ",".join(str(p) for p in page_indices)
     path_str = _format_section_path(section_path_text=section_path_text)
 
     if decision.row_range_start is not None or decision.row_range_end is not None:
@@ -247,39 +255,18 @@ def _check_structural_warnings(
 
     msg = (
         f"structural_leaf_review:"
-        f"segment_id={segment_id} decision_id={decision.decision_id} "
-        f"kind={segment_kind} conf={decision.confidence:.3f} "
-        f"leaf_count={leaf_count} threshold={structural_leaf_warn_threshold:.3f} "
+        f"segment_id={segment_id} "
+        f"decision_id={decision.decision_id} "
+        f"kind={segment_kind} "
+        f"conf={decision.confidence:.3f} "
+        f"leaf_count={leaf_count} "
+        f"threshold={structural_leaf_warn_threshold:.3f} "
         f"row_range={row_range_str} "
         f"pages={pages_str} "
         f"section_path={path_str}"
     )
     logger.warning(msg)
     warnings.append(msg)
-
-
-def _count_decision_leaves(d: SegmentDecision) -> int:
-    """Count statement leaves emitted by this decision (block leaves + table row
-    leaves).
-
-    Parameters
-    ----------
-    d
-        The SegmentDecision to count leaves for.
-
-    Returns
-    -------
-    int
-        The total number of leaves in the decision.
-    """
-
-    n = 0
-    n += len(d.leaves or [])
-
-    for r in d.rows or []:
-        n += len(r.leaves or [])
-
-    return n
 
 
 def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
@@ -298,38 +285,43 @@ def _decision_sort_key(d: SegmentDecision) -> tuple[int, int, str]:
 
     start = d.row_range_start if d.row_range_start is not None else -1
     end = d.row_range_end if d.row_range_end is not None else 2**31 - 1
-    decision_id = getattr(d, "decision_id", "") or ""
+    decision_id = d.decision_id
+    assert decision_id, (
+        f"SegmentDecision must have a decision_id before sorting. "
+        f"Found empty decision_id for segment_id={d.segment_id!r} "
+        f"row_range=({d.row_range_start},{d.row_range_end}) "
+        f"decision_type={d.decision_type}"
+    )
 
     return start, end, decision_id
 
 
 def _detect_semantic_collision(
-    *, existing: CanonicalNode, node: CanonicalNode, warnings: list[str]
+    *, existing_node: CanonicalNode, node: CanonicalNode, warnings: list[str]
 ) -> bool:
     """Check for semantic conflicts between an existing node and a new node.
 
     NB:
 
     1. Node IDs are derived from *normalized* semantics (role + normalized title/body
-        + ancestor fingerprint + optional local_code). Therefore we only treat this as
+        + ancestor fingerprint + optional local_code). Therefore, we only treat this as
         a true collision when the normalized semantics differ.
     2. Formatting-only differences (casing, punctuation, whitespace) should *not*
         trigger collision handling because that creates duplicate canonical nodes.
 
-    Examples:
-
-    1. Without normalization, these would be treated as collisions (causing
-        duplicates):
+    Examples
+    --------
+    1. Without normalization, these would be treated as collisions (causing duplicates):
         - "Recognize letters." vs "Recognize letters"
         - "Add and subtract" vs "add and subtract"
-        - bullet formatting differences
-        - small punctuation/whitespace changes
+        - Bullet formatting differences
+        - Small punctuation/whitespace changes
     2. With normalization, only true semantic differences trigger collision handling:
         - Normalized meaning differs (casefold + whitespace + dash normalize differs)
 
     Parameters
     ----------
-    existing
+    existing_node
         The existing CanonicalNode.
     node
         The new CanonicalNode.
@@ -347,19 +339,18 @@ def _detect_semantic_collision(
 
     # Role mismatch should never happen if node IDs are derived correctly, but we keep
     # it as a hard collision to avoid merging incompatible nodes.
-    if existing.role != node.role:
+    if existing_node.role != node.role:
         msg = (
             f"node_semantic_conflict_same_id_different_role:"
-            f"node_id={node.node_id} existing_role={existing.role} new_role={node.role} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+            f"node_id={node.node_id} existing_role={existing_node.role} new_role={node.role} "
+            f"existing_src_segments={existing_node.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
         logger.warning(msg)
         warnings.append(msg)
         return True
 
-    # compile_canonical_ir() always populates normalized_text on every node it creates,
-    # so we can rely on it directly without a fallback derivation path.
-    existing_norm = existing.normalized_text or ""
+    # NB: Text here should be normalized already before this function is called!
+    existing_norm = existing_node.normalized_text or ""
     new_norm = node.normalized_text or ""
 
     # True semantic mismatch (same deterministic ID but different normalized meaning).
@@ -367,15 +358,18 @@ def _detect_semantic_collision(
         msg = (
             f"node_semantic_conflict_same_id_different_normalized_text:"
             f"node_id={node.node_id} existing_norm={existing_norm!r} new_norm={new_norm!r} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+            f"existing_src_segments={existing_node.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
         logger.warning(msg)
         warnings.append(msg)
         collision = True
 
     # Formatting-only mismatches: warn, but do NOT mark as collision.
-    existing_title = existing.title.text if existing.title is not None else None
+    existing_title = (
+        existing_node.title.text if existing_node.title is not None else None
+    )
     new_title = node.title.text if node.title is not None else None
+
     if (
         existing_title
         and new_title
@@ -387,12 +381,12 @@ def _detect_semantic_collision(
         msg = (
             f"node_formatting_diff_same_id_title_semantics_equal:"
             f"node_id={node.node_id} existing_title={existing_title!r} new_title={new_title!r} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+            f"existing_src_segments={existing_node.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
         logger.warning(msg)
         warnings.append(msg)
 
-    existing_body = existing.body.text if existing.body is not None else None
+    existing_body = existing_node.body.text if existing_node.body is not None else None
     new_body = node.body.text if node.body is not None else None
 
     if (
@@ -406,22 +400,22 @@ def _detect_semantic_collision(
         msg = (
             f"node_formatting_diff_same_id_body_semantics_equal:"
             f"node_id={node.node_id} existing_body={existing_body!r} new_body={new_body!r} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+            f"existing_src_segments={existing_node.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
         logger.warning(msg)
         warnings.append(msg)
 
     # Local code mismatch is treated as provenance/metadata drift, not a true collision.
     if (
-        existing.local_code
+        existing_node.local_code
         and node.local_code
-        and existing.local_code.strip() != node.local_code.strip()
+        and existing_node.local_code.strip() != node.local_code.strip()
     ):
         msg = (
             f"node_local_code_diff_same_id_semantics_equal:"
-            f"node_id={node.node_id} existing_local_code={existing.local_code!r} "
+            f"node_id={node.node_id} existing_local_code={existing_node.local_code!r} "
             f"new_local_code={node.local_code!r} "
-            f"existing_src_segments={existing.source_segment_ids} new_src_segments={node.source_segment_ids}"
+            f"existing_src_segments={existing_node.source_segment_ids} new_src_segments={node.source_segment_ids}"
         )
         logger.warning(msg)
         warnings.append(msg)
@@ -532,38 +526,22 @@ def _extract_table_headers(segment: Segment) -> list[str]:
     if segment.kind != "table":
         return []
 
-    header_rows = getattr(segment, "header_rows", [])
-
-    if not header_rows:
-        return []
+    header_rows = segment.header_rows
+    assert (
+        header_rows
+    ), f"Table segment {segment.segment_id} has kind='table' but no header_rows found."
 
     # Use the last header row as "most specific".
-    last = header_rows[-1]
+    last_header_row = header_rows[-1]
     output: list[str] = []
 
-    for cell in getattr(last, "cells", []) or []:
-        tu = getattr(cell, "text", None)
-        if tu and getattr(tu, "text", "").strip():
+    for cell in last_header_row.cells:
+        tu = cell.text
+
+        if tu and tu.text.strip():
             output.append(tu.text.strip())
 
     return output
-
-
-def _format_page_indices(page_indices: list[int]) -> str:
-    """Format page indices as a comma-separated string.
-
-    Parameters
-    ----------
-    page_indices
-        The list of page indices to format.
-
-    Returns
-    -------
-    str
-        The formatted page indices string.
-    """
-
-    return "-" if not page_indices else ",".join(str(p) for p in page_indices)
 
 
 def _format_section_path(*, max_items: int = 6, section_path_text: list[str]) -> str:
@@ -587,7 +565,6 @@ def _format_section_path(*, max_items: int = 6, section_path_text: list[str]) ->
         return "-"
 
     tail = section_path_text[-max_items:]
-
     return " > ".join(tail)
 
 
@@ -614,7 +591,7 @@ def _grouping_key(g: GroupingDecision) -> str:
 
 
 def _index_decisions_by_segment(
-    *, segment_decisions: SegmentDecisionSet
+    segment_decisions: SegmentDecisionSet,
 ) -> dict[str, list[SegmentDecision]]:
     """Index all decisions by their segment ID.
 
@@ -650,10 +627,10 @@ def _index_decisions_by_segment(
 def _make_unmatched_segment_sample(
     *, max_len: int = 280, segment: Segment
 ) -> str | None:
-    """Sample string for segments that have *no* SegmentDecision.
+    """Sample string for segments that have no SegmentDecision.
 
     For blocks: uses best-effort extracted text.
-    For tables: includes header preview + first body-row preview when available.
+    For tables: includes header row preview + first body-row preview when available.
 
     Parameters
     ----------
@@ -713,16 +690,18 @@ def _make_unresolved_sample(
 
     parts: list[str] = []
     parts.append(f"type={decision.decision_type.value} conf={decision.confidence:.2f}")
-
-    rationale = getattr(decision, "rationale", None)
-
-    if rationale:
-        parts.append(f"rationale={rationale}")
+    rationale = decision.rationale
+    assert rationale, (
+        f"Unresolved decisions should always have a rationale. "
+        f"Found empty rationale for decision_id={decision.decision_id} "
+        f"segment_id={decision.segment_id}"
+    )
+    parts.append(f"rationale={rationale}")
 
     if isinstance(segment, BlockSegment):
         segment_text = extract_block_segment_text(segment)
     else:
-        # Fallback: best-effort (mostly useful for some segment variants)
+        # Fallback: best-effort (mostly useful for some segment variants).
         text_or_none = getattr(segment, "text", None)
         segment_text = text_or_none.text if isinstance(text_or_none, TextUnit) else None
 
@@ -732,11 +711,11 @@ def _make_unresolved_sample(
     # debugging.
     elif isinstance(segment, TableSegment):
         headers = _extract_table_headers(segment)
+
         if headers:
             parts.append("headers=" + " | ".join(headers[:8]))
 
     s = " | ".join(parts).strip()
-
     return s[:max_len]
 
 
@@ -1429,7 +1408,7 @@ def _materialize_table_rows(
 
 
 def _normalize_text(text: Optional[str]) -> str:
-    """Deterministic normalization for hashing/comparisons:
+    """Deterministic normalization for hashing/comparisons.
 
     Parameters
     ----------
@@ -1480,8 +1459,8 @@ def _normalized_text_hash(*, encoding: str = "utf-8", text: str) -> str:
 def _resolve_collision(
     *, node: CanonicalNode, nodes_by_id: dict[str, CanonicalNode], warnings: list[str]
 ) -> str:
-    """Disambiguate a node ID using provenance data and inserts it as a new node. Used
-    when a semantic collision is detected. Updates node.node_id in place.
+    """Disambiguate a node ID using provenance data and insert it as a new node. Used
+    when a semantic collision is detected. Updates `node.node_id` in place.
 
     Parameters
     ----------
@@ -1503,12 +1482,16 @@ def _resolve_collision(
     # Build a stable disambiguator string from provenance.
     if node.source_segment_ids:
         parts.append(f"seg={node.source_segment_ids[0]}")
+
     if node.source_decision_ids:
         parts.append(f"dec={node.source_decision_ids[0]}")
+
     if node.page_indices:
         parts.append(f"page={node.page_indices[0]}")
+
     if node.list_marker:
         parts.append(f"list={node.list_marker}")
+
     if node.local_code:
         parts.append(f"code={node.local_code}")
 
@@ -1520,6 +1503,7 @@ def _resolve_collision(
 
     # Extremely defensive: ensure uniqueness deterministically.
     i = 1
+
     while new_id in nodes_by_id:
         new_id = uuidv5_from_key(f"{base_key}|{i}")
         i += 1
@@ -1578,7 +1562,7 @@ def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
 
 
 def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
-    """Deterministic "stable union" for string lists:
+    """Deterministic "stable" union for string lists:
 
     1. Preserve first-seen order
     2. Avoid duplicates
@@ -1629,7 +1613,7 @@ def _table_first_body_row_preview(
 
     Returns
     -------
-    Optional[str]
+    str | None
         A string preview of the first non-header row, or None if no rows are available.
     """
 
@@ -1644,22 +1628,21 @@ def _table_first_body_row_preview(
         return None
 
     row = rows[hrc]
-
     cells_out: list[str] = []
     any_non_empty = False
 
     for cell in (row.cells or [])[:max_cells]:
-        tu = getattr(cell, "text", None)
-        raw = tu.text if isinstance(tu, TextUnit) else ""
-        txt = " ".join(raw.split()).strip()
+        tu = cell.text
+        raw_text = tu.text if isinstance(tu, TextUnit) else ""
+        text = " ".join(raw_text.split()).strip()
 
-        if txt:
+        if text:
             any_non_empty = True
 
-            if len(txt) > max_cell_len:
-                txt = txt[: max_cell_len - 1] + "…"
+            if len(text) > max_cell_len:
+                text = text[: max_cell_len - 1] + "…"
 
-            cells_out.append(txt)
+            cells_out.append(text)
         else:
             cells_out.append("∅")
 
@@ -1728,8 +1711,8 @@ def _validate_and_handle_unresolved(
     -------
     bool
         True if the decision is materializable, False otherwise. When False, the caller
-        skips _materialize_decision_structure, which means active_context_stack is not
-        updated for this decision.
+        skips `_materialize_decision_structure`, which means `active_context_stack` is
+        **not** updated for this decision.
     """
 
     if decision.decision_type == SegmentDecisionType.IGNORE:
@@ -1741,19 +1724,19 @@ def _validate_and_handle_unresolved(
     if decision.decision_type == SegmentDecisionType.EMIT_FLAGGED_UNRESOLVED:
         msg = (
             f"flagged_unresolved_decision_not_materialized:"
-            f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
-            f"kind={segment.kind} conf={decision.confidence:.3f}"
+            f"segment_id={segment.segment_id} "
+            f"decision_id={decision.decision_id} "
+            f"kind={segment.kind} "
+            f"conf={decision.confidence:.3f}"
         )
         logger.warning(msg)
         warnings.append(msg)
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
-                headers=(
-                    _extract_table_headers(segment) if segment.kind == "table" else []
-                ),
+                headers=_extract_table_headers(segment),
                 kind=segment.kind,
-                local_code=getattr(segment, "local_code", None),
+                local_code=segment.local_code,
                 page_indices=page_indices,
                 reason=UnresolvedReason.FLAGGED_UNRESOLVED,
                 sample=_make_unresolved_sample(decision=decision, segment=segment),
@@ -1764,17 +1747,14 @@ def _validate_and_handle_unresolved(
         return False
 
     if decision.decision_type == SegmentDecisionType.UNRESOLVED:
-        reason = UnresolvedReason.DECISION_UNRESOLVED
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
-                headers=(
-                    _extract_table_headers(segment) if segment.kind == "table" else []
-                ),
-                local_code=getattr(segment, "local_code", None),
+                headers=_extract_table_headers(segment),
+                local_code=segment.local_code,
                 kind=segment.kind,
                 page_indices=page_indices,
-                reason=reason,
+                reason=UnresolvedReason.DECISION_UNRESOLVED,
                 sample=_make_unresolved_sample(decision=decision, segment=segment),
                 section_path_text=section_path_text,
                 segment_id=segment.segment_id,
@@ -1782,12 +1762,16 @@ def _validate_and_handle_unresolved(
         )
         return False
 
-    # Confidence gating.
+    # Confidence gating. NB: Currently, all confidences are deterministically set to
+    # either 0.0 or 1.0. We keep this check here in case confidence is more
+    # fine-grained in the future (e.g., set by LLMs).
     if decision.confidence < segment_decision_conf_threshold:
         msg = (
             f"low_confidence_decision_not_materialized:"
-            f"segment_id={segment.segment_id} decision_id={decision.decision_id} "
-            f"kind={segment.kind} conf={decision.confidence:.3f} "
+            f"segment_id={segment.segment_id} "
+            f"decision_id={decision.decision_id} "
+            f"kind={segment.kind} "
+            f"conf={decision.confidence:.3f} "
             f"threshold={segment_decision_conf_threshold:.3f}"
         )
         logger.warning(msg)
@@ -1795,11 +1779,9 @@ def _validate_and_handle_unresolved(
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
-                headers=(
-                    _extract_table_headers(segment) if segment.kind == "table" else []
-                ),
+                headers=_extract_table_headers(segment),
                 kind=segment.kind,
-                local_code=getattr(segment, "local_code", None),
+                local_code=segment.local_code,
                 page_indices=page_indices,
                 reason=UnresolvedReason.LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED,
                 sample=_make_unresolved_sample(decision=decision, segment=segment),
@@ -2069,7 +2051,6 @@ def canonical_storage_text(text: Optional[str]) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = DASH_RE.sub("-", text)
     text = WS_RE.sub(" ", text).strip()
-
     return text
 
 
@@ -2093,13 +2074,16 @@ def compile_and_save_canonical_ir(
     4. Main traversal loop:
         a. For each segment in DocumentIR:
             i.   Prepare segment-level data.
-            ii.  If no decisions, log warning + add to unresolved.
-            iii. For each decision for the segment:
-                1. Validate decision; update unresolved/warnings; skip if not
-                    materializable.
+            ii.  If no segment decisions, log warning + add to unresolved.
+            iii. For each segment decision:
+                1. Validate the segment decision; update unresolved/warnings; skip if
+                    not materializable.
                 2. Check for structural warnings; update warnings.
-                3. Materialize nodes; update state containers.
-    5. Final compilation of CanonicalIR.
+                3. Materialize canonical IR nodes; update state containers.
+    5. Post-pass hygiene: merge duplicate nodes, dedupe edges, prune empty groupings,
+        prune unreachable nodes, reindex sibling order_indices, sanity check tree
+        invariants, and apply table column signatures.
+    6. Serialize final CanonicalIR to JSON.
 
     Parameters
     ----------
@@ -2135,9 +2119,7 @@ def compile_and_save_canonical_ir(
     warnings: list[str] = []
 
     # 2.
-    decisions_by_segment = _index_decisions_by_segment(
-        segment_decisions=segment_decisions
-    )
+    decisions_by_segment = _index_decisions_by_segment(segment_decisions)
 
     # 3.
     framework_title = segment_decisions.pdf_name
@@ -2148,7 +2130,7 @@ def compile_and_save_canonical_ir(
         list_marker=None,
         local_code=None,
         node_id=root_id,
-        normalized_text=_normalize_text(text=framework_title),
+        normalized_text=_normalize_text(framework_title),
         page_indices=[],
         role=NodeRole.FRAMEWORK,
         section_path_text=[],
@@ -2172,25 +2154,22 @@ def compile_and_save_canonical_ir(
         section_path_text = [h.text for h in (segment.section_path or [])]
 
         if not seg_decisions:
+            reason = (
+                UnresolvedReason.UNMATCHED_TABLE
+                if segment.kind == "table"
+                else UnresolvedReason.UNMATCHED_BLOCK
+            )
             msg = f"no_decision_for_segment:{seg_id}"
             logger.warning(msg)
             warnings.append(msg)
             unresolved.append(
                 UnresolvedItem(
                     caption_text=None,
-                    headers=(
-                        _extract_table_headers(segment)
-                        if segment.kind == "table"
-                        else []
-                    ),
+                    headers=_extract_table_headers(segment),
                     kind=segment.kind,
-                    local_code=getattr(segment, "local_code", None),
+                    local_code=segment.local_code,
                     page_indices=page_indices,
-                    reason=(
-                        UnresolvedReason.UNMATCHED_TABLE
-                        if segment.kind == "table"
-                        else UnresolvedReason.UNMATCHED_BLOCK
-                    ),
+                    reason=reason,
                     sample=_make_unmatched_segment_sample(segment=segment),
                     section_path_text=section_path_text,
                     segment_id=segment.segment_id,
@@ -2216,7 +2195,7 @@ def compile_and_save_canonical_ir(
             if not should_continue:
                 continue
 
-            # Check for structural warnings
+            # Check for structural warnings.
             _check_structural_warnings(
                 decision=decision,
                 page_indices=page_indices,
@@ -2341,15 +2320,63 @@ def ensure_node(
 ) -> str:
     """Ensure a CanonicalNode is present in nodes_by_id.
 
-    Returns the effective node_id. If the incoming node's node_id already exists but
-    the semantics do not match, we deterministically disambiguate the ID using stable
-    provenance-derived salt and insert as a distinct node.
+    This function is the single insertion point for all CanonicalNode objects into the
+    `nodes_by_id` registry. It handles three cases:
+
+    Case A: New node (ID not seen before): Insert directly, `return node_id`.
+    Case B: ID exists, semantics match: Merge provenance (page indices, segment IDs,
+        decision IDs, section paths) into the existing node. Scalar fields use
+        keep-first/fill-if-missing. Return the existing `node_id`.
+    Case C: ID exists, semantics differ (collision): Deterministically disambiguate the
+        new node's ID using provenance-derived salt, insert as a separate node, return
+        the new ID.
+
+    The reason this matters is that node IDs are deterministic hashes of (doc_key,
+    role, ancestor_path_fingerprint, local_code, normalized_text_hash). Two different
+    pieces of content can produce the same ID if their normalized text and ancestor
+    context happen to collide. Case C handles that.
 
     Merge policy (when semantics match):
 
     1. Preserve first-seen ordering for all provenance lists.
     2. Merge: page_indices, source_segment_ids, source_decision_ids, section_path_text.
     3. Keep-first for core semantic fields; fill if missing.
+
+    Examples
+    --------
+    1. Case B (merge, most common)
+        Two different table rows in the same table both reference the grouping
+        strand: "Communication orale" under the same ancestor path. The first row
+        creates the node; the second row hits `ensure_node()` with an identical ID
+        and identical normalized text. Result: provenance from the second row's
+        segment/decision is merged into the existing node. No new node is created.
+
+    2. Case B (fill-if-missing)
+        A grouping node is first created from a `context_groupings` snapshot where
+        `source_label` was None. A later decision creates the same grouping node
+        but this time with `source_label="Sous-domaine"`. Since the existing node's
+        `source_label` is None, the scalar fill-if-missing logic populates it. The
+        node ID stays the same.
+
+    3. Case C (collision)
+        Suppose two genuinely different leaf statements happen to produce the same
+        normalized text hash under the same ancestor path (extremely rare, but
+        possible with short/generic text like "Lire" appearing in two different
+        structural contexts that collapse to the same path fingerprint).
+        `_detect_semantic_collision` finds that normalized_text differs
+        (pre-normalization content is semantically different).
+        `_resolve_collision` generates a new deterministic ID by hashing the
+        original ID + provenance salt (segment ID, decision ID, page index), and
+        inserts as a distinct node. The caller receives the new ID so edges point
+        to the right place.
+
+    4. Case B with formatting-only difference (no collision)
+        Two decisions produce nodes with titles "Recognize letters." vs.
+        "Recognize letters". After normalization (casefold + whitespace + dash +
+        colon normalization), both produce the same normalized_text.
+        `_detect_semantic_collision` returns False (no collision), a formatting
+        warning is logged, and provenance is merged. This prevents duplicate
+        canonical nodes from trivial OCR/extraction formatting drift.
 
     Parameters
     ----------
@@ -2382,11 +2409,13 @@ def ensure_node(
         nodes_by_id[node.node_id] = node
         return node.node_id
 
-    existing = nodes_by_id[node.node_id]
+    existing_node = nodes_by_id[node.node_id]
 
-    # If we detected a collision, deterministically disambiguate the node_id and insert.
-    # NB: Return the effective node_id so callers emit edges to the correct node.
-    if _detect_semantic_collision(existing=existing, node=node, warnings=warnings):
+    # If we detected a collision, deterministically disambiguate the node ID and insert.
+    # NB: Return the effective `node_id` so callers emit edges to the correct node.
+    if _detect_semantic_collision(
+        existing_node=existing_node, node=node, warnings=warnings
+    ):
         return _resolve_collision(node=node, nodes_by_id=nodes_by_id, warnings=warnings)
 
     # No collision: Semantics match -> merge provenance (preserve first-seen order).
@@ -2396,15 +2425,19 @@ def ensure_node(
         "source_decision_ids",
         "section_path_text",
     )
-    for field_ in list_fields:
-        base = getattr(existing, field_)
-        extra = getattr(node, field_)
 
+    for field_ in list_fields:
         # Update existing in-place.
-        setattr(existing, field_, _stable_extend_unique(base=base, extra=extra))
+        setattr(
+            existing_node,
+            field_,
+            _stable_extend_unique(
+                base=getattr(existing_node, field_), extra=getattr(node, field_)
+            ),
+        )
 
     # page_indices must stay sorted (other list fields preserve first-seen order).
-    existing.page_indices = sorted(set(existing.page_indices))
+    existing_node.page_indices = sorted(set(existing_node.page_indices))
 
     # Keep-first semantics, fill missing values if present.
     scalar_fields = (
@@ -2417,13 +2450,14 @@ def ensure_node(
         "list_marker",
         "bbox",
     )
-    for field_ in scalar_fields:
-        # Only overwrite if existing is None. If node.field is also None, this is a
-        # harmless no-op.
-        if getattr(existing, field_) is None:
-            setattr(existing, field_, getattr(node, field_))
 
-    return existing.node_id
+    for field_ in scalar_fields:
+        # Only overwrite if existing is None. If `node.field` is also None, this is a
+        # harmless no-op.
+        if getattr(existing_node, field_) is None:
+            setattr(existing_node, field_, getattr(node, field_))
+
+    return existing_node.node_id
 
 
 def merge_nodes_postpass(
