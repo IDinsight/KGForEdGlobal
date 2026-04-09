@@ -387,17 +387,19 @@ def _build_shared_expectation_row_decision(
     active_column_groupings: dict[int, list[GroupingDecision]],
     active_shared_groupings: list[GroupingDecision],
     aux_only_cols: list[int],
-    column_row_groupings: dict[int, list[GroupingDecision]],
     column_row_leaves: dict[int, list[LeafDecision]],
     expectation_cols: list[int],
     grouping_only_cols: list[int],
 ) -> RowDecision | None:
-    """Collapse identical pre-split expectation columns into one shared row.
+    """Collapse semantically shared expectation columns into one shared row.
 
     This targets tables where grid/filldown expansion copied a logically shared row
-    into multiple expectation columns before the table truly branches. We only collapse
-    when there is no evidence of active or newly introduced column-specific grouping
-    context for the expectation columns.
+    into multiple expectation columns before the table truly branches. We do **not**
+    require the expectation columns to have an empty column-specific context. Instead,
+    we collapse whenever the *effective* grouping context for each expectation column
+    is semantically identical. This keeps the behavior general for pre-split rows that
+    sit under duplicated-but-still-shared structural context (for example, a stage row
+    repeated across columns before a later strand split).
 
     Parameters
     ----------
@@ -409,8 +411,6 @@ def _build_shared_expectation_row_decision(
         The currently active shared groupings.
     aux_only_cols
         Columns that emitted only aux leaves (descriptor/guidance) on this row.
-    column_row_groupings
-        Groupings extracted from the row, mapped by column index.
     column_row_leaves
         Leaves extracted from the row, mapped by column index.
     expectation_cols
@@ -428,18 +428,9 @@ def _build_shared_expectation_row_decision(
     if len(expectation_cols) < 2:
         return None
 
-    # If the row introduces any grouping-only branch structure, keep column-specific
+    # If the row introduces grouping-only branch structure, keep column-specific
     # outputs. This is a strong signal that the table is already in split mode.
     if grouping_only_cols:
-        return None
-
-    # Collapse only before any branch-specific grouping context exists for the
-    # expectation-bearing columns. Once column context appears, identical text can be
-    # semantically distinct across branches.
-    if any(active_column_groupings.get(col_index) for col_index in expectation_cols):
-        return None
-
-    if any(column_row_groupings.get(col_index) for col_index in expectation_cols):
         return None
 
     base_col = expectation_cols[0]
@@ -450,6 +441,9 @@ def _build_shared_expectation_row_decision(
     )
     base_leaves = column_row_leaves[base_col]
 
+    # Collapse only when each expectation-bearing column has the same effective
+    # grouping context and the same leaf payload. This allows duplicated-but-shared
+    # structural context to collapse, while still preserving genuinely branched rows.
     for col_index in expectation_cols[1:]:
         col_groupings = _get_row_groupings_for_col(
             active_column_groupings=active_column_groupings,
@@ -458,18 +452,32 @@ def _build_shared_expectation_row_decision(
         )
 
         if not _same_grouping_context(
-            left=base_groupings, right=col_groupings
+            left=base_groupings,
+            right=col_groupings,
         ) or not _same_leaf_payload(
-            left=base_leaves, right=column_row_leaves[col_index]
+            left=base_leaves,
+            right=column_row_leaves[col_index],
         ):
             return None
 
+    # Aux-only leaves can only be merged into the shared row when they live in the same
+    # effective grouping context. Otherwise they likely belong to a real branch.
     merged_leaves = list(base_leaves)
 
     for aux_col in aux_only_cols:
+        aux_groupings = _get_row_groupings_for_col(
+            active_column_groupings=active_column_groupings,
+            active_shared_groupings=active_shared_groupings,
+            col_index=aux_col,
+        )
+
+        if not _same_grouping_context(left=base_groupings, right=aux_groupings):
+            return None
+
         merged_leaves.extend(column_row_leaves[aux_col])
 
     merged_leaves = _dedupe_leaves_preserve_order(leaves=merged_leaves)
+
     return RowDecision(
         col_index=None,
         groupings=_dedupe_groupings_preserve_order(groupings=list(base_groupings)),
@@ -1167,7 +1175,6 @@ def _generate_mapped_row_decisions(
         active_column_groupings=active_column_groupings,
         active_shared_groupings=active_shared_groupings,
         aux_only_cols=aux_only_cols,
-        column_row_groupings=column_row_groupings,
         column_row_leaves=column_row_leaves,
         expectation_cols=expectation_cols,
         grouping_only_cols=grouping_only_cols,
