@@ -381,6 +381,103 @@ def _build_segment_groupings(node: CurriculumSkeletonNode) -> list[GroupingDecis
     ]
 
 
+def _build_shared_expectation_row_decision(
+    *,
+    abs_i: int,
+    active_column_groupings: dict[int, list[GroupingDecision]],
+    active_shared_groupings: list[GroupingDecision],
+    aux_only_cols: list[int],
+    column_row_groupings: dict[int, list[GroupingDecision]],
+    column_row_leaves: dict[int, list[LeafDecision]],
+    expectation_cols: list[int],
+    grouping_only_cols: list[int],
+) -> RowDecision | None:
+    """Collapse identical pre-split expectation columns into one shared row.
+
+    This targets tables where grid/filldown expansion copied a logically shared row
+    into multiple expectation columns before the table truly branches. We only collapse
+    when there is no evidence of active or newly introduced column-specific grouping
+    context for the expectation columns.
+
+    Parameters
+    ----------
+    abs_i
+        The absolute row index.
+    active_column_groupings
+        The currently active column-specific groupings.
+    active_shared_groupings
+        The currently active shared groupings.
+    aux_only_cols
+        Columns that emitted only aux leaves (descriptor/guidance) on this row.
+    column_row_groupings
+        Groupings extracted from the row, mapped by column index.
+    column_row_leaves
+        Leaves extracted from the row, mapped by column index.
+    expectation_cols
+        Columns that emitted at least one expectation leaf on this row.
+    grouping_only_cols
+        Columns that emitted groupings but no leaves on this row.
+
+    Returns
+    -------
+    RowDecision | None
+        A shared RowDecision with ``col_index=None`` when collapse is safe; otherwise
+        None.
+    """
+
+    if len(expectation_cols) < 2:
+        return None
+
+    # If the row introduces any grouping-only branch structure, keep column-specific
+    # outputs. This is a strong signal that the table is already in split mode.
+    if grouping_only_cols:
+        return None
+
+    # Collapse only before any branch-specific grouping context exists for the
+    # expectation-bearing columns. Once column context appears, identical text can be
+    # semantically distinct across branches.
+    if any(active_column_groupings.get(col_index) for col_index in expectation_cols):
+        return None
+
+    if any(column_row_groupings.get(col_index) for col_index in expectation_cols):
+        return None
+
+    base_col = expectation_cols[0]
+    base_groupings = _get_row_groupings_for_col(
+        active_column_groupings=active_column_groupings,
+        active_shared_groupings=active_shared_groupings,
+        col_index=base_col,
+    )
+    base_leaves = column_row_leaves[base_col]
+
+    for col_index in expectation_cols[1:]:
+        col_groupings = _get_row_groupings_for_col(
+            active_column_groupings=active_column_groupings,
+            active_shared_groupings=active_shared_groupings,
+            col_index=col_index,
+        )
+
+        if not _same_grouping_context(
+            left=base_groupings, right=col_groupings
+        ) or not _same_leaf_payload(
+            left=base_leaves, right=column_row_leaves[col_index]
+        ):
+            return None
+
+    merged_leaves = list(base_leaves)
+
+    for aux_col in aux_only_cols:
+        merged_leaves.extend(column_row_leaves[aux_col])
+
+    merged_leaves = _dedupe_leaves_preserve_order(leaves=merged_leaves)
+    return RowDecision(
+        col_index=None,
+        groupings=_dedupe_groupings_preserve_order(groupings=list(base_groupings)),
+        leaves=merged_leaves,
+        row_index=abs_i,
+    )
+
+
 def _cell_to_text(cell: TextUnit | dict[str, Any]) -> str:
     """Extract plain text from a table cell.
 
@@ -599,6 +696,34 @@ def _dedupe_groupings_preserve_order(
         if signature not in seen:
             seen.add(signature)
             output.append(grouping)
+
+    return output
+
+
+def _dedupe_leaves_preserve_order(leaves: list[LeafDecision]) -> list[LeafDecision]:
+    """Deduplicate leaf decisions while preserving first-seen order.
+
+    Parameters
+    ----------
+    leaves
+        The list of leaf decisions to deduplicate.
+
+    Returns
+    -------
+    list[LeafDecision]
+        A new list of leaf decisions with duplicates removed, preserving encounter
+        order.
+    """
+
+    output: list[LeafDecision] = []
+    seen: set[tuple[str, str | None, str | None, str | None, str]] = set()
+
+    for leaf in leaves:
+        signature = _normalized_leaf_signature(leaf=leaf)
+
+        if signature not in seen:
+            seen.add(signature)
+            output.append(leaf)
 
     return output
 
@@ -1037,7 +1162,21 @@ def _generate_mapped_row_decisions(
     )
     emitted_any = False
 
-    if len(expectation_cols) == 1:
+    shared_expectation_row = _build_shared_expectation_row_decision(
+        abs_i=abs_i,
+        active_column_groupings=active_column_groupings,
+        active_shared_groupings=active_shared_groupings,
+        aux_only_cols=aux_only_cols,
+        column_row_groupings=column_row_groupings,
+        column_row_leaves=column_row_leaves,
+        expectation_cols=expectation_cols,
+        grouping_only_cols=grouping_only_cols,
+    )
+
+    if shared_expectation_row is not None:
+        row_decisions.append(shared_expectation_row)
+        emitted_any = True
+    elif len(expectation_cols) == 1:
         anchor_col = expectation_cols[0]
         merged_anchor_leaves = list(column_row_leaves[anchor_col])
 
@@ -1052,7 +1191,7 @@ def _generate_mapped_row_decisions(
                     active_shared_groupings=active_shared_groupings,
                     col_index=anchor_col,
                 ),
-                leaves=merged_anchor_leaves,
+                leaves=_dedupe_leaves_preserve_order(leaves=merged_anchor_leaves),
                 row_index=abs_i,
             )
         )
@@ -1373,6 +1512,55 @@ def _normalize_match_text(text: str) -> str:
     text = text.casefold()
     text = WS_RE.sub(" ", text).strip()
     return text
+
+
+def _normalized_grouping_signature(
+    grouping: GroupingDecision,
+) -> tuple[str, str | None, str | None, str]:
+    """Return a normalized signature for grouping comparison.
+
+    Parameters
+    ----------
+    grouping
+        The grouping decision to normalize.
+
+    Returns
+    -------
+    tuple[str, str | None, str | None, str]
+        A normalized signature suitable for semantic equality checks.
+    """
+
+    return (
+        grouping.role.value,
+        _normalize_match_text(grouping.source_label or "") or None,
+        _normalize_match_text(grouping.local_code or "") or None,
+        _normalize_match_text(grouping.title),
+    )
+
+
+def _normalized_leaf_signature(
+    leaf: LeafDecision,
+) -> tuple[str, str | None, str | None, str | None, str]:
+    """Return a normalized signature for leaf comparison.
+
+    Parameters
+    ----------
+    leaf
+        The leaf decision to normalize.
+
+    Returns
+    -------
+    tuple[str, str | None, str | None, str | None, str]
+        A normalized signature suitable for semantic equality checks.
+    """
+
+    return (
+        leaf.role.value,
+        _normalize_match_text(leaf.source_label or "") or None,
+        _normalize_match_text(leaf.local_code or "") or None,
+        _normalize_match_text(leaf.list_marker or "") or None,
+        _normalize_match_text(leaf.body),
+    )
 
 
 def _probe_nodes(
@@ -2216,6 +2404,52 @@ def _row_matches_skip_patterns(*, patterns: list[str], row: TableRow) -> bool:
                 return True
 
     return False
+
+
+def _same_grouping_context(
+    *, left: list[GroupingDecision], right: list[GroupingDecision]
+) -> bool:
+    """Return True when two grouping-context lists are semantically identical.
+
+    Parameters
+    ----------
+    left
+        First grouping-context list.
+    right
+        Second grouping-context list.
+
+    Returns
+    -------
+    bool
+        True when both lists have the same normalized grouping signatures in the same
+        order.
+    """
+
+    return [_normalized_grouping_signature(grouping=g) for g in left] == [
+        _normalized_grouping_signature(grouping=g) for g in right
+    ]
+
+
+def _same_leaf_payload(*, left: list[LeafDecision], right: list[LeafDecision]) -> bool:
+    """Return True when two leaf lists are semantically identical.
+
+    Parameters
+    ----------
+    left
+        First leaf list.
+    right
+        Second leaf list.
+
+    Returns
+    -------
+    bool
+        True when both lists have the same normalized leaf signatures in the same
+        order.
+    """
+
+    return [_normalized_leaf_signature(leaf=leaf) for leaf in left] == [
+        _normalized_leaf_signature(leaf=leaf) for leaf in right
+    ]
 
 
 def _statement_role_value(role: StatementRole | str) -> str:
