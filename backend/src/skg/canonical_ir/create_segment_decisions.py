@@ -7,6 +7,7 @@ import re
 import unicodedata
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -860,9 +861,10 @@ def _extract_row_content(
     seen_signatures: set[tuple[str, str, str | None, str]] = set()
 
     for col_role in col_map:
-        if (
-            col_role.col_index >= len(cells) or col_role.kind in {"skip", "skip_row"}
-        ) or not (
+        # NB: Only "skip" is checked here. "skip_row" is never a base column kind from
+        # _resolve_column_mappings; it is only reachable via per-cell overrides in
+        # _resolve_effective_role, which runs below.
+        if (col_role.col_index >= len(cells) or col_role.kind == "skip") or not (
             cell_text := (_cell_to_text(cells[col_role.col_index]) or "").strip()
         ):
             continue
@@ -1159,9 +1161,7 @@ def _get_table_rows_source(*, segment_id: str, table_seg: TableSegment) -> list[
 
 def _grouping_precedence_index(
     role: NodeRole,
-    role_order: (
-        tuple[NodeRole, ...] | list[NodeRole]
-    ) = DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
+    role_order: Sequence[NodeRole] = DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
 ) -> int:
     """Return a stable precedence index for grouping roles.
 
@@ -1182,7 +1182,7 @@ def _grouping_precedence_index(
     """
 
     if role in role_order:
-        return list(role_order).index(role)
+        return role_order.index(role)
 
     return len(role_order)
 
@@ -1297,9 +1297,7 @@ def _merge_persistent_grouping_context(
     *,
     active_groupings: list[GroupingDecision],
     new_groupings: list[GroupingDecision],
-    role_order: (
-        tuple[NodeRole, ...] | list[NodeRole]
-    ) = DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
+    role_order: Sequence[NodeRole] = DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
 ) -> list[GroupingDecision]:
     """Merge newly seen groupings into an active carried-forward grouping context.
 
@@ -1506,7 +1504,11 @@ def _process_column_cell(
     idx = col_role.col_index
 
     # Boundary and basic skip checks.
-    if idx >= len(cells) or col_role.kind in {"skip", "skip_row"}:
+    #
+    # NB: Only "skip" is checked here. "skip_row" is never a base column kind from
+    # _resolve_column_mappings; it is only reachable via per-cell overrides in
+    # _resolve_effective_role, which runs below.
+    if idx >= len(cells) or col_role.kind == "skip":
         return None
 
     cell_text = (_cell_to_text(cells[idx]) or "").strip()
@@ -1546,7 +1548,7 @@ def _process_unmapped_row(
     node: CurriculumSkeletonNode,
     row: TableRow,
 ) -> RowDecision | None:
-    """Processe a row when no column mappings match.
+    """Process a row when no column mappings match.
 
     Parameters
     ----------
@@ -2580,7 +2582,7 @@ def build_ancestry_map(
         chain = ancestors + [node]
         assert (
             node.id not in result
-        ), f"Duplicate node ID detected in curriculum skeleton: {result}"
+        ), f"Duplicate node ID detected in curriculum skeleton: {node.id}"
         result[node.id] = chain
 
         for child in node.children:
