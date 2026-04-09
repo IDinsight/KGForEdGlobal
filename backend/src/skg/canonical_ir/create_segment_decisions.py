@@ -401,6 +401,82 @@ def _build_shared_expectation_row_decision(
     sit under duplicated-but-still-shared structural context (for example, a stage row
     repeated across columns before a later strand split).
 
+    Examples
+    --------
+    1. Collapse a duplicated shared expectation row
+        Suppose a table has three expectation columns:
+
+            col 1 = Expression orale
+            col 2 = Récitation
+            col 3 = Lecture
+
+        and grid/filldown expansion duplicated the same logical expectation row into
+        all three columns before the table truly branches:
+
+            "Palier 1 : Intégrer le vocabulaire de base ..."
+            "Palier 1 : Intégrer le vocabulaire de base ..."
+            "Palier 1 : Intégrer le vocabulaire de base ..."
+
+        Further suppose the effective grouping context for each of those columns is the
+        same, for example:
+
+            [section="Planification des apprentissages", stage="Étape 2"]
+
+        and `grouping_only_cols` is empty.
+
+        Result:
+            The function returns one shared RowDecision:
+
+                RowDecision(
+                    col_index=None,
+                    groupings=[section="Planification des apprentissages",
+                               stage="Étape 2"],
+                    leaves=[expectation("Palier 1 : Intégrer le vocabulaire de base ...")],
+                    row_index=abs_i,
+                )
+
+        instead of three column-specific RowDecisions.
+
+    2. Merge aux-only leaves into the shared expectation row
+        Suppose two expectation columns contain the same duplicated expectation
+        payload, and a third column emits only descriptor/guidance content for that
+        same logical row. If the aux-only column has the same effective grouping
+        context as the expectation columns, the function merges those aux leaves into
+        the same shared row.
+
+        Result:
+            The returned RowDecision still has `col_index=None`, but its `leaves`
+            contains both the shared expectation leaf and the aux leaf/leaves.
+
+    3. Do not collapse when the row has already branched structurally
+        Suppose two expectation columns contain identical text, but the same row also
+        introduces grouping-only branch structure, for example:
+
+            col 1 -> grouping(strand="Communication orale")
+            col 2 -> grouping(strand="Communication écrite")
+
+        In this case `grouping_only_cols` is non-empty, which is treated as evidence
+        that the row is already in true split mode.
+
+        Result:
+            The function returns `None`, so the caller keeps column-specific outputs.
+
+    4. Do not collapse when the effective grouping context differs
+        Suppose the duplicated expectation text appears in two columns, but one column
+        is under:
+
+            [stage="Étape 2", strand="Communication orale"]
+
+        while the other is under:
+
+            [stage="Étape 2", strand="Communication écrite"]
+
+        Even though the leaf payload is identical, the effective grouping contexts are
+        different.
+
+        Result:
+            The function returns `None`, preserving separate column-specific rows.
+
     Parameters
     ----------
     abs_i
@@ -482,6 +558,156 @@ def _build_shared_expectation_row_decision(
         col_index=None,
         groupings=_dedupe_groupings_preserve_order(groupings=list(base_groupings)),
         leaves=merged_leaves,
+        row_index=abs_i,
+    )
+
+
+def _build_shared_grouping_only_row_decision(
+    *,
+    abs_i: int,
+    active_column_groupings: dict[int, list[GroupingDecision]],
+    active_shared_groupings: list[GroupingDecision],
+    aux_only_cols: list[int],
+    expectation_cols: list[int],
+    grouping_only_cols: list[int],
+) -> RowDecision | None:
+    """Collapse semantically shared grouping-only columns into one shared row.
+
+    This targets tables where grid/filldown expansion copied a logically shared
+    structural row into multiple physical columns before the table truly branches.
+    Unlike expectation-row collapse, this helper is intentionally conservative: it
+    only fires when the row emits **no leaves at all**. That keeps mixed structure +
+    content rows column-specific while collapsing purely structural rows such as
+    duplicated stage/substage markers.
+
+    Examples
+    --------
+    1. Collapse a duplicated shared structural row
+        Suppose a 2-column overview table has been normalized so that a logically shared
+        structural row appears in both physical columns:
+
+            col 0 = "ÉTAPE 2"
+            col 1 = "ÉTAPE 2"
+
+        and both cells resolve to the same grouping role:
+
+            grouping(stage="ÉTAPE 2")
+
+        Further suppose the row emits no leaves anywhere:
+
+            expectation_cols = []
+            aux_only_cols = []
+            grouping_only_cols = [0, 1]
+
+        and the effective grouping context for both columns is the same.
+
+        Result:
+            The function returns one shared RowDecision:
+
+                RowDecision(
+                    col_index=None,
+                    groupings=[stage="ÉTAPE 2"],
+                    leaves=[],
+                    row_index=abs_i,
+                )
+
+        instead of two grouping-only RowDecisions, one for each column.
+
+    2. Preserve a real structural branch
+        Suppose a row introduces two different branch groupings:
+
+            col 0 -> grouping(strand="Sous-domaine 1 : Communication orale")
+            col 1 -> grouping(strand="Sous-domaine 2 : Communication écrite")
+
+        The row is grouping-only, but the effective grouping contexts are not the same.
+
+        Result:
+            The function returns `None`, so the caller emits two separate grouping-only
+            RowDecisions, preserving the real split.
+
+    3. Do not collapse mixed structure + content rows
+        Suppose a row has duplicated grouping-only structure in two columns, but also
+        emits an expectation leaf in another column on the same row.
+
+            expectation_cols = [2]
+            grouping_only_cols = [0, 1]
+
+        This means the row is not purely structural.
+
+        Result:
+            The function returns `None`, because grouping-only collapse is
+            intentionally restricted to rows with no leaf payload at all.
+
+    4. Difference from shared expectation collapse
+        This function is for rows that emit only groupings, such as duplicated stage,
+        palier, or section markers created by grid/filldown expansion.
+
+        Example:
+            "ÉTAPE 2" repeated across two columns -> collapse here.
+
+        By contrast, `_build_shared_expectation_row_decision()` is for rows whose main
+        payload is one or more duplicated expectation leaves, optionally with aux
+        leaves attached.
+
+        Example:
+            the same "Palier 1 : Intégrer ..." expectation repeated across three
+            expectation columns -> collapse there.
+
+    Parameters
+    ----------
+    abs_i
+        The absolute row index.
+    active_column_groupings
+        The currently active column-specific groupings.
+    active_shared_groupings
+        The currently active shared groupings.
+    aux_only_cols
+        Columns that emitted only aux leaves (descriptor/guidance) on this row.
+    expectation_cols
+        Columns that emitted at least one expectation leaf on this row.
+    grouping_only_cols
+        Columns that emitted groupings but no leaves on this row.
+
+    Returns
+    -------
+    RowDecision | None
+        A shared RowDecision with `col_index=None` when collapse is safe; otherwise
+        None.
+    """
+
+    if len(grouping_only_cols) < 2:
+        return None
+
+    # Collapse grouping-only rows only when the row is purely structural. If any leaf
+    # payload exists elsewhere on the row, keep column-specific outputs because the
+    # row may already be in a real branched mode.
+    if expectation_cols or aux_only_cols:
+        return None
+
+    base_col = grouping_only_cols[0]
+    base_groupings = _get_row_groupings_for_col(
+        active_column_groupings=active_column_groupings,
+        active_shared_groupings=active_shared_groupings,
+        col_index=base_col,
+    )
+
+    # Collapse only when each grouping-only column ends up with the same effective
+    # grouping context. This preserves real per-column branches while removing
+    # duplicated shared structural rows created by grid/filldown expansion.
+    for col_index in grouping_only_cols[1:]:
+        col_groupings = _get_row_groupings_for_col(
+            active_column_groupings=active_column_groupings,
+            active_shared_groupings=active_shared_groupings,
+            col_index=col_index,
+        )
+
+        if not _same_grouping_context(left=base_groupings, right=col_groupings):
+            return None
+
+    return RowDecision(
+        col_index=None,
+        groupings=_dedupe_groupings_preserve_order(groupings=list(base_groupings)),
+        leaves=[],
         row_index=abs_i,
     )
 
@@ -1219,20 +1445,33 @@ def _generate_mapped_row_decisions(
             )
             emitted_any = True
 
-    for col_index in grouping_only_cols:
-        row_decisions.append(
-            RowDecision(
-                col_index=col_index,
-                groupings=_get_row_groupings_for_col(
-                    active_column_groupings=active_column_groupings,
-                    active_shared_groupings=active_shared_groupings,
-                    col_index=col_index,
-                ),
-                leaves=[],
-                row_index=abs_i,
-            )
-        )
+    shared_grouping_only_row = _build_shared_grouping_only_row_decision(
+        abs_i=abs_i,
+        active_column_groupings=active_column_groupings,
+        active_shared_groupings=active_shared_groupings,
+        aux_only_cols=aux_only_cols,
+        expectation_cols=expectation_cols,
+        grouping_only_cols=grouping_only_cols,
+    )
+
+    if shared_grouping_only_row is not None:
+        row_decisions.append(shared_grouping_only_row)
         emitted_any = True
+    else:
+        for col_index in grouping_only_cols:
+            row_decisions.append(
+                RowDecision(
+                    col_index=col_index,
+                    groupings=_get_row_groupings_for_col(
+                        active_column_groupings=active_column_groupings,
+                        active_shared_groupings=active_shared_groupings,
+                        col_index=col_index,
+                    ),
+                    leaves=[],
+                    row_index=abs_i,
+                )
+            )
+            emitted_any = True
 
     if not emitted_any and active_shared_groupings and shared_row_groupings:
         row_decisions.append(
