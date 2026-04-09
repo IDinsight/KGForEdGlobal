@@ -480,7 +480,7 @@ def _emit_edge(
     if existing_parent is None:
         child_to_parent[child_id] = parent_id
 
-    # Edge key: includes rel for consistency with dedupe_edges_postpass.
+    # Edge key includes `rel` to match CanonicalEdge identity semantics.
     key = (parent_id, child_id, "hasChild")
 
     # If edge already exists, merge provenance into the first-emitted edge.
@@ -509,13 +509,21 @@ def _emit_edge(
     edges_by_key[key] = edge
 
 
-def _extract_table_headers(segment: Segment) -> list[str]:
+def _extract_table_headers(
+    *, segment: Segment, warnings: Optional[list[str]] = None
+) -> list[str]:
     """Best-effort extraction of header cell strings for unresolved table items.
+
+    Returns an empty list when the segment is not a table or when the table has no
+    header rows. Missing headers are warning-worthy for debugging, but should never
+    crash canonical compilation.
 
     Parameters
     ----------
     segment
         The Segment to extract headers from.
+    warnings
+        Optional list to append warning messages to when header rows are missing.
 
     Returns
     -------
@@ -527,9 +535,15 @@ def _extract_table_headers(segment: Segment) -> list[str]:
         return []
 
     header_rows = segment.header_rows
-    assert (
-        header_rows
-    ), f"Table segment {segment.segment_id} has kind='table' but no header_rows found."
+
+    if not header_rows:
+        msg = f"table_missing_header_rows:{segment.segment_id}"
+        logger.warning(msg)
+
+        if warnings is not None:
+            warnings.append(msg)
+
+        return []
 
     # Use the last header row as "most specific".
     last_header_row = header_rows[-1]
@@ -652,7 +666,7 @@ def _make_unmatched_segment_sample(
 
     if isinstance(segment, TableSegment):
         parts: list[str] = []
-        headers = _extract_table_headers(segment)
+        headers = _extract_table_headers(segment=segment)
 
         if headers:
             parts.append("headers=" + " | ".join(headers[:8]))
@@ -710,7 +724,7 @@ def _make_unresolved_sample(
     # For tables, we often don't have a clean "text" field; header preview can help
     # debugging.
     elif isinstance(segment, TableSegment):
-        headers = _extract_table_headers(segment)
+        headers = _extract_table_headers(segment=segment)
 
         if headers:
             parts.append("headers=" + " | ".join(headers[:8]))
@@ -1734,7 +1748,7 @@ def _validate_and_handle_unresolved(
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
-                headers=_extract_table_headers(segment),
+                headers=_extract_table_headers(segment=segment, warnings=warnings),
                 kind=segment.kind,
                 local_code=segment.local_code,
                 page_indices=page_indices,
@@ -1750,7 +1764,7 @@ def _validate_and_handle_unresolved(
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
-                headers=_extract_table_headers(segment),
+                headers=_extract_table_headers(segment=segment, warnings=warnings),
                 local_code=segment.local_code,
                 kind=segment.kind,
                 page_indices=page_indices,
@@ -1779,7 +1793,7 @@ def _validate_and_handle_unresolved(
         unresolved.append(
             UnresolvedItem(
                 caption_text=decision.caption_text,
-                headers=_extract_table_headers(segment),
+                headers=_extract_table_headers(segment=segment, warnings=warnings),
                 kind=segment.kind,
                 local_code=segment.local_code,
                 page_indices=page_indices,
@@ -2165,7 +2179,7 @@ def compile_and_save_canonical_ir(
             unresolved.append(
                 UnresolvedItem(
                     caption_text=None,
-                    headers=_extract_table_headers(segment),
+                    headers=_extract_table_headers(segment=segment, warnings=warnings),
                     kind=segment.kind,
                     local_code=segment.local_code,
                     page_indices=page_indices,
@@ -2250,69 +2264,6 @@ def compile_and_save_canonical_ir(
     save_canonical_ir(canonical_ir=canonical_ir, canonical_ir_fp=canonical_ir_fp)
 
     logger.success(f"CanonicalIR compiled and saved to: {canonical_ir_fp}")
-
-
-def dedupe_edges_postpass(
-    *, edges: list[CanonicalEdge], node_ids: set[str], warnings: list[str]
-) -> list[CanonicalEdge]:
-    """Dedupe edges in a post-pass after all edges have been emitted:
-
-    1. Drop dangling edges (missing nodes)
-    2. Dedupe edges by (parent_id, child_id, rel)
-    3. Merge provenance lists deterministically
-    4. keep first order_index encountered
-
-    Parameters
-    ----------
-    edges
-        The list of CanonicalEdges to dedupe.
-    node_ids
-        The set of valid node IDs.
-    warnings
-        The list of warnings to append to.
-
-    Returns
-    -------
-    list[CanonicalEdge]
-        The deduped list of CanonicalEdges.
-    """
-
-    merged: dict[tuple[str, str, str], CanonicalEdge] = {}
-
-    for e in edges:
-        # Drop edges referencing missing nodes.
-        if e.parent_id not in node_ids or e.child_id not in node_ids:
-            msg = f"dangling_edge_dropped:parent={e.parent_id} child={e.child_id}"
-            logger.warning(msg)
-            warnings.append(msg)
-            continue
-
-        key = (e.parent_id, e.child_id, e.rel)
-
-        if key not in merged:
-            merged[key] = e
-            continue
-
-        m = merged[key]
-
-        # order_index should be stable; keep first and warn if mismatch
-        if m.order_index != e.order_index:
-            msg = (
-                f"edge_order_index_conflict_kept_first:"
-                f"parent={e.parent_id} child={e.child_id} kept={m.order_index} dropped={e.order_index}"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-
-        m.source_segment_ids = _stable_extend_unique(
-            base=m.source_segment_ids, extra=e.source_segment_ids
-        )
-        m.source_decision_ids = _stable_extend_unique(
-            base=m.source_decision_ids, extra=e.source_decision_ids
-        )
-
-    # Preserve deterministic order: first-seen edge key order.
-    return list(merged.values())
 
 
 def ensure_node(
@@ -2460,77 +2411,6 @@ def ensure_node(
     return existing_node.node_id
 
 
-def merge_nodes_postpass(
-    *, nodes: list[CanonicalNode], warnings: list[str]
-) -> list[CanonicalNode]:
-    """Merge CanonicalNodes with the same node_id, combining provenance.
-
-    Parameters
-    ----------
-    nodes
-        The list of CanonicalNodes to merge.
-    warnings
-        A list to append warning messages to.
-
-    Returns
-    -------
-    list[CanonicalNode]
-        The merged list of CanonicalNodes.
-    """
-
-    merged: dict[str, CanonicalNode] = {}
-
-    for n in nodes:
-        if n.node_id not in merged:
-            merged[n.node_id] = n
-
-            continue
-
-        m = merged[n.node_id]
-
-        # Sanity check: role + title/body should be consistent.
-        if m.role != n.role:
-            msg = f"node_merge_role_conflict:{n.node_id} kept={m.role} dropped={n.role}"
-            logger.warning(msg)
-            warnings.append(msg)
-
-        if (m.title is None) != (n.title is None) or (m.body is None) != (
-            n.body is None
-        ):
-            msg = f"node_merge_title_body_shape_conflict:{n.node_id}"
-            logger.warning(msg)
-            warnings.append(msg)
-
-        # Merge provenance deterministically.
-        m.page_indices = sorted(
-            set(_stable_extend_unique(base=m.page_indices, extra=n.page_indices))
-        )
-        m.source_segment_ids = _stable_extend_unique(
-            base=m.source_segment_ids, extra=n.source_segment_ids
-        )
-        m.source_decision_ids = _stable_extend_unique(
-            base=m.source_decision_ids, extra=n.source_decision_ids
-        )
-        m.section_path_text = _stable_extend_unique(
-            base=m.section_path_text, extra=n.section_path_text
-        )
-
-        # Merge optional fields conservatively: keep first non-null.
-        for field_ in (
-            "normalized_text",
-            "source_label",
-            "source_type",
-            "list_marker",
-            "local_code",
-            "bbox",
-        ):
-            if getattr(m, field_) is None and getattr(n, field_) is not None:
-                setattr(m, field_, getattr(n, field_))
-
-    # Preserve deterministic order: first-seen node_id order.
-    return list(merged.values())
-
-
 def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -> str:
     """Create a short stable fingerprint of the ancestor grouping key sequence.
 
@@ -2560,17 +2440,16 @@ def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -
 def perform_postpass_hygiene(
     *, canonical_ir: CanonicalIR, document_ir: DocumentIR
 ) -> CanonicalIR:
-    """Perform post-pass hygiene on a CanonicalIR:
+    """Perform post-pass hygiene on a CanonicalIR.
 
     The process is as follows:
 
-    1. Merge nodes
-    2. Dedupe edges
-    3. Prune empty grouping containers
-    4. Prune nodes/edges not reachable from root
-    5. Reindex order_index under each parent (remove gaps after pruning)
-    6. Perform sanity checks
-    7. Add `columns_signature` from the document IR to the canonical IR.
+    1. Prune empty grouping containers
+    2. Prune nodes/edges not reachable from root
+    3. Reindex `order_index` under each parent (remove gaps after pruning)
+    4. Perform sanity checks
+    5. Add `columns_signature` from the document IR to `segment_decisions` for audit
+        and debugging purposes.
 
     Parameters
     ----------
@@ -2587,35 +2466,17 @@ def perform_postpass_hygiene(
 
     warnings = list(canonical_ir.warnings)
 
-    # 1. Merge duplicate nodes by node_id.
-    #
-    # NB: Currently a no-op because compile_canonical_ir() stores nodes in a dict keyed
-    # by node_id, so duplicates are impossible at construction time. Retained as a
-    # defensive postpass for future entry points (e.g., deserialization, IR merging).
-    nodes_merged = merge_nodes_postpass(nodes=canonical_ir.nodes, warnings=warnings)
-    node_ids = {n.node_id for n in nodes_merged}
-
-    # 2. Dedupe edges and drop dangling references.
-    #
-    # NB: Currently a no-op because _emit_edge() already deduplicates via edges_by_key
-    # and emits edges only for valid (possibly collision-resolved) node_ids. Retained as
-    # a defensive postpass — the dangling-edge check guards against future changes to
-    # collision handling or multi-source IR assembly.
-    edges_merged = dedupe_edges_postpass(
-        edges=canonical_ir.edges, node_ids=node_ids, warnings=warnings
-    )
-
-    # 3.
+    # 1.
     nodes_pruned_empty, edges_pruned_empty = prune_empty_groupings(
-        edges=edges_merged,
-        nodes=nodes_merged,
+        edges=canonical_ir.edges,
+        nodes=canonical_ir.nodes,
         # prune_roles={NodeRole.PROSE, NodeRole.SECTION},
         prune_roles=None,
         root_id=canonical_ir.root_id,
         warnings=warnings,
     )
 
-    # 4.
+    # 2.
     nodes_pruned_reachable, edges_pruned_reachable = prune_unreachable_nodes(
         edges=edges_pruned_empty,
         nodes=nodes_pruned_empty,
@@ -2623,12 +2484,12 @@ def perform_postpass_hygiene(
         warnings=warnings,
     )
 
-    # 5.
+    # 3.
     edges_reindexed = reindex_order_indices_postpass(
         edges=edges_pruned_reachable, warnings=warnings
     )
 
-    # 6.
+    # 4.
     sanity_checks_postpass(
         edges=edges_reindexed,
         nodes=nodes_pruned_reachable,
@@ -2636,7 +2497,7 @@ def perform_postpass_hygiene(
         warnings=warnings,
     )
 
-    # 7.
+    # 5.
     updated_decisions = apply_table_signatures(
         decisions=canonical_ir.segment_decisions, document_ir=document_ir
     )
