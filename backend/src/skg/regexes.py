@@ -63,20 +63,6 @@ ROMAN_RE = re.compile(
     r"\b(XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)\b", re.IGNORECASE
 )
 
-# Matches specific structural or educational keywords, ignoring case. The \b at the
-# start and end ensures it only matches whole words (e.g., "class" matches, but
-# "classic" does not). Catches English structural terms (grade, chapter, module, week)
-# and French ones (niveau, étape, semaine). Also catches specific shorthand patterns
-# like "p 1" (page 1) or "std iv" (standard 4).
-STRUCTURAL_CONTEXT_CUE_RE = re.compile(
-    r"\b("
-    r"grade|class|primary|standard|std\.?|stage|theme|sub[-\s]?theme|strand|subject|"
-    r"learning\s+area|unit|week|term|chapter|module|p\s*[1-9]|std\s*[ivx]+"
-    r"|palier|j[ée]ego|semaine|étape|activit[ée]s|niveau|comp[ée]tence"
-    r")\b",
-    flags=re.IGNORECASE,
-)
-
 # Dynamically builds an OR-separated string of escaped table prefixes (like "Table",
 # "Tab.", "Tab"). Like the figure pattern, sorting by descending length prevents short
 # prefixes from overriding longer ones.
