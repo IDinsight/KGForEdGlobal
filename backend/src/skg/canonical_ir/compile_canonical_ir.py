@@ -24,6 +24,7 @@ from skg.canonical_ir.schemas import (
     CanonicalNode,
     GroupingDecision,
     LeafDecision,
+    RowDecision,
     SegmentDecision,
     SegmentDecisionSet,
     UnresolvedItem,
@@ -1139,7 +1140,6 @@ def _materialize_decision_structure(
                 source_type="table",
                 warnings=warnings,
             )
-
         # Preferred: row-level decisions.
         elif decision.rows:
             _materialize_table_rows(
@@ -1271,7 +1271,7 @@ def _materialize_row_groupings(
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
     row_ancestor_keys: list[str],
-    row_bbox: Any,
+    row_bbox: BBox,
     row_parent_id: str,
     section_path_text: list[str],
     segment_id: str,
@@ -1353,7 +1353,6 @@ def _materialize_row_groupings(
             segment_id=segment_id,
             warnings=warnings,
         )
-
         row_parent_id = effective_node_id
         row_ancestor_keys.append(_grouping_key(g))
 
@@ -1370,9 +1369,9 @@ def _materialize_row_leaves(
     next_order_index: dict[str, int],
     nodes_by_id: dict[str, CanonicalNode],
     page_indices: list[int],
-    row: Any,
+    row: RowDecision,
     row_ancestor_keys: list[str],
-    row_bbox: Any,
+    row_bbox: BBox,
     row_parent_id: str,
     section_path_text: list[str],
     segment_id: str,
@@ -1399,7 +1398,7 @@ def _materialize_row_leaves(
     page_indices
         The list of page indices for the segment.
     row
-        The row object containing leaves to process.
+        The RowDecision containing the leaves to materialize.
     row_ancestor_keys
         The current ancestor keys for the row.
     row_bbox
@@ -1608,6 +1607,9 @@ def _materialize_table_rows(
         The list of warnings to append to.
     """
 
+    # Sort by row index, then col index, and treat None as max int for col index. This
+    # matters because edge `order_index` is assigned by encounter order downstream via
+    # `_emit_edge()`.
     for row in sorted(
         decision.rows,
         key=lambda r: (
@@ -1616,7 +1618,14 @@ def _materialize_table_rows(
         ),
     ):
         row_ancestor_keys = list(ancestor_keys)
-        row_bbox = _table_row_bbox(row_index=row.row_index, table_segment=table_segment)
+        row_bbox = None
+
+        if table_segment.row_provenance and 0 <= row.row_index < len(
+            table_segment.row_provenance
+        ):
+            rp = table_segment.row_provenance[row.row_index]
+            row_bbox = rp.row_bbox or rp.bbox
+
         row_parent_id = _materialize_row_groupings(
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
@@ -1896,32 +1905,6 @@ def _table_first_body_row_preview(
         return None
 
     return " | ".join(cells_out)
-
-
-def _table_row_bbox(*, row_index: int, table_segment: TableSegment) -> Optional[BBox]:
-    """Best-effort bbox for a stitched table row.
-
-    Parameters
-    ----------
-    row_index
-        The row index to extract the bbox for.
-    table_segment
-        The TableSegment to extract the row bbox from.
-
-    Returns
-    -------
-    Optional[BBox]
-        The BBox for the row if available, else None.
-    """
-
-    if table_segment.row_provenance and 0 <= row_index < len(
-        table_segment.row_provenance
-    ):
-        rp = table_segment.row_provenance[row_index]
-
-        return rp.row_bbox or rp.bbox
-
-    return None
 
 
 def _validate_and_handle_unresolved(
