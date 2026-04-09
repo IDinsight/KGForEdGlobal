@@ -35,9 +35,15 @@ from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegm
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.regexes import DASH_RE, WS_RE
 from skg.schemas import BBox
-from skg.utils.constants import NodeRole, SegmentDecisionType, UnresolvedReason
+from skg.utils.constants import (
+    NodeRole,
+    SegmentDecisionType,
+    StatementRole,
+    UnresolvedReason,
+)
 from skg.utils.general import QUOTES_TRANSLATION, write_to_json
 
+HAS_CHILD = "hasChild"
 T = TypeVar("T")
 
 
@@ -501,7 +507,7 @@ def _emit_edge(
         What happens:
 
         * existing_parent is section_A, so no parent conflict
-        * edge key (section_A, week_1, "hasChild") already exists
+        * edge key (section_A, week_1, HAS_CHILD) already exists
         * do not create a second edge
         * just append seg_99 and dec_99 to the existing edge provenance
 
@@ -602,7 +608,7 @@ def _emit_edge(
     # Edge key includes `rel` to match CanonicalEdge identity semantics. This tuple is
     # the identity of the edge. If the same parent -> child relation comes thru again,
     # it is treated as the same edge rather than a new one.
-    key = (parent_id, child_id, "hasChild")
+    key = (parent_id, child_id, HAS_CHILD)
 
     # If edge already exists, merge provenance into the first-emitted edge instead of
     # creating a new one.
@@ -1279,6 +1285,77 @@ def _materialize_row_groupings(
 ) -> str:
     """Process groupings for a table row and emit corresponding nodes and edges.
 
+    High-level Overview
+    -------------------
+
+    This function whole job is to:
+        1. Take the groupings attached to one RowDecision.
+        2. Materialize them as canonical grouping nodes under the row’s current parent.
+        3. Update the row’s local ancestry as it goes.
+        4. Return the final parent node ID that the row’s leaves should attach under
+
+    Conceptually, this function asks this question: “Before I emit this row’s leaves,
+    do I need to create any row-specific containers first?”
+
+    Examples
+    --------
+    1. One row grouping
+        Suppose `_materialize_table_rows()` gives:
+
+        * row_parent_id = strand:Lecture
+        * row_ancestor_keys = [section:planification, strand:lecture]
+        * groupings = [week:Semaine 4]
+
+        Then `_materialize_row_groupings()` will:
+
+        * canonicalize Semaine 4
+        * compute a deterministic node ID for week:Semaine 4 under that row ancestry
+        * build/reuse the week node
+        * emit Lecture -> Semaine 4
+        * update:
+            * row_parent_id = semaine_4_node
+            * append the week grouping key to row_ancestor_keys
+        * return semaine_4_node
+
+        So when `_materialize_row_leaves()` runs next, the row’s leaves will attach
+        under Semaine 4, not directly under Lecture.
+
+    2. Two row groupings become nested
+        Suppose a row has:
+
+        * groupings = [substage:Palier 1, topic:Salutations]
+
+        and starts with:
+
+        row_parent_id = strand:Communication orale
+
+        Iteration 1:
+
+        * emit Communication orale -> Palier 1
+        * update parent to Palier 1
+
+        Iteration 2:
+
+        * compute topic:Salutations using ancestor keys that now include Palier 1
+        * emit Palier 1 -> Salutations
+        * update parent to Salutations
+
+        Return value:
+
+        * row_parent_id = salutations_node
+
+        So the row leaves now go under:
+
+        * Communication orale -> Palier 1 -> Salutations
+
+        not as two sibling containers under Communication orale.
+
+    3. No row groupings
+        If groupings = [], the loop never runs, and the function just returns the
+        incoming `row_parent_id` unchanged. That means the row’s leaves attach directly
+        under the parent that was already established before row-specific grouping
+        emission.
+
     Parameters
     ----------
     child_to_parent
@@ -1379,6 +1456,107 @@ def _materialize_row_leaves(
 ) -> None:
     """Process and materialize leaves for a table row, handling expectation anchoring.
 
+    High-level Overview
+    -------------------
+
+    This function answers the following question: "If a table row contains one
+    expectation plus descriptor/guidance leaves, should those aux leaves hang directly
+    under the row container, or should they hang under that expectation?"
+
+    Its behavior is:
+        1. If the row has exactly one expectation leaf, it creates that expectation
+            first and uses it as an anchor for aux leaves.
+        2. If the row has multiple expectation leaves, it refuses to guess which one
+            the aux leaves belong to, warns, and leaves them unanchored as siblings.
+        3. If the row has no expectation leaves, it just emits everything under the row
+            parent using row-scoped disambiguation keys.
+
+    It does four main things:
+        1. Build row/column disambiguation keys
+        2. Inspect the row to find expectation leaves
+        3. Maybe pre-create a single “anchored” expectation node
+        4. Loop through all row leaves and emit each one under either:
+            4a. The expectation anchor, or
+            4b. The row parent
+
+    Examples
+    --------
+    1. One expectation + one descriptor
+        Suppose a row has:
+
+        * expectation: “Read simple syllables”
+        * descriptor: “with fluency”
+
+        and exactly one expectation leaf.
+
+        What happens:
+
+        1. expectation is pre-created under row_parent_id
+        2. `anchored_expectation_id` is set
+        3. in the loop:
+            * the expectation leaf is skipped because it was already emitted
+            * the descriptor is classified as aux
+            * `parent_for_leaf = anchored_expectation_id`
+            * its ID is computed with `expectation_anchor_key` in the ancestry
+            * edge emitted: expectation -> descriptor
+
+        Result:
+
+        * row parent
+            * expectation “Read simple syllables”
+                * descriptor “with fluency”
+
+        That is the intended anchored structure.
+
+    2. One expectation + one guidance leaf
+        Suppose a row has:
+
+        * expectation: “Count objects to 20”
+        * guidance: “Use counters and pictures”
+
+        Same behavior:
+
+        * expectation becomes the anchor
+        * guidance is aux
+        * guidance attaches under the expectation, not directly under the row parent
+
+    3. Two expectations + one descriptor
+        Suppose a row has:
+
+        * expectation A
+        * expectation B
+        * descriptor X
+
+        What happens:
+
+        * len(expectation_leaves) > 1
+        * aux leaves exist
+        * warning logged: table_row_multiple_expectations_unanchored_aux
+        * no anchor is created
+        * all leaves in the loop attach under `row_parent_id` using the legacy
+            row-scoped ancestry
+
+        Result:
+
+        * row parent
+            * expectation A
+            * expectation B
+            * descriptor X
+
+        The compiler avoids a wrong guess.
+
+    4. No expectation at all
+        Suppose a row only has:
+
+        * descriptor
+        * guidance
+
+        Then:
+
+        * no expectation anchor is created
+        * every leaf uses legacy_leaf_ancestor_keys
+        * everything attaches `under row_parent_id` as siblings
+
     Parameters
     ----------
     child_to_parent
@@ -1413,16 +1591,23 @@ def _materialize_row_leaves(
         The list of warnings to append to.
     """
 
+    # NB: `column_scope_key` is required because one physical row can produce multiple
+    # RowDecisions for different columns or branches. The RowDecision.col_index field
+    # is explicitly meant to preserve column-scoped identity when one row contains
+    # parallel branches.
+    column_scope_key = (
+        f"table_col:{segment_id}:{row.col_index}" if row.col_index is not None else None
+    )
+
+    # NB: `row_disambiguator` is required because even within the same column branch, a
+    # table row needs its own identity boundary.
     row_disambiguator = (
         f"table_row:{segment_id}:{row.row_index}:"
         f"{row.col_index if row.col_index is not None else '-'}"
     )
-    expectation_leaves = [
-        leaf for leaf in row.leaves if _role_value(role=leaf.role) == "expectation"
-    ]
-    column_scope_key = (
-        f"table_col:{segment_id}:{row.col_index}" if row.col_index is not None else None
-    )
+
+    # NB: `legacy_leaf_ancestor_keys` contains the row ancestor keys by default and
+    # also makes leaf IDs row-scoped and, when needed, column-scoped.
     legacy_leaf_ancestor_keys = list(row_ancestor_keys)
 
     if column_scope_key is not None:
@@ -1432,6 +1617,25 @@ def _materialize_row_leaves(
     anchored_expectation_id: Optional[str] = None
     expectation_anchor_key: Optional[str] = None
 
+    # `expectation_leaves` partition the row into "expectation" vs. "aux" leaves. If
+    # there is exactly one expectation leaf, we can be confident that all aux leaves
+    # belong to that expectation and should be anchored under it. If there are multiple
+    # expectation leaves, we cannot be sure which one the aux leaves belong to, so we
+    # warn and leave all leaves unanchored under the row. Otherwise, if there are no
+    # expectation leaves, we just emit everything under the row without any special
+    # anchoring.
+    expectation_leaves = [
+        leaf for leaf in row.leaves if _role_value(role=leaf.role) == "expectation"
+    ]
+
+    # If there is only one expectation leaf, we take that one expectation and treat it
+    # as the canonical "main" leaf for that row/column branch, not as just another
+    # row-scoped sibling. We create a CanonicalNode for that expectation and emit the
+    # edge from `row_parent_id` to `anchored_expectation_id`. After this process, the
+    # row may have a special node that aux leaves can hang under. This essentially
+    # implements the "under expectation" parenting for table aux statements and aligns
+    # with the KG pipeline's attach-to-expectation behavior that requires
+    # aux_statement_parenting="under_expectation".
     if len(expectation_leaves) == 1:
         expectation = expectation_leaves[0]
         expectation_ancestor_keys = list(row_ancestor_keys)
@@ -1477,6 +1681,16 @@ def _materialize_row_leaves(
             warnings=warnings,
         )
         expectation_anchor_key = f"expectation_anchor:{anchored_leaf_id}"
+    # If there are multiple expectations, we do not anchor aux leaves. This is a
+    # conservative choice. If a row contains:
+    #
+    #   * expectation A
+    #   * expectation B
+    #   * descriptor C
+    #
+    # we cannot be sure whether C belongs to A or B, so we leave C unanchored under
+    # the row; it stays under row_parent_id as siblings, not children of either
+    # expectation. This is safer than incorrect attachment.
     elif len(expectation_leaves) > 1:
         aux_leaves = [
             leaf
@@ -1487,19 +1701,28 @@ def _materialize_row_leaves(
         if aux_leaves:
             msg = (
                 f"table_row_multiple_expectations_unanchored_aux:"
-                f"segment={segment_id} row={row.row_index} "
+                f"segment={segment_id} "
+                f"row={row.row_index} "
                 f"expectations={len(expectation_leaves)} "
                 f"aux_leaves={len(aux_leaves)}"
             )
             logger.warning(msg)
             warnings.append(msg)
 
+    # Here, we iterate thru all leaves in row.leaves and emit them under either the
+    # anchored expectation (if there is one) or the row parent.
     for leaf in row.leaves:
         role_value = _role_value(role=leaf.role)
 
+        # Skip re-emitting the anchored expectation leaf. If a single expectation was
+        # already anchored earlier, and the current leaf is that expectation role, then
+        # skip it to avoid creating the same expectation twice.
         if anchored_expectation_id is not None and role_value == "expectation":
             continue
 
+        # Decide the parent for this leaf. Descriptor/guidance leaves go under the
+        # anchored expectation iff there is exactly one anchored expectation.
+        # Everything else goes under the row parent.
         is_aux = role_value in {"descriptor", "guidance"}
         parent_for_leaf = (
             anchored_expectation_id
@@ -1507,6 +1730,26 @@ def _materialize_row_leaves(
             else row_parent_id
         )
 
+        # Choose the ancestor keys for ID generation. If the leaf is being attached
+        # under the expectation anchor, we build a different ancestor path:
+        #
+        #   * start with row_ancestor_keys
+        #   * add column_scope_key if present
+        #   * add expectation_anchor_key
+        #   * add row_disambiguator
+        #
+        # Otherwise it uses the earlier legacy_leaf_ancestor_keys:
+        #
+        #   * row_ancestor_keys
+        #   * plus maybe column_scope_key
+        #   * plus row_disambiguator
+        #
+        # We add `expectation_anchor_key` because if a descriptor/guidance leaf is
+        # semantically "under" a particular expectation, its canonical ID should
+        # reflect that attachment context. Otherwise, the same descriptor text under
+        # two different expectations could collapse incorrectly. In other words,
+        # `expectation_anchor_key` is how the function bakes the anchor relationship
+        # into the leaf's deterministic identity.
         if (
             parent_for_leaf == anchored_expectation_id
             and expectation_anchor_key is not None
@@ -1521,6 +1764,7 @@ def _materialize_row_leaves(
         else:
             leaf_ancestor_keys = legacy_leaf_ancestor_keys
 
+        # Create the CanonicalNode for the row leaf and emit its edge.
         leaf_id = canonical_leaf_node_id(
             ancestor_grouping_keys=leaf_ancestor_keys, doc_key=doc_key, leaf=leaf
         )
@@ -1575,6 +1819,48 @@ def _materialize_table_rows(
 ) -> None:
     """Materialize rows and leaves for a table segment.
 
+    Examples
+    --------
+    1. Suppose _materialize_table_rows() is called with:
+
+    * base ancestor_keys representing Section = Planification → Strand = Lecture
+    * parent_id pointing to that Lecture node
+    * decision.rows containing:
+
+    Row A:
+
+    * row_index=5
+    * col_index=1
+    * groupings=[week="Semaine 4"]
+    * leaves=[expectation("Lire des syllabes simples")]
+
+    Row B:
+
+    * row_index=5
+    * col_index=2
+    * groupings=[week="Semaine 4"]
+    * leaves=[descriptor("avec fluidité")]
+
+    Then `_materialize_table_rows()` will:
+
+    For Row A:
+
+    * copy base ancestry
+    * compute row bbox for row 5
+    * call `_materialize_row_groupings()` to emit/reuse Semaine 4 under Lecture
+    * get back row_parent_id = node("Semaine 4")
+    * call `_materialize_row_leaves()` to attach the expectation under that row parent
+
+    For Row B:
+
+    * start again from a fresh copy of the same base ancestry
+    * compute the same row bbox
+    * again process row groupings
+    * again attach row leaves using the row-specific parent and row anchoring rules
+
+    The key point is that each row is handled independently, even if multiple row
+    decisions refer to the same structural container.
+
     Parameters
     ----------
     ancestor_keys
@@ -1617,6 +1903,14 @@ def _materialize_table_rows(
             r.col_index if r.col_index is not None else 2**31 - 1,
         ),
     ):
+        # This for-loop creates a fresh copy of the base `ancestor_keys` for each row,
+        # then passes that mutable list into `_materialize_row_groupings()`. After
+        # groupings are emitted, the updated list is passed into
+        # `_materialize_row_leaves()`. So `row_ancestor_keys` mutation is how the row’s
+        # leaves inherit the extra row-specific structure that was just created. In
+        # other words: `_materialize_row_groupings()` updates the row’s ancestry and
+        # `_materialize_row_leaves()` then uses that updated ancestry to compute leaf
+        # IDs and placement.
         row_ancestor_keys = list(ancestor_keys)
         row_bbox = None
 
@@ -1626,6 +1920,10 @@ def _materialize_table_rows(
             rp = table_segment.row_provenance[row.row_index]
             row_bbox = rp.row_bbox or rp.bbox
 
+        # NB: `_materialize_row_groupings()` returns the row parent ID. THis means that
+        # if the row introduces new grouping containers, those are emitted first. The
+        # returned `row_parent_id` becomes the parent under which the row's leaves
+        # should attach.
         row_parent_id = _materialize_row_groupings(
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
@@ -1643,6 +1941,9 @@ def _materialize_table_rows(
             segment_id=segment_id,
             warnings=warnings,
         )
+
+        # NB: `_materialize_row_leaves()` materializes the row's leaves under a
+        # row-specific parent.
         _materialize_row_leaves(
             child_to_parent=child_to_parent,
             decision_id=decision.decision_id,
@@ -1777,13 +2078,13 @@ def _resolve_collision(
     return new_id
 
 
-def _role_value(role: Any) -> str:
+def _role_value(role: StatementRole) -> str:
     """Return a normalized (case-folded) string value for a role.
 
     Parameters
     ----------
     role
-        The role value (enum or string).
+        The role.
 
     Returns
     -------
@@ -1791,9 +2092,7 @@ def _role_value(role: Any) -> str:
         The normalized role string.
     """
 
-    value = getattr(role, "value", role)
-
-    return str(value).casefold()
+    return str(role.value).casefold()
 
 
 def _segment_first_bbox(segment: Segment) -> BBox:
@@ -2812,8 +3111,8 @@ def prune_empty_groupings(
         out_degree: dict[str, int] = {nid: 0 for nid in nodes_by_id.keys()}
 
         for e in edges:
-            # CanonicalEdge.rel is always "hasChild", but keep this check just in case.
-            if e.rel == "hasChild" and e.parent_id in out_degree:
+            # CanonicalEdge.rel is always HAS_CHILD, but keep this check just in case.
+            if e.rel == HAS_CHILD and e.parent_id in out_degree:
                 out_degree[e.parent_id] += 1
 
         # Identify empty grouping nodes (0 children), excluding root.
@@ -2892,7 +3191,7 @@ def prune_unreachable_nodes(
     children_by_parent: dict[str, list[str]] = {}
 
     for e in edges:
-        if e.rel != "hasChild":
+        if e.rel != HAS_CHILD:
             continue
 
         children_by_parent.setdefault(e.parent_id, []).append(e.child_id)
@@ -3257,7 +3556,7 @@ def reindex_order_indices_postpass(
     edges_by_parent: dict[str, list["CanonicalEdge"]] = {}
 
     for e in edges:
-        if e.rel != "hasChild":
+        if e.rel != HAS_CHILD:
             continue
 
         edges_by_parent.setdefault(e.parent_id, []).append(e)
