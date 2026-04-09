@@ -435,28 +435,139 @@ def _emit_edge(
     segment_id: str,
     warnings: list[str],
 ) -> None:
-    """Emit edge and assign order_index by encounter order.
+    """Emit edge and assign order index by encounter order.
 
     NB:
+
     1. Keep-first-parent tree enforcement.
     2. Drop and warn on parent conflicts.
-    3. Assign order_index by first encounter order per parent.
+    3. Assign order index by first encounter order per parent.
     4. Merge provenance if the exact same edge is encountered again.
+
+    High-level Overview
+    -------------------
+    This function is basically saying:
+        1. “Can this child legally live under this parent?"
+        2. If no, drop it.
+        3. If yes, have we already recorded this exact link?
+        4. If yes, merge provenance.
+        5. If no, create it with the next sibling slot.
+
+    In other words, this is the function that actually turns “this grouping should now
+    exist under that parent” into a tree edge, while defending against:
+        - Duplicate links
+        - Conflicting parents
+        - Unstable sibling order
+
+    That is why this function sits in the middle of almost every materialization path.
+
+    Examples
+    --------
+    1. Normal new edge
+        Suppose the compiler has already created a section node and now wants to attach
+        a week node under it.
+
+        Inputs:
+
+        * parent_id = section_A
+        * child_id = week_1
+        * child_to_parent = {}
+        * edges_by_key = {}
+        * next_order_index[section_A] = 0
+
+        What happens:
+
+        * child has no parent yet
+        * record child_to_parent[week_1] = section_A
+        * edge key is new
+        * assign order_index = 0
+        * create edge (section_A)-[:hasChild {order_index: 0}] -> (week_1)
+
+        Afterward:
+
+        next_order_index[section_A] = 1
+
+        So the first child under section_A gets order 0.
+
+    2. Same exact edge encountered again
+        Now later another decision or segment points to the same parent and child:
+
+        * parent_id = section_A
+        * child_id = week_1
+        * decision_id = dec_99
+        * segment_id = seg_99
+
+        What happens:
+
+        * existing_parent is section_A, so no parent conflict
+        * edge key (section_A, week_1, "hasChild") already exists
+        * do not create a second edge
+        * just append seg_99 and dec_99 to the existing edge provenance
+
+        So we still have one edge, but now it knows it was supported by multiple
+        decisions/segments. This is useful because grouping nodes often get revisited
+        by later decisions.
+
+    3. Illegal second parent
+        Suppose week_1 is already attached under section_A, and later some buggy path
+        tries to attach it under section_B.
+
+        Inputs:
+
+        * child_to_parent["week_1"] = section_A
+        * incoming parent_id = section_B
+
+        What happens:
+
+        * existing_parent is section_A
+        * incoming parent is section_B
+        * mismatch triggers tree_parent_conflict_dropped
+        * function returns immediately
+        * no edge is emitted under section_B
+
+        This prevents the canonical hierarchy from turning into a DAG or multi-parent
+        structure. This is especially important because
+        `_materialize_decision_structure()` and `reconcile_context_stack()` may revisit
+        nodes from many segments, and the compiler wants one clean containment tree.
+
+    4. Sibling ordering
+        Suppose under the same parent strand_X, the compiler emits children in this
+        order:
+
+        * week_1
+        * week_2
+        * week_3
+
+        Then _emit_edge() assigns:
+
+        * week_1 → order 0
+        * week_2 → order 1
+        * week_3 → order 2
+
+        If week_2 is encountered again later, _emit_edge() does not change its order
+        index. It only merges provenance into the existing edge. So first-seen order
+        wins.
 
     Parameters
     ----------
     child_id
         The child node ID.
     child_to_parent
-        The mapping of child_id to parent_id.
+        The mapping of child_id to parent_id. This contains information regarding what
+        parent a child already belongs to. Without this dict, we could still
+        accidentally attach the same child to two different parents.
     decision_id
         The SegmentDecision ID.
     edges
         The list of CanonicalEdges to append to.
     edges_by_key
         The mapping of (parent_id, child_id, rel) to CanonicalEdge for deduplication.
+        This contains information regarding whether or not we have already emitted a
+        given parent -> child edge. Without this dict, we could still emit duplicate
+        copies of the same edge.
     next_order_index
-        The mapping of parent_id to next order_index.
+        The mapping of parent_id to next order_index. This contains information
+        regarding what sibling index should the next child under a parent get.
     parent_id
         The parent node ID.
     segment_id
@@ -467,6 +578,11 @@ def _emit_edge(
 
     # Keep-first-parent tree enforcement.
     existing_parent = child_to_parent.get(child_id)
+
+    # This is the tree-enforcement rule. The canonical IR is supposed to be a tree of
+    # `hasChild` edges, not a general graph with multiple containment parents. So once
+    # a child is attached to one parent, any later attempt to attach it somewhere else
+    # must be dropped.
     if existing_parent is not None and existing_parent != parent_id:
         msg = (
             f"tree_parent_conflict_dropped:"
@@ -476,15 +592,27 @@ def _emit_edge(
         warnings.append(msg)
         return
 
-    # Record first valid parent assignment.
+    # Record first valid parent assignment. This happens before edge dedupe so that
+    # parent ownership is established at the child level, not only at the edge-object
+    # level.
     if existing_parent is None:
         child_to_parent[child_id] = parent_id
 
-    # Edge key includes `rel` to match CanonicalEdge identity semantics.
+    # Edge key includes `rel` to match CanonicalEdge identity semantics. This tuple is
+    # the identity of the edge. If the same parent -> child relation comes thru again,
+    # it is treated as the same edge rather than a new one.
     key = (parent_id, child_id, "hasChild")
 
-    # If edge already exists, merge provenance into the first-emitted edge.
+    # If edge already exists, merge provenance into the first-emitted edge instead of
+    # creating a new one.
     existing = edges_by_key.get(key)
+
+    # Repeated evidence for the same parent -> child link does not create duplicate
+    # edges. It just adds onto the provenance on the first edge. An edge tells us:
+    # "What containment relationship exists?". Multiple segments/decisions may
+    # contribute evidence for the same containment relationship, so the edge keeps its
+    # own `source_segment_ids` and `source_decision_ids` lists to track all supporting
+    # evidence.
     if existing is not None:
         existing.source_segment_ids = _stable_extend_unique(
             base=existing.source_segment_ids, extra=[segment_id]
@@ -494,10 +622,9 @@ def _emit_edge(
         )
         return
 
-    # Deterministic sibling ordering (per parent).
+    # Create a brand-new edge with the next sibling index.
     order = next_order_index[parent_id]
     next_order_index[parent_id] += 1
-
     edge = CanonicalEdge(
         child_id=child_id,
         order_index=order,
@@ -600,7 +727,6 @@ def _grouping_key(g: GroupingDecision) -> str:
 
     code = g.local_code or "-"
     title = canonical_grouping_title(role=g.role, title=g.title)
-
     return f"{g.role.value}:{_normalize_text(text=title)}:{_normalize_text(text=code)}"
 
 
@@ -756,6 +882,94 @@ def _materialize_decision_structure(
     leaves first makes them appear first in deterministic order_index order under that
     parent. If we wanted to emit rows first, then we can just switch the if-statements.
 
+    High-level Overview
+    -------------------
+
+    1. `reconcile_context_stack()` only restores the compiler to the exact context
+        snapshot represented by `decision.context_groupings`. That is “where are we?”
+    2. This main for-loop then materializes `decision.groupings`, which are structural
+        nodes emitted by the decision itself. That is “what new containers does this
+        decision add before its leaves/rows?”
+    3. So the sequence is:
+        3a. Restore correct structural location
+        3b. Emit any grouping containers for this decision
+        3c. Emit leaves or table rows under the final parent
+    4. That is why `_materialize_leaves()` and `_materialize_table_rows()` are called
+        after the main for-loop, with the updated `parent_id` and `ancestor_keys`.
+
+    Examples
+    --------
+    1. One grouping emitted under existing context
+        Suppose reconciliation returned:
+
+        * current context branch = Section: Planification
+        * parent_id = planification_node
+        * ancestor_keys = [section:planification]
+
+        and the decision has:
+
+        * decision.groupings = [GroupingDecision(role="week", title="Semaine 4")]
+
+        The loop will:
+
+        * canonicalize Semaine 4
+        * compute a node ID for week/Semaine 4 under the Planification ancestor path
+        * build the week node
+        * ensure/reuse it
+        * emit Planification -> Semaine 4
+        * update parent_id to the week node
+        * append the week grouping key to ancestor_keys
+
+        Then when `_materialize_leaves()` runs afterward, the leaves attach under
+        Semaine 4, not under Planification.
+
+    2. Two emitted groupings become nested, not siblings
+        Suppose reconciliation returned:
+
+        * current parent = strand = Communication orale
+
+        and the decision has:
+
+        *  decision.groupings = [substage="Palier 1", topic="Salutations"]
+
+        Iteration 1:
+
+        * create/reuse Palier 1
+        * emit Communication orale -> Palier 1
+        * update parent to Palier 1
+
+        Iteration 2:
+
+        * compute the topic node ID using ancestor keys that now include Palier 1
+        * create/reuse Salutations
+        * emit Palier 1 -> Salutations
+        * update parent to Salutations
+
+        Resulting structure:
+
+        * Communication orale
+            * Palier 1
+                * Salutations
+
+        not:
+
+        * Communication orale
+            * Palier 1
+            * Salutations
+
+        That parent/ancestor update at the bottom of the loop is what causes the
+        nesting.
+
+    3. Same grouping encountered again later
+        Suppose a later decision arrives with the same reconciled context and again
+        emits:
+
+        * week = "Semaine 4"
+
+        The loop will build the same deterministic node ID, `ensure_node()` will reuse
+        the existing node, and `_emit_edge()` will reuse the existing edge while
+        merging provenance so that we do not get duplicate week nodes.
+
     Parameters
     ----------
     active_context_stack
@@ -796,7 +1010,7 @@ def _materialize_decision_structure(
         active_stack=active_context_stack,
         child_to_parent=child_to_parent,
         decision=decision,
-        desired_context=decision.context_groupings,
+        desired_context_groupings=decision.context_groupings,
         doc_key=doc_key,
         edges_by_key=edges_by_key,
         edges=edges,
@@ -808,13 +1022,29 @@ def _materialize_decision_structure(
         warnings=warnings,
     )
 
-    # Apply decision.groupings[] under the context stack tip.
+    # Apply decision.groupings[] under the context stack tip. This for-loop takes each
+    # GroupingDecision in decision.groupings and turns it into an actual canonical
+    # grouping node and a `hasChild` edge, one-by-one, under whatever parent
+    # `reconcile_context_stack()` just returned. Then, it updates the local parent/path
+    # state so the **next** grouping in the list nests underneath the previous one,
+    # creating a chain of groupings if there are multiple.
+    #
+    # NB:
+    #
+    # 1. decision.context_groupings is where a decision already lives.
+    # 2. decision.groupings is the new structure that a decision itself should emit.
+    #
+    # Thus, after `reconcile_context_stack()` restores the correct context snapshot,
+    # this loop **extends that** branch with any grouping containers produced by the
+    # decision.
     for g in decision.groupings:
         g_title = canonical_grouping_title(role=g.role, title=g.title)
         node_id = canonical_grouping_node_id(
             ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
         )
 
+        # NB: This is a grouping/container node and not a leaf statement node (`title`
+        # is set buty `body` is None).
         node = CanonicalNode(
             bbox=_segment_first_bbox(segment),
             body=None,
@@ -847,6 +1077,10 @@ def _materialize_decision_structure(
             warnings=warnings,
         )
 
+        # Update variables so that the newly created (or reused) grouping becomes the
+        # parent for the next iteration, and its semantic key becomes part of the
+        # ancestor path used for the next node ID. This is what makes the for-loop nest
+        # the groupings instead of attaching them all as siblings.
         parent_id = effective_node_id
         ancestor_keys.append(_grouping_key(g))
 
@@ -984,7 +1218,7 @@ def _materialize_leaves(
     segment_id
         The segment ID.
     source_type
-        The provenance source type (`"block"` or `"table"`).
+        The provenance source type ("block" or "table").
     warnings
         The list of warnings to append to.
     """
@@ -993,7 +1227,6 @@ def _materialize_leaves(
         leaf_id = canonical_leaf_node_id(
             ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, leaf=leaf
         )
-
         node = CanonicalNode(
             bbox=segment_bbox,
             body=TextUnit(language="und", text=canonical_storage_text(leaf.body)),
@@ -1010,7 +1243,6 @@ def _materialize_leaves(
             source_type=source_type,
             title=None,
         )
-
         effective_leaf_id = ensure_node(
             node=node, nodes_by_id=nodes_by_id, warnings=warnings
         )
@@ -1555,7 +1787,7 @@ def _role_value(role: Any) -> str:
     return str(value).casefold()
 
 
-def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
+def _segment_first_bbox(segment: Segment) -> BBox:
     """Best-effort bbox for a segment.
 
     NB: Segments can span pages; bboxes are page-local, so we only take the first
@@ -1568,11 +1800,11 @@ def _segment_first_bbox(segment: Segment) -> Optional[BBox]:
 
     Returns
     -------
-    Optional[BBox]
-        The first BBox if available, else None.
+    BBox
+        The BBox for the segment.
     """
 
-    return segment.segment_provenance[0].bbox if segment.segment_provenance else None
+    return segment.segment_provenance[0].bbox
 
 
 def _stable_extend_unique(*, base: list[T], extra: list[T]) -> list[T]:
@@ -1854,15 +2086,27 @@ def apply_table_signatures(
 def canonical_grade_level_title(title: str) -> str:
     """Normalize common grade label variants into a consistent display form.
 
-    Examples:
-      - "GRADE 1-3"     -> "GRADES 1–3"
-      - "GRADES 1 – 3"  -> "GRADES 1–3"
-      - "Grade 2"       -> "GRADE 2"
+    Examples
+    --------
+    1. "GRADE 1-3"     -> "GRADES 1–3"
+    2. "GRADES 1 – 3"  -> "GRADES 1–3"
+    3. "Grade 2"       -> "GRADE 2"
 
     NB:
 
     1. This only fires when patterns match confidently.
-    2. Otherwise we return the original string unchanged.
+    2. Otherwise, we return the original string unchanged.
+
+    Parameters
+    ----------
+    title
+        The original title string to canonicalize.
+
+    Returns
+    -------
+    str
+        The canonicalized title string if patterns matched, otherwise the original
+        title.
     """
 
     if not title:
@@ -1877,6 +2121,7 @@ def canonical_grade_level_title(title: str) -> str:
 
     # Numeric grade range: GRADE(S) 1 - 3,
     m = re.match(r"^(grades?|grade)\s+(\d+)-(\d+)$", t, flags=re.IGNORECASE)
+
     if m:
         start = int(m.group(2))
         end = int(m.group(3))
@@ -1884,6 +2129,7 @@ def canonical_grade_level_title(title: str) -> str:
 
     # Single numeric grade: GRADE(S) 2.
     m = re.match(r"^(grades?|grade)\s+(\d+)$", t, flags=re.IGNORECASE)
+
     if m:
         n = int(m.group(2))
         return f"GRADE {n}"
@@ -1896,6 +2142,22 @@ def canonical_grouping_node_id(
     *, ancestor_grouping_keys: list[str], doc_key: str, grouping: GroupingDecision
 ) -> str:
     """Compute the canonical node ID for a grouping decision.
+
+    NB: The node ID is not based only on the grouping text. It depends on:
+        1. Document key
+        2. Current ancestor path fingerprint
+        3. Grouping role
+        4. Normalized local code
+        5. Normalized title hash
+
+    So the same visible title can produce different IDs in different branches.
+
+    For example:
+
+    week = "Semaine 1" under strand = Lecture
+    week = "Semaine 1" under strand = Récitation
+
+    Those are not treated as the same grouping node, because their ancestor_keys differ.
 
     Parameters
     ----------
@@ -1913,17 +2175,9 @@ def canonical_grouping_node_id(
     """
 
     path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
-    code = grouping.local_code or "-"
-
-    if code != "-":
-        # Normalize local_code deterministically (whitespace + unicode dash).
-        code = unicodedata.normalize("NFKC", code)
-        code = DASH_RE.sub("-", code)
-        code = WS_RE.sub(" ", code).strip()
-
+    code = normalize_local_code(code=grouping.local_code or "-")
     title = canonical_grouping_title(role=grouping.role, title=grouping.title)
     text_hash = _normalized_text_hash(text=title)
-
     key = canonical_key(
         doc_key=doc_key,
         local_code_or_dash=code,
@@ -1931,7 +2185,6 @@ def canonical_grouping_node_id(
         path_fp=path_fp,
         role=grouping.role.value,
     )
-
     return uuidv5_from_key(key)
 
 
@@ -2022,16 +2275,8 @@ def canonical_leaf_node_id(
     """
 
     path_fp = path_fingerprint(grouping_keys=ancestor_grouping_keys)
-    code = leaf.local_code or "-"
-
-    if code != "-":
-        # Normalize local_code deterministically (whitespace + unicode dash).
-        code = unicodedata.normalize("NFKC", code)
-        code = DASH_RE.sub("-", code)
-        code = WS_RE.sub(" ", code).strip()
-
+    code = normalize_local_code(code=leaf.local_code or "-")
     text_hash = _normalized_text_hash(text=leaf.body)
-
     key = canonical_key(
         doc_key=doc_key,
         local_code_or_dash=code,
@@ -2039,7 +2284,6 @@ def canonical_leaf_node_id(
         path_fp=path_fp,
         role=leaf.role.value,
     )
-
     return uuidv5_from_key(key)
 
 
@@ -2411,6 +2655,29 @@ def ensure_node(
     return existing_node.node_id
 
 
+def normalize_local_code(code: str) -> str:
+    """Normalize a local code string deterministically.
+
+    Parameters
+    ----------
+    code
+        The local code to normalize.
+
+    Returns
+    -------
+    str
+        The normalized local code.
+    """
+
+    if code == "-":
+        return code
+
+    code = unicodedata.normalize("NFKC", code)
+    code = DASH_RE.sub("-", code)
+    code = WS_RE.sub(" ", code).strip()
+    return code
+
+
 def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -> str:
     """Create a short stable fingerprint of the ancestor grouping key sequence.
 
@@ -2432,7 +2699,7 @@ def path_fingerprint(*, encoding: str = "utf-8", grouping_keys: Iterable[str]) -
     if not keys:
         return "-"
 
-    # JSON encoding avoids delimiter ambiguity (e.g., ['a>b','c'] vs ['a','b>c']).
+    # JSON encoding avoids delimiter ambiguity (e.g., ['a>b','c'] vs. ['a','b>c']).
     payload = json.dumps(keys, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode(encoding)).hexdigest()[:32]
 
@@ -2686,7 +2953,7 @@ def reconcile_context_stack(
     active_stack: list[ContextFrame],
     child_to_parent: dict[str, str],
     decision: SegmentDecision,
-    desired_context: list[GroupingDecision],
+    desired_context_groupings: list[GroupingDecision],
     doc_key: str,
     edges: list[CanonicalEdge],
     edges_by_key: dict[tuple[str, str, str], CanonicalEdge],
@@ -2701,6 +2968,141 @@ def reconcile_context_stack(
     enforcing context snapshot exactly per decision and reusing nodes via deterministic
     IDs.
 
+    This function makes the compiler's current hierarchical position match the
+    SegmentDecision's desired context grouping exactly, before any new
+    `decision.groupings`, leaves, or table rows are emitted.
+    `_materialize_decision_structure()` calls it first, then uses the returned
+    `parent_id` and `ancestor_keys` as the base location for whatever that decision
+    emits next.
+
+    NB:
+
+    1. `active_stack` excludes the framework root.
+    2. `ContextFrame` only stores two things:
+        1. grouping_key: A stable semantic key for the grouping
+        2. node_id: The actual canonical node already representing that grouping in the
+            graph.
+    3. This function only handles `decision.context_groupings`. It does not handle
+        `decision.groupings`. Those are applied afterward in
+        `_materialize_decision_structure()` under the returned `parent_id`.
+        `context_groupings` = where this decision lives. `groupings` = new nodes this
+        decision itself emits.
+
+    Examples
+    --------
+    1. Staying on the same branch
+        Suppose the current active stack is:
+
+        section = Planification
+        strand = Lecture
+        week = Semaine 3
+
+        and the next decision has the exact same context_groupings.
+
+        Then:
+
+        * desired_keys equals the current stack keys
+        * lcp = 3
+        * new_stack = active_stack[:3] so nothing is popped
+        * there are no missing frames to push
+        * return current week node as parent_id
+
+        Effect: no structural graph changes happen inside reconciliation. It just
+        confirms “we are already in the right place.”
+
+    2. Moving to a sibling week under the same strand
+        Current stack:
+
+        section = Planification
+        strand = Lecture
+        week = Semaine 3
+
+        Desired context:
+
+        section = Planification
+        strand = Lecture
+        week = Semaine 4
+
+        Then:
+
+        * longest common prefix is [Planification, Lecture]
+        * lcp = 2
+        * pop Semaine 3
+        * current parent becomes the Lecture node
+        * push Semaine 4
+        * return the Semaine 4 node as parent_id
+
+        Effect: the compiler cleanly branches from one week sibling to the next without
+        carrying stale week context forward.
+
+    3. Moving across strands in the same section
+        Current stack:
+
+        section = Planification
+        strand = Lecture
+        week = Semaine 4
+
+        Desired context:
+
+        section = Planification
+        strand = Récitation
+        week = Semaine 1
+
+        Then:
+
+        * longest common prefix is just [Planification]
+        * pop Lecture and Semaine 4
+        * current parent becomes Planification
+        * push Récitation
+        * push Semaine 1
+        * return Semaine 1
+
+        Effect: it does not “move sideways” from under Lecture; it first backs out to
+        the shared ancestor, then rebuilds the target branch correctly.
+
+    4. Dropping all the way back to root
+        Current stack:
+
+        section = Strand Oral
+        substage = Palier 2
+
+        Desired context:
+
+        empty list
+
+        Then:
+
+        * desired_keys = []
+        * lcp = 0
+        * new_stack = []
+        * parent_id = root_id
+        * nothing is pushed
+
+        Effect: the next materialized content will attach directly under the framework
+        root unless `_materialize_decision_structure()` then adds `decision.groupings`.
+        This is how the compiler avoids stale structural carry-over when a decision
+        intentionally has no desired context groupings.
+
+    5. Adding an implicit container that is not currently on the stack
+        Suppose translation emitted context groupings:
+
+        section = Communication écrite
+        substage = Palier 1
+
+        but the current stack is only:
+
+        section = Communication écrite
+
+        Then:
+
+        * lcp = 1
+        * nothing gets popped
+        * it pushes the missing Palier 1 grouping
+        * returns that as the current parent
+
+        Effect: This is one way implicit structural nodes from the translated decision
+        snapshot become actual canonical grouping nodes during compilation.
+
     Parameters
     ----------
     active_stack
@@ -2709,8 +3111,8 @@ def reconcile_context_stack(
         The mapping of child_id to parent_id for emitted edges.
     decision
         The SegmentDecision being processed.
-    desired_context
-        The desired context snapshot from the SegmentDecision.
+    desired_context_groupings
+        The desired context groupings snapshot from the SegmentDecision.
     doc_key
         The document key.
     edges
@@ -2737,20 +3139,38 @@ def reconcile_context_stack(
         The (parent_id, ancestor_keys, new_stack) after reconciliation.
     """
 
-    desired_keys = [_grouping_key(g) for g in desired_context]
-    section_path_text = [h.text for h in (segment.section_path or [])]
+    # 1. Convert each desired context grouping into a stable normalized key before
+    # comparing anything. `_grouping_key()` is role-aware and based on grouping role,
+    # canonicalized grouping title, and normalized local code (if present). So the
+    # comparison is semantic, not pointer-based.
+    desired_keys = [_grouping_key(g) for g in desired_context_groupings]
+
+    section_path_text = [h.text for h in segment.section_path]
     seg_id = segment.segment_id
     seg_kind = segment.kind
 
-    # 1. Longest common prefix between active_stack keys and desired_keys.
+    # 2. Longest common prefix between active_stack keys and desired_keys. This is the
+    # main reconciliation step. It walks `active_stack` and `desired_keys` from the
+    # front until they diverge, storing the length in `lcp`. For example, if the
+    # current stack is [Grade 1, Math, Numbers] and the desired stack is
+    # [Grade 1, Math, Geometry], then the longest common prefix is [Grade 1, Math] and
+    # lcp = 2. This is how the function decides what can be reused and where it needs
+    # to branch.
     lcp = 0
+
     while lcp < len(active_stack) and lcp < len(desired_keys):
         if active_stack[lcp].grouping_key != desired_keys[lcp]:
             break
 
         lcp += 1
 
-    # 2. Pop extra frames (enforce snapshot exactly).
+    # 3. Pop extra frames (enforce desired context grouping exactly). Basically, this
+    # just says "for this decision, forget any deeper context beyond the shared prefix."
+    # If `new_stack` is empty after the pop, then `parent_id = root_id` and
+    # `ancestor_keys = []`. Otherwise, we derive the new parent and ancestor keys from
+    # the truncated stack. So after the pop, the compiler knows which node is now the
+    # current parent and which ancestor semantic path should be used when hashing any
+    # new grouping nodes.
     new_stack = active_stack[:lcp]
 
     # Determine current parent and ancestor keys after pop.
@@ -2761,13 +3181,19 @@ def reconcile_context_stack(
         ancestor_keys = [f.grouping_key for f in new_stack]
         parent_id = new_stack[-1].node_id
 
-    # 3. Push missing frames.
-    for g in desired_context[lcp:]:
+    # 4. Push missing frames by looping over the desired context grouping entries that
+    # were not already in the longest common prefix.
+    for g in desired_context_groupings[lcp:]:
+        # `node_id` depends on the document and the path leading to that grouping. This
+        # is what allows reuse of the right grouping node and avoids conflating
+        # same-named groupings in different branches.
         node_id = canonical_grouping_node_id(
             ancestor_grouping_keys=ancestor_keys, doc_key=doc_key, grouping=g
         )
         g_title = canonical_grouping_title(role=g.role, title=g.title)
 
+        # Build the CanonicalNode object using the canonicalized node ID and grouping
+        # title.
         node = CanonicalNode(
             bbox=_segment_first_bbox(segment),
             body=None,
@@ -2785,9 +3211,17 @@ def reconcile_context_stack(
             title=TextUnit(language="und", text=canonical_storage_text(g_title)),
         )
 
+        # `ensure_node()` will ensure that if this grouping node already exists under
+        # the same deterministic identity, it will get reused/merged. Otherwise, it
+        # gets inserted. So pushing a context frame is not necessarily creating a new
+        # graph node every time. Often, it just resolves to an existing one.
         effective_node_id = ensure_node(
             node=node, nodes_by_id=nodes_by_id, warnings=warnings
         )
+
+        # Now, we emit a `hasChild` edge from the current `parent_id` to the effective
+        # grouping node. `_emit_edge()` will enforce a keep-first-parent tree policy
+        # and dedupe edges.
         _emit_edge(
             child_id=effective_node_id,
             child_to_parent=child_to_parent,
@@ -2801,10 +3235,12 @@ def reconcile_context_stack(
         )
 
         # Advance stack.
-        gk = _grouping_key(g)
-        new_stack.append(ContextFrame(grouping_key=gk, node_id=effective_node_id))
+        next_grouping_key = _grouping_key(g)
+        new_stack.append(
+            ContextFrame(grouping_key=next_grouping_key, node_id=effective_node_id)
+        )
         parent_id = effective_node_id
-        ancestor_keys.append(gk)
+        ancestor_keys.append(next_grouping_key)
 
     # After reconciliation, new_stack should EXACTLY match desired_context snapshot.
     return parent_id, ancestor_keys, new_stack
