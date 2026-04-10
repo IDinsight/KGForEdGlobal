@@ -905,14 +905,16 @@ def merge_graph_bundles(
     )
     merged_graph_type = "_plus_".join(ordered) if ordered else ""
 
+    # Sort merged records by stable identifier so serialized bundle order stays
+    # deterministic even if upstream bundle or dict insertion order changes.
     return {
         "doc_key": doc_key,
         "export_dialect": export_dialect,
         "generated_at": generated_at,
         "graph_type": merged_graph_type,
         "included_graph_types": included_unique,
-        "nodes": list(nodes_by_id.values()),
-        "relationships": list(rels_by_id.values()),
+        "nodes": [nodes_by_id[nid] for nid in sorted(nodes_by_id)],
+        "relationships": [rels_by_id[rid] for rid in sorted(rels_by_id)],
     }
 
 
@@ -1051,6 +1053,10 @@ def persist_kg_run(
 def stable_text_hash(*, n: int = 32, s: str) -> str:
     """Generate a stable hash from a string.
 
+    The hashing normalization policy intentionally mirrors the Unicode handling used
+    by `normalize_key_token()` so canonically equivalent text does not drift across
+    reruns due only to normalization-form differences.
+
     Parameters
     ----------
     n
@@ -1064,5 +1070,5 @@ def stable_text_hash(*, n: int = 32, s: str) -> str:
         The stable hash of the string.
     """
 
-    s = normalize_ws(s).lower()
+    s = unicodedata.normalize("NFKC", normalize_ws(str(s or ""))).casefold()
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n]
