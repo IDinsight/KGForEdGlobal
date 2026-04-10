@@ -26,7 +26,7 @@ from skg.kgs.schemas import (
     StandardsFramework,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs, keyify, node_display_text
+from skg.kgs.utils import ExportContext, KGDirs, node_display_text, normalize_key_token
 from skg.regexes import ROMAN_RE
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
@@ -788,7 +788,7 @@ def _compute_topic_path_key(
         if not label:
             continue
 
-        parts.append(f"{r}={keyify(label)}")
+        parts.append(f"{r}={normalize_key_token(label=label, separator="_")}")
         debug.append({"role": r, "label": label, "canonical_node_id": aid})
 
     if not parts:

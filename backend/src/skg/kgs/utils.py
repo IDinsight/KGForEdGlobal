@@ -225,6 +225,10 @@ def _compute_base_piece(node: dict[str, Any]) -> str:
     its sibling set. It is called by both `ExportContext._path_piece` (for path-key
     generation) and `_detect_sibling_collisions` (for order disambiguation detection).
 
+    For grouping-like nodes, the label normalization policy is intentionally kept
+    consistent with `keyify()` so accented and other Unicode text collapses the same
+    way across path keys and LP thread/topic keys.
+
     Parameters
     ----------
     node
@@ -243,15 +247,7 @@ def _compute_base_piece(node: dict[str, Any]) -> str:
     if role in {item.value for item in StatementRole}:
         return f"{role}:{code}:{stable_text_hash(s=text_source)}"
 
-    original = normalize_ws(text_source)
-    lower = original.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", lower).strip("-")
-
-    # Fallback: if everything got stripped (e.g., non-Latin text), use a short stable
-    # hash. The prefix avoids empty/pure-digit oddities.
-    slug = slug or f"h{stable_text_hash(s=original)}"
-    label = slug[:80]
-
+    label = normalize_key_token(label=text_source, separator="-")
     return f"{role}:{code}:{label}" if code else f"{role}:{label}"
 
 
@@ -797,46 +793,6 @@ def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
     return dims
 
 
-def keyify(label: str) -> str:
-    """Deterministically normalize a label into a compact key token.
-
-    This is the canonical implementation used by both the Academic Standards export
-    (for `topic_path_key` construction) and the Learning Progressions export (for
-    `lp_thread_key construction`). Keeping a single implementation ensures thread-key
-    consistency across the pipeline.
-
-    Parameters
-    ----------
-    label
-        The input label string to normalize.
-
-    Returns
-    -------
-    str
-        A normalized, URL-safe string consisting of lowercase alphanumeric characters
-        and underscores. If the resulting string is empty after normalization, a
-        12-character hex hash prefixed with 'h' is returned to ensure a non-empty
-        deterministic key. The output is capped at 80 characters.
-    """
-
-    raw = " ".join(str(label or "").strip().split())
-
-    if not raw:
-        return ""
-
-    # Normalize unicode and strip diacritics to ASCII where possible.
-    norm = unicodedata.normalize("NFKD", raw)
-    ascii_s = norm.encode("ascii", "ignore").decode("ascii")
-    s = " ".join(ascii_s.strip().split()).lower()
-    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
-
-    if not s:
-        h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-        return f"h{h}"
-
-    return s[:80] if len(s) > 80 else s
-
-
 def merge_graph_bundles(
     *, bundles: list[dict[str, Any]], doc_key: str, export_dialect: str
 ) -> dict[str, Any]:
@@ -995,6 +951,48 @@ def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> s
 
     # Last resort: code or role.
     return (node.get("local_code") or node.get("role") or "").strip()
+
+
+def normalize_key_token(*, label: str, separator: str) -> str:
+    """Normalize a label into a deterministic ASCII key token.
+
+    This centralizes the normalization policy shared by path-key pieces and other
+    compact thread/topic keys. The normalization steps are:
+
+    1. Collapse internal whitespace.
+    2. Normalize Unicode with NFKD.
+    3. Strip diacritics by ASCII-folding where possible.
+    4. Lowercase and replace non-alphanumeric runs with `separator`.
+    5. Fall back to a short stable hash when normalization yields an empty token.
+
+    Parameters
+    ----------
+    label
+        The input label string to normalize.
+    separator
+        The separator to use between token runs (for example "-" or "_").
+
+    Returns
+    -------
+    str
+        A normalized key token capped at 80 characters. Returns an empty string only
+        when the input label is empty/blank.
+    """
+
+    raw = normalize_ws(str(label or ""))
+
+    if not raw:
+        return ""
+
+    norm = unicodedata.normalize("NFKD", raw)
+    ascii_s = norm.encode("ascii", "ignore").decode("ascii")
+    lowered = normalize_ws(ascii_s).lower()
+    token = re.sub(r"[^a-z0-9]+", separator, lowered).strip(separator)
+
+    if not token:
+        return f"h{stable_text_hash(s=raw)}"
+
+    return token[:80]
 
 
 def normalize_ws(s: str) -> str:

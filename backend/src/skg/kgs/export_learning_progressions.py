@@ -47,7 +47,7 @@ from skg.kgs.schemas import (
     Relationship,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair, keyify
+from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair, normalize_key_token
 from skg.kgs.validators import (
     validate_cross_grade_builds_towards,
     validate_cross_grade_relates_to,
@@ -966,7 +966,9 @@ def _compute_lp_thread_key(
         label = entry.get("label", "")
 
         if r and label and r in roles_set:
-            parts_by_role.setdefault(r, []).append(keyify(label))
+            parts_by_role.setdefault(r, []).append(
+                normalize_key_token(label=label, separator="_")
+            )
 
     segments: list[str] = []
 
