@@ -725,9 +725,9 @@ def cross_check_canonical_ir_run(
     if computed_doc_key != expected_doc_key:
         raise ValueError(
             f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
-            f"  computed doc_key:          {computed_doc_key}\n"
-            f"  extraction_run.json key:   {expected_doc_key}\n"
+            f"  PDF provided to create_kgs():   {extraction_config.pdf_fp}\n"
+            f"  computed doc_key:               {computed_doc_key}\n"
+            f"  extraction_run.json key:        {expected_doc_key}\n"
             f"You are likely creating KGs using a different PDF than the one used to "
             f"create the canonical IR. Pass the same PDF used in the canonical IR run "
             f"or re-run the canonical IR."
