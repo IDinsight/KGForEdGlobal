@@ -616,6 +616,7 @@ def persist_stitching_run(
         started_at=datetime.now(timezone.utc),
     )
     write_to_json(fp=output_dir / "stitching_run.json", json_info=stitching_run)
+
     logger.info(f"Saving stitching results to: {stitching_dirs.root}")
 
     return stitching_dirs, stitching_run

@@ -1125,6 +1125,7 @@ def persist_kg_run(
         started_at=datetime.now(timezone.utc),
     )
     write_to_json(fp=output_dir / "kg_run.json", json_info=kg_run)
+
     logger.info(f"Saving KG creation results to: {kg_dirs.root}")
 
     return kg_dirs, kg_run
@@ -1147,5 +1148,4 @@ def stable_text_hash(*, n: int = 32, s: str) -> str:
     """
 
     s = normalize_ws(s).lower()
-
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n]
