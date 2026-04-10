@@ -178,6 +178,7 @@ def persist_canonical_run(
         started_at=datetime.now(timezone.utc),
     )
     write_to_json(fp=output_dir / "creation_run.json", json_info=creation_run)
+
     logger.info(f"Saving canonical IR creation results to: {creation_dirs}")
 
     return creation_dirs, creation_run
