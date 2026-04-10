@@ -73,7 +73,6 @@ def create_page_ir_extraction_agent(
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
-
     agent = Agent(
         model,
         instructions=instructions,
@@ -136,7 +135,6 @@ def create_page_ir_extraction_agent(
             )
 
             attempt_counter["value"] += 1
-
             raise ModelRetry(
                 f"Your output had quality issues and must be corrected.\n"
                 f"ERROR: {str(e)}\n\n"
@@ -156,7 +154,6 @@ def create_page_ir_extraction_agent(
             validation_cycle=validation_cycle,
         )
         attempt_counter["value"] += 1
-
         return output
 
     return agent
@@ -206,7 +203,6 @@ def create_page_ir_validation_agent(
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
-
     agent = Agent(
         model,
         instructions=instructions,
@@ -265,7 +261,6 @@ def create_page_ir_validation_agent(
                 )
 
                 attempt_counter["value"] += 1
-
                 raise ModelRetry(
                     f"Your corrected_page_ir has quality issues and must be fixed.\n"
                     f"ERROR: {str(e)}\n\n"
@@ -274,7 +269,6 @@ def create_page_ir_validation_agent(
                 ) from e
 
         attempt_counter["value"] += 1
-
         return output
 
     return agent

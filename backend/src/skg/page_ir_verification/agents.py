@@ -109,7 +109,6 @@ def create_continuity_verification_agent(
             )
 
             attempt_counter["value"] += 1
-
             raise ModelRetry(
                 f"Your output had quality issues and must be corrected.\n"
                 f"ERROR: {str(e)}\n\n"
@@ -118,7 +117,6 @@ def create_continuity_verification_agent(
             ) from e
 
         attempt_counter["value"] += 1
-
         return output
 
     return agent
@@ -164,7 +162,6 @@ def create_continuity_validation_agent(
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
-
     agent = Agent(
         model,
         instructions=instructions,
@@ -209,7 +206,6 @@ def create_continuity_validation_agent(
                     f"attempt {attempt}: {truncated_msg}"
                 )
                 attempt_counter["value"] += 1
-
                 raise ModelRetry(
                     f"Your corrected_verdict has quality issues and must be fixed.\n"
                     f"ERROR: {str(e)}\n\n"
@@ -219,7 +215,6 @@ def create_continuity_validation_agent(
                 ) from e
 
         attempt_counter["value"] += 1
-
         return output
 
     return agent
