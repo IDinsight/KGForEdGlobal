@@ -1942,7 +1942,15 @@ def _reattach_children_of_dropped_nodes(
     This function detects such orphaned subtrees and hoists their children up to the
     nearest surviving ancestor (or the root), preserving tree connectivity.
 
-    This **must** run after all `emit_flag` mutations  and **before** empty-grouping
+    Ordering policy:
+
+    1. Prefer the canonical order slot of the **closest dropped node on the path**
+       between the surviving ancestor and the dropped parent. This preserves relative
+       placement even when multiple dropped ancestors are collapsed.
+    2. If that anchor edge has no canonical order metadata, fall back to appending at
+       the end of the surviving ancestor's child list.
+
+    This **must** run after all `emit_flag` mutations and **before** empty-grouping
     pruning, so that pruning operates on the corrected tree structure.
 
     Parameters
@@ -2003,6 +2011,40 @@ def _reattach_children_of_dropped_nodes(
 
         return d
 
+    def _find_surviving_ancestor_and_anchor(dropped_pid: str) -> tuple[str, str | None]:
+        """Find the nearest emitted ancestor and the canonical anchor child under it.
+
+        The anchor child is the closest dropped node on the path from the surviving
+        ancestor down toward `dropped_pid`. Using this anchor preserves relative order
+        even when multiple dropped ancestors are collapsed into one surviving parent.
+
+        Parameters
+        ----------
+        dropped_pid
+            The dropped parent ID for which to find the surviving ancestor and anchor
+            child.
+
+        Returns
+        -------
+        tuple[str, str | None]
+            A tuple of (surviving_ancestor_id, anchor_child_id). The surviving ancestor
+            is the nearest emitted ancestor of the dropped parent (or root if none).
+            The anchor child is the closest dropped node on the path from the surviving
+            ancestor down to the dropped parent, or None if no such anchor exists.
+        """
+
+        cur: str | None = ctx.parent_by_child.get(dropped_pid)
+        seen: set[str] = set()
+        anchor_child: str | None = dropped_pid
+
+        while cur and cur != ctx.root_id and not emit_flag.get(cur) and cur not in seen:
+            seen.add(cur)
+            anchor_child = cur
+            cur = ctx.parent_by_child.get(cur)
+
+        surviving = cur if cur and cur not in seen else ctx.root_id
+        return surviving, anchor_child
+
     dropped_parents.sort(key=_depth, reverse=True)
 
     reattached_count = 0
@@ -2014,17 +2056,14 @@ def _reattach_children_of_dropped_nodes(
         if not orphaned_children:
             continue
 
-        cur: str | None = ctx.parent_by_child.get(dropped_pid)
-        seen: set[str] = set()
-
-        while cur and cur != ctx.root_id and not emit_flag.get(cur) and cur not in seen:
-            seen.add(cur)
-            cur = ctx.parent_by_child.get(cur)
-
-        surviving: str = cur if cur and cur not in seen else ctx.root_id
+        surviving, anchor_child = _find_surviving_ancestor_and_anchor(dropped_pid)
         target_kids = export_children.setdefault(surviving, [])
         target_set = set(target_kids)
-        canonical_order = ctx.edge_order_index.get((surviving, dropped_pid))
+        canonical_order = (
+            ctx.edge_order_index.get((surviving, anchor_child))
+            if anchor_child is not None
+            else None
+        )
         insert_at: int | None = None
 
         if canonical_order is not None:
@@ -2223,6 +2262,97 @@ def _sort_order_map(
         order_map_sorted[k] = order_map[k]
 
     return order_map_sorted
+
+
+def _suppress_subtrees_of_attached_aux_nodes(
+    *,
+    drop_reasons: dict[str, str],
+    emit_flag: dict[str, bool],
+    export_children: dict[str, list[str]],
+    reparent_stats: dict[str, Any],
+) -> dict[str, int]:
+    """Suppress exported descendants of aux nodes that were attached to metadata.
+
+    When a guidance/descriptor node is converted into expectation metadata via
+    `attach_to_expectation_metadata`, its subtree should not later be hoisted back into
+    the Academic Standards hierarchy. This function removes those descendants from the
+    export tree and marks any still-emitted descendants as dropped.
+
+    Parameters
+    ----------
+    drop_reasons
+        Mutable mapping of canonical node ID -> drop reason.
+    emit_flag
+        Mutable mapping of canonical node ID -> emit boolean.
+    export_children
+        Export parent -> children mapping. Mutated in place.
+    reparent_stats
+        Reparent/attach statistics. The function reads `attached_aux_node_ids` and
+        updates subtree-suppression stats.
+
+    Returns
+    -------
+    dict[str, int]
+        Statistics describing how many metadata-attached aux roots had export subtrees
+        and how many descendant nodes were suppressed.
+    """
+
+    attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids", []))
+
+    if not attached_aux_node_ids:
+        return {
+            "attached_aux_subtree_root_count": 0,
+            "suppressed_attached_aux_descendant_count": 0,
+        }
+
+    subtree_roots: set[str] = {
+        nid for nid in attached_aux_node_ids if export_children.get(nid)
+    }
+
+    if not subtree_roots:
+        for pid, kids in list(export_children.items()):
+            export_children[pid] = [c for c in kids if emit_flag.get(c, False)]
+
+        return {
+            "attached_aux_subtree_root_count": 0,
+            "suppressed_attached_aux_descendant_count": 0,
+        }
+
+    suppressed_descendants: set[str] = set()
+    stack: list[str] = [
+        child for root in subtree_roots for child in export_children.get(root, [])
+    ]
+
+    while stack:
+        nid = stack.pop()
+
+        if nid in suppressed_descendants:
+            continue
+
+        suppressed_descendants.add(nid)
+        stack.extend(export_children.get(nid, []))
+
+        # Evaluate emit_flag and drop_reasons upon discovery.
+        if emit_flag.get(nid, False):
+            emit_flag[nid] = False
+            drop_reasons.setdefault(
+                nid, "dropped:ancestor_attached_to_expectation_metadata"
+            )
+
+    blocked_nodes = attached_aux_node_ids | suppressed_descendants
+
+    for pid in blocked_nodes:
+        export_children.pop(pid, None)
+
+    for pid, kids in export_children.items():
+        export_children[pid] = [
+            c for c in kids if emit_flag.get(c, False) and c not in blocked_nodes
+        ]
+
+    return {
+        "attached_aux_subtree_root_count": len(subtree_roots),
+        "suppressed_attached_aux_descendant_count": len(suppressed_descendants),
+    }
 
 
 def _to_int_or_roman(s: str) -> int | str:
@@ -2441,14 +2571,16 @@ def export_academic_standards(
         attach without modifying hierarchy.
     5. Handle attach-to-expectation rules for guidance/descriptors, modifying emit
         flags accordingly.
-    6. Re-attach children of dropped mid-hierarchy nodes to their nearest surviving
+    6. Suppress export subtrees rooted under aux nodes that were converted into
+        expectation metadata, preventing subtree leakage back into the hierarchy.
+    7. Re-attach children of dropped mid-hierarchy nodes to their nearest surviving
         ancestor, ensuring tree connectivity before pruning.
-    7. Prune empty groupings iteratively, modifying emit flags accordingly.
-    8. Emit StandardsFrameworkItems for all nodes still flagged for emission.
-    9. Build hasChild relationships and hierarchy order mappings.
-    10. Sort items and relationships for stable output.
-    11. Package everything into an AcademicStandardsExport dataclass.
-    12. Write JSON artifacts to disk.
+    8. Prune empty groupings iteratively, modifying emit flags accordingly.
+    9. Emit StandardsFrameworkItems for all nodes still flagged for emission.
+    10. Build hasChild relationships and hierarchy order mappings.
+    11. Sort items and relationships for stable output.
+    12. Package everything into an AcademicStandardsExport dataclass.
+    13. Write JSON artifacts to disk.
 
     Parameters
     ----------
@@ -2524,6 +2656,15 @@ def export_academic_standards(
     )
 
     # 6.
+    attached_aux_subtree_stats = _suppress_subtrees_of_attached_aux_nodes(
+        drop_reasons=drop_reasons,
+        emit_flag=emit_flag,
+        export_children=export_children,
+        reparent_stats=reparent_stats,
+    )
+    reparent_stats.update(attached_aux_subtree_stats)
+
+    # 7.
     reattach_stats = _reattach_children_of_dropped_nodes(
         ctx=ctx,
         emit_flag=emit_flag,
@@ -2531,7 +2672,7 @@ def export_academic_standards(
     )
     reparent_stats.update(reattach_stats)
 
-    # 7.
+    # 8.
     pruned_node_ids = _handle_empty_grouping_pruning(
         config=config,
         ctx=ctx,
@@ -2540,7 +2681,7 @@ def export_academic_standards(
         export_children=export_children,
     )
 
-    # 8.
+    # 9.
     export_parent_by_child = _build_export_parent_by_child(
         root_id=ctx.root_id, export_children=export_children
     )
@@ -2556,7 +2697,7 @@ def export_academic_standards(
         orphan_aux_node_ids=set(reparent_stats.get("orphan_aux_node_ids") or []),
     )
 
-    # 9.
+    # 10.
     relationships, order_map = _build_relationships_and_order(
         config=config,
         ctx=ctx,
@@ -2572,7 +2713,7 @@ def export_academic_standards(
         sfi_by_node=sfi_by_node,
     )
 
-    # 10.
+    # 11.
     items_sorted = sorted(
         sfi_by_node.values(), key=lambda sfi: str(sfi.case_identifier_uuid)
     )
@@ -2589,7 +2730,7 @@ def export_academic_standards(
         framework_uuid=framework_uuid, order_map=order_map
     )
 
-    # 11.
+    # 12.
     academic_standards = AcademicStandardsExport(
         drop_reasons=drop_reasons,
         framework=framework,
@@ -2600,7 +2741,7 @@ def export_academic_standards(
         reparent_stats=reparent_stats,
     )
 
-    # 12.
+    # 13.
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_framework.json",
         json_info=academic_standards.framework.model_dump(mode="json"),
