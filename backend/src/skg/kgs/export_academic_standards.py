@@ -446,6 +446,30 @@ def _build_aux_payload(
     return payload
 
 
+def _build_export_order_index(
+    export_children: dict[str, list[str]],
+) -> dict[tuple[str, str], int]:
+    """Build export-time (parent, child) -> `order_index` from the finalized export
+    tree.
+
+    Parameters
+    ----------
+    export_children
+        Finalized export parent-to-children mapping after reparenting/hoisting/pruning.
+
+    Returns
+    -------
+    dict[tuple[str, str], int]
+        Mapping of canonical (parent_id, child_id) pairs to export-time order indices.
+    """
+
+    return {
+        (parent_id, child_id): idx
+        for parent_id, child_ids in export_children.items()
+        for idx, child_id in enumerate(child_ids)
+    }
+
+
 def _build_export_parent_by_child(
     *, root_id: str, export_children: dict[str, list[str]]
 ) -> dict[str, str]:
@@ -531,6 +555,7 @@ def _build_relationships_and_order(
     config: CreateKGConfig,
     ctx: ExportContext,
     export_children: dict[str, list[str]],
+    export_order_index: dict[tuple[str, str], int],
     framework_uuid: UUID,
     sfi_by_node: dict[str, StandardsFrameworkItem],
 ) -> tuple[list[Relationship], dict[str, list[str]]]:
@@ -544,6 +569,9 @@ def _build_relationships_and_order(
         The ExportContext for the CanonicalIR.
     export_children
         The parent-to-children mapping.
+    export_order_index
+        Export-time (parent_id, child_id) -> order_index mapping derived from the
+        finalized export tree after any hoisting/reparenting.
     framework_uuid
         The UUID of the framework entity.
     sfi_by_node
@@ -582,6 +610,8 @@ def _build_relationships_and_order(
                 "source_decision_ids", []
             ),
             "canonical_edge_source_segment_ids": edge_md.get("source_segment_ids", []),
+            "export_parent_id": parent_id,
+            "export_order_index": export_order_index.get((parent_id, child_id)),
         }
 
     relationships: list[Relationship] = []
@@ -701,6 +731,10 @@ def _compute_export_children(
 ]:
     """Build export-time parent-to-children mapping with aux reparenting.
 
+    In `under_expectation` mode, expectation-anchored reparenting is applied for both
+    grouping parents and the framework root so root-level sibling layouts behave the
+    same as grouped sibling layouts.
+
     Parameters
     ----------
     config
@@ -737,8 +771,9 @@ def _compute_export_children(
 
         ordered_emitted_kids = [cid for cid in kids if emit_flag.get(cid, False)]
 
-        if config.aux_statement_parenting == "under_expectation" and _is_grouping_role(
-            config=config, role=parent_role
+        if config.aux_statement_parenting == "under_expectation" and (
+            parent_id == ctx.root_id
+            or _is_grouping_role(config=config, role=parent_role)
         ):
             # Count aux nodes before reparenting to detect orphans.
             aux_before = sum(
@@ -1029,6 +1064,7 @@ def _emit_sfi(
     canonical_ir_created_at: Optional[str],
     config: CreateKGConfig,
     ctx: ExportContext,
+    export_order_index: dict[tuple[str, str], int] | None = None,
     export_parent_by_child: dict[str, str] | None = None,
     fw_metadata: dict[str, Any],
     is_orphan_aux: bool = False,
@@ -1050,6 +1086,10 @@ def _emit_sfi(
     ctx
         The ExportContext for the CanonicalIR, providing access to node properties and
         framework metadata.
+    export_order_index
+        Optional export-time (parent_id, child_id) -> order_index mapping derived from
+        the finalized export tree after hoisting/reparenting. Used as the primary
+        per-parent ordering signal for progression metadata.
     export_parent_by_child
         Optional mapping of canonical child node ID to parent node ID to use for
         walking ancestors when computing progression context. If None, will use
@@ -1163,9 +1203,13 @@ def _emit_sfi(
         )
 
         parent_lookup = export_parent_by_child or ctx.parent_by_child
+        order_lookup = export_order_index or ctx.edge_order_index
         parent_id = parent_lookup.get(node_id)
-        order_index_within_parent = (
+        canonical_order_index_within_parent = (
             ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
+        )
+        order_index_within_parent = (
+            order_lookup.get((parent_id, node_id)) if parent_id else None
         )
         canon_order_path = _walk_ancestors(
             ctx=ctx, node_id=node_id, parent_by_child=parent_lookup
@@ -1190,6 +1234,7 @@ def _emit_sfi(
             "topic_path_key": topic_path_key,
             "topic_path_parts": topic_path_parts,  # For debugging
             "canon_order_path": canon_order_path,
+            "canonical_order_index_within_parent": canonical_order_index_within_parent,
             "order_index_within_parent": order_index_within_parent,
             **code_features,
         }
@@ -1226,6 +1271,7 @@ def _emit_sfis(
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
+    export_order_index: dict[tuple[str, str], int] | None = None,
     export_parent_by_child: dict[str, str] | None = None,
     orphan_aux_node_ids: set[str] | None = None,
 ) -> dict[str, StandardsFrameworkItem]:
@@ -1243,6 +1289,9 @@ def _emit_sfis(
         The ExportContext for the CanonicalIR.
     emit_flag
         Node-level emit flags.
+    export_order_index
+        Optional export-time (parent_id, child_id) -> order_index mapping derived from
+        the finalized export tree after hoisting/reparenting.
     export_parent_by_child
         Optional mapping of canonical child node ID to parent node ID to use for
         walking ancestors when computing progression context. If None, will use
@@ -1271,6 +1320,7 @@ def _emit_sfis(
             canonical_ir_created_at=canonical_created_at_iso,
             config=config,
             ctx=ctx,
+            export_order_index=export_order_index,
             export_parent_by_child=export_parent_by_child,
             fw_metadata=fw_metadata,
             is_orphan_aux=node_id in _orphans,
@@ -2494,12 +2544,14 @@ def export_academic_standards(
     export_parent_by_child = _build_export_parent_by_child(
         root_id=ctx.root_id, export_children=export_children
     )
+    export_order_index = _build_export_order_index(export_children)
     sfi_by_node = _emit_sfis(
         aux_attach_to_expectation=aux_attach_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
+        export_order_index=export_order_index,
         export_parent_by_child=export_parent_by_child,
         orphan_aux_node_ids=set(reparent_stats.get("orphan_aux_node_ids") or []),
     )
@@ -2509,6 +2561,7 @@ def export_academic_standards(
         config=config,
         ctx=ctx,
         export_children=export_children,
+        export_order_index=export_order_index,
         framework_uuid=framework_uuid,
         sfi_by_node=sfi_by_node,
     )
