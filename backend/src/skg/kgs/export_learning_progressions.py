@@ -288,7 +288,7 @@ def _build_order_index_lookup(
     This function keys the lookup by:
 
     1. `str(sfi.case_identifier_uuid or sfi.identifier)`
-    2. `progression_context.canonical_node_id` (when present)
+    2. `metadata.canonical_node_id` (when present)
 
     Parameters
     ----------
@@ -299,7 +299,7 @@ def _build_order_index_lookup(
     Returns
     -------
     dict[str, int]
-        A dictionary mapping UUID strings to integer `order_index_within_parent`
+        A dictionary mapping identifier strings to integer `order_index_within_parent`
         values. Items without a valid integer order index are omitted.
     """
 
@@ -318,11 +318,13 @@ def _build_order_index_lookup(
         if legacy_uuid:
             lookup[legacy_uuid] = oi
 
-        canonical_node_id = pc.get("canonical_node_id")
-        canonical_uuid = str(canonical_node_id).strip() if canonical_node_id else ""
+        # Academic Standards export stores the canonical node id at the top level of
+        # `sfi.metadata`, not inside `progression_context`.
+        canonical_node_id = meta.get("canonical_node_id")
+        canonical_key = str(canonical_node_id).strip() if canonical_node_id else ""
 
-        if canonical_uuid:
-            lookup[canonical_uuid] = oi
+        if canonical_key:
+            lookup[canonical_key] = oi
 
     return lookup
 
@@ -893,6 +895,7 @@ def _compare_within_grade_order(
 def _compute_bucket_keys(
     *,
     cross_roles: list[str] | None,
+    default_thread_key: str | None,
     normalized_level_key: str,
     subject_label: str,
     topic_path_parts: list[dict[str, Any]],
@@ -903,6 +906,9 @@ def _compute_bucket_keys(
     ----------
     cross_roles
         A list of roles used for cross-grade matching.
+    default_thread_key
+        The default thread key emitted by Academic Standards export in
+        `progression_context.thread_key`. Used when `cross_roles` is None.
     normalized_level_key
         The normalized string representing the grade or stage key.
     subject_label
@@ -916,19 +922,19 @@ def _compute_bucket_keys(
         A tuple containing the effective_bucket_key and the thread_key.
     """
 
-    lp_thread_key = (
-        _compute_lp_thread_key(topic_path_parts, cross_roles) if cross_roles else None
-    )
-    effective_bucket_key = (
-        lp_thread_key
-        if lp_thread_key is not None
-        else f"__unthreaded__::{subject_label}"
-    )
-    thread_key = (
-        lp_thread_key
-        if lp_thread_key is not None
-        else f"__unthreaded__::{subject_label}::{normalized_level_key}"
-    )
+    if cross_roles:
+        lp_thread_key = _compute_lp_thread_key(topic_path_parts, cross_roles)
+    else:
+        raw_default = str(default_thread_key or "").strip()
+        lp_thread_key = raw_default or None
+
+    # For unthreaded items, keep the sentinel level-specific so:
+    #
+    #   1. within-grade bucketing does not collapse all same-subject items together, and
+    #   2. cross-level matching is prevented unless we have a real thread key.
+    sentinel = f"__unthreaded__::{subject_label}::{normalized_level_key}"
+    effective_bucket_key = lp_thread_key if lp_thread_key is not None else sentinel
+    thread_key = lp_thread_key if lp_thread_key is not None else sentinel
 
     return effective_bucket_key, thread_key
 
@@ -2594,12 +2600,13 @@ def _process_single_standard(
         `stage_key`.
     2. **Subject label** is resolved via `config.progressions_subject_role`. Items
         without a matching role get `UNSPECIFIED_SUBJECT`.
-    3. **Thread key** is computed via `config.progressions_cross_grade_match_roles`.
-        Items with no matching roles become "unthreaded" and receive per-level sentinel
-        thread keys to prevent false cross-level matching.
+    3. **Thread key** uses `config.progressions_cross_grade_match_roles` when provided.
+        When that config is None, we reuse the default `progression_context.thread_key`
+        produced by Academic Standards export. Items with no usable thread key receive
+        a per-level sentinel to prevent false cross-level matching.
 
     NB: Banded/stage-level curricula (e.g., Tanzania "Standard I–II",
-        "Standard III–VI"): When `progression_context` includes a true range
+    "Standard III–VI"): When `progression_context` includes a true range
         (low != high), the bucket stores `grade_ordinal_low != grade_ordinal_high`,
         enabling cross-stage inference phases. If ordinals are unavailable and we rely
         on the config map, the bucket is treated as a single representative level
@@ -2620,8 +2627,8 @@ def _process_single_standard(
         LLM inference.
     order_index_lookup
         A mapping from SFI UUID strings to their `order_index_within_parent` values,
-        used to convert UUID-based `canon_order_path` into a numeric order path for
-        correct document-order sorting.
+        used to convert canonical-node-id-based `canon_order_path` into a numeric order
+        path for correct document-order sorting.
     sfi
         The standard item to process.
     """
@@ -2681,6 +2688,9 @@ def _process_single_standard(
     # Threading and bucket keys.
     effective_bucket_key, thread_key = _compute_bucket_keys(
         cross_roles=config.progressions_cross_grade_match_roles,
+        default_thread_key=(
+            str(progression_context.get("thread_key") or "").strip() or None
+        ),
         normalized_level_key=normalized_level_key,
         subject_label=subject_label,
         topic_path_parts=topic_path_parts,
@@ -3690,7 +3700,8 @@ def group_standards_for_learning_progressions(
     1. **Level bounds** resolved from `progression_context` ordinals when present, with
         a fallback to `config.progressions_grade_label_map`.
     2. **Subject label** resolved via `config.progressions_subject_role`.
-    3. **Thread key** computed via `config.progressions_cross_grade_match_roles`.
+    3. **Thread key** computed via `config.progressions_cross_grade_match_roles`, or
+        from `progression_context.thread_key` when that config is None.
 
     Parameters
     ----------
