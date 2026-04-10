@@ -66,6 +66,35 @@ class AcademicStandardsExport:
     reparent_stats: dict[str, Any]  # aux_reparented_count, orphan_aux_count, etc.
 
 
+def _append_unique_child(
+    *, export_children: dict[str, list[str]], parent_id: str, child_id: str
+) -> bool:
+    """Append a child to an export parent only if not already present.
+
+    Parameters
+    ----------
+    export_children
+        The parent-to-children mapping being built for export.
+    parent_id
+        The canonical node ID of the parent.
+    child_id
+        The canonical node ID of the child to append.
+
+    Returns
+    -------
+    bool
+        True if the child was newly appended, False if it was already present.
+    """
+
+    children = export_children.setdefault(parent_id, [])
+
+    if child_id in children:
+        return False
+
+    children.append(child_id)
+    return True
+
+
 def _attach_aux_statements_in_export_tree(
     *,
     attached_aux_node_ids: set[str],
@@ -417,6 +446,50 @@ def _build_aux_payload(
     return payload
 
 
+def _build_export_parent_by_child(
+    *, root_id: str, export_children: dict[str, list[str]]
+) -> dict[str, str]:
+    """Build an export-time parent lookup from the finalized export tree.
+
+    Parameters
+    ----------
+    root_id
+        The canonical node ID of the root (framework) node.
+    export_children
+        The finalized parent-to-children mapping for export.
+
+    Returns
+    -------
+    dict[str, str]
+        A mapping of canonical child node ID to its assigned parent node ID in the
+        export hierarchy. The root node ID is excluded from this mapping since it has
+        no parent.
+
+    Raises
+    ------
+    ValueError
+        If any emitted child is assigned to more than one exported parent.
+    """
+
+    parent_by_child: dict[str, str] = {}
+
+    for parent_id, child_ids in export_children.items():
+        for child_id in child_ids:
+            prior_parent = parent_by_child.get(child_id)
+
+            if prior_parent is not None and prior_parent != parent_id:
+                raise ValueError(
+                    "Export hierarchy integrity error: child node "
+                    f"{child_id!r} appears under multiple parents "
+                    f"({prior_parent!r}, {parent_id!r})."
+                )
+
+            parent_by_child[child_id] = parent_id
+
+    parent_by_child.pop(root_id, None)
+    return parent_by_child
+
+
 def _build_initial_emit_flags(
     *, config: CreateKGConfig, ctx: ExportContext
 ) -> tuple[dict[str, bool], dict[str, str]]:
@@ -499,7 +572,6 @@ def _build_relationships_and_order(
         """
 
         edge_md = ctx.edge_metadata_by_pair.get((parent_id, child_id), {})
-
         return {
             "canonical_parent_id": parent_id,
             "canonical_child_id": child_id,
@@ -516,9 +588,9 @@ def _build_relationships_and_order(
     order_map: dict[str, list[str]] = {}
 
     # Root -> first-level children.
-    root_children = [
-        cid for cid in export_children.get(ctx.root_id, []) if cid in sfi_by_node
-    ]
+    root_children = _dedupe_preserve_order(
+        [cid for cid in export_children.get(ctx.root_id, []) if cid in sfi_by_node]
+    )
     order_map[str(framework_uuid)] = [
         str(sfi_by_node[cid].case_identifier_uuid) for cid in root_children
     ]
@@ -540,7 +612,9 @@ def _build_relationships_and_order(
         if pid == ctx.root_id or pid not in sfi_by_node:
             continue
 
-        emitted_kids = [cid for cid in kids if cid in sfi_by_node]
+        emitted_kids = _dedupe_preserve_order(
+            [cid for cid in kids if cid in sfi_by_node]
+        )
 
         if not emitted_kids:
             continue
@@ -724,6 +798,7 @@ def _compute_topic_path_key(
     *,
     ctx: ExportContext,
     node_id: str,
+    parent_by_child: dict[str, str] | None = None,
     prefer_text_en: bool,
     role_allowlist: set[str] | None = None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
@@ -738,6 +813,9 @@ def _compute_topic_path_key(
         hierarchy.
     node_id
         The ID of the canonical node for which to compute the topic path key.
+    parent_by_child
+        Optional mapping of canonical child node ID to parent node ID to use for
+        walking ancestors. If None, will use ctx.parent_by_child.
     prefer_text_en
         If True, prefer "text_en" over "text" when extracting display text for nodes.
     role_allowlist
@@ -753,7 +831,9 @@ def _compute_topic_path_key(
         testing and verification purposes).
     """
 
-    ancestry = _walk_ancestors(ctx=ctx, node_id=node_id)
+    ancestry = _walk_ancestors(
+        ctx=ctx, node_id=node_id, parent_by_child=parent_by_child
+    )
     debug: list[dict[str, Any]] = []
     parts: list[str] = []
 
@@ -795,6 +875,34 @@ def _compute_topic_path_key(
         return None, debug
 
     return "|".join(parts), debug
+
+
+def _dedupe_preserve_order(ids: list[str]) -> list[str]:
+    """Deduplicate a list while preserving the first occurrence order.
+
+    Parameters
+    ----------
+    ids
+        The list of strings to deduplicate.
+
+    Returns
+    -------
+    list[str]
+        A new list containing the unique strings from the input list, in the order of
+        their first occurrence.
+    """
+
+    seen: set[str] = set()
+    output: list[str] = []
+
+    for item in ids:
+        if item in seen:
+            continue
+
+        seen.add(item)
+        output.append(item)
+
+    return output
 
 
 def _emit_framework(
@@ -921,6 +1029,7 @@ def _emit_sfi(
     canonical_ir_created_at: Optional[str],
     config: CreateKGConfig,
     ctx: ExportContext,
+    export_parent_by_child: dict[str, str] | None = None,
     fw_metadata: dict[str, Any],
     is_orphan_aux: bool = False,
     node_id: str,
@@ -941,6 +1050,10 @@ def _emit_sfi(
     ctx
         The ExportContext for the CanonicalIR, providing access to node properties and
         framework metadata.
+    export_parent_by_child
+        Optional mapping of canonical child node ID to parent node ID to use for
+        walking ancestors when computing progression context. If None, will use
+        ctx.parent_by_child.
     fw_metadata
         Pre-computed framework metadata dict (from ctx.get_framework_metadata()).
         Passed in to avoid redundant recomputation per node.
@@ -1019,14 +1132,16 @@ def _emit_sfi(
         grade_key = _first_ancestor_label_for_role(
             ctx=ctx,
             node_id=node_id,
-            role=NodeRole.GRADE_LEVEL.value,
+            parent_by_child=export_parent_by_child,
             prefer_text_en=prefer_en,
+            role=NodeRole.GRADE_LEVEL.value,
         )
         stage_key = _first_ancestor_label_for_role(
             ctx=ctx,
             node_id=node_id,
-            role=NodeRole.STAGE.value,
+            parent_by_child=export_parent_by_child,
             prefer_text_en=prefer_en,
+            role=NodeRole.STAGE.value,
         )
 
         # Use the grouping whitelist if present so topic_path_key is consistent across
@@ -1042,15 +1157,19 @@ def _emit_sfi(
         topic_path_key, topic_path_parts = _compute_topic_path_key(
             ctx=ctx,
             node_id=node_id,
+            parent_by_child=export_parent_by_child,
             prefer_text_en=prefer_en,
             role_allowlist=role_allowlist,
         )
 
-        parent_id = ctx.parent_by_child.get(node_id)
+        parent_lookup = export_parent_by_child or ctx.parent_by_child
+        parent_id = parent_lookup.get(node_id)
         order_index_within_parent = (
             ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
         )
-        canon_order_path = _walk_ancestors(ctx=ctx, node_id=node_id)
+        canon_order_path = _walk_ancestors(
+            ctx=ctx, node_id=node_id, parent_by_child=parent_lookup
+        )
 
         # Code retrieval (should work across countries/canonicalizers).
         grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
@@ -1107,6 +1226,7 @@ def _emit_sfis(
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
+    export_parent_by_child: dict[str, str] | None = None,
     orphan_aux_node_ids: set[str] | None = None,
 ) -> dict[str, StandardsFrameworkItem]:
     """Emit StandardsFrameworkItems for all flagged nodes.
@@ -1123,6 +1243,10 @@ def _emit_sfis(
         The ExportContext for the CanonicalIR.
     emit_flag
         Node-level emit flags.
+    export_parent_by_child
+        Optional mapping of canonical child node ID to parent node ID to use for
+        walking ancestors when computing progression context. If None, will use
+        ctx.parent_by_child.
     orphan_aux_node_ids
         Set of canonical node IDs for aux statements that had no preceding expectation
         sibling (orphans). If provided, their emitted SFIs will carry
@@ -1147,6 +1271,7 @@ def _emit_sfis(
             canonical_ir_created_at=canonical_created_at_iso,
             config=config,
             ctx=ctx,
+            export_parent_by_child=export_parent_by_child,
             fw_metadata=fw_metadata,
             is_orphan_aux=node_id in _orphans,
             node_id=node_id,
@@ -1156,7 +1281,12 @@ def _emit_sfis(
 
 
 def _first_ancestor_label_for_role(
-    *, ctx: ExportContext, node_id: str, role: str, prefer_text_en: bool
+    *,
+    ctx: ExportContext,
+    node_id: str,
+    parent_by_child: dict[str, str] | None = None,
+    prefer_text_en: bool,
+    role: str,
 ) -> str | None:
     """Find the closest ancestor (including self) with a given role and return its
     label.
@@ -1168,11 +1298,14 @@ def _first_ancestor_label_for_role(
         hierarchy.
     node_id
         The ID of the canonical node for which to find the ancestor.
-    role
-        The role string to match in ancestors.
+    parent_by_child
+        Optional mapping of canonical child node ID to parent node ID to use for
+        walking ancestors. If None, will use ctx.parent_by_child.
     prefer_text_en
         If True, prefer "text_en" over "text" when extracting display text for the
         ancestor node.
+    role
+        The role string to match in ancestors.
 
     Returns
     -------
@@ -1182,6 +1315,7 @@ def _first_ancestor_label_for_role(
         ancestor node has no displayable text, returns None.
     """
 
+    parent_lookup = parent_by_child or ctx.parent_by_child
     cur: str | None = node_id
     seen: set[str] = set()
 
@@ -1196,7 +1330,7 @@ def _first_ancestor_label_for_role(
             label = " ".join(str(label or "").split())
             return label or None
 
-        cur = ctx.parent_by_child.get(cur)
+        cur = parent_lookup.get(cur)
 
     return None
 
@@ -1927,7 +2061,7 @@ def _reparent_aux_under_expectations(
     prefer_en = config.description_text_policy == "prefer_text_en"
     child_aux_consumed: int = 0
 
-    def _attach_aux(aux_node_id: str, target_expectation_id: str) -> None:
+    def _attach_aux(*, aux_node_id: str, target_expectation_id: str) -> bool:
         """Process a single aux node: attach as metadata or as an export child.
 
         Parameters
@@ -1937,6 +2071,12 @@ def _reparent_aux_under_expectations(
         target_expectation_id
             The canonical node ID of the expectation to which the aux statement should
             be attached.
+
+        Returns
+        -------
+        bool
+            True if the aux node was newly attached/reparented, False if it had already
+            been attached under the same expectation.
         """
 
         node = ctx.nodes_by_id[aux_node_id]
@@ -1951,15 +2091,26 @@ def _reparent_aux_under_expectations(
         )
 
         if attach_to_metadata:
+            if _is_already_attached(
+                aux_attach_to_expectation=aux_attach_to_expectation,
+                aux_node_id=aux_node_id,
+                expectation_id=target_expectation_id,
+            ):
+                return False
+
             aux_attach_to_expectation[target_expectation_id].append(
                 _build_aux_payload(
                     aux_node_id=aux_node_id, ctx=ctx, prefer_en=prefer_en
                 )
             )
             attached_aux_node_ids.add(aux_node_id)
-        else:
-            export_children.setdefault(target_expectation_id, [])
-            export_children[target_expectation_id].append(aux_node_id)
+            return True
+
+        return _append_unique_child(
+            export_children=export_children,
+            parent_id=target_expectation_id,
+            child_id=aux_node_id,
+        )
 
     for cid in ordered_kids:
         node = ctx.nodes_by_id[cid]
@@ -1977,15 +2128,16 @@ def _reparent_aux_under_expectations(
 
                 child_role = str(ctx.nodes_by_id[child_id].get("role") or "")
 
-                if child_role in AUX_ROLES:
-                    _attach_aux(child_id, cid)
+                if child_role in AUX_ROLES and _attach_aux(
+                    aux_node_id=child_id, target_expectation_id=cid
+                ):
                     child_aux_consumed += 1
 
             continue
 
         # Sibling layout: aux following an expectation in sibling order.
         if role in AUX_ROLES and last_expectation:
-            _attach_aux(cid, last_expectation)
+            _attach_aux(aux_node_id=cid, target_expectation_id=last_expectation)
             continue
 
         new_kids.append(cid)
@@ -2178,7 +2330,9 @@ def _verify_standards_export(
     )
 
 
-def _walk_ancestors(*, ctx: ExportContext, node_id: str) -> list[str]:
+def _walk_ancestors(
+    *, ctx: ExportContext, node_id: str, parent_by_child: dict[str, str] | None = None
+) -> list[str]:
     """Return canonical node_id ancestry from root -> ... -> node_id (excluding root).
 
     Parameters
@@ -2187,6 +2341,11 @@ def _walk_ancestors(*, ctx: ExportContext, node_id: str) -> list[str]:
         The ExportContext for the CanonicalIR, providing access to parent-child mappings.
     node_id
         The ID of the canonical node for which to walk ancestors.
+    parent_by_child
+        Optional parent_by_child mapping to use instead of ctx.parent_by_child. This is
+        used in contexts where the parent-child relationships are being modified (e.g.,
+        during export) and the original canonical IR parent_by_child would not reflect
+        the current hierarchy.
 
     Returns
     -------
@@ -2196,6 +2355,7 @@ def _walk_ancestors(*, ctx: ExportContext, node_id: str) -> list[str]:
         ancestry up to the point where a cycle is detected or the root is reached.
     """
 
+    parent_lookup = parent_by_child or ctx.parent_by_child
     chain: list[str] = []
     cur: str | None = node_id
     seen: set[str] = set()
@@ -2203,7 +2363,7 @@ def _walk_ancestors(*, ctx: ExportContext, node_id: str) -> list[str]:
     while cur and cur != ctx.root_id and cur not in seen:
         seen.add(cur)
         chain.append(cur)
-        cur = ctx.parent_by_child.get(cur)
+        cur = parent_lookup.get(cur)
 
     chain.reverse()
 
@@ -2331,12 +2491,16 @@ def export_academic_standards(
     )
 
     # 8.
+    export_parent_by_child = _build_export_parent_by_child(
+        root_id=ctx.root_id, export_children=export_children
+    )
     sfi_by_node = _emit_sfis(
         aux_attach_to_expectation=aux_attach_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
+        export_parent_by_child=export_parent_by_child,
         orphan_aux_node_ids=set(reparent_stats.get("orphan_aux_node_ids") or []),
     )
 
