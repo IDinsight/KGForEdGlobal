@@ -19,6 +19,8 @@ from typing import Any, Iterable
 from uuid import UUID, uuid5
 
 # Third Party Library
+import pycountry
+
 from loguru import logger
 
 # Package Library
@@ -26,15 +28,10 @@ from skg.kgs.export_academic_standards import AcademicStandardsExport
 from skg.kgs.llm import infer_atomic_skills
 from skg.kgs.prompts import decompose_atomic_skills
 from skg.kgs.schemas import LearningComponent, Relationship, StandardsFrameworkItem
-from skg.kgs.utils import (
-    ExportContext,
-    KGDirs,
-    format_language_for_prompt,
-    normalize_ws,
-    stable_text_hash,
-)
+from skg.kgs.utils import ExportContext, KGDirs, normalize_ws, stable_text_hash
 from skg.kgs.validators import validate_atomic_skills
 from skg.schemas import CreateKGConfig
+from skg.utils.constants import LANG_PRIMARY_CODE_TO_NAME
 from skg.utils.general import open_json_type, write_to_json
 
 # Inline bullets: exclude hyphen/dash so we never split hyphenated words.
@@ -1481,6 +1478,50 @@ def export_learning_components(
         lcs=lcs,
         rels=rels,
     )
+
+
+def format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
+    """Format a BCP-47 language tag as a human-friendly language name for prompts.
+
+    Parameters
+    ----------
+    include_tag
+        If True, include the original tag in parentheses, e.g. "English (en)".
+    tag
+        A BCP-47 language tag like "en", "fr", "sw", or "en-US". May be None.
+
+    Returns
+    -------
+    str
+        A human-readable language name (optionally with the tag).
+    """
+
+    raw = normalize_ws(str(tag or "")).strip()
+
+    if not raw:
+        return "English"
+
+    # Normalize tag formatting but preserve the original for display.
+    tag_norm = raw.replace("_", "-")
+    primary = tag_norm.split("-")[0].lower().strip()
+    name = LANG_PRIMARY_CODE_TO_NAME.get(primary)
+
+    if not name:
+        lang = (
+            pycountry.languages.get(alpha_2=primary)
+            or pycountry.languages.get(alpha_3=primary)
+            or pycountry.languages.get(bibliographic=primary)
+            or pycountry.languages.get(terminology=primary)
+        )
+
+        if lang and getattr(lang, "name", None):
+            name = str(lang.name)
+
+    # Final fallback: return the tag itself.
+    if not name:
+        return tag_norm
+
+    return f"{name} ({tag_norm})" if include_tag else name
 
 
 def load_learning_components_export(kg_dirs: KGDirs) -> LearningComponentsExport:
