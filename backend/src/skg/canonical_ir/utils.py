@@ -90,8 +90,8 @@ def cross_check_stitching_run(
     ------
     ValueError
         If canonical_ir_config is not provided.
-        If the computed doc_key from the PDF does not match the doc_key in the
-        stitching run metadata.
+        If the computed `doc_key` from the PDF does not match the `doc_key` in the
+            stitching run metadata.
     """
 
     if not canonical_ir_config:

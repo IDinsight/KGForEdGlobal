@@ -33,6 +33,7 @@ from loguru import logger
 # the command line. However, it is not necessary if it is imported from a pip install.
 if __name__ == "__main__":
     PACKAGE_PATH = Path(__file__).resolve().parents[2]
+
     if PACKAGE_PATH not in sys.path:
         print(f"Appending '{PACKAGE_PATH}' to system path...")
         sys.path.append(str(PACKAGE_PATH))
@@ -52,6 +53,7 @@ from skg.kgs.reporting import (
 from skg.kgs.utils import (
     KGDirs,
     build_kg_export_context,
+    cross_check_canonical_ir_run,
     get_page_image_dims,
     merge_graph_bundles,
     persist_kg_run,
@@ -66,7 +68,7 @@ cli = typer.Typer(no_args_is_help=True)
 
 def create_kgs(
     *,
-    canonical_ir_fp: Path,
+    canonical_ir: CanonicalIR,
     config: CreateKGConfig,
     kg_dirs: KGDirs,
     provenance_context: dict | None = None,
@@ -81,19 +83,18 @@ def create_kgs(
 
     The process is as follows:
 
-    1. Load the CanonicalIR JSON and validate it.
-    2. Build the knowledge graph export context.
-    3. Export (or load) academic standards.
-    4. Export (or load) Learning Components KG and write combined Standards + Learning
+    1. Build the knowledge graph export context.
+    2. Export (or load) academic standards.
+    3. Export (or load) Learning Components KG and write combined Standards + Learning
         Components graph bundle.
-    5. Optionally export (or load) Learning Progressions KG and write combined
+    4. Optionally export (or load) Learning Progressions KG and write combined
         Standards + Learning Components + Learning Progressions graph bundle.
-    6. Build reporting and validation artifacts, write to disk, and log console summary.
+    5. Build reporting and validation artifacts, write to disk, and log console summary.
 
     Parameters
     ----------
-    canonical_ir_fp
-        The file path to the CanonicalIR JSON.
+    canonical_ir
+        The CanonicalIR object loaded from the canonical IR JSON file.
     config
         The knowledge graph run configuration.
     kg_dirs
@@ -110,12 +111,9 @@ def create_kgs(
     """
 
     # 1.
-    canonical_ir = CanonicalIR.model_validate(open_json_type(canonical_ir_fp))
-
-    # 2.
     kg_export_ctx = build_kg_export_context(canonical_ir=canonical_ir, config=config)
 
-    # 3.
+    # 2.
     academic_standards, as_reused = load_or_export_academic_standards(
         canonical_ir_created_at=canonical_ir.created_at,
         config=config,
@@ -125,7 +123,7 @@ def create_kgs(
         provenance_context=provenance_context,
     )
 
-    # 4.
+    # 3.
     learning_components, lc_reused = load_or_export_learning_components(
         academic_standards=academic_standards,
         config=config,
@@ -157,7 +155,7 @@ def create_kgs(
         )
         write_to_json(fp=combined_as_lc_fp, json_info=combined_bundle)
 
-    # 5.
+    # 4.
     learning_progressions = None
 
     if config.generate_progressions is True:
@@ -192,7 +190,7 @@ def create_kgs(
             )
             write_to_json(fp=combined_all_fp, json_info=combined_bundle)
 
-    # 6.
+    # 5.
     policy_report = build_policy_coverage_report(
         academic_standards=academic_standards,
         ctx=kg_export_ctx,
@@ -244,7 +242,7 @@ def create(
     The process is as follows:
 
     1. Load config and validate extraction run existence.
-    2. Check doc_key consistency.
+    2. Cross-check canonical IR run results.
     3. Persist KG creation run metadata.
     4. Create Learning Commons knowledge graphs.
 
@@ -257,9 +255,6 @@ def create(
     ------
     Exception
         If any part of the knowledge graph creation process fails.
-    ValueError
-        If the computed doc_key from the PDF does not match the doc_key in the
-        canonical IR run metadata.
     """
 
     # 1.
@@ -280,24 +275,19 @@ def create(
     extraction_run_config = RunCtx.model_validate(
         open_json_type(extraction_run_results_dir / "extraction_run.json")
     )
-
-    # 2.
     expected_doc_key = extraction_run_config.extra["doc_key"]
 
-    if computed_doc_key != expected_doc_key:
-        raise ValueError(
-            f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
-            f"  computed doc_key:          {computed_doc_key}\n"
-            f"  extraction_run.json key:    {expected_doc_key}\n"
-            f"You are likely creating KGs using a different PDF than the one used to "
-            f"create the canonical IR. Pass the same PDF used in the canonical IR run "
-            f"or re-run the canonical IR."
-        )
-
-    kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
+    # 2.
+    canonical_ir = cross_check_canonical_ir_run(
+        canonical_ir_fp=canonical_ir_fp,
+        computed_doc_key=computed_doc_key,
+        expected_doc_key=expected_doc_key,
+        extraction_config=extraction_config,
+        kg_config=config,
+    )
 
     # 3.
+    kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
     try:
@@ -307,7 +297,7 @@ def create(
         )
 
         create_kgs(
-            canonical_ir_fp=canonical_ir_fp,
+            canonical_ir=canonical_ir,
             config=config,
             kg_dirs=kg_dirs,
             provenance_context={
@@ -325,6 +315,7 @@ def create(
             },
         )
         kg_run.extra["status"] = "success"
+
         logger.success("KG creation completed successfully!")
     except Exception as e:  # pylint: disable=broad-except
         kg_run.extra["status"] = "error"

@@ -20,9 +20,9 @@ from PIL import Image
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR, SegmentDecision
-from skg.schemas import CreateKGConfig, RunCtx
+from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
 from skg.utils.constants import StatementRole
-from skg.utils.general import make_dir, write_to_json
+from skg.utils.general import make_dir, open_json_type, write_to_json
 
 # Minimal primary-language map for common BCP-47 tags seen in primary-school curricula.
 # We still attempt to resolve unknown codes via `pycountry`.
@@ -535,68 +535,6 @@ def _verify_tree_integrity(ctx: ExportContext) -> None:
     _validate_no_cycles(ctx)
 
 
-def canon_str_pair(a: str, b: str) -> tuple[str, str]:
-    """Canonicalize an undirected pair of UUID strings by lexicographic sort.
-
-    This is the single source of truth for how undirected (relatesTo) edge pairs are
-    canonicalized when compared as *strings*. All code that builds or checks
-    forbidden-pair sets, validator duplicate detection, and disposition-map keys for
-    undirected relationships should use this function to ensure consistent ordering.
-
-    Parameters
-    ----------
-    a
-        The first UUID string.
-    b
-        The second UUID string.
-
-    Returns
-    -------
-    tuple[str, str]
-        A tuple `(lo, hi)` where `lo <= hi` lexicographically.
-    """
-
-    return (a, b) if a <= b else (b, a)
-
-
-def create_kg_dirs(*, output_dir: Path) -> KGDirs:
-    """Create KG directories for a given KG run.
-
-    Parameters
-    ----------
-    output_dir
-        The output directory root.
-
-    Returns
-    -------
-    KGDirs
-        The created KG directories.
-    """
-
-    root = output_dir
-    academic_standards = root / "academic_standards"
-    learning_components = root / "learning_components"
-    learning_progressions = root / "learning_progressions"
-    combined = root / "combined"
-
-    for p in [
-        root,
-        academic_standards,
-        learning_components,
-        learning_progressions,
-        combined,
-    ]:
-        make_dir(p)
-
-    return KGDirs(
-        root=root,
-        academic_standards=academic_standards,
-        learning_components=learning_components,
-        learning_progressions=learning_progressions,
-        combined=combined,
-    )
-
-
 def build_kg_export_context(
     *, canonical_ir: CanonicalIR, config: CreateKGConfig
 ) -> ExportContext:
@@ -720,6 +658,122 @@ def build_kg_export_context(
     _verify_columns_signature(ctx=ctx, segment_decisions=canonical_ir.segment_decisions)
 
     return ctx
+
+
+def canon_str_pair(a: str, b: str) -> tuple[str, str]:
+    """Canonicalize an undirected pair of UUID strings by lexicographic sort.
+
+    This is the single source of truth for how undirected (relatesTo) edge pairs are
+    canonicalized when compared as *strings*. All code that builds or checks
+    forbidden-pair sets, validator duplicate detection, and disposition-map keys for
+    undirected relationships should use this function to ensure consistent ordering.
+
+    Parameters
+    ----------
+    a
+        The first UUID string.
+    b
+        The second UUID string.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple `(lo, hi)` where `lo <= hi` lexicographically.
+    """
+
+    return (a, b) if a <= b else (b, a)
+
+
+def create_kg_dirs(*, output_dir: Path) -> KGDirs:
+    """Create KG directories for a given KG run.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory root.
+
+    Returns
+    -------
+    KGDirs
+        The created KG directories.
+    """
+
+    root = output_dir
+    academic_standards = root / "academic_standards"
+    learning_components = root / "learning_components"
+    learning_progressions = root / "learning_progressions"
+    combined = root / "combined"
+
+    for p in [
+        root,
+        academic_standards,
+        learning_components,
+        learning_progressions,
+        combined,
+    ]:
+        make_dir(p)
+
+    return KGDirs(
+        root=root,
+        academic_standards=academic_standards,
+        learning_components=learning_components,
+        learning_progressions=learning_progressions,
+        combined=combined,
+    )
+
+
+def cross_check_canonical_ir_run(
+    *,
+    canonical_ir_fp: Path,
+    computed_doc_key: str,
+    expected_doc_key: str,
+    extraction_config: ExtractionConfig,
+    kg_config: CreateKGConfig | None,
+) -> CanonicalIR:
+    """Cross-check that the canonical IR run matches expected parameters and load the
+    canonical IR for the KG run.
+
+    Parameters
+    ----------
+    canonical_ir_fp
+        The file path to the canonical IR JSON.
+    computed_doc_key
+        The document key computed from the source PDF bytes by the caller.
+    expected_doc_key
+        The expected document key (hex string) from the extraction run metadata.
+    extraction_config
+        The extraction configuration used for the run.
+    kg_config
+        The KG creation configuration for the run.
+
+    Returns
+    -------
+    CanonicalIR
+        The loaded CanonicalIR instance from the provided file path.
+
+    Raises
+    ------
+    ValueError
+        If kg_config is not provided.
+        If the computed `doc_key` from the PDF does not match the `doc_key` in the
+            canonical IR run metadata.
+    """
+
+    if not kg_config:
+        raise ValueError("KG config is required")
+
+    if computed_doc_key != expected_doc_key:
+        raise ValueError(
+            f"PDF doc_key mismatch.\n"
+            f"  PDF provided to verify():  {extraction_config.pdf_fp}\n"
+            f"  computed doc_key:          {computed_doc_key}\n"
+            f"  extraction_run.json key:   {expected_doc_key}\n"
+            f"You are likely creating KGs using a different PDF than the one used to "
+            f"create the canonical IR. Pass the same PDF used in the canonical IR run "
+            f"or re-run the canonical IR."
+        )
+
+    return CanonicalIR.model_validate(open_json_type(canonical_ir_fp))
 
 
 def format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
