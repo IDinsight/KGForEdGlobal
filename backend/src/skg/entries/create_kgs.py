@@ -73,7 +73,7 @@ def create_kgs(
     kg_dirs: KGDirs,
     provenance_context: dict | None = None,
 ) -> None:
-    """Create Learning Commons knowledge graphs from a single CanonicalIR JSON.
+    """Create Learning Commons knowledge graphs from a single CanonicalIR.
 
     Each export phase checks whether its sentinel bundle file already exists on disk.
     When `config.overwrite` is `False` and the sentinel exists, the prior export is
