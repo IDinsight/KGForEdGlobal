@@ -177,10 +177,6 @@ argcomplete==3.6.3 \
     --hash=sha256:62e8ed4fd6a45864acc8235409461b72c9a28ee785a2011cc5eb78318786c89c \
     --hash=sha256:f5007b3a600ccac5d25bbce33089211dfd49eab4a7718da3f10e3082525a92ce
     # via pydantic-ai-slim
-asgiref==3.11.0 \
-    --hash=sha256:13acff32519542a1736223fb79a715acdebe24286d98e8b164a73085f40da2c4 \
-    --hash=sha256:1db9021efadb0d9512ce8ffaf72fcef601c7b73a8807a1bb2ef143dc6b14846d
-    # via opentelemetry-instrumentation-asgi
 astroid==3.3.11 \
     --hash=sha256:1e5a5011af2920c7c67a53f65d536d65bfa7116feeaf2354d8b94f29573bb0ce \
     --hash=sha256:54c760ae8322ece1abd213057c4b5bba7c49818853fc901ef09719a60dbf9dec
@@ -1289,9 +1285,7 @@ langcodes==3.5.1 \
 logfire==4.25.0 \
     --hash=sha256:1865b832e08c58a3fb0d21b24460ee9c6cbeff12db6038c508fb966699ce81c2 \
     --hash=sha256:f9a6bf6d40fd3e2c2a86a364617246cadecbde620b4ecccb17c499140f1ebc13
-    # via
-    #   skg (pyproject.toml)
-    #   pydantic-ai-slim
+    # via pydantic-ai-slim
 logfire-api==4.25.0 \
     --hash=sha256:0d607eb09ef5426e26f376ff277a8d401bc5b7b4178ea66db404e13c368494cf \
     --hash=sha256:7562d5adfe3987291039dddb21947c86cb9d832d068c87d9aa23db86ef07095b
@@ -1709,9 +1703,7 @@ numpy==2.4.1 \
 openai==2.12.0 \
     --hash=sha256:7177998ce49ba3f90bcce8b5769a6666d90b1f328f0518d913aaec701271485a \
     --hash=sha256:cc6dcbcb8bccf05976d983f6516c5c1f447b71c747720f1530b61e8f858bcbc9
-    # via
-    #   skg (pyproject.toml)
-    #   pydantic-ai-slim
+    # via pydantic-ai-slim
 openapi-pydantic==0.5.1 \
     --hash=sha256:a3a09ef4586f5bd760a8df7f43028b60cafb6d9f61de2acba9574766255ab146 \
     --hash=sha256:ff6835af6bde7a459fb93eb93bb92b8749b754fc6e51b2f1590a19dc3005ee0d
@@ -1724,11 +1716,7 @@ opentelemetry-api==1.39.1 \
     #   mistralai
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-instrumentation
-    #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-fastapi
     #   opentelemetry-instrumentation-httpx
-    #   opentelemetry-instrumentation-redis
-    #   opentelemetry-instrumentation-system-metrics
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
     #   pydantic-ai-slim
@@ -1747,30 +1735,10 @@ opentelemetry-instrumentation==0.60b1 \
     --hash=sha256:57ddc7974c6eb35865af0426d1a17132b88b2ed8586897fee187fd5b8944bd6a
     # via
     #   logfire
-    #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-fastapi
     #   opentelemetry-instrumentation-httpx
-    #   opentelemetry-instrumentation-redis
-    #   opentelemetry-instrumentation-system-metrics
-opentelemetry-instrumentation-asgi==0.60b1 \
-    --hash=sha256:16bfbe595cd24cda309a957456d0fc2523f41bc7b076d1f2d7e98a1ad9876d6f \
-    --hash=sha256:d48def2dbed10294c99cfcf41ebbd0c414d390a11773a41f472d20000fcddc25
-    # via opentelemetry-instrumentation-fastapi
-opentelemetry-instrumentation-fastapi==0.60b1 \
-    --hash=sha256:af94b7a239ad1085fc3a820ecf069f67f579d7faf4c085aaa7bd9b64eafc8eaf \
-    --hash=sha256:de608955f7ff8eecf35d056578346a5365015fd7d8623df9b1f08d1c74769c01
-    # via logfire
 opentelemetry-instrumentation-httpx==0.60b1 \
     --hash=sha256:a506ebaf28c60112cbe70ad4f0338f8603f148938cb7b6794ce1051cd2b270ae \
     --hash=sha256:f37636dd742ad2af83d896ba69601ed28da51fa4e25d1ab62fde89ce413e275b
-    # via logfire
-opentelemetry-instrumentation-redis==0.60b1 \
-    --hash=sha256:33bef0ff9af6f2d88de90c1cd7e25675c10a16d4f9ee5ae7592b28bb08b78139 \
-    --hash=sha256:ecafa8f81c88917b59f0d842fb3d157f3a8edc71fb4b85bebca3bc19432ce7b8
-    # via logfire
-opentelemetry-instrumentation-system-metrics==0.60b1 \
-    --hash=sha256:21fb040ed6cfabc8ca97c63548fd01689f7ec92c64bbc6cfd08f30489a336fc6 \
-    --hash=sha256:b9c3a40f31f20c694c386bd28fa0eed5268532bb78f545bbd8e23bbe99d81e09
     # via logfire
 opentelemetry-proto==1.39.1 \
     --hash=sha256:22cdc78efd3b3765d09e68bfbd010d4fc254c9818afd0b6b423387d9dee46007 \
@@ -1791,18 +1759,12 @@ opentelemetry-semantic-conventions==0.60b1 \
     --hash=sha256:9fa8c8b0c110da289809292b0591220d3a7b53c1526a23021e977d68597893fb
     # via
     #   opentelemetry-instrumentation
-    #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-fastapi
     #   opentelemetry-instrumentation-httpx
-    #   opentelemetry-instrumentation-redis
     #   opentelemetry-sdk
 opentelemetry-util-http==0.60b1 \
     --hash=sha256:0d97152ca8c8a41ced7172d29d3622a219317f74ae6bb3027cfbdcf22c3cc0d6 \
     --hash=sha256:66381ba28550c91bee14dcba8979ace443444af1ed609226634596b4b0faf199
-    # via
-    #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-fastapi
-    #   opentelemetry-instrumentation-httpx
+    # via opentelemetry-instrumentation-httpx
 packaging==25.0 \
     --hash=sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484 \
     --hash=sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f
@@ -2151,27 +2113,6 @@ protobuf==5.29.5 \
     #   opentelemetry-proto
     #   temporalio
     #   xai-sdk
-psutil==7.1.3 \
-    --hash=sha256:0005da714eee687b4b8decd3d6cc7c6db36215c9e74e5ad2264b90c3df7d92dc \
-    --hash=sha256:1068c303be3a72f8e18e412c5b2a8f6d31750fb152f9cb106b54090296c9d251 \
-    --hash=sha256:18349c5c24b06ac5612c0428ec2a0331c26443d259e2a0144a9b24b4395b58fa \
-    --hash=sha256:19644c85dcb987e35eeeaefdc3915d059dac7bd1167cdcdbf27e0ce2df0c08c0 \
-    --hash=sha256:2bdbcd0e58ca14996a42adf3621a6244f1bb2e2e528886959c72cf1e326677ab \
-    --hash=sha256:31d77fcedb7529f27bb3a0472bea9334349f9a04160e8e6e5020f22c59893264 \
-    --hash=sha256:3792983e23b69843aea49c8f5b8f115572c5ab64c153bada5270086a2123c7e7 \
-    --hash=sha256:3bb428f9f05c1225a558f53e30ccbad9930b11c3fc206836242de1091d3e7dd3 \
-    --hash=sha256:56d974e02ca2c8eb4812c3f76c30e28836fffc311d55d979f1465c1feeb2b68b \
-    --hash=sha256:6c86281738d77335af7aec228328e944b30930899ea760ecf33a4dba66be5e74 \
-    --hash=sha256:8f33a3702e167783a9213db10ad29650ebf383946e91bc77f28a5eb083496bc9 \
-    --hash=sha256:95ef04cf2e5ba0ab9eaafc4a11eaae91b44f4ef5541acd2ee91d9108d00d59a7 \
-    --hash=sha256:ad81425efc5e75da3f39b3e636293360ad8d0b49bed7df824c79764fb4ba9b8b \
-    --hash=sha256:b403da1df4d6d43973dc004d19cee3b848e998ae3154cc8097d139b77156c353 \
-    --hash=sha256:bc31fa00f1fbc3c3802141eede66f3a2d51d89716a194bf2cd6fc68310a19880 \
-    --hash=sha256:bd0d69cee829226a761e92f28140bec9a5ee9d5b4fb4b0cc589068dbfff559b1 \
-    --hash=sha256:c525ffa774fe4496282fb0b1187725793de3e7c6b29e41562733cae9ada151ee \
-    --hash=sha256:f39c2c19fe824b47484b96f9692932248a54c43799a84282cfe58d05a6449efd \
-    --hash=sha256:fac9cd332c67f4422504297889da5ab7e05fd11e3c4392140f7370f4208ded1f
-    # via opentelemetry-instrumentation-system-metrics
 py==1.11.0 \
     --hash=sha256:51c75c4126074b472f746a24399ad32f6053d1b34b68d2fa41e558e6f4a98719 \
     --hash=sha256:607c53218732647dff4acdfcd50cb62615cedf612e72d1724fb1a0cc6405b378
@@ -2955,7 +2896,6 @@ tenacity==9.1.2 \
     --hash=sha256:1169d376c297e7de388d18b4481760d478b0e99a777cad3a9c86e556f4b697cb \
     --hash=sha256:f77bf36710d8b73a50b2dd155c97b870017ad21afe6ab300326b0371b3b05138
     # via
-    #   skg (pyproject.toml)
     #   google-genai
     #   pydantic-ai-slim
 termcolor==3.2.0 \
@@ -3392,7 +3332,6 @@ wrapt==1.17.3 \
     # via
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-httpx
-    #   opentelemetry-instrumentation-redis
 xai-sdk==1.7.0 \
     --hash=sha256:332672c46ee73a7aad9b05e82db5a5044174bb3f5f038a7acf703f0b0ce6bad0 \
     --hash=sha256:649e7c3bff01510326f13a709dff824256fcdfd2850e21606d25870208989bd1
