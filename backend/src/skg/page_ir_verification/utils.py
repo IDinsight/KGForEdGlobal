@@ -234,9 +234,9 @@ def cross_check_extraction_run(
     if computed_doc_key != expected_doc_key:
         raise ValueError(
             f"PDF doc_key mismatch.\n"
-            f"  PDF provided to verify(): {extraction_config.pdf_fp}\n"
-            f"  computed doc_key:         {computed_doc_key}\n"
-            f"  extraction_run.json key:  {expected_doc_key}\n"
+            f"  PDF provided to verify_page_ir_continuity():    {extraction_config.pdf_fp}\n"
+            f"  computed doc_key:                               {computed_doc_key}\n"
+            f"  extraction_run.json key:                        {expected_doc_key}\n"
             f"You are likely verifying against a different PDF than the one used for "
             f"extraction. Pass the same PDF used in the extraction step or re-run "
             f"extraction."
