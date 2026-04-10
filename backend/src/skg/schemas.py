@@ -576,11 +576,12 @@ class CreateKGConfig(BaseSchema):
         ),
     )
     grouping_role_policy: Literal["loose", "whitelist"] = Field(
-        default="loose",
+        default="whitelist",
         description=(
             "How to interpret node roles as hierarchy groupings during standards export. "
-            "'loose' = current behavior (any non-statement role becomes a grouping). "
-            "'whitelist' = only roles in grouping_roles_whitelist are groupings."
+            "'whitelist' is the safer default for international curricula: only roles in "
+            "grouping_roles_whitelist are treated as hierarchy groupings. "
+            "'loose' is opt-in legacy behavior where any non-statement role becomes a grouping."
         ),
     )
     grouping_roles_whitelist: set[NodeRole] = Field(
@@ -670,7 +671,10 @@ class CreateKGConfig(BaseSchema):
         description=(
             "When grouping_role_policy='whitelist': what to do with nodes that are neither "
             "statement roles (expectation/descriptor/guidance) nor allowed groupings. "
-            "'drop' removes them; 'export_as_sfi_other' emits them as SFIs with type 'Other'."
+            "'drop' removes them. 'export_as_sfi_other' is leaf-only: the node may be "
+            "emitted as an SFI with type 'Other' only when it has no canonical children; "
+            "structural non-grouping parents are dropped and their children are hoisted "
+            "to the nearest surviving ancestor during export."
         ),
     )
     non_standard_columns_signature: set[str] = Field(

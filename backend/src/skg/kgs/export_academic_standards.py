@@ -2597,7 +2597,9 @@ def should_emit_node_with_reason(
     -------
     tuple[bool, str]
         (True, "emitted") if the node should be emitted, or (False, reason) where
-        reason is a human-readable string explaining why the node was dropped.
+        reason is a human-readable string explaining why the node was dropped. In
+        whitelist mode, non-grouping nodes are only eligible for `export_as_sfi_other`
+        when they are leaf nodes.
     """
 
     node = ctx.nodes_by_id[node_id]
@@ -2610,11 +2612,12 @@ def should_emit_node_with_reason(
         if dec and ctx.should_drop_segment(decision=dec):
             dt = dec.get("decision_type", "unknown")
             sig = dec.get("columns_signature")
-
-            if sig and sig in (ctx.kg_config.non_standard_columns_signature or set()):
-                return False, f"dropped:columns_signature:{sig}"
-
-            return False, f"dropped:segment_decision:{dt}"
+            return (
+                (False, f"dropped:columns_signature:{sig}")
+                if sig
+                and sig in (ctx.kg_config.non_standard_columns_signature or set())
+                else (False, f"dropped:segment_decision:{dt}")
+            )
 
     # Role handling.
     if role == StatementRole.GUIDANCE.value and config.guidance_handling == "drop":
@@ -2624,16 +2627,24 @@ def should_emit_node_with_reason(
         return False, "dropped:descriptor_handling:drop"
 
     # Strict grouping policy: if it's not a statement role, it must be an allowed
-    # grouping (otherwise drop or export-as-Other depending on config).
+    # grouping. Non-grouping nodes may only be emitted as `Other` when they are true
+    # leaves. Structural non-grouping nodes are dropped so their children can be
+    # hoisted to the nearest surviving ancestor by
+    # `_reattach_children_of_dropped_nodes`, rather than letting a semantic `Other`
+    # node function as a de facto grouping parent.
     if (
         config.grouping_role_policy == "whitelist"
         and role != NodeRole.FRAMEWORK.value
         and role not in STATEMENT_ROLE_VALUES
         and not _is_grouping_role(config=config, role=role)
     ):
+        if config.non_grouping_role_handling == "drop":
+            return False, "dropped:non_grouping_role:drop"
+
+        has_canonical_children = len(ctx.children_by_parent.get(node_id, [])) > 0
         return (
-            (False, "dropped:non_grouping_role:drop")
-            if config.non_grouping_role_handling == "drop"
+            (False, "dropped:non_grouping_role:structural_parent")
+            if has_canonical_children
             else (True, "emitted")
         )
 
