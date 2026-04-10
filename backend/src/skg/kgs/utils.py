@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any
 
 # Third Party Library
-import pycountry
-
 from loguru import logger
 from PIL import Image
 
@@ -23,19 +21,6 @@ from skg.canonical_ir.schemas import CanonicalIR, SegmentDecision
 from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
 from skg.utils.constants import StatementRole
 from skg.utils.general import make_dir, open_json_type, write_to_json
-
-# Minimal primary-language map for common BCP-47 tags seen in primary-school curricula.
-# We still attempt to resolve unknown codes via `pycountry`.
-_LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
-    "en": "English",
-    "fr": "French",
-    "sw": "Swahili",
-    "wo": "Wolof",
-    "pt": "Portuguese",
-    "es": "Spanish",
-    "ar": "Arabic",
-    "und": "Undetermined",
-}
 
 
 @dataclass
@@ -47,7 +32,7 @@ class ExportContext:
     pdf_name: str
     root_id: str
 
-    # Indexes
+    # Indexes.
     children_by_parent: dict[str, list[str]]
     decisions_by_id: dict[str, dict[str, Any]]
     decisions_by_segment_id: dict[str, dict[str, Any]]
@@ -77,6 +62,7 @@ class ExportContext:
 
                 if isinstance(text_unit_or_none, dict):
                     lang = text_unit_or_none.get("language")
+
                     if lang and lang != "und":
                         return str(lang)
 
@@ -104,13 +90,13 @@ class ExportContext:
 
         role = node["role"]
         assert role, f"Node {child_id} is missing role in provenance: {node}"
-        piece = _compute_base_piece(node=node)
+        piece = _compute_base_piece(node)
 
         if (parent_id, child_id) in self._needs_order_disambiguator:
             oi = self.edge_order_index.get((parent_id, child_id), 0)
 
             # Add a stable disambiguator so sibling collisions cannot produce identical
-            # path keys even when order_index values are duplicated or missing.
+            # path keys even when `order_index` values are duplicated or missing.
             suffix = stable_text_hash(s=child_id, n=8)
             piece = f"{piece}~{oi}~{suffix}"
 
@@ -142,8 +128,10 @@ class ExportContext:
             seen.add(cur)
             chain.append(cur)
             nxt = self.parent_by_child.get(cur)
-            if nxt == cur:  # self-loop guard
+
+            if nxt == cur:  # Self-loop guard
                 break
+
             cur = nxt
 
         chain.reverse()
@@ -230,7 +218,7 @@ class KGDirs:
     combined: Path
 
 
-def _compute_base_piece(*, node: dict[str, Any]) -> str:
+def _compute_base_piece(node: dict[str, Any]) -> str:
     """Compute the base path piece for a canonical node (before order disambiguation).
 
     This is the single source of truth for the string used to identify a node within
@@ -250,12 +238,19 @@ def _compute_base_piece(*, node: dict[str, Any]) -> str:
 
     role = str(node.get("role") or "")
     code = normalize_ws(str(node.get("local_code") or ""))
+    text_source = str(node.get("normalized_text") or node_display_text(node=node))
 
     if role in {item.value for item in StatementRole}:
-        text_for_hash = str(node.get("normalized_text") or node_display_text(node=node))
-        return f"{role}:{code}:{stable_text_hash(s=text_for_hash)}"
+        return f"{role}:{code}:{stable_text_hash(s=text_source)}"
 
-    label = _slugify(s=str(node.get("normalized_text") or node_display_text(node=node)))
+    original = normalize_ws(text_source)
+    lower = original.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", lower).strip("-")
+
+    # Fallback: if everything got stripped (e.g., non-Latin text), use a short stable
+    # hash. The prefix avoids empty/pure-digit oddities.
+    slug = slug or f"h{stable_text_hash(s=original)}"
+    label = slug[:80]
 
     return f"{role}:{code}:{label}" if code else f"{role}:{label}"
 
@@ -281,7 +276,7 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
 
         for cid in kids:
             node = ctx.nodes_by_id[cid]
-            base = _compute_base_piece(node=node)
+            base = _compute_base_piece(node)
 
             if base in seen:
                 needs.add((pid, seen[base]))
@@ -292,11 +287,11 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
     return needs
 
 
-def _pick_text(*, prefer_text_en: bool, unit: Any) -> str:
+def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
     """Retrieve text from a title/body TextUnit dict.
 
     Canonical nodes store title/body as a dict like:
-        {"language": "...", "text": "...", "text_en": "..."}.
+    {"language": "...", "text": "...", "text_en": "..."}.
 
     Parameters
     ----------
@@ -323,34 +318,6 @@ def _pick_text(*, prefer_text_en: bool, unit: Any) -> str:
     return (unit.get("text") or unit.get("text_en") or "").strip()
 
 
-def _slugify(*, max_len: int = 80, s: str) -> str:
-    """Generate a slug from a string.
-
-    Parameters
-    ----------
-    max_len
-        The maximum length of the slug.
-    s
-        The input string to slugify.
-
-    Returns
-    -------
-    str
-        The slugified string.
-    """
-
-    original = normalize_ws(s)
-    lower = original.lower()
-
-    slug = re.sub(r"[^a-z0-9]+", "-", lower).strip("-")
-
-    # Fallback: if everything got stripped (e.g., non-Latin text), use a short stable
-    # hash. The prefix avoids empty/pure-digit oddities.
-    slug = slug or f"h{stable_text_hash(s=original)}"
-
-    return slug[:max_len] if max_len else slug
-
-
 def _validate_decision_references(ctx: ExportContext) -> None:
     """Ensure all decision IDs referenced by nodes exist in the context.
 
@@ -368,9 +335,10 @@ def _validate_decision_references(ctx: ExportContext) -> None:
     missing_decisions = []
 
     for n in ctx.nodes_by_id.values():
-        for did in n.get("source_decision_ids", []):
-            if did not in ctx.decisions_by_id:
-                missing_decisions.append(did)
+        for sid in n.get("source_decision_ids", []):
+            if sid not in ctx.decisions_by_id:
+                missing_decisions.append(sid)
+
                 if len(missing_decisions) >= 10:
                     break
 
@@ -421,7 +389,7 @@ def _validate_no_cycles(ctx: ExportContext) -> None:
             f"{len(cycle_examples)} node(s) do not reach root. "
             f"Examples: {cycle_examples[:5]}. "
             f"This typically indicates a bug in the canonicalization step that "
-            f"produced circular hasChild edges."
+            f"produced circular `hasChild` edges."
         )
 
 
@@ -459,8 +427,8 @@ def _validate_reachability(ctx: ExportContext) -> None:
             dfs(cid)
 
     dfs(ctx.root_id)
-
     all_nodes = set(ctx.nodes_by_id.keys())
+
     if visited != all_nodes:
         missing = sorted(all_nodes - visited)[:20]
         raise ValueError(
@@ -486,7 +454,7 @@ def _validate_root_structure(ctx: ExportContext) -> None:
 def _verify_columns_signature(
     *, ctx: ExportContext, segment_decisions: list[SegmentDecision]
 ) -> None:
-    """Verify that table segment decisions have columns_signature when required.
+    """Verify that table segment decisions have `columns_signature` when required.
 
     Parameters
     ----------
@@ -542,12 +510,12 @@ def build_kg_export_context(
 
     The process is as follows:
 
-    1. Serialize nodes
-    2. Build tree indexes
-    3. Serialize decisions by ID
+    1. Serialize nodes.
+    2. Build tree indexes.
+    3. Serialize decisions by ID.
     4. Serialize decisions by segment ID (choose a representative decision per
-        segment_id to handle chunking). For segments with multiple decisions (e.g.,
-        chunked tables), choose a single representative decision per segment_id.
+        `segment_id` to handle chunking). For segments with multiple decisions (e.g.,
+        chunked tables), choose a single representative decision per `segment_id`.
         Tiebreaker: (confidence DESC, decision_id DESC).
             - `confidence` reflects the LLM's reported certainty, so higher is
                 preferred.
@@ -555,8 +523,8 @@ def build_kg_export_context(
                 ordering is stable across reruns but carries no semantic meaning. It
                 serves solely to break ties when confidence values are equal, ensuring
                 a single deterministic winner per segment.
-    5. Initialize context
-    6. Post-init calculations
+    5. Initialize the export context.
+    6. Post-init calculations.
 
     Parameters
     ----------
@@ -585,15 +553,12 @@ def build_kg_export_context(
     parent_by_child: dict[str, str] = {}
 
     for edge in canonical_ir.edges:
-        assert edge.rel == "hasChild", f"Unexpected edge relationship: {edge.rel}"
-
         cid = edge.child_id
         oi = edge.order_index
         pid = edge.parent_id
-
-        assert pid in nodes_by_id, f"Edge parent_id not found in nodes: {pid}"
+        assert edge.rel == "hasChild", f"Unexpected edge relationship: {edge.rel}"
         assert cid in nodes_by_id, f"Edge child_id not found in nodes: {cid}"
-
+        assert pid in nodes_by_id, f"Edge parent_id not found in nodes: {pid}"
         children_by_parent[pid].append(cid)
         edge_order_index[(pid, cid)] = oi
 
@@ -629,12 +594,11 @@ def build_kg_export_context(
 
     decisions_by_segment_id: dict[str, dict[str, Any]] = {}
 
+    # Dump the best decision to a dict.
     for sid, decisions in by_seg.items():
         ds_sorted = sorted(
             decisions, key=lambda d: (d.confidence, d.decision_id), reverse=True
         )
-
-        # Dump the best decision to a dict.
         decisions_by_segment_id[sid] = ds_sorted[0].model_dump(mode="json")
 
     # 5.
@@ -663,8 +627,8 @@ def build_kg_export_context(
 def canon_str_pair(a: str, b: str) -> tuple[str, str]:
     """Canonicalize an undirected pair of UUID strings by lexicographic sort.
 
-    This is the single source of truth for how undirected (relatesTo) edge pairs are
-    canonicalized when compared as *strings*. All code that builds or checks
+    This is the single source of truth for how undirected (i.e., `relatesTo`) edge
+    pairs are canonicalized when compared as *strings*. All code that builds or checks
     forbidden-pair sets, validator duplicate detection, and disposition-map keys for
     undirected relationships should use this function to ensure consistent ordering.
 
@@ -776,50 +740,6 @@ def cross_check_canonical_ir_run(
     return CanonicalIR.model_validate(open_json_type(canonical_ir_fp))
 
 
-def format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
-    """Format a BCP-47 language tag as a human-friendly language name for prompts.
-
-    Parameters
-    ----------
-    include_tag
-        If True, include the original tag in parentheses, e.g. "English (en)".
-    tag
-        A BCP-47 language tag like "en", "fr", "sw", or "en-US". May be None.
-
-    Returns
-    -------
-    str
-        A human-readable language name (optionally with the tag).
-    """
-
-    raw = normalize_ws(str(tag or "")).strip()
-
-    if not raw:
-        return "English"
-
-    # Normalize tag formatting but preserve the original for display.
-    tag_norm = raw.replace("_", "-")
-    primary = tag_norm.split("-")[0].lower().strip()
-    name = _LANG_PRIMARY_CODE_TO_NAME.get(primary)
-
-    if not name:
-        lang = (
-            pycountry.languages.get(alpha_2=primary)
-            or pycountry.languages.get(alpha_3=primary)
-            or pycountry.languages.get(bibliographic=primary)
-            or pycountry.languages.get(terminology=primary)
-        )
-
-        if lang and getattr(lang, "name", None):
-            name = str(lang.name)
-
-    # Final fallback: return the tag itself.
-    if not name:
-        return tag_norm
-
-    return f"{name} ({tag_norm})" if include_tag else name
-
-
 def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
     """Get page image dimensions from extraction results. Page images from extraction
     should always be in extraction_dir/page_images as PNGs named 0000.png, 0001.png, ...
@@ -837,11 +757,9 @@ def get_page_image_dims(extraction_dir: Path) -> list[dict[str, Any]]:
 
     page_dir = extraction_dir / "page_images"
     assert page_dir.exists(), f"Page images directory not found: {page_dir}"
-
     pngs = list(page_dir.glob("*.png"))
     assert pngs, f"No PNG page images found in: {page_dir}"
-
-    dims: list[dict] = []
+    dims: list[dict[str, Any]] = []
 
     # Sort by numeric stem to preserve true page order (0000, 0001, ...).
     def _page_index(p: Path) -> int:
@@ -883,8 +801,8 @@ def keyify(label: str) -> str:
     """Deterministically normalize a label into a compact key token.
 
     This is the canonical implementation used by both the Academic Standards export
-    (for topic_path_key construction) and the Learning Progressions export (for
-    lp_thread_key construction). Keeping a single implementation ensures thread-key
+    (for `topic_path_key` construction) and the Learning Progressions export (for
+    `lp_thread_key construction`). Keeping a single implementation ensures thread-key
     consistency across the pipeline.
 
     Parameters
@@ -909,7 +827,6 @@ def keyify(label: str) -> str:
     # Normalize unicode and strip diacritics to ASCII where possible.
     norm = unicodedata.normalize("NFKD", raw)
     ascii_s = norm.encode("ascii", "ignore").decode("ascii")
-
     s = " ".join(ascii_s.strip().split()).lower()
     s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
 
@@ -946,12 +863,13 @@ def merge_graph_bundles(
     """
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    included_graph_types: list[str] = []
     nodes_by_id: dict[str, dict[str, Any]] = {}
     rels_by_id: dict[str, dict[str, Any]] = {}
-    included_graph_types: list[str] = []
 
     for b in bundles:
         gt = str(b.get("graph_type", "")).strip()
+
         if gt:
             included_graph_types.append(gt)
 
@@ -1003,6 +921,7 @@ def merge_graph_bundles(
                     raise ValueError(
                         f"Relationship ID collision with differing properties: {rid}"
                     )
+
                 if (
                     existing.get("type") != r.get("type")
                     or existing.get("start") != r.get("start")
@@ -1018,7 +937,7 @@ def merge_graph_bundles(
             else:
                 rels_by_id[rid] = r
 
-    # Compute a correct merged graph_type from what was actually merged.
+    # Compute a correct merged `graph_type` from what was actually merged.
     included_unique = sorted(set(included_graph_types))
     preferred_order = [
         "academic_standards",
@@ -1043,7 +962,7 @@ def merge_graph_bundles(
 
 def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
     """Determine display text for a node, preferring title over body, and falling back
-    to normalized_text, then local_code or role if no text found.
+    to `normalized_text`, then `local_code` or `role` if no text found.
 
     Parameters
     ----------
