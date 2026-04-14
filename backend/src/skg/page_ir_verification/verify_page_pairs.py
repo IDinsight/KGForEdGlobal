@@ -1042,7 +1042,6 @@ def execute_verification_attempts(
                 min_confidence_to_stop_negative_search=(
                     config.min_confidence_to_stop_negative_search
                 ),
-                model=config.model,
                 next_item=next_item_json,
                 next_item_excerpt=make_verification_excerpt(
                     item=strip_continuity_hints(next_item_json)

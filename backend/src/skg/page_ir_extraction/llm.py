@@ -33,6 +33,7 @@ from loguru import logger
 from pydantic_ai import BinaryContent
 
 # Package Library
+from skg.config import Settings
 from skg.page_ir_extraction.agents import (
     create_page_ir_extraction_agent,
     create_page_ir_validation_agent,
@@ -126,7 +127,6 @@ def _run_validation_agent(
     *,
     image_height: int,
     image_width: int,
-    model: str,
     page_index: int,
     page_ir: PageIR,
     png_bytes: bytes,
@@ -146,8 +146,6 @@ def _run_validation_agent(
         The image height in pixels.
     image_width
         The image width in pixels.
-    model
-        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
     page_index
         The 0-based page index.
     page_ir
@@ -176,7 +174,7 @@ def _run_validation_agent(
         image_height=image_height,
         image_width=image_width,
         instructions=prompts.system_message,
-        model=model,
+        model_config=Settings.llm_config("page_ir_extraction"),
         page_index=page_index,
         verify_quality_fn=verify_page_ir_extraction_quality,
     )
@@ -198,7 +196,6 @@ def extract_page_ir(
     image_height: int,
     image_width: int,
     languages: list[str],
-    model: str,
     page_index: int,
     pdf_page: pymupdf.Page | None = None,
     png_fp: Path,
@@ -230,8 +227,6 @@ def extract_page_ir(
         The image width in pixels.
     languages
         Expected languages context for the prompt.
-    model
-        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
     page_index
         The 0-based page index.
     pdf_page
@@ -288,7 +283,7 @@ def extract_page_ir(
         image_height=image_height,
         image_width=image_width,
         instructions=prompts.system_message,
-        model=model,
+        model_config=Settings.llm_config("page_ir_extraction"),
         page_index=page_index,
         raw_page_irs_dir=raw_page_irs_dir,
         verify_quality_fn=verify_page_ir_extraction_quality,
@@ -308,7 +303,6 @@ def extract_page_ir(
     verdict = _run_validation_agent(
         image_height=image_height,
         image_width=image_width,
-        model=model,
         page_index=page_index,
         page_ir=page_ir,
         png_bytes=png_bytes,

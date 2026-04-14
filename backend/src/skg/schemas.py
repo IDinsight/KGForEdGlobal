@@ -227,9 +227,6 @@ class ExtractionConfig(BaseSchema):
         description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
         min_length=1,
     )
-    model: str = Field(
-        "openai:gpt-5.2-2025-12-11", description="Model for page IR extraction."
-    )
     output_dir: Path = Field(..., description="Output directory root.")
     overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
     pdf_fp: FilePath = Field(
@@ -322,10 +319,6 @@ class VerificationConfig(BaseSchema):
         description="Minimum confidence for a same-family primary-primary negative verdict to stop alternate candidate-pair search for a page boundary. This controls verification search budget, not compile-time patching.",
         ge=0.0,
         le=1.0,
-    )
-    model: str = Field(
-        "openai:gpt-5.2-2025-12-11",
-        description="OpenAI model for page IR verification.",
     )
     next_page_crop_padding_px: int = Field(
         120,
@@ -661,7 +654,6 @@ class CreateKGConfig(BaseSchema):
             "a conservative placeholder."
         ),
     )
-    model: str = Field("openai:gpt-5.2-2025-12-11", description="OpenAI model for KGs.")
     namespace_uuid: UUID = Field(
         default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
         description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
@@ -1098,9 +1090,9 @@ class RunCtx(BaseSchema):
         default_factory=dict,
         description="Arbitrary key-value metadata attached to the run (e.g., status, error details, doc_key).",
     )
-    models: list[str] = Field(
-        default_factory=list,
-        description="Ordered list of model identifiers used during the run.",
+    models: dict[str, str] = Field(
+        default_factory=dict,
+        description="Dictionary mapping model types to their identifiers used during the run.",
     )
     run_id: str = Field(
         description="Unique identifier for this run (typically a UUID or slug)."

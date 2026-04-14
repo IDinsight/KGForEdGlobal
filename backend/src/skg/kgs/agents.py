@@ -12,7 +12,6 @@ from typing import Callable, Optional
 # Third Party Library
 from loguru import logger
 from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
 # Package Library
 from skg.kgs.prompts import (
@@ -20,6 +19,7 @@ from skg.kgs.prompts import (
     double_check_learning_progressions,
 )
 from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
+from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.validators import QualityError
 
 
@@ -28,7 +28,7 @@ def create_atomic_skills_agent(
     always_double_check_first_attempt: bool,
     instructions: str,
     max_retries: int = 3,
-    model: str,
+    model_config: ModelConfig,
     validator: Optional[Callable[[AtomicSkillsResponse], None]] = None,
 ) -> Agent:
     """Create an Agent configured for atomic skills inference.
@@ -46,8 +46,8 @@ def create_atomic_skills_agent(
         System-level instructions for the agent.
     max_retries
         Maximum number of output-validation retries (correction turns).
-    model
-        The model identifier (e.g., `openai:gpt-5.2-2025-12-11`).
+    model_config
+        The ModelConfig containing the model identifier and any relevant settings.
     validator
         Optional post-parse validator; should raise `QualityError` on failure.
 
@@ -60,13 +60,11 @@ def create_atomic_skills_agent(
     attempt_counter: dict[str, int] = {"value": 0}
 
     agent = Agent(
-        model,
+        model_config.model,
         instructions=instructions,
-        model_settings=OpenAIResponsesModelSettings(
-            openai_reasoning_effort="high", openai_reasoning_summary="detailed"
-        ),
+        model_settings=model_config.kgs_settings("learning_components"),
         output_retries=max_retries,
-        output_type=AtomicSkillsResponse,
+        output_type=model_config.wrap_output_type(AtomicSkillsResponse),
     )
 
     @agent.output_validator
@@ -125,7 +123,7 @@ def create_progression_edges_agent(
     always_double_check_first_attempt: bool,
     instructions: str,
     max_retries: int = 3,
-    model: str,
+    model_config: ModelConfig,
     validator: Optional[Callable[[ProgressionEdgesResponse], None]] = None,
 ) -> Agent:
     """Create an Agent configured for learning progression edge inference.
@@ -139,8 +137,8 @@ def create_progression_edges_agent(
         System-level instructions for the agent.
     max_retries
         Maximum number of output-validation retries (correction turns).
-    model
-        The model identifier (e.g., `openai:gpt-5.2-2025-12-11`).
+    model_config
+        The ModelConfig containing the model identifier and any relevant settings.
     validator
         Optional post-parse validator; should raise `QualityError` on failure.
 
@@ -152,13 +150,11 @@ def create_progression_edges_agent(
 
     attempt_counter: dict[str, int] = {"value": 0}
     agent = Agent(
-        model,
+        model_config.model,
         instructions=instructions,
-        model_settings=OpenAIResponsesModelSettings(
-            openai_reasoning_effort="high", openai_reasoning_summary="detailed"
-        ),
+        model_settings=model_config.kgs_settings("learning_progressions"),
         output_retries=max_retries,
-        output_type=ProgressionEdgesResponse,
+        output_type=model_config.wrap_output_type(ProgressionEdgesResponse),
     )
 
     @agent.output_validator

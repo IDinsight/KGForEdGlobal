@@ -16,9 +16,9 @@ from typing import Callable
 # Third Party Library
 from loguru import logger
 from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
 # Package Library
+from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.schemas import ExtractionValidationVerdict, PageIR
 from skg.page_ir_extraction.utils import persist_page_ir_attempt_artifacts
 from skg.page_ir_extraction.validators import QualityError
@@ -30,7 +30,7 @@ def create_page_ir_extraction_agent(
     image_width: int,
     instructions: str,
     max_retries: int = 3,
-    model: str,
+    model_config: ModelConfig,
     page_index: int,
     raw_page_irs_dir: Path,
     validation_cycle: int = 0,
@@ -51,8 +51,8 @@ def create_page_ir_extraction_agent(
         System-level extraction instructions.
     max_retries
         Maximum number of quality-error retries (correction turns).
-    model
-        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
+    model_config
+        The ModelConfig containing the model identifier and any relevant settings.
     page_index
         The 0-based page index.
     raw_page_irs_dir
@@ -74,11 +74,11 @@ def create_page_ir_extraction_agent(
 
     attempt_counter: dict[str, int] = {"value": 0}
     agent = Agent(
-        model,
+        model_config.model,
         instructions=instructions,
-        model_settings=OpenAIResponsesModelSettings(temperature=0.0, top_p=0.95),
+        model_settings=model_config.page_ir_extraction_settings("extraction"),
         output_retries=max_retries,
-        output_type=PageIR,
+        output_type=model_config.wrap_output_type(PageIR),
     )
 
     @agent.output_validator
@@ -121,7 +121,7 @@ def create_page_ir_extraction_agent(
             persist_page_ir_attempt_artifacts(
                 attempt=attempt,
                 error=e,
-                model=model,
+                model=model_config.model,
                 output_text=None,
                 page_index=page_index,
                 parsed=output,
@@ -146,7 +146,7 @@ def create_page_ir_extraction_agent(
         persist_page_ir_attempt_artifacts(
             attempt=attempt,
             error=None,
-            model=model,
+            model=model_config.model,
             output_text=None,
             page_index=page_index,
             parsed=output,
@@ -165,7 +165,7 @@ def create_page_ir_validation_agent(
     image_width: int,
     instructions: str,
     max_retries: int = 3,
-    model: str,
+    model_config: ModelConfig,
     page_index: int,
     verify_quality_fn: Callable,
 ) -> Agent:
@@ -188,8 +188,8 @@ def create_page_ir_validation_agent(
         System-level validation instructions.
     max_retries
         Maximum number of retries if the corrected PageIR fails quality checks.
-    model
-        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
+    model_config
+        The ModelConfig containing the model identifier and any relevant settings.
     page_index
         The 0-based page index.
     verify_quality_fn
@@ -204,13 +204,11 @@ def create_page_ir_validation_agent(
 
     attempt_counter: dict[str, int] = {"value": 0}
     agent = Agent(
-        model,
+        model_config.model,
         instructions=instructions,
-        model_settings=OpenAIResponsesModelSettings(
-            openai_reasoning_effort="high", openai_reasoning_summary="detailed"
-        ),
+        model_settings=model_config.page_ir_extraction_settings("validation"),
         output_retries=max_retries,
-        output_type=ExtractionValidationVerdict,
+        output_type=model_config.wrap_output_type(ExtractionValidationVerdict),
     )
 
     @agent.output_validator

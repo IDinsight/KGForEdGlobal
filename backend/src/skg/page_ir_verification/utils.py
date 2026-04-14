@@ -13,6 +13,7 @@ from typing import NamedTuple
 from loguru import logger
 
 # Package Library
+from skg.config import Settings
 from skg.page_ir_extraction.schemas import Block, PageIR, Table, TextUnit
 from skg.page_ir_verification.schemas import PageIRContinuityVerdict
 from skg.schemas import ExtractionConfig, RunCtx, VerificationConfig
@@ -661,13 +662,16 @@ def persist_verification_run(
     """
 
     verification_dirs = create_page_ir_verification_dirs(output_dir)
-    exclude_keys = {"model", "overwrite"}
+    exclude_keys = {"overwrite"}
     extra = {
         k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys
     }
     verification_run = RunCtx(
         extra=extra,
-        models=[config.model],
+        models={
+            "verification": Settings.LLM_PAGE_IR_VERIFICATION_MODEL,
+            "validation": Settings.LLM_PAGE_IR_VERIFICATION_MODEL,
+        },
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
     )
