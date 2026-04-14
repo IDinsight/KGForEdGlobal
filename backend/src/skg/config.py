@@ -12,12 +12,24 @@ from typing import Literal
 # Third Party Library
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Package Library
+from skg.model_registry import ModelConfig
+
 
 class BackendSettings(BaseSettings):
     """Pydantic settings for backend."""
 
     # Chat
     CHAT_ENV: Literal["dev", "prod", "local", "testing"] = "local"
+
+    # LLM
+    LLM_ANTHROPIC_EFFORT: str = "high"
+    LLM_KG_MODEL: str = "anthropic:claude-opus-4-6"
+    LLM_OPENAI_REASONING_EFFORT: str = "high"
+    LLM_OPENAI_TEMPERATURE: float = 0.0
+    LLM_OPENAI_TOP_P: float = 0.95
+    LLM_PAGE_IR_EXTRACTION_MODEL: str = "anthropic:claude-opus-4-6"
+    LLM_PAGE_IR_VERIFICATION_MODEL: str = "anthropic:claude-opus-4-6"
 
     # Logging
     LOGGING_LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
@@ -30,6 +42,63 @@ class BackendSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="allow"
     )
+
+    def _llm_type_registry(self, model_type: str) -> str:
+        """Registry mapping LLM model types to their corresponding ModelConfig builders.
+
+        Parameters
+        ----------
+        model_type
+            The type of model configuration to retrieve. Expected values are:
+                1. "page_ir_extraction" - for page IR extraction agents.
+                2. "page_ir_verification" - for page IR verification agents.
+                3. "kgs" - for knowledge graph construction agents.
+
+        Returns
+        -------
+        str
+            The model string corresponding to the specified model type.
+
+        Raises
+        ------
+        ValueError
+            If an unsupported model type is provided.
+        """
+
+        match model_type:
+            case "page_ir_extraction":
+                return self.LLM_PAGE_IR_EXTRACTION_MODEL
+            case "page_ir_verification":
+                return self.LLM_PAGE_IR_VERIFICATION_MODEL
+            case "kgs":
+                return self.LLM_KG_MODEL
+            case _:
+                raise ValueError(f"Unsupported model type: {model_type}")
+
+    def llm_config(self, model_type: str) -> ModelConfig:
+        """Build a ModelConfig from env-driven fields.
+
+        Parameters
+        ----------
+        model_type
+            The type of model configuration to build. Expected values are:
+                1. "page_ir_extraction" - for page IR extraction agents.
+                2. "page_ir_verification" - for page IR verification agents.
+                3. "kg" - for knowledge graph construction agents.
+
+        Returns
+        -------
+        ModelConfig
+                The constructed ModelConfig.
+        """
+
+        return ModelConfig(
+            model=self._llm_type_registry(model_type),
+            anthropic_effort=self.LLM_ANTHROPIC_EFFORT,
+            openai_temperature=self.LLM_OPENAI_TEMPERATURE,
+            openai_top_p=self.LLM_OPENAI_TOP_P,
+            openai_reasoning_effort=self.LLM_OPENAI_REASONING_EFFORT,
+        )
 
 
 Settings: BackendSettings = BackendSettings()

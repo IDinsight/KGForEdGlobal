@@ -14,6 +14,7 @@ from loguru import logger
 from PIL import Image
 
 # Package Library
+from skg.config import Settings
 from skg.page_ir_extraction.schemas import PageIR
 from skg.schemas import ExtractionConfig, RunCtx
 from skg.utils.general import make_dir, write_to_json
@@ -294,14 +295,17 @@ def persist_extraction_run(
     extraction_dirs = create_page_ir_extraction_dirs(
         output_dir=config.output_dir / doc_key / "extraction"
     )
-    exclude_keys = {"model", "overwrite"}
+    exclude_keys = {"overwrite"}
     extra = {
         k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys
     }
     extra["doc_key"] = doc_key
     extraction_run = RunCtx(
         extra=extra,
-        models=[config.model],
+        models={
+            "extraction": Settings.LLM_PAGE_IR_EXTRACTION_MODEL,
+            "validation": Settings.LLM_PAGE_IR_EXTRACTION_MODEL,
+        },
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
     )

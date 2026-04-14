@@ -111,7 +111,6 @@ def extract_page_by_page(
             image_height=image_height,
             image_width=image_width,
             languages=config.languages,
-            model=config.model,
             page_index=page_index,
             pdf_page=doc.load_page(page_index) if config.use_extracted_hints else None,
             png_fp=png_fp,

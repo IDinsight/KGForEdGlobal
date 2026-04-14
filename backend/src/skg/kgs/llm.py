@@ -22,6 +22,7 @@ from typing import Callable, Optional
 from loguru import logger
 
 # Package Library
+from skg.config import Settings
 from skg.kgs.agents import create_atomic_skills_agent, create_progression_edges_agent
 from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
 
@@ -31,7 +32,6 @@ def infer_atomic_skills(
     always_double_check_first_attempt: bool,
     instructions: str,
     max_retries: int = 3,
-    model: str,
     user_message: str,
     validator: Optional[Callable[[AtomicSkillsResponse], None]] = None,
 ) -> AtomicSkillsResponse:
@@ -45,8 +45,6 @@ def infer_atomic_skills(
         The system instructions to include in the prompt for the LLM.
     max_retries
         Maximum number of retries for quality errors.
-    model
-        The model identifier (e.g., ``"openai:gpt-5.2-2025-12-11"``).
     user_message
         The primary user payload as a string.
     validator
@@ -62,7 +60,7 @@ def infer_atomic_skills(
         always_double_check_first_attempt=always_double_check_first_attempt,
         instructions=instructions,
         max_retries=max_retries,
-        model=model,
+        model_config=Settings.llm_config("kgs"),
         validator=validator,
     )
 
@@ -80,7 +78,6 @@ def infer_progression_edges(
     always_double_check_first_attempt: bool,
     instructions: str,
     max_retries: int = 3,
-    model: str,
     user_message: str,
     validator: Optional[Callable[[ProgressionEdgesResponse], None]] = None,
 ) -> ProgressionEdgesResponse:
@@ -94,8 +91,6 @@ def infer_progression_edges(
         The system instructions to include in the prompt for the LLM.
     max_retries
         Maximum number of retries for quality errors.
-    model
-        The model identifier (e.g., `openai:gpt-5.2-2025-12-11`).
     user_message
         The primary user payload as a string.
     validator
@@ -111,7 +106,7 @@ def infer_progression_edges(
         always_double_check_first_attempt=always_double_check_first_attempt,
         instructions=instructions,
         max_retries=max_retries,
-        model=model,
+        model_config=Settings.llm_config("kgs"),
         validator=validator,
     )
 

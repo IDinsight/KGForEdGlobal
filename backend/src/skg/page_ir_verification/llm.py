@@ -30,6 +30,7 @@ from loguru import logger
 from pydantic_ai import BinaryContent
 
 # Package Library
+from skg.config import Settings
 from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_verification.agents import (
     create_continuity_validation_agent,
@@ -115,7 +116,6 @@ def _run_validation_agent(
     min_confidence_to_patch: float,
     min_confidence_to_select_positive: float,
     min_confidence_to_stop_negative_search: float,
-    model: str,
     next_item: Block | Table,
     next_item_excerpt: dict[str, Any],
     next_page_index: int,
@@ -139,8 +139,6 @@ def _run_validation_agent(
     min_confidence_to_stop_negative_search
         Same-family primary-primary negative verdicts at or above this threshold may
         stop alternate candidate-pair search.
-    model
-        The model identifier.
     next_item
         The parsed next page candidate item.
     next_item_excerpt
@@ -181,7 +179,7 @@ def _run_validation_agent(
 
     agent = create_continuity_validation_agent(
         instructions=prompts.system_message,
-        model=model,
+        model_config=Settings.llm_config("page_ir_verification"),
         next_item=next_item,
         prev_item=prev_item,
         verify_continuity_fn=verify_page_ir_continuity_verdict,
@@ -206,7 +204,6 @@ def verify_page_ir_pairs(
     min_confidence_to_patch: float,
     min_confidence_to_select_positive: float,
     min_confidence_to_stop_negative_search: float,
-    model: str,
     next_item: dict[str, Any],
     next_item_excerpt: dict[str, Any],
     next_page_index: int,
@@ -236,8 +233,6 @@ def verify_page_ir_pairs(
     min_confidence_to_stop_negative_search
         Same-family primary-primary negative verdicts at or above this threshold may
         stop alternate candidate-pair search.
-    model
-        The model identifier.
     next_item
         The candidate item dict near top of page N+1.
     next_item_excerpt
@@ -293,7 +288,7 @@ def verify_page_ir_pairs(
 
     agent = create_continuity_verification_agent(
         instructions=prompts.system_message,
-        model=model,
+        model_config=Settings.llm_config("page_ir_verification"),
         next_item=next_item_parsed,
         prev_item=prev_item_parsed,
         verify_continuity_fn=verify_page_ir_continuity_verdict,
@@ -330,7 +325,6 @@ def verify_page_ir_pairs(
         min_confidence_to_patch=min_confidence_to_patch,
         min_confidence_to_select_positive=min_confidence_to_select_positive,
         min_confidence_to_stop_negative_search=min_confidence_to_stop_negative_search,
-        model=model,
         next_item=next_item_parsed,
         next_item_excerpt=next_item_excerpt,
         next_page_index=next_page_index,

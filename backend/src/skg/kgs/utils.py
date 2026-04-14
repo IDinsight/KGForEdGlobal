@@ -18,6 +18,7 @@ from PIL import Image
 
 # Package Library
 from skg.canonical_ir.schemas import CanonicalIR, SegmentDecision
+from skg.config import Settings
 from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
 from skg.utils.constants import StatementRole
 from skg.utils.general import make_dir, open_json_type, write_to_json
@@ -1033,12 +1034,15 @@ def persist_kg_run(
     """
 
     kg_dirs = create_kg_dirs(output_dir=output_dir)
-    exclude_keys = {"model", "overwrite"}
+    exclude_keys = {"overwrite"}
+    extra = {
+        k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys
+    }
     kg_run = RunCtx(
-        extra={
-            k: v
-            for k, v in config.model_dump(mode="json").items()
-            if k not in exclude_keys
+        extra=extra,
+        models={
+            "learning_components": Settings.KG_MODEL,
+            "learning_progressions": Settings.KG_MODEL,
         },
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),

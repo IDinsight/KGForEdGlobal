@@ -15,9 +15,9 @@ from typing import Callable
 # Third Party Library
 from loguru import logger
 from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
 # Package Library
+from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.schemas import Block, Table
 from skg.page_ir_extraction.validators import QualityError
 from skg.page_ir_verification.schemas import (
@@ -30,7 +30,7 @@ def create_continuity_verification_agent(
     *,
     instructions: str,
     max_retries: int = 3,
-    model: str,
+    model_config: ModelConfig,
     next_item: Block | Table,
     prev_item: Block | Table,
     verify_continuity_fn: Callable,
@@ -46,8 +46,8 @@ def create_continuity_verification_agent(
         System-level verification instructions.
     max_retries
         Maximum number of quality-error retries (correction turns).
-    model
-        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
+    model_config
+        The ModelConfig containing the model identifier and any relevant settings.
     next_item
         The next page candidate item (parsed Block or Table).
     prev_item
@@ -65,11 +65,11 @@ def create_continuity_verification_agent(
     attempt_counter: dict[str, int] = {"value": 0}
 
     agent = Agent(
-        model,
+        model_config.model,
         instructions=instructions,
-        model_settings=OpenAIResponsesModelSettings(temperature=0.0, top_p=0.95),
+        model_settings=model_config.page_ir_verification_settings("verification"),
         output_retries=max_retries,
-        output_type=PageIRContinuityVerdict,
+        output_type=model_config.wrap_output_type(PageIRContinuityVerdict),
     )
 
     @agent.output_validator
@@ -126,7 +126,7 @@ def create_continuity_validation_agent(
     *,
     instructions: str,
     max_retries: int = 3,
-    model: str,
+    model_config: ModelConfig,
     next_item: Block | Table,
     prev_item: Block | Table,
     verify_continuity_fn: Callable,
@@ -145,8 +145,8 @@ def create_continuity_validation_agent(
         System-level validation instructions.
     max_retries
         Maximum number of retries if the corrected verdict fails quality checks.
-    model
-        The model identifier (e.g., 'openai:gpt-5.2-2025-12-11').
+    model_config
+        The ModelConfig containing the model identifier and any relevant settings.
     next_item
         The next page candidate item (parsed Block or Table).
     prev_item
@@ -163,13 +163,11 @@ def create_continuity_validation_agent(
 
     attempt_counter: dict[str, int] = {"value": 0}
     agent = Agent(
-        model,
+        model_config.model,
         instructions=instructions,
-        model_settings=OpenAIResponsesModelSettings(
-            openai_reasoning_effort="high", openai_reasoning_summary="detailed"
-        ),
+        model_settings=model_config.page_ir_verification_settings("validation"),
         output_retries=max_retries,
-        output_type=ContinuityValidationVerdict,
+        output_type=model_config.wrap_output_type(ContinuityValidationVerdict),
     )
 
     @agent.output_validator

@@ -13,6 +13,7 @@ import pytest
 from pydantic_ai import BinaryContent
 
 # Package Library
+from skg.model_registry import ModelConfig
 from skg.page_ir_extraction import llm as llm_module
 from skg.page_ir_extraction.llm import ExtractionUsageTracker
 from skg.page_ir_extraction.schemas import (
@@ -168,7 +169,7 @@ def _install_stub_extraction_agent(
         image_height: int,
         image_width: int,
         instructions: str,
-        model: str,
+        model_config: ModelConfig | None,
         page_index: int,
         raw_page_irs_dir: Path,
         verify_quality_fn: Callable[..., Any],
@@ -183,8 +184,8 @@ def _install_stub_extraction_agent(
             Image width in pixels.
         instructions
             System instructions.
-        model
-            Model identifier.
+        model_config
+            The ModelConfig containing the model identifier and any relevant settings.
         page_index
             0-based page index.
         raw_page_irs_dir
@@ -228,7 +229,7 @@ def _install_stub_validation_agent(
         image_height: int,
         image_width: int,
         instructions: str,
-        model: str,
+        model_config: ModelConfig,
         page_index: int,
         verify_quality_fn: Callable[..., Any],
     ) -> _StubAgent:
@@ -242,8 +243,8 @@ def _install_stub_validation_agent(
             Image width in pixels.
         instructions
             System instructions.
-        model
-            Model identifier.
+        model_config
+            The ModelConfig containing the model identifier and any relevant settings.
         page_index
             0-based page index.
         verify_quality_fn
@@ -530,7 +531,6 @@ def test__run_validation_agent_invokes_agent_and_tracks_usage(
     out = llm_module._run_validation_agent(
         image_height=200,
         image_width=100,
-        model="openai:stub",
         page_index=0,
         page_ir=fixture_page_ir_minimal,
         png_bytes=b"\x89PNG\r\n\x1a\n...",
@@ -614,7 +614,6 @@ def test_extract_page_ir_accumulates_extraction_usage(
         image_height=3508,
         image_width=2480,
         languages=["en"],
-        model="openai:stub",
         page_index=0,
         pdf_page=None,
         png_fp=synthetic_blank_page,
@@ -701,7 +700,6 @@ def test_extract_page_ir_asserts_when_validation_fails_without_corrected_page_ir
             image_height=3508,
             image_width=2480,
             languages=["en"],
-            model="openai:stub",
             page_index=0,
             pdf_page=None,
             png_fp=synthetic_blank_page,
@@ -761,7 +759,6 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
         *,
         image_height: int,
         image_width: int,
-        model: str,
         page_index: int,
         page_ir: PageIR,
         png_bytes: bytes,
@@ -775,8 +772,6 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
             Image height in pixels.
         image_width
             Image width in pixels.
-        model
-            Model identifier.
         page_index
             0-based page index.
         page_ir
@@ -880,7 +875,6 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
         image_height=3508,
         image_width=2480,
         languages=["en"],
-        model="openai:stub",
         page_index=0,
         pdf_page=pdf_page,
         png_fp=synthetic_blank_page,
@@ -957,7 +951,6 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
         *,
         image_height: int,
         image_width: int,
-        model: str,
         page_index: int,
         page_ir: PageIR,
         png_bytes: bytes,
@@ -971,8 +964,6 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
             Image height in pixels.
         image_width
             Image width in pixels.
-        model
-            Model identifier.
         page_index
             0-based page index.
         page_ir
@@ -1005,7 +996,6 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
         image_height=3508,
         image_width=2480,
         languages=["en"],
-        model="openai:stub",
         page_index=0,
         pdf_page=None,
         png_fp=synthetic_blank_page,
@@ -1062,7 +1052,6 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
         *,
         image_height: int,
         image_width: int,
-        model: str,
         page_index: int,
         page_ir: PageIR,
         png_bytes: bytes,
@@ -1076,8 +1065,6 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
             Image height in pixels.
         image_width
             Image width in pixels.
-        model
-            Model identifier.
         page_index
             0-based page index.
         page_ir
@@ -1110,7 +1097,6 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
         image_height=3508,
         image_width=2480,
         languages=["en"],
-        model="openai:stub",
         page_index=0,
         pdf_page=None,
         png_fp=synthetic_blank_page,
@@ -1217,7 +1203,6 @@ def test_extract_page_ir_skips_hints_when_pdf_page_is_none(
         image_height=3508,
         image_width=2480,
         languages=["en"],
-        model="openai:stub",
         page_index=0,
         pdf_page=None,
         png_fp=synthetic_blank_page,
