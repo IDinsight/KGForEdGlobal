@@ -98,7 +98,7 @@ def _append_unique_child(
 def _attach_aux_statements_in_export_tree(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -128,7 +128,7 @@ def _attach_aux_statements_in_export_tree(
     ----------
     aux_attach_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
-    attached_aux_node_ids
+    aux_nodes_attached_to_expectation
         Mutable set collecting canonical node IDs that were successfully attached to an
         expectation's metadata.
     config
@@ -151,7 +151,7 @@ def _attach_aux_statements_in_export_tree(
 
     child_attached = _attach_child_layout_aux_nodes(
         attached_aux_node_ids=attached_aux_node_ids,
-        aux_attach_to_expectation=aux_attach_to_expectation,
+        aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
@@ -160,7 +160,7 @@ def _attach_aux_statements_in_export_tree(
 
     sibling_attached, sibling_orphans = _attach_sibling_layout_aux_nodes(
         attached_aux_node_ids=attached_aux_node_ids,
-        aux_attach_to_expectation=aux_attach_to_expectation,
+        aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
@@ -177,7 +177,7 @@ def _attach_aux_statements_in_export_tree(
 def _attach_child_layout_aux_nodes(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -190,7 +190,7 @@ def _attach_child_layout_aux_nodes(
     ----------
     attached_aux_node_ids
         Mutable set collecting canonical node IDs successfully attached.
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -232,13 +232,13 @@ def _attach_child_layout_aux_nodes(
                 attached_aux_node_ids.add(child_id)
 
             if _is_already_attached(
-                aux_attach_to_expectation=aux_attach_to_expectation,
                 aux_node_id=child_id,
+                aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
                 expectation_id=exp_id,
             ):
                 continue
 
-            aux_attach_to_expectation[exp_id].append(
+            aux_nodes_attached_to_expectation[exp_id].append(
                 _build_aux_payload(aux_node_id=child_id, ctx=ctx, prefer_en=prefer_en)
             )
             attached_count += 1
@@ -249,7 +249,7 @@ def _attach_child_layout_aux_nodes(
 def _attach_sibling_layout_aux_nodes(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -263,7 +263,7 @@ def _attach_sibling_layout_aux_nodes(
     ----------
     attached_aux_node_ids
         Mutable set collecting canonical node IDs successfully attached.
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -298,7 +298,7 @@ def _attach_sibling_layout_aux_nodes(
 
         attached, orphans = _process_sibling_group(
             attached_aux_node_ids=attached_aux_node_ids,
-            aux_attach_to_expectation=aux_attach_to_expectation,
+            aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
             config=config,
             ctx=ctx,
             emit_flag=emit_flag,
@@ -743,6 +743,104 @@ def _compute_export_children(
     grouping parents and the framework root so root-level sibling layouts behave the
     same as grouped sibling layouts.
 
+    Examples
+    --------
+    1. Sibling-layout row in a Senegal table
+        A common Senegal reading row has one expectation followed by guidance and
+        descriptor leaves. For example:
+
+            * expectation: Objectif spécifique
+            * guidance: Contenus
+            * descriptor: Durée
+
+        When these appear as ordered siblings under the same exported parent,
+        `_compute_export_children()` keeps the expectation in the parent’s child list,
+        then attaches the following guidance/descriptor to that expectation instead of
+        leaving them as sibling SFIs under the parent. For example:
+
+        Suppose a parent grouping has ordered emitted children:
+
+            [E1(expectation), G1(guidance), D1(descriptor), E2(expectation)]
+
+        In `under_expectation` mode, the exporter treats `G1` and `D1` as belonging to
+        the most recent preceding expectation (`E1`).
+
+        Result:
+            export_children[parent] == [E1, E2]
+            aux_attach_to_expectation[E1] contains payloads for G1 and D1
+
+        This matches table rows where "Objectif spécifique" is followed by
+        "Contenus" and "Durée".
+
+    2. Child-layout aux under an expectation
+        This function also supports the case where the canonical IR already stores
+        guidance/descriptor as direct children of an expectation. In that layout, when
+        `_compute_export_children()` encounters the expectation in sibling order, it
+         pulls its aux children from `ctx.children_by_parent[expectation]` and attaches
+         them to that expectation, instead of requiring them to appear as siblings. For
+         example:
+
+         Suppose a parent grouping has ordered emitted children:
+
+            [E1(expectation), E2(expectation)]
+
+        and the canonical IR already stores:
+
+            ctx.children_by_parent[E1] == [G1(guidance), D1(descriptor)]
+
+        When the exporter visits `E1`, it pulls `G1` and `D1` from the canonical
+        expectation subtree and attaches them to `E1` (either as metadata or as
+        export-time children, depending on config).
+
+        Result:
+            export_children[parent] still includes E1 only once
+            child-layout aux are consumed without needing sibling matching
+
+    3. Non-aux children stay in order
+        This function does NOT rewrite everything under a parent. It only intercepts
+        attachable aux statements. Other emitted children stay in the parent’s exported
+        order. For example:
+
+        Suppose a parent has ordered emitted children:
+
+            [W1(week), E1(expectation), G1(guidance), D1(descriptor), W2(week)]
+
+        The exporter preserves non-aux children in order and only re-homes attachable
+        aux statements.
+
+        Result:
+            export_children[parent] == [W1, E1, W2]
+            aux_attach_to_expectation[E1] contains G1 and D1
+
+    4. Aux before any expectation is not matched
+        If a guidance/descriptor node appears before any expectation sibling has been
+        seen, there is no `last_expectation` to attach it to. In that case the node is
+        left in `new_kids` rather than being silently attached to the wrong
+        expectation. For example:
+
+        Suppose a parent has ordered emitted children:
+
+            [G0(guidance), D0(descriptor), E1(expectation)]
+
+        Because no preceding expectation exists yet, `G0` and `D0` are not attached to
+        `E1`. They remain in the parent's exported child sequence at this stage.
+
+        Result:
+            export_children[parent] == [G0, D0, E1]
+
+        This avoids incorrectly assigning leading aux statements to a later expectation.
+
+    5. Senegal reading curriculum example
+        Under a `subtopic` such as "Róofoo-gi-baat / Grammaire", a row may contain:
+
+            - expectation: "Objectif spécifique"
+            - guidance: "Contenus"
+            - descriptor: "Durée"
+
+        The exporter keeps the expectation as the exported child under the subtopic and
+        attaches the "Contenus" and "Durée" leaves to that expectation, rather than
+        keeping all three as sibling StandardsFrameworkItems under the subtopic.
+
     Parameters
     ----------
     config
@@ -757,14 +855,16 @@ def _compute_export_children(
     tuple[
         dict[str, list[str]], DefaultDict[str, list[dict[str, Any]]], dict[str, Any]
     ]
-        (export_children, aux_attach_to_expectation, reparent_stats)--the
-        parent-to-children mapping, metadata attachments for expectation nodes, and a
-        dict with `aux_reparented_count` and `orphan_aux_count`.
+        A tuple containing:
+            export_children: The parent -> children mapping for the export tree.
+            aux_nodes_attached_to_expectation: Metadata payloads to attach to
+                expectations.
+            reparent_stats: Counts and orphan/attached aux node IDs.
     """
 
     attached_aux_node_ids: set[str] = set()
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]] = defaultdict(
-        list
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]] = (
+        defaultdict(list)
     )
     export_children: dict[str, list[str]] = {}
     orphan_aux_count = 0
@@ -772,27 +872,27 @@ def _compute_export_children(
     reparented_count = 0
 
     for parent_id, kids in ctx.children_by_parent.items():
-        if parent_id == ctx.root_id:
-            parent_role = NodeRole.FRAMEWORK.value
-        else:
-            parent_role = str(ctx.nodes_by_id[parent_id].get("role") or "")
-
-        ordered_emitted_kids = [cid for cid in kids if emit_flag.get(cid, False)]
+        parent_role = (
+            NodeRole.FRAMEWORK.value
+            if parent_id == ctx.root_id
+            else ctx.nodes_by_id[parent_id]["role"]
+        )
+        ordered_emitted_kids = [cid for cid in kids if emit_flag[cid]]
 
         if config.aux_statement_parenting == "under_expectation" and (
             parent_id == ctx.root_id
             or _is_grouping_role(config=config, role=parent_role)
         ):
-            # Count aux nodes before reparenting to detect orphans.
+            # Count aux nodes before re-parenting to detect orphans.
             aux_before = sum(
                 1
                 for cid in ordered_emitted_kids
-                if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
+                if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
             )
 
-            new_kids, child_aux_consumed = _reparent_aux_under_expectations(
-                aux_attach_to_expectation=aux_attach_to_expectation,
+            new_kids, child_aux_consumed = _reparent_aux_nodes_under_expectations(
                 attached_aux_node_ids=attached_aux_node_ids,
+                aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
                 config=config,
                 ctx=ctx,
                 emit_flag=emit_flag,
@@ -800,12 +900,10 @@ def _compute_export_children(
                 ordered_kids=ordered_emitted_kids,
             )
 
-            # Aux nodes that ended up in new_kids had no preceding expectation
+            # Aux nodes that ended up in `new_kids` had no preceding expectation
             # (orphans).
             orphan_ids_in_batch = {
-                cid
-                for cid in new_kids
-                if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
+                cid for cid in new_kids if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
             }
             reparented_count += aux_before - len(orphan_ids_in_batch)
             reparented_count += child_aux_consumed
@@ -825,16 +923,13 @@ def _compute_export_children(
 
         export_children[parent_id] = merged
 
-    return (
-        export_children,
-        aux_attach_to_expectation,
-        {
-            "aux_reparented_count": reparented_count,
-            "orphan_aux_count": orphan_aux_count,
-            "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
-            "attached_aux_node_ids": sorted(attached_aux_node_ids),
-        },
-    )
+    reparent_stats = {
+        "aux_reparented_count": reparented_count,
+        "orphan_aux_count": orphan_aux_count,
+        "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
+        "attached_aux_node_ids": sorted(attached_aux_node_ids),
+    }
+    return export_children, aux_nodes_attached_to_expectation, reparent_stats
 
 
 def _compute_topic_path_key(
@@ -1273,7 +1368,7 @@ def _emit_sfi(
 
 def _emit_sfis(
     *,
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     canonical_created_at_iso: Optional[str],
     config: CreateKGConfig,
     ctx: ExportContext,
@@ -1286,7 +1381,7 @@ def _emit_sfis(
 
     Parameters
     ----------
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Metadata attachments for expectation nodes.
     canonical_created_at_iso
         The ISO-8601 creation datetime.
@@ -1323,7 +1418,7 @@ def _emit_sfis(
             continue
 
         sfi_by_node[node_id] = _emit_sfi(
-            aux_attachments=aux_attach_to_expectation.get(node_id),
+            aux_attachments=aux_nodes_attached_to_expectation.get(node_id),
             canonical_ir_created_at=canonical_created_at_iso,
             config=config,
             ctx=ctx,
@@ -1441,7 +1536,7 @@ def _handle_empty_grouping_pruning(
 
 def _is_already_attached(
     *,
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     aux_node_id: str,
     expectation_id: str,
 ) -> bool:
@@ -1449,10 +1544,10 @@ def _is_already_attached(
 
     Parameters
     ----------
-    aux_attach_to_expectation
-        Mutable mapping collecting metadata attachments for expectation nodes.
     aux_node_id
         The canonical node ID of the auxiliary node.
+    aux_nodes_attached_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
     expectation_id
         The ID of the expectation node.
 
@@ -1464,7 +1559,7 @@ def _is_already_attached(
 
     return any(
         p.get("canonical_node_id") == aux_node_id
-        for p in aux_attach_to_expectation.get(expectation_id, [])
+        for p in aux_nodes_attached_to_expectation.get(expectation_id, [])
     )
 
 
@@ -1774,7 +1869,7 @@ def _process_attach_to_expectation(
 def _process_sibling_group(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -1788,7 +1883,7 @@ def _process_sibling_group(
     ----------
     attached_aux_node_ids
         Mutable set collecting canonical node IDs successfully attached.
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -1843,14 +1938,14 @@ def _process_sibling_group(
 
         # Guard: Skip if it's already attached to prevent duplicates.
         if _is_already_attached(
-            aux_attach_to_expectation=aux_attach_to_expectation,
             aux_node_id=cid,
+            aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
             expectation_id=last_expectation,
         ):
             continue
 
         # If all guards pass, attach the payload.
-        aux_attach_to_expectation[last_expectation].append(
+        aux_nodes_attached_to_expectation[last_expectation].append(
             _build_aux_payload(aux_node_id=cid, ctx=ctx, prefer_en=prefer_en)
         )
         attached_count += 1
@@ -2096,17 +2191,17 @@ def _reattach_children_of_dropped_nodes(
     }
 
 
-def _reparent_aux_under_expectations(
+def _reparent_aux_nodes_under_expectations(
     *,
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     attached_aux_node_ids: set[str],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
     ordered_kids: list[str],
 ) -> tuple[list[str], int]:
-    """Re-parent aux statements under their owning expectation.
+    """Re-parent aux nodes under their owning expectation.
 
     Walks the ordered children of a grouping node, attaching aux nodes either to
     expectation metadata or as export-time children of the owning expectation.
@@ -2117,15 +2212,103 @@ def _reparent_aux_under_expectations(
         under a shared grouping parent. Aux nodes are matched to the immediately
         preceding expectation in sibling order.
     2. **Child layout**: guidance/descriptor nodes are direct children of their owning
-        expectation in the canonical IR tree.  These are discovered by inspecting
+        expectation in the canonical IR tree. These are discovered by inspecting
         `ctx.children_by_parent` for each expectation encountered.
 
     Both layouts may coexist within the same IR; the function handles them in a single
     pass.
 
+    Examples
+    --------
+    1. Sibling layout: attach aux nodes to the most recent preceding expectation
+        Suppose `ordered_kids` under a grouping parent are:
+
+            [E1(expectation), G1(guidance), D1(descriptor), E2(expectation)]
+
+        and the config requests:
+
+            guidance_handling = "attach_to_expectation_metadata"
+            descriptor_handling = "attach_to_expectation_metadata"
+
+        Then the function keeps only the expectations in `new_kids`:
+
+            new_kids == [E1, E2]
+
+        and records metadata attachments for E1:
+
+            aux_nodes_attached_to_expectation[E1] == [payload(G1), payload(D1)]
+
+        because `G1` and `D1` are matched to the most recent preceding expectation
+        in sibling order.
+
+    2. Child layout: get aux children already stored under an expectation
+        Suppose `ordered_kids` are:
+
+            [E1(expectation), E2(expectation)]
+
+        and the canonical IR already stores:
+
+            ctx.children_by_parent[E1] == [G1(guidance), D1(descriptor)]
+
+        When this function visits E1, it get `G1` and `D1` from the canonical
+        expectation subtree and attaches them to E1.
+
+        Result:
+            new_kids == [E1, E2]
+            child_aux_consumed_count == 2
+
+        This avoids requiring those aux nodes to also appear as siblings.
+
+    3. Leading aux nodes remain in the parent output if no expectation has appeared yet
+        Suppose `ordered_kids` are:
+
+            [G0(guidance), D0(descriptor), E1(expectation)]
+
+        Because no preceding expectation exists when `G0` and `D0` are encountered,
+        they are not attached to E1. They remain in `new_kids`:
+
+            new_kids == [G0, D0, E1]
+
+        This prevents incorrectly assigning leading aux nodes to a later expectation.
+
+    4. Mixed layout in one pass
+        Suppose `ordered_kids` are:
+
+            [E1(expectation), G1(guidance), E2(expectation)]
+
+        and also:
+
+            ctx.children_by_parent[E2] == [D2(descriptor)]
+
+        Then the function handles both layouts together:
+
+            new_kids == [E1, E2]
+
+        with:
+            G1 attached to E1 by sibling order
+            D2 attached to E2 by child harvesting
+
+        This is why the function returns both:
+            - `new_kids` for the parent's filtered child list
+            - `child_aux_consumed_count` for aux nodes harvested from child layout
+
+    5. Senegal reading row example
+        In the Senegal reading curriculum, a row often contains:
+
+            - expectation: "Objectif spécifique"
+            - guidance: "Contenus"
+            - descriptor: "Durée"
+
+        When these appear in sibling order, the function keeps the expectation in the
+        exported child sequence and attaches the "Contenus" and "Durée" nodes to that
+        expectation, rather than keeping all three as sibling SFIs under the same
+        parent.
+
     Parameters
     ----------
-    aux_attach_to_expectation
+    attached_aux_node_ids
+        Mutable set collecting canonical node IDs successfully attached.
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -2184,13 +2367,13 @@ def _reparent_aux_under_expectations(
 
         if attach_to_metadata:
             if _is_already_attached(
-                aux_attach_to_expectation=aux_attach_to_expectation,
                 aux_node_id=aux_node_id,
+                aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
                 expectation_id=target_expectation_id,
             ):
                 return False
 
-            aux_attach_to_expectation[target_expectation_id].append(
+            aux_nodes_attached_to_expectation[target_expectation_id].append(
                 _build_aux_payload(
                     aux_node_id=aux_node_id, ctx=ctx, prefer_en=prefer_en
                 )
@@ -2242,6 +2425,12 @@ def _should_emit_node_with_reason(
 ) -> tuple[bool, str]:
     """Determine whether a canonical node should be emitted. If it should not be
     emitted, then also include a drop reason.
+
+    NB: This function implements a conservative-drop behavior: a node is dropped if
+    **any** of its `source_decision_ids` maps to a droppable decision. This is a design
+    choice---not something set in stone. It is stricter than “drop only if the node is
+    entirely sourced from bad segments.” In mixed-provenance cases, this could overdrop
+    nodes.
 
     Parameters
     ----------
@@ -2643,7 +2832,13 @@ def export_academic_standards(
 
     1. Emit the framework node.
     2. Precompute node-level emit flags based on drop policies.
-    3. Compute export-time aux parenting based on preceding expectation siblings.
+    3. Compute export-time aux parenting based on preceding expectation siblings to
+        include:
+            - Building the export tree
+            - Handling root and grouping parents
+            - Supporting sibling and child layouts
+            - Collecting attachment payloads
+            - Tracking orphan aux nodes
     4. Attach-only discovery pass: when aux nodes remain as siblings (or children) but
         export config requests attaching them to expectation metadata, discover and
         attach without modifying hierarchy.
@@ -2659,6 +2854,55 @@ def export_academic_standards(
     11. Sort items and relationships for stable output.
     12. Package everything into an AcademicStandardsExport dataclass.
     13. Write JSON artifacts to disk.
+
+    NB: Aux nodes means auxiliary statement nodes: specifically, canonical nodes whose
+    role is either `descriptor` or `guidance` (as defined by `AUX_ROLES`).
+    `expectation` is considered to be the main normative role. So aux nodes are not
+    "all non-expectations"; they are two statement-role types that are treated as
+    supporting material around an expectation. In practice, aux nodes are things that
+    the exporter can either drop, attach to an expectation's metadata, or keep as SFIs
+    depending on config parameters. For example, `_is_attachable()` determines whether
+    an aux node is eligible for attachment based on its role and the export config.
+
+    NB: In this exporter, an aux node can end up in one of 3 states:
+
+        1. Attached to an expectation as metadata and not emitted as its own SFI. This
+            happens when the config specifies "attach_to_expectation_metadata". In this
+            scenario, the sibling layout approach attaches the aux node to the most
+            preceding expectation sibling. The child layout attaches the aux node to an
+            expectation that already owns it as a child in the export tree.
+        2. Emitted as its own SFI. An aux node is still emitted as a separate SFI in
+            two common cases. First, if the config specifies "export_as_sfi_other",
+            then `_is_attachable()` returns `False`, so that the node is **not**
+            attached into expectation metadata. If `emit_flag=True`, then
+            `_emit_sfis()` will emit it as its own SFI with a normalized statement
+            type of "Other" because that's how aux roles normalize. Second, if
+            attachment was requested but no owning expectation was found, then this is
+            the orphan aux case. If a guidance/descriptor appears before any
+            expectation in sibling order, `_process_sibling_group()` marks it as orphan
+            instead of attaching it to a later expectation.
+            `_process_attach_to_expectation()` then suppresses only the aux nodes that
+            were actually attached. Orphan aux nodes remain emitted. `_emit_sfi()`
+            marks them with `metadata["orphan_aux"] = True`. So the rule is:
+            attached aux -> no standalone SFI; orphaned aux -> yes, standalone SFI,
+            tagged as `orphan_aux`.
+        3. Dropped entirely. An aux node can get fully dropped if the config specifies
+            "drop". In this case, the aux node never makes it to the
+            attachment-or-emission decision.
+
+    For example, suppose our config specifies the following:
+
+        * guidance_handling = "attach_to_expectation_metadata"
+        * descriptor_handling = "attach_to_expectation_metadata"
+        * aux_statement_parenting = "under_expectation"
+
+    that means:
+
+        1. Guidance/descriptor nodes are intended to disappear as standalone SFIs if
+            they can be matched to an expectation.
+        2. Only unmatched/orphan guidance/descriptor nodes remain as standalone SFIs.
+        3. Expectations stay emitted as normal SFIs, and they carry matched aux nodes
+            in metadata["aux_statements"].
 
     Parameters
     ----------
@@ -2697,7 +2941,7 @@ def export_academic_standards(
     emit_flag, drop_reasons = _build_initial_emit_flags(config=config, ctx=ctx)
 
     # 3.
-    export_children, aux_attach_to_expectation, reparent_stats = (
+    export_children, aux_nodes_attached_to_expectation, reparent_stats = (
         _compute_export_children(config=config, ctx=ctx, emit_flag=emit_flag)
     )
 
@@ -2711,7 +2955,7 @@ def export_academic_standards(
 
         attach_only_stats = _attach_aux_statements_in_export_tree(
             attached_aux_node_ids=attached_aux_node_ids,
-            aux_attach_to_expectation=aux_attach_to_expectation,
+            aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
             config=config,
             ctx=ctx,
             emit_flag=emit_flag,
@@ -2765,7 +3009,7 @@ def export_academic_standards(
     )
     export_order_index = _build_export_order_index(export_children)
     sfi_by_node = _emit_sfis(
-        aux_attach_to_expectation=aux_attach_to_expectation,
+        aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
         config=config,
         ctx=ctx,
