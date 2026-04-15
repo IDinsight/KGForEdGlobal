@@ -202,7 +202,7 @@ class ExportContext:
         if "by_columns_signature" in policies:
             sig = decision.get("columns_signature")
 
-            if sig and sig in (self.kg_config.non_standard_columns_signature or set()):
+            if sig and sig in self.kg_config.non_standard_columns_signature:
                 return True
 
         return False

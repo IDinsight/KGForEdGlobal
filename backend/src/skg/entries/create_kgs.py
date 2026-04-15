@@ -3,14 +3,13 @@ from a canonical IR JSON file. This is step 5.
 
 Step 5 does the following:
 
-1. Loads the canonical IR JSON and validates it.
-2. Builds the knowledge graph export context.
-3. Exports academic standards to the knowledge graphs.
-4. Exports Learning Components KG and writes combined Standards + Learning Components
+1. Builds the knowledge graph export context.
+2. Exports academic standards to the knowledge graphs.
+3. Exports Learning Components KG and writes combined Standards + Learning Components
     graph bundle.
-5. Optionally exports Learning Progressions KG and writes combined Standards +
+4. Optionally exports Learning Progressions KG and writes combined Standards +
     Learning Components + Learning Progressions graph bundle.
-6. Builds reporting and validation artifacts, writes to disk, and logs console summary.
+5. Builds reporting and validation artifacts, writes to disk, and logs console summary.
 
 Invoke from the backend directory via:
 

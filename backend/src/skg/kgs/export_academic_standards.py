@@ -529,17 +529,25 @@ def _build_initial_emit_flags(
     Returns
     -------
     tuple[dict[str, bool], dict[str, str]]
-        A tuple containing the emit_flag dictionary and drop_reasons dictionary.
+        A tuple of (emit_flag, drop_reasons) where:
+            - emit_flag is a mapping of canonical node ID to a boolean indicating
+                whether the node should be emitted based on export policies.
+            - drop_reasons is a mapping of canonical node ID to a string describing
+                the reason for dropping the node (only for nodes where emit_flag is
+                False).
     """
 
     emit_flag: dict[str, bool] = {}
     drop_reasons: dict[str, str] = {}
 
     for node_id in ctx.nodes_by_id:
+        # The root/framework node is always emitted and should not be subject to
+        # dropping rules since it has no parent and serves as the anchor for the entire
+        # export hierarchy.
         if node_id == ctx.root_id:
             continue
 
-        ok, reason = should_emit_node_with_reason(
+        ok, reason = _should_emit_node_with_reason(
             ctx=ctx, config=config, node_id=node_id
         )
         emit_flag[node_id] = ok
@@ -754,14 +762,14 @@ def _compute_export_children(
         dict with `aux_reparented_count` and `orphan_aux_count`.
     """
 
+    attached_aux_node_ids: set[str] = set()
     aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]] = defaultdict(
         list
     )
     export_children: dict[str, list[str]] = {}
-    reparented_count = 0
     orphan_aux_count = 0
     orphan_aux_node_ids: set[str] = set()
-    attached_aux_node_ids: set[str] = set()
+    reparented_count = 0
 
     for parent_id, kids in ctx.children_by_parent.items():
         if parent_id == ctx.root_id:
@@ -976,7 +984,6 @@ def _emit_framework(
     prefer_en = config.description_text_policy == "prefer_text_en"
     root_node = ctx.nodes_by_id.get(ctx.root_id, {})
     name = node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
-
     return StandardsFramework(
         academic_subject=metadata["academic_subject_default"],
         adoption_status=metadata["adoption_status"],
@@ -1502,17 +1509,13 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
         True if the role is a grouping role, False otherwise.
     """
 
-    if role == NodeRole.FRAMEWORK.value:
-        return False
-
-    if role in STATEMENT_ROLE_VALUES:
+    if role in (NodeRole.FRAMEWORK.value, STATEMENT_ROLE_VALUES):
         return False
 
     if config.grouping_role_policy == "loose":
         return True
 
     allowed = {r.value for r in config.grouping_roles_whitelist}
-
     return role in allowed
 
 
@@ -2234,6 +2237,82 @@ def _reparent_aux_under_expectations(
     return new_kids, child_aux_consumed
 
 
+def _should_emit_node_with_reason(
+    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
+) -> tuple[bool, str]:
+    """Determine whether a canonical node should be emitted. If it should not be
+    emitted, then also include a drop reason.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export, which may influence drop policies.
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties and
+        decision/segment information for drop policies.
+    node_id
+        The ID of the canonical node to evaluate.
+
+    Returns
+    -------
+    tuple[bool, str]
+        (True, "emitted") if the node should be emitted, or (False, reason) where
+        reason is a human-readable string explaining why the node was dropped. In
+        whitelist mode, non-grouping nodes are only eligible for `export_as_sfi_other`
+        when they are leaf nodes.
+    """
+
+    node = ctx.nodes_by_id[node_id]
+    role = str(node.get("role") or "")
+
+    # Segment drop policy.
+    for source_decision_id in node["source_decision_ids"]:
+        decision = ctx.decisions_by_id[source_decision_id]
+
+        if decision and ctx.should_drop_segment(decision):
+            decision_type = decision["decision_type"]
+            col_sig = decision["columns_signature"]
+            return (
+                (False, f"dropped:columns_signature:{col_sig}")
+                if col_sig and col_sig in ctx.kg_config.non_standard_columns_signature
+                else (False, f"dropped:segment_decision:{decision_type}")
+            )
+
+    # Role handling.
+    if role == StatementRole.GUIDANCE.value and config.guidance_handling == "drop":
+        return False, f"dropped:guidance_handling:{config.guidance_handling}"
+
+    if role == StatementRole.DESCRIPTOR.value and config.descriptor_handling == "drop":
+        return False, f"dropped:descriptor_handling:{config.descriptor_handling}"
+
+    # Strict grouping policy: if it's not a statement role, it must be an allowed
+    # grouping. Non-grouping nodes may only be emitted as `Other` when they are true
+    # leaves. Structural non-grouping nodes are dropped so their children can be
+    # hoisted to the nearest surviving ancestor by
+    # `_reattach_children_of_dropped_nodes`, rather than letting a semantic `Other`
+    # node function as a de facto grouping parent.
+    if (
+        config.grouping_role_policy == "whitelist"
+        and role != NodeRole.FRAMEWORK.value
+        and role not in STATEMENT_ROLE_VALUES
+        and not _is_grouping_role(config=config, role=role)
+    ):
+        if config.non_grouping_role_handling == "drop":
+            return (
+                False,
+                f"dropped:non_grouping_role:{config.non_grouping_role_handling}",
+            )
+
+        has_canonical_children = len(ctx.children_by_parent.get(node_id, [])) > 0
+        return (
+            (False, "dropped:non_grouping_role:structural_parent")
+            if has_canonical_children
+            else (True, "emitted")
+        )
+
+    return True, "emitted"
+
+
 def _sort_order_map(
     *, framework_uuid: Any, order_map: dict[str, list[str]]
 ) -> dict[str, list[str]]:
@@ -2405,8 +2484,7 @@ def _to_iso8601_or_none(v: Any) -> Optional[str]:
         return None
 
     if isinstance(v, str):
-        v2 = v.strip()
-        return v2 or None
+        return v.strip() or None
 
     if isinstance(v, datetime):
         return v.isoformat()
@@ -2823,7 +2901,6 @@ def load_academic_standards_export(kg_dirs: KGDirs) -> AcademicStandardsExport:
     # policy coverage report can be fully regenerated even when the export is reused.
     drop_reasons_fp = d / "academic_standards_drop_reasons.json"
     reparent_stats_fp = d / "academic_standards_reparent_stats.json"
-
     drop_reasons: dict[str, str] = (
         open_json_type(drop_reasons_fp) if drop_reasons_fp.exists() else {}
     )
@@ -2885,7 +2962,7 @@ def load_or_export_academic_standards(
 
     if as_sentinel.exists() and not config.overwrite:
         logger.warning(
-            "Academic Standards KG already exists and overwrite=False — loading from "
+            "Academic Standards KG already exists and overwrite=False--loading from "
             "disk."
         )
         academic_standards = load_academic_standards_export(kg_dirs)
@@ -2907,103 +2984,3 @@ def load_or_export_academic_standards(
         )
 
     return academic_standards, as_reused
-
-
-def should_emit_node(
-    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
-) -> bool:
-    """Determine whether a canonical node should be emitted as a StandardsFrameworkItem
-    based on its properties and the export configuration.
-
-    Parameters
-    ----------
-    config
-        The CreateKGConfig for export, which may influence drop policies.
-    ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        decision/segment information for drop policies.
-    node_id
-        The ID of the canonical node to evaluate.
-
-    Returns
-    -------
-    bool
-        True if the node should be emitted as a StandardsFrameworkItem, False if it
-        should be dropped.
-    """
-
-    ok, _ = should_emit_node_with_reason(config=config, ctx=ctx, node_id=node_id)
-    return ok
-
-
-def should_emit_node_with_reason(
-    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
-) -> tuple[bool, str]:
-    """Determine whether a canonical node should be emitted, with a drop reason.
-
-    Parameters
-    ----------
-    config
-        The CreateKGConfig for export, which may influence drop policies.
-    ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        decision/segment information for drop policies.
-    node_id
-        The ID of the canonical node to evaluate.
-
-    Returns
-    -------
-    tuple[bool, str]
-        (True, "emitted") if the node should be emitted, or (False, reason) where
-        reason is a human-readable string explaining why the node was dropped. In
-        whitelist mode, non-grouping nodes are only eligible for `export_as_sfi_other`
-        when they are leaf nodes.
-    """
-
-    node = ctx.nodes_by_id[node_id]
-    role = str(node.get("role") or "")
-
-    # Segment drop policy.
-    for did in node.get("source_decision_ids", []):
-        dec = ctx.decisions_by_id.get(did)
-
-        if dec and ctx.should_drop_segment(decision=dec):
-            dt = dec.get("decision_type", "unknown")
-            sig = dec.get("columns_signature")
-            return (
-                (False, f"dropped:columns_signature:{sig}")
-                if sig
-                and sig in (ctx.kg_config.non_standard_columns_signature or set())
-                else (False, f"dropped:segment_decision:{dt}")
-            )
-
-    # Role handling.
-    if role == StatementRole.GUIDANCE.value and config.guidance_handling == "drop":
-        return False, "dropped:guidance_handling:drop"
-
-    if role == StatementRole.DESCRIPTOR.value and config.descriptor_handling == "drop":
-        return False, "dropped:descriptor_handling:drop"
-
-    # Strict grouping policy: if it's not a statement role, it must be an allowed
-    # grouping. Non-grouping nodes may only be emitted as `Other` when they are true
-    # leaves. Structural non-grouping nodes are dropped so their children can be
-    # hoisted to the nearest surviving ancestor by
-    # `_reattach_children_of_dropped_nodes`, rather than letting a semantic `Other`
-    # node function as a de facto grouping parent.
-    if (
-        config.grouping_role_policy == "whitelist"
-        and role != NodeRole.FRAMEWORK.value
-        and role not in STATEMENT_ROLE_VALUES
-        and not _is_grouping_role(config=config, role=role)
-    ):
-        if config.non_grouping_role_handling == "drop":
-            return False, "dropped:non_grouping_role:drop"
-
-        has_canonical_children = len(ctx.children_by_parent.get(node_id, [])) > 0
-        return (
-            (False, "dropped:non_grouping_role:structural_parent")
-            if has_canonical_children
-            else (True, "emitted")
-        )
-
-    return True, "emitted"
