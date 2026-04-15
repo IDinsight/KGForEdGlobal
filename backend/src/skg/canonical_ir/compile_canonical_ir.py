@@ -1051,7 +1051,7 @@ def _materialize_decision_structure(
         )
 
         # NB: This is a grouping/container node and not a leaf statement node (`title`
-        # is set buty `body` is None).
+        # is set but `body` is None).
         node = CanonicalNode(
             bbox=_segment_first_bbox(segment),
             body=None,
