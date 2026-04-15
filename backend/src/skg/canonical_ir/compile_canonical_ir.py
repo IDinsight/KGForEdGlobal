@@ -1060,6 +1060,7 @@ def _materialize_decision_structure(
             node_id=node_id,
             normalized_text=_normalize_text(text=g_title),
             page_indices=page_indices,
+            preserve_if_empty=g.preserve_if_empty,
             role=g.role,
             section_path_text=section_path_text,
             source_decision_ids=[decision.decision_id],
@@ -1408,6 +1409,7 @@ def _materialize_row_groupings(
             node_id=node_id,
             normalized_text=_normalize_text(text=g_title),
             page_indices=page_indices,
+            preserve_if_empty=g.preserve_if_empty,
             role=g.role,
             section_path_text=section_path_text,
             source_decision_ids=[decision_id],
@@ -2916,6 +2918,13 @@ def ensure_node(
     # page_indices must stay sorted (other list fields preserve first-seen order).
     existing_node.page_indices = sorted(set(existing_node.page_indices))
 
+    # Boolean preservation flags should merge with OR semantics so that any supporting
+    # decision can mark a grouping as intentionally retained even if an earlier
+    # occurrence omitted the flag.
+    existing_node.preserve_if_empty = (
+        existing_node.preserve_if_empty or node.preserve_if_empty
+    )
+
     # Keep-first semantics, fill missing values if present.
     scalar_fields = (
         "normalized_text",
@@ -3076,11 +3085,13 @@ def prune_empty_groupings(
     1. If a grouping has no children, drop it.
     2. After dropping, its parent may become empty -> repeat until stable.
     3. Root is never pruned.
+    4. Groupings marked `preserve_if_empty=True` are never pruned.
 
     This **should** be safe because:
 
     1. It only removes empty containers (no standards/leaves underneath).
     2. It makes the CanonicalIR cleaner for export (Step 5).
+    3. Skeleton-authored structural shells can opt out via `preserve_if_empty`.
 
     Parameters
     ----------
@@ -3119,7 +3130,7 @@ def prune_empty_groupings(
         prunable_ids: set[str] = set()
 
         for nid, node in nodes_by_id.items():
-            if nid == root_id:
+            if nid == root_id or node.preserve_if_empty:
                 continue
 
             if (
@@ -3484,6 +3495,7 @@ def reconcile_context_stack(
             node_id=node_id,
             normalized_text=_normalize_text(text=g_title),
             page_indices=page_indices,
+            preserve_if_empty=g.preserve_if_empty,
             role=g.role,
             section_path_text=section_path_text,
             source_decision_ids=[decision.decision_id],

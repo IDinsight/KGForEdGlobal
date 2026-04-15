@@ -409,7 +409,7 @@ def _build_academic_standards_graph_bundle(
 def _build_aux_payload(
     *, aux_node_id: str, ctx: ExportContext, prefer_en: bool
 ) -> dict[str, Any]:
-    """Builds the metadata payload dictionary for an auxiliary node.
+    """Build the metadata payload dictionary for an auxiliary node.
 
     Parameters
     ----------
@@ -427,17 +427,15 @@ def _build_aux_payload(
     """
 
     node = ctx.nodes_by_id[aux_node_id]
-    role = str(node.get("role") or "")
-    bbox = node.get("bbox")
-
+    bbox = node["bbox"]
     payload: dict[str, Any] = {
-        "role": role,
-        "text": node_display_text(node=node, prefer_text_en=prefer_en),
+        "bbox": bbox,
         "canonical_node_id": aux_node_id,
         "page_indices": node.get("page_indices", []),
+        "role": node["role"],
         "source_decision_ids": node.get("source_decision_ids", []),
         "source_segment_ids": node.get("source_segment_ids", []),
-        "bbox": bbox,
+        "text": node_display_text(node=node, prefer_text_en=prefer_en),
     }
 
     if bbox is not None:
@@ -541,7 +539,7 @@ def _build_initial_emit_flags(
     drop_reasons: dict[str, str] = {}
 
     for node_id in ctx.nodes_by_id:
-        # The root/framework node is always emitted and should not be subject to
+        # The root/framework node is always skipped and should not be subject to
         # dropping rules since it has no parent and serves as the anchor for the entire
         # export hierarchy.
         if node_id == ctx.root_id:
@@ -1536,8 +1534,8 @@ def _handle_empty_grouping_pruning(
 
 def _is_already_attached(
     *,
-    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     aux_node_id: str,
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     expectation_id: str,
 ) -> bool:
     """Checks if an auxiliary node is already attached to an expectation.
@@ -1558,8 +1556,8 @@ def _is_already_attached(
     """
 
     return any(
-        p.get("canonical_node_id") == aux_node_id
-        for p in aux_nodes_attached_to_expectation.get(expectation_id, [])
+        p["canonical_node_id"] == aux_node_id
+        for p in aux_nodes_attached_to_expectation[expectation_id]
     )
 
 
@@ -2331,13 +2329,13 @@ def _reparent_aux_nodes_under_expectations(
         the canonical-IR children of expectations (child layout).
     """
 
+    child_aux_consumed: int = 0
     last_expectation: Optional[str] = None
     new_kids: list[str] = []
     prefer_en = config.description_text_policy == "prefer_text_en"
-    child_aux_consumed: int = 0
 
-    def _attach_aux(*, aux_node_id: str, target_expectation_id: str) -> bool:
-        """Process a single aux node: attach as metadata or as an export child.
+    def _attach_aux_node(*, aux_node_id: str, target_expectation_id: str) -> bool:
+        """Process a single aux node as either metadata or as an export child.
 
         Parameters
         ----------
@@ -2354,18 +2352,7 @@ def _reparent_aux_nodes_under_expectations(
             been attached under the same expectation.
         """
 
-        node = ctx.nodes_by_id[aux_node_id]
-        role = str(node.get("role") or "")
-
-        attach_to_metadata = (
-            role == StatementRole.GUIDANCE.value
-            and config.guidance_handling == "attach_to_expectation_metadata"
-        ) or (
-            role == StatementRole.DESCRIPTOR.value
-            and config.descriptor_handling == "attach_to_expectation_metadata"
-        )
-
-        if attach_to_metadata:
+        if _is_attachable(config=config, role=ctx.nodes_by_id[aux_node_id]["role"]):
             if _is_already_attached(
                 aux_node_id=aux_node_id,
                 aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
@@ -2382,37 +2369,36 @@ def _reparent_aux_nodes_under_expectations(
             return True
 
         return _append_unique_child(
+            child_id=aux_node_id,
             export_children=export_children,
             parent_id=target_expectation_id,
-            child_id=aux_node_id,
         )
 
     for cid in ordered_kids:
-        node = ctx.nodes_by_id[cid]
-        role = str(node.get("role") or "")
+        role = ctx.nodes_by_id[cid]["role"]
 
         if role == StatementRole.EXPECTATION.value:
             last_expectation = cid
             new_kids.append(cid)
 
-            # Child layout: harvest aux nodes that are direct children of this
-            # expectation in the canonical IR.
+            # Child layout: get aux nodes that are direct children of this expectation
+            # in the canonical IR.
             for child_id in ctx.children_by_parent.get(cid, []):
-                if not emit_flag.get(child_id, False):
+                if not emit_flag[child_id]:
                     continue
 
-                child_role = str(ctx.nodes_by_id[child_id].get("role") or "")
+                child_role = ctx.nodes_by_id[child_id]["role"]
 
-                if child_role in AUX_ROLES and _attach_aux(
+                if child_role in AUX_ROLES and _attach_aux_node(
                     aux_node_id=child_id, target_expectation_id=cid
                 ):
                     child_aux_consumed += 1
 
             continue
 
-        # Sibling layout: aux following an expectation in sibling order.
+        # Sibling layout: aux node following an expectation in sibling order.
         if role in AUX_ROLES and last_expectation:
-            _attach_aux(aux_node_id=cid, target_expectation_id=last_expectation)
+            _attach_aux_node(aux_node_id=cid, target_expectation_id=last_expectation)
             continue
 
         new_kids.append(cid)
@@ -2950,9 +2936,8 @@ def export_academic_standards(
         config.guidance_handling == "attach_to_expectation_metadata"
         or config.descriptor_handling == "attach_to_expectation_metadata"
     ):
-        attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids") or [])
-        orphan_aux_node_ids = set(reparent_stats.get("orphan_aux_node_ids") or [])
-
+        attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids", []))
+        orphan_aux_node_ids = set(reparent_stats.get("orphan_aux_node_ids", []))
         attach_only_stats = _attach_aux_statements_in_export_tree(
             attached_aux_node_ids=attached_aux_node_ids,
             aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
@@ -2962,7 +2947,6 @@ def export_academic_standards(
             export_children=export_children,
             orphan_aux_node_ids=orphan_aux_node_ids,
         )
-
         reparent_stats.update(attach_only_stats)
         reparent_stats["attached_aux_node_ids"] = sorted(attached_aux_node_ids)
         reparent_stats["orphan_aux_node_ids"] = sorted(orphan_aux_node_ids)

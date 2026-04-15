@@ -374,6 +374,7 @@ def _build_segment_groupings(node: CurriculumSkeletonNode) -> list[GroupingDecis
     return [
         GroupingDecision(
             local_code=node.local_code,
+            preserve_if_empty=node.preserve_if_empty,
             role=node.grouping_role,
             source_label=node.source_label,
             title=node.canonical_name.primary,
@@ -3390,6 +3391,7 @@ def build_context_groupings(
         context.append(
             GroupingDecision(
                 local_code=node.local_code,
+                preserve_if_empty=node.preserve_if_empty,
                 role=node.grouping_role,
                 source_label=node.source_label,
                 title=node.canonical_name.primary,
@@ -4401,6 +4403,7 @@ def translate_matched_segment(
             groupings=[
                 GroupingDecision(
                     local_code=node.local_code,
+                    preserve_if_empty=node.preserve_if_empty,
                     role=node.grouping_role,
                     source_label=node.source_label,
                     title=node.canonical_name.primary,
@@ -4451,6 +4454,7 @@ def translate_matched_segment(
             groupings=[
                 GroupingDecision(
                     local_code=node.local_code,
+                    preserve_if_empty=node.preserve_if_empty,
                     role=node.grouping_role,
                     source_label=node.source_label,
                     title=node.canonical_name.primary,

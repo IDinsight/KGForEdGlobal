@@ -472,6 +472,15 @@ class CurriculumSkeletonNode(BaseSchema):
         default=None,
         description="Maps to GroupingDecision.local_code (e.g., 'Tableau 4').",
     )
+    preserve_if_empty: bool = Field(
+        default=False,
+        description=(
+            "If True, retain the emitted grouping node even when it has no emitted "
+            "children after canonical compilation. Use for structural sections that "
+            "should remain visible for provenance/scope even when their matched "
+            "content is intentionally ignored."
+        ),
+    )
     source_label: Optional[str] = Field(
         default=None,
         description="Maps to GroupingDecision.source_label — original document text.",
@@ -747,6 +756,15 @@ class GroupingDecision(BaseSchema):
     local_code: str | None = Field(
         default=None,
         description="Optional local code associated with the grouping (rare; often used for table codes or document codes).",
+    )
+    preserve_if_empty: bool = Field(
+        default=False,
+        description=(
+            "If True, preserve the emitted grouping node even when it has no "
+            "materialized children after compilation. Intended for structural "
+            "containers such as planning sections that are kept for provenance even "
+            "when their matched child content is intentionally ignored."
+        ),
     )
     role: NodeRole = Field(
         ...,
@@ -1405,6 +1423,13 @@ class CanonicalNode(BaseSchema):
     page_indices: list[int] = Field(
         default_factory=list,
         description="Page indices from which this node was derived.",
+    )
+    preserve_if_empty: bool = Field(
+        default=False,
+        description=(
+            "If True, post-pass empty-group pruning must retain this grouping node "
+            "even when it has no outgoing children."
+        ),
     )
     role: NodeRole | StatementRole = Field(
         ...,

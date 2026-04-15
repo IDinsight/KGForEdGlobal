@@ -208,7 +208,8 @@
 						"match_target": "caption",
 						"row_skip_cell_patterns": []
 					}
-				]
+				],
+				"preserve_if_empty": true
 			},
 			{
 				"id": "strand-oral",
