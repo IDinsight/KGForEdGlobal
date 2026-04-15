@@ -197,49 +197,16 @@
 							"primary": "Tableau 1.2.1 — Planification des apprentissages du CE1",
 							"translations": {}
 						},
-						"emit": "emit_table_rows",
+						"emit": "ignore",
 						"leaf_role": "expectation",
 						"allow_multiple_segments": false,
-						"column_mappings": [
-							{
-								"header_pattern": "(?i)activit[ée]s",
-								"role": "grouping:week",
-								"grouping_role_overrides": [
-									{
-										"cell_pattern": "(?i)^\\s*(manoore|comp[ée]tences?\\s+de\\s+base)\\b",
-										"role": "skip_row"
-									},
-									{
-										"cell_pattern": "(?i)^\\s*semaines\\s*$",
-										"role": "skip_row"
-									}
-								]
-							},
-							{
-								"header_pattern": "(?i)waxinu làmmiñ|expression orale",
-								"role": "leaf:expectation",
-								"source_label_override": "Expression orale"
-							},
-							{
-								"header_pattern": "(?i)tari|r[ée]citation",
-								"role": "leaf:expectation",
-								"source_label_override": "Récitation"
-							},
-							{
-								"header_pattern": "(?i)njàng|lecture",
-								"role": "leaf:expectation",
-								"source_label_override": "Lecture"
-							}
-						],
-						"doc_note": "25-week planning grid across 3 paliers. First column is the week axis; the duplicated 'Manoore yi lalu / Compétences de base' row is skipped because base competencies are already captured in Tableau 1.1.2. [FIX: 'Semaines' now skips instead of becoming a bogus grouping. Checkpoint rows whose cells are exactly INTÉGRATION or EVALUATION are suppressed via row_skip_cell_patterns. Removed an ineffective grouping:substage override for Jéego/Palier because, in this table, the palier markers live in the expectation columns rather than the grouping column; they cannot be promoted to row-level substage groupings via the current skeleton-only override model.]",
+						"column_mappings": [],
+						"doc_note": "25-week planning grid across 3 paliers. This table is retained only as matched planning/scope-and-sequence content and is no longer translated into standards leaves. Rationale: for Senegal reading, the primary standards-like leaf units should come from the detailed activity tables (sections 1.3, 1.4, and later 1.6) where rows expose 'Objectif spécifique' + 'Contenus' + 'Durée'. Keeping this table as EMIT_TABLE_ROWS over-materializes week-based planning cells as academic standards candidates. The explicit section heading '1.2 TABLEAU DE PLANIFICATION DES APPRENTISSAGES' is still preserved by the parent node.",
 						"match_phrases": [
 							"tableau 1.2.1"
 						],
 						"match_target": "caption",
-						"row_skip_cell_patterns": [
-							"(?is)^\\s*int[ée]gration\\s*$",
-							"(?is)^\\s*evaluation\\s*$"
-						]
+						"row_skip_cell_patterns": []
 					}
 				]
 			},
