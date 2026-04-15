@@ -67,18 +67,18 @@ class AcademicStandardsExport:
 
 
 def _append_unique_child(
-    *, export_children: dict[str, list[str]], parent_id: str, child_id: str
+    *, child_id: str, export_children: dict[str, list[str]], parent_id: str
 ) -> bool:
     """Append a child to an export parent only if not already present.
 
     Parameters
     ----------
+    child_id
+        The canonical node ID of the child to append.
     export_children
         The parent-to-children mapping being built for export.
     parent_id
         The canonical node ID of the parent.
-    child_id
-        The canonical node ID of the child to append.
 
     Returns
     -------
@@ -124,13 +124,17 @@ def _attach_aux_statements_in_export_tree(
     emitted as SFIs is controlled by `_process_attach_to_expectation` (based on which
     aux nodes were successfully attached).
 
+    This function does the following: “Given the current export tree, find every
+    guidance/descriptor node that should be attached into an expectation’s metadata,
+    either because it is already a child of that expectation or because it appears
+    after that expectation in sibling order.”
+
     Parameters
     ----------
-    aux_attach_to_expectation
-        Mutable mapping collecting metadata attachments for expectation nodes.
+    attached_aux_node_ids
+        Mutable set collecting canonical node IDs successfully attached.
     aux_nodes_attached_to_expectation
-        Mutable set collecting canonical node IDs that were successfully attached to an
-        expectation's metadata.
+        Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
     ctx
@@ -167,7 +171,6 @@ def _attach_aux_statements_in_export_tree(
         export_children=export_children,
         orphan_aux_node_ids=orphan_aux_node_ids,
     )
-
     return {
         "attach_only_attached_count": child_attached + sibling_attached,
         "attach_only_orphan_aux_count": sibling_orphans,
@@ -184,7 +187,49 @@ def _attach_child_layout_aux_nodes(
     export_children: dict[str, list[str]],
 ) -> int:
     """Processes child layout, attaching emitted guidance/descriptors to their parent
-    expectation.
+    expectation. This layout is basically "expectation already directly owns aux
+    children.".
+
+    Examples
+    --------
+    1. Expectation already owns guidance/descriptor as children
+        Suppose the export tree already contains:
+
+            export_children[E1] == [G1, D1]
+
+        where:
+
+            E1.role == "expectation"
+            G1.role == "guidance"
+            D1.role == "descriptor"
+
+        and both aux roles are configured with "attach_to_expectation_metadata".
+
+        This function does not modify `export_children`. Instead, it records payloads
+        for `G1` and `D1` under:
+
+            aux_nodes_attached_to_expectation[E1]
+
+        Result:
+            - E1 is now associated with aux metadata for G1 and D1
+            - G1 and D1 are added to `attached_aux_node_ids`
+            - The hierarchy remains unchanged at this stage
+
+    2. Senegal reading curriculum example
+        A common Senegal reading pattern is:
+
+            E1 = "Objectif spécifique"
+            G1 = "Contenus"
+            D1 = "Durée"
+
+        If the export tree already stores `Contenus` and `Durée` as direct children of
+        the `Objectif spécifique` expectation, this function attaches both as metadata
+        to that expectation.
+
+        Example:
+            E1: "Joxe ay santaane / Donner des consignes"
+            G1: guidance content
+            D1: "Ayu bés 22 / Semaine 22"
 
     Parameters
     ----------
@@ -211,17 +256,17 @@ def _attach_child_layout_aux_nodes(
     attached_count = 0
 
     for exp_id, node in ctx.nodes_by_id.items():
-        if not emit_flag.get(exp_id, False):
-            continue
-
-        if str(node.get("role") or "") != StatementRole.EXPECTATION.value:
+        if (
+            not emit_flag.get(exp_id, False)
+            or node["role"] != StatementRole.EXPECTATION.value
+        ):
             continue
 
         for child_id in export_children.get(exp_id, []):
-            if not emit_flag.get(child_id, False):
+            if not emit_flag[child_id]:
                 continue
 
-            child_role = str(ctx.nodes_by_id.get(child_id, {}).get("role") or "")
+            child_role = ctx.nodes_by_id[child_id]["role"]
 
             if child_role not in AUX_ROLES or not _is_attachable(
                 config=config, role=child_role
@@ -257,7 +302,59 @@ def _attach_sibling_layout_aux_nodes(
     orphan_aux_node_ids: set[str],
 ) -> tuple[int, int]:
     """Processes sibling layout, attaching auxiliary nodes to the most recent preceding
-    expectation.
+    expectation. This layout is basically "expectation and aux are siblings, and aux
+    belongs to the most recent preceding expectation.".
+
+    Examples
+    --------
+    1. Ordered sibling row under a grouping parent
+        Suppose a grouping parent has the following emitted children in order:
+
+            [E1, G1, D1, E2]
+
+        where:
+
+            E1.role == "expectation"
+            G1.role == "guidance"
+            D1.role == "descriptor"
+            E2.role == "expectation"
+
+        This function scans left to right and attaches `G1` and `D1` to the most recent
+        preceding expectation, which is `E1`.
+
+        Result:
+            aux_nodes_attached_to_expectation[E1] contains payloads for G1 and D1
+
+        `E2` becomes the new `last_expectation` for any later aux siblings.
+
+    2. Leading aux nodes become orphans
+        Suppose a parent has:
+
+            [G0, D0, E1]
+
+        where no expectation appears before `G0` and `D0`.
+
+        Because there is no preceding expectation to own them, the function does not
+        attach `G0` or `D0` to `E1`. Instead, it records them in `orphan_aux_node_ids`.
+
+        Result:
+            - `G0` and `D0` are marked orphan aux
+            - they are not attached to `E1`
+
+    3. Senegal reading curriculum example
+        A common Senegal planning row appears in sibling order as:
+
+            [Objectif spécifique, Contenus, Durée]
+
+        For example:
+
+            E1: "Joxe ay santaane / Donner des consignes"
+            G1: guidance content under "Contenus"
+            D1: "Ayu bés 22 / Semaine 22"
+
+        The function attaches `Contenus` and `Durée` to the expectation
+        "Joxe ay santaane / Donner des consignes" because it is the most recent
+        preceding expectation in sibling order.
 
     Parameters
     ----------
@@ -288,10 +385,11 @@ def _attach_sibling_layout_aux_nodes(
     total_orphans = 0
 
     for parent_id, kids in export_children.items():
-        if parent_id == ctx.root_id:
-            parent_role = NodeRole.FRAMEWORK.value
-        else:
-            parent_role = str((ctx.nodes_by_id.get(parent_id) or {}).get("role") or "")
+        parent_role = (
+            NodeRole.FRAMEWORK.value
+            if parent_id == ctx.root_id
+            else ctx.nodes_by_id[parent_id]["role"]
+        )
 
         if parent_role in STATEMENT_ROLE_VALUES:
             continue
@@ -306,7 +404,6 @@ def _attach_sibling_layout_aux_nodes(
             orphan_aux_node_ids=orphan_aux_node_ids,
             prefer_en=prefer_en,
         )
-
         total_attached += attached
         total_orphans += orphans
 
@@ -1137,7 +1234,6 @@ def _emit_has_child(
 
     relationship_metadata = dict(relationship_metadata or {})
     relationship_metadata.setdefault("source_kg", "academic_standards")
-
     return Relationship(
         attribution_statement=config.attribution_statement,
         author=config.author,
@@ -1587,7 +1683,12 @@ def _is_attachable(*, config: CreateKGConfig, role: str) -> bool:
 
 
 def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
-    """Determine if a role is a grouping role (not expectation/aux).
+    """Determine if a role should be treated as a grouping node in standards export.
+
+    Statement roles (expectation/descriptor/guidance) and the synthetic framework role
+    are never groupings. When `grouping_role_policy="loose"`, every other role is
+    treated as a grouping. When `grouping_role_policy="whitelist"`, only roles in
+    `grouping_roles_whitelist` count as groupings.
 
     Parameters
     ----------
@@ -1602,7 +1703,7 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
         True if the role is a grouping role, False otherwise.
     """
 
-    if role in (NodeRole.FRAMEWORK.value, STATEMENT_ROLE_VALUES):
+    if role == NodeRole.FRAMEWORK.value or role in STATEMENT_ROLE_VALUES:
         return False
 
     if config.grouping_role_policy == "loose":
@@ -1795,73 +1896,6 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
         )
 
     return None, None
-
-
-def _process_attach_to_expectation(
-    *,
-    config: CreateKGConfig,
-    ctx: ExportContext,
-    drop_reasons: dict[str, str],
-    emit_flag: dict[str, bool],
-    reparent_stats: dict[str, Any],
-) -> None:
-    """Modify emit flags and track stats for attach-to-expectation handling.
-
-    If aux statements are "attach_to_expectation_metadata", they should NOT be counted
-    as emitted nodes for pruning.
-
-    Only aux statements that were successfully attached to an owning expectation are
-    suppressed; orphan aux statements remain emitted (and are tagged as orphan_aux).
-
-    Parameters
-    ----------
-    config
-        The CreateKGConfig for export.
-    ctx
-        The ExportContext for the CanonicalIR.
-    drop_reasons
-        Dictionary mapping node IDs to reasons they were dropped. Mutated in-place.
-    emit_flag
-        Dictionary mapping node IDs to boolean emit flags. Mutated in-place.
-    reparent_stats
-        Dictionary containing reparenting statistics. Mutated in-place.
-    """
-
-    attach_to_exp_count = 0
-
-    # Only suppress aux nodes that were actually attached to an expectation's metadata.
-    # This avoids silently deleting "orphan" aux statements that had no owning
-    # expectation (those remain as SFIs and are tagged via orphan_aux metadata).
-    attached_aux_node_ids: set[str] = set(
-        reparent_stats.get("attached_aux_node_ids") or []
-    )
-
-    if (
-        config.guidance_handling == "attach_to_expectation_metadata"
-        or config.descriptor_handling == "attach_to_expectation_metadata"
-    ):
-        for nid in attached_aux_node_ids:
-            if not emit_flag.get(nid, False):
-                continue
-
-            role = str(ctx.nodes_by_id[nid].get("role") or "")
-
-            if (
-                role == StatementRole.GUIDANCE.value
-                and config.guidance_handling == "attach_to_expectation_metadata"
-            ):
-                emit_flag[nid] = False
-                drop_reasons[nid] = "dropped:attach_to_expectation_metadata"
-                attach_to_exp_count += 1
-            elif (
-                role == StatementRole.DESCRIPTOR.value
-                and config.descriptor_handling == "attach_to_expectation_metadata"
-            ):
-                emit_flag[nid] = False
-                drop_reasons[nid] = "dropped:attach_to_expectation_metadata"
-                attach_to_exp_count += 1
-
-    reparent_stats["attach_to_expectation_count"] = attach_to_exp_count
 
 
 def _process_sibling_group(
@@ -2518,6 +2552,107 @@ def _sort_order_map(
     return order_map_sorted
 
 
+def _suppress_attached_to_expectation(
+    *,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    drop_reasons: dict[str, str],
+    emit_flag: dict[str, bool],
+    reparent_stats: dict[str, Any],
+) -> None:
+    """Modify emit flags and track stats for attach-to-expectation handling.
+
+    NB: If aux statements are "attach_to_expectation_metadata", they should NOT be
+    counted as emitted nodes for pruning. Only aux statements that were successfully
+    attached to an owning expectation are suppressed; orphan aux statements remain
+    emitted (and are tagged as `orphan_aux`). In other words, after this function, aux
+    statements are no longer "real export nodes"---they become metadata only.
+
+    This function basically looks at the set of aux node IDs that were successfully
+    attached to an expectation during steps 3 and 4, and then decides whether those aux
+    nodes should still be emitted as standalone SFIs. Thus, this function is **not**
+    finding new attachments (that already happened in steps 3 and 4). Instead, this
+    function enforces the export policy for those already-attached aux nodes. After
+    step 4, the exporter knows "G1 and D1 belong to expectation E1.". This function
+    then asks: "Since G1 and D1 are already attached to E1's metadata, should they
+    still appear as separate SFIs?".
+
+    NB: There are really three cases for aux nodes.
+        1. Attached aux node -> suppress as standalone SFI. If an aux node was
+            successfully attached to an expectation and the config says
+            attach-to-metadata, then it is dropped from standalone emission in step 5.
+        2. Orphan aux node -> keep as standalone SFI
+            If an aux node was not successfully attached because there was no owning
+            expectation, step 5 does not suppress it. It stays emitted. That is why
+            this function only iterates `attached_aux_node_ids`, not all aux nodes.
+        3. Aux configured as "export_as_sfi_other" -> keep as standalone SFI. If
+            guidance or descriptor handling were configured differently, then
+            `_is_attachable()` would not have attached them in the first place, so step
+            5 would have nothing to suppress for those nodes.
+
+    NB: This function needs to be called before later cleanup because later steps
+    need to know the final emit/non-emit state. The main flow says:
+        - Step 5: Modify emit flags for attach-to-expectation
+        - Step 6: Suppress subtrees rooted under aux nodes converted into
+            expectation metadata
+        - Step 7: Reattach children of dropped nodes
+        - Step 8: Prune empty groupings
+
+    This ordering is correct. If step 5 did not happen first, later cleanup steps
+    would still think those attached aux nodes were legitimate exported nodes and
+    might keep them alive or preserve their subtrees.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    drop_reasons
+        Dictionary mapping node IDs to reasons they were dropped. Mutated in-place.
+    emit_flag
+        Dictionary mapping node IDs to boolean emit flags. Mutated in-place.
+    reparent_stats
+        Dictionary containing reparenting statistics. Mutated in-place.
+    """
+
+    attach_to_exp_count = 0
+
+    # Only suppress aux nodes that were actually attached to an expectation's metadata.
+    # This avoids silently deleting "orphan" aux statements that had no owning
+    # expectation (those remain as SFIs and are tagged via `orphan_aux` metadata).
+    attached_aux_node_ids: set[str] = set(
+        reparent_stats.get("attached_aux_node_ids", [])
+    )
+
+    if (
+        config.guidance_handling == "attach_to_expectation_metadata"
+        or config.descriptor_handling == "attach_to_expectation_metadata"
+    ):
+        for nid in attached_aux_node_ids:
+            if not emit_flag.get(nid, False):
+                continue
+
+            role = ctx.nodes_by_id[nid]["role"]
+
+            if (
+                role == StatementRole.GUIDANCE.value
+                and config.guidance_handling == "attach_to_expectation_metadata"
+            ):
+                attach_to_exp_count += 1
+                drop_reasons[nid] = f"dropped:{config.guidance_handling}"
+                emit_flag[nid] = False
+            elif (
+                role == StatementRole.DESCRIPTOR.value
+                and config.descriptor_handling == "attach_to_expectation_metadata"
+            ):
+                attach_to_exp_count += 1
+                drop_reasons[nid] = f"dropped:{config.descriptor_handling}"
+                emit_flag[nid] = False
+
+    reparent_stats["suppressed_after_being_attached"] = attach_to_exp_count
+
+
 def _suppress_subtrees_of_attached_aux_nodes(
     *,
     drop_reasons: dict[str, str],
@@ -2525,12 +2660,97 @@ def _suppress_subtrees_of_attached_aux_nodes(
     export_children: dict[str, list[str]],
     reparent_stats: dict[str, Any],
 ) -> dict[str, int]:
-    """Suppress exported descendants of aux nodes that were attached to metadata.
+    """Suppress any exported descendants reachable from aux nodes that were attached to
+    expectation metadata, and remove those aux-rooted subtrees from the export tree.
 
     When a guidance/descriptor node is converted into expectation metadata via
-    `attach_to_expectation_metadata`, its subtree should not later be hoisted back into
-    the Academic Standards hierarchy. This function removes those descendants from the
-    export tree and marks any still-emitted descendants as dropped.
+    `_reparent_aux_nodes_under_expectations`, its subtree should not later be hoisted
+    back into the Academic Standards hierarchy. This function removes those descendants
+    from the export tree and marks any still-emitted descendants as dropped.
+
+    In other words, once an aux node has been converted into expectation metadata in
+    step 5, nothing under that aux node should be allowed to survive in the exported
+    hierarchy.
+
+    Otherwise, a later hoisting pass could leak that subtree back into the KG. By the
+    time step 6 (i.e., this function is called), step 4 has discovered attachable aux
+    nodes, step 5 has flipped `emit_flag=false` for attached guidance/descriptors, but
+    `export_children` may still contain those aux nodes as parents with descendants
+    underneath them.
+
+    Without this function, step 7 (`_reattach_children_of_dropped_nodes()`) could see a
+    dropped aux parent that still has children and hoist those children upward to a
+    surviving ancestor. That would reintroduce content from an aux subtree that was
+    supposed to disappear into metadata.
+
+    So, one way to view step 5 is that step 5 suppresses the attached aux nodes
+    themselves whereas step 6 (this function) suppresses everything below them, so
+    those descendants cannot be hoisted back later.
+
+    Examples
+    --------
+    1. Main case that this function is protecting against
+        Suppose step 5 already attached and suppressed G1:
+
+        P
+        - E1 (expectation)
+        - G1 (guidance, attached to E1 metadata, emit_flag=False)
+            - X1
+            - X2
+
+        Without step 6:
+
+        * G1 is dropped,
+        * but G1 still has children X1 and X2,
+        * then step 7 could hoist X1 and X2 up to P or another surviving ancestor.
+
+        That would be wrong, because X1 and X2 only existed under a guidance node that
+        has already been absorbed into metadata.
+
+        With step 6:
+
+        * X1 and X2 are recursively marked non-emitted,
+        * G1, X1, and X2 are removed from export_children,
+        * so step 7 never gets a chance to hoist them.
+
+    2. Multiple attached aux roots
+        Suppose two attached aux nodes still have subtrees:
+
+        P
+        - E1
+        - G1 (attached aux root)
+            - X1
+        - D1 (attached aux root)
+            - Y1
+            - Y2
+
+        Step 6 will:
+
+        * treat G1 and D1 as subtree_roots,
+        * recursively suppress X1, Y1, and Y2,
+        * remove G1, D1, X1, Y1, Y2 from the export tree.
+
+        Returned stats would be:
+
+        {
+            "attached_aux_subtree_root_count": 2,
+            "suppressed_attached_aux_descendant_count": 3,
+        }
+
+    3. No-op case
+        Suppose attached aux nodes are leaves:
+
+        P
+        - E1
+        - G1 (attached aux, no children)
+        - D1 (attached aux, no children)
+
+        Then:
+
+        * attached_aux_node_ids is non-empty,
+        * but subtree_roots is empty because neither G1 nor D1 has children,
+        * so step 6 does no recursive suppression and returns zeros. It only cleans
+            child lists to keep non-emitted nodes out.
 
     Parameters
     ----------
@@ -2551,18 +2771,24 @@ def _suppress_subtrees_of_attached_aux_nodes(
         and how many descendant nodes were suppressed.
     """
 
+    # Get the aux nodes that were successfully attached to expectation metadata earlier.
     attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids", []))
 
+    # No need to suppress if no aux nodes were attached to expectations.
     if not attached_aux_node_ids:
         return {
             "attached_aux_subtree_root_count": 0,
             "suppressed_attached_aux_descendant_count": 0,
         }
 
+    # Find which attached aux nodes are actually subtree roots in the current export
+    # tree. We only care about attached aux nodes that still have exported children.
     subtree_roots: set[str] = {
         nid for nid in attached_aux_node_ids if export_children.get(nid)
     }
 
+    # If none of the attached aux nodes have children, we do a cleanup pass to remove
+    # any non-emitted children from parent lists, then return zero stats.
     if not subtree_roots:
         for pid, kids in list(export_children.items()):
             export_children[pid] = [c for c in kids if emit_flag.get(c, False)]
@@ -2572,10 +2798,12 @@ def _suppress_subtrees_of_attached_aux_nodes(
             "suppressed_attached_aux_descendant_count": 0,
         }
 
-    suppressed_descendants: set[str] = set()
+    # Otherwise, we traverse downward from those aux roots using a stack to collect all
+    # descendants.
     stack: list[str] = [
         child for root in subtree_roots for child in export_children.get(root, [])
     ]
+    suppressed_descendants: set[str] = set()
 
     while stack:
         nid = stack.pop()
@@ -2583,6 +2811,8 @@ def _suppress_subtrees_of_attached_aux_nodes(
         if nid in suppressed_descendants:
             continue
 
+        # For every discovered descendant that is still emitted, we flip the emit flag
+        # and add a drop reason (if it does not exist).
         suppressed_descendants.add(nid)
         stack.extend(export_children.get(nid, []))
 
@@ -2593,6 +2823,7 @@ def _suppress_subtrees_of_attached_aux_nodes(
                 nid, "dropped:ancestor_attached_to_expectation_metadata"
             )
 
+    # Now, remove `blocked_nodes` from the export tree.
     blocked_nodes = attached_aux_node_ids | suppressed_descendants
 
     for pid in blocked_nodes:
@@ -2827,7 +3058,19 @@ def export_academic_standards(
             - Tracking orphan aux nodes
     4. Attach-only discovery pass: when aux nodes remain as siblings (or children) but
         export config requests attaching them to expectation metadata, discover and
-        attach without modifying hierarchy.
+        attach without modifying hierarchy:
+            - Starts from what step 3 already found
+            - Calls `_attach_aux_statements_in_export_tree()`, which tries to discover
+                more attachable aux nodes in the current `export_children` tree without
+                changing the hierarchy
+            - Merges the returned stats back into `reparent_stats`
+            - Overwrites/recomputes the tracked attached/orphan ID lists
+        This step answers the question: "Given the tree we have now, can any remaining
+        aux nodes be attached to expectations as metadata?". This matters because after
+        Step 3, we can still have cases like:
+            - Aux nodes still sitting as children under an expectation
+            - Aux siblings under a non-statement parent that Step 3 did not overwrite
+            - Mixed layouts that were not fully consumed during export-tree construction
     5. Handle attach-to-expectation rules for guidance/descriptors, modifying emit
         flags accordingly.
     6. Suppress export subtrees rooted under aux nodes that were converted into
@@ -2953,7 +3196,7 @@ def export_academic_standards(
         reparent_stats["orphan_aux_count"] = len(orphan_aux_node_ids)
 
     # 5.
-    _process_attach_to_expectation(
+    _suppress_attached_to_expectation(
         config=config,
         ctx=ctx,
         drop_reasons=drop_reasons,

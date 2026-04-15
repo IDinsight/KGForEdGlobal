@@ -1041,8 +1041,8 @@ def persist_kg_run(
     kg_run = RunCtx(
         extra=extra,
         models={
-            "learning_components": Settings.KG_MODEL,
-            "learning_progressions": Settings.KG_MODEL,
+            "learning_components": Settings.LLM_KG_MODEL,
+            "learning_progressions": Settings.LLM_KG_MODEL,
         },
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
