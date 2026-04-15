@@ -794,6 +794,13 @@ def validate_extraction_text_constraints(ctx: PageIRExtractionQualityCtx) -> Non
 def validate_placeholder_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
     """Detect placeholder bboxes used across many items.
 
+    If lots of items all get assigned to the same bbox, then that looks suspicious.
+    This function looks for the most frequently repeated bbox and raises an error if it
+    looks like one of two common placeholder patterns:
+
+    1. A box starting at the page origin (0, 0, ..., ...).
+    2. A box covering almost the whole page.
+
     Parameters
     ----------
     ctx
@@ -805,17 +812,32 @@ def validate_placeholder_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
         If too many items share a placeholder bbox.
     """
 
+    # Only check if there are at least 3 bboxes to avoid flagging tiny samples.
     if len(ctx.top_level_bboxes) >= 3:
+        # Count how many times each bbox appears so that if many items have exactly the
+        # same bbox, then we can find that repeated bbox.
         counts = Counter(ctx.top_level_bboxes)
         most_common_bbox, most_common_count = counts.most_common(1)[0]
+
+        # Compute the fraction of items using that common bbox to see if it exceeds a
+        # threshold. Example: 10 total items, same bbox appears 4 times, then
+        # frac = 0.40.
         frac = most_common_count / max(1, len(ctx.top_level_bboxes))
 
+        # Check whether that bbox starts at the origin.
         x0, y0, x1, y1 = most_common_bbox
         starts_at_origin = abs(x0) <= ctx.tol and abs(y0) <= ctx.tol
+
+        # Compute how much of the page the bbox covers. `area_frac` is percentage of
+        # the page covered by the bbox. For example, if `area_frac` = 0.90, then the
+        # bbox covers 90% of the page.
         area = max(0.0, (x1 - x0)) * max(0.0, (y1 - y0))
         page_area = float(ctx.image_width) * float(ctx.image_height)
         area_frac = area / page_area if page_area > 0 else 0.0
 
+        # Case 1: Too many items share the same origin-anchored bbox. This looks like
+        # the model defaulted several items to the same top-left bbox instead of
+        # locating each item properly.
         if frac >= 0.30 and starts_at_origin:
             raise QualityError(
                 f"Too many items share the same origin-anchored bbox "
@@ -823,6 +845,10 @@ def validate_placeholder_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
                 f"This looks like a placeholder; bboxes must be localized to each item."
             )
 
+        # Case 2: Too many items share a near-full-page bbox. If at least 20% of items
+        # use the same bbox and that bbox covers at least 85% of the page, then we also
+        # treat it as a placeholder. This is when we the model tries to use one giant
+        # almost-full-page bbox for multiple distinct items.
         if frac >= 0.20 and area_frac >= 0.85:
             raise QualityError(
                 f"Too many items share a near-full-page bbox "

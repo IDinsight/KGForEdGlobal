@@ -7,7 +7,7 @@
 			"fr",
 			"wo"
 		],
-		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/component_a",
 		"overwrite": false,
 		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/reading_wolof_CE1_fixed.pdf",
 		"start_page": 0,
