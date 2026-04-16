@@ -754,6 +754,44 @@ def _collect_grade_levels(
     """Collect grade level tags by walking ancestors and capturing nodes whose role ==
     grade_level.
 
+    Examples
+    --------
+    1. Single grade ancestor
+        Suppose the ancestry is:
+
+            framework -> grade_level("Grade 2") -> topic -> expectation
+
+        Then:
+
+            _collect_grade_levels(..., node_id=expectation_id, prefer_text_en=False)
+
+        returns:
+
+            ["Grade 2"]
+
+    2. Multiple grade-level wrappers
+        Suppose the ancestry contains two grade-level nodes:
+
+            framework -> grade_level("Primary") -> grade_level("Grade 2") -> expectation
+
+        Then the function returns:
+
+            ["Primary", "Grade 2"]
+
+    3. De-duplication
+        Suppose the ancestry contains repeated grade labels due to wrapper duplication:
+
+            framework -> grade_level("CE1") -> section -> grade_level("CE1") -> expectation
+
+        Then the returned list is de-duplicated while preserving order:
+
+            ["CE1"]
+
+    4. No grade-level ancestors
+        If no ancestor has role == "grade_level", the function returns:
+
+            []
+
     Parameters
     ----------
     ctx
@@ -782,7 +820,7 @@ def _collect_grade_levels(
         seen.add(cur)
         node = ctx.nodes_by_id.get(cur) or {}
 
-        if node.get("role") == "grade_level":
+        if node["role"] == "grade_level":
             label = node_display_text(node=node, prefer_text_en=prefer_text_en)
 
             if label:
@@ -1012,9 +1050,51 @@ def _compute_topic_path_key(
     prefer_text_en: bool,
     role_allowlist: set[str] | None = None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Compute a deterministic topic_path_key for progression threading. If
+    """Compute a deterministic `topic_path_key` for progression threading. If
     role_allowlist is provided, only those roles contribute. Always excludes
     grade/stage to allow matching across levels.
+
+    Examples
+    --------
+    1. Senegal reading example with whitelisted grouping roles
+        Suppose an expectation sits under the following export ancestry:
+
+            stage:    "CE1"
+            strand:   "Lecture"
+            substage: "Palier 1"
+            subtopic: "Róofoo-gi-baat / Grammaire"
+
+        and `role_allowlist={"strand", "substage", "subtopic"}`.
+
+        Then `_compute_topic_path_key()` may return:
+
+            (
+                "strand=lecture|substage=palier_1|subtopic=roofoo_gi_baat_grammaire",
+                [
+                    {"role": "strand", "label": "Lecture", ...},
+                    {"role": "substage", "label": "Palier 1", ...},
+                    {"role": "subtopic", "label": "Róofoo-gi-baat / Grammaire", ...},
+                ],
+            )
+
+        Note that `stage` is excluded even though it exists in the ancestry.
+
+    2. Excluding structural roles
+        Suppose the ancestry contains:
+
+            framework -> section -> stage -> subtopic -> expectation
+
+        Even without a role allowlist, `framework`, `section`, and `stage` are excluded
+        by default. If `subtopic` has a usable label, the returned key contains only
+        the `subtopic=...` segment.
+
+    3. No valid path parts
+        Suppose all ancestors are excluded roles or have blank labels after
+        normalization.
+
+        Then the function returns:
+
+            (None, [])
 
     Parameters
     ----------
@@ -1245,6 +1325,52 @@ def _emit_sfi(
 ) -> StandardsFrameworkItem:
     """Emit a StandardsFrameworkItem for a given canonical node.
 
+    Examples
+    --------
+    1. Basic expectation emission with attached aux metadata
+        Suppose steps 3 - 5 has already attached guidance and descriptor rows to an
+        expectation from the Senegal reading curriculum:
+
+            expectation: "Joxe ay ndigal / Donner des ordres"
+            guidance:    "Toftalanteg kàddu yu gàtt ..."
+            descriptor:  "Ayu bés 20 / Semaine 20"
+
+        Calling `_emit_sfi()` on the expectation node produces one
+        `StandardsFrameworkItem` whose:
+
+            - `description` is the expectation text
+            - `normalized_statement_type` is "Standard"
+            - `metadata["aux_statements"]` contains payloads for the guidance and
+                descriptor nodes
+            - `metadata["progression_context"]` is populated
+
+        The guidance and descriptor are not emitted here as separate SFIs if they
+        were previously attached and suppressed.
+
+    2. Grouping node emission
+        Suppose the node is a grouping such as:
+
+            subtopic: "Róofoo-gi-baat / Grammaire"
+
+        Calling `_emit_sfi()` emits an SFI whose:
+
+            - `description` is the grouping label
+            - `normalized_statement_type` is "Standard Grouping"
+            - `metadata["progression_context"]` is absent because the node is not an
+                expectation
+
+    3. Orphan aux emission
+        Suppose a descriptor row could not be attached to any expectation earlier in
+        the export pipeline.
+
+        Calling `_emit_sfi(..., is_orphan_aux=True, ...)` on that node emits a
+        standalone SFI whose metadata includes:
+
+            metadata["orphan_aux"] = True
+
+        This preserves the aux statement for debugging/review instead of silently
+        dropping it.
+
     Parameters
     ----------
     aux_attachments
@@ -1295,11 +1421,11 @@ def _emit_sfi(
         # top-level field. Check title first, then body, skipping "und" (undetermined).
         node_lang = next(
             (
-                str(node[f]["language"]).strip()
-                for f in ("title", "body")
-                if isinstance(node.get(f), dict)
-                and node[f].get("language")
-                and str(node[f]["language"]).strip().lower() != "und"
+                node[field]["language"].strip()
+                for field in ("title", "body")
+                if isinstance(node.get(field), dict)
+                and node[field].get("language")
+                and node[field]["language"].strip().lower() != "und"
             ),
             None,
         )
@@ -1310,12 +1436,11 @@ def _emit_sfi(
     path_key = ctx.compute_path_key(node_id)
     sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
 
-    role = str(node.get("role") or "")
+    role = node["role"]
     desc = node_display_text(node=node, prefer_text_en=prefer_en) or (
         f"[{role or 'unknown'}:{node_id[:8]}]"
     )
     bbox = node.get("bbox")
-
     metadata: dict[str, Any] = {
         "bbox": bbox,
         "canonical_node_id": node_id,
@@ -1329,7 +1454,7 @@ def _emit_sfi(
     }
 
     # Make bbox interpretation self-describing by pointing to the framework-level bbox
-    # context. (framework.metadata.provenance_context.bbox) should include coord_space,
+    # context. `framework.metadata.provenance_context.bbox` should include coord_space,
     # dpi, page dims, etc.
     if bbox is not None:
         metadata["bbox_ref"] = "framework.metadata.provenance_context.bbox"
@@ -1340,7 +1465,8 @@ def _emit_sfi(
     if is_orphan_aux:
         metadata["orphan_aux"] = True
 
-    # Deterministic progression context keys (for Learning Progressions KG inference).
+    # Generate progression context keys for expectation nodes (used for Learning
+    # Progressions KG inference downstream).
     if role == StatementRole.EXPECTATION.value:
         grade_key = _first_ancestor_label_for_role(
             ctx=ctx,
@@ -1357,8 +1483,8 @@ def _emit_sfi(
             role=NodeRole.STAGE.value,
         )
 
-        # Use the grouping whitelist if present so topic_path_key is consistent across
-        # countries/configs.
+        # Use the grouping whitelist if present so `topic_path_key` is consistent
+        # across countries/configs.
         role_allowlist = None
 
         if config.grouping_role_policy == "whitelist":
@@ -1484,8 +1610,8 @@ def _emit_sfis(
     sfi_by_node: dict[str, StandardsFrameworkItem] = {}
     _orphans = orphan_aux_node_ids or set()
 
-    for node_id, ok in emit_flag.items():
-        if not ok:
+    for node_id, should_emit in emit_flag.items():
+        if not should_emit:
             continue
 
         sfi_by_node[node_id] = _emit_sfi(
@@ -1552,7 +1678,49 @@ def _first_ancestor_label_for_role(
     role: str,
 ) -> str | None:
     """Find the closest ancestor (including self) with a given role and return its
-    label.
+    label. This is how an expectation gets labeled with the nearest enclosing
+    stage-like wrapper, such as a palier/stage node (if one exists in the export
+    hierarchy).
+
+    Examples
+    --------
+    1. Closest stage ancestor
+        Suppose the export ancestry for an expectation is:
+
+            framework
+              -> stage("CE1")
+              -> substage("Palier 3")
+              -> subtopic("Róofoo-gi-baat / Grammaire")
+              -> expectation("Joxe ay ndigal / Donner des ordres")
+
+        Calling:
+
+            _first_ancestor_label_for_role(..., role="stage")
+
+        returns:
+
+            "ce1"  # or the node display text if `normalized_text` is unavailable
+
+    2. Includes self
+        Suppose `node_id` itself points to a node whose role is `"stage"`.
+
+        Calling:
+
+            _first_ancestor_label_for_role(..., role="stage")
+
+        returns that node's own label, because the search includes self before
+        walking upward.
+
+    3. No matching ancestor
+        Suppose a Senegal expectation has no `grade_level` node anywhere above it.
+
+        Calling:
+
+            _first_ancestor_label_for_role(..., role="grade_level")
+
+        returns:
+
+            None
 
     Parameters
     ----------
@@ -1584,11 +1752,11 @@ def _first_ancestor_label_for_role(
 
     while cur and cur != ctx.root_id and cur not in seen:
         seen.add(cur)
-        n = ctx.nodes_by_id.get(cur) or {}
+        node = ctx.nodes_by_id.get(cur) or {}
 
-        if n.get("role") == role:
-            label = n.get("normalized_text") or node_display_text(
-                node=n, prefer_text_en=prefer_text_en
+        if node["role"] == role:
+            label = node.get("normalized_text") or node_display_text(
+                node=node, prefer_text_en=prefer_text_en
             )
             label = " ".join(str(label or "").split())
             return label or None
@@ -1836,6 +2004,26 @@ def _normalize_thread_key(topic_path_key: str | None) -> str | None:
     2. If a segment value becomes empty after stripping (rare), it falls back to the
       original value.
 
+    Examples
+    --------
+    1. Stripping numeric topic prefixes
+        _normalize_thread_key(
+            "topic=1_1_exploring_my_world|subtopic=2_5_weather"
+        ) == "topic=exploring_my_world|subtopic=weather"
+
+    2. Keeping non-numbered segments unchanged
+        _normalize_thread_key(
+            "strand=lecture|subtopic=roofoo_gi_baat_grammaire"
+        ) == "strand=lecture|subtopic=roofoo_gi_baat_grammaire"
+
+    3. Ignoring malformed segments
+        _normalize_thread_key(
+            "strand=lecture|badsegment|subtopic=1_2_grammar"
+        ) == "strand=lecture|subtopic=grammar"
+
+    4. Empty input
+        _normalize_thread_key(None) is None
+
     Parameters
     ----------
     topic_path_key
@@ -1871,8 +2059,42 @@ def _parse_code_features(*, code: str, grade_ordinal_low: int | None) -> dict[st
 
     Supports:
       - numeric codes with dots: 3.9.4.1
-      - mixed codes: M3-1a / ENG.P1.02
+      - mixed codes: M3-1a/ENG.P1.02
       - roman segments: VI.2.1
+
+    Examples
+    --------
+    1. Numeric dotted code
+        _parse_code_features(code="3.9.4.1", grade_ordinal_low=3) == {
+            "code": "3.9.4.1",
+            "code_segments": ["3", "9", "4", "1"],
+            "code_tuple": [3, 9, 4, 1],
+            "code_stem": "3.9.4",
+            "code_ordinal": "1",
+            "code_stem_without_grade": "9.4",
+        }
+
+    2. Mixed alphanumeric code
+        _parse_code_features(code="ENG.P1.02", grade_ordinal_low=None) == {
+            "code": "ENG.P1.02",
+            "code_segments": ["ENG", "P1", "02"],
+            "code_tuple": ["ENG", "P1", 2],
+            "code_stem": "ENG.P1",
+            "code_ordinal": "02",
+        }
+
+    3. Roman numeral prefix
+        _parse_code_features(code="VI.2.1", grade_ordinal_low=6) == {
+            "code": "VI.2.1",
+            "code_segments": ["VI", "2", "1"],
+            "code_tuple": [6, 2, 1],
+            "code_stem": "VI.2",
+            "code_ordinal": "1",
+            "code_stem_without_grade": "2",
+        }
+
+    4. Empty code
+        _parse_code_features(code="", grade_ordinal_low=None) == {}
 
     Parameters
     ----------
@@ -1916,6 +2138,7 @@ def _parse_code_features(*, code: str, grade_ordinal_low: int | None) -> dict[st
     # that prefix too.
     if grade_ordinal_low is not None and segs:
         first_val = _to_int_or_roman(segs[0])
+
         if (
             isinstance(first_val, int)
             and first_val == grade_ordinal_low
@@ -1932,6 +2155,23 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
     Handles:
       - digits: "Grade 3" -> 3, "I–II" -> 1, "Std III-VI" -> 3
       - embedded roman numerals: "Std VI" -> 6, "Standard III–VI" -> 3
+
+    Examples
+    --------
+    1. Single numeric level
+        _parse_ordinal("Grade 3") == (3, 3)
+
+    2. Numeric range with dash
+        _parse_ordinal("Semaines 10-17") == (10, 17)
+
+    3. Roman numeral range
+        _parse_ordinal("Std III–VI") == (3, 6)
+
+    4. Embedded digit inside a label
+        _parse_ordinal("CE1") == (1, 1)
+
+    5. No ordinal information
+        _parse_ordinal("Communication écrite") == (None, None)
 
     Parameters
     ----------
@@ -1957,9 +2197,11 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
     nums = [int(x) for x in re.findall(r"(\d+)", s_norm)]
 
     if nums:
-        if len(nums) >= 2:
-            return min(nums[0], nums[1]), max(nums[0], nums[1])
-        return nums[0], nums[0]
+        return (
+            (min(nums[0], nums[1]), max(nums[0], nums[1]))
+            if len(nums) >= 2
+            else (nums[0], nums[0])
+        )
 
     # Otherwise try roman numerals anywhere in the string.
     romans = [ROMAN_MAP.get(m.group(1).upper()) for m in ROMAN_RE.finditer(s_norm)]
@@ -3225,12 +3467,44 @@ def _verify_standards_export(
 def _walk_ancestors(
     *, ctx: ExportContext, node_id: str, parent_by_child: dict[str, str] | None = None
 ) -> list[str]:
-    """Return canonical node_id ancestry from root -> ... -> node_id (excluding root).
+    """Return canonical `node_id` ancestry from root -> ... -> node_id (excluding root).
+
+    Examples
+    --------
+    1. Basic ancestry walk
+        Suppose the canonical hierarchy is:
+
+            ROOT -> A(stage) -> B(subtopic) -> C(expectation)
+
+        Calling:
+
+            _walk_ancestors(..., node_id="C")
+
+        returns:
+
+            ["A", "B", "C"]
+
+        The root is excluded from the returned list.
+
+    2. Export-time parent override
+        Suppose step 7 hoisted an expectation so that its exported ancestry differs
+        from the canonical one.
+
+        If `parent_by_child={"C": "X", "X": "A"}` is passed in, the function walks the
+        export-time ancestry instead of `ctx.parent_by_child`.
+
+        This allows progression metadata to reflect the finalized export hierarchy.
+
+    3. Cycle-safe partial ancestry
+        If the supplied parent mapping is malformed and contains a cycle, the function
+        returns the ancestry accumulated up to the point where the cycle is detected,
+        rather than looping forever.
 
     Parameters
     ----------
     ctx
-        The ExportContext for the CanonicalIR, providing access to parent-child mappings.
+        The ExportContext for the CanonicalIR, providing access to parent-child
+        mappings.
     node_id
         The ID of the canonical node for which to walk ancestors.
     parent_by_child
@@ -3247,9 +3521,9 @@ def _walk_ancestors(
         ancestry up to the point where a cycle is detected or the root is reached.
     """
 
-    parent_lookup = parent_by_child or ctx.parent_by_child
     chain: list[str] = []
     cur: str | None = node_id
+    parent_lookup = parent_by_child or ctx.parent_by_child
     seen: set[str] = set()
 
     while cur and cur != ctx.root_id and cur not in seen:
@@ -3258,7 +3532,6 @@ def _walk_ancestors(
         cur = parent_lookup.get(cur)
 
     chain.reverse()
-
     return chain
 
 
@@ -3553,7 +3826,7 @@ def export_academic_standards(
         json_info=academic_standards.reparent_stats,
     )
 
-    logger.info(
+    logger.success(
         f"Exported Academic Standards KG: "
         f"{len(academic_standards.items)} items, "
         f"{len(academic_standards.relationships)} `hasChild` relationships"
