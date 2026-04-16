@@ -541,30 +541,6 @@ def _build_aux_payload(
     return payload
 
 
-def _build_export_order_index(
-    export_children: dict[str, list[str]],
-) -> dict[tuple[str, str], int]:
-    """Build export-time (parent, child) -> `order_index` from the finalized export
-    tree.
-
-    Parameters
-    ----------
-    export_children
-        Finalized export parent-to-children mapping after reparenting/hoisting/pruning.
-
-    Returns
-    -------
-    dict[tuple[str, str], int]
-        Mapping of canonical (parent_id, child_id) pairs to export-time order indices.
-    """
-
-    return {
-        (parent_id, child_id): idx
-        for parent_id, child_ids in export_children.items()
-        for idx, child_id in enumerate(child_ids)
-    }
-
-
 def _build_export_parent_by_child(
     *, root_id: str, export_children: dict[str, list[str]]
 ) -> dict[str, str]:
@@ -598,13 +574,14 @@ def _build_export_parent_by_child(
 
             if prior_parent is not None and prior_parent != parent_id:
                 raise ValueError(
-                    "Export hierarchy integrity error: child node "
-                    f"{child_id!r} appears under multiple parents "
-                    f"({prior_parent!r}, {parent_id!r})."
+                    f"Export hierarchy integrity error: "
+                    f"child node {child_id} appears under multiple parents "
+                    f"({prior_parent}, {parent_id})."
                 )
 
             parent_by_child[child_id] = parent_id
 
+    # Remove the root from the `parent_by_child` mapping since it has no parent.
     parent_by_child.pop(root_id, None)
     return parent_by_child
 
@@ -3483,7 +3460,11 @@ def export_academic_standards(
     export_parent_by_child = _build_export_parent_by_child(
         root_id=ctx.root_id, export_children=export_children
     )
-    export_order_index = _build_export_order_index(export_children)
+    export_order_index = {
+        (parent_id, child_id): child_index
+        for parent_id, child_ids in export_children.items()
+        for child_index, child_id in enumerate(child_ids)
+    }
     sfi_by_node = _emit_sfis(
         aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
