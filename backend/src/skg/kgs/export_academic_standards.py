@@ -749,7 +749,11 @@ def _build_relationships_and_order(
 
 
 def _collect_grade_levels(
-    *, ctx: ExportContext, node_id: str, prefer_text_en: bool
+    *,
+    ctx: ExportContext,
+    node_id: str,
+    parent_by_child: dict[str, str] | None = None,
+    prefer_text_en: bool,
 ) -> list[str]:
     """Collect grade level tags by walking ancestors and capturing nodes whose role ==
     grade_level.
@@ -799,6 +803,11 @@ def _collect_grade_levels(
         hierarchy.
     node_id
         The ID of the canonical node for which to collect grade levels.
+    parent_by_child
+        Optional mapping of canonical child node ID to parent node ID to use for
+        walking ancestors. If None, will use ctx.parent_by_child. This allows grade
+        level collection to reflect the finalized export hierarchy after hoisting or
+        reparenting.
     prefer_text_en
         If True, prefer "text_en" over "text" when extracting display text for grade
         level nodes.
@@ -812,23 +821,22 @@ def _collect_grade_levels(
         empty list is returned.
     """
 
-    cur: Optional[str] = node_id
+    ancestry = _walk_ancestors(
+        ctx=ctx, node_id=node_id, parent_by_child=parent_by_child
+    )
     output: list[str] = []
-    seen: set[str] = set()
 
-    while cur and cur != ctx.root_id and cur not in seen:
-        seen.add(cur)
-        node = ctx.nodes_by_id.get(cur) or {}
+    for aid in ancestry:
+        node = ctx.nodes_by_id.get(aid) or {}
 
-        if node["role"] == "grade_level":
-            label = node_display_text(node=node, prefer_text_en=prefer_text_en)
+        if node["role"] == NodeRole.GRADE_LEVEL.value:
+            label = node.get("normalized_text") or node_display_text(
+                node=node, prefer_text_en=prefer_text_en
+            )
+            label = " ".join(str(label or "").split())
 
             if label:
                 output.append(label)
-
-        cur = ctx.parent_by_child.get(cur)
-
-    output.reverse()
 
     # De-dupe while preserving order.
     deduped: list[str] = []
@@ -1554,7 +1562,10 @@ def _emit_sfi(
         date_modified=None,
         description=desc,
         grade_level=_collect_grade_levels(
-            ctx=ctx, node_id=node_id, prefer_text_en=prefer_en
+            ctx=ctx,
+            node_id=node_id,
+            parent_by_child=export_parent_by_child,
+            prefer_text_en=prefer_en,
         ),
         identifier=sfi_id,
         in_language=sfi_in_language,
