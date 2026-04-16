@@ -1060,7 +1060,7 @@ def _compute_topic_path_key(
 ) -> tuple[str | None, list[dict[str, Any]]]:
     """Compute a deterministic `topic_path_key` for progression threading. If
     role_allowlist is provided, only those roles contribute. Always excludes
-    grade/stage to allow matching across levels.
+    grade/stage/week to allow matching across levels.
 
     Examples
     --------
@@ -2012,8 +2012,8 @@ def _normalize_thread_key(topic_path_key: str | None) -> str | None:
     """Normalize a topic_path_key into a cross-level "thread" key.
 
     Many curricula number topics/subtopics in their labels (e.g., "1.1 Exploring My
-    World", "2.5 Weather"). topic_path_key intentionally *excludes* grade/stage roles
-    so that it can be used for threading, but those numeric prefixes may still be
+    World", "2.5 Weather"). topic_path_key intentionally *excludes* grade/stage/week
+    roles so that it can be used for threading, but those numeric prefixes may still be
     embedded in the keyified label itself (e.g., `topic=1_1_exploring_my_world`).
 
     This normalization strips leading numeric-underscore prefixes from each segment's
