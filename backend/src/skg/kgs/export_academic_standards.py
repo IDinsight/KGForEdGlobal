@@ -2063,25 +2063,164 @@ def _reattach_children_of_dropped_nodes(
     """Re-attach children of dropped (non-emitted) nodes to their nearest emitted
     ancestor in the export hierarchy.
 
-    When a mid-hierarchy grouping node is dropped (e.g., a `section` role not in the
-    grouping whitelist), `_compute_export_children` still creates an entry for it as a
-    parent in `export_children` (with its emitted children as values). However,
-    `_build_relationships_and_order` skips dropped parents (`pid not in sfi_by_node`),
-    leaving those children unreachable from the framework root.
+    When this function is called (step 7), we have `emit_flag` which indicates whether
+    each canonical node will still be emitted and `export_children` which indicates the
+    export-time parent -> child map built in step 3. A key aspect is that step 3 builds
+    `export_children` from already-emitted children only. So this function is not
+    trying to rescue dropped children. It only rescues emitted children that are
+    currently hanging under a dropped parent. The reason for doing this is because if a
+    dropped mid-hierarchy parent remains as a key in `export_children`, then
+    `_build_relationships_and_order()` later skips that parent because it has not
+    emitted SFI, and the children underneath can become unreachable from the framework
+    root.
 
-    This function detects such orphaned subtrees and hoists their children up to the
-    nearest surviving ancestor (or the root), preserving tree connectivity.
+    This function detects such disconnected export-time branches and hoists their
+    emitted children up to the nearest surviving ancestor (or the root), preserving
+    tree connectivity. In other words, this function is just doing a tree collapse:
 
-    Ordering policy:
+    If the canonical/export-time tree is:
 
+    Root
+        - A (emitted)
+            - B (dropped)
+                - X (emitted)
+                - Y(emitted)
+
+    after this function it becomes:
+
+    Root
+        - A (emitted)
+            - X (emitted)
+            - Y (emitted)
+
+    so the children of B survives and only B disappears.
+
+    With:
+
+        - grouping_role_policy = "whitelist"
+        - non_grouping_role_handling = "drop"
+
+    a structural node that is not a statement role and not whitelisted can be dropped
+    intentionally so it does not become a fake “Other” SFI parent. In this function,
+    those dropped structural parents would be hoisted.
+
+    Ordering policy
+    ---------------
     1. Prefer the canonical order slot of the **closest dropped node on the path**
        between the surviving ancestor and the dropped parent. This preserves relative
        placement even when multiple dropped ancestors are collapsed.
-    2. If that anchor edge has no canonical order metadata, fall back to appending at
-       the end of the surviving ancestor's child list.
+    2. If that anchor edge has no canonical order metadata, fall back to appending the
+       hoisted children at the end of the surviving ancestor's child list.
+    3. When multiple dropped parents occur at the same depth, their processing order
+       follows the current insertion order of `export_children`, which is expected to
+       be deterministic across reruns.
+
+    Limitations
+    -----------
+    If canonical order metadata is missing for the anchor edge, the fallback append
+    behavior preserves connectivity but may not perfectly preserve the original local
+    sibling ordering under the surviving ancestor.
 
     This **must** run after all `emit_flag` mutations and **before** empty-grouping
     pruning, so that pruning operates on the corrected tree structure.
+
+    Examples
+    --------
+    1. Single dropped grouping between two emitted levels
+        Suppose the export tree currently contains:
+
+            export_children = {
+                ROOT: [A],
+                A: [B],
+                B: [X, Y],
+            }
+
+        and emit flags are:
+
+            emit_flag[A] = True
+            emit_flag[B] = False
+            emit_flag[X] = True
+            emit_flag[Y] = True
+
+        Here `B` is a dropped structural parent that still holds emitted children `X`
+        and `Y`. If left unchanged, `_build_relationships_and_order()` will skip `B`
+        because it has no emitted SFI, and `X`/`Y` will not be reachable from `A`.
+
+        This function removes `B` as an export parent and hoists its emitted children
+        to the nearest surviving ancestor `A`:
+
+            export_children == {
+                ROOT: [A],
+                A: [X, Y],
+            }
+
+        Result:
+            - `B` no longer appears as an export parent
+            - `X` and `Y` remain connected to the framework tree
+
+    2. Collapsing multiple dropped ancestors
+        Suppose the canonical/export tree contains:
+
+            ROOT -> A(emitted) -> B(dropped) -> C(dropped) -> X(emitted), Y(emitted)
+
+        represented as:
+
+            export_children = {
+                ROOT: [A],
+                A: [B],
+                B: [C],
+                C: [X, Y],
+            }
+
+        and:
+
+            emit_flag[A] = True
+            emit_flag[B] = False
+            emit_flag[C] = False
+            emit_flag[X] = True
+            emit_flag[Y] = True
+
+        The function processes deeper dropped parents first:
+
+            1. `C` is resolved first, hoisting `X` and `Y` upward toward the nearest
+               surviving ancestor on the path.
+            2. `B` is then resolved.
+
+        Final shape:
+
+            export_children == {
+                ROOT: [A],
+                A: [X, Y],
+            }
+
+        Sorting dropped parents deepest-first avoids leaving grandchildren stranded
+        under an already-removed dropped parent.
+
+    3. Senegal reading curriculum: no-op when all grouping parents survive
+        In the Senegal reading run, the grouping-role whitelist includes:
+
+            stage, section, strand, substage, week, subtopic
+
+        and row-level `guidance`/`descriptor` nodes are attached to expectations as
+        metadata rather than used as grouping parents.
+
+        If the export tree already contains only emitted grouping parents such as:
+
+            ROOT -> stage -> section -> strand -> substage -> week -> subtopic -> expectation
+
+        then there are no dropped mid-hierarchy parents in `export_children`, so:
+
+            dropped_parents == []
+
+        and the function returns:
+
+            {
+                "reattached_children_count": 0,
+                "dropped_parents_resolved": 0,
+            }
+
+        This is expected behavior: the function is a structural repair pass and should
+        be a no-op when the tree is already connected.
 
     Parameters
     ----------
@@ -2098,16 +2237,18 @@ def _reattach_children_of_dropped_nodes(
     Returns
     -------
     dict[str, int]
-        Statistics: `reattached_children_count` (number of children moved) and
-        `dropped_parents_resolved` (number of dropped parents whose children were
-        re-attached).
+        - `reattached_children_count`: number of children newly inserted under a
+            surviving ancestor.
+        - `dropped_parents_resolved`: number of dropped parents that contributed at
+            least one newly inserted child.
     """
 
-    # Identify non-root parents in export_children that are NOT emitted.
+    # Identify non-root parents in `export_children` that are NOT emitted. These are
+    # the parents whose children may need to be hoisted upward.
     dropped_parents = [
         pid
         for pid in list(export_children)
-        if pid != ctx.root_id and not emit_flag.get(pid)
+        if pid != ctx.root_id and not emit_flag.get(pid, False)
     ]
 
     if not dropped_parents:
@@ -2130,8 +2271,8 @@ def _reattach_children_of_dropped_nodes(
             depth 0.
         """
 
-        d = 0
         cur: str | None = nid
+        d = 0
         seen: set[str] = set()
 
         while cur and cur != ctx.root_id and cur not in seen:
@@ -2141,8 +2282,11 @@ def _reattach_children_of_dropped_nodes(
 
         return d
 
-    def _find_surviving_ancestor_and_anchor(dropped_pid: str) -> tuple[str, str | None]:
-        """Find the nearest emitted ancestor and the canonical anchor child under it.
+    def _find_surviving_ancestor_and_anchor(
+        dropped_pid_: str,
+    ) -> tuple[str, str | None]:
+        """For each dropped child, walk upward until we find the nearest anchor whose
+        `emit_flag` is True. If none is found before the root, fall back to the root.
 
         The anchor child is the closest dropped node on the path from the surviving
         ancestor down toward `dropped_pid`. Using this anchor preserves relative order
@@ -2150,7 +2294,7 @@ def _reattach_children_of_dropped_nodes(
 
         Parameters
         ----------
-        dropped_pid
+        dropped_pid_
             The dropped parent ID for which to find the surviving ancestor and anchor
             child.
 
@@ -2163,29 +2307,34 @@ def _reattach_children_of_dropped_nodes(
             ancestor down to the dropped parent, or None if no such anchor exists.
         """
 
-        cur: str | None = ctx.parent_by_child.get(dropped_pid)
+        cur: str | None = ctx.parent_by_child.get(dropped_pid_)
         seen: set[str] = set()
-        anchor_child: str | None = dropped_pid
+        anchor_child_: str | None = dropped_pid_
 
         while cur and cur != ctx.root_id and not emit_flag.get(cur) and cur not in seen:
             seen.add(cur)
-            anchor_child = cur
+            anchor_child_ = cur
             cur = ctx.parent_by_child.get(cur)
 
-        surviving = cur if cur and cur not in seen else ctx.root_id
-        return surviving, anchor_child
+        surviving_ = cur if cur and cur not in seen else ctx.root_id
+        return surviving_, anchor_child_
 
     dropped_parents.sort(key=_depth, reverse=True)
-
     reattached_count = 0
     resolved_count = 0
 
     for dropped_pid in dropped_parents:
-        orphaned_children = export_children.pop(dropped_pid, [])
+        # Pop the dropped parent from export_children to detach its subtree. This means
+        # that the dropped parent stops being a parent in the export tree and its
+        # emitted children are now temporarily detached.
+        children_to_hoist = export_children.pop(dropped_pid, [])
 
-        if not orphaned_children:
+        if not children_to_hoist:
             continue
 
+        # Get the surviving ancestor's current child list and look up the canonical
+        # edge order for (surviving, anchor_child) to find the right insertion point
+        # for the hoisted children.
         surviving, anchor_child = _find_surviving_ancestor_and_anchor(dropped_pid)
         target_kids = export_children.setdefault(surviving, [])
         target_set = set(target_kids)
@@ -2196,6 +2345,10 @@ def _reattach_children_of_dropped_nodes(
         )
         insert_at: int | None = None
 
+        #  If `canonical_order` exists, we inser the hoisted children before the first
+        # existing target child whose canonical order is greater than the anchor order.
+        # Otherwise, we append the hoisted children at the end of the target's child
+        # list.
         if canonical_order is not None:
             insert_at = next(
                 (
@@ -2207,7 +2360,9 @@ def _reattach_children_of_dropped_nodes(
                 None,
             )
 
-        new_children = [c for c in orphaned_children if c not in target_set]
+        # Dedupe and insert. Here, we filter out any child already present under the
+        # surviving ancestor, then insert of append the remaining children.
+        new_children = [c for c in children_to_hoist if c not in target_set]
 
         if insert_at is not None:
             target_kids[insert_at:insert_at] = new_children
@@ -2215,7 +2370,7 @@ def _reattach_children_of_dropped_nodes(
             target_kids.extend(new_children)
 
         reattached_count += len(new_children)
-        resolved_count += 1
+        resolved_count += 1 if new_children else 0
 
     return {
         "reattached_children_count": reattached_count,
