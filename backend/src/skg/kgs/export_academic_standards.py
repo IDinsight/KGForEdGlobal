@@ -416,12 +416,69 @@ def _build_academic_standards_graph_bundle(
     config: CreateKGConfig,
     ctx: ExportContext,
 ) -> dict[str, Any]:
-    """Build a single graph bundle JSON.
+    """Build a single graph-shaped JSON bundle from the already-exported academic
+    standards artifacts.
 
-    - Nodes: StandardsFramework + StandardsFrameworkItem
-    - Relationships: HAS_CHILD (from Relationships export)
-    - Ordering: add `order_index` on HAS_CHILD relationships based on
-        HierarchyOrderExport.order (parent -> ordered child ids).
+    This function does not re-run standards export logic. Instead, it converts the
+    typed `AcademicStandardsExport` outputs into a graph bundle with top-level metadata
+    plus `nodes` and `relationships` lists.
+
+    Behavior:
+
+    1. Builds an edge-order lookup from `HierarchyOrderExport.order`, where each
+        `(parent_uuid, child_uuid)` pair maps to its child position under that parent.
+    2. Emits one graph node for the StandardsFramework and one graph node for each
+        StandardsFrameworkItem, using `case_identifier_uuid` as the graph node ID.
+    3. Converts each exported `hasChild` Relationship into a graph edge using:
+        - `source_entity_value` as `start`
+        - `target_entity_value` as `end`
+        - the serialized Relationship record as `properties`
+    4. Adds `order_index` to each graph edge's properties based on the hierarchy-order
+        artifact so downstream graph consumers can recover sibling order directly from
+        the edge list.
+    5. Returns a single bundle dictionary with: `doc_key`, `export_dialect`,
+        `generated_at`, `graph_type`, `nodes`, and `relationships`.
+
+    Examples
+    --------
+    1. Framework and two first-level items
+        Suppose the exported order artifact contains:
+
+            framework_uuid -> [A, B]
+
+        Then the bundle contains:
+            - one StandardsFramework node with id = framework CASE UUID
+            - two StandardsFrameworkItem nodes with ids A and B
+            - two hasChild edges:
+                framework -> A  (order_index = 0)
+                framework -> B  (order_index = 1)
+
+    2. Senegal expectation with attached aux metadata
+        Suppose an expectation SFI "Joxe ay santaane / Donner des consignes" has
+        attached aux metadata for:
+
+            - guidance: "Contenus"
+            - descriptor: "Ayu bés 22 / Semaine 22"
+
+        and appears as a child of a Palier 3 grouping SFI.
+
+        Then the bundle contains:
+            - a node for the Palier 3 grouping
+            - a node for the expectation SFI whose properties include the attached aux
+                metadata
+            - a single hasChild edge from Palier 3 -> expectation
+            - no separate graph nodes or edges for the attached guidance/descriptor
+
+    3. Relationship ordering
+        Suppose parent P has ordered children [C1, C2, C3] in the hierarchy-order
+        export.
+
+        Then the bundle contains hasChild edges:
+            P -> C1 with properties.order_index = 0
+            P -> C2 with properties.order_index = 1
+            P -> C3 with properties.order_index = 2
+
+        This preserves sibling order directly on the edge records.
 
     Parameters
     ----------
@@ -447,8 +504,8 @@ def _build_academic_standards_graph_bundle(
         for idx, child_id in enumerate(child_ids):
             order_index_by_edge[(parent_id, child_id)] = idx
 
-    # Nodes: use case_identifier_uuid as the node key since relationships already key
-    # off case_identifier_uuid.
+    # Nodes: use `case_identifier_uuid` as the node key since relationships already key
+    # off `case_identifier_uuid`.
     fw = academic_standards.framework
     nodes: list[dict[str, Any]] = [
         {
@@ -472,17 +529,14 @@ def _build_academic_standards_graph_bundle(
     relationships: list[dict[str, Any]] = []
 
     for r in academic_standards.relationships:
-        start_id = r.source_entity_value  # Already case_identifier_uuid as string
-        end_id = r.target_entity_value  # Already case_identifier_uuid as string
-
+        start_id = r.source_entity_value  # Already `case_identifier_uuid` as string
+        end_id = r.target_entity_value  # Already `case_identifier_uuid` as string
         props = r.model_dump(mode="json")
         props["order_index"] = order_index_by_edge.get((start_id, end_id))
-
         assert r.relationship_type == "hasChild", (
             f"Unexpected relationship type '{r.relationship_type}' "
             f"in Academic Standards export bundle."
         )
-
         relationships.append(
             {
                 "id": str(r.identifier),
@@ -639,7 +693,84 @@ def _build_relationships_and_order(
     framework_uuid: UUID,
     sfi_by_node: dict[str, StandardsFrameworkItem],
 ) -> tuple[list[Relationship], dict[str, list[str]]]:
-    """Build hasChild relationships and hierarchy order map.
+    """Build "hasChild" relationships and hierarchy order map.
+
+    This function does three main things.
+        1. `_edge_metadata()` pulls provenance for a canonical edge from
+            `ctx.edge_metadata_by_pair` and packages it into relationship metadata:
+            canonical parent/child IDs, canonical order index, source decision IDs,
+            source segment IDs, and the export-time order index from
+            `export_order_index`. This is how the relationship keeps both the original
+            canonical edge trace and the final exported ordering trace.
+        2. It emits framework -> first-level SFI relationships. It looks at
+            `export_children[ctx.root_id]`, filters to children that actually exist in
+            `sfi_by_node`, deduplicates them while preserving order, writes that
+            ordered UUID list into `order_map[str(framework_uuid)]`, and emits one
+            hasChild relationship per child with source_entity="StandardsFramework".
+        3. It emits SFI -> SFI relationships for every surviving exported parent. For
+            each non-root parent in `export_children`, it skips the parent unless that
+            canonical parent itself became an SFI, filters/dedupes its emitted
+            children, records their UUID order in `order_map[str(parent_sfi_uuid)]`,
+            and emits one hasChild edge per child. Parents with no emitted children
+            simply do not get an `order_map` entry.
+
+    Examples
+    --------
+    1. Framework -> first-level items
+        Suppose the finalized export tree contains:
+
+            export_children[ROOT] = [A, B]
+
+        and both `A` and `B` were emitted as SFIs with UUIDs `UA` and `UB`.
+
+        Then the function produces:
+
+            order_map[str(framework_uuid)] == [str(UA), str(UB)]
+
+        and emits:
+
+            StandardsFramework(framework_uuid) -[:hasChild]-> StandardsFrameworkItem(UA)
+            StandardsFramework(framework_uuid) -[:hasChild]-> StandardsFrameworkItem(UB)
+
+    2. SFI -> SFI edges under a surviving grouping
+        Suppose a surviving exported parent `P` has finalized children:
+
+            export_children[P] = [E1, E2]
+
+        and all three nodes were emitted as SFIs with UUIDs `UP`, `UE1`, `UE2`.
+
+        Then the function produces:
+
+            order_map[str(UP)] == [str(UE1), str(UE2)]
+
+        and emits:
+
+            StandardsFrameworkItem(UP) -[:hasChild]-> StandardsFrameworkItem(UE1)
+            StandardsFrameworkItem(UP) -[:hasChild]-> StandardsFrameworkItem(UE2)
+
+    3. Attached aux nodes do not become hierarchy edges
+        Suppose a Senegal row originally contained:
+
+            E1(expectation), G1(guidance/"Contenus"), D1(descriptor/"Durée")
+
+        and earlier export steps attached `G1` and `D1` into
+        `E1.metadata["aux_statements"]` and suppressed them as standalone SFIs.
+
+        Then `_build_relationships_and_order()` emits a hasChild edge only for `E1`
+        within the hierarchy. It does not emit separate hierarchy edges for `G1` or
+        `D1`.
+
+    4. Duplicate child references are collapsed deterministically
+        Suppose earlier hoisting produced:
+
+            export_children[P] = [E1, E2, E1]
+
+        Then `_dedupe_preserve_order()` normalizes this to:
+
+            [E1, E2]
+
+        so the export does not produce duplicate hasChild edges or duplicate ordered
+        children.
 
     Parameters
     ----------
@@ -663,7 +794,7 @@ def _build_relationships_and_order(
         (relationships, order_map).
     """
 
-    def _edge_metadata(parent_id: str, child_id: str) -> dict[str, Any]:
+    def _edge_metadata(*, parent_id: str, child_id: str) -> dict[str, Any]:
         """Retrieve edge metadata for a given parent-child pair.
 
         Parameters
@@ -681,17 +812,17 @@ def _build_relationships_and_order(
 
         edge_md = ctx.edge_metadata_by_pair.get((parent_id, child_id), {})
         return {
-            "canonical_parent_id": parent_id,
-            "canonical_child_id": child_id,
             "canonical_order_index": edge_md.get(
                 "order_index", ctx.edge_order_index.get((parent_id, child_id))
             ),
+            "canonical_parent_id": parent_id,
+            "canonical_child_id": child_id,
             "canonical_edge_source_decision_ids": edge_md.get(
                 "source_decision_ids", []
             ),
             "canonical_edge_source_segment_ids": edge_md.get("source_segment_ids", []),
-            "export_parent_id": parent_id,
             "export_order_index": export_order_index.get((parent_id, child_id)),
+            "export_parent_id": parent_id,
         }
 
     relationships: list[Relationship] = []
@@ -712,7 +843,9 @@ def _build_relationships_and_order(
                 config=config,
                 doc_key=ctx.doc_key,
                 parent_uuid=framework_uuid,
-                relationship_metadata=_edge_metadata(ctx.root_id, cid),
+                relationship_metadata=_edge_metadata(
+                    parent_id=ctx.root_id, child_id=cid
+                ),
                 source_entity="StandardsFramework",
             )
         )
@@ -741,7 +874,7 @@ def _build_relationships_and_order(
                     config=config,
                     doc_key=ctx.doc_key,
                     parent_uuid=p_uuid,
-                    relationship_metadata=_edge_metadata(pid, cid),
+                    relationship_metadata=_edge_metadata(parent_id=pid, child_id=cid),
                 )
             )
 
@@ -1176,7 +1309,10 @@ def _compute_topic_path_key(
 
 
 def _dedupe_preserve_order(ids: list[str]) -> list[str]:
-    """Deduplicate a list while preserving the first occurrence order.
+    """Remove duplicate child IDs but keep the first occurrence, which is important
+    because earlier hoisting/merge steps can accidentally leave repeated canonical
+    child references in a parent’s child list. This function prevents duplicate
+    hasChild edges and duplicate child UUIDs in `order_map` without scrambling sequence.
 
     Parameters
     ----------
@@ -1190,15 +1326,15 @@ def _dedupe_preserve_order(ids: list[str]) -> list[str]:
         their first occurrence.
     """
 
-    seen: set[str] = set()
     output: list[str] = []
+    seen: set[str] = set()
 
     for item in ids:
         if item in seen:
             continue
 
-        seen.add(item)
         output.append(item)
+        seen.add(item)
 
     return output
 
@@ -1275,6 +1411,11 @@ def _emit_has_child(
 ) -> Relationship:
     """Create a hasChild Relationship.
 
+    NB: The Relationship schema should validate that hasChild is either
+    StandardsFramework -> StandardsFrameworkItem or
+    StandardsFrameworkItem -> StandardsFrameworkItem, and that both endpoints are CASE
+    UUIDs.
+
     Parameters
     ----------
     child_uuid
@@ -1297,7 +1438,7 @@ def _emit_has_child(
         The constructed hasChild Relationship.
     """
 
-    relationship_metadata = dict(relationship_metadata or {})
+    relationship_metadata = relationship_metadata or {}
     relationship_metadata.setdefault("source_kg", "academic_standards")
     return Relationship(
         attribution_statement=config.attribution_statement,
@@ -3014,16 +3155,103 @@ def _should_emit_node_with_reason(
 
 
 def _sort_order_map(
-    *, framework_uuid: Any, order_map: dict[str, list[str]]
+    *, framework_uuid: UUID | str, order_map: dict[str, list[str]]
 ) -> dict[str, list[str]]:
     """Stabilize parent key ordering while preserving deterministic child order.
+
+    By the time this function is called, `order_map` has already been built in step 10
+    by `_build_relationships_and_order()`. At that point, each entry already means:
+
+        * key = exported parent UUID string
+        * value = ordered list of exported child UUID strings
+
+    This function just sorts three top-level outputs for stable serialization. Because
+    Python dicts preserve insertion order, the returned dict will always serialize in
+    this stable order:
+
+        * framework parent first
+        * all remaining parent UUID keys alphabetically
+
+    The child UUID lists are copied over unchanged. So if a parent had children
+    [C3, C1, C2], this function leaves that as [C3, C1, C2]. It does not sort children.
+
+    Examples
+    --------
+    1. Framework key is moved to the front
+        Suppose:
+
+            framework_uuid = "fw"
+            order_map = {
+                "b-parent": ["c2", "c1"],
+                "fw": ["a-parent", "b-parent"],
+                "a-parent": ["a1", "a2"],
+            }
+
+        Then the returned dictionary is:
+
+            {
+                "fw": ["a-parent", "b-parent"],
+                "a-parent": ["a1", "a2"],
+                "b-parent": ["c2", "c1"],
+            }
+
+        The framework entry is placed first, and all remaining parent keys are sorted
+        lexicographically.
+
+    2. Child order is preserved exactly
+        Suppose:
+
+            order_map = {
+                "fw": ["p2", "p1"],
+                "p2": ["x3", "x1", "x2"],
+            }
+
+        `_sort_order_map()` does not sort the child lists. The returned dictionary
+        still contains:
+
+            "fw": ["p2", "p1"]
+            "p2": ["x3", "x1", "x2"]
+
+        Only the ordering of parent keys in the outer dictionary is normalized.
+
+    3. No-op when already stable
+        Suppose:
+
+            framework_uuid = "fw"
+            order_map = {
+                "fw": ["a", "b"],
+                "a": ["a1"],
+                "b": ["b1"],
+            }
+
+        Because the framework key is already first and the remaining keys are already
+        in sorted order, the returned dictionary has the same visible ordering.
+
+    4. Framework key absent
+        Suppose:
+
+            framework_uuid = "fw"
+            order_map = {
+                "b": ["y"],
+                "a": ["x"],
+            }
+
+        Then the returned dictionary is:
+
+            {
+                "a": ["x"],
+                "b": ["y"],
+            }
+
+        The function still sorts non-framework parent keys even when the framework key
+        is absent.
 
     Parameters
     ----------
     framework_uuid
         The UUID of the framework.
     order_map
-        Dictionary mapping parent IDs to sorted child IDs.
+        Dictionary mapping parent IDs to already-ordered child IDs.
 
     Returns
     -------
@@ -3406,6 +3634,43 @@ def _verify_standards_export(
 ) -> None:
     """Verify the integrity of the exported standards artifacts.
 
+    Examples
+    --------
+    1. Referential integrity failure
+        Suppose a relationship points to target UUID `UX`, but `UX` is not present in
+        the emitted SFI set.
+
+        Then verification fails with a "Relationship references missing entity"
+        assertion.
+
+    2. Ordering mismatch failure
+        Suppose relationships imply:
+
+            parent P -> children [A, B]
+
+        but `parent_to_children[P] == [A]`.
+
+        Then verification fails because the hierarchy-order artifact does not match the
+        exported hasChild edges.
+
+    3. Reachability failure
+        Suppose an expectation SFI `E1` was emitted, but due to a hoisting bug it is
+        not reachable from the framework via any chain of hasChild edges.
+
+        Then verification fails with a reachability assertion, identifying emitted SFIs
+        that are disconnected from the framework root.
+
+    4. Groupings-only export failure
+        Suppose the exporter emitted only grouping SFIs such as stage/strand/subtopic,
+        but no expectation SFI with `normalized_statement_type="Standard"`.
+
+        Then verification fails with:
+
+            "No expectation SFIs emitted (normalized_statement_type='Standard')."
+
+        This prevents a structurally non-empty but semantically useless standards
+        export.
+
     Parameters
     ----------
     framework
@@ -3604,7 +3869,16 @@ def export_academic_standards(
     10. Build hasChild relationships and hierarchy order mappings.
     11. Sort items and relationships for stable output.
     12. Package everything into an AcademicStandardsExport dataclass.
-    13. Write JSON artifacts to disk.
+    13. Persist the exported academic standards artifacts to disk. This step writes
+        both:
+            - Decomposed typed artifacts (framework, items, hasChild relationships,
+                hierarchy order, drop reasons, reparent stats), and
+            - A single graph bundle (`academic_standards_kg.json`) built from those
+                artifacts.
+        The decomposed artifacts are used for debugging and for reloading prior exports
+        via `load_academic_standards_export()`. The graph bundle is used as the
+        academic standards sentinel artifact and as the input for later merged bundles
+        with Learning Components and Learning Progressions.
 
     NB: Aux nodes means auxiliary statement nodes: specifically, canonical nodes whose
     role is either `descriptor` or `guidance` (as defined by `AUX_ROLES`).
@@ -3617,29 +3891,29 @@ def export_academic_standards(
 
     NB: In this exporter, an aux node can end up in one of 3 states:
 
-        1. Attached to an expectation as metadata and not emitted as its own SFI. This
-            happens when the config specifies "attach_to_expectation_metadata". In this
-            scenario, the sibling layout approach attaches the aux node to the most
-            preceding expectation sibling. The child layout attaches the aux node to an
-            expectation that already owns it as a child in the export tree.
-        2. Emitted as its own SFI. An aux node is still emitted as a separate SFI in
-            two common cases. First, if the config specifies "export_as_sfi_other",
-            then `_is_attachable()` returns `False`, so that the node is **not**
-            attached into expectation metadata. If `emit_flag=True`, then
-            `_emit_sfis()` will emit it as its own SFI with a normalized statement
-            type of "Other" because that's how aux roles normalize. Second, if
-            attachment was requested but no owning expectation was found, then this is
-            the orphan aux case. If a guidance/descriptor appears before any
-            expectation in sibling order, `_process_sibling_group()` marks it as orphan
-            instead of attaching it to a later expectation.
-            `_process_attach_to_expectation()` then suppresses only the aux nodes that
-            were actually attached. Orphan aux nodes remain emitted. `_emit_sfi()`
-            marks them with `metadata["orphan_aux"] = True`. So the rule is:
-            attached aux -> no standalone SFI; orphaned aux -> yes, standalone SFI,
-            tagged as `orphan_aux`.
-        3. Dropped entirely. An aux node can get fully dropped if the config specifies
-            "drop". In this case, the aux node never makes it to the
-            attachment-or-emission decision.
+    1. Attached to an expectation as metadata and not emitted as its own SFI. This
+        happens when the config specifies "attach_to_expectation_metadata". In this
+        scenario, the sibling layout approach attaches the aux node to the most
+        preceding expectation sibling. The child layout attaches the aux node to an
+        expectation that already owns it as a child in the export tree.
+    2. Emitted as its own SFI. An aux node is still emitted as a separate SFI in
+        two common cases. First, if the config specifies "export_as_sfi_other",
+        then `_is_attachable()` returns `False`, so that the node is **not**
+        attached into expectation metadata. If `emit_flag=True`, then
+        `_emit_sfis()` will emit it as its own SFI with a normalized statement
+        type of "Other" because that's how aux roles normalize. Second, if
+        attachment was requested but no owning expectation was found, then this is
+        the orphan aux case. If a guidance/descriptor appears before any
+        expectation in sibling order, `_process_sibling_group()` marks it as orphan
+        instead of attaching it to a later expectation.
+        `_process_attach_to_expectation()` then suppresses only the aux nodes that
+        were actually attached. Orphan aux nodes remain emitted. `_emit_sfi()`
+        marks them with `metadata["orphan_aux"] = True`. So the rule is:
+        attached aux -> no standalone SFI; orphaned aux -> yes, standalone SFI,
+        tagged as `orphan_aux`.
+    3. Dropped entirely. An aux node can get fully dropped if the config specifies
+        "drop". In this case, the aux node never makes it to the
+        attachment-or-emission decision.
 
     For example, suppose our config specifies the following:
 
