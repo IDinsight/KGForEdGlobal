@@ -121,8 +121,8 @@ def _attach_aux_statements_in_export_tree(
         sibling.
 
     The hierarchy (`export_children`) is not modified. Which aux nodes are ultimately
-    emitted as SFIs is controlled by `_process_attach_to_expectation` (based on which
-    aux nodes were successfully attached).
+    emitted as SFIs is controlled by `_suppress_attached_to_expectation` (based on
+    which aux nodes were successfully attached).
 
     This function does the following: “Given the current export tree, find every
     guidance/descriptor node that should be attached into an expectation’s metadata,
@@ -2795,14 +2795,14 @@ def _suppress_attached_to_expectation(
                 and config.guidance_handling == "attach_to_expectation_metadata"
             ):
                 attach_to_exp_count += 1
-                drop_reasons[nid] = f"dropped:{config.guidance_handling}"
+                drop_reasons[nid] = f"dropped_guidance:{config.guidance_handling}"
                 emit_flag[nid] = False
             elif (
                 role == StatementRole.DESCRIPTOR.value
                 and config.descriptor_handling == "attach_to_expectation_metadata"
             ):
                 attach_to_exp_count += 1
-                drop_reasons[nid] = f"dropped:{config.descriptor_handling}"
+                drop_reasons[nid] = f"dropped_descriptor:{config.descriptor_handling}"
                 emit_flag[nid] = False
 
     reparent_stats["suppressed_after_being_attached"] = attach_to_exp_count
@@ -2824,8 +2824,8 @@ def _suppress_subtrees_of_attached_aux_nodes(
     from the export tree and marks any still-emitted descendants as dropped.
 
     In other words, once an aux node has been converted into expectation metadata in
-    step 5, nothing under that aux node should be allowed to survive in the exported
-    hierarchy.
+    steps 3 - 4, nothing under that aux node should be allowed to survive in the
+    exported hierarchy.
 
     Otherwise, a later hoisting pass could leak that subtree back into the KG. By the
     time step 6 (i.e., this function is called), step 4 has discovered attachable aux
