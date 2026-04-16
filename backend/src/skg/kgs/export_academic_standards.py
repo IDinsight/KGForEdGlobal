@@ -1629,12 +1629,72 @@ def _handle_empty_grouping_pruning(
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
 ) -> set[str]:
-    """Prune empty groupings strictly.
+    """Optionally prune empty grouping nodes after hoisting and record drop reasons.
 
-    This step assumes that `_reattach_children_of_dropped_nodes` has already been
+    This step assumes that `_reattach_children_of_dropped_nodes()` has already been
     called, so children of dropped mid-hierarchy nodes have been hoisted to their
-    nearest surviving ancestor. In this function, pruning then only removes grouping
-    nodes that are genuinely empty (no emitted children after reattachment).
+    nearest surviving ancestor. Pruning then removes only grouping nodes that are still
+    genuinely empty in the **export** tree.
+
+    Nodes with `preserve_if_empty=True` are exempt from pruning even if they have zero
+    emitted children. This is useful for intentionally retained structural wrappers in
+    the canonical IR (e.g., a section heading that should survive as a visible export
+    node even when its descendants were filtered out).
+
+    Examples
+    --------
+    1. Simple empty grouping after aux suppression
+        Suppose earlier steps have already attached and suppressed aux nodes, leaving:
+
+            export_children = {
+                ROOT: [S1],
+                S1: [T1],
+                T1: [],
+            }
+
+        and:
+
+            emit_flag[S1] = True   # grouping (e.g., substage)
+            emit_flag[T1] = True   # grouping (e.g., subtopic)
+
+        Because `T1` is a grouping with zero emitted children, pruning removes it.
+        After `T1` is removed, `S1` may also become empty and will be pruned on the
+        next iteration if it then has no emitted children.
+
+        Result:
+            - empty grouping shells do not survive as standalone SFIs
+            - the final hierarchy contains only groupings that still organize emitted
+              descendants
+
+    2. Senegal reading curriculum example
+        In Senegal reading, a whitelisted grouping such as:
+
+            substage: "Palier 2 — Production d'écrits"
+
+        may contain several `subtopic` children such as:
+
+            subtopic: "Róofoo-gi-baat / Grammaire"
+
+        If one such `subtopic` loses all emitted descendants after earlier filtering,
+        attachment, and subtree suppression, this step removes that empty `subtopic`.
+        If the `substage` still contains other emitted expectations or non-empty
+        subtopics, it remains. If it becomes empty too, it is pruned on a later pass.
+
+    3. preserve_if_empty keeps an intentional wrapper
+        Suppose a canonical grouping node has:
+
+            preserve_if_empty = True
+
+        and it ends up with zero emitted children after earlier export-time cleanup.
+        This wrapper is kept in the export tree and is not added to `drop_reasons`,
+        because the canonical IR explicitly requested that it survive even when empty.
+
+    4. Why this runs after step 7
+        Suppose a dropped non-grouping parent was hoisted away in step 7 so that its
+        emitted children now sit directly under a surviving grouping parent. Only after
+        that hoisting is complete can pruning correctly decide whether the grouping is
+        truly empty. Running pruning earlier could remove a grouping before its rescued
+        children were reattached.
 
     Parameters
     ----------
@@ -1938,6 +1998,25 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
     return None, None
 
 
+def _preserve_if_empty(*, ctx: ExportContext, nid: str) -> bool:
+    """Return whether a canonical node requests empty-wrapper preservation.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties.
+    nid
+        The canonical node ID.
+
+    Returns
+    -------
+    bool
+        True if the node carries `preserve_if_empty=True`, else False.
+    """
+
+    return bool((ctx.nodes_by_id.get(nid) or {}).get("preserve_if_empty", False))
+
+
 def _process_sibling_group(
     *,
     attached_aux_node_ids: set[str],
@@ -2032,8 +2111,99 @@ def _prune_empty_groupings(
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
 ) -> set[str]:
-    """Iteratively prune grouping nodes that have no emitted children. Mutates
-    `emit_flag` and `export_children` in place.
+    """Iteratively prune empty grouping nodes to a fixpoint.
+
+    Only grouping nodes are eligible. A grouping is pruned when all of the following
+    are true:
+
+    1. It is still emitted,
+    2. It has zero **emitted** children in the current export tree, and
+    3. Its canonical node does not request `preserve_if_empty=True`.
+
+    This function mutates both `emit_flag` and `export_children` in place. Parent-child
+    lists are cleaned immediately when a grouping is pruned, and then globally scrubbed
+    against the final emitted set at the end of pruning so no stale child references
+    survive in the final export tree.
+
+    Examples
+    --------
+    1. Single empty grouping
+        Suppose:
+
+            export_children = {
+                ROOT: [A],
+                A: [B],
+                B: [],
+            }
+
+        and:
+
+            emit_flag[A] = True   # grouping
+            emit_flag[B] = True   # grouping
+
+        `B` has no emitted children, so it is pruned first. If that leaves `A` with no
+        emitted children, `A` is pruned on the next iteration.
+
+        Final result:
+            export_children = {ROOT: []}
+            emit_flag[A] = False
+            emit_flag[B] = False
+
+    2. Cascading prune to a fixpoint
+        Suppose:
+
+            export_children = {
+                ROOT: [Stage1],
+                Stage1: [Subtopic1],
+                Subtopic1: [],
+            }
+
+        where both `Stage1` and `Subtopic1` are grouping roles and both are currently
+        emitted.
+
+        First iteration:
+            - `Subtopic1` is pruned because it has zero emitted children.
+
+        Second iteration:
+            - `Stage1` is now empty, so it is pruned too.
+
+        The loop continues until no new empty grouping nodes remain.
+
+    3. Senegal reading curriculum: keeping non-empty wrappers
+        Suppose a Senegal `subtopic` like:
+
+            "Róofoo-gi-baat / Grammaire"
+
+        still contains one emitted expectation after aux statements (`Contenus`,
+        `Durée`) were attached and suppressed.
+
+            export_children[subtopic_id] == [expectation_id]
+
+        Because that grouping still has at least one emitted child, it is **not**
+        pruned. This step only removes grouping wrappers that have become structurally
+        empty.
+
+    4. preserve_if_empty overrides empty pruning
+        Suppose a canonical grouping node has:
+
+            preserve_if_empty = True
+
+        and currently:
+
+            export_children[preserved_id] == []
+            emit_flag[preserved_id] = True
+
+        Even though it is empty, it is kept in the export tree because the canonical IR
+        explicitly requested preservation.
+
+    5. Stale references are scrubbed away
+        If a grouping is pruned after earlier hoisting changed export-time parentage,
+        this function removes that grouping from every remaining parent child-list
+        immediately. It then performs one final global scrub:
+
+            export_children[parent] = [c for c in kids if c in emitted]
+
+        so no non-emitted child references survive in the finalized export tree.
 
     Parameters
     ----------
@@ -2052,24 +2222,26 @@ def _prune_empty_groupings(
         The set of canonical node IDs that were pruned.
     """
 
-    all_pruned: set[str] = set()
     changed = True
     emitted: set[str] = {nid for nid, ok in emit_flag.items() if ok}
+    all_pruned: set[str] = set()
 
     while changed:
         changed = False
         to_prune: list[str] = []
 
         for nid in list(emitted):
-            role = str(ctx.nodes_by_id[nid].get("role") or "")
+            role = ctx.nodes_by_id[nid]["role"]
 
-            if _is_grouping_role(config=config, role=role):
-                live_children = [
-                    c for c in export_children.get(nid, []) if c in emitted
-                ]
+            if not _is_grouping_role(config=config, role=role) or _preserve_if_empty(
+                ctx=ctx, nid=nid
+            ):
+                continue
 
-                if len(live_children) == 0:
-                    to_prune.append(nid)
+            live_children = [c for c in export_children.get(nid, []) if c in emitted]
+
+            if len(live_children) == 0:
+                to_prune.append(nid)
 
         if to_prune:
             changed = True
@@ -2078,10 +2250,7 @@ def _prune_empty_groupings(
             for nid in to_prune:
                 emitted.discard(nid)
                 export_children.pop(nid, None)
-                pid = ctx.parent_by_child.get(nid)
-
-                if pid is not None and pid in export_children:
-                    export_children[pid] = [c for c in export_children[pid] if c != nid]
+                _remove_child_everywhere(child_id=nid, export_children=export_children)
 
     # Drop children that are no longer emitted.
     for pid, kids in list(export_children.items()):
@@ -2282,7 +2451,7 @@ def _remove_child_everywhere(
     child_id
         The child node ID to remove from all parent child-lists.
     export_children
-        Parent-to-children mapping.
+        Parent-to-children mapping (mutated in place).
 
     Returns
     -------
