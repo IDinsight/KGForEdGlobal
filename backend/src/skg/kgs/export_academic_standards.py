@@ -1490,7 +1490,13 @@ def _emit_sfi(
         if config.grouping_role_policy == "whitelist":
             role_allowlist = {r.value for r in config.grouping_roles_whitelist}
 
-            # But never allow grade/stage into the path key.
+            # But never allow grade/stage into the path key. If we left them in the
+            # topic path key, the same conceptual thread would split into separate keys
+            # like stage=ce1|strand=lecture|subtopic=grammaire vs.
+            # stage=ce2|strand=lecture|subtopic=grammaire, which defeats the point of a
+            # reusable cross-level thread key. The level signal is already preserved
+            # elsewhere, so excluding it from `topic_path_key` avoids double encoding
+            # and fragmentation.
             role_allowlist -= {NodeRole.GRADE_LEVEL.value, NodeRole.STAGE.value}
 
         topic_path_key, topic_path_parts = _compute_topic_path_key(
