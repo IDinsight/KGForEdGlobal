@@ -1728,7 +1728,7 @@ class GraphValidationReport(BaseSchema):
             return
 
         # Keep the exception message readable.
-        lines = ["CanonicalIR pre-validation failed:"]
+        lines = ["GraphValidationReport pre-validation failed:"]
 
         for i in self.errors()[:15]:
             lines.append(f"- [{i.code}] {i.message}")
