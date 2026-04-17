@@ -515,6 +515,15 @@ def _build_academic_standards_graph_bundle(
     -------
     dict[str, Any]
         The graph bundle dictionary.
+
+    Raises
+    ------
+    ValueError
+        If any hasChild relationship in the export bundle is missing a corresponding
+        entry in `academic_standards.order.order` for its parent-child pair, which is
+        required to populate the edge's `order_index` property. This should never occur
+        if the export logic is correct, since every emitted relationship should have a
+        corresponding hierarchy order entry.
     """
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -554,11 +563,22 @@ def _build_academic_standards_graph_bundle(
         start_id = r.source_entity_value  # Already `case_identifier_uuid` as string
         end_id = r.target_entity_value  # Already `case_identifier_uuid` as string
         props = r.model_dump(mode="json")
-        props["order_index"] = order_index_by_edge.get((start_id, end_id))
+        order_index = order_index_by_edge.get((start_id, end_id))
         assert r.relationship_type == "hasChild", (
             f"Unexpected relationship type '{r.relationship_type}' "
             f"in Academic Standards export bundle."
         )
+
+        if order_index is None:
+            raise ValueError(
+                f"Missing hierarchy order entry for exported hasChild edge "
+                f"{start_id} -> {end_id}. Every Academic Standards relationship "
+                f"must have a corresponding entry in "
+                f"academic_standards.order.order so bundle edges never serialize "
+                f"with a null order_index."
+            )
+
+        props["order_index"] = order_index
         relationships.append(
             {
                 "id": str(r.identifier),
