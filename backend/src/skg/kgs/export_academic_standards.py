@@ -63,7 +63,9 @@ class AcademicStandardsExport:
     order: HierarchyOrderExport
     pruned_node_ids: set[str]  # Node IDs pruned as empty groupings
     relationships: list[Relationship]
-    reparent_stats: dict[str, Any]  # aux_reparented_count, orphan_aux_count, etc.
+    reparent_stats: dict[
+        str, Any
+    ]  # aux reparent/attachment counters, orphan counts, IDs, etc.
 
 
 def _append_unique_child(
@@ -107,9 +109,9 @@ def _attach_aux_statements_in_export_tree(
 ) -> dict[str, Any]:
     """Attach aux statements to expectation metadata without reparenting.
 
-    This is an "attach-only" discovery pass used when the canonical IR keeps
-    descriptors/guidance as siblings (or children) of expectations, but the export
-    config requests attaching those aux statements into the owning expectation's
+    This is an "attach-only" discovery pass used when the current export tree still
+    contains descriptors/guidance as siblings (or children) of expectations, but the
+    export config requests attaching those aux statements into the owning expectation's
     metadata via `attach_to_expectation_metadata`.
 
     The pass:
@@ -121,13 +123,20 @@ def _attach_aux_statements_in_export_tree(
         sibling.
 
     The hierarchy (`export_children`) is not modified. Which aux nodes are ultimately
-    emitted as SFIs is controlled by `_suppress_attached_to_expectation` (based on
-    which aux nodes were successfully attached).
+    emitted as SFIs is controlled later by `_suppress_attached_to_expectation()` based
+    on which aux nodes were successfully attached.
 
-    This function does the following: “Given the current export tree, find every
-    guidance/descriptor node that should be attached into an expectation’s metadata,
-    either because it is already a child of that expectation or because it appears
-    after that expectation in sibling order.”
+    This function answers the question: "Given the current export tree, can we discover
+    any *additional* aux nodes that should be attached into expectation metadata,
+    either because they are already children of an expectation or because they appear
+    after an expectation in sibling order?"
+
+    The returned stats distinguish between two concepts:
+
+    * **Payload attachment counts**: how many expectation-metadata payloads were added
+      during this pass (child-layout + sibling-layout).
+    * **Unique-node deltas**: how many *new* aux node IDs entered the tracked
+      `attached_aux_node_ids`/`orphan_aux_node_ids` sets during this pass.
 
     Parameters
     ----------
@@ -150,8 +159,11 @@ def _attach_aux_statements_in_export_tree(
     Returns
     -------
     dict[str, Any]
-        Stats about attachments performed in this pass.
+        Stats about new attachments/orphans discovered in this pass.
     """
+
+    attached_before = set(attached_aux_node_ids)
+    orphan_before = set(orphan_aux_node_ids)
 
     child_attached = _attach_child_layout_aux_nodes(
         attached_aux_node_ids=attached_aux_node_ids,
@@ -171,9 +183,21 @@ def _attach_aux_statements_in_export_tree(
         export_children=export_children,
         orphan_aux_node_ids=orphan_aux_node_ids,
     )
+
+    attached_after = set(attached_aux_node_ids)
+    orphan_after = set(orphan_aux_node_ids)
+
     return {
-        "attach_only_attached_count": child_attached + sibling_attached,
-        "attach_only_orphan_aux_count": sibling_orphans,
+        "attach_only_attached_count": len(attached_after - attached_before),
+        "attach_only_child_layout_payload_attachment_count": child_attached,
+        "attach_only_new_orphan_aux_node_count": len(orphan_after - orphan_before),
+        "attach_only_newly_attached_aux_node_count": len(
+            attached_after - attached_before
+        ),
+        "attach_only_orphan_aux_count": len(orphan_after - orphan_before),
+        "attach_only_payload_attachment_count": child_attached + sibling_attached,
+        "attach_only_sibling_layout_orphan_observation_count": sibling_orphans,
+        "attach_only_sibling_layout_payload_attachment_count": sibling_attached,
     }
 
 
@@ -1110,7 +1134,8 @@ def _compute_export_children(
             export_children: The parent -> children mapping for the export tree.
             aux_nodes_attached_to_expectation: Metadata payloads to attach to
                 expectations.
-            reparent_stats: Counts and orphan/attached aux node IDs.
+            reparent_stats: Granular aux counters (sibling reparented vs. child-layout
+                attached) and orphan/attached aux node IDs.
     """
 
     attached_aux_node_ids: set[str] = set()
@@ -1120,7 +1145,8 @@ def _compute_export_children(
     export_children: dict[str, list[str]] = {}
     orphan_aux_count = 0
     orphan_aux_node_ids: set[str] = set()
-    reparented_count = 0
+    sibling_aux_reparented_count = 0
+    child_layout_aux_attached_count = 0
 
     for parent_id, kids in ctx.children_by_parent.items():
         parent_role = (
@@ -1156,8 +1182,8 @@ def _compute_export_children(
             orphan_ids_in_batch = {
                 cid for cid in new_kids if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
             }
-            reparented_count += aux_before - len(orphan_ids_in_batch)
-            reparented_count += child_aux_consumed
+            sibling_aux_reparented_count += aux_before - len(orphan_ids_in_batch)
+            child_layout_aux_attached_count += child_aux_consumed
             orphan_aux_count += len(orphan_ids_in_batch)
             orphan_aux_node_ids.update(orphan_ids_in_batch)
         else:
@@ -1175,10 +1201,15 @@ def _compute_export_children(
         export_children[parent_id] = merged
 
     reparent_stats = {
-        "aux_reparented_count": reparented_count,
+        "attached_aux_node_ids": sorted(attached_aux_node_ids),
+        "aux_reparented_count": sibling_aux_reparented_count,
+        "child_layout_aux_attached_count": child_layout_aux_attached_count,
         "orphan_aux_count": orphan_aux_count,
         "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
-        "attached_aux_node_ids": sorted(attached_aux_node_ids),
+        "sibling_aux_reparented_count": sibling_aux_reparented_count,
+        "step3_total_attached_aux_node_count": len(attached_aux_node_ids),
+        "step3_total_aux_linked_to_expectation_count": len(attached_aux_node_ids),
+        "step3_total_orphan_aux_node_count": len(orphan_aux_node_ids),
     }
     return export_children, aux_nodes_attached_to_expectation, reparent_stats
 
@@ -3453,29 +3484,33 @@ def _suppress_subtrees_of_attached_aux_nodes(
     """Suppress any exported descendants reachable from aux nodes that were attached to
     expectation metadata, and remove those aux-rooted subtrees from the export tree.
 
-    When a guidance/descriptor node is converted into expectation metadata via
-    `_reparent_aux_nodes_under_expectations`, its subtree should not later be hoisted
-    back into the Academic Standards hierarchy. This function removes those descendants
-    from the export tree and marks any still-emitted descendants as dropped.
+    By the time this function runs, an aux node may have been recognized as attached to
+    an expectation in either of two earlier places:
+
+    1. **Step 3** during export-tree construction
+        (`_compute_export_children()`/`_reparent_aux_nodes_under_expectations()`), or
+    2. **Step 4** during the attach-only discovery pass
+    (`_attach_aux_statements_in_export_tree()`).
+
+    Step 5 then flips `emit_flag=False` for those attached aux nodes themselves.
+    However, `export_children` may still contain attached aux nodes as parents with
+    descendants underneath them. This function removes those descendants from the
+    export tree and marks any still-emitted descendants as dropped.
 
     In other words, once an aux node has been converted into expectation metadata in
     steps 3 - 4, nothing under that aux node should be allowed to survive in the
     exported hierarchy.
-
-    Otherwise, a later hoisting pass could leak that subtree back into the KG. By the
-    time step 6 (i.e., this function is called), step 4 has discovered attachable aux
-    nodes, step 5 has flipped `emit_flag=false` for attached guidance/descriptors, but
-    `export_children` may still contain those aux nodes as parents with descendants
-    underneath them.
 
     Without this function, step 7 (`_reattach_children_of_dropped_nodes()`) could see a
     dropped aux parent that still has children and hoist those children upward to a
     surviving ancestor. That would reintroduce content from an aux subtree that was
     supposed to disappear into metadata.
 
-    So, one way to view step 5 is that step 5 suppresses the attached aux nodes
-    themselves whereas step 6 (this function) suppresses everything below them, so
-    those descendants cannot be hoisted back later.
+    So, one way to view steps 5-6 is:
+
+    * **Step 5** suppresses the attached aux nodes themselves as standalone SFIs.
+    * **Step 6** suppresses everything below those attached aux nodes so descendants
+        cannot be hoisted back later.
 
     Examples
     --------
@@ -3551,8 +3586,9 @@ def _suppress_subtrees_of_attached_aux_nodes(
     export_children
         Export parent -> children mapping. Mutated in place.
     reparent_stats
-        Reparent/attach statistics. The function reads `attached_aux_node_ids` and
-        updates subtree-suppression stats.
+        Reparent/attach statistics. The function reads the tracked
+        `attached_aux_node_ids` (regardless of whether they were first discovered in
+        step 3 or step 4) and updates subtree-suppression stats.
 
     Returns
     -------
@@ -4059,9 +4095,12 @@ def export_academic_standards(
             orphan_aux_node_ids=orphan_aux_node_ids,
         )
         reparent_stats.update(attach_only_stats)
+        reparent_stats["attached_aux_count"] = len(attached_aux_node_ids)
         reparent_stats["attached_aux_node_ids"] = sorted(attached_aux_node_ids)
-        reparent_stats["orphan_aux_node_ids"] = sorted(orphan_aux_node_ids)
         reparent_stats["orphan_aux_count"] = len(orphan_aux_node_ids)
+        reparent_stats["orphan_aux_node_ids"] = sorted(orphan_aux_node_ids)
+        reparent_stats["total_attached_aux_node_count"] = len(attached_aux_node_ids)
+        reparent_stats["total_orphan_aux_node_count"] = len(orphan_aux_node_ids)
 
     # 5.
     _suppress_attached_to_expectation(

@@ -1780,13 +1780,41 @@ class PolicyCoverageReport(BaseSchema):
     total_canonical_nodes: int = 0
     total_emitted_sfis: int = 0
 
-    # Aux reparenting.
-    aux_reparented_count: int = Field(
-        default=0, description="Aux statement nodes reparented under expectations."
+    # Aux reparenting/attachment.
+    attach_only_newly_attached_aux_node_count: int = Field(
+        default=0,
+        description=(
+            "Unique aux node IDs newly discovered and attached during the step-4 "
+            "attach-only discovery pass."
+        ),
+    )
+    child_layout_aux_attached_count: int = Field(
+        default=0,
+        description=(
+            "Aux statements discovered as canonical children of an expectation and "
+            "attached during step 3 export-tree construction."
+        ),
     )
     orphan_aux_count: int = Field(
         default=0,
-        description="Aux nodes that could not be reparented (no preceding expectation).",
+        description=(
+            "Total unique aux nodes that could not be attached to an owning "
+            "expectation (for example, no preceding expectation in sibling order)."
+        ),
+    )
+    sibling_aux_reparented_count: int = Field(
+        default=0,
+        description=(
+            "Aux sibling statements reparented to the most recent preceding "
+            "expectation during step 3 export-tree construction."
+        ),
+    )
+    total_attached_aux_node_count: int = Field(
+        default=0,
+        description=(
+            "Total unique aux node IDs tracked as attached to an expectation after "
+            "the attach-only discovery pass (steps 3-4 combined)."
+        ),
     )
 
     # LC stats.
