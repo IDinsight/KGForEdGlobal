@@ -560,6 +560,15 @@ class CreateKGConfig(BaseSchema):
             "'default' always uses `language_default`."
         ),
     )
+    framework_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional explicit title for the exported StandardsFramework root node. "
+            "Use this when the canonical IR root label is a filename or other "
+            "non-human-readable placeholder. If omitted, the exporter falls back to "
+            "the canonical root node display text, then the PDF filename."
+        ),
+    )
     generate_progressions: bool = Field(
         default=True,
         description=(
@@ -951,6 +960,36 @@ class CreateKGConfig(BaseSchema):
             return v
 
         return validate_progression_role(field_name="progressions_subject_role", role=v)
+
+    @field_validator("framework_name", mode="before")
+    @classmethod
+    def _validate_framework_name(cls, v: Optional[str]) -> Optional[str]:
+        """Trim optional `framework_name` and treat empty strings as None.
+
+        Parameters
+        ----------
+        v
+            The optional override value supplied in config.
+
+        Returns
+        -------
+        Optional[str]
+            The trimmed override string, or None when empty/unset.
+
+        Raises
+        ------
+        TypeError
+            If the value is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("framework_name must be a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
 
     @model_validator(mode="after")
     def _validate_grouping_role_policy(self) -> Self:

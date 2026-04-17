@@ -1374,7 +1374,10 @@ def _emit_framework(
     metadata = ctx.get_framework_metadata()
     prefer_en = config.description_text_policy == "prefer_text_en"
     root_node = ctx.nodes_by_id.get(ctx.root_id, {})
-    name = node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
+    inferred_name = (
+        node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
+    )
+    name = config.framework_name or inferred_name
     return StandardsFramework(
         academic_subject=metadata["academic_subject_default"],
         adoption_status=metadata["adoption_status"],
@@ -3835,7 +3838,8 @@ def export_academic_standards(
     The process is as follows:
 
     1. Emit the framework node.
-    2. Precompute node-level emit flags based on drop policies.
+    2. Precompute node-level emit flags based on segment-drop, statement-role, and
+        grouping-role policies.
     3. Compute export-time aux parenting based on preceding expectation siblings to
         include:
             - Building the export tree

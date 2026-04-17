@@ -54,6 +54,7 @@
 		"descriptor_handling": "attach_to_expectation_metadata",
 		"export_dialect": "global_relaxed",
 		"export_in_language_policy": "source",
+		"framework_name": "Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)",
 		"generate_progressions": true,
 		"grouping_role_policy": "whitelist",
 		"grouping_roles_whitelist": [
