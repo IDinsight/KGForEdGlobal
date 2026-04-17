@@ -26,7 +26,7 @@ from skg.kgs.schemas import (
     StandardsFramework,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs, node_display_text, normalize_key_token
+from skg.kgs.utils import ExportContext, KGDirs, normalize_key_token
 from skg.regexes import ROMAN_RE
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
@@ -586,7 +586,7 @@ def _build_aux_payload(
         "role": node["role"],
         "source_decision_ids": node.get("source_decision_ids", []),
         "source_segment_ids": node.get("source_segment_ids", []),
-        "text": node_display_text(node=node, prefer_text_en=prefer_en),
+        "text": _node_display_text(node=node, prefer_text_en=prefer_en),
     }
 
     if bbox is not None:
@@ -963,7 +963,7 @@ def _collect_grade_levels(
         node = ctx.nodes_by_id.get(aid) or {}
 
         if node["role"] == NodeRole.GRADE_LEVEL.value:
-            label = node.get("normalized_text") or node_display_text(
+            label = node.get("normalized_text") or _node_display_text(
                 node=node, prefer_text_en=prefer_text_en
             )
             label = " ".join(str(label or "").split())
@@ -1291,7 +1291,7 @@ def _compute_topic_path_key(
         if role_allowlist is not None and r not in role_allowlist:
             continue
 
-        label = n.get("normalized_text") or node_display_text(
+        label = n.get("normalized_text") or _node_display_text(
             node=n, prefer_text_en=prefer_text_en
         )
         label = " ".join(str(label or "").split())
@@ -1375,7 +1375,7 @@ def _emit_framework(
     prefer_en = config.description_text_policy == "prefer_text_en"
     root_node = ctx.nodes_by_id.get(ctx.root_id, {})
     inferred_name = (
-        node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
+        _node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
     )
     name = config.framework_name or inferred_name
     return StandardsFramework(
@@ -1589,7 +1589,7 @@ def _emit_sfi(
     sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
 
     role = node["role"]
-    desc = node_display_text(node=node, prefer_text_en=prefer_en) or (
+    desc = _node_display_text(node=node, prefer_text_en=prefer_en) or (
         f"[{role or 'unknown'}:{node_id[:8]}]"
     )
     bbox = node.get("bbox")
@@ -1920,7 +1920,7 @@ def _first_ancestor_label_for_role(
         node = ctx.nodes_by_id.get(cur) or {}
 
         if node["role"] == role:
-            label = node.get("normalized_text") or node_display_text(
+            label = node.get("normalized_text") or _node_display_text(
                 node=node, prefer_text_en=prefer_text_en
             )
             label = " ".join(str(label or "").split())
@@ -2121,6 +2121,43 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
 
     allowed = {r.value for r in config.grouping_roles_whitelist}
     return role in allowed
+
+
+def _node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
+    """Determine display text for a node, preferring title over body, and falling back
+    to `normalized_text`, then `local_code` or `role` if no text found.
+
+    Parameters
+    ----------
+    node
+        The node dictionary to extract text from.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when extracting from title/body.
+
+    Returns
+    -------
+    str
+        The display text for the node.
+    """
+
+    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
+
+    if title:
+        return title
+
+    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
+
+    if body:
+        return body
+
+    # Tertiary fallback: normalized_text (common on all canonical IR nodes).
+    nt = (node.get("normalized_text") or "").strip()
+
+    if nt:
+        return nt
+
+    # Last resort: code or role.
+    return (node.get("local_code") or node.get("role") or "").strip()
 
 
 def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
@@ -2380,6 +2417,37 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
         )
 
     return None, None
+
+
+def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
+    """Retrieve text from a title/body TextUnit dict.
+
+    Canonical nodes store title/body as a dict like:
+    {"language": "...", "text": "...", "text_en": "..."}.
+
+    Parameters
+    ----------
+    prefer_text_en
+        If True, prefer "text_en" over "text" when both are present.
+    unit
+        The title/body unit dict (or None).
+
+    Returns
+    -------
+    str
+        The extracted text, or empty string if none found.
+    """
+
+    if not isinstance(unit, dict):
+        return ""
+
+    if prefer_text_en:
+        t = (unit.get("text_en") or "").strip()
+
+        if t:
+            return t
+
+    return (unit.get("text") or unit.get("text_en") or "").strip()
 
 
 def _preserve_if_empty(*, ctx: ExportContext, nid: str) -> bool:

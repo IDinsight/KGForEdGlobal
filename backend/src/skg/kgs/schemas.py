@@ -23,7 +23,7 @@ from pydantic import Field, field_validator, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import BaseSchema, ExportDialect
+from skg.schemas import BaseSchema, ExportDialect, validate_bbox_order
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
@@ -1256,11 +1256,36 @@ class BBox(BaseSchema):
         Any
             The validated BBox data, either as a dict or the original data if it was
             not a list/tuple of 4 numbers.
+
+        Raises
+        ------
+        ValueError
+            If the input is a list/tuple but does not have exactly 4 numbers.
         """
 
-        if isinstance(data, (list, tuple)) and len(data) == 4:
+        if isinstance(data, (list, tuple)):
+            if len(data) != 4:
+                raise ValueError(
+                    "Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]."
+                )
+
             return {"x0": data[0], "y0": data[1], "x1": data[2], "y1": data[3]}
         return data
+
+    @model_validator(mode="after")
+    def _normalize_axis_order(self) -> BBox:
+        """Normalize bbox ordering and expand zero-size axes.
+
+        Returns
+        -------
+        BBox
+            The BBox object with normalized coordinates.
+        """
+
+        self.x0, self.y0, self.x1, self.y1 = validate_bbox_order(
+            [self.x0, self.y0, self.x1, self.y1]
+        )
+        return self
 
 
 class EntityProvenance(BaseSchema):

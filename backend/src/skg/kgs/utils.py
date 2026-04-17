@@ -243,7 +243,7 @@ def _compute_base_piece(node: dict[str, Any]) -> str:
 
     role = str(node.get("role") or "")
     code = normalize_ws(str(node.get("local_code") or ""))
-    text_source = str(node.get("normalized_text") or node_display_text(node=node))
+    text_source = node["normalized_text"]
 
     if role in {item.value for item in StatementRole}:
         return f"{role}:{code}:{stable_text_hash(s=text_source)}"
@@ -282,37 +282,6 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
                 seen[base] = cid
 
     return needs
-
-
-def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
-    """Retrieve text from a title/body TextUnit dict.
-
-    Canonical nodes store title/body as a dict like:
-    {"language": "...", "text": "...", "text_en": "..."}.
-
-    Parameters
-    ----------
-    prefer_text_en
-        If True, prefer "text_en" over "text" when both are present.
-    unit
-        The title/body unit dict (or None).
-
-    Returns
-    -------
-    str
-        The extracted text, or empty string if none found.
-    """
-
-    if not isinstance(unit, dict):
-        return ""
-
-    if prefer_text_en:
-        t = (unit.get("text_en") or "").strip()
-
-        if t:
-            return t
-
-    return (unit.get("text") or unit.get("text_en") or "").strip()
 
 
 def _validate_decision_references(ctx: ExportContext) -> None:
@@ -917,43 +886,6 @@ def merge_graph_bundles(
         "nodes": [nodes_by_id[nid] for nid in sorted(nodes_by_id)],
         "relationships": [rels_by_id[rid] for rid in sorted(rels_by_id)],
     }
-
-
-def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
-    """Determine display text for a node, preferring title over body, and falling back
-    to `normalized_text`, then `local_code` or `role` if no text found.
-
-    Parameters
-    ----------
-    node
-        The node dictionary to extract text from.
-    prefer_text_en
-        If True, prefer "text_en" over "text" when extracting from title/body.
-
-    Returns
-    -------
-    str
-        The display text for the node.
-    """
-
-    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
-
-    if title:
-        return title
-
-    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
-
-    if body:
-        return body
-
-    # Tertiary fallback: normalized_text (common on all canonical IR nodes).
-    nt = (node.get("normalized_text") or "").strip()
-
-    if nt:
-        return nt
-
-    # Last resort: code or role.
-    return (node.get("local_code") or node.get("role") or "").strip()
 
 
 def normalize_key_token(*, label: str, separator: str) -> str:
