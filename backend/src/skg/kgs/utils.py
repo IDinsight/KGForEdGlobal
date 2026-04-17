@@ -157,24 +157,24 @@ class ExportContext:
         """
 
         return {
-            "academic_subject_default": self.kg_config.academic_subject_default,
-            "adoption_status": self.kg_config.adoption_status,
-            "attribution_statement": self.kg_config.attribution_statement,
-            "author": self.kg_config.author,
-            "case_uri_base": self.kg_config.case_uri_base,
+            "academic_subject_default": self.kg_config.as_academic_subject_default,
+            "adoption_status": self.kg_config.as_adoption_status,
+            "attribution_statement": self.kg_config.as_attribution_statement,
+            "author": self.kg_config.as_author,
+            "case_uri_base": self.kg_config.as_case_uri_base,
             "doc_key": self.doc_key,
-            "export_dialect": self.kg_config.export_dialect,
+            "export_dialect": self.kg_config.as_export_dialect,
             "in_language": (
-                self.kg_config.language_default
-                if self.kg_config.export_in_language_policy == "default"
+                self.kg_config.as_language_default
+                if self.kg_config.as_export_in_language_policy == "default"
                 else self._infer_language_from_nodes()
-                or self.kg_config.language_default
+                or self.kg_config.as_language_default
             ),
-            "jurisdiction": self.kg_config.jurisdiction_default,
-            "license": self.kg_config.license,
+            "jurisdiction": self.kg_config.as_jurisdiction_default,
+            "license": self.kg_config.as_license,
             "namespace_uuid": str(self.kg_config.namespace_uuid),
             "pdf_name": self.pdf_name,
-            "provider": self.kg_config.provider,
+            "provider": self.kg_config.as_provider,
         }
 
     def should_drop_segment(self, decision: dict[str, Any]) -> bool:
@@ -191,18 +191,18 @@ class ExportContext:
             True if the segment should be dropped, False otherwise.
         """
 
-        policies = set(self.kg_config.non_standard_segment_drop_policy or [])
+        policies = set(self.kg_config.as_non_standard_segment_drop_policy or [])
 
         if "by_decision_type" in policies:
             dt = decision.get("decision_type")
 
-            if dt in {t.value for t in self.kg_config.non_standard_decision_types}:
+            if dt in {t.value for t in self.kg_config.as_non_standard_decision_types}:
                 return True
 
         if "by_columns_signature" in policies:
             sig = decision.get("columns_signature")
 
-            if sig and sig in self.kg_config.non_standard_columns_signature:
+            if sig and sig in self.kg_config.as_non_standard_columns_signature:
                 return True
 
         return False
@@ -436,7 +436,7 @@ def _verify_columns_signature(
     """
 
     if "by_columns_signature" not in set(
-        ctx.kg_config.non_standard_segment_drop_policy or []
+        ctx.kg_config.as_non_standard_segment_drop_policy or []
     ):
         return
 

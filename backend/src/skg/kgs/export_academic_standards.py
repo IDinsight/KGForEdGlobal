@@ -274,7 +274,7 @@ def _attach_child_layout_aux_nodes(
         The number of auxiliary nodes successfully attached in this pass.
     """
 
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
     attached_count = 0
 
     for exp_id, node in ctx.nodes_by_id.items():
@@ -402,7 +402,7 @@ def _attach_sibling_layout_aux_nodes(
         A tuple of (attached_count, sibling_orphans_count) recorded during this pass.
     """
 
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
     total_attached = 0
     total_orphans = 0
 
@@ -591,7 +591,7 @@ def _build_academic_standards_graph_bundle(
 
     return {
         "doc_key": ctx.doc_key,
-        "export_dialect": config.export_dialect,
+        "export_dialect": config.as_export_dialect,
         "generated_at": generated_at,
         "graph_type": "academic_standards",
         "nodes": nodes,
@@ -1174,7 +1174,7 @@ def _compute_export_children(
         )
         ordered_emitted_kids = [cid for cid in kids if emit_flag[cid]]
 
-        if config.aux_statement_parenting == "under_expectation" and (
+        if config.as_aux_statement_parenting == "under_expectation" and (
             parent_id == ctx.root_id
             or _is_grouping_role(config=config, role=parent_role)
         ):
@@ -1220,7 +1220,7 @@ def _compute_export_children(
             # Non-attachable aux nodes (e.g., when exported as standalone SFIs) are
             # intentionally preserved as expectation children.
             if (
-                config.aux_statement_parenting == "under_expectation"
+                config.as_aux_statement_parenting == "under_expectation"
                 and parent_id != ctx.root_id
                 and parent_role == StatementRole.EXPECTATION.value
             ):
@@ -1484,18 +1484,18 @@ def _emit_framework(
         config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:framework"
     )
     metadata = ctx.get_framework_metadata()
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
     root_node = ctx.nodes_by_id.get(ctx.root_id, {})
     inferred_name = (
         _node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
     )
-    name = config.framework_name or inferred_name
+    name = config.as_framework_name or inferred_name
     return StandardsFramework(
         academic_subject=metadata["academic_subject_default"],
         adoption_status=metadata["adoption_status"],
         attribution_statement=metadata["attribution_statement"],
         author=metadata["author"],
-        case_identifier_uri=f"{config.case_uri_base}{framework_id}",
+        case_identifier_uri=f"{config.as_case_uri_base}{framework_id}",
         case_identifier_uuid=framework_id,
         date_created=canonical_ir_created_at,
         date_modified=None,
@@ -1511,7 +1511,7 @@ def _emit_framework(
             "provenance_context": provenance_context or {},
         },
         name=name,
-        provider=config.provider,
+        provider=config.as_provider,
     )
 
 
@@ -1556,15 +1556,15 @@ def _emit_has_child(
     relationship_metadata = relationship_metadata or {}
     relationship_metadata.setdefault("source_kg", "academic_standards")
     return Relationship(
-        attribution_statement=config.attribution_statement,
-        author=config.author,
+        attribution_statement=config.as_attribution_statement,
+        author=config.as_author,
         identifier=uuid5(
             config.namespace_uuid,
             f"lc:curriculum:{doc_key}:rel:hasChild:{parent_uuid}:{child_uuid}",
         ),
-        license=config.license,
+        license=config.as_license,
         metadata=relationship_metadata,
-        provider=config.provider,
+        provider=config.as_provider,
         relationship_type="hasChild",
         source_entity=source_entity,
         source_entity_key="case_identifier_uuid",
@@ -1673,14 +1673,14 @@ def _emit_sfi(
     """
 
     node = ctx.nodes_by_id[node_id]
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
 
     # Language policy:
     # - default: Always use framework language
     # - source: Prefer per-node language if present, else fall back to framework
     sfi_in_language = str(fw_metadata.get("in_language") or "")
 
-    if config.export_in_language_policy == "source":
+    if config.as_export_in_language_policy == "source":
         # Canonical IR stores language inside TextUnit dicts (title/body), not as a
         # top-level field. Check title first, then body, skipping "und" (undetermined).
         node_lang = next(
@@ -1751,8 +1751,8 @@ def _emit_sfi(
         # across countries/configs.
         role_allowlist = None
 
-        if config.grouping_role_policy == "whitelist":
-            role_allowlist = {r.value for r in config.grouping_roles_whitelist}
+        if config.as_grouping_role_policy == "whitelist":
+            role_allowlist = {r.value for r in config.as_grouping_roles_whitelist}
 
             # But never allow grade/stage/week into the path key. If we left them in
             # the topic path key, the same conceptual thread would split into separate
@@ -1814,9 +1814,9 @@ def _emit_sfi(
 
     return StandardsFrameworkItem(
         academic_subject=fw_metadata["academic_subject_default"],
-        attribution_statement=config.attribution_statement,
-        author=config.author,
-        case_identifier_uri=f"{config.case_uri_base}{sfi_id}",
+        attribution_statement=config.as_attribution_statement,
+        author=config.as_author,
+        case_identifier_uri=f"{config.as_case_uri_base}{sfi_id}",
         case_identifier_uuid=sfi_id,
         date_created=canonical_ir_created_at,
         date_modified=None,
@@ -1830,11 +1830,11 @@ def _emit_sfi(
         identifier=sfi_id,
         in_language=sfi_in_language,
         jurisdiction=fw_metadata["jurisdiction"],
-        license=config.license,
+        license=config.as_license,
         metadata=metadata,
         normalized_statement_type=_normalized_statement_type(config=config, role=role),
         notes=None,
-        provider=config.provider,
+        provider=config.as_provider,
         statement_code=node.get("local_code"),
         statement_type=(node.get("source_label") or role or None),
     )
@@ -2139,7 +2139,7 @@ def _handle_empty_grouping_pruning(
 
     pruned_node_ids: set[str] = set()
 
-    if config.prune_empty_groupings:
+    if config.as_prune_empty_groupings:
         pruned_node_ids = _prune_empty_groupings(
             config=config, ctx=ctx, emit_flag=emit_flag, export_children=export_children
         )
@@ -2197,10 +2197,10 @@ def _is_attachable(*, config: CreateKGConfig, role: str) -> bool:
 
     return (
         role == StatementRole.GUIDANCE.value
-        and config.guidance_handling == "attach_to_expectation_metadata"
+        and config.as_guidance_handling == "attach_to_expectation_metadata"
     ) or (
         role == StatementRole.DESCRIPTOR.value
-        and config.descriptor_handling == "attach_to_expectation_metadata"
+        and config.as_descriptor_handling == "attach_to_expectation_metadata"
     )
 
 
@@ -2208,9 +2208,9 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     """Determine if a role should be treated as a grouping node in standards export.
 
     Statement roles (expectation/descriptor/guidance) and the synthetic framework role
-    are never groupings. When `grouping_role_policy="loose"`, every other role is
-    treated as a grouping. When `grouping_role_policy="whitelist"`, only roles in
-    `grouping_roles_whitelist` count as groupings.
+    are never groupings. When `as_grouping_role_policy="loose"`, every other role is
+    treated as a grouping. When `as_grouping_role_policy="whitelist"`, only roles in
+    `as_grouping_roles_whitelist` count as groupings.
 
     Parameters
     ----------
@@ -2228,10 +2228,10 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
     if role == NodeRole.FRAMEWORK.value or role in STATEMENT_ROLE_VALUES:
         return False
 
-    if config.grouping_role_policy == "loose":
+    if config.as_grouping_role_policy == "loose":
         return True
 
-    allowed = {r.value for r in config.grouping_roles_whitelist}
+    allowed = {r.value for r in config.as_grouping_roles_whitelist}
     return role in allowed
 
 
@@ -3089,8 +3089,8 @@ def _reparent_aux_nodes_under_expectations(
 
         and the config requests:
 
-            guidance_handling = "attach_to_expectation_metadata"
-            descriptor_handling = "attach_to_expectation_metadata"
+            as_guidance_handling = "attach_to_expectation_metadata"
+            as_descriptor_handling = "attach_to_expectation_metadata"
 
         Then the function keeps only the expectations in `new_kids`:
 
@@ -3196,7 +3196,7 @@ def _reparent_aux_nodes_under_expectations(
     child_aux_consumed: int = 0
     last_expectation: Optional[str] = None
     new_kids: list[str] = []
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
 
     def _attach_aux_node(*, aux_node_id: str, target_expectation_id: str) -> bool:
         """Process a single aux node as either metadata or as an export child.
@@ -3313,16 +3313,20 @@ def _should_emit_node_with_reason(
             col_sig = decision["columns_signature"]
             return (
                 (False, f"dropped:columns_signature:{col_sig}")
-                if col_sig and col_sig in ctx.kg_config.non_standard_columns_signature
+                if col_sig
+                and col_sig in ctx.kg_config.as_non_standard_columns_signature
                 else (False, f"dropped:segment_decision:{decision_type}")
             )
 
     # Role handling.
-    if role == StatementRole.GUIDANCE.value and config.guidance_handling == "drop":
-        return False, f"dropped:guidance_handling:{config.guidance_handling}"
+    if role == StatementRole.GUIDANCE.value and config.as_guidance_handling == "drop":
+        return False, f"dropped:as_guidance_handling:{config.as_guidance_handling}"
 
-    if role == StatementRole.DESCRIPTOR.value and config.descriptor_handling == "drop":
-        return False, f"dropped:descriptor_handling:{config.descriptor_handling}"
+    if (
+        role == StatementRole.DESCRIPTOR.value
+        and config.as_descriptor_handling == "drop"
+    ):
+        return False, f"dropped:as_descriptor_handling:{config.as_descriptor_handling}"
 
     # Strict grouping policy: if it's not a statement role, it must be an allowed
     # grouping. Non-grouping nodes may only be emitted as `Other` when they are true
@@ -3331,15 +3335,15 @@ def _should_emit_node_with_reason(
     # `_reattach_children_of_dropped_nodes`, rather than letting a semantic `Other`
     # node function as a de facto grouping parent.
     if (
-        config.grouping_role_policy == "whitelist"
+        config.as_grouping_role_policy == "whitelist"
         and role != NodeRole.FRAMEWORK.value
         and role not in STATEMENT_ROLE_VALUES
         and not _is_grouping_role(config=config, role=role)
     ):
-        if config.non_grouping_role_handling == "drop":
+        if config.as_non_grouping_role_handling == "drop":
             return (
                 False,
-                f"dropped:non_grouping_role:{config.non_grouping_role_handling}",
+                f"dropped:non_grouping_role:{config.as_non_grouping_role_handling}",
             )
 
         has_canonical_children = len(ctx.children_by_parent.get(node_id, [])) > 0
@@ -3545,8 +3549,8 @@ def _suppress_attached_to_expectation(
     )
 
     if (
-        config.guidance_handling == "attach_to_expectation_metadata"
-        or config.descriptor_handling == "attach_to_expectation_metadata"
+        config.as_guidance_handling == "attach_to_expectation_metadata"
+        or config.as_descriptor_handling == "attach_to_expectation_metadata"
     ):
         for nid in attached_aux_node_ids:
             if not emit_flag.get(nid, False):
@@ -3556,17 +3560,19 @@ def _suppress_attached_to_expectation(
 
             if (
                 role == StatementRole.GUIDANCE.value
-                and config.guidance_handling == "attach_to_expectation_metadata"
+                and config.as_guidance_handling == "attach_to_expectation_metadata"
             ):
                 newly_suppressed_attached_aux_count += 1
-                drop_reasons[nid] = f"dropped_guidance:{config.guidance_handling}"
+                drop_reasons[nid] = f"dropped_guidance:{config.as_guidance_handling}"
                 emit_flag[nid] = False
             elif (
                 role == StatementRole.DESCRIPTOR.value
-                and config.descriptor_handling == "attach_to_expectation_metadata"
+                and config.as_descriptor_handling == "attach_to_expectation_metadata"
             ):
                 newly_suppressed_attached_aux_count += 1
-                drop_reasons[nid] = f"dropped_descriptor:{config.descriptor_handling}"
+                drop_reasons[nid] = (
+                    f"dropped_descriptor:{config.as_descriptor_handling}"
+                )
                 emit_flag[nid] = False
 
     reparent_stats["step5_newly_suppressed_attached_aux_node_count"] = (
@@ -4125,9 +4131,9 @@ def export_academic_standards(
 
     For example, suppose our config specifies the following:
 
-        * guidance_handling = "attach_to_expectation_metadata"
-        * descriptor_handling = "attach_to_expectation_metadata"
-        * aux_statement_parenting = "under_expectation"
+        * as_guidance_handling = "attach_to_expectation_metadata"
+        * as_descriptor_handling = "attach_to_expectation_metadata"
+        * as_aux_statement_parenting = "under_expectation"
 
     that means:
 
@@ -4180,8 +4186,8 @@ def export_academic_standards(
 
     # 4.
     if (
-        config.guidance_handling == "attach_to_expectation_metadata"
-        or config.descriptor_handling == "attach_to_expectation_metadata"
+        config.as_guidance_handling == "attach_to_expectation_metadata"
+        or config.as_descriptor_handling == "attach_to_expectation_metadata"
     ):
         attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids", []))
         orphan_aux_node_ids = set(reparent_stats.get("orphan_aux_node_ids", []))

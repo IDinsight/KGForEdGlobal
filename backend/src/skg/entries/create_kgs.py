@@ -142,7 +142,7 @@ def create_kgs(
     if combined_as_lc_fp.exists() and as_reused and lc_reused:
         logger.info(
             "Combined Academic Standards and Learning Components bundle already exists "
-            "(both components reused)---skipping."
+            "(both components reused)--skipping."
         )
     else:
         academic_bundle = open_json_type(as_sentinel)
@@ -150,7 +150,7 @@ def create_kgs(
         combined_bundle = merge_graph_bundles(
             bundles=[academic_bundle, lc_bundle],
             doc_key=kg_export_ctx.doc_key,
-            export_dialect=str(config.export_dialect),
+            export_dialect=config.as_export_dialect,
         )
         write_to_json(fp=combined_as_lc_fp, json_info=combined_bundle)
 
@@ -185,7 +185,7 @@ def create_kgs(
             combined_bundle = merge_graph_bundles(
                 bundles=[academic_bundle, lc_bundle, lp_bundle],
                 doc_key=kg_export_ctx.doc_key,
-                export_dialect=str(config.export_dialect),
+                export_dialect=config.as_export_dialect,
             )
             write_to_json(fp=combined_all_fp, json_info=combined_bundle)
 

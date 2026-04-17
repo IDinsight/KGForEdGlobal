@@ -89,8 +89,7 @@ def _allow_within_grade_inference(
     """Return True if Phase 1/3 within-grade inference should consider this bucket.
 
     By default, we only run within-grade inference for single-grade buckets. If
-    progressions_within_grade_allow_banded_levels=True, banded/stage buckets are
-    allowed.
+    lp_within_grade_allow_banded_levels=True, banded/stage buckets are allowed.
 
     Parameters
     ----------
@@ -107,7 +106,7 @@ def _allow_within_grade_inference(
         configuration and whether it represents a single grade or a banded level.
     """
 
-    if config.progressions_within_grade_allow_banded_levels:
+    if config.lp_within_grade_allow_banded_levels:
         return True
 
     return _is_single_grade_bucket(bucket)
@@ -377,15 +376,15 @@ def _build_relationship(
     )
 
     return Relationship(
-        attribution_statement=config.attribution_statement,
-        author=config.author,
+        attribution_statement=config.as_attribution_statement,
+        author=config.as_author,
         date_created=None,
         date_modified=None,
         description="",
         identifier=rid,
-        license=config.license,
+        license=config.as_license,
         metadata=metadata,
-        provider=config.provider,
+        provider=config.as_provider,
         relationship_type=rel_type,
         source_entity="StandardsFrameworkItem",
         source_entity_key="case_identifier_uuid",
@@ -405,9 +404,9 @@ def _build_sfi_index(
     reason about edges without having to join back to the source node payloads.
 
     NB: Buckets may intentionally mix multiple topic paths (e.g. "__unthreaded__"
-    buckets when `progressions_cross_grade_match_roles` does not match any roles for an
-    item). Therefore, this index MUST prefer *item-level* topic fields when present,
-    rather than relying on bucket-level `topic_path`/`lp_bucket_key` values.
+    buckets when `lp_cross_grade_match_roles` does not match any roles for an item).
+    Therefore, this index MUST prefer *item-level* topic fields when present, rather
+    than relying on bucket-level `topic_path`/`lp_bucket_key` values.
     """
 
     def _iter_items() -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:
@@ -737,13 +736,13 @@ def _collect_builds_towards_work_items(
             )
 
             if both_single:
-                if not config.progressions_cross_grade_builds_towards:
+                if not config.lp_cross_grade_builds_towards:
                     continue
 
                 inference_type = "cross_grade_builds_towards"
                 prompt_builder = cross_grade_builds_towards
             else:
-                if not config.progressions_cross_stage_builds_towards:
+                if not config.lp_cross_stage_builds_towards:
                     continue
 
                 inference_type = "cross_stage_builds_towards"
@@ -794,13 +793,13 @@ def _collect_relates_to_work_items(
             both_single = (lo_low == lo_high) and (hi_low == hi_high)
 
             if both_single:
-                if not config.progressions_cross_grade_relates_to:
+                if not config.lp_cross_grade_relates_to:
                     continue
 
                 inference_type = "cross_grade_relates_to"
                 prompt_builder = cross_grade_relates_to
             else:
-                if not config.progressions_cross_stage_relates_to:
+                if not config.lp_cross_stage_relates_to:
                     continue
 
                 inference_type = "cross_stage_relates_to"
@@ -1403,8 +1402,7 @@ def _group_threads_by_grade_and_subject(
         dictionaries, representing the organization of threads by grade and subject for
         within-grade relatesTo inference. Only buckets that are allowed for
         within-grade inference based on the configuration (e.g., single-grade buckets
-        if progressions_within_grade_allow_banded_levels=False) are included in the
-        output.
+        if lp_within_grade_allow_banded_levels=False) are included in the output.
     """
 
     grade_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
@@ -1455,8 +1453,7 @@ def _infer_cross_grade_builds_towards(
     cross_level_build_pairs: set[tuple[UUID, UUID]] = set()
 
     if not (
-        config.progressions_cross_grade_builds_towards
-        or config.progressions_cross_stage_builds_towards
+        config.lp_cross_grade_builds_towards or config.lp_cross_stage_builds_towards
     ):
         return candidates, provenance_rows, cross_level_build_pairs
 
@@ -1482,11 +1479,11 @@ def _infer_cross_grade_builds_towards(
     )
     cross_stage_calls = total_calls - cross_grade_calls
 
-    if config.progressions_cross_grade_builds_towards:
+    if config.lp_cross_grade_builds_towards:
         logger.info(
             f"{cross_grade_calls} adjacent single-grade pairs for cross-grade buildsTowards inference."
         )
-    if config.progressions_cross_stage_builds_towards:
+    if config.lp_cross_stage_builds_towards:
         logger.info(
             f"{cross_stage_calls} adjacent level pairs for cross-stage buildsTowards inference."
         )
@@ -1550,18 +1547,15 @@ def _infer_cross_grade_relates_to(
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
 
-    if not (
-        config.progressions_cross_grade_relates_to
-        or config.progressions_cross_stage_relates_to
-    ):
+    if not (config.lp_cross_grade_relates_to or config.lp_cross_stage_relates_to):
         return candidates, provenance_rows
 
-    max_items = int(config.progressions_cross_grade_relates_to_max_items_per_subject)
-    max_edges_per_sfi = int(config.progressions_relates_to_max_edges_per_sfi)
+    max_items = int(config.lp_cross_grade_relates_to_max_items_per_subject)
+    max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
 
     subject_level_samples = _prepare_subject_grade_samples(
         by_grade=by_grade,
-        excluded_subject_labels=set(config.progressions_excluded_subject_labels or []),
+        excluded_subject_labels=set(config.lp_excluded_subject_labels or []),
         max_items=max_items,
     )
 
@@ -1575,12 +1569,12 @@ def _infer_cross_grade_relates_to(
     cross_stage_calls = len(work_items) - cross_grade_calls
     total_calls = len(work_items) * 2
 
-    if config.progressions_cross_grade_relates_to:
+    if config.lp_cross_grade_relates_to:
         logger.info(
             f"{cross_grade_calls} adjacent single-grade pairs for cross-grade relatesTo inference."
         )
 
-    if config.progressions_cross_stage_relates_to:
+    if config.lp_cross_stage_relates_to:
         logger.info(
             f"{cross_stage_calls} adjacent level pairs for cross-stage relatesTo inference."
         )
@@ -1634,7 +1628,7 @@ def _infer_within_grade_builds_towards(
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
 
-    if not config.progressions_within_grade_builds_towards:
+    if not config.lp_within_grade_builds_towards:
         return candidates, provenance_rows
 
     # Collect eligible buckets so total_calls is exact.
@@ -1665,7 +1659,7 @@ def _infer_within_grade_builds_towards(
         prompt = within_grade_builds_towards(
             grade_label=str(grade_label),
             items=ordered_items,
-            min_confidence=config.progressions_builds_towards_min_confidence,
+            min_confidence=config.lp_builds_towards_min_confidence,
             thread_path=str(
                 bucket.get("topic_path")
                 or bucket.get("canonical_topic_path_key")
@@ -1748,11 +1742,11 @@ def _infer_within_grade_relates_to(
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
 
-    if not config.progressions_within_grade_relates_to:
+    if not config.lp_within_grade_relates_to:
         return candidates, provenance_rows
 
-    max_items = int(config.progressions_within_grade_relates_to_max_items_per_subject)
-    max_edges_per_sfi = int(config.progressions_relates_to_max_edges_per_sfi)
+    max_items = int(config.lp_within_grade_relates_to_max_items_per_subject)
+    max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
 
     # NB: Phase 3 does NOT exclude forbidden buildsTowards pairs (unlike Phase 4). This
     # is safe because Phase 1 (within-grade buildsTowards) operates within a single
@@ -1768,7 +1762,7 @@ def _infer_within_grade_relates_to(
     )
 
     work_items: list[dict[str, Any]] = []
-    excluded = set(config.progressions_excluded_subject_labels or []) | {
+    excluded = set(config.lp_excluded_subject_labels or []) | {
         "UNSPECIFIED_SUBJECT",
         "UNKNOWN",
         "",
@@ -1874,7 +1868,7 @@ def _infer_within_grade_relates_to(
             items_a=items_a,
             items_b=items_b,
             max_edges_per_sfi=max_edges_per_sfi,
-            min_confidence=config.progressions_relates_to_min_confidence,
+            min_confidence=config.lp_relates_to_min_confidence,
             subject_label=f"{subject_a} × {subject_b}",
             thread_a_key=f"subject:{subject_a}",
             thread_b_key=f"subject:{subject_b}",
@@ -1905,7 +1899,7 @@ def _infer_within_grade_relates_to(
             items_a=items_b,
             items_b=items_a,
             max_edges_per_sfi=max_edges_per_sfi,
-            min_confidence=config.progressions_relates_to_min_confidence,
+            min_confidence=config.lp_relates_to_min_confidence,
             subject_label=f"{subject_b} × {subject_a}",
             thread_a_key=f"subject:{subject_b}",
             thread_b_key=f"subject:{subject_a}",
@@ -2167,7 +2161,7 @@ def _limit_relates_to_edges_per_sfi(
     max_edges_per_sfi
         The maximum number of relatesTo edges to allow per SFI (undirected cap). Must
         be >= 1. To disable relatesTo inference, use the phase toggles
-        (progressions_within_grade_relates_to/progressions_cross_grade_relates_to).
+        (lp_within_grade_relates_to/lp_cross_grade_relates_to).
 
     Returns
     -------
@@ -2457,12 +2451,12 @@ def _process_and_filter_candidates(
     builds_kept = [
         e
         for e in builds_candidates
-        if e.confidence >= config.progressions_builds_towards_min_confidence
+        if e.confidence >= config.lp_builds_towards_min_confidence
     ]
     builds_dropped_low = [
         e
         for e in builds_candidates
-        if e.confidence < config.progressions_builds_towards_min_confidence
+        if e.confidence < config.lp_builds_towards_min_confidence
     ]
 
     # Enforce within-grade directionality using the exporter-derived document order.
@@ -2489,18 +2483,18 @@ def _process_and_filter_candidates(
     relates_kept_thr = [
         e
         for e in relates_candidates
-        if e.confidence >= config.progressions_relates_to_min_confidence
+        if e.confidence >= config.lp_relates_to_min_confidence
     ]
     relates_dropped_low = [
         e
         for e in relates_candidates
-        if e.confidence < config.progressions_relates_to_min_confidence
+        if e.confidence < config.lp_relates_to_min_confidence
     ]
 
     # Limit relatesTo per SFI.
     relates_kept, relates_dropped_cap = _limit_relates_to_edges_per_sfi(
         edges=relates_kept_thr,
-        max_edges_per_sfi=int(config.progressions_relates_to_max_edges_per_sfi),
+        max_edges_per_sfi=int(config.lp_relates_to_max_edges_per_sfi),
     )
 
     builds_relationships: list[Relationship] = [
@@ -2595,12 +2589,12 @@ def _process_single_standard(
         (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
         we fall back to `config.progressions_grade_label_map` using `grade_key` or
         `stage_key`.
-    2. **Subject label** is resolved via `config.progressions_subject_role`. Items
-        without a matching role get `UNSPECIFIED_SUBJECT`.
-    3. **Thread key** uses `config.progressions_cross_grade_match_roles` when provided.
-        When that config is None, we reuse the default `progression_context.thread_key`
-        produced by Academic Standards export. Items with no usable thread key receive
-        a per-level sentinel to prevent false cross-level matching.
+    2. **Subject label** is resolved via `config.lp_subject_role`. Items without a
+        matching role get `UNSPECIFIED_SUBJECT`.
+    3. **Thread key** uses `config.lp_cross_grade_match_roles` when provided. When that
+        config is None, we reuse the default `progression_context.thread_key` produced
+        by Academic Standards export. Items with no usable thread key receive a
+        per-level sentinel to prevent false cross-level matching.
 
     NB: Banded/stage-level curricula (e.g., Tanzania "Standard I–II",
     "Standard III–VI"): When `progression_context` includes a true range
@@ -2679,12 +2673,12 @@ def _process_single_standard(
     topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
 
     subject_label = _resolve_subject_label(
-        subject_role=config.progressions_subject_role, topic_path_parts=topic_path_parts
+        subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
     )
 
     # Threading and bucket keys.
     effective_bucket_key, thread_key = _compute_bucket_keys(
-        cross_roles=config.progressions_cross_grade_match_roles,
+        cross_roles=config.lp_cross_grade_match_roles,
         default_thread_key=(
             str(progression_context.get("thread_key") or "").strip() or None
         ),
@@ -2782,7 +2776,7 @@ def _process_builds_towards_work_item(
     prompt = prompt_builder(
         lower_items=lower_payload,
         lower_grade_label=lo_label,
-        min_confidence=config.progressions_builds_towards_min_confidence,
+        min_confidence=config.lp_builds_towards_min_confidence,
         thread_key=thread_key,
         thread_path=str(
             b_hi.get("topic_path")
@@ -2839,7 +2833,7 @@ def _process_builds_towards_work_item(
         # meets the confidence threshold. Sub-threshold edges will be dropped during
         # post-processing, so forbidding their relatesTo counterparts would
         # unnecessarily suppress valid cross-grade associations.
-        if ce.confidence >= config.progressions_builds_towards_min_confidence:
+        if ce.confidence >= config.lp_builds_towards_min_confidence:
             cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
 
         provenance_rows.append(
@@ -2936,7 +2930,7 @@ def _process_relates_to_work_item(
         list_b_grade_label=str(upper["level_label"]),
         list_b_items=upper_items,
         max_edges_per_sfi=max_edges_per_sfi,
-        min_confidence=config.progressions_relates_to_min_confidence,
+        min_confidence=config.lp_relates_to_min_confidence,
         subject_label=subject_label,
     )
 
@@ -2970,7 +2964,7 @@ def _process_relates_to_work_item(
         list_b_grade_label=str(lower["level_label"]),
         list_b_items=lower_items,
         max_edges_per_sfi=max_edges_per_sfi,
-        min_confidence=config.progressions_relates_to_min_confidence,
+        min_confidence=config.lp_relates_to_min_confidence,
         subject_label=subject_label,
     )
 
@@ -3631,7 +3625,7 @@ def export_learning_progressions(
     graph_bundle = _build_learning_progressions_graph_bundle(
         academic_standards=academic_standards,
         ctx=ctx,
-        export_dialect=str(config.export_dialect),
+        export_dialect=config.as_export_dialect,
         relationships=(builds_rels + relates_rels),
     )
     write_to_json(
@@ -3644,19 +3638,19 @@ def export_learning_progressions(
         "counts": stats,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "phase_toggles": {
-            "within_grade_builds_towards": config.progressions_within_grade_builds_towards,
-            "cross_grade_builds_towards": config.progressions_cross_grade_builds_towards,
-            "cross_stage_builds_towards": config.progressions_cross_stage_builds_towards,
-            "within_grade_relates_to": config.progressions_within_grade_relates_to,
-            "cross_grade_relates_to": config.progressions_cross_grade_relates_to,
-            "cross_stage_relates_to": config.progressions_cross_stage_relates_to,
+            "within_grade_builds_towards": config.lp_within_grade_builds_towards,
+            "cross_grade_builds_towards": config.lp_cross_grade_builds_towards,
+            "cross_stage_builds_towards": config.lp_cross_stage_builds_towards,
+            "within_grade_relates_to": config.lp_within_grade_relates_to,
+            "cross_grade_relates_to": config.lp_cross_grade_relates_to,
+            "cross_stage_relates_to": config.lp_cross_stage_relates_to,
         },
         "thresholds": {
-            "builds_towards_min_confidence": config.progressions_builds_towards_min_confidence,
-            "relates_to_min_confidence": config.progressions_relates_to_min_confidence,
-            "relates_to_max_edges_per_sfi": config.progressions_relates_to_max_edges_per_sfi,
-            "within_grade_relates_to_max_items_per_subject": config.progressions_within_grade_relates_to_max_items_per_subject,
-            "cross_grade_relates_to_max_items_per_subject": config.progressions_cross_grade_relates_to_max_items_per_subject,
+            "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
+            "relates_to_min_confidence": config.lp_relates_to_min_confidence,
+            "relates_to_max_edges_per_sfi": config.lp_relates_to_max_edges_per_sfi,
+            "within_grade_relates_to_max_items_per_subject": config.lp_within_grade_relates_to_max_items_per_subject,
+            "cross_grade_relates_to_max_items_per_subject": config.lp_cross_grade_relates_to_max_items_per_subject,
         },
         "drops": buckets_info.get("drops") or {},
     }
@@ -3693,9 +3687,9 @@ def group_standards_for_learning_progressions(
 
     1. **Level bounds** resolved from `progression_context` ordinals when present, with
         a fallback to `config.progressions_grade_label_map`.
-    2. **Subject label** resolved via `config.progressions_subject_role`.
-    3. **Thread key** computed via `config.progressions_cross_grade_match_roles`, or
-        from `progression_context.thread_key` when that config is None.
+    2. **Subject label** resolved via `config.lp_subject_role`.
+    3. **Thread key** computed via `config.lp_cross_grade_match_roles`, or from
+        `progression_context.thread_key` when that config is None.
 
     Parameters
     ----------

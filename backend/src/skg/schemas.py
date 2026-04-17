@@ -69,8 +69,9 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
     return [x0, y0, x1, y1]
 
 
-def validate_progression_role(*, field_name: str, role: NodeRole) -> NodeRole:
-    """Validate that a progression-role config field uses a concrete hierarchy role.
+def validate_lp_role(*, field_name: str, role: NodeRole) -> NodeRole:
+    """Validate that a learning progression role config field uses a concrete hierarchy
+    role.
 
     Parameters
     ----------
@@ -87,7 +88,7 @@ def validate_progression_role(*, field_name: str, role: NodeRole) -> NodeRole:
     Raises
     ------
     ValueError
-        If the role is too generic to be useful for progression bucketing.
+        If the role is too generic to be useful for learning progression bucketing.
     """
 
     disallowed_roles = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
@@ -103,10 +104,10 @@ def validate_progression_role(*, field_name: str, role: NodeRole) -> NodeRole:
     return role
 
 
-def validate_progression_roles(
+def validate_lp_roles(
     *, field_name: str, roles: Optional[list[NodeRole]]
 ) -> Optional[list[NodeRole]]:
-    """Validate a progression-role list for non-empty, unique, concrete roles.
+    """Validate a learning progression role list for non-empty, unique, concrete roles.
 
     Parameters
     ----------
@@ -133,12 +134,12 @@ def validate_progression_roles(
     seen_roles: set[NodeRole] = set()
 
     for role in roles:
-        validated_role = validate_progression_role(field_name=field_name, role=role)
+        validated_role = validate_lp_role(field_name=field_name, role=role)
 
         if validated_role in seen_roles:
             raise ValueError(
                 f"{field_name} must not contain duplicate roles. "
-                f"Duplicate value: {validated_role.value!r}."
+                f"Duplicate value: {validated_role.value}."
             )
 
         seen_roles.add(validated_role)
@@ -484,43 +485,43 @@ class CreateKGConfig(BaseSchema):
 
     Notes
     -----
-    1. export_dialect defaults to "global_relaxed". We *can* keep "lc_public_strict" as
+    1. as_export_dialect defaults to "global_relaxed". We *can* keep "lc_public_strict" as
         an option for internal experiments, but the schemas/models are intentionally
         non-US-centric.
     2. namespace_uuid MUST be pinned and never changed once you start generating IDs.
     """
 
-    academic_subject_default: str = Field(
+    always_double_check_first_attempt: bool = Field(
+        False,
+        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
+    )
+    as_academic_subject_default: str = Field(
         description=(
             "Default high-level academic subject classification for the framework "
             "(e.g., Mathematics, English Language Arts, Science). Used when canonical "
             "IR does not provide a subject (or when exporting a single subject partition)."
         ),
     )
-    adoption_status: str = Field(
+    as_adoption_status: str = Field(
         description=(
             "Adoption status of the framework (e.g., Draft, Adopted). "
             "In `lc_public_strict`, this should conform to LC enum values; "
             "in `global_relaxed`, free-form values are allowed."
         ),
     )
-    always_double_check_first_attempt: bool = Field(
-        False,
-        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
-    )
-    attribution_statement: str = Field(
+    as_attribution_statement: str = Field(
         description=(
             "Attribution text required to credit the original publisher/owner "
             "of the standards framework (e.g., Ministry of Education, year, source)."
         ),
     )
-    author: str = Field(
+    as_author: str = Field(
         description=(
             "Human or organization name considered the author/owner of the framework "
             "(e.g., 'Ministry of Education (Zambia)')."
         ),
     )
-    aux_statement_parenting: Literal["as_siblings", "under_expectation"] = Field(
+    as_aux_statement_parenting: Literal["as_siblings", "under_expectation"] = Field(
         default="as_siblings",
         description=(
             "If exporting guidance/descriptors as SFIs, choose whether they remain "
@@ -528,11 +529,11 @@ class CreateKGConfig(BaseSchema):
             "expectation they belong to."
         ),
     )
-    case_uri_base: str = Field(
+    as_case_uri_base: str = Field(
         default="urn:lc:case:",
         description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
     )
-    description_text_policy: Literal["source", "prefer_text_en"] = Field(
+    as_description_text_policy: Literal["source", "prefer_text_en"] = Field(
         default="source",
         description=(
             "How to populate the 'description' text on exported SFIs. "
@@ -540,11 +541,11 @@ class CreateKGConfig(BaseSchema):
             "'prefer_text_en' uses the English translation when available."
         ),
     )
-    descriptor_handling: AuxStatementHandling = Field(
+    as_descriptor_handling: AuxStatementHandling = Field(
         default="export_as_sfi_other",
         description="How to handle descriptor statements during KG export.",
     )
-    export_dialect: ExportDialect = Field(
+    as_export_dialect: ExportDialect = Field(
         default="global_relaxed",
         description=(
             "Export schema dialect. 'lc_public_strict' enforces LC KG public schema "
@@ -552,15 +553,15 @@ class CreateKGConfig(BaseSchema):
             "non-US metadata shapes and free-form fields for international curricula."
         ),
     )
-    export_in_language_policy: Literal["default", "source"] = Field(
+    as_export_in_language_policy: Literal["default", "source"] = Field(
         default="source",
         description=(
             "Controls the 'inLanguage' value on exported SFIs. "
             "'source' uses the language detected on each statement's body text; "
-            "'default' always uses `language_default`."
+            "'default' always uses `as_language_default`."
         ),
     )
-    framework_name: Optional[str] = Field(
+    as_framework_name: Optional[str] = Field(
         default=None,
         description=(
             "Optional explicit title for the exported StandardsFramework root node. "
@@ -568,6 +569,96 @@ class CreateKGConfig(BaseSchema):
             "non-human-readable placeholder. If omitted, the exporter falls back to "
             "the canonical root node display text, then the PDF filename."
         ),
+    )
+    as_grouping_role_policy: Literal["loose", "whitelist"] = Field(
+        default="whitelist",
+        description=(
+            "How to interpret node roles as hierarchy groupings during standards export. "
+            "'whitelist' is the safer default for international curricula: only roles in "
+            "as_grouping_roles_whitelist are treated as hierarchy groupings. "
+            "'loose' is opt-in legacy behavior where any non-statement role becomes a grouping."
+        ),
+    )
+    as_grouping_roles_whitelist: set[NodeRole] = Field(
+        default_factory=lambda: set(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER)
+        - {NodeRole.PROSE},
+        description=(
+            "When as_grouping_role_policy='whitelist', only these roles count as groupings "
+            "(emitted as normalizedStatementType='Standard Grouping', eligible for pruning, "
+            "and used as aux-parenting anchors). Default excludes PROSE."
+        ),
+    )
+    as_guidance_handling: AuxStatementHandling = Field(
+        default="drop",
+        description="How to handle guidance statements during KG export.",
+    )
+    as_jurisdiction_default: str = Field(
+        description=(
+            "Default jurisdiction that issued the framework (e.g., Zambia, Uganda). "
+            "Used when canonical IR does not provide jurisdiction."
+        ),
+    )
+    as_language_default: LanguageField = Field(
+        description=(
+            "Default BCP-47 language code for the framework (e.g., 'en', 'fr', 'sw'). "
+            "Used as the fallback inLanguage when per-statement language detection is "
+            "unavailable or when as_export_in_language_policy='default'."
+        ),
+    )
+    as_license: str = Field(
+        description=(
+            "License string for the framework content. This may be an SPDX-like label "
+            "or a publisher-defined license statement; must be present even if it is "
+            "a conservative placeholder."
+        ),
+    )
+    as_non_grouping_role_handling: Literal["drop", "export_as_sfi_other"] = Field(
+        default="drop",
+        description=(
+            "When as_grouping_role_policy='whitelist': what to do with nodes that are neither "
+            "statement roles (expectation/descriptor/guidance) nor allowed groupings. "
+            "'drop' removes them. 'export_as_sfi_other' is leaf-only: the node may be "
+            "emitted as an SFI with type 'Other' only when it has no canonical children; "
+            "structural non-grouping parents are dropped and their children are hoisted "
+            "to the nearest surviving ancestor during export."
+        ),
+    )
+    as_non_standard_columns_signature: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Normalized columns signature that identify non-standards tables when "
+            "using by_columns_signature. Example columns signature: "
+            "'cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday'."
+        ),
+    )
+    as_non_standard_decision_types: set[SegmentDecisionType] = Field(
+        default_factory=lambda: {SegmentDecisionType.IGNORE},
+        description=(
+            "Decision types that should be treated as non-standards and dropped "
+            "when using by_decision_type."
+        ),
+    )
+    as_non_standard_segment_drop_policy: list[
+        Literal["by_columns_signature", "by_decision_type"]
+    ] = Field(
+        default_factory=lambda: cast(
+            list[Literal["by_columns_signature", "by_decision_type"]],
+            ["by_decision_type"],
+        ),
+        description=(
+            "One or more policies used to drop non-standards segments from KG export. "
+            "Policies are OR'ed together (if any policy matches -> drop)."
+        ),
+    )
+    as_provider: str = Field(
+        description=(
+            "Provider/host name for the exported KG dataset (often the organization/product). "
+            "Used for attribution and provenance in downstream systems."
+        ),
+    )
+    as_prune_empty_groupings: bool = Field(
+        default=True,
+        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering and after reattachment hoists children of dropped nodes to their nearest surviving ancestor, repeating to a fixpoint.",
     )
     generate_progressions: bool = Field(
         default=True,
@@ -577,44 +668,9 @@ class CreateKGConfig(BaseSchema):
             "generation entirely (useful for quick re-exports or debugging)."
         ),
     )
-    grouping_role_policy: Literal["loose", "whitelist"] = Field(
-        default="whitelist",
-        description=(
-            "How to interpret node roles as hierarchy groupings during standards export. "
-            "'whitelist' is the safer default for international curricula: only roles in "
-            "grouping_roles_whitelist are treated as hierarchy groupings. "
-            "'loose' is opt-in legacy behavior where any non-statement role becomes a grouping."
-        ),
-    )
-    grouping_roles_whitelist: set[NodeRole] = Field(
-        default_factory=lambda: set(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER)
-        - {NodeRole.PROSE},
-        description=(
-            "When grouping_role_policy='whitelist', only these roles count as groupings "
-            "(emitted as normalizedStatementType='Standard Grouping', eligible for pruning, "
-            "and used as aux-parenting anchors). Default excludes PROSE."
-        ),
-    )
-    guidance_handling: AuxStatementHandling = Field(
-        default="drop",
-        description="How to handle guidance statements during KG export.",
-    )
-    jurisdiction_default: str = Field(
-        description=(
-            "Default jurisdiction that issued the framework (e.g., Zambia, Uganda). "
-            "Used when canonical IR does not provide jurisdiction."
-        ),
-    )
-    language_default: LanguageField = Field(
-        description=(
-            "Default BCP-47 language code for the framework (e.g., 'en', 'fr', 'sw'). "
-            "Used as the fallback inLanguage when per-statement language detection is "
-            "unavailable or when export_in_language_policy='default'."
-        ),
-    )
     lc_atomic_skills_batch_size: int = Field(
         default=5,
-        description="Number of expectation SFIs to send per LLM call when learning_component_policy='llm_atomic_skills'.",
+        description="Number of expectation SFIs to send per LLM call when lc_policy='llm_atomic_skills'.",
         ge=1,
         le=50,
     )
@@ -640,9 +696,12 @@ class CreateKGConfig(BaseSchema):
         default=True,
         description="If True, require a short rationale for each atomic skill in the LLM response.",
     )
-    learning_component_policy: Literal[
-        "1_to_1", "split_bullets", "llm_atomic_skills"
-    ] = Field(
+    lc_max_splits_per_standard: int = Field(
+        default=25,
+        description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
+        ge=1,
+    )
+    lc_policy: Literal["1_to_1", "split_bullets", "llm_atomic_skills"] = Field(
         default="1_to_1",
         description=(
             "LearningComponent creation strategy. "
@@ -651,72 +710,17 @@ class CreateKGConfig(BaseSchema):
             "'llm_atomic_skills' uses an LLM to decompose each expectation into 1–N atomic skill LCs."
         ),
     )
-    lc_max_splits_per_standard: int = Field(
-        default=25,
-        description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
-        ge=1,
-    )
-    license: str = Field(
-        description=(
-            "License string for the framework content. This may be an SPDX-like label "
-            "or a publisher-defined license statement; must be present even if it is "
-            "a conservative placeholder."
-        ),
-    )
-    namespace_uuid: UUID = Field(
-        default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
-        description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
-    )
-    non_grouping_role_handling: Literal["drop", "export_as_sfi_other"] = Field(
-        default="drop",
-        description=(
-            "When grouping_role_policy='whitelist': what to do with nodes that are neither "
-            "statement roles (expectation/descriptor/guidance) nor allowed groupings. "
-            "'drop' removes them. 'export_as_sfi_other' is leaf-only: the node may be "
-            "emitted as an SFI with type 'Other' only when it has no canonical children; "
-            "structural non-grouping parents are dropped and their children are hoisted "
-            "to the nearest surviving ancestor during export."
-        ),
-    )
-    non_standard_columns_signature: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Normalized columns signature that identify non-standards tables when "
-            "using by_columns_signature. Example columns signature: "
-            "'cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday'."
-        ),
-    )
-    non_standard_decision_types: set[SegmentDecisionType] = Field(
-        default_factory=lambda: {SegmentDecisionType.IGNORE},
-        description=(
-            "Decision types that should be treated as non-standards and dropped "
-            "when using by_decision_type."
-        ),
-    )
-    non_standard_segment_drop_policy: list[
-        Literal["by_columns_signature", "by_decision_type"]
-    ] = Field(
-        default_factory=lambda: cast(
-            list[Literal["by_columns_signature", "by_decision_type"]],
-            ["by_decision_type"],
-        ),
-        description=(
-            "One or more policies used to drop non-standards segments from KG export. "
-            "Policies are OR'ed together (if any policy matches -> drop)."
-        ),
-    )
-    overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
-    progressions_builds_towards_min_confidence: float = Field(
+    lp_builds_towards_min_confidence: float = Field(
         default=0.60,
         description="Minimum confidence to emit buildsTowards relationships.",
         ge=0.0,
         le=1.0,
     )
-    progressions_cross_grade_builds_towards: bool = Field(
+    lp_cross_grade_builds_towards: bool = Field(
         default=True,
         description="Enable cross-grade buildsTowards progression inference between adjacent single-level grade buckets.",
     )
-    progressions_cross_grade_match_roles: Optional[list[NodeRole]] = Field(
+    lp_cross_grade_match_roles: Optional[list[NodeRole]] = Field(
         default=None,
         description=(
             "Ordered list of canonical IR node roles whose labels form the "
@@ -729,16 +733,16 @@ class CreateKGConfig(BaseSchema):
         ),
         min_length=1,
     )
-    progressions_cross_grade_relates_to_max_items_per_subject: int = Field(
+    lp_cross_grade_relates_to_max_items_per_subject: int = Field(
         default=10,
         description="Cross-grade relatesTo: max sampled Standards per subject per grade.",
         ge=1,
     )
-    progressions_cross_grade_relates_to: bool = Field(
+    lp_cross_grade_relates_to: bool = Field(
         default=True,
         description="Enable cross-grade relatesTo progression inference between adjacent single-level grade buckets.",
     )
-    progressions_cross_stage_builds_towards: bool = Field(
+    lp_cross_stage_builds_towards: bool = Field(
         default=False,
         description=(
             "Cross-grade buildsTowards fallback: if either adjacent level bucket is "
@@ -746,7 +750,7 @@ class CreateKGConfig(BaseSchema):
             "(e.g., I–II -> III–VI)."
         ),
     )
-    progressions_cross_stage_relates_to: bool = Field(
+    lp_cross_stage_relates_to: bool = Field(
         default=False,
         description=(
             "Cross-grade relatesTo fallback: if either adjacent level bucket is banded "
@@ -754,7 +758,7 @@ class CreateKGConfig(BaseSchema):
             "(e.g., I–II <-> III–VI)."
         ),
     )
-    progressions_excluded_subject_labels: list[str] = Field(
+    lp_excluded_subject_labels: list[str] = Field(
         default=["UNSPECIFIED_SUBJECT"],
         description=(
             "Subject labels to exclude from Phase 3 (within-grade cross-subject "
@@ -763,7 +767,7 @@ class CreateKGConfig(BaseSchema):
             "unmapped items in cross-subject pairing adds noise without value."
         ),
     )
-    progressions_grade_label_map: Optional[dict[str, int]] = Field(
+    lp_grade_label_map: Optional[dict[str, int]] = Field(
         default=None,
         description=(
             "Explicit mapping from grade_key labels (as they appear in "
@@ -777,18 +781,18 @@ class CreateKGConfig(BaseSchema):
             "_parse_ordinal heuristics on grade_ordinal_low/high."
         ),
     )
-    progressions_relates_to_max_edges_per_sfi: int = Field(
+    lp_relates_to_max_edges_per_sfi: int = Field(
         default=3,
         ge=1,
         description="Cap the number of relatesTo edges per SFI (undirected cap).",
     )
-    progressions_relates_to_min_confidence: float = Field(
+    lp_relates_to_min_confidence: float = Field(
         default=0.80,
         ge=0.0,
         le=1.0,
         description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
     )
-    progressions_subject_role: Optional[NodeRole] = Field(
+    lp_subject_role: Optional[NodeRole] = Field(
         default=None,
         description=(
             "Canonical IR node role to use as the 'subject' for Phase 3 "
@@ -800,7 +804,7 @@ class CreateKGConfig(BaseSchema):
             "'subject' then 'learning_area' roles."
         ),
     )
-    progressions_within_grade_allow_banded_levels: bool = Field(
+    lp_within_grade_allow_banded_levels: bool = Field(
         default=False,
         description=(
             "If false (default), Phase 1 and Phase 3 'within-grade' inference only runs "
@@ -809,37 +813,32 @@ class CreateKGConfig(BaseSchema):
             "(low != high), e.g., 'Std I–II'."
         ),
     )
-    progressions_within_grade_builds_towards: bool = Field(
+    lp_within_grade_builds_towards: bool = Field(
         default=True,
         description="Enable within-grade buildsTowards progression inference (sequential standards within the same grade/subject thread).",
     )
-    progressions_within_grade_relates_to: bool = Field(
+    lp_within_grade_relates_to: bool = Field(
         default=True,
         description=(
             "Enable within-grade relatesTo inference (cross-subject only). "
             "Threads within the same subject are skipped to reduce noise."
         ),
     )
-    progressions_within_grade_relates_to_max_items_per_subject: int = Field(
+    lp_within_grade_relates_to_max_items_per_subject: int = Field(
         default=5,
         description="Within-grade relatesTo (cross-subject only): max sampled standards per subject (keeps LLM calls bounded).",
         ge=1,
     )
-    provider: str = Field(
-        description=(
-            "Provider/host name for the exported KG dataset (often the organization/product). "
-            "Used for attribution and provenance in downstream systems."
-        ),
+    namespace_uuid: UUID = Field(
+        default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
+        description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
     )
-    prune_empty_groupings: bool = Field(
-        default=True,
-        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering and after reattachment hoists children of dropped nodes to their nearest surviving ancestor, repeating to a fixpoint.",
-    )
+    overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
 
     @model_validator(mode="after")
     def _validate_atomic_skills_bounds(self) -> Self:
-        """Validate that lc_atomic_skills_min_per_sfi is less than or equal to
-        lc_max_splits_per_standard when using llm_atomic_skills.
+        """Validate that `lc_atomic_skills_min_per_sfi` is less than or equal to
+        `lc_max_splits_per_standard` when using `llm_atomic_skills`.
 
         Returns
         -------
@@ -849,11 +848,12 @@ class CreateKGConfig(BaseSchema):
         Raises
         ------
         ValueError
-            If lc_atomic_skills_min_per_sfi is greater than lc_max_splits_per_standard.
+            If `lc_atomic_skills_min_per_sfi` is greater than
+            `lc_max_splits_per_standard`.
         """
 
         if (
-            self.learning_component_policy == "llm_atomic_skills"
+            self.lc_policy == "llm_atomic_skills"
             and self.lc_atomic_skills_min_per_sfi > self.lc_max_splits_per_standard
         ):
             raise ValueError(
@@ -863,55 +863,12 @@ class CreateKGConfig(BaseSchema):
 
         return self
 
-    @field_validator("progressions_grade_label_map")
+    @field_validator("lp_cross_grade_match_roles")
     @classmethod
-    def _validate_grade_label_map_keys(
-        cls, v: Optional[dict[str, int]]
-    ) -> Optional[dict[str, int]]:
-        """Enforce that all keys are lowercase + stripped, and values are non-negative.
-
-        Parameters
-        ----------
-        v
-            The grade label map to validate.
-
-        Returns
-        -------
-        Optional[dict[str, int]]
-            The validated grade label map.
-
-        Raises
-        ------
-        ValueError
-            If any key is not lowercase + stripped, or any value is negative.
-        """
-
-        if v is None:
-            return v
-
-        for key, val in v.items():
-            normalized = key.strip().lower()
-
-            if key != normalized:
-                raise ValueError(
-                    f"progressions_grade_label_map key must be lowercase + stripped: "
-                    f"got {key!r}, expected {normalized!r}"
-                )
-
-            if not isinstance(val, int) or val < 0:
-                raise ValueError(
-                    f"progressions_grade_label_map values must be non-negative integers: "
-                    f"got {val!r} for key {key!r}"
-                )
-
-        return v
-
-    @field_validator("progressions_cross_grade_match_roles")
-    @classmethod
-    def _validate_progressions_cross_grade_match_roles(
+    def _validate_lp_cross_grade_match_roles(
         cls, v: Optional[list[NodeRole]]
     ) -> Optional[list[NodeRole]]:
-        """Validate progression thread-key roles.
+        """Validate learning progression thread-key roles.
 
         Parameters
         ----------
@@ -929,21 +886,17 @@ class CreateKGConfig(BaseSchema):
             If the role list contains duplicates or disallowed roles.
         """
 
-        return validate_progression_roles(
-            field_name="progressions_cross_grade_match_roles", roles=v
-        )
+        return validate_lp_roles(field_name="lp_cross_grade_match_roles", roles=v)
 
-    @field_validator("progressions_subject_role")
+    @field_validator("lp_subject_role")
     @classmethod
-    def _validate_progressions_subject_role(
-        cls, v: Optional[NodeRole]
-    ) -> Optional[NodeRole]:
+    def _validate_lp_subject_role(cls, v: Optional[NodeRole]) -> Optional[NodeRole]:
         """Validate the configured subject-like bucketing role.
 
         Parameters
         ----------
         v
-            The role used to derive subject buckets for progression inference.
+            The role used to derive subject buckets for learning progression inference.
 
         Returns
         -------
@@ -953,18 +906,18 @@ class CreateKGConfig(BaseSchema):
         Raises
         ------
         ValueError
-            If the role is too generic to support progression bucketing.
+            If the role is too generic to support learning progression bucketing.
         """
 
         if v is None:
             return v
 
-        return validate_progression_role(field_name="progressions_subject_role", role=v)
+        return validate_lp_role(field_name="lp_subject_role", role=v)
 
-    @field_validator("framework_name", mode="before")
+    @field_validator("as_framework_name", mode="before")
     @classmethod
     def _validate_framework_name(cls, v: Optional[str]) -> Optional[str]:
-        """Trim optional `framework_name` and treat empty strings as None.
+        """Trim optional `as_framework_name` and treat empty strings as None.
 
         Parameters
         ----------
@@ -986,15 +939,15 @@ class CreateKGConfig(BaseSchema):
             return None
 
         if not isinstance(v, str):
-            raise TypeError("framework_name must be a string or None")
+            raise TypeError("as_framework_name must be a string or None")
 
         v2 = v.strip()
         return v2 if v2 else None
 
     @model_validator(mode="after")
     def _validate_grouping_role_policy(self) -> Self:
-        """Validate that if grouping_role_policy is 'whitelist', then
-        grouping_roles_whitelist is non-empty and does not include
+        """Validate that if `as_grouping_role_policy` is 'whitelist', then
+        `as_grouping_roles_whitelist` is non-empty and does not include
         FRAMEWORK/UNRESOLVED.
 
         Returns
@@ -1005,30 +958,31 @@ class CreateKGConfig(BaseSchema):
         Raises
         ------
         ValueError
-            If grouping_role_policy is 'whitelist' but grouping_roles_whitelist is
-            empty or includes disallowed roles.
+            If `as_grouping_role_policy` is 'whitelist' but
+            `as_grouping_roles_whitelist` is empty or includes disallowed roles.
         """
 
-        if self.grouping_role_policy == "whitelist":
-            if not self.grouping_roles_whitelist:
+        if self.as_grouping_role_policy == "whitelist":
+            if not self.as_grouping_roles_whitelist:
                 raise ValueError(
-                    "grouping_role_policy='whitelist' requires a non-empty grouping_roles_whitelist."
+                    "as_grouping_role_policy='whitelist' requires a non-empty "
+                    "as_grouping_roles_whitelist."
                 )
 
             # These should never be treated as hierarchy groupings.
             disallowed = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
-            overlap = disallowed & set(self.grouping_roles_whitelist)
+            overlap = disallowed & set(self.as_grouping_roles_whitelist)
 
             if overlap:
                 raise ValueError(
-                    f"grouping_roles_whitelist cannot include FRAMEWORK/UNRESOLVED: {overlap}"
+                    f"as_grouping_roles_whitelist cannot include FRAMEWORK/UNRESOLVED: {overlap}"
                 )
 
         return self
 
     @model_validator(mode="after")
     def _validate_parenting_relevance(self) -> Self:
-        """Validate that aux_statement_parenting is compatible with guidance/descriptor
+        """Validate that as_aux_statement_parenting is compatible with guidance/descriptor
         handling.
 
         Returns
@@ -1039,38 +993,38 @@ class CreateKGConfig(BaseSchema):
         Raises
         ------
         ValueError
-            If aux_statement_parenting is 'under_expectation' but neither guidance nor
-            descriptor handling is set to export as SFI.
+            If as_aux_statement_parenting is 'under_expectation' but neither guidance
+            nor descriptor handling is set to export as SFI.
         """
 
-        relevant_any = self.guidance_handling in {
+        relevant_any = self.as_guidance_handling in {
             "export_as_sfi_other",
             "attach_to_expectation_metadata",
-        } or self.descriptor_handling in {
+        } or self.as_descriptor_handling in {
             "export_as_sfi_other",
             "attach_to_expectation_metadata",
         }
 
-        if self.aux_statement_parenting == "under_expectation" and not relevant_any:
+        if self.as_aux_statement_parenting == "under_expectation" and not relevant_any:
             raise ValueError(
-                "aux_statement_parenting='under_expectation' requires exporting "
-                "or attaching guidance/descriptors to expectations (set guidance_handling "
-                "or descriptor_handling to 'export_as_sfi_other' or "
+                "as_aux_statement_parenting='under_expectation' requires exporting "
+                "or attaching guidance/descriptors to expectations (set as_guidance_handling "
+                "or as_descriptor_handling to 'export_as_sfi_other' or "
                 "'attach_to_expectation_metadata')."
             )
 
         # attach-to-expectation requires the export-time anchor discovery implemented
-        # by aux_statement_parenting="under_expectation". If we leave
-        # aux_statement_parenting="as_siblings", export_academic_standards will skip
+        # by as_aux_statement_parenting="under_expectation". If we leave
+        # as_aux_statement_parenting="as_siblings", export_academic_standards will skip
         # emitting aux nodes (to avoid SFIs) but will never attach them -> silent loss.
         attach_any = (
-            self.guidance_handling == "attach_to_expectation_metadata"
-            or self.descriptor_handling == "attach_to_expectation_metadata"
+            self.as_guidance_handling == "attach_to_expectation_metadata"
+            or self.as_descriptor_handling == "attach_to_expectation_metadata"
         )
-        if attach_any and self.aux_statement_parenting != "under_expectation":
+        if attach_any and self.as_aux_statement_parenting != "under_expectation":
             raise ValueError(
-                "guidance_handling/descriptor_handling='attach_to_expectation_metadata' "
-                "requires aux_statement_parenting='under_expectation' so aux statements "
+                "as_guidance_handling/as_descriptor_handling='attach_to_expectation_metadata' "
+                "requires as_aux_statement_parenting='under_expectation' so aux statements "
                 "can be anchored to the most recent expectation during export."
             )
 
@@ -1078,7 +1032,7 @@ class CreateKGConfig(BaseSchema):
 
     @model_validator(mode="after")
     def _validate_stable_bases(self) -> Self:
-        """Validate that case_uri_base is non-empty and stable.
+        """Validate that as_case_uri_base is non-empty and stable.
 
         Returns
         -------
@@ -1088,11 +1042,11 @@ class CreateKGConfig(BaseSchema):
         Raises
         ------
         ValueError
-            If case_uri_base is empty.
+            If as_case_uri_base is empty.
         """
 
-        if not self.case_uri_base:
-            raise ValueError("case_uri_base must be non-empty and stable.")
+        if not self.as_case_uri_base:
+            raise ValueError("as_case_uri_base must be non-empty and stable.")
 
         return self
 

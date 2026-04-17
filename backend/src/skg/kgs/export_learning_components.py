@@ -346,8 +346,8 @@ def _create_lcs_for_expectation(
     id_source_kind_override
         If provided, overrides the auto-detected `id_source_kind` label.
     policy_override
-        If provided, overrides `config.learning_component_policy` for both the UUID
-        seed and the metadata label.
+        If provided, overrides `config.lc_policy` for both the UUID seed and the
+        metadata label.
     sfi
         The StandardsFrameworkItem representing the expectation for which to create LCs.
 
@@ -360,7 +360,7 @@ def _create_lcs_for_expectation(
         across runs.
     """
 
-    policy = policy_override or config.learning_component_policy
+    policy = policy_override or config.lc_policy
 
     # Display text (human-facing): use SFI.description as exported by academic
     # standards.
@@ -800,7 +800,7 @@ def _finalize_lc_export(
     Parameters
     ----------
     config
-        KG export configuration (export_dialect).
+        KG export configuration.
     ctx
         ExportContext (doc_key).
     kg_dirs
@@ -838,7 +838,7 @@ def _finalize_lc_export(
         fp=kg_dirs.learning_components / "learning_components_kg.json",
         json_info=_build_learning_components_graph_bundle(
             doc_key=ctx.doc_key,
-            export_dialect=str(config.export_dialect),
+            export_dialect=config.as_export_dialect,
             learning_components=lcs,
             supports_relationships=rels,
         ),
@@ -1382,12 +1382,11 @@ def export_learning_components(
     ----------
     academic_standards
         Exported academic standards artifacts. This is the shared backbone: supports
-        edges MUST target emitted StandardsFrameworkItems by case_identifier_uuid.
+        edges MUST target emitted StandardsFrameworkItems by `case_identifier_uuid`.
     config
         KG config for LC policy + deterministic ID namespace.
     ctx
-        ExportContext (doc_key, framework metadata, indexes). Only doc_key + framework
-        metadata are required here.
+        ExportContext (doc_key, framework metadata, indexes).
     kg_dirs
         The KGDirs for output.
 
@@ -1403,7 +1402,7 @@ def export_learning_components(
         mismatched counts of LCs and relationships.
     """
 
-    if config.learning_component_policy == "llm_atomic_skills":
+    if config.lc_policy == "llm_atomic_skills":
         lcs, rels, lc_stats = _export_lcs_via_llm_atomic_skills(
             academic_standards=academic_standards,
             config=config,
@@ -1462,7 +1461,7 @@ def export_learning_components(
         )
 
     lc_stats = {
-        "split_policy": str(config.learning_component_policy),
+        "split_policy": str(config.lc_policy),
         "total_expectations": len(expectation_sfis_sorted),
         "total_lcs": len(lcs),
         "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
@@ -1548,7 +1547,7 @@ def load_learning_components_export(kg_dirs: KGDirs) -> LearningComponentsExport
         for raw in open_json_type(d / "learning_components_supports_relationships.json")
     ]
 
-    # lc_stats is persisted so the policy coverage report can be fully regenerated.
+    # `lc_stats` is persisted so the policy coverage report can be fully regenerated.
     lc_stats_fp = d / "learning_components_stats.json"
     lc_stats: dict = open_json_type(lc_stats_fp) if lc_stats_fp.exists() else {}
 
@@ -1596,9 +1595,10 @@ def load_or_export_learning_components(
 
     if lc_sentinel.exists() and not config.overwrite:
         logger.warning(
-            "Learning Components KG already exists and overwrite=False — loading "
+            "Learning Components KG already exists and overwrite=False--loading "
             "from disk."
         )
+
         learning_components = load_learning_components_export(kg_dirs)
         lc_reused = True
     else:

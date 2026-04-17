@@ -1637,7 +1637,7 @@ def _materialize_row_leaves(
     # row may have a special node that aux leaves can hang under. This essentially
     # implements the "under expectation" parenting for table aux statements and aligns
     # with the KG pipeline's attach-to-expectation behavior that requires
-    # aux_statement_parenting="under_expectation".
+    # as_aux_statement_parenting="under_expectation".
     if len(expectation_leaves) == 1:
         expectation = expectation_leaves[0]
         expectation_ancestor_keys = list(row_ancestor_keys)

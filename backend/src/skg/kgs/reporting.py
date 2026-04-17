@@ -1125,8 +1125,8 @@ def build_policy_coverage_report(
     reparent_stats = academic_standards.reparent_stats
     reason_counter: Counter[str] = Counter(drop_reasons.values())
 
-    dropped_guidance = reason_counter.get("dropped:guidance_handling:drop", 0)
-    dropped_descriptor = reason_counter.get("dropped:descriptor_handling:drop", 0)
+    dropped_guidance = reason_counter.get("dropped:as_guidance_handling:drop", 0)
+    dropped_descriptor = reason_counter.get("dropped:as_descriptor_handling:drop", 0)
     dropped_non_grouping_role = reason_counter.get("dropped:non_grouping_role:drop", 0)
 
     dropped_by_decision_type = {
@@ -1141,8 +1141,8 @@ def build_policy_coverage_report(
     }
 
     known_exacts = {
-        "dropped:guidance_handling:drop",
-        "dropped:descriptor_handling:drop",
+        "dropped:as_guidance_handling:drop",
+        "dropped:as_descriptor_handling:drop",
         "dropped:non_grouping_role:drop",
         "dropped:pruned_empty_grouping",
         "dropped:attach_to_expectation_metadata",

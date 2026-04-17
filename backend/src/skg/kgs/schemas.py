@@ -1764,14 +1764,14 @@ class PolicyCoverageReport(BaseSchema):
         description="Count of nodes dropped per segment decision type (e.g., ignore, unresolved).",
     )
     dropped_descriptor: int = Field(
-        default=0, description="Nodes dropped because descriptor_handling == 'drop'."
+        default=0, description="Nodes dropped because as_descriptor_handling == 'drop'."
     )
     dropped_guidance: int = Field(
-        default=0, description="Nodes dropped because guidance_handling == 'drop'."
+        default=0, description="Nodes dropped because as_guidance_handling == 'drop'."
     )
     dropped_non_grouping_role: int = Field(
         default=0,
-        description="Nodes dropped because non_grouping_role_handling == 'drop'.",
+        description="Nodes dropped because as_non_grouping_role_handling == 'drop'.",
     )
     pruned_empty_groupings: int = Field(
         default=0,
