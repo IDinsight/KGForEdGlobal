@@ -188,13 +188,11 @@ def _attach_aux_statements_in_export_tree(
     orphan_after = set(orphan_aux_node_ids)
 
     return {
-        "attach_only_attached_count": len(attached_after - attached_before),
         "attach_only_child_layout_payload_attachment_count": child_attached,
         "attach_only_new_orphan_aux_node_count": len(orphan_after - orphan_before),
         "attach_only_newly_attached_aux_node_count": len(
             attached_after - attached_before
         ),
-        "attach_only_orphan_aux_count": len(orphan_after - orphan_before),
         "attach_only_payload_attachment_count": child_attached + sibling_attached,
         "attach_only_sibling_layout_orphan_observation_count": sibling_orphans,
         "attach_only_sibling_layout_payload_attachment_count": sibling_attached,
@@ -3468,10 +3466,12 @@ def _suppress_attached_to_expectation(
     emit_flag
         Dictionary mapping node IDs to boolean emit flags. Mutated in-place.
     reparent_stats
-        Dictionary containing reparenting statistics. Mutated in-place.
+        Dictionary containing reparenting statistics. Mutated in-place. The recorded
+        step 5 counter reflects how many attached aux nodes were newly suppressed in
+        this step, not how many aux nodes had ever been attached overall.
     """
 
-    attach_to_exp_count = 0
+    newly_suppressed_attached_aux_count = 0
 
     # Only suppress aux nodes that were actually attached to an expectation's metadata.
     # This avoids silently deleting "orphan" aux statements that had no owning
@@ -3494,18 +3494,20 @@ def _suppress_attached_to_expectation(
                 role == StatementRole.GUIDANCE.value
                 and config.guidance_handling == "attach_to_expectation_metadata"
             ):
-                attach_to_exp_count += 1
+                newly_suppressed_attached_aux_count += 1
                 drop_reasons[nid] = f"dropped_guidance:{config.guidance_handling}"
                 emit_flag[nid] = False
             elif (
                 role == StatementRole.DESCRIPTOR.value
                 and config.descriptor_handling == "attach_to_expectation_metadata"
             ):
-                attach_to_exp_count += 1
+                newly_suppressed_attached_aux_count += 1
                 drop_reasons[nid] = f"dropped_descriptor:{config.descriptor_handling}"
                 emit_flag[nid] = False
 
-    reparent_stats["suppressed_after_being_attached"] = attach_to_exp_count
+    reparent_stats["step5_newly_suppressed_attached_aux_node_count"] = (
+        newly_suppressed_attached_aux_count
+    )
 
 
 def _suppress_subtrees_of_attached_aux_nodes(
@@ -4129,12 +4131,10 @@ def export_academic_standards(
             orphan_aux_node_ids=orphan_aux_node_ids,
         )
         reparent_stats.update(attach_only_stats)
-        reparent_stats["attached_aux_count"] = len(attached_aux_node_ids)
         reparent_stats["attached_aux_node_ids"] = sorted(attached_aux_node_ids)
         reparent_stats["orphan_aux_count"] = len(orphan_aux_node_ids)
         reparent_stats["orphan_aux_node_ids"] = sorted(orphan_aux_node_ids)
         reparent_stats["total_attached_aux_node_count"] = len(attached_aux_node_ids)
-        reparent_stats["total_orphan_aux_node_count"] = len(orphan_aux_node_ids)
 
     # 5.
     _suppress_attached_to_expectation(
