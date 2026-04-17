@@ -44,6 +44,8 @@
 	},
 	"kgs": {
 		"always_double_check_first_attempt": false,
+		"generate_progressions": true,
+		"overwrite": false,
 		"as_academic_subject_default": "Langue et Communication",
 		"as_adoption_status": "Adopted",
 		"as_attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Langue et Communication, 2eme etape (CE1).",
@@ -79,7 +81,6 @@
 		],
 		"as_provider": "IDinsight | Learning Commons",
 		"as_prune_empty_groupings": true,
-		"generate_progressions": true,
 		"lc_atomic_skills_batch_size": 4,
 		"lc_atomic_skills_include_aux_statements": true,
 		"lc_atomic_skills_include_topic_context": true,
@@ -105,7 +106,6 @@
 		"lp_within_grade_allow_banded_levels": true,
 		"lp_within_grade_builds_towards": true,
 		"lp_within_grade_relates_to": true,
-		"lp_within_grade_relates_to_max_items_per_subject": 4,
-		"overwrite": false
+		"lp_within_grade_relates_to_max_items_per_subject": 4
 	}
 }
