@@ -316,9 +316,8 @@ class ProgressionEdge(BaseSchema):
 
     @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
     @classmethod
-    def _strip_uuid_str(cls, v: Any) -> str:
-        """Strip whitespace and validate that the value is a non-empty string for UUID
-        fields.
+    def _validate_uuid_str(cls, v: Any) -> str:
+        """Strip whitespace and validate that the value is a parseable UUID string.
 
         Parameters
         ----------
@@ -328,12 +327,12 @@ class ProgressionEdge(BaseSchema):
         Returns
         -------
         str
-            The validated and stripped string value.
+            The validated and stripped UUID string.
 
         Raises
         ------
         ValueError
-            If the input value is None or an empty string after stripping.
+            If the input value is null, empty, or not a valid UUID string.
         """
 
         if v is None:
@@ -343,6 +342,11 @@ class ProgressionEdge(BaseSchema):
 
         if not s:
             raise ValueError("UUID cannot be empty")
+
+        try:
+            UUID(s)
+        except Exception as e:  # pylint: disable=broad-except
+            raise ValueError(f"Invalid UUID string: {s}") from e
 
         return s
 
