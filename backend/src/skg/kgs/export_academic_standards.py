@@ -4120,7 +4120,7 @@ def export_academic_standards(
         the orphan aux case. If a guidance/descriptor appears before any
         expectation in sibling order, `_process_sibling_group()` marks it as orphan
         instead of attaching it to a later expectation.
-        `_process_attach_to_expectation()` then suppresses only the aux nodes that
+        `_suppress_attached_to_expectation()` then suppresses only the aux nodes that
         were actually attached. Orphan aux nodes remain emitted. `_emit_sfi()`
         marks them with `metadata["orphan_aux"] = True`. So the rule is:
         attached aux -> no standalone SFI; orphaned aux -> yes, standalone SFI,

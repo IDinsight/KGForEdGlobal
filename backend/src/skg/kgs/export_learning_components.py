@@ -64,9 +64,8 @@ def _build_atomic_skills_prompt_items(
         The list of StandardsFrameworkItems representing expectations for which to
         generate prompt items. Each item will be transformed into a dictionary
         containing the relevant text and metadata fields needed for the atomic skills
-        decomposition prompt. The transformation will include normalization of
-        whitespace and trimming of text to ensure that the prompt stays within
-        reasonable length limits for LLM input.
+        decomposition prompt.
+
     Returns
     -------
     list[dict[str, Any]]
@@ -79,24 +78,23 @@ def _build_atomic_skills_prompt_items(
     items: list[dict[str, Any]] = []
 
     for sfi in sfis:
-        md = sfi.metadata or {}
+        metadata = sfi.metadata or {}
         display_text = normalize_ws(sfi.description or "")
         id_source_text = (
-            normalize_ws(str(md.get("normalized_text") or "")) or display_text
+            normalize_ws(metadata.get("normalized_text") or "") or display_text
         )
-
         payload: dict[str, Any] = {
-            "sfi_uuid": str(sfi.case_identifier_uuid),
-            "statement_code": sfi.statement_code,
-            "grade_level": list(sfi.grade_level or []),
-            "id_source_text": _trim_text(max_chars=2000, s=id_source_text),
             "display_text": _trim_text(
                 max_chars=2000, s=display_text or id_source_text
             ),
+            "grade_level": list(sfi.grade_level or []),
+            "id_source_text": _trim_text(max_chars=2000, s=id_source_text),
+            "sfi_uuid": str(sfi.case_identifier_uuid),
+            "statement_code": sfi.statement_code,
         }
 
         if config.lc_atomic_skills_include_topic_context:
-            pc = (md.get("progression_context") or {}) if isinstance(md, dict) else {}
+            pc = metadata.get("progression_context") or {}
             topic_ctx = {
                 "grade_key": pc.get("grade_key"),
                 "stage_key": pc.get("stage_key"),
@@ -105,23 +103,25 @@ def _build_atomic_skills_prompt_items(
                 "topic_path_parts": pc.get("topic_path_parts"),
             }
 
-            # Only include topic_context when at least one value is non-None; an
-            # all-None dict adds prompt tokens for no benefit.
+            # Only include `topic_ctx` when at least one value is non-None; an all-None
+            # dict adds prompt tokens for no benefit.
             if any(v is not None for v in topic_ctx.values()):
                 payload["topic_context"] = topic_ctx
 
         if config.lc_atomic_skills_include_aux_statements:
-            aux = md.get("aux_statements") if isinstance(md, dict) else None
+            aux = metadata.get("aux_statements")
             aux_items: list[dict[str, Any]] = []
 
             if isinstance(aux, list):
                 for a in aux[:10]:
+                    assert isinstance(a, dict), f"{a = }"
+
                     if not isinstance(a, dict):
                         continue
 
                     aux_items.append(
                         {
-                            "role": a.get("role"),
+                            "role": a["role"],
                             "text": _trim_text(
                                 max_chars=400, s=str(a.get("text") or "")
                             ),
@@ -595,146 +595,6 @@ def _emit_supports(
     )
 
 
-def _export_lcs_via_llm_atomic_skills(
-    *,
-    academic_standards: AcademicStandardsExport,
-    config: CreateKGConfig,
-    ctx: ExportContext,
-    kg_dirs: KGDirs,
-) -> tuple[list[LearningComponent], list[Relationship], dict[str, Any]]:
-    """Export LearningComponents using LLM-based atomic skills decomposition.
-
-    Parameters
-    ----------
-    academic_standards
-        The exported academic standards artifacts, containing the
-        StandardsFrameworkItems that represent normative expectations. These SFIs will
-        be the targets of the supports relationships emitted by the LearningComponents
-        created in this function.
-    config
-        The KG export configuration, which includes settings for the LLM-based atomic
-        skills decomposition.
-    ctx
-        The ExportContext, which provides access to the document key and framework
-        metadata needed for ID generation and provenance.
-    kg_dirs
-        The KGDirs for output, used for writing debug information.
-
-    Returns
-    -------
-    tuple[list[LearningComponent], list[Relationship], dict[str, Any]]
-        A tuple containing the list of LearningComponent entities created, the list of
-        supports Relationships emitted, and a dictionary of statistics about the LC
-        creation process (e.g., split distribution, fallback counts) for analysis and
-        debugging.
-    """
-
-    expectation_sfis = _iter_expectation_sfis(academic_standards.items)
-    fw_metadata = ctx.get_framework_metadata()
-
-    expectation_sfis_sorted = sorted(
-        expectation_sfis, key=lambda x: str(x.case_identifier_uuid)
-    )
-
-    # Pre-filter: remove SFIs whose text is entirely empty so they never reach the LLM.
-    # These would produce 0 LCs anyway (same outcome as the _create_lcs_for_expectation
-    # empty-text guard), but sending them to the LLM wastes tokens and risks the model
-    # hallucinating content for a blank input.
-    batchable_sfis: list[StandardsFrameworkItem] = []
-    empty_text_sfis: list[StandardsFrameworkItem] = []
-
-    for sfi in expectation_sfis_sorted:
-        if _has_usable_text(sfi):
-            batchable_sfis.append(sfi)
-        else:
-            empty_text_sfis.append(sfi)
-
-    if empty_text_sfis:
-        logger.warning(
-            f"LLM atomic skills: skipping {len(empty_text_sfis)} expectation SFI(s) "
-            f"with empty text (no normalized_text or description). These SFIs will "
-            f"have no LearningComponents or `supports` edges. UUIDs: "
-            f"{[str(s.case_identifier_uuid) for s in empty_text_sfis[:20]]}"
-            + (
-                f" ... (+{len(empty_text_sfis) - 20} more)"
-                if len(empty_text_sfis) > 20
-                else ""
-            )
-        )
-
-    total_sfis = len(batchable_sfis)
-    batch_size = int(config.lc_atomic_skills_batch_size)
-    total_batches = math.ceil(total_sfis / batch_size) if total_sfis else 0
-    max_splits = int(config.lc_max_splits_per_standard)
-
-    lcs: list[LearningComponent] = []
-    rels: list[Relationship] = []
-    splits_per_sfi: defaultdict[int, int] = defaultdict(int)
-
-    # Account for empty-text SFIs in the split distribution (0 LCs each).
-    if empty_text_sfis:
-        splits_per_sfi[0] += len(empty_text_sfis)
-
-    debug_batches: list[dict[str, Any]] = []
-    fallback_sfis_total: list[str] = []
-
-    logger.info(
-        f"Starting LLM atomic skills export for {total_sfis} SFIs "
-        f"across {total_batches} batches (Batch size: {batch_size})."
-        + (
-            f" ({len(empty_text_sfis)} empty-text SFI(s) excluded.)"
-            if empty_text_sfis
-            else ""
-        )
-    )
-
-    for batch_index in range(0, total_sfis, batch_size):
-        current_batch_num = (batch_index // batch_size) + 1
-        batch = batchable_sfis[batch_index : batch_index + batch_size]
-
-        batch_lcs, batch_rels, batch_splits, batch_debug, batch_fallbacks = (
-            _process_atomic_skills_batch(
-                batch=batch,
-                batch_index=batch_index // batch_size,
-                config=config,
-                ctx=ctx,
-                current_batch_num=current_batch_num,
-                fw_metadata=fw_metadata,
-                max_splits=max_splits,
-                total_batches=total_batches,
-            )
-        )
-
-        lcs.extend(batch_lcs)
-        rels.extend(batch_rels)
-        for splits_count, occurrences in batch_splits.items():
-            splits_per_sfi[splits_count] += occurrences
-
-        debug_batches.append(batch_debug)
-        fallback_sfis_total.extend(batch_fallbacks)
-
-    save_fp = (
-        kg_dirs.learning_components / "learning_components_llm_atomic_skills_debug.json"
-    )
-    write_to_json(fp=save_fp, json_info=debug_batches)
-
-    logger.success(f"Saved LLM atomic skills debug info to: {save_fp}")
-
-    lc_stats = {
-        "split_policy": "llm_atomic_skills",
-        "total_expectations": len(batchable_sfis) + len(empty_text_sfis),
-        "total_expectations_batchable": len(batchable_sfis),
-        "total_expectations_empty_text": len(empty_text_sfis),
-        "total_lcs": len(lcs),
-        "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
-        "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
-        "llm_batches": len(debug_batches),
-        "fallback_sfis_count": len(set(fallback_sfis_total)),
-    }
-
-    return lcs, rels, lc_stats
-
-
 def _finalize_lc_export(
     *,
     config: CreateKGConfig,
@@ -817,6 +677,50 @@ def _finalize_lc_export(
     )
 
     return export
+
+
+def _format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
+    """Format a BCP-47 language tag as a human-friendly language name for prompts.
+
+    Parameters
+    ----------
+    include_tag
+        If True, include the original tag in parentheses, e.g. "English (en)".
+    tag
+        A BCP-47 language tag like "en", "fr", "sw", or "en-US". May be None.
+
+    Returns
+    -------
+    str
+        A human-readable language name (optionally with the tag).
+    """
+
+    raw = normalize_ws(str(tag or "")).strip()
+
+    if not raw:
+        return "English"
+
+    # Normalize tag formatting but preserve the original for display.
+    tag_norm = raw.replace("_", "-")
+    primary = tag_norm.split("-")[0].lower().strip()
+    name = LANG_PRIMARY_CODE_TO_NAME.get(primary)
+
+    if not name:
+        lang = (
+            pycountry.languages.get(alpha_2=primary)
+            or pycountry.languages.get(alpha_3=primary)
+            or pycountry.languages.get(bibliographic=primary)
+            or pycountry.languages.get(terminology=primary)
+        )
+
+        if lang and getattr(lang, "name", None):
+            name = str(lang.name)
+
+    # Final fallback: return the tag itself.
+    if not name:
+        return tag_norm
+
+    return f"{name} ({tag_norm})" if include_tag else name
 
 
 def _handle_atomic_skills_fallback(
@@ -1009,10 +913,9 @@ def _has_usable_text(sfi: StandardsFrameworkItem) -> bool:
         True if the SFI has at least one non-empty text source.
     """
 
-    md = sfi.metadata or {}
-    id_source = normalize_ws(str(md.get("normalized_text") or ""))
+    metadata = sfi.metadata or {}
+    id_source = normalize_ws(metadata.get("normalized_text") or "")
     display = normalize_ws(sfi.description or "")
-
     return bool(id_source or display)
 
 
@@ -1122,7 +1025,7 @@ def _process_atomic_skills_batch(
     allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
     prompt_items = _build_atomic_skills_prompt_items(config=config, sfis=batch)
     prompt = decompose_atomic_skills(
-        display_language=format_language_for_prompt(
+        display_language=_format_language_for_prompt(
             tag=str(fw_metadata["in_language"])
         ),
         items=prompt_items,
@@ -1130,7 +1033,6 @@ def _process_atomic_skills_batch(
         min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
         require_rationale=bool(config.lc_atomic_skills_require_rationale),
     )
-
     batch_debug: dict[str, Any] = {
         "batch_index": batch_index,
         "input_items": prompt_items,
@@ -1138,7 +1040,6 @@ def _process_atomic_skills_batch(
         "fallback_sfi_uuids": [],
         "error": None,
     }
-
     skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
     fallback_sfis_total: list[str] = []
 
@@ -1155,13 +1056,13 @@ def _process_atomic_skills_batch(
                 require_rationale=bool(config.lc_atomic_skills_require_rationale),
             ),
         )
-
         parsed_dict = parsed.model_dump(mode="json")
         batch_debug["response"] = parsed_dict
 
         for it in parsed_dict.get("items", []):
             sfi_uuid = str(it.get("sfi_uuid"))
             skills_by_sfi[sfi_uuid] = list(it.get("skills") or [])
+
     except Exception as e:  # pylint: disable=broad-except
         batch_debug["error"] = f"{e.__class__.__name__}: {e}"
         batch_debug["fallback_sfi_uuids"] = [str(s.case_identifier_uuid) for s in batch]
@@ -1193,7 +1094,6 @@ def _process_atomic_skills_batch(
         skills_by_sfi=skills_by_sfi,
     )
     fallback_sfis_total.extend(fallback_uuids)
-
     return lcs, rels, splits, batch_debug, fallback_sfis_total
 
 
@@ -1593,13 +1493,12 @@ def export_learning_components(
     """
 
     if config.lc_policy == "llm_atomic_skills":
-        lcs, rels, lc_stats = _export_lcs_via_llm_atomic_skills(
+        lcs, rels, lc_stats = export_learning_components_using_llm(
             academic_standards=academic_standards,
             config=config,
             ctx=ctx,
             kg_dirs=kg_dirs,
         )
-
         return _finalize_lc_export(
             config=config,
             ctx=ctx,
@@ -1670,48 +1569,143 @@ def export_learning_components(
     )
 
 
-def format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
-    """Format a BCP-47 language tag as a human-friendly language name for prompts.
+def export_learning_components_using_llm(
+    *,
+    academic_standards: AcademicStandardsExport,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    kg_dirs: KGDirs,
+) -> tuple[list[LearningComponent], list[Relationship], dict[str, Any]]:
+    """Export LearningComponents using LLM-based atomic skills decomposition.
 
     Parameters
     ----------
-    include_tag
-        If True, include the original tag in parentheses, e.g. "English (en)".
-    tag
-        A BCP-47 language tag like "en", "fr", "sw", or "en-US". May be None.
+    academic_standards
+        The exported academic standards artifacts, containing the
+        StandardsFrameworkItems that represent normative expectations. These SFIs will
+        be the targets of the supports relationships emitted by the LearningComponents
+        created in this function.
+    config
+        The KG export configuration, which includes settings for the LLM-based atomic
+        skills decomposition.
+    ctx
+        The ExportContext, which provides access to the document key and framework
+        metadata needed for ID generation and provenance.
+    kg_dirs
+        The KGDirs for output, used for writing debug information.
 
     Returns
     -------
-    str
-        A human-readable language name (optionally with the tag).
+    tuple[list[LearningComponent], list[Relationship], dict[str, Any]]
+        A tuple containing the list of LearningComponent entities created, the list of
+        supports Relationships emitted, and a dictionary of statistics about the LC
+        creation process (e.g., split distribution, fallback counts) for analysis and
+        debugging.
     """
 
-    raw = normalize_ws(str(tag or "")).strip()
+    expectation_sfis = _iter_expectation_sfis(academic_standards.items)
+    fw_metadata = ctx.get_framework_metadata()
 
-    if not raw:
-        return "English"
+    # Deterministic order: sort by SFI UUID string.
+    expectation_sfis_sorted = sorted(
+        expectation_sfis, key=lambda x: str(x.case_identifier_uuid)
+    )
 
-    # Normalize tag formatting but preserve the original for display.
-    tag_norm = raw.replace("_", "-")
-    primary = tag_norm.split("-")[0].lower().strip()
-    name = LANG_PRIMARY_CODE_TO_NAME.get(primary)
+    # Pre-filter: remove SFIs whose text is entirely empty so they never reach the LLM.
+    # These would produce 0 LCs anyway (same outcome as the
+    # `_create_lcs_for_expectation()` empty-text guard), but sending them to the LLM
+    # wastes tokens and risks the model hallucinating content for a blank input.
+    batchable_sfis: list[StandardsFrameworkItem] = []
+    empty_text_sfis: list[StandardsFrameworkItem] = []
 
-    if not name:
-        lang = (
-            pycountry.languages.get(alpha_2=primary)
-            or pycountry.languages.get(alpha_3=primary)
-            or pycountry.languages.get(bibliographic=primary)
-            or pycountry.languages.get(terminology=primary)
+    for sfi in expectation_sfis_sorted:
+        if _has_usable_text(sfi):
+            batchable_sfis.append(sfi)
+        else:
+            empty_text_sfis.append(sfi)
+
+    if empty_text_sfis:
+        logger.warning(
+            f"LLM atomic skills: skipping {len(empty_text_sfis)} expectation SFI(s) "
+            f"with empty text (no `normalized_text` or `description`). These SFIs will "
+            f"have no LearningComponents or `supports` edges. UUIDs: "
+            f"{[str(s.case_identifier_uuid) for s in empty_text_sfis[:20]]}"
+            + (
+                f" ... (+{len(empty_text_sfis) - 20} more)"
+                if len(empty_text_sfis) > 20
+                else ""
+            )
         )
 
-        if lang and getattr(lang, "name", None):
-            name = str(lang.name)
+    total_sfis = len(batchable_sfis)
+    batch_size = int(config.lc_atomic_skills_batch_size)
+    total_batches = math.ceil(total_sfis / batch_size) if total_sfis else 0
+    max_splits = int(config.lc_max_splits_per_standard)
 
-    # Final fallback: return the tag itself.
-    if not name:
-        return tag_norm
+    lcs: list[LearningComponent] = []
+    rels: list[Relationship] = []
+    splits_per_sfi: defaultdict[int, int] = defaultdict(int)
 
-    return f"{name} ({tag_norm})" if include_tag else name
+    # Account for empty-text SFIs in the split distribution (0 LCs each).
+    if empty_text_sfis:
+        splits_per_sfi[0] += len(empty_text_sfis)
+
+    logger.info(
+        f"Starting LLM atomic skills export for {total_sfis} SFIs "
+        f"across {total_batches} batches (batch size: {batch_size})."
+        + (
+            f" ({len(empty_text_sfis)} empty text SFI(s) excluded.)"
+            if empty_text_sfis
+            else ""
+        )
+    )
+
+    debug_batches: list[dict[str, Any]] = []
+    fallback_sfis_total: list[str] = []
+
+    for batch_index in range(0, total_sfis, batch_size):
+        current_batch_num = (batch_index // batch_size) + 1
+        batch = batchable_sfis[batch_index : batch_index + batch_size]
+        batch_lcs, batch_rels, batch_splits, batch_debug, batch_fallbacks = (
+            _process_atomic_skills_batch(
+                batch=batch,
+                batch_index=batch_index // batch_size,
+                config=config,
+                ctx=ctx,
+                current_batch_num=current_batch_num,
+                fw_metadata=fw_metadata,
+                max_splits=max_splits,
+                total_batches=total_batches,
+            )
+        )
+        lcs.extend(batch_lcs)
+        rels.extend(batch_rels)
+
+        for splits_count, occurrences in batch_splits.items():
+            splits_per_sfi[splits_count] += occurrences
+
+        debug_batches.append(batch_debug)
+        fallback_sfis_total.extend(batch_fallbacks)
+
+    save_fp = (
+        kg_dirs.learning_components / "learning_components_llm_atomic_skills_debug.json"
+    )
+    write_to_json(fp=save_fp, json_info=debug_batches)
+
+    logger.success(f"Saved LLM atomic skills debug info to: {save_fp}")
+
+    lc_stats = {
+        "fallback_sfis_count": len(set(fallback_sfis_total)),
+        "llm_batches": len(debug_batches),
+        "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
+        "split_policy": "llm_atomic_skills",
+        "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
+        "total_expectations": len(batchable_sfis) + len(empty_text_sfis),
+        "total_expectations_batchable": len(batchable_sfis),
+        "total_expectations_empty_text": len(empty_text_sfis),
+        "total_lcs": len(lcs),
+    }
+    return lcs, rels, lc_stats
 
 
 def load_learning_components_export(kg_dirs: KGDirs) -> LearningComponentsExport:
