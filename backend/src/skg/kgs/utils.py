@@ -931,7 +931,7 @@ def normalize_key_token(*, label: str, separator: str) -> str:
 
 
 def normalize_ws(s: str) -> str:
-    """Normalize whitespace in a string by collapsing multiple spaces and trim.
+    """Normalize textual whitespace and remove invisible separator artifacts.
 
     Parameters
     ----------
@@ -941,10 +941,22 @@ def normalize_ws(s: str) -> str:
     Returns
     -------
     str
-        The normalized string.
+        The normalized string with soft hyphens and zero-width characters removed,
+        repeated whitespace collapsed, and leading/trailing whitespace stripped.
     """
 
-    return re.sub(r"\s+", " ", (s or "")).strip()
+    text = str(s or "")
+
+    # Use explicit unicode escapes.
+    #   - \u00AD: Soft hyphen
+    #   - \u200B: Zero-width space
+    #   - \u200C: Zero-width non-joiner
+    #   - \u200D: Zero-width joiner
+    #   - \uFEFF: Byte Order Mark / Zero-width no-break space
+    text = re.sub(r"[\u00AD\u200B\u200C\u200D\uFEFF]+", "", text)
+
+    # Collapse remaining whitespace and strip edges.
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def persist_kg_run(

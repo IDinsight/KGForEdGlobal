@@ -201,21 +201,22 @@ def _build_learning_components_graph_bundle(
     }
 
 
-def _build_provenance_from_sfi(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Extract the standard provenance dict from SFI metadata.
+def _build_provenance_from_sfi(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract standard provenance fields from SFI metadata.
 
     Parameters
     ----------
     metadata
-        The SFI metadata dictionary (`sfi.metadata or {}`).
+        The SFI metadata dictionary (`sfi.metadata or {}`), or None.
 
     Returns
     -------
     dict[str, Any]
-        A provenance dictionary with page_indices, bbox, bbox_ref, source_decision_ids,
-        and source_segment_ids.
+        A provenance dictionary containing bbox, bbox_ref, page_indices,
+        source_decision_ids, and source_segment_ids.
     """
 
+    metadata = metadata or {}
     return {
         "bbox": metadata.get("bbox"),
         "bbox_ref": metadata.get("bbox_ref"),
@@ -237,7 +238,6 @@ def _build_single_lc(
     provenance: dict[str, Any],
     sfi: StandardsFrameworkItem,
     split_display_text: str,
-    split_hash: str,
     split_id_text: str,
     split_index: int,
     truncated: bool,
@@ -246,7 +246,7 @@ def _build_single_lc(
 
     This is the single source of truth for LC entity construction. All policy paths
     (`1_to_1`, `split_bullets`, `llm_atomic_skills`) delegate here so that the metadata
-    contract and UUID seed format are maintained in one place.
+    contract, text normalization, and UUID seed format are maintained in one place.
 
     Parameters
     ----------
@@ -271,8 +271,6 @@ def _build_single_lc(
         The parent StandardsFrameworkItem.
     split_display_text
         The display-oriented text stored in metadata for traceability.
-    split_hash
-        Stable text hash of the canonical ID text for this split.
     split_id_text
         The canonical text used for ID generation.
     split_index
@@ -286,6 +284,12 @@ def _build_single_lc(
         A fully constructed LearningComponent entity.
     """
 
+    description = normalize_ws(description)
+    id_source_kind = normalize_ws(id_source_kind)
+    policy = normalize_ws(policy)
+    split_display_text = normalize_ws(split_display_text)
+    split_id_text = normalize_ws(split_id_text)
+    split_hash = stable_text_hash(s=split_id_text)
     metadata: dict[str, Any] = {
         "canonical_node_id": (sfi.metadata or {}).get("canonical_node_id"),
         "id_source_kind": id_source_kind,
@@ -308,7 +312,7 @@ def _build_single_lc(
         ),
         attribution_statement=str(fw_metadata["attribution_statement"]),
         author=str(fw_metadata["author"]),
-        description=description,
+        description=description or split_display_text or split_id_text,
         identifier=uuid5(
             config.namespace_uuid,
             f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{split_index}:{split_hash}",
@@ -352,55 +356,21 @@ def _create_lcs_for_expectation(
     Returns
     -------
     list[LearningComponent]
-        A list of LearningComponent entities created for the given expectation SFI,
-        according to the specified policy. Each LC will have a deterministic UUID based
-        on the doc_key, SFI UUID, split index, and split hash to ensure stable IDs
-        across runs.
+        LearningComponents created for the given expectation SFI according to the
+        requested split policy.
     """
 
-    policy = policy_override or config.lc_policy
-
-    # Display text (human-facing): use SFI.description as exported by academic
-    # standards.
-    display_text = normalize_ws(sfi.description or "")
-
-    # Canonical ID text: always prefer stable `normalized_text` from SFI.metadata so
-    # IDs don't change when description display policy/translations change.
-    metadata = sfi.metadata or {}
-
-    id_source_text = normalize_ws(metadata.get("normalized_text") or "")
-    id_source_kind = "metadata.normalized_text"
-
-    if not id_source_text:
-        # Fallback only if canonical normalized_text is missing.
-        id_source_text = display_text
-        id_source_kind = "sfi.description_fallback"
-
-    if id_source_kind_override:
-        id_source_kind = id_source_kind_override
-
-    # Build ID parts (used for hashing + UUIDv5 name strings).
-    id_parts: list[str]
-
-    if policy == "split_bullets":
-        id_parts = _split_bullets_deterministic(id_source_text)
-        id_parts = id_parts or [id_source_text]
-    else:
-        id_parts = [id_source_text]
-
-    # Enforce max splits deterministically (keep earliest parts).
+    policy = normalize_ws(policy_override or config.lc_policy)
     max_splits = int(config.lc_max_splits_per_standard)
-    truncated = False
+    display_text, id_source_text, id_source_kind, metadata = _resolve_lc_text_sources(
+        id_source_kind_override=id_source_kind_override, sfi=sfi
+    )
+    id_parts, truncated = _split_lc_parts(
+        max_splits=max_splits, policy=policy, text=id_source_text
+    )
 
-    if len(id_parts) > max_splits:
-        id_parts = id_parts[:max_splits]
-        truncated = True
-
-    # Drop empty ID parts.
-    id_parts = [p for p in id_parts if p]
-
-    if not id_parts:
-        id_parts = [display_text] if display_text else []
+    if not id_parts and display_text:
+        id_parts = [display_text]
 
     if not id_parts:
         logger.warning(
@@ -409,32 +379,20 @@ def _create_lcs_for_expectation(
             f"are empty (canonical_node_id={metadata.get('canonical_node_id')}). "
             f"This SFI will have no `supports` edge."
         )
+
         return []
 
-    # Build display parts (used for LC.description). Try to split display_text the same
-    # way as ID text so each LC gets a meaningful description.
     display_source_text = display_text or id_source_text
-    display_parts: list[str]
-
-    if policy == "split_bullets":
-        display_parts = _split_bullets_deterministic(display_source_text)
-        display_parts = display_parts or [display_source_text]
-    else:
-        display_parts = [display_source_text]
-
-    if len(display_parts) > max_splits:
-        display_parts = display_parts[:max_splits]
-
-    display_parts = [p for p in display_parts if p]
-
-    # If the split counts don't match, fall back to using ID parts for descriptions
-    # (keeps determinism + avoids mismatched pairing).
-    paired_parts = (
-        list(zip(id_parts, display_parts))
-        if len(display_parts) == len(id_parts)
-        else [(p, p) for p in id_parts]
+    display_parts, _ = _split_lc_parts(
+        max_splits=max_splits, policy=policy, text=display_source_text
     )
 
+    if not display_parts and display_source_text:
+        display_parts = [display_source_text]
+
+    paired_parts = _pair_id_and_display_parts(
+        display_parts=display_parts, id_parts=id_parts
+    )
     provenance = _build_provenance_from_sfi(metadata)
     lcs: list[LearningComponent] = []
 
@@ -450,7 +408,6 @@ def _create_lcs_for_expectation(
                 provenance=provenance,
                 sfi=sfi,
                 split_display_text=display_part,
-                split_hash=stable_text_hash(s=id_part),
                 split_id_text=id_part,
                 split_index=i,
                 truncated=truncated,
@@ -558,8 +515,6 @@ def _create_lcs_from_atomic_skills(
     lcs: list[LearningComponent] = []
 
     for i, (desc, rat) in enumerate(final):
-        split_hash = stable_text_hash(s=desc)
-
         lcs.append(
             _build_single_lc(
                 config=config,
@@ -575,7 +530,6 @@ def _create_lcs_from_atomic_skills(
                 provenance=provenance,
                 sfi=sfi,
                 split_display_text=desc,
-                split_hash=split_hash,
                 split_id_text=desc,
                 split_index=i,
                 truncated=truncated,
@@ -1090,6 +1044,31 @@ def _iter_expectation_sfis(
     return expectation_sfis
 
 
+def _pair_id_and_display_parts(
+    *, display_parts: list[str], id_parts: list[str]
+) -> list[tuple[str, str]]:
+    """Pair ID parts with display parts deterministically.
+
+    Parameters
+    ----------
+    display_parts
+        Candidate description parts for emitted LearningComponents.
+    id_parts
+        Canonical ID parts used for hashing and UUID generation.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        Ordered `(id_part, display_part)` pairs. If the split counts do not match,
+        the ID parts are reused as display parts to preserve deterministic pairing.
+    """
+
+    if len(display_parts) == len(id_parts):
+        return list(zip(id_parts, display_parts))
+
+    return [(part, part) for part in id_parts]
+
+
 def _process_atomic_skills_batch(
     *,
     batch: list[StandardsFrameworkItem],
@@ -1217,6 +1196,44 @@ def _process_atomic_skills_batch(
     return lcs, rels, splits, batch_debug, fallback_sfis_total
 
 
+def _resolve_lc_text_sources(
+    *, id_source_kind_override: str | None = None, sfi: StandardsFrameworkItem
+) -> tuple[str, str, str, dict[str, Any]]:
+    """Resolve the text channels used for LC display and deterministic IDs.
+
+    Parameters
+    ----------
+    id_source_kind_override
+        Optional override label for the ID-source provenance field.
+    sfi
+        The supporting StandardsFrameworkItem.
+
+    Returns
+    -------
+    tuple[str, str, str, dict[str, Any]]
+        A tuple of `(display_text, id_source_text, id_source_kind, metadata)` where:
+            - `display_text` comes from the exported SFI description.
+            - `id_source_text` prefers `metadata.normalized_text` and falls back to the
+                display text only when needed.
+            - `id_source_kind` records which source supplied the ID text.
+            - `metadata` is the SFI metadata dictionary used by downstream helpers.
+    """
+
+    metadata = sfi.metadata or {}
+    display_text = normalize_ws(sfi.description or "")
+    id_source_text = normalize_ws(str(metadata.get("normalized_text") or ""))
+    id_source_kind = "metadata.normalized_text"
+
+    if not id_source_text:
+        id_source_text = display_text
+        id_source_kind = "sfi.description_fallback"
+
+    if id_source_kind_override:
+        id_source_kind = normalize_ws(id_source_kind_override)
+
+    return display_text, id_source_text, id_source_kind, metadata
+
+
 def _split_bullets_deterministic(text: str) -> list[str]:
     """Deterministically split text into bullet/numbered parts.
 
@@ -1251,6 +1268,7 @@ def _split_bullets_deterministic(text: str) -> list[str]:
     if not src:
         return []
 
+    src = re.sub(r"[\u00ad\u200b\u200c\u200d\ufeff]+", "", src)
     src = src.replace("\r\n", "\n").replace("\r", "\n")
 
     # Detect markers before we mutate heavily. NB: (?:^|\s+) so a leading bullet
@@ -1304,6 +1322,47 @@ def _split_bullets_deterministic(text: str) -> list[str]:
             seen.add(p)
 
     return deduped
+
+
+def _split_lc_parts(
+    *, max_splits: int, policy: str, text: str
+) -> tuple[list[str], bool]:
+    """Split LC source text according to the configured policy.
+
+    Parameters
+    ----------
+    max_splits
+        Maximum number of parts allowed for a single standard.
+    policy
+        LC split policy label (`1_to_1`, `split_bullets`, or equivalent override).
+    text
+        The normalized text source to split.
+
+    Returns
+    -------
+    tuple[list[str], bool]
+        A tuple of `(parts, truncated)` where `parts` is the ordered split list and
+        `truncated` indicates whether additional parts were dropped after applying the
+        maximum-splits cap.
+    """
+
+    normalized_text = normalize_ws(text)
+
+    if not normalized_text:
+        return [], False
+
+    if policy == "split_bullets":
+        parts = _split_bullets_deterministic(normalized_text) or [normalized_text]
+    else:
+        parts = [normalized_text]
+
+    cleaned_parts = [normalize_ws(part) for part in parts if normalize_ws(part)]
+    truncated = len(cleaned_parts) > max_splits
+
+    if truncated:
+        cleaned_parts = cleaned_parts[:max_splits]
+
+    return cleaned_parts, truncated
 
 
 def _trim_text(*, max_chars: int, s: str) -> str:
