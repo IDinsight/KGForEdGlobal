@@ -11,7 +11,7 @@ This module implements a shape-preserving Learning Commons Learning Components e
 import math
 import re
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
@@ -743,6 +743,7 @@ def _finalize_lc_export(
     lc_stats: dict[str, Any],
     lcs: list[LearningComponent],
     rels: list[Relationship],
+    valid_sfi_case_uuids: set[str],
 ) -> LearningComponentsExport:
     """Verify, persist, and wrap LC export artifacts.
 
@@ -760,6 +761,9 @@ def _finalize_lc_export(
         The LearningComponent entities to persist.
     rels
         The supports Relationship entities to persist.
+    valid_sfi_case_uuids
+        The set of valid StandardsFrameworkItem CASE UUIDs that supports edges may
+        target.
 
     Returns
     -------
@@ -772,32 +776,27 @@ def _finalize_lc_export(
         If integrity checks fail.
     """
 
-    if any(r.relationship_type != "supports" for r in rels):
-        raise ValueError(
-            "Non-supports relationship found in Learning Components export."
-        )
-
-    if len(rels) != len(lcs):
-        raise ValueError(
-            f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
-        )
+    _validate_lc_export_integrity(
+        lcs=lcs, rels=rels, valid_sfi_case_uuids=valid_sfi_case_uuids
+    )
+    sorted_lcs, sorted_rels = _sort_lc_export_artifacts(lcs=lcs, rels=rels)
 
     write_to_json(
         fp=kg_dirs.learning_components / "learning_components.json",
-        json_info=[lc.model_dump(mode="json") for lc in lcs],
+        json_info=[lc.model_dump(mode="json") for lc in sorted_lcs],
     )
     write_to_json(
         fp=kg_dirs.learning_components
         / "learning_components_supports_relationships.json",
-        json_info=[r.model_dump(mode="json") for r in rels],
+        json_info=[r.model_dump(mode="json") for r in sorted_rels],
     )
     write_to_json(
         fp=kg_dirs.learning_components / "learning_components_kg.json",
         json_info=_build_learning_components_graph_bundle(
             doc_key=ctx.doc_key,
             export_dialect=config.as_export_dialect,
-            learning_components=lcs,
-            supports_relationships=rels,
+            learning_components=sorted_lcs,
+            supports_relationships=sorted_rels,
         ),
     )
     write_to_json(
@@ -806,7 +805,9 @@ def _finalize_lc_export(
     )
 
     export = LearningComponentsExport(
-        lc_stats=lc_stats, learning_components=lcs, supports_relationships=rels
+        lc_stats=lc_stats,
+        learning_components=sorted_lcs,
+        supports_relationships=sorted_rels,
     )
 
     logger.success(
@@ -1234,6 +1235,38 @@ def _resolve_lc_text_sources(
     return display_text, id_source_text, id_source_kind, metadata
 
 
+def _sort_lc_export_artifacts(
+    *, lcs: list[LearningComponent], rels: list[Relationship]
+) -> tuple[list[LearningComponent], list[Relationship]]:
+    """Sort LearningComponents export artifacts deterministically.
+
+    Parameters
+    ----------
+    lcs
+        The LearningComponent entities to sort.
+    rels
+        The supports Relationship entities to sort.
+
+    Returns
+    -------
+    tuple[list[LearningComponent], list[Relationship]]
+        A tuple of `(sorted_lcs, sorted_rels)` with deterministic ordering applied.
+        LearningComponents are sorted by `identifier`. Relationships are sorted by
+        `(source_entity_value, target_entity_value, identifier)`.
+    """
+
+    sorted_lcs = sorted(lcs, key=lambda lc: str(lc.identifier))
+    sorted_rels = sorted(
+        rels,
+        key=lambda rel: (
+            str(rel.source_entity_value),
+            str(rel.target_entity_value),
+            str(rel.identifier),
+        ),
+    )
+    return sorted_lcs, sorted_rels
+
+
 def _split_bullets_deterministic(text: str) -> list[str]:
     """Deterministically split text into bullet/numbered parts.
 
@@ -1400,6 +1433,132 @@ def _trim_text(*, max_chars: int, s: str) -> str:
     return s2[: max_chars - 3].rstrip() + "..."
 
 
+def _validate_lc_export_integrity(
+    *,
+    lcs: list[LearningComponent],
+    rels: list[Relationship],
+    valid_sfi_case_uuids: set[str],
+) -> None:
+    """Validate Learning Components export integrity before persistence.
+
+    Parameters
+    ----------
+    lcs
+        The LearningComponent entities prepared for export.
+    rels
+        The supports Relationship entities prepared for export.
+    valid_sfi_case_uuids
+        The set of valid StandardsFrameworkItem CASE UUIDs that supports edges may
+        target.
+
+    Raises
+    ------
+    ValueError
+        If relationship types are invalid, counts do not match, identifiers are
+        duplicated, supports sources do not map one-to-one with LearningComponents, or
+        supports targets reference unknown StandardsFrameworkItems.
+    """
+
+    if any(rel.relationship_type != "supports" for rel in rels):
+        raise ValueError(
+            "Non-supports relationship found in Learning Components export."
+        )
+
+    if len(rels) != len(lcs):
+        raise ValueError(
+            f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
+        )
+
+    lc_ids = [str(lc.identifier) for lc in lcs]
+    rel_ids = [str(rel.identifier) for rel in rels]
+    rel_source_ids = [str(rel.source_entity_value) for rel in rels]
+    rel_target_ids = [str(rel.target_entity_value) for rel in rels]
+    lc_id_counts = Counter(lc_ids)
+    rel_id_counts = Counter(rel_ids)
+    rel_source_counts = Counter(rel_source_ids)
+    duplicate_lc_ids = sorted(item for item, count in lc_id_counts.items() if count > 1)
+
+    if duplicate_lc_ids:
+        raise ValueError(
+            f"Duplicate LearningComponent identifier(s) found in export: "
+            f"{duplicate_lc_ids[:10]}"
+            + (
+                f" ... (+{len(duplicate_lc_ids) - 10} more)"
+                if len(duplicate_lc_ids) > 10
+                else ""
+            )
+        )
+
+    duplicate_rel_ids = sorted(
+        item for item, count in rel_id_counts.items() if count > 1
+    )
+
+    if duplicate_rel_ids:
+        raise ValueError(
+            f"Duplicate supports relationship identifier(s) found in export: "
+            f"{duplicate_rel_ids[:10]}"
+            + (
+                f" ... (+{len(duplicate_rel_ids) - 10} more)"
+                if len(duplicate_rel_ids) > 10
+                else ""
+            )
+        )
+
+    unknown_lc_sources = sorted(set(rel_source_ids) - set(lc_ids))
+
+    if unknown_lc_sources:
+        raise ValueError(
+            f"supports relationship source_entity_value references unknown "
+            f"LearningComponent identifier(s): {unknown_lc_sources[:10]}"
+            + (
+                f" ... (+{len(unknown_lc_sources) - 10} more)"
+                if len(unknown_lc_sources) > 10
+                else ""
+            )
+        )
+
+    unknown_sfi_targets = sorted(set(rel_target_ids) - set(valid_sfi_case_uuids))
+
+    if unknown_sfi_targets:
+        raise ValueError(
+            f"supports relationship target_entity_value references unknown "
+            f"StandardsFrameworkItem CASE UUID(s): {unknown_sfi_targets[:10]}"
+            + (
+                f" ... (+{len(unknown_sfi_targets) - 10} more)"
+                if len(unknown_sfi_targets) > 10
+                else ""
+            )
+        )
+
+    missing_sources = sorted(set(lc_ids) - set(rel_source_ids))
+
+    if missing_sources:
+        raise ValueError(
+            f"LearningComponent identifier(s) missing a supports relationship: "
+            f"{missing_sources[:10]}"
+            + (
+                f" ... (+{len(missing_sources) - 10} more)"
+                if len(missing_sources) > 10
+                else ""
+            )
+        )
+
+    duplicated_sources = sorted(
+        item for item, count in rel_source_counts.items() if count > 1
+    )
+
+    if duplicated_sources:
+        raise ValueError(
+            f"LearningComponent identifier(s) have multiple supports relationships: "
+            f"{duplicated_sources[:10]}"
+            + (
+                f" ... (+{len(duplicated_sources) - 10} more)"
+                if len(duplicated_sources) > 10
+                else ""
+            )
+        )
+
+
 def export_learning_components(
     *,
     academic_standards: AcademicStandardsExport,
@@ -1448,6 +1607,9 @@ def export_learning_components(
             lc_stats=lc_stats,
             lcs=lcs,
             rels=rels,
+            valid_sfi_case_uuids={
+                str(sfi.case_identifier_uuid) for sfi in academic_standards.items
+            },
         )
 
     expectation_sfis = _iter_expectation_sfis(academic_standards.items)
@@ -1502,6 +1664,9 @@ def export_learning_components(
         lc_stats=lc_stats,
         lcs=lcs,
         rels=rels,
+        valid_sfi_case_uuids={
+            str(sfi.case_identifier_uuid) for sfi in academic_standards.items
+        },
     )
 
 
