@@ -45,7 +45,7 @@ _LINE_BULLET_CHARS = r"[\u2022\u00b7•·\-\–\—\*]"
 class LearningComponentsExport:
     """The output of exporting Learning Components KG artifacts."""
 
-    lc_stats: dict[str, Any]  # split_policy, splits_distribution, max_splits_observed
+    lc_stats: dict[str, Any]
     learning_components: list[LearningComponent]
     supports_relationships: list[Relationship]
 
@@ -201,12 +201,12 @@ def _build_learning_components_graph_bundle(
     }
 
 
-def _build_provenance_from_sfi(md: dict[str, Any]) -> dict[str, Any]:
+def _build_provenance_from_sfi(metadata: dict[str, Any]) -> dict[str, Any]:
     """Extract the standard provenance dict from SFI metadata.
 
     Parameters
     ----------
-    md
+    metadata
         The SFI metadata dictionary (`sfi.metadata or {}`).
 
     Returns
@@ -217,11 +217,11 @@ def _build_provenance_from_sfi(md: dict[str, Any]) -> dict[str, Any]:
     """
 
     return {
-        "page_indices": md.get("page_indices", []),
-        "bbox": md.get("bbox"),
-        "bbox_ref": md.get("bbox_ref"),
-        "source_decision_ids": md.get("source_decision_ids", []),
-        "source_segment_ids": md.get("source_segment_ids", []),
+        "bbox": metadata.get("bbox"),
+        "bbox_ref": metadata.get("bbox_ref"),
+        "page_indices": metadata.get("page_indices", []),
+        "source_decision_ids": metadata.get("source_decision_ids", []),
+        "source_segment_ids": metadata.get("source_segment_ids", []),
     }
 
 
@@ -246,7 +246,7 @@ def _build_single_lc(
 
     This is the single source of truth for LC entity construction. All policy paths
     (`1_to_1`, `split_bullets`, `llm_atomic_skills`) delegate here so that the metadata
-    contract and UUID-seed format are maintained in one place.
+    contract and UUID seed format are maintained in one place.
 
     Parameters
     ----------
@@ -266,7 +266,7 @@ def _build_single_lc(
     policy
         The split policy label embedded in the UUID seed and metadata.
     provenance
-        Provenance dict.
+        The provenance dictionary extracted from the SFI metadata.
     sfi
         The parent StandardsFrameworkItem.
     split_display_text
@@ -286,23 +286,21 @@ def _build_single_lc(
         A fully constructed LearningComponent entity.
     """
 
-    ns: UUID = config.namespace_uuid
-
-    md: dict[str, Any] = {
-        "id_source_kind": id_source_kind,
-        "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
+    metadata: dict[str, Any] = {
         "canonical_node_id": (sfi.metadata or {}).get("canonical_node_id"),
-        "split_policy": policy,
-        "split_id_text": split_id_text,
-        "split_display_text": split_display_text,
-        "split_index": split_index,
-        "split_hash": split_hash,
-        "split_truncated": truncated,
+        "id_source_kind": id_source_kind,
         "provenance": provenance,
+        "split_display_text": split_display_text,
+        "split_hash": split_hash,
+        "split_id_text": split_id_text,
+        "split_index": split_index,
+        "split_policy": policy,
+        "split_truncated": truncated,
+        "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
     }
 
     if extra_metadata:
-        md.update(extra_metadata)
+        metadata.update(extra_metadata)
 
     return LearningComponent(
         academic_subject=str(
@@ -312,12 +310,12 @@ def _build_single_lc(
         author=str(fw_metadata["author"]),
         description=description,
         identifier=uuid5(
-            ns,
+            config.namespace_uuid,
             f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{split_index}:{split_hash}",
         ),
         in_language=str(sfi.in_language or fw_metadata["in_language"]),
         license=str(fw_metadata["license"]),
-        metadata=md,
+        metadata=metadata,
         provider=str(fw_metadata["provider"]),
     )
 
@@ -366,12 +364,13 @@ def _create_lcs_for_expectation(
     # standards.
     display_text = normalize_ws(sfi.description or "")
 
-    # Canonical ID text: ALWAYS prefer stable normalized_text from SFI.metadata so IDs
-    # don't change when description display policy/translations change.
+    # Canonical ID text: always prefer stable `normalized_text` from SFI.metadata so
+    # IDs don't change when description display policy/translations change.
     metadata = sfi.metadata or {}
 
-    id_source_text = normalize_ws(str(metadata.get("normalized_text") or ""))
+    id_source_text = normalize_ws(metadata.get("normalized_text") or "")
     id_source_kind = "metadata.normalized_text"
+
     if not id_source_text:
         # Fallback only if canonical normalized_text is missing.
         id_source_text = display_text
@@ -384,7 +383,7 @@ def _create_lcs_for_expectation(
     id_parts: list[str]
 
     if policy == "split_bullets":
-        id_parts = _split_bullets_deterministic(text=id_source_text)
+        id_parts = _split_bullets_deterministic(id_source_text)
         id_parts = id_parts or [id_source_text]
     else:
         id_parts = [id_source_text]
@@ -418,7 +417,7 @@ def _create_lcs_for_expectation(
     display_parts: list[str]
 
     if policy == "split_bullets":
-        display_parts = _split_bullets_deterministic(text=display_source_text)
+        display_parts = _split_bullets_deterministic(display_source_text)
         display_parts = display_parts or [display_source_text]
     else:
         display_parts = [display_source_text]
@@ -440,7 +439,6 @@ def _create_lcs_for_expectation(
     lcs: list[LearningComponent] = []
 
     for i, (id_part, display_part) in enumerate(paired_parts):
-        split_hash = stable_text_hash(s=id_part)
         lcs.append(
             _build_single_lc(
                 config=config,
@@ -452,7 +450,7 @@ def _create_lcs_for_expectation(
                 provenance=provenance,
                 sfi=sfi,
                 split_display_text=display_part,
-                split_hash=split_hash,
+                split_hash=stable_text_hash(s=id_part),
                 split_id_text=id_part,
                 split_index=i,
                 truncated=truncated,
@@ -619,17 +617,14 @@ def _emit_supports(
         based on the doc_key, LC UUID, and SFI UUID to ensure stable IDs across runs.
     """
 
-    ns: UUID = config.namespace_uuid
-    edge_id = uuid5(
-        ns,
-        f"lc:curriculum:{doc_key}:rel:supports:{lc.identifier}:{sfi.case_identifier_uuid}",
-    )
-
     return Relationship(
         attribution_statement=str(fw_metadata["attribution_statement"]),
         author=str(fw_metadata["author"]),
         description="",
-        identifier=edge_id,
+        identifier=uuid5(
+            config.namespace_uuid,
+            f"lc:curriculum:{doc_key}:rel:supports:{lc.identifier}:{sfi.case_identifier_uuid}",
+        ),
         license=str(fw_metadata["license"]),
         metadata={
             "source_kg": "learning_components",
@@ -823,7 +818,15 @@ def _finalize_lc_export(
         If integrity checks fail.
     """
 
-    _verify_lc_export(lcs=lcs, rels=rels)
+    if any(r.relationship_type != "supports" for r in rels):
+        raise ValueError(
+            "Non-supports relationship found in Learning Components export."
+        )
+
+    if len(rels) != len(lcs):
+        raise ValueError(
+            f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
+        )
 
     write_to_json(
         fp=kg_dirs.learning_components / "learning_components.json",
@@ -852,9 +855,9 @@ def _finalize_lc_export(
         lc_stats=lc_stats, learning_components=lcs, supports_relationships=rels
     )
 
-    logger.info(
-        f"Exported Learning Components KG ({lc_stats.get('split_policy', '?')}): "
-        f"{len(export.learning_components)} components, "
+    logger.success(
+        f"Exported Learning Components KG ({lc_stats['split_policy']}): "
+        f"{len(export.learning_components)} learning components, "
         f"{len(export.supports_relationships)} `supports` relationships"
     )
 
@@ -1078,15 +1081,13 @@ def _iter_expectation_sfis(
         by Learning Components.
     """
 
-    output: list[StandardsFrameworkItem] = []
+    expectation_sfis = [
+        sfi for sfi in items if sfi.normalized_statement_type == "Standard"
+    ]
 
-    for sfi in items:
-        nst = sfi.normalized_statement_type
+    logger.info(f"Found {len(expectation_sfis)} expectation SFIs.")
 
-        if nst == "Standard":
-            output.append(sfi)
-
-    return output
+    return expectation_sfis
 
 
 def _process_atomic_skills_batch(
@@ -1216,7 +1217,7 @@ def _process_atomic_skills_batch(
     return lcs, rels, splits, batch_debug, fallback_sfis_total
 
 
-def _split_bullets_deterministic(*, text: str) -> list[str]:
+def _split_bullets_deterministic(text: str) -> list[str]:
     """Deterministically split text into bullet/numbered parts.
 
     The process is as follows:
@@ -1266,24 +1267,25 @@ def _split_bullets_deterministic(*, text: str) -> list[str]:
     # NB: (?:^|\s+) so a leading bullet is also converted to a newline split point.
     # A leading \n from ^-match is harmless; the split+strip below discards it.
     src = re.sub(rf"(?:^|\s+){_INLINE_BULLET_CHARS}\s+", "\n• ", src)
-    lines = [ln.strip() for ln in re.split(r"\n+", src) if ln.strip()]
+    lines = [line.strip() for line in re.split(r"\n+", src) if line.strip()]
 
     if not lines:
         return []
 
     parts: list[str] = []
 
-    for ln in lines:
-        ln2 = re.sub(rf"^{_LINE_BULLET_CHARS}\s*", "", ln).strip()
-        ln2 = re.sub(
-            r"^(?:\(?\d+\)?|[A-Za-z]|[ivxlcdmIVXLCDM]+)[\)\.]\s+", "", ln2
+    for line in lines:
+        line2 = re.sub(rf"^{_LINE_BULLET_CHARS}\s*", "", line).strip()
+        line2 = re.sub(
+            r"^(?:\(?\d+\)?|[A-Za-z]|[ivxlcdmIVXLCDM]+)[\)\.]\s+", "", line2
         ).strip()
-        ln2 = re.sub(
-            r"^(?:\(?\d+\)?|[A-Za-z]|[ivxlcdmIVXLCDM]+)\s*[-–—]\s+", "", ln2
+        line2 = re.sub(
+            r"^(?:\(?\d+\)?|[A-Za-z]|[ivxlcdmIVXLCDM]+)\s*[-–—]\s+", "", line2
         ).strip()
-        ln2 = normalize_ws(ln2)
-        if ln2:
-            parts.append(ln2)
+        line2 = normalize_ws(line2)
+
+        if line2:
+            parts.append(line2)
 
     # If there was an explicit marker and we got 1 clean part, keep it.
     if len(parts) == 1 and had_list_marker:
@@ -1293,13 +1295,13 @@ def _split_bullets_deterministic(*, text: str) -> list[str]:
         return []
 
     # De-dupe while preserving order.
-    seen: set[str] = set()
     deduped: list[str] = []
+    seen: set[str] = set()
 
     for p in parts:
         if p not in seen:
-            seen.add(p)
             deduped.append(p)
+            seen.add(p)
 
     return deduped
 
@@ -1337,36 +1339,6 @@ def _trim_text(*, max_chars: int, s: str) -> str:
         return s2[:max_chars]
 
     return s2[: max_chars - 3].rstrip() + "..."
-
-
-def _verify_lc_export(
-    *, lcs: list[LearningComponent], rels: list[Relationship]
-) -> None:
-    """Verify integrity invariants for a Learning Components export.
-
-    Parameters
-    ----------
-    lcs
-        The list of LearningComponent entities produced by the export.
-    rels
-        The list of supports Relationship entities produced by the export.
-
-    Raises
-    ------
-    ValueError
-        If any relationship is not of type 'supports', or if the number of
-        relationships does not match the number of LearningComponents (1:1).
-    """
-
-    if any(r.relationship_type != "supports" for r in rels):
-        raise ValueError(
-            "Non-supports relationship found in Learning Components export."
-        )
-
-    if len(rels) != len(lcs):
-        raise ValueError(
-            f"Expected 1 supports edge per LC, got {len(rels)} rels for {len(lcs)} LCs."
-        )
 
 
 def export_learning_components(
@@ -1420,26 +1392,23 @@ def export_learning_components(
         )
 
     expectation_sfis = _iter_expectation_sfis(academic_standards.items)
-
-    logger.info(f"Learning Components: found {len(expectation_sfis)} expectation SFIs")
-
     fw_metadata = ctx.get_framework_metadata()
     lcs = []
     rels = []
     splits_per_sfi: defaultdict[int, int] = defaultdict(int)
 
-    # Deterministic order for determinism: sort by SFI UUID string.
+    # Deterministic order: sort by SFI UUID string.
     expectation_sfis_sorted = sorted(
-        expectation_sfis, key=lambda x: str(x.case_identifier_uuid)
+        expectation_sfis, key=lambda x: x.case_identifier_uuid
     )
 
     for sfi in expectation_sfis_sorted:
-        created = _create_lcs_for_expectation(
+        created_lcs = _create_lcs_for_expectation(
             config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
         )
-        splits_per_sfi[len(created)] += 1
+        splits_per_sfi[len(created_lcs)] += 1
 
-        for lc in created:
+        for lc in created_lcs:
             lcs.append(lc)
             rels.append(
                 _emit_supports(
@@ -1461,13 +1430,12 @@ def export_learning_components(
         )
 
     lc_stats = {
-        "split_policy": str(config.lc_policy),
+        "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
+        "split_policy": config.lc_policy,
+        "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
         "total_expectations": len(expectation_sfis_sorted),
         "total_lcs": len(lcs),
-        "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
-        "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
     }
-
     return _finalize_lc_export(
         config=config,
         ctx=ctx,
