@@ -306,12 +306,15 @@ def _build_single_lc(
     if extra_metadata:
         metadata.update(extra_metadata)
 
+    date_created, date_modified = _resolve_derived_timestamps(sfi)
     return LearningComponent(
         academic_subject=str(
             sfi.academic_subject or fw_metadata["academic_subject_default"]
         ),
         attribution_statement=str(fw_metadata["attribution_statement"]),
         author=str(fw_metadata["author"]),
+        date_created=date_created,
+        date_modified=date_modified,
         description=description or split_display_text or split_id_text,
         identifier=uuid5(
             config.namespace_uuid,
@@ -571,9 +574,12 @@ def _emit_supports(
         based on the doc_key, LC UUID, and SFI UUID to ensure stable IDs across runs.
     """
 
+    date_created, date_modified = _resolve_derived_timestamps(sfi)
     return Relationship(
         attribution_statement=str(fw_metadata["attribution_statement"]),
         author=str(fw_metadata["author"]),
+        date_created=date_created,
+        date_modified=date_modified,
         description="",
         identifier=uuid5(
             config.namespace_uuid,
@@ -1095,6 +1101,34 @@ def _process_atomic_skills_batch(
     )
     fallback_sfis_total.extend(fallback_uuids)
     return lcs, rels, splits, batch_debug, fallback_sfis_total
+
+
+def _resolve_derived_timestamps(
+    sfi: StandardsFrameworkItem,
+) -> tuple[str | None, str | None]:
+    """Resolve stable timestamps for derived LC entities and relationships.
+
+    Derived LearningComponents and `supports` relationships inherit timestamps from the
+    supporting StandardsFrameworkItem so reruns remain stable and traceable to the
+    underlying academic-standards export.
+
+    Parameters
+    ----------
+    sfi
+        The supporting StandardsFrameworkItem.
+
+    Returns
+    -------
+    tuple[str | None, str | None]
+        `(date_created, date_modified)` for the derived object. If the source SFI does
+        not provide `date_modified`, we fall back to `date_created` so derived exports
+        populate both fields deterministically whenever a source creation timestamp is
+        available.
+    """
+
+    date_created = sfi.date_created
+    date_modified = sfi.date_modified or date_created
+    return date_created, date_modified
 
 
 def _resolve_lc_text_sources(
