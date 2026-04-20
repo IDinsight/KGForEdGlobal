@@ -87,7 +87,7 @@
 		"lc_atomic_skills_min_per_sfi": 1,
 		"lc_atomic_skills_require_rationale": true,
 		"lc_max_splits_per_standard": 5,
-		"lc_policy": "1_to_1",
+		"lc_policy": "llm_atomic_skills",
 		"lp_builds_towards_min_confidence": 0.75,
 		"lp_cross_grade_builds_towards": false,
 		"lp_cross_grade_match_roles": [
