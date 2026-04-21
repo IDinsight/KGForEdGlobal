@@ -117,10 +117,6 @@ def _build_atomic_skills_prompt_items(
             if isinstance(aux, list):
                 for a in aux[:10]:
                     assert isinstance(a, dict), f"{a = }"
-
-                    if not isinstance(a, dict):
-                        continue
-
                     aux_items.append(
                         {
                             "role": a["role"],
