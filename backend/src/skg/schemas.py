@@ -660,11 +660,11 @@ class CreateKGConfig(BaseSchema):
         default=True,
         description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering and after reattachment hoists children of dropped nodes to their nearest surviving ancestor, repeating to a fixpoint.",
     )
-    generate_progressions: bool = Field(
+    generate_learning_progressions: bool = Field(
         default=True,
         description=(
-            "Whether to run LLM-based progression inference (buildsTowards / relatesTo) "
-            "after exporting the standards hierarchy. Disable to skip progression "
+            "Whether to run LLM-based learning progression inference (buildsTowards / relatesTo) "
+            "after exporting the standards hierarchy. Disable to skip learning progression "
             "generation entirely (useful for quick re-exports or debugging)."
         ),
     )

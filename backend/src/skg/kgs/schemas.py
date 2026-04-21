@@ -1827,7 +1827,7 @@ class PolicyCoverageReport(BaseSchema):
     total_expectations: int = 0
     total_lcs: int = 0
 
-    # Progression stats (populated only when generate_progressions is True).
+    # LP stats (populated only when `generate_learning_progressions` is True).
     progression_candidate_edges: int = 0
     progression_dropped_cap_relates: int = 0
     progression_dropped_low_conf_builds: int = 0
