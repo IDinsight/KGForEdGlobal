@@ -33,6 +33,7 @@ from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import open_json_type, write_to_json
 
 AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
+HAS_CHILD = "hasChild"
 ROMAN_MAP = {
     "I": 1,
     "II": 2,
@@ -564,7 +565,7 @@ def _build_academic_standards_graph_bundle(
         end_id = r.target_entity_value  # Already `case_identifier_uuid` as string
         props = r.model_dump(mode="json")
         order_index = order_index_by_edge.get((start_id, end_id))
-        assert r.relationship_type == "hasChild", (
+        assert r.relationship_type == HAS_CHILD, (
             f"Unexpected relationship type '{r.relationship_type}' "
             f"in Academic Standards export bundle."
         )
@@ -1565,7 +1566,7 @@ def _emit_has_child(
         license=config.as_license,
         metadata=relationship_metadata,
         provider=config.as_provider,
-        relationship_type="hasChild",
+        relationship_type=HAS_CHILD,
         source_entity=source_entity,
         source_entity_key="case_identifier_uuid",
         source_entity_value=str(parent_uuid),
@@ -3912,7 +3913,7 @@ def _verify_standards_export(
     rel_children_by_parent: DefaultDict[str, set[str]] = defaultdict(set)
 
     for r in relationships:
-        if r.relationship_type == "hasChild":
+        if r.relationship_type == HAS_CHILD:
             rel_children_by_parent[r.source_entity_value].add(r.target_entity_value)
 
     for parent, kids in rel_children_by_parent.items():
@@ -3927,7 +3928,7 @@ def _verify_standards_export(
     adj: DefaultDict[str, list[str]] = defaultdict(list)
 
     for r in relationships:
-        if r.relationship_type == "hasChild":
+        if r.relationship_type == HAS_CHILD:
             adj[r.source_entity_value].append(r.target_entity_value)
 
     stack: list[str] = [fw_id]

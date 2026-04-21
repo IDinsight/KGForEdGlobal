@@ -34,6 +34,8 @@ from skg.schemas import CreateKGConfig
 from skg.utils.constants import LANG_PRIMARY_CODE_TO_NAME
 from skg.utils.general import open_json_type, write_to_json
 
+SUPPORTS = "supports"
+
 # Inline bullets: exclude hyphen/dash so we never split hyphenated words.
 _INLINE_BULLET_CHARS = r"[\u2022\u00b7•·\*]"
 
@@ -179,7 +181,7 @@ def _build_learning_components_graph_bundle(
 
     for r in supports_relationships:
         assert (
-            r.relationship_type == "supports"
+            r.relationship_type == SUPPORTS
         ), f"{r.relationship_type} is not 'supports'"
         relationships.append(
             {
@@ -591,7 +593,7 @@ def _emit_supports(
             "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
         },
         provider=str(fw_metadata["provider"]),
-        relationship_type="supports",
+        relationship_type=SUPPORTS,
         source_entity="LearningComponent",
         source_entity_key="identifier",
         source_entity_value=str(lc.identifier),
@@ -1393,7 +1395,7 @@ def _validate_lc_export_integrity(
         supports targets reference unknown StandardsFrameworkItems.
     """
 
-    if any(rel.relationship_type != "supports" for rel in rels):
+    if any(rel.relationship_type != SUPPORTS for rel in rels):
         raise ValueError(
             "Non-supports relationship found in Learning Components export."
         )
