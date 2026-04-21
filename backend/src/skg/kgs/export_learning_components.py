@@ -73,8 +73,8 @@ def _build_atomic_skills_prompt_items(
     list[dict[str, Any]]
         A list of dictionaries, each representing an SFI with the necessary fields for
         the atomic skills decomposition prompt. Each dictionary will contain the SFI
-        UUID, statement code, grade level, display text, and ID source text, as well as
-        optional topic context and auxiliary statements if configured to include them.
+        UUID, statement code, display text, and ID source text, as well as optional
+        topic context and auxiliary statements if configured to include them.
     """
 
     items: list[dict[str, Any]] = []
@@ -89,7 +89,6 @@ def _build_atomic_skills_prompt_items(
             "display_text": _trim_text(
                 max_chars=2000, s=display_text or id_source_text
             ),
-            "grade_level": list(sfi.grade_level or []),
             "id_source_text": _trim_text(max_chars=2000, s=id_source_text),
             "sfi_uuid": str(sfi.case_identifier_uuid),
             "statement_code": sfi.statement_code,

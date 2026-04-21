@@ -495,8 +495,9 @@ def decompose_atomic_skills(
         The language name in which the skill descriptions should be written (e.g.,
         "English" or "French").
     items
-        The list of StandardsFrameworkItems to decompose, each with 'sfi_uuid' and
-        'statement' fields.
+        The list of prompt payload objects to decompose. Each item includes `sfi_uuid1`,
+        `display_text`, `id_source_text`, and `statement_code`, and may also include
+        `topic_context` and `aux_statements` when those context hints are available.
     max_per_sfi
         The maximum number of skills to return per SFI to keep the graph manageable.
     min_per_sfi
@@ -525,9 +526,12 @@ OUTPUT FORMAT:
   {{ "items": [ {{ "sfi_uuid": <uuid>, "skills": [ {{ "description": "...", "rationale": "..." }} ] }} ] }}
 
 INPUT FIELDS (per SFI):
+- `sfi_uuid`: the StandardsFrameworkItem UUID you must echo back exactly for that item.
 - `display_text`: the human-readable expectation statement — base your decomposition on THIS field.
-- `id_source_text`: the stable canonical text used for ID generation (often identical to display_text; ignore unless display_text is missing).
-- `topic_context` / `aux_statements`: optional contextual hints — use them to inform decomposition but do NOT decompose them directly.
+- `id_source_text`: the stable canonical text used for ID generation (often identical to `display_text`; ignore unless `display_text` is missing).
+- `statement_code`: optional source-framework code for the item; use only as a traceability hint.
+- `topic_context`: optional structural context (for example stage/thread/topic path) — use it only to disambiguate the expectation.
+- `aux_statements`: optional guidance/descriptor text — use it only as supporting context and do NOT decompose it directly unless it clearly clarifies the expectation.
 
 HARD RULES:
 1. Use ONLY the provided `sfi_uuid` values. Do not invent UUIDs.

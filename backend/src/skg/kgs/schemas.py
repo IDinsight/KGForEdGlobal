@@ -740,14 +740,14 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             return []
 
         if not isinstance(v, list):
-            raise TypeError("gradeLevel must be a list of strings")
+            raise TypeError("grade_level must be a list of strings")
 
         cleaned: list[str] = []
         seen: set[str] = set()
 
         for item in v:
             if not isinstance(item, str):
-                raise TypeError("gradeLevel must contain only strings")
+                raise TypeError("grade_level must contain only strings")
 
             s = item.strip()
 
