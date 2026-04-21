@@ -701,6 +701,25 @@ class CreateKGConfig(BaseSchema):
         description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
         ge=1,
     )
+    lc_output_language_policy: Literal["english", "explicit_tag", "source"] = Field(
+        default="source",
+        description=(
+            "Controls both the output-language instruction sent to the LearningComponents "
+            "LLM prompt and the emitted `in_language` tag on derived LearningComponents. "
+            "'source' uses the source SFI/framework language metadata; if that resolves to "
+            "'mul', the prompt instructs the model to use the same language(s) as the input "
+            "text rather than the raw tag. 'english' forces English output and emits "
+            "`in_language='en'`. 'explicit_tag' forces a specific BCP-47 tag from "
+            "`lc_output_language_tag`."
+        ),
+    )
+    lc_output_language_tag: Optional[LanguageField] = Field(
+        default=None,
+        description=(
+            "Explicit BCP-47 language tag used when lc_output_language_policy='explicit_tag' "
+            "(for example 'fr', 'wo', or 'en'). Ignored otherwise."
+        ),
+    )
     lc_policy: Literal["1_to_1", "split_bullets", "llm_atomic_skills"] = Field(
         default="1_to_1",
         description=(
@@ -859,6 +878,33 @@ class CreateKGConfig(BaseSchema):
             raise ValueError(
                 f"lc_atomic_skills_min_per_sfi ({self.lc_atomic_skills_min_per_sfi}) "
                 f"must be <= lc_max_splits_per_standard ({self.lc_max_splits_per_standard})."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_lc_output_language_policy(self) -> Self:
+        """Validate LC output-language settings.
+
+        Returns
+        -------
+        Self
+            The validated CreateKGConfig object.
+
+        Raises
+        ------
+        ValueError
+            If lc_output_language_policy='explicit_tag' but lc_output_language_tag is
+            missing.
+        """
+
+        if (
+            self.lc_output_language_policy == "explicit_tag"
+            and not self.lc_output_language_tag
+        ):
+            raise ValueError(
+                "lc_output_language_policy='explicit_tag' requires "
+                "lc_output_language_tag to be provided."
             )
 
         return self

@@ -492,10 +492,11 @@ def decompose_atomic_skills(
     Parameters
     ----------
     display_language
-        The language name in which the skill descriptions should be written (e.g.,
-        "English" or "French").
+        Human-readable instruction describing what language the skill descriptions
+        should use (e.g., "English", "French", or "the same language(s) as the input
+        text; bilingual output is allowed when the source is bilingual").
     items
-        The list of prompt payload objects to decompose. Each item includes `sfi_uuid1`,
+        The list of prompt payload objects to decompose. Each item includes `sfi_uuid`,
         `display_text`, `id_source_text`, and `statement_code`, and may also include
         `topic_context` and `aux_statements` when those context hints are available.
     max_per_sfi
@@ -539,7 +540,7 @@ HARD RULES:
 3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
 4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
 5. Do NOT invent prerequisites or unrelated skills.
-6. `description` MUST be written in language: {display_language}.
+6. `description` MUST follow this output-language instruction: {display_language}.
 7. No duplicate skills within an SFI (dedupe by description meaning).
 8. Keep rationales brief (1–2 sentences max). {rationale_req}
 """

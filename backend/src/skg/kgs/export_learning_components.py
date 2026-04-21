@@ -317,7 +317,9 @@ def _build_single_lc(
             config.namespace_uuid,
             f"lc:curriculum:{doc_key}:lc:{policy}:{sfi.case_identifier_uuid}:{split_index}:{split_hash}",
         ),
-        in_language=str(sfi.in_language or fw_metadata["in_language"]),
+        in_language=_resolve_lc_output_language_tag(
+            config=config, fw_metadata=fw_metadata, sfi=sfi
+        ),
         license=str(fw_metadata["license"]),
         metadata=metadata,
         provider=str(fw_metadata["provider"]),
@@ -1028,8 +1030,8 @@ def _process_atomic_skills_batch(
     allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
     prompt_items = _build_atomic_skills_prompt_items(config=config, sfis=batch)
     prompt = decompose_atomic_skills(
-        display_language=_format_language_for_prompt(
-            tag=str(fw_metadata["in_language"])
+        display_language=_resolve_lc_prompt_language_instruction(
+            config=config, fw_metadata=fw_metadata, sfi=batch[0]
         ),
         items=prompt_items,
         max_per_sfi=max_splits,
@@ -1126,6 +1128,80 @@ def _resolve_derived_timestamps(
     date_created = sfi.date_created
     date_modified = sfi.date_modified or date_created
     return date_created, date_modified
+
+
+def _resolve_lc_output_language_tag(
+    *, config: CreateKGConfig, fw_metadata: dict[str, Any], sfi: StandardsFrameworkItem
+) -> str:
+    """Resolve the emitted `in_language` tag for a derived LearningComponent.
+
+    Parameters
+    ----------
+    config
+        KG export configuration containing LC output-language policy.
+    fw_metadata
+        Framework metadata dict used for fallback language values.
+    sfi
+        The supporting StandardsFrameworkItem.
+
+    Returns
+    -------
+    str
+        The BCP-47 tag to write onto the derived LearningComponent.
+    """
+
+    policy = normalize_ws(config.lc_output_language_policy or "source").lower()
+
+    if policy == "english":
+        return "en"
+
+    if policy == "explicit_tag":
+        return normalize_ws(config.lc_output_language_tag or "en") or "en"
+
+    return normalize_ws(sfi.in_language or fw_metadata["in_language"] or "en") or "en"
+
+
+def _resolve_lc_prompt_language_instruction(
+    *, config: CreateKGConfig, fw_metadata: dict[str, Any], sfi: StandardsFrameworkItem
+) -> str:
+    """Resolve the human-readable output-language instruction for LC prompts.
+
+    Parameters
+    ----------
+    config
+        KG export configuration containing LC output-language policy.
+    fw_metadata
+        Framework metadata dict used for fallback language values.
+    sfi
+        A representative SFI from the current batch.
+
+    Returns
+    -------
+    str
+        Human-readable prompt instruction describing what language the LLM should use
+        for emitted atomic skill descriptions.
+    """
+
+    policy = normalize_ws(str(config.lc_output_language_policy or "source")).lower()
+
+    if policy == "english":
+        return "English"
+
+    if policy == "explicit_tag":
+        return _format_language_for_prompt(tag=config.lc_output_language_tag or "en")
+
+    resolved_tag = _resolve_lc_output_language_tag(
+        config=config, fw_metadata=fw_metadata, sfi=sfi
+    )
+    primary = resolved_tag.replace("_", "-").split("-")[0].lower().strip()
+
+    if primary == "mul":
+        return "the same language(s) as the input text; bilingual output is allowed when the source is bilingual"
+
+    if primary == "und":
+        return "the same language as the input text"
+
+    return _format_language_for_prompt(tag=resolved_tag)
 
 
 def _resolve_lc_text_sources(
