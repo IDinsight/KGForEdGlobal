@@ -23,7 +23,7 @@ from pydantic import Field, field_validator, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import BaseSchema, ExportDialect, validate_bbox_order
+from skg.schemas import BaseSchema, ExportDialect, LanguageField, validate_bbox_order
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
@@ -434,7 +434,7 @@ class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema)
             "deterministic across reruns (UUIDv5 recommended)."
         ),
     )
-    in_language: str = Field(
+    in_language: LanguageField = Field(
         description=(
             "Language tag for the framework (e.g., en-US). In `lc_public_strict`, "
             "this should conform to LC enum values; in `global_relaxed`, any valid "
@@ -603,7 +603,7 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             "across reruns (UUIDv5 recommended)."
         ),
     )
-    in_language: str = Field(
+    in_language: LanguageField = Field(
         description=(
             "Language tag for the item text (e.g., en-US). "
             "In strict exports this should conform to LC enums; "
@@ -834,7 +834,7 @@ class LearningComponent(_DateValidationMixin, BaseSchema):
             "across reruns (UUIDv5 recommended)."
         ),
     )
-    in_language: str = Field(
+    in_language: LanguageField = Field(
         description=(
             "Language tag for the component text (e.g., en-US). In strict exports this should "
             "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
