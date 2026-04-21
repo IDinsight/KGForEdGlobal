@@ -1,4 +1,6 @@
-"""This module contains prompt templates for Learning Progressions inference."""
+"""This module contains prompt templates for learning components and learning
+progressions inference.
+"""
 
 # Standard Library
 import json
