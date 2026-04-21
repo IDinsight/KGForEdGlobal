@@ -182,7 +182,7 @@ def _build_learning_components_graph_bundle(
     for r in supports_relationships:
         assert (
             r.relationship_type == SUPPORTS
-        ), f"{r.relationship_type} is not 'supports'"
+        ), f"{r.relationship_type} is not '{SUPPORTS}'"
         relationships.append(
             {
                 "id": str(r.identifier),
