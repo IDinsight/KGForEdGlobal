@@ -1676,12 +1676,17 @@ def _emit_sfi(
     node = ctx.nodes_by_id[node_id]
     prefer_en = config.as_description_text_policy == "prefer_text_en"
 
-    # Language policy:
-    # - default: Always use framework language
-    # - source: Prefer per-node language if present, else fall back to framework
+    # `in_language` should follow the emitted description text.
+    #
+    #   - prefer_text_en: emitted descriptions are English when available, so tag as
+    #       `en`.
+    #   - source: prefer the per-node text language, else fall back to the framework
+    #       language (which itself falls back to `as_language_default`)
     sfi_in_language = str(fw_metadata.get("in_language") or "")
 
-    if config.as_export_in_language_policy == "source":
+    if config.as_description_text_policy == "prefer_text_en":
+        sfi_in_language = "en"
+    else:
         # Canonical IR stores language inside TextUnit dicts (title/body), not as a
         # top-level field. Check title first, then body, skipping "und" (undetermined).
         node_lang = next(

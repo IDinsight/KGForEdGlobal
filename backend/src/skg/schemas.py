@@ -553,14 +553,6 @@ class CreateKGConfig(BaseSchema):
             "non-US metadata shapes and free-form fields for international curricula."
         ),
     )
-    as_export_in_language_policy: Literal["default", "source"] = Field(
-        default="source",
-        description=(
-            "Controls the 'inLanguage' value on exported SFIs. "
-            "'source' uses the language detected on each statement's body text; "
-            "'default' always uses `as_language_default`."
-        ),
-    )
     as_framework_name: Optional[str] = Field(
         default=None,
         description=(
@@ -600,9 +592,8 @@ class CreateKGConfig(BaseSchema):
     )
     as_language_default: LanguageField = Field(
         description=(
-            "Default BCP-47 language code for the framework (e.g., 'en', 'fr', 'sw'). "
-            "Used as the fallback inLanguage when per-statement language detection is "
-            "unavailable or when as_export_in_language_policy='default'."
+            "Default BCP-47 language code used as the fallback `in_language` when the "
+            "language of the exported framework/item text cannot be determined reliably."
         ),
     )
     as_license: str = Field(

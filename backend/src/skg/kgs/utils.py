@@ -165,8 +165,8 @@ class ExportContext:
             "doc_key": self.doc_key,
             "export_dialect": self.kg_config.as_export_dialect,
             "in_language": (
-                self.kg_config.as_language_default
-                if self.kg_config.as_export_in_language_policy == "default"
+                "en"
+                if self.kg_config.as_description_text_policy == "prefer_text_en"
                 else self._infer_language_from_nodes()
                 or self.kg_config.as_language_default
             ),
