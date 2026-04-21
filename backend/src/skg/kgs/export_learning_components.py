@@ -1067,7 +1067,6 @@ def _process_atomic_skills_batch(
         for it in parsed_dict.get("items", []):
             sfi_uuid = str(it.get("sfi_uuid"))
             skills_by_sfi[sfi_uuid] = list(it.get("skills") or [])
-
     except Exception as e:  # pylint: disable=broad-except
         batch_debug["error"] = f"{e.__class__.__name__}: {e}"
         batch_debug["fallback_sfi_uuids"] = [str(s.case_identifier_uuid) for s in batch]
