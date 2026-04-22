@@ -12,6 +12,7 @@ import math
 import re
 
 from collections import Counter, defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
@@ -133,7 +134,7 @@ def _build_atomic_skills_prompt_items(
     return items
 
 
-def _build_learning_components_graph_bundle(
+def _build_lc_graph_bundle(
     *,
     doc_key: str,
     export_dialect: str,
@@ -198,6 +199,60 @@ def _build_learning_components_graph_bundle(
     }
 
 
+def _build_lc_semantic_context_from_sfi(sfi: StandardsFrameworkItem) -> dict[str, Any]:
+    """Extract stable semantic context from the supporting SFI for LC metadata.
+
+    The goal is to make each LearningComponent more self-describing when inspected on
+    its own, without changing LC identity semantics or duplicating low-level provenance
+    fields that already live under `metadata["provenance"]`.
+
+    Included fields are intentionally limited to higher-level semantic context that is
+    useful for downstream inspection, filtering, and debugging, such as statement
+    typing, canonical placement, progression context, and attached auxiliary
+    statements.
+
+    Parameters
+    ----------
+    sfi
+        The supporting StandardsFrameworkItem.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary of selected semantic context fields copied from the supporting SFI
+        and its metadata.
+    """
+
+    metadata = sfi.metadata or {}
+    semantic_context: dict[str, Any] = {
+        "supporting_sfi_canonical_path_key": metadata.get("canonical_path_key"),
+        "supporting_sfi_grade_level": list(sfi.grade_level or []),
+        "supporting_sfi_in_language": str(sfi.in_language or ""),
+        "supporting_sfi_normalized_statement_type": sfi.normalized_statement_type,
+        "supporting_sfi_role": metadata.get("role"),
+        "supporting_sfi_source_label": metadata.get("source_label"),
+        "supporting_sfi_statement_code": sfi.statement_code,
+        "supporting_sfi_statement_type": sfi.statement_type,
+    }
+    progression_context = metadata.get("progression_context")
+
+    if isinstance(progression_context, dict) and progression_context:
+        semantic_context["supporting_sfi_progression_context"] = deepcopy(
+            progression_context
+        )
+
+    aux_statements = metadata.get("aux_statements")
+
+    if isinstance(aux_statements, list) and aux_statements:
+        semantic_context["supporting_sfi_aux_statements"] = deepcopy(aux_statements)
+
+    return {
+        key: value
+        for key, value in semantic_context.items()
+        if value not in {None, ""} and value != []
+    }
+
+
 def _build_provenance_from_sfi(metadata: dict[str, Any] | None) -> dict[str, Any]:
     """Extract standard provenance fields from SFI metadata.
 
@@ -243,7 +298,8 @@ def _build_single_lc(
 
     This is the single source of truth for LC entity construction. All policy paths
     (`1_to_1`, `split_bullets`, `llm_atomic_skills`) delegate here so that the metadata
-    contract, text normalization, and UUID seed format are maintained in one place.
+    contract, text normalization, semantic-context carry-through, and UUID seed format
+    are maintained in one place.
 
     Parameters
     ----------
@@ -298,6 +354,7 @@ def _build_single_lc(
         "split_policy": policy,
         "split_truncated": truncated,
         "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
+        **_build_lc_semantic_context_from_sfi(sfi=sfi),
     }
 
     if extra_metadata:
@@ -657,7 +714,7 @@ def _finalize_lc_export(
     )
     write_to_json(
         fp=kg_dirs.learning_components / "learning_components_kg.json",
-        json_info=_build_learning_components_graph_bundle(
+        json_info=_build_lc_graph_bundle(
             doc_key=ctx.doc_key,
             export_dialect=config.as_export_dialect,
             learning_components=sorted_lcs,
