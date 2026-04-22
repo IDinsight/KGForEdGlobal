@@ -4544,8 +4544,8 @@ def load_academic_standards_export(kg_dirs: KGDirs) -> AcademicStandardsExport:
     """Reconstruct an AcademicStandardsExport from previously written disk artifacts.
 
     This enables progressive re-use: if the academic standards KG already exists and
-    `overwrite=False`, we load the prior export rather than re-running the LLM-driven
-    export pipeline.
+    `overwrite=False`, we load the prior export rather than re-running the export
+    pipeline.
 
     Parameters
     ----------
