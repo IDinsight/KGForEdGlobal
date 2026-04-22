@@ -927,7 +927,7 @@ def _has_usable_text(sfi: StandardsFrameworkItem) -> bool:
 def _iter_expectation_sfis(
     items: Iterable[StandardsFrameworkItem],
 ) -> list[StandardsFrameworkItem]:
-    """Return a StandardsFrameworkItems that represent normative expectations.
+    """Return a StandardsFrameworkItem that represent normative expectations.
 
     Parameters
     ----------
