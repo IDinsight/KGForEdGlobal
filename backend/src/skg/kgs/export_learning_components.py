@@ -249,7 +249,7 @@ def _build_lc_semantic_context_from_sfi(sfi: StandardsFrameworkItem) -> dict[str
     return {
         key: value
         for key, value in semantic_context.items()
-        if value not in {None, ""} and value != []
+        if value is not None and value != "" and value != [] and value != {}
     }
 
 
