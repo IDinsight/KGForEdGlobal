@@ -640,16 +640,16 @@ def _build_aux_payload(
 
 
 def _build_export_parent_by_child(
-    *, root_id: str, export_children: dict[str, list[str]]
+    *, export_children: dict[str, list[str]], root_id: str
 ) -> dict[str, str]:
     """Build an export-time parent lookup from the finalized export tree.
 
     Parameters
     ----------
-    root_id
-        The canonical node ID of the root (framework) node.
     export_children
         The finalized parent-to-children mapping for export.
+    root_id
+        The canonical node ID of the root (framework) node.
 
     Returns
     -------
