@@ -728,6 +728,121 @@ def _build_initial_emit_flags(
     return emit_flag, drop_reasons
 
 
+def _build_progression_context(
+    *,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    export_order_index: dict[tuple[str, str], int] | None,
+    export_parent_by_child: dict[str, str] | None,
+    node: dict[str, Any],
+    node_id: str,
+    prefer_text_en: bool,
+) -> dict[str, Any]:
+    """Build the progression context metadata for expectation nodes.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    export_order_index
+        Optional export-time (parent_id, child_id) -> order_index mapping.
+    export_parent_by_child
+        Optional mapping of canonical child node ID to parent node ID.
+    node
+        The canonical node dictionary.
+    node_id
+        The ID of the canonical node.
+    prefer_text_en
+        Whether to prefer English text.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the computed progression context keys and ordinals.
+    """
+
+    grade_key = _first_ancestor_label_for_role(
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_text_en,
+        role=NodeRole.GRADE_LEVEL.value,
+    )
+    stage_key = _first_ancestor_label_for_role(
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_text_en,
+        role=NodeRole.STAGE.value,
+    )
+    role_allowlist = None
+
+    if config.as_grouping_role_policy == "whitelist":
+        # Use the grouping whitelist if present so `topic_path_key` is consistent
+        # across countries/configs.
+        role_allowlist = {r.value for r in config.as_grouping_roles_whitelist}
+
+        # But never allow grade/stage/week into the path key. If we left them in the
+        # topic path key, the same conceptual thread would split into separate keys
+        # like stage=ce1|strand=lecture|subtopic=grammaire vs.
+        # stage=ce2|strand=lecture|subtopic=grammaire, which defeats the point of a
+        # reusable cross-level thread key. The level signal is already preserved
+        # elsewhere, so excluding it from `topic_path_key` avoids double encoding and
+        # fragmentation.
+        role_allowlist -= {
+            NodeRole.GRADE_LEVEL.value,
+            NodeRole.STAGE.value,
+            NodeRole.WEEK.value,
+        }
+
+    topic_path_key, topic_path_parts = _compute_topic_path_key(
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_text_en,
+        role_allowlist=role_allowlist,
+    )
+
+    parent_lookup = export_parent_by_child or ctx.parent_by_child
+    order_lookup = export_order_index or ctx.edge_order_index
+    parent_id = parent_lookup.get(node_id)
+
+    canonical_order_index_within_parent = (
+        ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
+    )
+    order_index_within_parent = (
+        order_lookup.get((parent_id, node_id)) if parent_id else None
+    )
+    canon_order_path = _walk_ancestors(
+        ctx=ctx, node_id=node_id, parent_by_child=parent_lookup
+    )
+
+    grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
+    stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
+    code_raw = node.get("local_code") or ""
+    code_features = _parse_code_features(
+        code=str(code_raw), grade_ordinal_low=grade_low
+    )
+
+    return {
+        "canon_order_path": canon_order_path,
+        "canonical_order_index_within_parent": canonical_order_index_within_parent,
+        "grade_key": grade_key,
+        "grade_ordinal_high": grade_high,
+        "grade_ordinal_low": grade_low,
+        "order_index_within_parent": order_index_within_parent,
+        "stage_key": stage_key,
+        "stage_ordinal_high": stage_high,
+        "stage_ordinal_low": stage_low,
+        "thread_key": _normalize_thread_key(topic_path_key=topic_path_key),
+        "topic_path_key": topic_path_key,
+        "topic_path_parts": topic_path_parts,  # For debugging
+        **code_features,
+    }
+
+
 def _build_relationships_and_order(
     *,
     config: CreateKGConfig,
@@ -1256,16 +1371,44 @@ def _compute_export_children(
 
     reparent_stats = {
         "attached_aux_node_ids": sorted(attached_aux_node_ids),
-        "aux_reparented_count": sibling_aux_reparented_count,
+        "attached_aux_node_count": len(attached_aux_node_ids),
         "child_layout_aux_attached_count": child_layout_aux_attached_count,
-        "orphan_aux_count": orphan_aux_count,
         "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
+        "orphan_aux_node_count": orphan_aux_count,
         "sibling_aux_reparented_count": sibling_aux_reparented_count,
-        "step3_total_attached_aux_node_count": len(attached_aux_node_ids),
-        "step3_total_aux_linked_to_expectation_count": len(attached_aux_node_ids),
-        "step3_total_orphan_aux_node_count": len(orphan_aux_node_ids),
     }
     return export_children, aux_nodes_attached_to_expectation, reparent_stats
+
+
+def _compute_source_anchored_sfi_uuid(
+    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
+) -> UUID:
+    """Compute a source-anchored deterministic SFI UUID for a canonical node.
+
+    SFI identity should track the canonical/source node rather than the node's final
+    export placement. Export-time hoisting, pruning, or reparenting may legitimately
+    change `hasChild` edges without changing the identity of the source-derived SFI
+    itself.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig providing the UUID namespace.
+    ctx
+        The ExportContext providing the document key.
+    node_id
+        The canonical node ID being exported as an SFI.
+
+    Returns
+    -------
+    UUID
+        A deterministic UUIDv5 anchored to the canonical node identity.
+    """
+
+    return uuid5(
+        config.namespace_uuid,
+        f"lc:curriculum:{ctx.doc_key}:sfi:canonical_node:{node_id}",
+    )
 
 
 def _compute_topic_path_key(
@@ -1451,6 +1594,27 @@ def _depth(*, ctx: ExportContext, nid: str) -> int:
         cur = ctx.parent_by_child.get(cur)
 
     return d
+
+
+def _drop_reason(*parts: Any) -> str:
+    """Build a normalized drop-reason taxonomy string.
+
+    All drop reasons emitted by this module should use the same shape so policy
+    coverage and downstream reporting can group them reliably.
+
+    Parameters
+    ----------
+    parts
+        Ordered non-empty reason segments to append after the `drop` prefix.
+
+    Returns
+    -------
+    str
+        A normalized drop reason string like `drop:segment_decision:ignore`.
+    """
+
+    cleaned = [str(part).strip() for part in parts if str(part).strip()]
+    return ":".join(["drop", *cleaned])
 
 
 def _emit_framework(
@@ -1676,45 +1840,17 @@ def _emit_sfi(
 
     node = ctx.nodes_by_id[node_id]
     prefer_en = config.as_description_text_policy == "prefer_text_en"
-
-    # `in_language` should follow the emitted description text.
-    #
-    #   - prefer_text_en: emitted descriptions are English when available, so tag as
-    #       `en`.
-    #   - source: prefer the per-node text language, else fall back to the framework
-    #       language (which itself falls back to `as_language_default`)
-    sfi_in_language = str(fw_metadata.get("in_language") or "")
-
-    if config.as_description_text_policy == "prefer_text_en":
-        sfi_in_language = "en"
-    else:
-        # Canonical IR stores language inside TextUnit dicts (title/body), not as a
-        # top-level field. Check title first, then body, skipping "und" (undetermined).
-        node_lang = next(
-            (
-                node[field]["language"].strip()
-                for field in ("title", "body")
-                if isinstance(node.get(field), dict)
-                and node[field].get("language")
-                and node[field]["language"].strip().lower() != "und"
-            ),
-            None,
-        )
-
-        if node_lang:
-            sfi_in_language = node_lang
-
-    path_key = ctx.compute_path_key(node_id)
-    sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
-
-    role = node["role"]
-    desc = _node_display_text(node=node, prefer_text_en=prefer_en) or (
-        f"[{role or 'unknown'}:{node_id[:8]}]"
+    desc, sfi_in_language = _resolve_description_and_language(
+        fw_metadata=fw_metadata, node=node, node_id=node_id, prefer_text_en=prefer_en
     )
+    sfi_id = _compute_source_anchored_sfi_uuid(config=config, ctx=ctx, node_id=node_id)
+    role = node["role"]
     bbox = node.get("bbox")
     metadata: dict[str, Any] = {
         "bbox": bbox,
         "canonical_node_id": node_id,
+        "canonical_path_key": ctx.compute_path_key(node_id),
+        "identity_basis": "canonical_node",
         "local_code": node.get("local_code"),
         "normalized_text": node.get("normalized_text"),
         "page_indices": node.get("page_indices", []),
@@ -1739,85 +1875,15 @@ def _emit_sfi(
     # Generate progression context keys for expectation nodes (used for Learning
     # Progressions KG inference downstream).
     if role == StatementRole.EXPECTATION.value:
-        grade_key = _first_ancestor_label_for_role(
+        metadata["progression_context"] = _build_progression_context(
+            config=config,
             ctx=ctx,
+            export_order_index=export_order_index,
+            export_parent_by_child=export_parent_by_child,
+            node=node,
             node_id=node_id,
-            parent_by_child=export_parent_by_child,
             prefer_text_en=prefer_en,
-            role=NodeRole.GRADE_LEVEL.value,
         )
-        stage_key = _first_ancestor_label_for_role(
-            ctx=ctx,
-            node_id=node_id,
-            parent_by_child=export_parent_by_child,
-            prefer_text_en=prefer_en,
-            role=NodeRole.STAGE.value,
-        )
-
-        # Use the grouping whitelist if present so `topic_path_key` is consistent
-        # across countries/configs.
-        role_allowlist = None
-
-        if config.as_grouping_role_policy == "whitelist":
-            role_allowlist = {r.value for r in config.as_grouping_roles_whitelist}
-
-            # But never allow grade/stage/week into the path key. If we left them in
-            # the topic path key, the same conceptual thread would split into separate
-            # keys like stage=ce1|strand=lecture|subtopic=grammaire vs.
-            # stage=ce2|strand=lecture|subtopic=grammaire, which defeats the point of a
-            # reusable cross-level thread key. The level signal is already preserved
-            # elsewhere, so excluding it from `topic_path_key` avoids double encoding
-            # and fragmentation.
-            role_allowlist -= {
-                NodeRole.GRADE_LEVEL.value,
-                NodeRole.STAGE.value,
-                NodeRole.WEEK.value,
-            }
-
-        topic_path_key, topic_path_parts = _compute_topic_path_key(
-            ctx=ctx,
-            node_id=node_id,
-            parent_by_child=export_parent_by_child,
-            prefer_text_en=prefer_en,
-            role_allowlist=role_allowlist,
-        )
-
-        parent_lookup = export_parent_by_child or ctx.parent_by_child
-        order_lookup = export_order_index or ctx.edge_order_index
-        parent_id = parent_lookup.get(node_id)
-        canonical_order_index_within_parent = (
-            ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
-        )
-        order_index_within_parent = (
-            order_lookup.get((parent_id, node_id)) if parent_id else None
-        )
-        canon_order_path = _walk_ancestors(
-            ctx=ctx, node_id=node_id, parent_by_child=parent_lookup
-        )
-
-        # Code retrieval (should work across countries/canonicalizers).
-        grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
-        stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
-        code_raw = node.get("local_code") or ""
-        code_features = _parse_code_features(
-            code=str(code_raw), grade_ordinal_low=grade_low
-        )
-
-        metadata["progression_context"] = {
-            "grade_key": grade_key,
-            "grade_ordinal_low": grade_low,
-            "grade_ordinal_high": grade_high,
-            "stage_key": stage_key,
-            "stage_ordinal_low": stage_low,
-            "stage_ordinal_high": stage_high,
-            "thread_key": _normalize_thread_key(topic_path_key=topic_path_key),
-            "topic_path_key": topic_path_key,
-            "topic_path_parts": topic_path_parts,  # For debugging
-            "canon_order_path": canon_order_path,
-            "canonical_order_index_within_parent": canonical_order_index_within_parent,
-            "order_index_within_parent": order_index_within_parent,
-            **code_features,
-        }
 
     return StandardsFrameworkItem(
         academic_subject=fw_metadata["academic_subject_default"],
@@ -2152,7 +2218,7 @@ def _handle_empty_grouping_pruning(
         )
 
         for nid in pruned_node_ids:
-            drop_reasons[nid] = "dropped:pruned_empty_grouping"
+            drop_reasons[nid] = _drop_reason("pruned_empty_grouping")
 
     return pruned_node_ids
 
@@ -2541,13 +2607,13 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
 def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
     """Retrieve text from a title/body TextUnit dict.
 
-    Canonical nodes store title/body as a dict like:
-    {"language": "...", "text": "...", "text_en": "..."}.
+    This helper returns only the text portion of ``_pick_text_with_lang()`` and keeps
+    existing call sites concise when language provenance is not needed.
 
     Parameters
     ----------
     prefer_text_en
-        If True, prefer "text_en" over "text" when both are present.
+        If True, prefer ``text_en`` over ``text`` when both are present.
     unit
         The title/body unit dict (or None).
 
@@ -2557,16 +2623,50 @@ def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
         The extracted text, or empty string if none found.
     """
 
+    text, _, _ = _pick_text_with_lang(prefer_text_en=prefer_text_en, unit=unit)
+    return text
+
+
+def _pick_text_with_lang(
+    *, prefer_text_en: bool, unit: dict[str, Any] | None
+) -> tuple[str, str | None, bool]:
+    """Retrieve text from a title/body TextUnit dict together with its language.
+
+    Canonical nodes store title/body as a dict like:
+    {"language": "...", "text": "...", "text_en": "..."}.
+
+    Parameters
+    ----------
+    prefer_text_en
+        If True, prefer `text_en` over `text` when both are present.
+    unit
+        The title/body unit dict (or None).
+
+    Returns
+    -------
+    tuple[str, str | None, bool]
+        `(text, language, used_text_en)` where *language* is the language of the
+        selected text when it is known. English is reported only when English text was
+        actually selected.
+    """
+
     if not isinstance(unit, dict):
-        return ""
+        return "", None, False
 
-    if prefer_text_en:
-        t = (unit.get("text_en") or "").strip()
+    source_language = str(unit.get("language") or "").strip() or None
+    text_en = str(unit.get("text_en") or "").strip()
+    text = str(unit.get("text") or "").strip()
 
-        if t:
-            return t
+    if prefer_text_en and text_en:
+        return text_en, "en", True
 
-    return (unit.get("text") or unit.get("text_en") or "").strip()
+    if text:
+        return text, source_language, False
+
+    if text_en:
+        return text_en, "en", True
+
+    return "", source_language, False
 
 
 def _preserve_if_empty(*, ctx: ExportContext, nid: str) -> bool:
@@ -3277,6 +3377,88 @@ def _reparent_aux_nodes_under_expectations(
     return new_kids, child_aux_consumed
 
 
+def _resolve_description_and_language(
+    *,
+    fw_metadata: dict[str, Any],
+    node: dict[str, Any],
+    node_id: str,
+    prefer_text_en: bool,
+) -> tuple[str, str]:
+    """Resolve the primary description text and its language for the SFI.
+
+    Parameters
+    ----------
+    fw_metadata
+        Pre-computed framework metadata dict.
+    node
+        The canonical node dictionary.
+    node_id
+        The ID of the canonical node.
+    prefer_text_en
+        Whether to prefer English text.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple containing the resolved description text and the SFI language code.
+    """
+
+    # `in_language` should follow the text actually emitted in `description`, not just
+    # the requested policy. `prefer_text_en` may still fall back to source text when no
+    # English translation is available.
+    sfi_in_language = fw_metadata.get("in_language") or ""
+    role = node["role"]
+
+    title_text, title_lang, title_used_text_en = _pick_text_with_lang(
+        prefer_text_en=prefer_text_en, unit=node.get("title")
+    )
+    body_text, body_lang, body_used_text_en = _pick_text_with_lang(
+        prefer_text_en=prefer_text_en, unit=node.get("body")
+    )
+
+    if title_text:
+        desc = title_text
+        desc_lang = title_lang
+        desc_used_text_en = title_used_text_en
+    elif body_text:
+        desc = body_text
+        desc_lang = body_lang
+        desc_used_text_en = body_used_text_en
+    else:
+        desc = _node_display_text(node=node, prefer_text_en=prefer_text_en) or (
+            f"[{role or 'unknown'}:{node_id[:8]}]"
+        )
+        desc_lang = None
+        desc_used_text_en = False
+
+    if desc_used_text_en:
+        sfi_in_language = "en"
+    else:
+        desc_lang_norm = (desc_lang or "").strip()
+
+        if desc_lang_norm and desc_lang_norm.lower() != "und":
+            sfi_in_language = desc_lang_norm
+        else:
+            # Canonical IR stores language inside TextUnit dicts (title/body), not as a
+            # top-level field. Check title first, then body, skipping "und"
+            # (undetermined).
+            node_lang = next(
+                (
+                    node[field]["language"].strip()
+                    for field in ("title", "body")
+                    if isinstance(node.get(field), dict)
+                    and node[field].get("language")
+                    and node[field]["language"].strip().lower() != "und"
+                ),
+                None,
+            )
+
+            if node_lang:
+                sfi_in_language = node_lang
+
+    return desc, sfi_in_language
+
+
 def _should_emit_node_with_reason(
     *, config: CreateKGConfig, ctx: ExportContext, node_id: str
 ) -> tuple[bool, str]:
@@ -3319,21 +3501,21 @@ def _should_emit_node_with_reason(
             decision_type = decision["decision_type"]
             col_sig = decision["columns_signature"]
             return (
-                (False, f"dropped:columns_signature:{col_sig}")
+                (False, _drop_reason("columns_signature", col_sig))
                 if col_sig
                 and col_sig in ctx.kg_config.as_non_standard_columns_signature
-                else (False, f"dropped:segment_decision:{decision_type}")
+                else (False, _drop_reason("segment_decision", decision_type))
             )
 
     # Role handling.
     if role == StatementRole.GUIDANCE.value and config.as_guidance_handling == "drop":
-        return False, f"dropped:as_guidance_handling:{config.as_guidance_handling}"
+        return False, _drop_reason("guidance_handling", config.as_guidance_handling)
 
     if (
         role == StatementRole.DESCRIPTOR.value
         and config.as_descriptor_handling == "drop"
     ):
-        return False, f"dropped:as_descriptor_handling:{config.as_descriptor_handling}"
+        return False, _drop_reason("descriptor_handling", config.as_descriptor_handling)
 
     # Strict grouping policy: if it's not a statement role, it must be an allowed
     # grouping. Non-grouping nodes may only be emitted as `Other` when they are true
@@ -3350,12 +3532,12 @@ def _should_emit_node_with_reason(
         if config.as_non_grouping_role_handling == "drop":
             return (
                 False,
-                f"dropped:non_grouping_role:{config.as_non_grouping_role_handling}",
+                _drop_reason("non_grouping_role", config.as_non_grouping_role_handling),
             )
 
         has_canonical_children = len(ctx.children_by_parent.get(node_id, [])) > 0
         return (
-            (False, "dropped:non_grouping_role:structural_parent")
+            (False, _drop_reason("non_grouping_role", "structural_parent"))
             if has_canonical_children
             else (True, "emitted")
         )
@@ -3570,19 +3752,21 @@ def _suppress_attached_to_expectation(
                 and config.as_guidance_handling == "attach_to_expectation_metadata"
             ):
                 newly_suppressed_attached_aux_count += 1
-                drop_reasons[nid] = f"dropped_guidance:{config.as_guidance_handling}"
+                drop_reasons[nid] = _drop_reason(
+                    "guidance_attached_to_expectation", config.as_guidance_handling
+                )
                 emit_flag[nid] = False
             elif (
                 role == StatementRole.DESCRIPTOR.value
                 and config.as_descriptor_handling == "attach_to_expectation_metadata"
             ):
                 newly_suppressed_attached_aux_count += 1
-                drop_reasons[nid] = (
-                    f"dropped_descriptor:{config.as_descriptor_handling}"
+                drop_reasons[nid] = _drop_reason(
+                    "descriptor_attached_to_expectation", config.as_descriptor_handling
                 )
                 emit_flag[nid] = False
 
-    reparent_stats["step5_newly_suppressed_attached_aux_node_count"] = (
+    reparent_stats["suppressed_attached_aux_node_count"] = (
         newly_suppressed_attached_aux_count
     )
 
@@ -3759,7 +3943,7 @@ def _suppress_subtrees_of_attached_aux_nodes(
         if emit_flag.get(nid, False):
             emit_flag[nid] = False
             drop_reasons.setdefault(
-                nid, "dropped:ancestor_attached_to_expectation_metadata"
+                nid, _drop_reason("ancestor_attached_to_expectation_metadata")
             )
 
     # Now, remove `blocked_nodes` from the export tree.
@@ -4209,9 +4393,9 @@ def export_academic_standards(
         )
         reparent_stats.update(attach_only_stats)
         reparent_stats["attached_aux_node_ids"] = sorted(attached_aux_node_ids)
-        reparent_stats["orphan_aux_count"] = len(orphan_aux_node_ids)
+        reparent_stats["orphan_aux_node_count"] = len(orphan_aux_node_ids)
         reparent_stats["orphan_aux_node_ids"] = sorted(orphan_aux_node_ids)
-        reparent_stats["total_attached_aux_node_count"] = len(attached_aux_node_ids)
+        reparent_stats["attached_aux_node_count"] = len(attached_aux_node_ids)
 
     # 5.
     _suppress_attached_to_expectation(
