@@ -13,6 +13,7 @@ These models are intentionally **non-US-centric**:
 from __future__ import annotations
 
 # Standard Library
+from collections import Counter
 from datetime import datetime
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
@@ -1385,6 +1386,113 @@ class KnowledgeGraphExport(BaseSchema):
         default_factory=list
     )
 
+    @staticmethod
+    def _collect_duplicate_values(values: list[str]) -> list[str]:
+        """Return duplicate values in stable first-seen order.
+
+        Parameters
+        ----------
+        values
+            Sequence of identifier values to inspect.
+
+        Returns
+        -------
+        list[str]
+            Duplicate identifier values ordered by first appearance.
+        """
+
+        counts = Counter(values)
+        duplicates: list[str] = []
+        seen: set[str] = set()
+
+        for value in values:
+            if counts[value] > 1 and value not in seen:
+                duplicates.append(value)
+                seen.add(value)
+
+        return duplicates
+
+    @classmethod
+    def _raise_if_duplicates(
+        cls, *, entity_type: str, field_name: str, values: list[str]
+    ) -> None:
+        """Raise a clear error if an identifier field contains duplicates.
+
+        Parameters
+        ----------
+        entity_type
+            Human-readable entity type label for the error message.
+        field_name
+            Dotted field path used in the error message.
+        values
+            Identifier values collected from one entity list.
+
+        Raises
+        ------
+        ValueError
+            If duplicate identifier values are found.
+        """
+
+        duplicates = cls._collect_duplicate_values(values)
+
+        if duplicates:
+            examples = ", ".join(duplicates[:5])
+            raise ValueError(
+                f"Duplicate {field_name} value(s) found in {entity_type}: {examples}"
+            )
+
+    def _validate_unique_entity_ids(self) -> None:
+        """Ensure exported entities do not contain duplicate identifiers.
+
+        Raises
+        ------
+        ValueError
+            If any entity identifier field contains duplicates.
+        """
+
+        self._raise_if_duplicates(
+            entity_type="frameworks",
+            field_name="StandardsFramework.identifier",
+            values=[str(f.identifier) for f in self.frameworks],
+        )
+        self._raise_if_duplicates(
+            entity_type="frameworks",
+            field_name="StandardsFramework.case_identifier_uuid",
+            values=[str(f.case_identifier_uuid) for f in self.frameworks],
+        )
+        self._raise_if_duplicates(
+            entity_type="standards_framework_items",
+            field_name="StandardsFrameworkItem.identifier",
+            values=[str(s.identifier) for s in self.standards_framework_items],
+        )
+        self._raise_if_duplicates(
+            entity_type="standards_framework_items",
+            field_name="StandardsFrameworkItem.case_identifier_uuid",
+            values=[
+                str(s.case_identifier_uuid) for s in self.standards_framework_items
+            ],
+        )
+        self._raise_if_duplicates(
+            entity_type="learning_components",
+            field_name="LearningComponent.identifier",
+            values=[str(lc.identifier) for lc in self.learning_components],
+        )
+
+    def _validate_unique_relationship_ids(self) -> None:
+        """Ensure exported relationships do not contain duplicate identifiers.
+
+        Raises
+        ------
+        ValueError
+            If relationship identifiers are duplicated.
+        """
+
+        self._raise_if_duplicates(
+            entity_type="relationships",
+            field_name="Relationship.identifier",
+            values=[str(rel.identifier) for rel in self.relationships],
+        )
+
     def _build_id_maps(self) -> dict[str, set[str]]:
         """Extract sets of valid IDs for each entity type.
 
@@ -1604,6 +1712,9 @@ class KnowledgeGraphExport(BaseSchema):
         KnowledgeGraphExport
             The validated KnowledgeGraphExport object.
         """
+
+        self._validate_unique_entity_ids()
+        self._validate_unique_relationship_ids()
 
         id_maps = self._build_id_maps()
 
