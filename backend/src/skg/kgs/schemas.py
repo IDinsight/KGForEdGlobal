@@ -1703,6 +1703,34 @@ class KnowledgeGraphExport(BaseSchema):
             valid_ids=id_maps["items"],
         )
 
+    def _validate_learning_components_have_supports(self) -> None:
+        """Ensure every exported LearningComponent is anchored by a `supports` edge.
+
+        Raises
+        ------
+        ValueError
+            If one or more LearningComponents have no outgoing `supports` relationship
+            to a StandardsFrameworkItem.
+        """
+
+        supported_component_ids = {
+            rel.source_entity_value
+            for rel in self.relationships
+            if rel.relationship_type == "supports"
+        }
+        orphan_component_ids = [
+            str(lc.identifier)
+            for lc in self.learning_components
+            if str(lc.identifier) not in supported_component_ids
+        ]
+
+        if orphan_component_ids:
+            examples = ", ".join(orphan_component_ids[:10])
+            raise ValueError(
+                "Every LearningComponent must have at least one supports relationship. "
+                f"Found {len(orphan_component_ids)} orphan LearningComponent(s): {examples}"
+            )
+
     @model_validator(mode="after")
     def _validate_integrity(self) -> KnowledgeGraphExport:
         """Validate referential integrity of relationships against entities.
@@ -1720,6 +1748,8 @@ class KnowledgeGraphExport(BaseSchema):
 
         for rel in self.relationships:
             self._validate_single_relationship(rel, id_maps)
+
+        self._validate_learning_components_have_supports()
 
         return self
 
