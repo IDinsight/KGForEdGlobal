@@ -123,7 +123,8 @@ def _validate_sfi_skills(
 
     if len(skills) < int(min_per_sfi) or len(skills) > int(max_per_sfi):
         raise QualityError(
-            f"sfi_uuid {sfi_uuid} must have between {min_per_sfi} and {max_per_sfi} skills; got {len(skills)}."
+            f"sfi_uuid {sfi_uuid} must have between {min_per_sfi} and {max_per_sfi} skills; "
+            f"got {len(skills)}."
         )
 
     desc_seen: set[str] = set()
@@ -163,13 +164,13 @@ def _validate_single_skill(
         If the skill description or rationale violates quality rules.
     """
 
-    desc = (sk.description or "").strip()
-    rat = (sk.rationale or "").strip() if sk.rationale is not None else ""
+    description = (sk.description or "").strip()
+    rationale = (sk.rationale or "").strip() if sk.rationale is not None else ""
 
-    if not desc:
+    if not description:
         raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty description.")
 
-    norm_desc = " ".join(desc.split()).lower()
+    norm_desc = " ".join(description.split()).lower()
 
     if norm_desc in desc_seen:
         raise QualityError(
@@ -178,7 +179,7 @@ def _validate_single_skill(
 
     desc_seen.add(norm_desc)
 
-    if require_rationale and not rat:
+    if require_rationale and not rationale:
         raise QualityError(
             f"sfi_uuid {sfi_uuid} has a skill missing required rationale."
         )
@@ -219,8 +220,8 @@ def validate_atomic_skills(
     if not parsed.items:
         raise QualityError("AtomicSkillsResponse.items is empty.")
 
-    seen: set[UUID] = set()
     returned: set[UUID] = set()
+    seen: set[UUID] = set()
 
     for item in parsed.items:
         sfi_uuid = item.sfi_uuid
@@ -228,7 +229,8 @@ def validate_atomic_skills(
 
         if sfi_uuid not in allowed_sfi_uuids:
             raise QualityError(
-                f"Unknown sfi_uuid in atomic skills output: {sfi_uuid}. Use only provided UUIDs."
+                f"Unknown sfi_uuid in atomic skills output: {sfi_uuid}. "
+                f"Use only provided UUIDs."
             )
 
         if sfi_uuid in seen:
