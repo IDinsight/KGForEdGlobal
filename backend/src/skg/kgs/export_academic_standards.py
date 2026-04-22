@@ -628,6 +628,7 @@ def _build_aux_payload(
         "page_indices": node.get("page_indices", []),
         "role": node["role"],
         "source_decision_ids": node.get("source_decision_ids", []),
+        "source_label": node.get("source_label"),
         "source_segment_ids": node.get("source_segment_ids", []),
         "text": _node_display_text(node=node, prefer_text_en=prefer_en),
     }
