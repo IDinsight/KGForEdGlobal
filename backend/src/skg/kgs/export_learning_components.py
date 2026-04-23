@@ -29,7 +29,13 @@ from skg.kgs.export_academic_standards import AcademicStandardsExport
 from skg.kgs.llm import infer_atomic_skills
 from skg.kgs.prompts import decompose_atomic_skills
 from skg.kgs.schemas import LearningComponent, Relationship, StandardsFrameworkItem
-from skg.kgs.utils import ExportContext, KGDirs, normalize_ws, stable_text_hash
+from skg.kgs.utils import (
+    ExportContext,
+    KGDirs,
+    canonicalize_stable_text,
+    normalize_ws,
+    stable_text_hash,
+)
 from skg.kgs.validators import validate_atomic_skills
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import LANG_PRIMARY_CODE_TO_NAME
@@ -518,18 +524,18 @@ def _create_lcs_from_atomic_skills(
 
     keyed.sort(key=lambda t: t[0])
 
-    # Deduplicate by normalized description BEFORE truncation so that duplicates don't
-    # consume slots that could be used by unique skills beyond the cutoff.
+    # Deduplicate by the exact same canonicalization used by `stable_text_hash()` so
+    # de-dupe semantics stay aligned with the LC ID text hashing policy.
     seen_desc: set[str] = set()
     deduped: list[tuple[str, str, str]] = []
 
     for h, desc, rat in keyed:
-        nd = " ".join(desc.split()).lower()
+        canonical_desc = canonicalize_stable_text(desc)
 
-        if nd in seen_desc:
+        if canonical_desc in seen_desc:
             continue
 
-        seen_desc.add(nd)
+        seen_desc.add(canonical_desc)
         deduped.append((h, desc, rat))
 
     truncated = False

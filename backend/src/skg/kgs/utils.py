@@ -998,6 +998,28 @@ def persist_kg_run(
     return kg_dirs, kg_run
 
 
+def canonicalize_stable_text(s: str) -> str:
+    """Canonicalize text using the same normalization policy as `stable_text_hash`.
+
+    This helper exists so callers that need deterministic text equivalence (for
+    example, de-duplication before hashing) can reuse the exact same canonicalization
+    path as `stable_text_hash()` rather than approximating it with ad hoc lowercasing.
+
+    Parameters
+    ----------
+    s
+        The input string to canonicalize.
+
+    Returns
+    -------
+    str
+        The canonicalized text after whitespace normalization, Unicode NFKC
+        normalization, and Unicode-aware case folding.
+    """
+
+    return unicodedata.normalize("NFKC", normalize_ws(s or "")).casefold()
+
+
 def stable_text_hash(*, n: int = 32, s: str) -> str:
     """Generate a stable hash from a string.
 
@@ -1018,5 +1040,5 @@ def stable_text_hash(*, n: int = 32, s: str) -> str:
         The stable hash of the string.
     """
 
-    s = unicodedata.normalize("NFKC", normalize_ws(str(s or ""))).casefold()
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n]
+    canonical = canonicalize_stable_text(s)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:n]
