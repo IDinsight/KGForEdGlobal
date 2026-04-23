@@ -494,13 +494,14 @@ def decompose_atomic_skills(
     Parameters
     ----------
     display_language
-        Human-readable instruction describing what language the skill descriptions
-        should use (e.g., "English", "French", or "the same language(s) as the input
-        text; bilingual output is allowed when the source is bilingual").
+        Batch-level default instruction describing what language the skill descriptions
+        should use when an item does not provide its own language instruction.
     items
-        The list of prompt payload objects to decompose. Each item includes `sfi_uuid`,
-        `display_text`, `id_source_text`, and `statement_code`, and may also include
-        `topic_context` and `aux_statements` when those context hints are available.
+        The list of prompt payload objects to decompose. Each item always includes
+        `sfi_uuid` and `display_text`, may include item-specific
+        `language_instruction`, and may also include `id_source_text`,
+        `statement_code`, `topic_context`, and `aux_statements` when those hints are
+        available.
     max_per_sfi
         The maximum number of skills to return per SFI to keep the graph manageable.
     min_per_sfi
@@ -531,7 +532,8 @@ OUTPUT FORMAT:
 INPUT FIELDS (per SFI):
 - `sfi_uuid`: the StandardsFrameworkItem UUID you must echo back exactly for that item.
 - `display_text`: the human-readable expectation statement — base your decomposition on THIS field.
-- `id_source_text`: the stable canonical text used for ID generation (often identical to `display_text`; ignore unless `display_text` is missing).
+- `language_instruction`: optional item-specific output-language instruction. If present, it OVERRIDES the batch default.
+- `id_source_text`: optional stable canonical text used for ID generation (often identical to `display_text`); ignore unless `display_text` is missing or materially less complete.
 - `statement_code`: optional source-framework code for the item; use only as a traceability hint.
 - `topic_context`: optional structural context (for example stage/thread/topic path) — use it only to disambiguate the expectation.
 - `aux_statements`: optional guidance/descriptor text — use it only as supporting context and do NOT decompose it directly unless it clearly clarifies the expectation.
@@ -542,9 +544,11 @@ HARD RULES:
 3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
 4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
 5. Do NOT invent prerequisites or unrelated skills.
-6. `description` MUST follow this output-language instruction: {display_language}.
-7. No duplicate skills within an SFI (dedupe by description meaning).
-8. Keep rationales brief (1–2 sentences max). {rationale_req}
+6. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this batch default: {display_language}.
+7. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
+8. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
+9. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
+10. Keep rationales brief (1–2 sentences max). {rationale_req}
 """
     )
 

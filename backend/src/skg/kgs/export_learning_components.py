@@ -785,7 +785,8 @@ def _finalize_lc_export(
 
 
 def _format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
-    """Format a BCP-47 language tag as a human-friendly language name for prompts.
+    """Format a BCP-47 language tag as a human-friendly language name for prompts. We
+    still attempt to resolve unknown codes via `pycountry`.
 
     Parameters
     ----------
