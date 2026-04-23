@@ -328,7 +328,6 @@ def _build_single_prompt_item(
     display_text = normalize_ws(sfi.description or "")
     id_source_text = normalize_ws(metadata.get("normalized_text") or "") or display_text
     trimmed_display_text = _trim_text(max_chars=2000, s=display_text or id_source_text)
-    trimmed_id_source_text = _trim_text(max_chars=2000, s=id_source_text)
     payload: dict[str, Any] = {
         "display_text": trimmed_display_text,
         "language_instruction": _resolve_lc_prompt_language_instruction(
@@ -339,9 +338,6 @@ def _build_single_prompt_item(
 
     if sfi.statement_code:
         payload["statement_code"] = sfi.statement_code
-
-    if trimmed_id_source_text and trimmed_id_source_text != trimmed_display_text:
-        payload["id_source_text"] = trimmed_id_source_text
 
     if config.lc_atomic_skills_include_topic_context:
         if topic_context := _extract_topic_context(metadata):
@@ -1032,7 +1028,7 @@ def _has_usable_text(sfi: StandardsFrameworkItem) -> bool:
 def _iter_expectation_sfis(
     items: Iterable[StandardsFrameworkItem],
 ) -> list[StandardsFrameworkItem]:
-    """Return a StandardsFrameworkItem that represents normative expectations.
+    """Return a list of StandardsFrameworkItems that represents normative expectations.
 
     Parameters
     ----------

@@ -499,9 +499,8 @@ def decompose_atomic_skills(
     items
         The list of prompt payload objects to decompose. Each item always includes
         `sfi_uuid` and `display_text`, may include item-specific
-        `language_instruction`, and may also include `id_source_text`,
-        `statement_code`, `topic_context`, and `aux_statements` when those hints are
-        available.
+        `language_instruction`, and may also include `statement_code`, `topic_context`,
+        and `aux_statements` when those hints are available.
     max_per_sfi
         The maximum number of skills to return per SFI to keep the graph manageable.
     min_per_sfi
@@ -533,7 +532,6 @@ INPUT FIELDS (per SFI):
 - `sfi_uuid`: the StandardsFrameworkItem UUID you must echo back exactly for that item.
 - `display_text`: the human-readable expectation statement — base your decomposition on THIS field.
 - `language_instruction`: optional item-specific output-language instruction. If present, it OVERRIDES the batch default.
-- `id_source_text`: optional stable canonical text used for ID generation (often identical to `display_text`); ignore unless `display_text` is missing or materially less complete.
 - `statement_code`: optional source-framework code for the item; use only as a traceability hint.
 - `topic_context`: optional structural context (for example stage/thread/topic path) — use it only to disambiguate the expectation.
 - `aux_statements`: optional guidance/descriptor text — use it only as supporting context and do NOT decompose it directly unless it clearly clarifies the expectation.
