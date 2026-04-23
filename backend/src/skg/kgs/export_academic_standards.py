@@ -1295,11 +1295,14 @@ def _compute_export_children(
             parent_id == ctx.root_id
             or _is_grouping_role(config=config, role=parent_role)
         ):
-            # Count aux nodes before re-parenting to detect orphans.
+            # Count only attachable aux nodes before re-parenting. Standalone aux
+            # configured as non-attachable are not failed attachments and therefore
+            # should not contribute to orphan/reparent statistics.
             aux_before = sum(
                 1
                 for cid in ordered_emitted_kids
                 if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                and _is_attachable(config=config, role=ctx.nodes_by_id[cid]["role"])
             )
 
             new_kids, child_aux_consumed = _reparent_aux_nodes_under_expectations(
@@ -1312,10 +1315,14 @@ def _compute_export_children(
                 ordered_kids=ordered_emitted_kids,
             )
 
-            # Aux nodes that ended up in `new_kids` had no preceding expectation
-            # (orphans).
+            # Only attachable aux nodes that remain in `new_kids` lacked a preceding
+            # expectation and therefore count as true orphan attachments. Aux nodes
+            # configured to remain standalone SFIs are intentionally excluded.
             orphan_ids_in_batch = {
-                cid for cid in new_kids if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                cid
+                for cid in new_kids
+                if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                and _is_attachable(config=config, role=ctx.nodes_by_id[cid]["role"])
             }
             sibling_aux_reparented_count += aux_before - len(orphan_ids_in_batch)
             child_layout_aux_attached_count += child_aux_consumed
@@ -2701,6 +2708,11 @@ def _process_sibling_group(
 ) -> tuple[int, int]:
     """Processes a single group of sibling nodes, attaching aux nodes to expectations.
 
+    Only aux nodes whose role is configured to attach are eligible to become tracked
+    "orphans" in this pass. Aux roles configured to remain standalone SFIs (e.g.,
+    `export_as_sfi_other`) are intentionally ignored by orphan bookkeeping because they
+    are not failed attachments.
+
     Parameters
     ----------
     attached_aux_node_ids
@@ -2743,16 +2755,16 @@ def _process_sibling_group(
         if role not in AUX_ROLES:
             continue
 
-        # Guard: If no expectation precedes this aux node, it is an orphan.
+        # Only aux roles configured for attachment participate in orphan tracking.
+        if not _is_attachable(config=config, role=role):
+            continue
+
+        # Guard: If no expectation precedes this attachable aux node, it is an orphan.
         if not last_expectation:
             if cid not in orphan_aux_node_ids:
                 orphan_aux_node_ids.add(cid)
                 orphan_count += 1
 
-            continue
-
-        # Guard: Check if the role is configured to be attachable.
-        if not _is_attachable(config=config, role=role):
             continue
 
         if cid not in attached_aux_node_ids:
@@ -2766,7 +2778,6 @@ def _process_sibling_group(
         ):
             continue
 
-        # If all guards pass, attach the payload.
         aux_nodes_attached_to_expectation[last_expectation].append(
             _build_aux_payload(aux_node_id=cid, ctx=ctx, prefer_en=prefer_en)
         )
@@ -4048,14 +4059,14 @@ def _verify_standards_export(
         assertion.
 
     2. Ordering mismatch failure
-        Suppose relationships imply:
+        Suppose relationships imply the ordered children:
 
-            parent P -> children [A, B]
+            parent P -> [A, B]
 
-        but `parent_to_children[P] == [A]`.
+        but `parent_to_children[P] == [B, A]` or `parent_to_children[P] == [A]`.
 
-        Then verification fails because the hierarchy-order artifact does not match the
-        exported hasChild edges.
+        Then verification fails because the hierarchy-order artifact does not exactly
+        match the exported hasChild edge order.
 
     3. Reachability failure
         Suppose an expectation SFI `E1` was emitted, but due to a hoisting bug it is
@@ -4100,18 +4111,19 @@ def _verify_standards_export(
         )
 
     # Check ordering integrity.
-    rel_children_by_parent: DefaultDict[str, set[str]] = defaultdict(set)
+    rel_children_by_parent: DefaultDict[str, list[str]] = defaultdict(list)
 
     for r in relationships:
         if r.relationship_type == HAS_CHILD:
-            rel_children_by_parent[r.source_entity_value].add(r.target_entity_value)
+            rel_children_by_parent[r.source_entity_value].append(r.target_entity_value)
 
     for parent, kids in rel_children_by_parent.items():
         ordered = parent_to_children.get(parent)
         assert ordered is not None, f"Missing hierarchy order for parent: {parent}"
-        assert set(ordered) == set(
-            kids
-        ), f"Hierarchy order child set mismatch for parent: {parent}"
+        assert ordered == kids, (
+            f"Hierarchy order mismatch for parent: {parent}. "
+            f"Expected ordered children {ordered}, got {kids}."
+        )
 
     # Check reachability: every emitted SFI must be reachable from the framework root
     # via hasChild edges. This catches orphans caused by pruning/filters.
@@ -4127,11 +4139,11 @@ def _verify_standards_export(
     while stack:
         cur = stack.pop()
 
-        if cur not in visited:
-            visited.add(cur)
+        if cur in visited:
+            continue
 
-            # Add all unvisited neighbors at once.
-            stack.extend(n for n in adj.get(cur, []) if n not in visited)
+        visited.add(cur)
+        stack.extend(adj.get(cur, []))
 
     reachable_sfis = visited - {fw_id}
     missing = sfi_ids - reachable_sfis
