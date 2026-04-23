@@ -494,8 +494,9 @@ def decompose_atomic_skills(
     Parameters
     ----------
     default_language_instruction
-        Batch-level default instruction describing what language the skill descriptions
-        should use when an item does not provide its own language instruction.
+        Neutral fallback instruction used only when an item does not provide its own
+        `language_instruction`. This should not be derived from any particular SFI in
+        the batch.
     items
         The list of prompt payload objects to decompose. Each item always includes
         `sfi_uuid` and `display_text`, may include item-specific
@@ -531,7 +532,7 @@ OUTPUT FORMAT:
 INPUT FIELDS (per SFI):
 - `sfi_uuid`: the StandardsFrameworkItem UUID you must echo back exactly for that item.
 - `display_text`: the human-readable expectation statement — base your decomposition on THIS field.
-- `language_instruction`: optional item-specific output-language instruction. If present, it OVERRIDES the batch default.
+- `language_instruction`: optional item-specific output-language instruction. If present, it OVERRIDES the neutral fallback instruction.
 - `statement_code`: optional source-framework code for the item; use only as a traceability hint.
 - `topic_context`: optional structural context (for example stage/thread/topic path) — use it only to disambiguate the expectation.
 - `aux_statements`: optional guidance/descriptor text — use it only as supporting context and do NOT decompose it directly unless it clearly clarifies the expectation.
@@ -542,7 +543,7 @@ HARD RULES:
 3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
 4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
 5. Do NOT invent prerequisites or unrelated skills.
-6. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this batch default: {default_language_instruction}.
+6. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this neutral fallback instruction: {default_language_instruction}.
 7. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
 8. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
 9. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).

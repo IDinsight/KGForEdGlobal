@@ -35,13 +35,15 @@ from skg.schemas import CreateKGConfig
 from skg.utils.constants import LANG_PRIMARY_CODE_TO_NAME
 from skg.utils.general import open_json_type, write_to_json
 
-SUPPORTS = "supports"
+_DEFAULT_LC_PROMPT_LANGUAGE_INSTRUCTION = "the same language as the input text"
 
 # Inline bullets: exclude hyphen/dash so we never split hyphenated words.
 _INLINE_BULLET_CHARS = r"[\u2022\u00b7•·\*]"
 
 # Line bullets: allow hyphen/dash, but we only treat them as bullets at line-start.
 _LINE_BULLET_CHARS = r"[\u2022\u00b7•·\-\–\—\*]"
+
+SUPPORTS = "supports"
 
 
 @dataclass
@@ -1139,9 +1141,7 @@ def _process_atomic_skills_batch(
         for sfi in batch
     ]
     prompt = decompose_atomic_skills(
-        default_language_instruction=_resolve_lc_prompt_language_instruction(
-            config=config, fw_metadata=fw_metadata, sfi=batch[0]
-        ),
+        default_language_instruction=_DEFAULT_LC_PROMPT_LANGUAGE_INSTRUCTION,
         items=prompt_items,
         max_per_sfi=max_splits,
         min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
