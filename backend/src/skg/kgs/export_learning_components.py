@@ -986,10 +986,10 @@ def _handle_atomic_skills_success(
         critical bug in the data handling logic.
     """
 
+    fallback_uuids: list[str] = []
     lcs: list[LearningComponent] = []
     rels: list[Relationship] = []
     splits: defaultdict[int, int] = defaultdict(int)
-    fallback_uuids: list[str] = []
 
     for sfi_idx, sfi in enumerate(batch, start=1):
         sfi_uuid_str = str(sfi.case_identifier_uuid)
