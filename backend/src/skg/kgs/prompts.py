@@ -501,7 +501,7 @@ def decompose_atomic_skills(
         The list of prompt payload objects to decompose. Each item always includes
         `sfi_uuid` and `display_text`, may include item-specific
         `language_instruction`, and may also include `statement_code`, `topic_context`,
-        and `aux_statements` when those hints are available.
+        `aux_statements`, etc. when those hints are available.
     max_per_sfi
         The maximum number of skills to return per SFI to keep the graph manageable.
     min_per_sfi
