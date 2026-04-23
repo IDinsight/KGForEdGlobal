@@ -1139,7 +1139,7 @@ def _process_atomic_skills_batch(
         for sfi in batch
     ]
     prompt = decompose_atomic_skills(
-        display_language=_resolve_lc_prompt_language_instruction(
+        default_language_instruction=_resolve_lc_prompt_language_instruction(
             config=config, fw_metadata=fw_metadata, sfi=batch[0]
         ),
         items=prompt_items,
@@ -1275,7 +1275,7 @@ def _resolve_lc_output_language_tag(
 def _resolve_lc_prompt_language_instruction(
     *, config: CreateKGConfig, fw_metadata: dict[str, Any], sfi: StandardsFrameworkItem
 ) -> str:
-    """Resolve the human-readable output-language instruction for LC prompts.
+    """Resolve the output-language instruction for LC prompts.
 
     Parameters
     ----------
@@ -1289,8 +1289,8 @@ def _resolve_lc_prompt_language_instruction(
     Returns
     -------
     str
-        Human-readable prompt instruction describing what language the LLM should use
-        for emitted atomic skill descriptions for this specific SFI.
+        Prompt instruction describing what language the LLM should use for emitted
+        atomic skill descriptions for this specific SFI.
     """
 
     policy = normalize_ws(str(config.lc_output_language_policy or "source")).lower()

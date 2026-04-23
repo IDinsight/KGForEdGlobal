@@ -483,7 +483,7 @@ def cross_stage_relates_to(
 
 def decompose_atomic_skills(
     *,
-    display_language: str,
+    default_language_instruction: str,
     items: list[dict[str, Any]],
     max_per_sfi: int,
     min_per_sfi: int,
@@ -493,7 +493,7 @@ def decompose_atomic_skills(
 
     Parameters
     ----------
-    display_language
+    default_language_instruction
         Batch-level default instruction describing what language the skill descriptions
         should use when an item does not provide its own language instruction.
     items
@@ -542,7 +542,7 @@ HARD RULES:
 3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
 4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
 5. Do NOT invent prerequisites or unrelated skills.
-6. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this batch default: {display_language}.
+6. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this batch default: {default_language_instruction}.
 7. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
 8. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
 9. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
