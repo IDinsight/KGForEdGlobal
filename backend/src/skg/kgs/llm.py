@@ -2,49 +2,164 @@
 Progressions KG inference via LLM.
 
 The Agent definitions and output-validation wiring live in `agents.py`. This module is
-responsible for prompt construction, creating fresh agents, running them with the user
-message, and returning the validated structured output.
+responsible for prompt construction, creating fresh agents, running the initial agent,
+then always running a separate validation agent that reviews the initial structured
+output against the original task context.
 
 Orchestration flow
 ------------------
 
-1. Build a fresh agent via the appropriate factory in `agents.py`.
-2. Run the agent with the user message. The agent's internal output validator handles
-   quality checks (including the optional "double-check first attempt" forced retry)
-   via `ModelRetry`.
-3. Return the validated structured output.
+1. Build and run a fresh initial agent via the appropriate factory in `agents.py`.
+2. Let that agent's internal output validator handle Python-side quality checks via
+   `ModelRetry`.
+3. Build and run a fresh validation agent in a separate conversation using the
+   original instructions, original user payload, and the initial structured output.
+4. Return the validation agent's final structured output.
 """
 
 # Standard Library
-from typing import Callable, Optional
+from typing import Optional
 
 # Third Party Library
 from loguru import logger
 
 # Package Library
 from skg.config import Settings
-from skg.kgs.agents import create_atomic_skills_agent, create_progression_edges_agent
+from skg.kgs.agents import (
+    create_atomic_skills_agent,
+    create_atomic_skills_validation_agent,
+    create_progression_edges_agent,
+    create_progression_edges_validation_agent,
+)
+from skg.kgs.prompts import (
+    validate_atomic_skills_output,
+    validate_progression_edges_output,
+)
 from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
+from skg.kgs.validators import AtomicSkillsValidator, ProgressionEdgesValidator
+
+
+def _run_atomic_skills_validation_agent(
+    *,
+    draft_output: AtomicSkillsResponse,
+    instructions: str,
+    max_retries: int,
+    user_message: str,
+    validator: Optional[AtomicSkillsValidator] = None,
+) -> AtomicSkillsResponse:
+    """Run the atomic-skills validation agent on an already-validated draft output.
+
+    Parameters
+    ----------
+    draft_output
+        The output from the initial agent pass, which should already be validated by
+        the agent's internal validator.
+    instructions
+        The original system instructions to include in the prompt for the validation
+        agent.
+    max_retries
+        Maximum number of retries for quality errors on the validation agent.
+    user_message
+        The original primary user payload as a string, to include in the validation
+        agent prompt.
+    validator
+        Optional post-parse validator for the validation agent; raise `QualityError` to
+        trigger correction and retry.
+
+    Returns
+    -------
+    AtomicSkillsResponse
+        Structured atomic skills list after the validation-agent review pass.
+    """
+
+    logger.info("Running atomic skills validation agent...")
+
+    prompts = validate_atomic_skills_output(
+        draft_response_json=draft_output.model_dump_json(),
+        original_instructions=instructions,
+        original_user_message=user_message,
+    )
+    agent = create_atomic_skills_validation_agent(
+        instructions=prompts.system_message,
+        max_retries=max_retries,
+        model_config=Settings.llm_config("kgs"),
+        validator=validator,
+    )
+    result = agent.run_sync(prompts.user_message)
+
+    logger.success("Atomic skills validation succeeded!")
+
+    return result.output
+
+
+def _run_progression_edges_validation_agent(
+    *,
+    draft_output: ProgressionEdgesResponse,
+    instructions: str,
+    max_retries: int,
+    user_message: str,
+    validator: Optional[ProgressionEdgesValidator] = None,
+) -> ProgressionEdgesResponse:
+    """Run the progression-edges validation agent on an already-validated draft output.
+
+    Parameters
+    ----------
+    draft_output
+        The output from the initial agent pass, which should already be validated by
+        the agent's internal validator.
+    instructions
+        The original system instructions to include in the prompt for the validation
+        agent.
+    max_retries
+        Maximum number of retries for quality errors on the validation agent.
+    user_message
+        The original primary user payload as a string, to include in the validation
+        agent prompt.
+    validator
+        Optional post-parse validator for the validation agent; raise `QualityError` to
+        trigger correction and retry.
+
+    Returns
+    -------
+    ProgressionEdgesResponse
+        Structured progression edges list after the validation-agent review pass.
+    """
+
+    logger.info("Running learning progression validation agent...")
+
+    prompts = validate_progression_edges_output(
+        draft_response_json=draft_output.model_dump_json(),
+        original_instructions=instructions,
+        original_user_message=user_message,
+    )
+    agent = create_progression_edges_validation_agent(
+        instructions=prompts.system_message,
+        max_retries=max_retries,
+        model_config=Settings.llm_config("kgs"),
+        validator=validator,
+    )
+    result = agent.run_sync(prompts.user_message)
+
+    logger.success("Learning progression validation succeeded!")
+
+    return result.output
 
 
 def infer_atomic_skills(
     *,
-    always_double_check_first_attempt: bool,
     instructions: str,
     max_retries: int = 3,
     user_message: str,
-    validator: Optional[Callable[[AtomicSkillsResponse], None]] = None,
+    validator: Optional[AtomicSkillsValidator] = None,
 ) -> AtomicSkillsResponse:
-    """Call the LLM and return parsed/validated atomic skills.
+    """Call the LLM and return final reviewed atomic skills.
 
     Parameters
     ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     instructions
-        The system instructions to include in the prompt for the LLM.
+        The system instructions to include in the prompt for the initial LLM call.
     max_retries
-        Maximum number of retries for quality errors.
+        Maximum number of retries for quality errors on each agent pass.
     user_message
         The primary user payload as a string.
     validator
@@ -53,11 +168,10 @@ def infer_atomic_skills(
     Returns
     -------
     AtomicSkillsResponse
-        Structured atomic skills list.
+        Structured atomic skills list after the validation-agent review pass.
     """
 
     agent = create_atomic_skills_agent(
-        always_double_check_first_attempt=always_double_check_first_attempt,
         instructions=instructions,
         max_retries=max_retries,
         model_config=Settings.llm_config("kgs"),
@@ -68,29 +182,32 @@ def infer_atomic_skills(
 
     result = agent.run_sync(user_message)
 
-    logger.success("Atomic skills inference succeeded!")
+    logger.success("Atomic skills initial inference succeeded!")
 
-    return result.output
+    return _run_atomic_skills_validation_agent(
+        draft_output=result.output,
+        instructions=instructions,
+        max_retries=max_retries,
+        user_message=user_message,
+        validator=validator,
+    )
 
 
 def infer_progression_edges(
     *,
-    always_double_check_first_attempt: bool,
     instructions: str,
     max_retries: int = 3,
     user_message: str,
-    validator: Optional[Callable[[ProgressionEdgesResponse], None]] = None,
+    validator: Optional[ProgressionEdgesValidator] = None,
 ) -> ProgressionEdgesResponse:
-    """Call the LLM and return parsed/validated edges.
+    """Call the LLM and return final reviewed progression edges.
 
     Parameters
     ----------
-    always_double_check_first_attempt
-        Whether to force a retry on the first attempt. Useful for difficult/messy pages.
     instructions
-        The system instructions to include in the prompt for the LLM.
+        The system instructions to include in the prompt for the initial LLM call.
     max_retries
-        Maximum number of retries for quality errors.
+        Maximum number of retries for quality errors on each agent pass.
     user_message
         The primary user payload as a string.
     validator
@@ -99,11 +216,10 @@ def infer_progression_edges(
     Returns
     -------
     ProgressionEdgesResponse
-        Structured edges list.
+        Structured edges list after the validation-agent review pass.
     """
 
     agent = create_progression_edges_agent(
-        always_double_check_first_attempt=always_double_check_first_attempt,
         instructions=instructions,
         max_retries=max_retries,
         model_config=Settings.llm_config("kgs"),
@@ -114,6 +230,12 @@ def infer_progression_edges(
 
     result = agent.run_sync(user_message)
 
-    logger.success("Learning progressions inference succeeded!")
+    logger.success("Learning progressions initial inference succeeded!")
 
-    return result.output
+    return _run_progression_edges_validation_agent(
+        draft_output=result.output,
+        instructions=instructions,
+        max_retries=max_retries,
+        user_message=user_message,
+        validator=validator,
+    )

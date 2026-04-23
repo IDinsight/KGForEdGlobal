@@ -1,5 +1,5 @@
 """This module contains prompt templates for learning components and learning
-progressions inference.
+progressions inference, including second-pass validation prompts.
 """
 
 # Standard Library
@@ -565,8 +565,23 @@ INPUT SFIs (JSON):
     return PromptPair(system_message=system_message, user_message=user_message)
 
 
-def double_check_atomic_skills() -> PromptPair:
-    """Extra user message to trigger a careful second pass for atomic skills.
+def validate_atomic_skills_output(
+    *, draft_response_json: str, original_instructions: str, original_user_message: str
+) -> PromptPair:
+    """Generate prompts for validating an AtomicSkillsResponse.
+
+    The validation agent reviews a draft AtomicSkillsResponse against the original
+    instructions and original user payload, then returns the final corrected
+    AtomicSkillsResponse.
+
+    Parameters
+    ----------
+    draft_response_json
+        The serialized draft AtomicSkillsResponse produced by the initial agent.
+    original_instructions
+        The system instructions used for the initial agent.
+    original_user_message
+        The original user payload sent to the initial agent.
 
     Returns
     -------
@@ -574,50 +589,121 @@ def double_check_atomic_skills() -> PromptPair:
         A PromptPair containing 'system_message' and 'user_message'.
     """
 
-    user_message = dedent(
-        """**Hmmmm, are you absolutely sure of your results?**
+    system_message = dedent(
+        """You are a quality-assurance agent for curriculum atomic-skill decomposition.
 
-Carefully review your last output against the instructions and double-check:
+You will receive:
+1. The original system instructions used for the first-pass agent.
+2. The original user payload.
+3. A draft AtomicSkillsResponse JSON produced by that first-pass agent.
 
-1. Output is valid JSON and matches AtomicSkillsResponse exactly.
-2. Every input `sfi_uuid` appears exactly once in `items`.
-3. Each SFI has 1..N skills within the specified bounds.
-4. `description` is an atomic skill (not an activity/resource) in the required language.
-5. No duplicates within an SFI.
+Your job is to audit the draft carefully against the original task and return the FINAL AtomicSkillsResponse.
 
-Return a complete corrected AtomicSkillsResponse object."""
-    )
-
-    return PromptPair(system_message="", user_message=user_message)
-
-
-def double_check_learning_progressions() -> PromptPair:
-    """Extra user message to trigger a careful second pass.
-
-    Returns
-    -------
-    PromptPair
-        A PromptPair containing 'system_message' and 'user_message'.
-    """
-
-    user_message = dedent(
-        """**Hmmmm, are you absolutely sure of your results?**
-
-It's a good idea to carefully review your last output against the stated instructions and double-check your response.
-
-In particular, ensure that:
-
-1. The output matches the schema exactly.
-2. All SFI UUIDs exist in the provided input lists.
-3. No self-edges (source == target).
-4. You followed the provided rules (direction constraints, forbidden pairs, etc.).
-5. Confidence is calibrated conservatively; avoid "over-linking".
-
-When you are confident in your answer, return a complete `ProgressionEdgesResponse` that matches the schema and fixes any issues you might've overlooked or incorrect assumptions you might've made.
+RULES:
+- Return ONLY valid JSON matching the AtomicSkillsResponse schema.
+- Preserve correct content from the draft whenever possible; make targeted fixes rather than rewriting needlessly.
+- If the draft is already correct, you may return it unchanged.
+- Use ONLY SFI UUIDs from the original input payload.
+- Ensure every input `sfi_uuid` appears exactly once.
+- Respect all original bounds and requirements (skill count limits, language guidance, rationale requirement if present, no duplicate skills within an SFI).
+- Skills must remain atomic, actionable, and measurable. Do not add activities, resources, or unrelated skills.
+- Do not include commentary, markdown, or explanations outside the JSON object.
         """
     )
 
-    return PromptPair(system_message="", user_message=user_message.strip())
+    user_message = dedent(
+        f"""Audit the following atomic-skills output and return the final AtomicSkillsResponse.
+
+## Original system instructions
+```text
+{original_instructions}
+```
+
+## Original user payload
+```json
+{original_user_message}
+```
+
+## Draft AtomicSkillsResponse
+```json
+{draft_response_json}
+```
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def validate_progression_edges_output(
+    *, draft_response_json: str, original_instructions: str, original_user_message: str
+) -> PromptPair:
+    """Generate prompts for validating a ProgressionEdgesResponse.
+
+    The validation agent reviews a draft ProgressionEdgesResponse against the original
+    instructions and original user payload, then returns the final corrected
+    ProgressionEdgesResponse.
+
+    Parameters
+    ----------
+    draft_response_json
+        The serialized draft ProgressionEdgesResponse produced by the initial agent.
+    original_instructions
+        The system instructions used for the initial agent.
+    original_user_message
+        The original user payload sent to the initial agent.
+
+    Returns
+    -------
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
+    """
+
+    system_message = dedent(
+        """You are a quality-assurance agent for curriculum progression-edge inference.
+
+You will receive:
+1. The original system instructions used for the first-pass agent.
+2. The original user payload.
+3. A draft ProgressionEdgesResponse JSON produced by that first-pass agent.
+
+Your job is to audit the draft carefully against the original task and return the FINAL ProgressionEdgesResponse.
+
+RULES:
+- Return ONLY valid JSON matching the ProgressionEdgesResponse schema.
+- Preserve correct edges from the draft whenever possible; make targeted fixes rather than rewriting needlessly.
+- If the draft is already correct, you may return it unchanged.
+- Use ONLY SFI UUIDs that appear in the original input payload.
+- Respect all original task constraints, including directionality, cross-list membership rules, forbidden-pair exclusions, ordering constraints, sparsity expectations, and confidence calibration.
+- Do not add weak or speculative edges just to increase recall.
+- Do not include commentary, markdown, or explanations outside the JSON object.
+        """
+    )
+
+    user_message = dedent(
+        f"""Audit the following progression-edges output and return the final ProgressionEdgesResponse.
+
+## Original system instructions
+```text
+{original_instructions}
+```
+
+## Original user payload
+```json
+{original_user_message}
+```
+
+## Draft ProgressionEdgesResponse
+```json
+{draft_response_json}
+```
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
 
 
 def within_grade_builds_towards(

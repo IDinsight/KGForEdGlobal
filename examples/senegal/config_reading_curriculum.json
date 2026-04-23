@@ -43,7 +43,6 @@
 		"overwrite": true
 	},
 	"kgs": {
-		"always_double_check_first_attempt": false,
 		"generate_learning_progressions": true,
 		"overwrite": false,
 		"as_academic_subject_default": "Langue et Communication",

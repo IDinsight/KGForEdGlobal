@@ -1,15 +1,22 @@
-"""This module contains functionalities related to validating Learning Progressions KG
-information.
+"""This module contains validators and validator type aliases for Learning Components
+and Learning Progressions KG inference. These validators are reused by both the initial
+inference agents and the second-pass validation agents.
 """
 
 # Standard Library
-from typing import Any
+from typing import Any, Callable, TypeAlias
 from uuid import UUID
 
 # Package Library
 from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
 from skg.kgs.utils import canon_str_pair
 from skg.page_ir_extraction.validators import QualityError
+
+AtomicSkillsValidator: TypeAlias = Callable[[AtomicSkillsResponse], None]
+"""Callable signature for validating an AtomicSkillsResponse."""
+
+ProgressionEdgesValidator: TypeAlias = Callable[[ProgressionEdgesResponse], None]
+"""Callable signature for validating a ProgressionEdgesResponse."""
 
 
 def _check_common_edge_invariants(

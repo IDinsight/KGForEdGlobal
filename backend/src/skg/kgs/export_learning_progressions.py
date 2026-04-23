@@ -1671,7 +1671,6 @@ def _infer_within_grade_builds_towards(
         allowed = set(pos.keys())
 
         response = infer_progression_edges(
-            always_double_check_first_attempt=config.always_double_check_first_attempt,
             instructions=prompt.system_message,
             user_message=prompt.user_message,
             validator=partial(
@@ -1884,7 +1883,6 @@ def _infer_within_grade_relates_to(
         )
 
         resp_ab = infer_progression_edges(
-            always_double_check_first_attempt=config.always_double_check_first_attempt,
             instructions=prompt_ab.system_message,
             user_message=prompt_ab.user_message,
             validator=partial(
@@ -1915,7 +1913,6 @@ def _infer_within_grade_relates_to(
         )
 
         resp_ba = infer_progression_edges(
-            always_double_check_first_attempt=config.always_double_check_first_attempt,
             instructions=prompt_ba.system_message,
             user_message=prompt_ba.user_message,
             validator=partial(
@@ -2791,7 +2788,6 @@ def _process_builds_towards_work_item(
     allowed_hi = {str(it["sfi_uuid"]) for it in upper_payload}
 
     response = infer_progression_edges(
-        always_double_check_first_attempt=config.always_double_check_first_attempt,
         instructions=prompt.system_message,
         user_message=prompt.user_message,
         validator=partial(
@@ -2942,7 +2938,6 @@ def _process_relates_to_work_item(
     )
 
     resp_lo_hi = infer_progression_edges(
-        always_double_check_first_attempt=config.always_double_check_first_attempt,
         instructions=prompt_lo_hi.system_message,
         user_message=prompt_lo_hi.user_message,
         validator=partial(
@@ -2976,7 +2971,6 @@ def _process_relates_to_work_item(
     )
 
     resp_hi_lo = infer_progression_edges(
-        always_double_check_first_attempt=config.always_double_check_first_attempt,
         instructions=prompt_hi_lo.system_message,
         user_message=prompt_hi_lo.user_message,
         validator=partial(

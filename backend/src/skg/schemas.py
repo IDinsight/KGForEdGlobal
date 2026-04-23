@@ -491,10 +491,6 @@ class CreateKGConfig(BaseSchema):
     2. namespace_uuid MUST be pinned and never changed once you start generating IDs.
     """
 
-    always_double_check_first_attempt: bool = Field(
-        False,
-        description="Force LLM retry on first attempt. Useful for difficult/messy PDFs.",
-    )
     as_academic_subject_default: str = Field(
         description=(
             "Default high-level academic subject classification for the framework "

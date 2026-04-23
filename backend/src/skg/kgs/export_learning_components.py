@@ -1107,7 +1107,6 @@ def _process_atomic_skills_batch(
 
     try:
         parsed = infer_atomic_skills(
-            always_double_check_first_attempt=config.always_double_check_first_attempt,
             instructions=prompt.system_message,
             user_message=prompt.user_message,
             validator=partial(
