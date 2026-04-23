@@ -472,8 +472,9 @@ def _create_lcs_from_atomic_skills(
 
     NB:
 
-    1. Skill ordering is based on stable_text_hash (description).
-    2. LC UUID seed uses split_hash derived from description.
+    1. Skill ordering preserves the validated LLM/source order.
+    2. Deduplication uses the same canonical text normalization as `stable_text_hash()`.
+    3. LC UUID seed uses split_hash derived from description.
 
     Parameters
     ----------
@@ -494,7 +495,7 @@ def _create_lcs_from_atomic_skills(
         allowed SFI UUIDs, min/max skills per SFI, presence of rationale if required).
         Each skill will be transformed into a LearningComponent entity, with
         deterministic UUID generation based on the skill description and its position
-        in the list.
+        in the validated LLM/source order.
 
     Returns
     -------
@@ -505,47 +506,42 @@ def _create_lcs_from_atomic_skills(
         ensure stable IDs across runs.
     """
 
-    policy = "llm_atomic_skills"
-    md = sfi.metadata or {}
-    provenance = _build_provenance_from_sfi(md)
     max_splits = int(config.lc_max_splits_per_standard)
     norm_skills: list[tuple[str, str]] = []
+    policy = "llm_atomic_skills"
+    provenance = _build_provenance_from_sfi(sfi.metadata or {})
 
-    for sk in skills:
-        desc = normalize_ws(str(sk.get("description") or ""))
-        rat = (
-            normalize_ws(str(sk.get("rationale") or ""))
-            if sk.get("rationale") is not None
+    for skill in skills:
+        description = normalize_ws(str(skill.get("description") or ""))
+        rationale = (
+            normalize_ws(str(skill.get("rationale") or ""))
+            if skill.get("rationale") is not None
             else ""
         )
 
-        if desc:
-            norm_skills.append((desc, rat))
+        if description:
+            norm_skills.append((description, rationale))
 
     if not norm_skills:
         return []
 
-    keyed: list[tuple[str, str, str]] = []
-
-    for desc, rat in norm_skills:
-        h = stable_text_hash(s=desc)
-        keyed.append((h, desc, rat))
-
-    keyed.sort(key=lambda t: t[0])
-
-    # Deduplicate by the exact same canonicalization used by `stable_text_hash()` so
-    # de-dupe semantics stay aligned with the LC ID text hashing policy.
+    # Preserve the validated LLM/source order. The prompt asks the model to decompose
+    # each source expectation into meaningful atomic skills, so the returned order is
+    # the best available semantic order. We still deduplicate deterministically, but we
+    # do NOT sort by hash before truncation; otherwise `lc_max_splits_per_standard`
+    # would keep an arbitrary hash-ordered subset rather than the first N skills in the
+    # model/source order.
+    deduped: list[tuple[str, str]] = []
     seen_desc: set[str] = set()
-    deduped: list[tuple[str, str, str]] = []
 
-    for h, desc, rat in keyed:
-        canonical_desc = canonicalize_stable_text(desc)
+    for description, rationale in norm_skills:
+        canonical_desc = canonicalize_stable_text(description)
 
         if canonical_desc in seen_desc:
             continue
 
+        deduped.append((description, rationale))
         seen_desc.add(canonical_desc)
-        deduped.append((h, desc, rat))
 
     truncated = False
 
@@ -553,26 +549,22 @@ def _create_lcs_from_atomic_skills(
         deduped = deduped[:max_splits]
         truncated = True
 
-    final: list[tuple[str, str]] = [(desc, rat) for _, desc, rat in deduped]
-
     lcs: list[LearningComponent] = []
 
-    for i, (desc, rat) in enumerate(final):
+    for i, (description, rationale) in enumerate(deduped):
         lcs.append(
             _build_single_lc(
                 config=config,
-                description=desc,
+                description=description,
                 doc_key=doc_key,
-                extra_metadata={
-                    "llm_rationale": rat or None,
-                },
+                extra_metadata={"llm_rationale": rationale or None},
                 fw_metadata=fw_metadata,
                 id_source_kind="llm_atomic_skills.description",
                 policy=policy,
                 provenance=provenance,
                 sfi=sfi,
-                split_display_text=desc,
-                split_id_text=desc,
+                split_display_text=description,
+                split_id_text=description,
                 split_index=i,
                 truncated=truncated,
             )
@@ -1003,9 +995,9 @@ def _handle_atomic_skills_success(
 
         if not skills:
             raise ValueError(
-                f"BUG: SFI {sfi_uuid_str} passed validation but has no skills in "
-                f"skills_by_sfi. This indicates a mapping error between parsed_dict "
-                f"and skills_by_sfi."
+                f"ERROR: SFI {sfi_uuid_str} passed validation but has no skills in "
+                f"`skills_by_sfi`. This indicates a mapping error between `parsed_dict` "
+                f"and `skills_by_sfi`."
             )
 
         created = _create_lcs_from_atomic_skills(
@@ -1019,7 +1011,7 @@ def _handle_atomic_skills_success(
         if not created:
             logger.warning(
                 f"Atomic skills for SFI {sfi_uuid_str} produced 0 LCs "
-                f"after normalization/dedup; falling back to 1_to_1."
+                f"after normalization/dedup; falling back to `1_to_1` policy."
             )
             created = _create_lcs_for_expectation(
                 config=config,
