@@ -329,14 +329,15 @@ def _build_single_prompt_item(
     dict[str, Any]
         A dictionary representing the SFI with the fields needed for the atomic-skills
         decomposition prompt. Includes an item-specific language instruction so
-        mixed-language batches can still be handled correctly.
+        mixed-language batches can still be handled correctly. The full untrimmed
+        source text is intentionally NOT included here; validator grounding carries it
+        separately to avoid inflating the prompt.
     """
 
     metadata = sfi.metadata or {}
-    display_text = normalize_ws(sfi.description or "")
-    fallback_text = normalize_ws(metadata.get("normalized_text") or "") or display_text
+    source_text = _resolve_prompt_source_text(sfi)
     trimmed_display_text, display_text_was_truncated, display_text_original_length = (
-        _trim_text_with_debug(max_chars=2000, s=display_text or fallback_text)
+        _trim_text_with_debug(max_chars=2000, s=source_text)
     )
 
     payload: dict[str, Any] = {
@@ -1176,7 +1177,13 @@ def _process_atomic_skills_batch(
     )
 
     allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
-    source_items_by_uuid = {UUID(str(item["sfi_uuid"])): item for item in prompt_items}
+    source_items_by_uuid = {
+        UUID(str(sfi.case_identifier_uuid)): {
+            **item,
+            "full_source_text": _resolve_prompt_source_text(sfi),
+        }
+        for sfi, item in zip(batch, prompt_items)
+    }
     batch_debug: dict[str, Any] = {
         "batch_index": batch_index,
         "error": None,
@@ -1382,6 +1389,30 @@ def _resolve_lc_text_sources(
         id_source_kind = normalize_ws(id_source_kind_override)
 
     return display_text, id_source_text, id_source_kind, metadata
+
+
+def _resolve_prompt_source_text(sfi: StandardsFrameworkItem) -> str:
+    """Resolve the full untrimmed source text for atomic-skills prompting.
+
+    This centralizes the source-text selection logic so the prompt payload can use a
+    trimmed `display_text` for token control while validator grounding can still use
+    the full untrimmed source statement.
+
+    Parameters
+    ----------
+    sfi
+        The StandardsFrameworkItem representing the expectation.
+
+    Returns
+    -------
+    str
+        The full untrimmed source text that underlies the prompt `display_text`.
+    """
+
+    metadata = sfi.metadata or {}
+    display_text = normalize_ws(sfi.description or "")
+    fallback_text = normalize_ws(metadata.get("normalized_text") or "") or display_text
+    return display_text or fallback_text
 
 
 def _sort_lc_export_artifacts(

@@ -328,7 +328,8 @@ def _validate_single_skill(
     sk
         The skill object to validate.
     source_item
-        Optional source prompt item for source-aware heuristic checks.
+        Optional source prompt item or validator-grounding payload for source-aware
+        heuristic checks.
 
     Raises
     ------
@@ -362,7 +363,9 @@ def _validate_single_skill(
     desc_seen.add(norm_desc)
 
     if source_item is not None:
-        source_text = str(source_item.get("display_text") or "").strip()
+        source_text = str(
+            source_item.get("full_source_text") or source_item.get("display_text") or ""
+        ).strip()
 
         if source_text and _looks_like_whole_standard_echo(
             description=description, source_text=source_text
@@ -410,9 +413,10 @@ def validate_atomic_skills(
         If True, each skill must have a non-empty rationale. If False, rationales are
         optional and can be empty.
     source_items_by_uuid
-        Optional mapping from SFI UUID to the original prompt payload for that SFI.
-        When provided, the validator compares returned skills against the source
-        `display_text` to catch whole-standard echoes and similar low-quality outputs.
+        Optional mapping from SFI UUID to the original prompt payload or a
+        validator-grounding payload for that SFI. When provided, the validator compares
+        returned skills against `full_source_text` when available, otherwise against
+        `display_text`, to catch whole-standard echoes and similar low-quality outputs.
 
     Raises
     ------
