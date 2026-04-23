@@ -113,7 +113,7 @@ def create_atomic_skills_agent(
             trigger a retry.
         """
 
-        attempt = attempt_counter["value"]
+        attempt = attempt_counter["value"] + 1
 
         try:
             if validator is not None:
@@ -196,7 +196,7 @@ def create_atomic_skills_validation_agent(
             trigger a retry.
         """
 
-        attempt = attempt_counter["value"]
+        attempt = attempt_counter["value"] + 1
 
         try:
             if validator is not None:
@@ -276,7 +276,7 @@ def create_progression_edges_agent(
             trigger a retry.
         """
 
-        attempt = attempt_counter["value"]
+        attempt = attempt_counter["value"] + 1
 
         try:
             if validator is not None:
@@ -359,7 +359,7 @@ def create_progression_edges_validation_agent(
             trigger a retry.
         """
 
-        attempt = attempt_counter["value"]
+        attempt = attempt_counter["value"] + 1
 
         try:
             if validator is not None:

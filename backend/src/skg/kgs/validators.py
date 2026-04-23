@@ -358,9 +358,7 @@ def _validate_single_skill(
     desc_seen.add(norm_desc)
 
     if source_item is not None:
-        source_display_text = str(source_item.get("display_text") or "").strip()
-        source_id_text = str(source_item.get("id_source_text") or "").strip()
-        source_text = source_display_text or source_id_text
+        source_text = str(source_item.get("display_text") or "").strip()
 
         if source_text and _looks_like_whole_standard_echo(
             description=description, source_text=source_text
@@ -390,8 +388,8 @@ def validate_atomic_skills(
     In addition to strict structural checks (UUID coverage, duplicate UUIDs, min/max
     skill counts), this validator also applies lightweight source-aware heuristics to
     better enforce the spirit of the prompt: atomic skills should not be empty,
-    low-information, obvious activities/resources, or mere echoes of a clearly
-    composite source standard.
+    low-information, duplicated within an SFI, or mere echoes of a clearly composite
+    source standard.
 
     Parameters
     ----------
@@ -409,15 +407,16 @@ def validate_atomic_skills(
         optional and can be empty.
     source_items_by_uuid
         Optional mapping from SFI UUID to the original prompt payload for that SFI.
-        When provided, the validator can compare returned skills against the source
-        statement to catch whole-standard echoes and similar low-quality outputs.
+        When provided, the validator compares returned skills against the source
+        `display_text` to catch whole-standard echoes and similar low-quality outputs.
 
     Raises
     ------
     QualityError
-        If any validation rule is violated, such as unknown SFI UUIDs, duplicate skill
-        labels, missing descriptions, rationale requirements, low-information skills,
-        activity/resource placeholders, or whole-standard echoes.
+        If any validation rule is violated, such as unknown SFI UUIDs, duplicate
+        `sfi_uuid` entries, out-of-bounds skill counts, duplicate normalized skill
+        descriptions within an SFI, missing descriptions, missing required rationales,
+        low-information skills, or whole-standard echoes.
     """
 
     if not parsed.items:
