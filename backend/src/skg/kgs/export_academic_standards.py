@@ -1515,7 +1515,7 @@ def _compute_topic_path_key(
 
     for aid in ancestry:
         n = ctx.nodes_by_id.get(aid) or {}
-        r = str(n.get("role") or "")
+        r = n["role"]
 
         if not r:
             continue
@@ -1534,7 +1534,7 @@ def _compute_topic_path_key(
         if not label:
             continue
 
-        parts.append(f"{r}={normalize_key_token(label=label, separator="_")}")
+        parts.append(f"{r}={normalize_key_token(label=label, separator='_')}")
         debug.append({"role": r, "label": label, "canonical_node_id": aid})
 
     if not parts:
@@ -3230,7 +3230,7 @@ def _reparent_aux_nodes_under_expectations(
 
             ctx.children_by_parent[E1] == [G1(guidance), D1(descriptor)]
 
-        When this function visits E1, it get `G1` and `D1` from the canonical
+        When this function visits E1, it gets `G1` and `D1` from the canonical
         expectation subtree and attaches them to E1.
 
         Result:
