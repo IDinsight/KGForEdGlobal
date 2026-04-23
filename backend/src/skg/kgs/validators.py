@@ -320,7 +320,7 @@ def _validate_single_skill(
     Parameters
     ----------
     desc_seen
-        A set of normalized descriptions already seen for this SFI.
+        A set of validator-normalized descriptions already seen for this SFI.
     require_rationale
         Whether a non-empty rationale is required.
     sfi_uuid
@@ -348,7 +348,11 @@ def _validate_single_skill(
             f"{description!r}."
         )
 
-    norm_desc = " ".join(description.split()).lower()
+    # Use the stronger validator-side normalizer so duplicate detection is robust to
+    # accent, punctuation, and minor formatting differences.
+    norm_desc = _normalize_quality_text(description)
+    norm_desc = re.sub(r"[^\w]+", " ", norm_desc, flags=re.UNICODE)
+    norm_desc = re.sub(r"\s+", " ", norm_desc).strip()
 
     if norm_desc in desc_seen:
         raise QualityError(
