@@ -53,87 +53,6 @@ class LearningComponentsExport:
     supports_relationships: list[Relationship]
 
 
-def _build_atomic_skills_prompt_items(
-    *, config: CreateKGConfig, sfis: list[StandardsFrameworkItem]
-) -> list[dict[str, Any]]:
-    """Build prompt payload objects for a batch of expectation SFIs.
-
-    Parameters
-    ----------
-    config
-        The KG export configuration, used to determine which metadata fields to include
-        in the prompt for each SFI.
-    sfis
-        The list of StandardsFrameworkItems representing expectations for which to
-        generate prompt items. Each item will be transformed into a dictionary
-        containing the relevant text and metadata fields needed for the atomic skills
-        decomposition prompt.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        A list of dictionaries, each representing an SFI with the necessary fields for
-        the atomic skills decomposition prompt. Each dictionary will contain the SFI
-        UUID, statement code, display text, and ID source text, as well as optional
-        topic context and auxiliary statements if configured to include them.
-    """
-
-    items: list[dict[str, Any]] = []
-
-    for sfi in sfis:
-        metadata = sfi.metadata or {}
-        display_text = normalize_ws(sfi.description or "")
-        id_source_text = (
-            normalize_ws(metadata.get("normalized_text") or "") or display_text
-        )
-        payload: dict[str, Any] = {
-            "display_text": _trim_text(
-                max_chars=2000, s=display_text or id_source_text
-            ),
-            "id_source_text": _trim_text(max_chars=2000, s=id_source_text),
-            "sfi_uuid": str(sfi.case_identifier_uuid),
-            "statement_code": sfi.statement_code,
-        }
-
-        if config.lc_atomic_skills_include_topic_context:
-            pc = metadata.get("progression_context") or {}
-            topic_ctx = {
-                "grade_key": pc.get("grade_key"),
-                "stage_key": pc.get("stage_key"),
-                "thread_key": pc.get("thread_key"),
-                "topic_path_key": pc.get("topic_path_key"),
-                "topic_path_parts": pc.get("topic_path_parts"),
-            }
-
-            # Only include `topic_ctx` when at least one value is non-None; an all-None
-            # dict adds prompt tokens for no benefit.
-            if any(v is not None for v in topic_ctx.values()):
-                payload["topic_context"] = topic_ctx
-
-        if config.lc_atomic_skills_include_aux_statements:
-            aux = metadata.get("aux_statements")
-            aux_items: list[dict[str, Any]] = []
-
-            if isinstance(aux, list):
-                for a in aux[:10]:
-                    assert isinstance(a, dict), f"{a = }"
-                    aux_items.append(
-                        {
-                            "role": a["role"],
-                            "text": _trim_text(
-                                max_chars=400, s=str(a.get("text") or "")
-                            ),
-                        }
-                    )
-
-            if aux_items:
-                payload["aux_statements"] = aux_items
-
-        items.append(payload)
-
-    return items
-
-
 def _build_lc_graph_bundle(
     *,
     doc_key: str,
@@ -310,8 +229,8 @@ def _build_single_lc(
     doc_key
         Document key for UUID-seed construction.
     extra_metadata
-        Optional additional metadata entries (e.g. `llm_rationale`, `llm_model`) merged
-        into the LC metadata dict.
+        Optional additional metadata entries (e.g. `llm_rationale`) merged into the LC
+        metadata dict.
     fw_metadata
         Standards framework metadata for attribution fields.
     id_source_kind
@@ -381,6 +300,52 @@ def _build_single_lc(
         metadata=metadata,
         provider=str(fw_metadata["provider"]),
     )
+
+
+def _build_single_prompt_item(
+    *, config: CreateKGConfig, sfi: StandardsFrameworkItem
+) -> dict[str, Any]:
+    """Build the prompt payload object for a single expectation SFI.
+
+    Parameters
+    ----------
+    config
+        The KG export configuration, used to determine which metadata fields to include.
+    sfi
+        The StandardsFrameworkItem representing the expectation.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary representing the SFI with necessary fields for the decomposition
+        prompt.
+    """
+
+    metadata = sfi.metadata or {}
+    display_text = normalize_ws(sfi.description or "")
+    id_source_text = normalize_ws(metadata.get("normalized_text") or "") or display_text
+    trimmed_display_text = _trim_text(max_chars=2000, s=display_text or id_source_text)
+    trimmed_id_source_text = _trim_text(max_chars=2000, s=id_source_text)
+    payload: dict[str, Any] = {
+        "display_text": trimmed_display_text,
+        "sfi_uuid": str(sfi.case_identifier_uuid),
+    }
+
+    if sfi.statement_code:
+        payload["statement_code"] = sfi.statement_code
+
+    if trimmed_id_source_text and trimmed_id_source_text != trimmed_display_text:
+        payload["id_source_text"] = trimmed_id_source_text
+
+    if config.lc_atomic_skills_include_topic_context:
+        if topic_context := _extract_topic_context(metadata):
+            payload["topic_context"] = topic_context
+
+    if config.lc_atomic_skills_include_aux_statements:
+        if aux_statements := _extract_aux_statements(metadata):
+            payload["aux_statements"] = aux_statements
+
+    return payload
 
 
 def _create_lcs_for_expectation(
@@ -581,7 +546,6 @@ def _create_lcs_from_atomic_skills(
                 doc_key=doc_key,
                 extra_metadata={
                     "llm_rationale": rat or None,
-                    "llm_model": str(config.model),
                 },
                 fw_metadata=fw_metadata,
                 id_source_kind="llm_atomic_skills.description",
@@ -655,6 +619,85 @@ def _emit_supports(
         target_entity_key="case_identifier_uuid",
         target_entity_value=str(sfi.case_identifier_uuid),
     )
+
+
+def _extract_aux_statements(metadata: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Extract and trim up to 10 auxiliary statements from an SFI's metadata.
+
+    Parameters
+    ----------
+    metadata
+        The metadata dictionary from a StandardsFrameworkItem.
+
+    Returns
+    -------
+    list[dict[str, Any]] | None
+        A list of trimmed auxiliary statement dictionaries, or None if no valid
+        statements exist or the input is not a list.
+    """
+
+    aux = metadata.get("aux_statements")
+
+    if not isinstance(aux, list):
+        return None
+
+    aux_items: list[dict[str, Any]] = []
+
+    for a in aux[:10]:
+        assert isinstance(a, dict), f"{a = }"
+        trimmed_aux_text = _trim_text(max_chars=400, s=str(a.get("text") or ""))
+
+        if not trimmed_aux_text:
+            continue
+
+        aux_items.append({"role": a["role"], "text": trimmed_aux_text})
+
+    return aux_items if aux_items else None
+
+
+def _extract_topic_context(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract and clean the topic context from an SFI's metadata.
+
+    Parameters
+    ----------
+    metadata
+        The metadata dictionary from a StandardsFrameworkItem.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        A dictionary containing cleaned topic context parts, or None if no valid
+        context data adds benefit.
+    """
+
+    pc = metadata.get("progression_context") or {}
+    cleaned_topic_path_parts: list[dict[str, Any]] = []
+
+    if isinstance(pc.get("topic_path_parts"), list):
+        for part in pc["topic_path_parts"]:
+            if not isinstance(part, dict):
+                continue
+
+            role = normalize_ws(str(part.get("role") or ""))
+            label = normalize_ws(str(part.get("label") or ""))
+
+            if role and label:
+                cleaned_topic_path_parts.append({"role": role, "label": label})
+
+    topic_ctx = {
+        "grade_key": normalize_ws(str(pc.get("grade_key") or "")) or None,
+        "stage_key": normalize_ws(str(pc.get("stage_key") or "")) or None,
+        "thread_key": normalize_ws(str(pc.get("thread_key") or "")) or None,
+        "topic_path_key": normalize_ws(str(pc.get("topic_path_key") or "")) or None,
+        "topic_path_parts": cleaned_topic_path_parts,
+    }
+
+    # Only return `topic_context` when at least one cleaned value is present; empty
+    # strings/lists add prompt tokens for no benefit.
+    if any(value not in (None, "", [], {}) for value in topic_ctx.values()):
+        return topic_ctx
+
+    return None
 
 
 def _finalize_lc_export(
@@ -1085,7 +1128,7 @@ def _process_atomic_skills_batch(
     )
 
     allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
-    prompt_items = _build_atomic_skills_prompt_items(config=config, sfis=batch)
+    prompt_items = [_build_single_prompt_item(config=config, sfi=sfi) for sfi in batch]
     prompt = decompose_atomic_skills(
         display_language=_resolve_lc_prompt_language_instruction(
             config=config, fw_metadata=fw_metadata, sfi=batch[0]
