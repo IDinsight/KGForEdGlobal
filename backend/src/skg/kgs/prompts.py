@@ -535,7 +535,10 @@ INPUT FIELDS (per SFI):
 - `language_instruction`: optional item-specific output-language instruction. If present, it OVERRIDES the neutral fallback instruction.
 - `statement_code`: optional source-framework code for the item; use only as a traceability hint.
 - `topic_context`: optional structural context (for example stage/thread/topic path) — use it only to disambiguate the expectation.
-- `aux_statements`: optional guidance/descriptor text — use it only as supporting context and do NOT decompose it directly unless it clearly clarifies the expectation.
+- `aux_statements`: optional guidance/descriptor text — use it only as supporting context and do NOT decompose it directly unless it clearly clarifies the expectation. Individual aux items may also include debug-only truncation fields such as `text_truncated`, `text_original_length`, and `text_max_chars`; these do not change the meaning of the text.
+- `display_text_truncated`: optional debug flag indicating `display_text` was clipped for prompt size limits.
+- `display_text_original_length`: optional debug integer giving the normalized source length before clipping.
+- `display_text_max_chars`: optional debug integer giving the cap used for `display_text`.
 
 HARD RULES:
 1. Use ONLY the provided `sfi_uuid` values. Do not invent UUIDs.

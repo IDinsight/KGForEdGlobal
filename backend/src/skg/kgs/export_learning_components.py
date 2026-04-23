@@ -334,8 +334,11 @@ def _build_single_prompt_item(
 
     metadata = sfi.metadata or {}
     display_text = normalize_ws(sfi.description or "")
-    id_source_text = normalize_ws(metadata.get("normalized_text") or "") or display_text
-    trimmed_display_text = _trim_text(max_chars=2000, s=display_text or id_source_text)
+    fallback_text = normalize_ws(metadata.get("normalized_text") or "") or display_text
+    trimmed_display_text, display_text_was_truncated, display_text_original_length = (
+        _trim_text_with_debug(max_chars=2000, s=display_text or fallback_text)
+    )
+
     payload: dict[str, Any] = {
         "display_text": trimmed_display_text,
         "language_instruction": _resolve_lc_prompt_language_instruction(
@@ -343,6 +346,11 @@ def _build_single_prompt_item(
         ),
         "sfi_uuid": str(sfi.case_identifier_uuid),
     }
+
+    if display_text_was_truncated:
+        payload["display_text_truncated"] = True
+        payload["display_text_original_length"] = display_text_original_length
+        payload["display_text_max_chars"] = 2000
 
     if sfi.statement_code:
         payload["statement_code"] = sfi.statement_code
@@ -654,13 +662,26 @@ def _extract_aux_statements(metadata: dict[str, Any]) -> list[dict[str, Any]] | 
     aux_items: list[dict[str, Any]] = []
 
     for a in aux[:10]:
-        assert isinstance(a, dict), f"{a = }"
-        trimmed_aux_text = _trim_text(max_chars=400, s=str(a.get("text") or ""))
+        if not isinstance(a, dict):
+            continue
+
+        role = normalize_ws(a["role"])
+        assert role, f"{a = }"
+        trimmed_aux_text, aux_text_was_truncated, aux_text_original_length = (
+            _trim_text_with_debug(max_chars=400, s=a.get("text") or "")
+        )
 
         if not trimmed_aux_text:
             continue
 
-        aux_items.append({"role": a["role"], "text": trimmed_aux_text})
+        aux_item: dict[str, Any] = {"role": role, "text": trimmed_aux_text}
+
+        if aux_text_was_truncated:
+            aux_item["text_truncated"] = True
+            aux_item["text_original_length"] = aux_text_original_length
+            aux_item["text_max_chars"] = 400
+
+        aux_items.append(aux_item)
 
     return aux_items if aux_items else None
 
@@ -1559,6 +1580,34 @@ def _trim_text(*, max_chars: int, s: str) -> str:
         return s2[:max_chars]
 
     return s2[: max_chars - 3].rstrip() + "..."
+
+
+def _trim_text_with_debug(*, max_chars: int, s: str) -> tuple[str, bool, int]:
+    """Trim text and return debug metadata about truncation.
+
+    Parameters
+    ----------
+    max_chars
+        The maximum number of characters to allow in the output string, including the
+        ellipsis if truncation occurs.
+    s
+        The input string to trim and analyze for truncation. This is typically the text
+        used for ID generation or display in the LearningComponent. It will be
+        normalized for whitespace before trimming, to ensure consistent length counting
+        and truncation behavior.
+
+    Returns
+    -------
+    tuple[str, bool, int]
+        A tuple of:
+        - trimmed_text
+        - was_truncated
+        - original_length (after whitespace normalization)
+    """
+
+    normalized = normalize_ws(s or "")
+    trimmed = _trim_text(max_chars=max_chars, s=normalized)
+    return trimmed, trimmed != normalized, len(normalized)
 
 
 def _validate_lc_export_integrity(
