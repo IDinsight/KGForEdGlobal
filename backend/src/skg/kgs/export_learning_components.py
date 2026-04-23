@@ -1153,6 +1153,7 @@ def _process_atomic_skills_batch(
     )
 
     allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
+    source_items_by_uuid = {UUID(str(item["sfi_uuid"])): item for item in prompt_items}
     batch_debug: dict[str, Any] = {
         "batch_index": batch_index,
         "error": None,
@@ -1173,6 +1174,7 @@ def _process_atomic_skills_batch(
                 min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
                 max_per_sfi=max_splits,
                 require_rationale=bool(config.lc_atomic_skills_require_rationale),
+                source_items_by_uuid=source_items_by_uuid,
             ),
         )
         parsed_dict = parsed.model_dump(mode="json")

@@ -598,7 +598,7 @@ def validate_atomic_skills_output(
 
 You will receive:
 1. The original system instructions used for the first-pass agent.
-2. The original user payload.
+2. The original user message.
 3. A draft AtomicSkillsResponse JSON produced by that first-pass agent.
 
 Your job is to audit the draft carefully against the original task and return the FINAL AtomicSkillsResponse.
@@ -610,7 +610,10 @@ RULES:
 - Use ONLY SFI UUIDs from the original input payload.
 - Ensure every input `sfi_uuid` appears exactly once.
 - Respect all original bounds and requirements (skill count limits, language guidance, rationale requirement if present, no duplicate skills within an SFI).
+- Respect item-specific `language_instruction` when present.
 - Skills must remain atomic, actionable, and measurable. Do not add activities, resources, or unrelated skills.
+- If the source restates the same competency in multiple languages, keep it as ONE competency unless the meanings genuinely differ.
+- Do not allow a skill to merely echo the full composite source expectation when decomposition is required.
 - Do not include commentary, markdown, or explanations outside the JSON object.
         """
     )
@@ -623,8 +626,8 @@ RULES:
 {original_instructions}
 ```
 
-## Original user payload
-```json
+## Original user message
+```text
 {original_user_message}
 ```
 

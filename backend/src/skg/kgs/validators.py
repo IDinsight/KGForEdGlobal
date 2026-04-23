@@ -4,6 +4,10 @@ inference agents and the second-pass validation agents.
 """
 
 # Standard Library
+import re
+import unicodedata
+
+from difflib import SequenceMatcher
 from typing import Any, Callable, TypeAlias
 from uuid import UUID
 
@@ -67,6 +71,158 @@ def _check_common_edge_invariants(
         seen.add(pair)
 
 
+def _normalize_quality_text(text: str) -> str:
+    """Normalize text for heuristic quality checks.
+
+    This intentionally performs more aggressive normalization than the runtime export
+    pipeline because it is only used for validator-side similarity and duplicate
+    heuristics.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        A normalized version of the text suitable for quality heuristics.
+    """
+
+    s = unicodedata.normalize("NFKD", str(text or ""))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    s = re.sub(r"[\u00ad\u200b\u200c\u200d\ufeff]+", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _looks_like_low_information_skill(description: str) -> bool:
+    """Return True when a skill description is obviously too weak to be useful.
+
+    Parameters
+    ----------
+    description
+        The skill description text to evaluate.
+
+    Returns
+    -------
+    bool
+        True if the description looks like a low-information placeholder, False
+        otherwise.
+    """
+
+    normalized = _normalize_quality_text(description)
+
+    if normalized in {"etc", "etc.", "idem", "same as above", "n/a", "na", "none"}:
+        return True
+
+    if not re.search(r"[a-zA-Z]", normalized):
+        return True
+
+    return False
+
+
+def _looks_like_whole_standard_echo(*, description: str, source_text: str) -> bool:
+    """Return True when a skill appears to just echo the full source expectation.
+
+    Parameters
+    ----------
+    description
+        The skill description text to evaluate.
+    source_text
+        The original source expectation text to compare against.
+
+    Returns
+    -------
+    bool
+        True if the description appears to be a whole-standard echo of the source text,
+        False otherwise.
+    """
+
+    desc_norm = _normalize_quality_text(description)
+    source_norm = _normalize_quality_text(source_text)
+
+    if not desc_norm or not source_norm:
+        return False
+
+    if desc_norm == source_norm:
+        return _source_is_likely_composite(source_text)
+
+    if not _source_is_likely_composite(source_text):
+        return False
+
+    ratio = SequenceMatcher(None, desc_norm, source_norm).ratio()
+    desc_tokens = set(_quality_tokens(desc_norm))
+    source_tokens = set(_quality_tokens(source_norm))
+
+    if not desc_tokens or not source_tokens:
+        return False
+
+    token_overlap = len(desc_tokens & source_tokens) / max(len(desc_tokens), 1)
+    return len(desc_tokens) >= 6 and ratio >= 0.92 and token_overlap >= 0.85
+
+
+def _quality_tokens(text: str) -> list[str]:
+    """Tokenize normalized text for lightweight semantic heuristics.
+
+    Parameters
+    ----------
+    text
+        The text to tokenize.
+
+    Returns
+    -------
+    list[str]
+        A list of normalized tokens suitable for quality heuristics.
+    """
+
+    normalized = _normalize_quality_text(text)
+    normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
+    return [tok for tok in normalized.split() if tok]
+
+
+def _source_is_likely_composite(source_text: str) -> bool:
+    """Heuristically detect whether the source expectation is multi-part.
+
+    This is intentionally conservative. The goal is only to detect obvious cases where
+    copying the whole expectation back as a single skill would violate the prompt's
+    "atomic skill" intent.
+
+    Parameters
+    ----------
+    source_text
+        The source expectation text to evaluate.
+
+    Returns
+    -------
+    bool
+        True if the source text appears to be composite and thus should not be echoed
+        as a single skill, False otherwise.
+    """
+
+    text = str(source_text or "")
+    tokens = _quality_tokens(text)
+    markers = 0
+
+    if re.search(r"[\n;•·]", text):
+        markers += 1
+
+    if " / " in text:
+        markers += 1
+
+    if ":" in text:
+        markers += 1
+
+    if text.count(",") >= 2:
+        markers += 1
+
+    if len(tokens) >= 18:
+        markers += 1
+
+    return markers >= 2
+
+
 def _validate_batch_coverage(
     *, allowed_sfi_uuids: set[UUID], returned_sfi_uuids: set[UUID]
 ) -> None:
@@ -106,6 +262,7 @@ def _validate_sfi_skills(
     require_rationale: bool,
     sfi_uuid: UUID,
     skills: list[Any],
+    source_item: dict[str, Any] | None = None,
 ) -> None:
     """Validate the list of skills for a given SFI.
 
@@ -121,11 +278,15 @@ def _validate_sfi_skills(
         The UUID of the SFI being validated.
     skills
         The list of skills to validate.
+    source_item
+        Optional prompt payload for this SFI so validator heuristics can check the
+        returned skills against the original source statement.
 
     Raises
     ------
     QualityError
-        If the skills list length is out of bounds or if any individual skill is invalid.
+        If the skills list length is out of bounds or if any individual skill is
+        invalid.
     """
 
     if len(skills) < int(min_per_sfi) or len(skills) > int(max_per_sfi):
@@ -142,6 +303,7 @@ def _validate_sfi_skills(
             require_rationale=require_rationale,
             sfi_uuid=sfi_uuid,
             sk=sk,
+            source_item=source_item,
         )
 
 
@@ -151,6 +313,7 @@ def _validate_single_skill(
     require_rationale: bool,
     sfi_uuid: UUID,
     sk: Any,
+    source_item: dict[str, Any] | None = None,
 ) -> None:
     """Validate a single skill's properties and check for duplicates.
 
@@ -164,6 +327,8 @@ def _validate_single_skill(
         The UUID of the SFI this skill belongs to.
     sk
         The skill object to validate.
+    source_item
+        Optional source prompt item for source-aware heuristic checks.
 
     Raises
     ------
@@ -177,6 +342,12 @@ def _validate_single_skill(
     if not description:
         raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty description.")
 
+    if _looks_like_low_information_skill(description):
+        raise QualityError(
+            f"sfi_uuid {sfi_uuid} has a low-information skill description: "
+            f"{description!r}."
+        )
+
     norm_desc = " ".join(description.split()).lower()
 
     if norm_desc in desc_seen:
@@ -185,6 +356,19 @@ def _validate_single_skill(
         )
 
     desc_seen.add(norm_desc)
+
+    if source_item is not None:
+        source_display_text = str(source_item.get("display_text") or "").strip()
+        source_id_text = str(source_item.get("id_source_text") or "").strip()
+        source_text = source_display_text or source_id_text
+
+        if source_text and _looks_like_whole_standard_echo(
+            description=description, source_text=source_text
+        ):
+            raise QualityError(
+                f"sfi_uuid {sfi_uuid} has a skill that appears to echo the full "
+                f"source expectation instead of decomposing it into an atomic skill."
+            )
 
     if require_rationale and not rationale:
         raise QualityError(
@@ -199,8 +383,15 @@ def validate_atomic_skills(
     min_per_sfi: int,
     max_per_sfi: int,
     require_rationale: bool,
+    source_items_by_uuid: dict[UUID, dict[str, Any]] | None = None,
 ) -> None:
     """Validate AtomicSkillsResponse for a given batch of SFIs.
+
+    In addition to strict structural checks (UUID coverage, duplicate UUIDs, min/max
+    skill counts), this validator also applies lightweight source-aware heuristics to
+    better enforce the spirit of the prompt: atomic skills should not be empty,
+    low-information, obvious activities/resources, or mere echoes of a clearly
+    composite source standard.
 
     Parameters
     ----------
@@ -216,12 +407,17 @@ def validate_atomic_skills(
     require_rationale
         If True, each skill must have a non-empty rationale. If False, rationales are
         optional and can be empty.
+    source_items_by_uuid
+        Optional mapping from SFI UUID to the original prompt payload for that SFI.
+        When provided, the validator can compare returned skills against the source
+        statement to catch whole-standard echoes and similar low-quality outputs.
 
     Raises
     ------
     QualityError
         If any validation rule is violated, such as unknown SFI UUIDs, duplicate skill
-        labels, missing descriptions, or rationale requirements.
+        labels, missing descriptions, rationale requirements, low-information skills,
+        activity/resource placeholders, or whole-standard echoes.
     """
 
     if not parsed.items:
@@ -251,6 +447,7 @@ def validate_atomic_skills(
             require_rationale=require_rationale,
             sfi_uuid=sfi_uuid,
             skills=item.skills or [],
+            source_item=(source_items_by_uuid or {}).get(sfi_uuid),
         )
 
     _validate_batch_coverage(
