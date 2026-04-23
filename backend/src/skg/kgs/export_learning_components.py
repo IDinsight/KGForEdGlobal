@@ -303,7 +303,7 @@ def _build_single_lc(
 
 
 def _build_single_prompt_item(
-    *, config: CreateKGConfig, sfi: StandardsFrameworkItem
+    *, config: CreateKGConfig, fw_metadata: dict[str, Any], sfi: StandardsFrameworkItem
 ) -> dict[str, Any]:
     """Build the prompt payload object for a single expectation SFI.
 
@@ -311,14 +311,17 @@ def _build_single_prompt_item(
     ----------
     config
         The KG export configuration, used to determine which metadata fields to include.
+    fw_metadata
+        Framework metadata dict used for fallback language values.
     sfi
         The StandardsFrameworkItem representing the expectation.
 
     Returns
     -------
     dict[str, Any]
-        A dictionary representing the SFI with necessary fields for the decomposition
-        prompt.
+        A dictionary representing the SFI with the fields needed for the atomic-skills
+        decomposition prompt. Includes an item-specific language instruction so
+        mixed-language batches can still be handled correctly.
     """
 
     metadata = sfi.metadata or {}
@@ -328,6 +331,9 @@ def _build_single_prompt_item(
     trimmed_id_source_text = _trim_text(max_chars=2000, s=id_source_text)
     payload: dict[str, Any] = {
         "display_text": trimmed_display_text,
+        "language_instruction": _resolve_lc_prompt_language_instruction(
+            config=config, fw_metadata=fw_metadata, sfi=sfi
+        ),
         "sfi_uuid": str(sfi.case_identifier_uuid),
     }
 
@@ -784,21 +790,19 @@ def _finalize_lc_export(
     return export
 
 
-def _format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -> str:
+def _format_language_for_prompt(tag: str | None) -> str:
     """Format a BCP-47 language tag as a human-friendly language name for prompts. We
     still attempt to resolve unknown codes via `pycountry`.
 
     Parameters
     ----------
-    include_tag
-        If True, include the original tag in parentheses, e.g. "English (en)".
     tag
         A BCP-47 language tag like "en", "fr", "sw", or "en-US". May be None.
 
     Returns
     -------
     str
-        A human-readable language name (optionally with the tag).
+        A human-readable language name.
     """
 
     raw = normalize_ws(str(tag or "")).strip()
@@ -826,7 +830,7 @@ def _format_language_for_prompt(*, include_tag: bool = False, tag: str | None) -
     if not name:
         return tag_norm
 
-    return f"{name} ({tag_norm})" if include_tag else name
+    return name
 
 
 def _handle_atomic_skills_fallback(
@@ -1028,7 +1032,7 @@ def _has_usable_text(sfi: StandardsFrameworkItem) -> bool:
 def _iter_expectation_sfis(
     items: Iterable[StandardsFrameworkItem],
 ) -> list[StandardsFrameworkItem]:
-    """Return a StandardsFrameworkItem that represent normative expectations.
+    """Return a StandardsFrameworkItem that represents normative expectations.
 
     Parameters
     ----------
@@ -1119,17 +1123,25 @@ def _process_atomic_skills_batch(
 
     Returns
     -------
-    tuple[list[LearningComponent], list[Relationship], dict[int, int], dict[str, Any], list[str]]
-        A tuple containing the LCs, relationships, splits distribution, debug information,
-        and fallback UUIDs for this batch.
+    tuple[
+        list[LearningComponent],
+        list[Relationship],
+        dict[int, int],
+        dict[str, Any],
+        list[str],
+    ]
+        A tuple containing the LCs, relationships, splits distribution, debug
+        information, and fallback UUIDs for this batch.
     """
 
     logger.info(
         f"Processing batch {current_batch_num}/{total_batches} ({len(batch)} SFIs)..."
     )
 
-    allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
-    prompt_items = [_build_single_prompt_item(config=config, sfi=sfi) for sfi in batch]
+    prompt_items = [
+        _build_single_prompt_item(config=config, fw_metadata=fw_metadata, sfi=sfi)
+        for sfi in batch
+    ]
     prompt = decompose_atomic_skills(
         display_language=_resolve_lc_prompt_language_instruction(
             config=config, fw_metadata=fw_metadata, sfi=batch[0]
@@ -1139,15 +1151,17 @@ def _process_atomic_skills_batch(
         min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
         require_rationale=bool(config.lc_atomic_skills_require_rationale),
     )
+
+    allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
     batch_debug: dict[str, Any] = {
         "batch_index": batch_index,
+        "error": None,
+        "fallback_sfi_uuids": [],
         "input_items": prompt_items,
         "response": None,
-        "fallback_sfi_uuids": [],
-        "error": None,
     }
-    skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
     fallback_sfis_total: list[str] = []
+    skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
 
     try:
         parsed = infer_atomic_skills(
@@ -1272,13 +1286,13 @@ def _resolve_lc_prompt_language_instruction(
     fw_metadata
         Framework metadata dict used for fallback language values.
     sfi
-        A representative SFI from the current batch.
+        The SFI whose language policy should drive the prompt instruction.
 
     Returns
     -------
     str
         Human-readable prompt instruction describing what language the LLM should use
-        for emitted atomic skill descriptions.
+        for emitted atomic skill descriptions for this specific SFI.
     """
 
     policy = normalize_ws(str(config.lc_output_language_policy or "source")).lower()
@@ -1295,7 +1309,11 @@ def _resolve_lc_prompt_language_instruction(
     primary = resolved_tag.replace("_", "-").split("-")[0].lower().strip()
 
     if primary == "mul":
-        return "the same language(s) as the input text; bilingual output is allowed when the source is bilingual"
+        return (
+            "the same language(s) as the input text; if the source restates the same "
+            "competency in multiple languages, treat it as one competency rather than "
+            "separate skills"
+        )
 
     if primary == "und":
         return "the same language as the input text"
@@ -1373,7 +1391,7 @@ def _sort_lc_export_artifacts(
     return sorted_lcs, sorted_rels
 
 
-def _split_bullets_deterministic(text: str) -> list[str]:
+def _split_bullets(text: str) -> list[str]:
     """Deterministically split text into bullet/numbered parts.
 
     The process is as follows:
@@ -1491,7 +1509,7 @@ def _split_lc_parts(
         return [], False
 
     if policy == "split_bullets":
-        parts = _split_bullets_deterministic(normalized_text) or [normalized_text]
+        parts = _split_bullets(normalized_text) or [normalized_text]
     else:
         parts = [normalized_text]
 
