@@ -527,31 +527,35 @@ def decompose_atomic_skills(
 
 OUTPUT FORMAT:
 - Return ONLY valid JSON matching the AtomicSkillsResponse schema:
-  {{ "items": [ {{ "sfi_uuid": <uuid>, "skills": [ {{ "description": "...", "rationale": "..." }} ] }} ] }}
+  {{ "items": [ {{ "sfi_uuid": "<uuid>", "skills": [ {{ "description": "...", "rationale": "..." }} ] }} ] }}
 
 INPUT FIELDS (per SFI):
 - `sfi_uuid`: the StandardsFrameworkItem UUID you must echo back exactly for that item.
 - `display_text`: the human-readable expectation statement — base your decomposition on THIS field.
 - `language_instruction`: optional item-specific output-language instruction. If present, it OVERRIDES the neutral fallback instruction.
 - `statement_code`: optional source-framework code for the item; use only as a traceability hint.
-- `topic_context`: optional structural context (for example stage/thread/topic path) — use it only to disambiguate the expectation.
+- `statement_type`: optional source statement type/column label; use it to understand the source role of the expectation.
+- `source_label`: optional original source label; use it as a traceability/context hint only.
+- `topic_context`: optional human-readable structural context (for example stage/topic path) — use it only to disambiguate the expectation.
 - `aux_statements`: optional guidance/descriptor text — use it only as supporting context and do NOT decompose it directly unless it clearly clarifies the expectation. Individual aux items may also include debug-only truncation fields such as `text_truncated`, `text_original_length`, and `text_max_chars`; these do not change the meaning of the text.
 - `display_text_truncated`: optional debug flag indicating `display_text` was clipped for prompt size limits.
 - `display_text_original_length`: optional debug integer giving the normalized source length before clipping.
 - `display_text_max_chars`: optional debug integer giving the cap used for `display_text`.
 
 HARD RULES:
-1. Use ONLY the provided `sfi_uuid` values. Do not invent UUIDs.
-2. For each input SFI, return between {min_per_sfi} and {max_per_sfi} skills.
-3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
-4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
-5. Do NOT invent prerequisites, enabling/background knowledge, preparatory steps, or unrelated skills. Only return skills that are explicitly present in `display_text` or directly clarified by `aux_statements`.
-6. Do NOT convert an implied teaching dependency into a skill. For example, if the source says learners should use a dictionary, do not add a separate skill such as “know alphabetical order” unless that knowledge is explicitly stated in the source.
-7. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this neutral fallback instruction: {default_language_instruction}.
-8. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
-9. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
-10. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
-11. Keep rationales brief (1–2 sentences max). {rationale_req}
+1. Return every input `sfi_uuid` exactly once, preferably in the same order as the input.
+2. Use ONLY the provided `sfi_uuid` values. Do not invent UUIDs.
+3. For each input SFI, return between {min_per_sfi} and {max_per_sfi} skills.
+4. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
+5. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
+6. Do NOT invent prerequisites, enabling/background knowledge, preparatory steps, or unrelated skills. Only return skills that are explicitly present in `display_text` or directly clarified by `aux_statements`.
+7. Do NOT convert an implied teaching dependency into a skill. For example, if the source says learners should use a dictionary, do not add a separate skill such as “know alphabetical order” unless that knowledge is explicitly stated in the source.
+8. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this neutral fallback instruction: {default_language_instruction}.
+9. If the source provides parallel Wolof/French restatements of the same competency, produce one skill, not two. The description may preserve both languages only when both are needed to faithfully represent the source meaning.
+10. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
+11. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
+12. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
+13. Keep rationales brief (1–2 sentences max). {rationale_req}
 """
     )
 

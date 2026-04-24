@@ -448,7 +448,7 @@ def _build_single_prompt_item(
     """
 
     metadata = sfi.metadata or {}
-    source_text = _resolve_prompt_source_text(sfi)
+    source_text = _resolve_prompt_display_text(sfi)
     trimmed_display_text, display_text_was_truncated, display_text_original_length = (
         _trim_text_with_debug(max_chars=2000, s=source_text)
     )
@@ -468,6 +468,15 @@ def _build_single_prompt_item(
 
     if sfi.statement_code:
         payload["statement_code"] = sfi.statement_code
+
+    statement_type = normalize_ws(str(sfi.statement_type or ""))
+    source_label = normalize_ws(str(metadata.get("source_label") or ""))
+
+    if statement_type:
+        payload["statement_type"] = statement_type
+
+    if source_label and source_label != statement_type:
+        payload["source_label"] = source_label
 
     if config.lc_atomic_skills_include_topic_context:
         if topic_context := _extract_topic_context(metadata):
@@ -824,8 +833,6 @@ def _extract_topic_context(metadata: dict[str, Any]) -> dict[str, Any] | None:
     topic_ctx = {
         "grade_key": normalize_ws(str(pc.get("grade_key") or "")) or None,
         "stage_key": normalize_ws(str(pc.get("stage_key") or "")) or None,
-        "thread_key": normalize_ws(str(pc.get("thread_key") or "")) or None,
-        "topic_path_key": normalize_ws(str(pc.get("topic_path_key") or "")) or None,
         "topic_path_parts": cleaned_topic_path_parts,
     }
 
@@ -1448,7 +1455,7 @@ def _process_atomic_skills_batch(
     source_items_by_uuid = {
         UUID(str(sfi.case_identifier_uuid)): {
             **item,
-            "full_source_text": _resolve_prompt_source_text(sfi),
+            "full_source_text": _resolve_prompt_display_text(sfi),
         }
         for sfi, item in zip(batch, prompt_items)
     }
@@ -1662,12 +1669,12 @@ def _resolve_lc_text_sources(
     return display_text, id_source_text, id_source_kind, metadata
 
 
-def _resolve_prompt_source_text(sfi: StandardsFrameworkItem) -> str:
-    """Resolve the full untrimmed source text for atomic-skills prompting.
+def _resolve_prompt_display_text(sfi: StandardsFrameworkItem) -> str:
+    """Resolve the full untrimmed display text for atomic-skills prompting.
 
-    This centralizes the source-text selection logic so the prompt payload can use a
-    trimmed `display_text` for token control while validator grounding can still use
-    the full untrimmed source statement.
+    This centralizes the prompt text selection logic. It prefers the exported SFI
+    `description` because that is the human-readable text shown to the model, then
+    falls back to `metadata.normalized_text` when the description is empty.
 
     Parameters
     ----------
@@ -1677,7 +1684,7 @@ def _resolve_prompt_source_text(sfi: StandardsFrameworkItem) -> str:
     Returns
     -------
     str
-        The full untrimmed source text that underlies the prompt `display_text`.
+        The full untrimmed display text that underlies the prompt `display_text`.
     """
 
     metadata = sfi.metadata or {}
