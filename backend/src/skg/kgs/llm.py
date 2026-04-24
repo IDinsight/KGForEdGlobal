@@ -49,8 +49,10 @@ class KGUsageTracker:
     persisting in `kg_run.json`.
     """
 
-    generation: AgentUsageBucket
-    validation: AgentUsageBucket
+    lc_generation: AgentUsageBucket
+    lc_validation: AgentUsageBucket
+    lp_generation: AgentUsageBucket
+    lp_validation: AgentUsageBucket
 
     def __init__(self) -> None:
         """Initialize empty usage buckets for generation and validation agents."""
@@ -109,8 +111,12 @@ class KGUsageTracker:
             + self.lp_validation.runs,
             "total_tokens": (
                 self.lc_generation.input_tokens
+                + self.lc_generation.output_tokens
+                + self.lc_validation.input_tokens
                 + self.lc_validation.output_tokens
                 + self.lp_generation.input_tokens
+                + self.lp_generation.output_tokens
+                + self.lp_validation.input_tokens
                 + self.lp_validation.output_tokens
             ),
         }

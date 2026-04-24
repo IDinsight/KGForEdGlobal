@@ -117,7 +117,7 @@ def _looks_like_low_information_skill(description: str) -> bool:
     if normalized in {"etc", "etc.", "idem", "same as above", "n/a", "na", "none"}:
         return True
 
-    if not re.search(r"[a-zA-Z]", normalized):
+    if not any(ch.isalpha() for ch in normalized):
         return True
 
     return False
