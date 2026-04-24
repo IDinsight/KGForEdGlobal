@@ -601,25 +601,6 @@ def _clean_lc_source_report_value(value: Any) -> str:
     return cleaned if cleaned else "(missing)"
 
 
-def _clean_source_level_report_value(value: Any) -> str:
-    """Normalize a source-level grouping value for Learning Components QA reporting.
-
-    Parameters
-    ----------
-    value
-        Raw metadata value from a LearningComponent or supporting SFI.
-
-    Returns
-    -------
-    str
-        A normalized non-empty string. Missing/blank values are represented with the
-        explicit "(missing)" sentinel so gaps are visible in reports.
-    """
-
-    cleaned = normalize_ws(str(value or ""))
-    return cleaned if cleaned else "(missing)"
-
-
 def _config_value_set(values: Iterable[Any] | None) -> set[str]:
     """Return normalized non-empty config values as a set.
 
@@ -1483,19 +1464,19 @@ def _lc_source_level_record(lc: LearningComponent) -> dict[str, str]:
     canonical_path_key = metadata.get("supporting_sfi_canonical_path_key")
     return {
         "lc_uuid": str(lc.identifier),
-        "supporting_sfi_canonical_path_key": _clean_source_level_report_value(
+        "supporting_sfi_canonical_path_key": _clean_lc_source_report_value(
             canonical_path_key
         ),
-        "supporting_sfi_case_uuid": _clean_source_level_report_value(
+        "supporting_sfi_case_uuid": _clean_lc_source_report_value(
             metadata.get("supporting_sfi_case_uuid")
         ),
         "supporting_sfi_path_pattern": _path_pattern_from_canonical_path_key(
             canonical_path_key
         ),
-        "supporting_sfi_source_label": _clean_source_level_report_value(
+        "supporting_sfi_source_label": _clean_lc_source_report_value(
             metadata.get("supporting_sfi_source_label")
         ),
-        "supporting_sfi_statement_type": _clean_source_level_report_value(
+        "supporting_sfi_statement_type": _clean_lc_source_report_value(
             metadata.get("supporting_sfi_statement_type")
         ),
     }
