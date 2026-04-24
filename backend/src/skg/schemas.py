@@ -1,6 +1,8 @@
 """This module contains top-level Pydantic models."""
 
 # Standard Library
+import re
+
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional, Self, cast
@@ -181,6 +183,62 @@ def validate_bcp47(code: str) -> str:
         return lang.to_tag()
     except langcodes.LanguageTagError as exc:
         raise ValueError(f"Unparseable language tag: '{code}'") from exc
+
+
+def validate_regex_prefixed_patterns(
+    *, field_name: str, patterns: list[str]
+) -> list[str]:
+    """Validate regex-based path patterns in LC source filtering config.
+
+    LC source path pattern fields support three pattern styles: plain substring,
+    shell-style glob, and regex when prefixed with `re:`. Only regex-prefixed patterns
+    need compilation validation; substring/glob patterns are returned unchanged.
+
+    Parameters
+    ----------
+    field_name
+        The config field name used in validation error messages.
+    patterns
+        Pattern strings from the config field.
+
+    Returns
+    -------
+    list[str]
+        The original pattern list, unchanged.
+
+    Raises
+    ------
+    TypeError
+        If a configured path pattern is not a string.
+    ValueError
+        If a regex-prefixed pattern is empty or cannot be compiled by `re`.
+    """
+
+    for idx, pattern in enumerate(patterns or []):
+        if not isinstance(pattern, str):
+            raise TypeError(
+                f"{field_name}[{idx}] must be a string. Got {type(pattern).__name__}."
+            )
+
+        if not pattern.startswith("re:"):
+            continue
+
+        regex_body = pattern[3:]
+
+        if not regex_body:
+            raise ValueError(
+                f"{field_name}[{idx}] is an empty regex pattern. "
+                f"Use a non-empty pattern after the 're:' prefix."
+            )
+
+        try:
+            re.compile(regex_body)
+        except re.error as exc:
+            raise ValueError(
+                f"Invalid regex in {field_name}[{idx}] ({pattern!r}): {exc}"
+            ) from exc
+
+    return patterns
 
 
 # Common fields with descriptions.
@@ -1004,6 +1062,36 @@ class CreateKGConfig(BaseSchema):
             )
 
         return self
+
+    @field_validator(
+        "lc_source_path_patterns_exclude", "lc_source_path_patterns_include"
+    )
+    @classmethod
+    def _validate_lc_source_regex_path_patterns(
+        cls, v: list[str], info: Any
+    ) -> list[str]:
+        """Validate regex-prefixed LC source path patterns at config-load time.
+
+        Parameters
+        ----------
+        v
+            The configured path pattern list. Entries that start with `r0e:` are
+            compiled to ensure malformed regexes fail fast before KG export.
+        info
+            Pydantic field validation info; used to report the field name.
+
+        Returns
+        -------
+        list[str]
+            The original pattern list, unchanged.
+
+        Raises
+        ------
+        ValueError
+            If a regex-prefixed path pattern is empty or invalid.
+        """
+
+        return validate_regex_prefixed_patterns(field_name=info.field_name, patterns=v)
 
     @field_validator("lp_cross_grade_match_roles")
     @classmethod
