@@ -742,6 +742,7 @@ def _create_lcs_from_atomic_skills(
     config: CreateKGConfig,
     doc_key: str,
     fw_metadata: dict[str, Any],
+    max_splits: int,
     sfi: StandardsFrameworkItem,
     skills: list[dict[str, Any]],
 ) -> list[LearningComponent]:
@@ -756,12 +757,15 @@ def _create_lcs_from_atomic_skills(
     Parameters
     ----------
     config
-        The KG export configuration, used to determine ID namespace and max splits.
+        The KG export configuration, used to determine ID namespace and LC metadata.
     doc_key
         The document key for this export, used in ID generation.
     fw_metadata
         The standards framework metadata, used for populating LC provenance and
         attribution.
+    max_splits
+        The maximum number of atomic skills to materialize for this SFI. This should be
+        the same value used in the prompt and validator for the current LLM batch.
     sfi
         The StandardsFrameworkItem representing the expectation for which to create LCs.
     skills
@@ -783,7 +787,6 @@ def _create_lcs_from_atomic_skills(
         ensure stable IDs across runs.
     """
 
-    max_splits = int(config.lc_max_splits_per_standard)
     norm_skills: list[tuple[str, str]] = []
     policy = "llm_atomic_skills"
     provenance = _build_provenance_from_sfi(sfi.metadata or {})
@@ -1254,6 +1257,7 @@ def _handle_atomic_skills_success(
     ctx: ExportContext,
     current_batch_num: int,
     fw_metadata: dict[str, Any],
+    max_splits: int,
     skills_by_sfi: dict[str, list[dict[str, Any]]],
 ) -> tuple[list[LearningComponent], list[Relationship], dict[int, int], list[str]]:
     """Process successfully inferred atomic skills to create LCs.
@@ -1272,6 +1276,8 @@ def _handle_atomic_skills_success(
         The index (1-based) of the current batch being processed.
     fw_metadata
         The framework metadata dict.
+    max_splits
+        The maximum number of atomic skills to materialize per SFI.
     skills_by_sfi
         A dictionary mapping SFI UUIDs to their generated atomic skills.
 
@@ -1316,6 +1322,7 @@ def _handle_atomic_skills_success(
             config=config,
             doc_key=ctx.doc_key,
             fw_metadata=fw_metadata,
+            max_splits=max_splits,
             sfi=sfi,
             skills=skills,
         )
@@ -1814,6 +1821,7 @@ def _process_atomic_skills_batch(
         ctx=ctx,
         current_batch_num=current_batch_num,
         fw_metadata=fw_metadata,
+        max_splits=max_splits,
         skills_by_sfi=skills_by_sfi,
     )
     fallback_sfis_total.extend(fallback_uuids)
