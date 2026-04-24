@@ -363,8 +363,7 @@ def validate_atomic_skills(
     In addition to strict structural checks (UUID coverage, duplicate UUIDs, min/max
     skill counts), this validator also applies lightweight source-aware heuristics to
     better enforce the spirit of the prompt: atomic skills should not be empty,
-    low-information, duplicated within an SFI, or mere echoes of a clearly composite
-    source standard.
+    duplicated within an SFI, or mere echoes of a clearly composite source standard.
 
     Parameters
     ----------
@@ -392,7 +391,7 @@ def validate_atomic_skills(
         If any validation rule is violated, such as unknown SFI UUIDs, duplicate
         `sfi_uuid` entries, out-of-bounds skill counts, duplicate normalized skill
         descriptions within an SFI, missing descriptions, missing required rationales,
-        low-information skills, or whole-standard echoes.
+        or whole-standard echoes.
     """
 
     if not parsed.items:

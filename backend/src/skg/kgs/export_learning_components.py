@@ -1761,14 +1761,45 @@ def _sort_sfis_for_lc_generation(
     traverse the same stable order.
     """
 
+    def _canonical_parent_path_key(value: Any) -> str:
+        """Return the grouping/path portion of a canonical path key.
+
+        Canonical path keys for leaf standards usually end with an expectation fragment
+        that contains a text hash. Using the full key too early in the sort would make
+        hash text ordering outrank the canonical order index within the parent. This
+        helper keeps sibling groupings together while reserving the full path for a
+        late deterministic tie-breaker.
+
+        Parameters
+        ----------
+        value
+            The canonical path key to extract the parent portion from.
+
+        Returns
+        -------
+        str
+            The parent path key with the final fragment removed, or the original value
+            if it does not contain a slash. For example,
+            `section:foo/stage:bar/expectation::abc123` becomes
+            `section:foo/stage:bar`, while `section:foo` remains `section:foo`. If the
+            input is empty or None, returns an empty string.
+        """
+
+        path = normalize_ws(str(value or ""))
+
+        if not path:
+            return ""
+
+        return path.rsplit("/", 1)[0] if "/" in path else path
+
     def _sort_key(sfi: StandardsFrameworkItem) -> tuple[Any, ...]:
         """Return a deterministic, curriculum-aware sort key for LC source SFIs.
 
         UUID-only ordering is stable but pedagogically arbitrary. This key keeps nearby
         curriculum items near each other before LC creation and, especially, before
-        LLM-based atomic-skills batching. It prefers source document order and canonical
-        curriculum path/order metadata, then falls back to the SFI UUID for full
-        determinism.
+        LLM-based atomic-skills batching. It prefers source document order, canonical
+        grouping context, and order metadata before using leaf-level path hashes and
+        the SFI UUID as tie-breakers.
 
         Parameters
         ----------
@@ -1786,6 +1817,8 @@ def _sort_sfis_for_lc_generation(
         metadata = sfi.metadata or {}
         progression_context = metadata.get("progression_context", {})
         bbox_top, bbox_left = _bbox_reading_order(metadata)
+        canonical_path_key = metadata.get("canonical_path_key")
+        canonical_parent_path_key = _canonical_parent_path_key(canonical_path_key)
         order_index = _sort_number(
             value=progression_context.get(
                 "canonical_order_index_within_parent",
@@ -1796,11 +1829,12 @@ def _sort_sfis_for_lc_generation(
             _first_page_index(metadata),
             bbox_top,
             bbox_left,
-            _natural_sort_key(metadata.get("canonical_path_key")),
             _natural_sort_key(progression_context.get("topic_path_key")),
             _natural_sort_key(progression_context.get("thread_key")),
+            _natural_sort_key(canonical_parent_path_key),
             order_index,
             _natural_sort_key(sfi.statement_type),
+            _natural_sort_key(canonical_path_key),
             str(sfi.case_identifier_uuid),
         )
 
@@ -1919,13 +1953,17 @@ def _split_lc_parts(
         maximum-splits cap.
     """
 
-    normalized_text = normalize_ws(text)
+    raw_text = str(text or "").strip()
+    normalized_text = normalize_ws(raw_text)
 
     if not normalized_text:
         return [], False
 
     if policy == "split_bullets":
-        parts = _split_bullets(normalized_text) or [normalized_text]
+        # Preserve original line breaks for bullet/numbered-line detection. Collapsing
+        # whitespace before `_split_bullets()` would make line-start bullets and
+        # numbered lists indistinguishable from ordinary inline text.
+        parts = _split_bullets(raw_text) or [normalized_text]
     else:
         parts = [normalized_text]
 
