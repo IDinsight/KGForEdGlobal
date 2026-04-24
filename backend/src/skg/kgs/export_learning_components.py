@@ -780,6 +780,10 @@ def _finalize_lc_export(
         json_info=[r.model_dump(mode="json") for r in sorted_rels],
     )
     write_to_json(
+        fp=kg_dirs.learning_components / "learning_components_stats.json",
+        json_info=lc_stats,
+    )
+    write_to_json(
         fp=kg_dirs.learning_components / "learning_components_kg.json",
         json_info=_build_lc_graph_bundle(
             doc_key=ctx.doc_key,
@@ -787,10 +791,6 @@ def _finalize_lc_export(
             learning_components=sorted_lcs,
             supports_relationships=sorted_rels,
         ),
-    )
-    write_to_json(
-        fp=kg_dirs.learning_components / "learning_components_stats.json",
-        json_info=lc_stats,
     )
 
     export = LearningComponentsExport(
