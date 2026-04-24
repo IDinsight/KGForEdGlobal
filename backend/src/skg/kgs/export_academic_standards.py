@@ -4525,12 +4525,6 @@ def export_academic_standards(
         json_info=academic_standards.order.model_dump(mode="json"),
     )
     write_to_json(
-        fp=kg_dirs.academic_standards / "academic_standards_kg.json",
-        json_info=_build_academic_standards_graph_bundle(
-            academic_standards=academic_standards, config=config, ctx=ctx
-        ),
-    )
-    write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_drop_reasons.json",
         json_info=academic_standards.drop_reasons,
     )
@@ -4541,6 +4535,12 @@ def export_academic_standards(
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_reparent_stats.json",
         json_info=academic_standards.reparent_stats,
+    )
+    write_to_json(
+        fp=kg_dirs.academic_standards / "academic_standards_kg.json",
+        json_info=_build_academic_standards_graph_bundle(
+            academic_standards=academic_standards, config=config, ctx=ctx
+        ),
     )
 
     logger.success(
