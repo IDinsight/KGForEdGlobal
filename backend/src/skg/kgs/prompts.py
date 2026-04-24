@@ -551,7 +551,7 @@ HARD RULES:
 6. Do NOT invent prerequisites, enabling/background knowledge, preparatory steps, or unrelated skills. Only return skills that are explicitly present in `display_text` or directly clarified by `aux_statements`.
 7. Do NOT convert an implied teaching dependency into a skill. For example, if the source says learners should use a dictionary, do not add a separate skill such as “know alphabetical order” unless that knowledge is explicitly stated in the source.
 8. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this neutral fallback instruction: {default_language_instruction}.
-9. If the source provides parallel Wolof/French restatements of the same competency, produce one skill, not two. The description may preserve both languages only when both are needed to faithfully represent the source meaning.
+9. If the source provides parallel restatements of the same competency (e.g., in both Wolof and French), produce one skill, not two. The description may preserve both languages only when both are needed to faithfully represent the source meaning.
 10. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
 11. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
 12. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
@@ -621,7 +621,7 @@ RULES:
 - Skills must remain atomic, actionable, and measurable. Do not add activities, resources, inferred prerequisites, enabling/background knowledge, preparatory steps, or unrelated skills.
 - Only keep skills that are explicitly present in the source expectation or directly clarified by provided auxiliary statements. Do not convert implied teaching dependencies into separate skills.
 - If the source restates the same competency in multiple languages, keep it as ONE competency unless the meanings genuinely differ.
-- Do not allow a skill to merely echo the full composite source expectation when decomposition is required.
+- Do not allow a skill to merely echo the full composite source expectation when decomposition is required unless it is already atomic.
 - Do not include commentary, markdown, or explanations outside the JSON object.
         """
     )

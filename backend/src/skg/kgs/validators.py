@@ -7,7 +7,6 @@ inference agents and the second-pass validation agents.
 import re
 import unicodedata
 
-from difflib import SequenceMatcher
 from typing import Any, Callable, TypeAlias
 from uuid import UUID
 
@@ -69,40 +68,6 @@ def _check_common_edge_invariants(
             )
 
         seen.add(pair)
-
-
-def _looks_like_whole_standard_echo(*, description: str, source_text: str) -> bool:
-    """Return True when a skill appears to just echo the full source expectation.
-
-    Parameters
-    ----------
-    description
-        The skill description text to evaluate.
-    source_text
-        The original source expectation text to compare against.
-
-    Returns
-    -------
-    bool
-        True if the description appears to be a whole-standard echo of the source text,
-        False otherwise.
-    """
-
-    desc_norm = _normalize_quality_text(description)
-    source_norm = _normalize_quality_text(source_text)
-
-    if not desc_norm or not source_norm:
-        return False
-
-    ratio = SequenceMatcher(None, desc_norm, source_norm).ratio()
-    desc_tokens = set(_quality_tokens(desc_norm))
-    source_tokens = set(_quality_tokens(source_norm))
-
-    if not desc_tokens or not source_tokens:
-        return False
-
-    token_overlap = len(desc_tokens & source_tokens) / max(len(desc_tokens), 1)
-    return len(desc_tokens) >= 6 and ratio >= 0.92 and token_overlap >= 0.85
 
 
 def _normalize_quality_text(text: str) -> str:
@@ -189,7 +154,6 @@ def _validate_sfi_skills(
     require_rationale: bool,
     sfi_uuid: UUID,
     skills: list[Any],
-    source_item: dict[str, Any] | None = None,
 ) -> None:
     """Validate the list of skills for a given SFI.
 
@@ -205,9 +169,6 @@ def _validate_sfi_skills(
         The UUID of the SFI being validated.
     skills
         The list of skills to validate.
-    source_item
-        Optional prompt payload for this SFI so validator heuristics can check the
-        returned skills against the original source statement.
 
     Raises
     ------
@@ -224,23 +185,17 @@ def _validate_sfi_skills(
 
     desc_seen: set[str] = set()
 
-    for sk in skills:
+    for skill in skills:
         _validate_single_skill(
             desc_seen=desc_seen,
             require_rationale=require_rationale,
             sfi_uuid=sfi_uuid,
-            sk=sk,
-            source_item=source_item,
+            skill=skill,
         )
 
 
 def _validate_single_skill(
-    *,
-    desc_seen: set[str],
-    require_rationale: bool,
-    sfi_uuid: UUID,
-    sk: Any,
-    source_item: dict[str, Any] | None = None,
+    *, desc_seen: set[str], require_rationale: bool, sfi_uuid: UUID, skill: Any
 ) -> None:
     """Validate a single skill's properties and check for duplicates.
 
@@ -252,11 +207,8 @@ def _validate_single_skill(
         Whether a non-empty rationale is required.
     sfi_uuid
         The UUID of the SFI this skill belongs to.
-    sk
+    skill
         The skill object to validate.
-    source_item
-        Optional source prompt item or validator-grounding payload for source-aware
-        heuristic checks.
 
     Raises
     ------
@@ -264,8 +216,8 @@ def _validate_single_skill(
         If the skill description or rationale violates quality rules.
     """
 
-    description = (sk.description or "").strip()
-    rationale = (sk.rationale or "").strip() if sk.rationale is not None else ""
+    description = (skill.description or "").strip()
+    rationale = (skill.rationale or "").strip() if skill.rationale is not None else ""
 
     if not description:
         raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty description.")
@@ -283,19 +235,6 @@ def _validate_single_skill(
 
     desc_seen.add(norm_desc)
 
-    if source_item is not None:
-        source_text = str(
-            source_item.get("full_source_text") or source_item.get("display_text") or ""
-        ).strip()
-
-        if source_text and _looks_like_whole_standard_echo(
-            description=description, source_text=source_text
-        ):
-            raise QualityError(
-                f"sfi_uuid {sfi_uuid} has a skill that appears to echo the full "
-                f"source expectation instead of decomposing it into an atomic skill."
-            )
-
     if require_rationale and not rationale:
         raise QualityError(
             f"sfi_uuid {sfi_uuid} has a skill missing required rationale."
@@ -309,14 +248,13 @@ def validate_atomic_skills(
     min_per_sfi: int,
     max_per_sfi: int,
     require_rationale: bool,
-    source_items_by_uuid: dict[UUID, dict[str, Any]] | None = None,
 ) -> None:
     """Validate AtomicSkillsResponse for a given batch of SFIs.
 
     In addition to strict structural checks (UUID coverage, duplicate UUIDs, min/max
     skill counts), this validator also applies lightweight source-aware heuristics to
-    better enforce the spirit of the prompt: atomic skills should not be empty,
-    duplicated within an SFI, or mere echoes of a clearly composite source standard.
+    better enforce the spirit of the prompt such as atomic skills should not be empty,
+    duplicated within an SFI, etc.
 
     Parameters
     ----------
@@ -332,19 +270,14 @@ def validate_atomic_skills(
     require_rationale
         If True, each skill must have a non-empty rationale. If False, rationales are
         optional and can be empty.
-    source_items_by_uuid
-        Optional mapping from SFI UUID to the original prompt payload or a
-        validator-grounding payload for that SFI. When provided, the validator compares
-        returned skills against `full_source_text` when available, otherwise against
-        `display_text`, to catch whole-standard echoes and similar low-quality outputs.
 
     Raises
     ------
     QualityError
         If any validation rule is violated, such as unknown SFI UUIDs, duplicate
         `sfi_uuid` entries, out-of-bounds skill counts, duplicate normalized skill
-        descriptions within an SFI, missing descriptions, missing required rationales,
-        or whole-standard echoes.
+        descriptions within an SFI, missing descriptions, or missing required
+        rationales.
     """
 
     if not parsed.items:
@@ -374,7 +307,6 @@ def validate_atomic_skills(
             require_rationale=require_rationale,
             sfi_uuid=sfi_uuid,
             skills=item.skills or [],
-            source_item=(source_items_by_uuid or {}).get(sfi_uuid),
         )
 
     _validate_batch_coverage(
