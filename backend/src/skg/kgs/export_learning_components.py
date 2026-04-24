@@ -61,6 +61,35 @@ class LearningComponentsExport:
     supports_relationships: list[Relationship]
 
 
+def _bbox_reading_order(metadata: dict[str, Any]) -> tuple[float, float]:
+    """Return a `(top, left)` reading-order key from SFI bbox metadata.
+
+    The bbox format is `[x0, y0, x1, y1]`, so sorting by `(y0, x0)` approximates
+    top-to-bottom, left-to-right document order when page/path metadata is otherwise
+    tied.
+
+    Parameters
+    ----------
+    metadata
+        The metadata dictionary from a StandardsFrameworkItem, which may contain a
+        "bbox" field with a list of four numbers representing the bounding box of the
+        source text on the page.
+
+    Returns
+    -------
+    tuple[float, float]
+        A `(top, left)` key for reading-order sorting, or `(inf, inf)` if bbox metadata
+        is unavailable or invalid, which will sort after any valid keys.
+    """
+
+    bbox = metadata.get("bbox") or []
+
+    if isinstance(bbox, list) and len(bbox) >= 2:
+        return _sort_number(value=bbox[1]), _sort_number(value=bbox[0])
+
+    return float("inf"), float("inf")
+
+
 def _build_lc_graph_bundle(
     *,
     doc_key: str,
@@ -896,6 +925,28 @@ def _finalize_lc_export(
     return export
 
 
+def _first_page_index(metadata: dict[str, Any]) -> float:
+    """Return the first source page index for an SFI, or infinity when unavailable.
+
+    Parameters
+    ----------
+    metadata
+        The metadata dictionary from a StandardsFrameworkItem.
+
+    Returns
+    -------
+    float
+        The first page index if available, or infinity if not available or invalid.
+    """
+
+    page_indices = metadata.get("page_indices") or []
+
+    if isinstance(page_indices, list) and page_indices:
+        return _sort_number(value=page_indices[0])
+
+    return float("inf")
+
+
 def _format_language_for_prompt(tag: str | None) -> str:
     """Format a BCP-47 language tag as a human-friendly language name for prompts. We
     still attempt to resolve unknown codes via `pycountry`.
@@ -1217,6 +1268,45 @@ def _lc_source_level_record(lc: LearningComponent) -> dict[str, str]:
             metadata.get("supporting_sfi_statement_type")
         ),
     }
+
+
+def _natural_sort_key(value: Any) -> tuple[tuple[int, int | str], ...]:
+    """Build a deterministic natural-sort key for curriculum labels/paths.
+
+    Curriculum path fragments often contain embedded numbers such as `week:10`,
+    `palier-2`, or `grade 3`. A plain lexicographic sort would place `week:10` before
+    `week:2`, so this helper splits digit runs into integers while keeping non-numeric
+    text as normalized lowercase strings.
+
+    Parameters
+    ----------
+    value
+        Any label/path value to normalize for natural sorting.
+
+    Returns
+    -------
+    tuple[tuple[int, int | str], ...]
+        A stable comparable key where numeric runs sort numerically and text runs sort
+        lexicographically.
+    """
+
+    text = normalize_ws(str(value or "")).casefold()
+
+    if not text:
+        return ()
+
+    key_parts: list[tuple[int, int | str]] = []
+
+    for part in re.split(r"(\d+)", text):
+        if not part:
+            continue
+
+        if part.isdigit():
+            key_parts.append((0, int(part)))
+        else:
+            key_parts.append((1, part))
+
+    return tuple(key_parts)
 
 
 def _pair_id_and_display_parts(
@@ -1626,6 +1716,88 @@ def _sort_lc_export_artifacts(
         ),
     )
     return sorted_lcs, sorted_rels
+
+
+def _sort_number(*, default: float = float("inf"), value: Any) -> float:
+    """Convert a possible numeric sort value to float with a stable missing default.
+
+    Parameters
+    ----------
+    default
+        The value to return when the input is None or cannot be converted to a number.
+        Defaults to positive infinity so missing values sort last.
+    value
+        The value to convert to a float for sorting. Can be of any type;
+        non-convertible values will trigger the default.
+
+    Returns
+    -------
+    float
+        The converted float value, or the default when input is None or non-convertible.
+    """
+
+    if value is None:
+        return default
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sort_sfis_for_lc_generation(
+    sfis: Iterable[StandardsFrameworkItem],
+) -> list[StandardsFrameworkItem]:
+    """Sort LC source SFIs in deterministic curriculum/document order.
+
+    This is used by all LC policies so non-LLM exports and LLM atomic-skills batches
+    traverse the same stable order.
+    """
+
+    def _sort_key(sfi: StandardsFrameworkItem) -> tuple[Any, ...]:
+        """Return a deterministic, curriculum-aware sort key for LC source SFIs.
+
+        UUID-only ordering is stable but pedagogically arbitrary. This key keeps nearby
+        curriculum items near each other before LC creation and, especially, before
+        LLM-based atomic-skills batching. It prefers source document order and canonical
+        curriculum path/order metadata, then falls back to the SFI UUID for full
+        determinism.
+
+        Parameters
+        ----------
+        sfi
+            The StandardsFrameworkItem to generate a sort key for.
+
+        Returns
+        -------
+        tuple[Any, ...]
+            A tuple key that can be used to sort SFIs in a stable, curriculum-aware
+            order that prioritizes source document order and canonical curriculum
+            metadata.
+        """
+
+        metadata = sfi.metadata or {}
+        progression_context = metadata.get("progression_context", {})
+        bbox_top, bbox_left = _bbox_reading_order(metadata)
+        order_index = _sort_number(
+            value=progression_context.get(
+                "canonical_order_index_within_parent",
+                progression_context.get("order_index_within_parent"),
+            )
+        )
+        return (
+            _first_page_index(metadata),
+            bbox_top,
+            bbox_left,
+            _natural_sort_key(metadata.get("canonical_path_key")),
+            _natural_sort_key(progression_context.get("topic_path_key")),
+            _natural_sort_key(progression_context.get("thread_key")),
+            order_index,
+            _natural_sort_key(sfi.statement_type),
+            str(sfi.case_identifier_uuid),
+        )
+
+    return sorted(sfis, key=_sort_key)
 
 
 def _split_bullets(text: str) -> list[str]:
@@ -2068,10 +2240,8 @@ def export_learning_components(
     rels = []
     splits_per_sfi: defaultdict[int, int] = defaultdict(int)
 
-    # Deterministic order: sort by SFI UUID string.
-    expectation_sfis_sorted = sorted(
-        expectation_sfis, key=lambda x: x.case_identifier_uuid
-    )
+    # Deterministic curriculum/document order keeps related SFIs adjacent.
+    expectation_sfis_sorted = _sort_sfis_for_lc_generation(expectation_sfis)
 
     for sfi in expectation_sfis_sorted:
         created_lcs = _create_lcs_for_expectation(
@@ -2161,10 +2331,9 @@ def export_learning_components_using_llm(
     expectation_sfis = _iter_expectation_sfis(academic_standards.items)
     fw_metadata = ctx.get_framework_metadata()
 
-    # Deterministic order: sort by SFI UUID string.
-    expectation_sfis_sorted = sorted(
-        expectation_sfis, key=lambda x: str(x.case_identifier_uuid)
-    )
+    # Deterministic curriculum/document order keeps related SFIs adjacent before
+    # batching, while still falling back to SFI UUID as the final tiebreaker.
+    expectation_sfis_sorted = _sort_sfis_for_lc_generation(expectation_sfis)
 
     # Pre-filter: remove SFIs whose text is entirely empty so they never reach the LLM.
     # These would produce 0 LCs anyway (same outcome as the
