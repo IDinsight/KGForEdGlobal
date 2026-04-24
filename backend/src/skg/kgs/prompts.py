@@ -545,12 +545,13 @@ HARD RULES:
 2. For each input SFI, return between {min_per_sfi} and {max_per_sfi} skills.
 3. Skills must be *atomic*, actionable, and measurable. Avoid teacher activities/resources.
 4. Do NOT paraphrase the entire standard as a single skill unless it is already atomic.
-5. Do NOT invent prerequisites or unrelated skills.
-6. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this neutral fallback instruction: {default_language_instruction}.
-7. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
-8. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
-9. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
-10. Keep rationales brief (1–2 sentences max). {rationale_req}
+5. Do NOT invent prerequisites, enabling/background knowledge, preparatory steps, or unrelated skills. Only return skills that are explicitly present in `display_text` or directly clarified by `aux_statements`.
+6. Do NOT convert an implied teaching dependency into a skill. For example, if the source says learners should use a dictionary, do not add a separate skill such as “know alphabetical order” unless that knowledge is explicitly stated in the source.
+7. For each SFI, `description` MUST follow that item's `language_instruction` when present; otherwise use this neutral fallback instruction: {default_language_instruction}.
+8. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
+9. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
+10. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
+11. Keep rationales brief (1–2 sentences max). {rationale_req}
 """
     )
 
@@ -613,7 +614,8 @@ RULES:
 - Ensure every input `sfi_uuid` appears exactly once.
 - Respect all original bounds and requirements (skill count limits, language guidance, rationale requirement if present, no duplicate skills within an SFI).
 - Respect item-specific `language_instruction` when present.
-- Skills must remain atomic, actionable, and measurable. Do not add activities, resources, or unrelated skills.
+- Skills must remain atomic, actionable, and measurable. Do not add activities, resources, inferred prerequisites, enabling/background knowledge, preparatory steps, or unrelated skills.
+- Only keep skills that are explicitly present in the source expectation or directly clarified by provided auxiliary statements. Do not convert implied teaching dependencies into separate skills.
 - If the source restates the same competency in multiple languages, keep it as ONE competency unless the meanings genuinely differ.
 - Do not allow a skill to merely echo the full composite source expectation when decomposition is required.
 - Do not include commentary, markdown, or explanations outside the JSON object.
