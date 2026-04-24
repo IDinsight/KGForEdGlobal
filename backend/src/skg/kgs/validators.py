@@ -71,58 +71,6 @@ def _check_common_edge_invariants(
         seen.add(pair)
 
 
-def _normalize_quality_text(text: str) -> str:
-    """Normalize text for heuristic quality checks.
-
-    This intentionally performs more aggressive normalization than the runtime export
-    pipeline because it is only used for validator-side similarity and duplicate
-    heuristics.
-
-    Parameters
-    ----------
-    text
-        The text to normalize.
-
-    Returns
-    -------
-    str
-        A normalized version of the text suitable for quality heuristics.
-    """
-
-    s = unicodedata.normalize("NFKD", str(text or ""))
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = s.lower()
-    s = re.sub(r"[\u00ad\u200b\u200c\u200d\ufeff]+", "", s)
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-def _looks_like_low_information_skill(description: str) -> bool:
-    """Return True when a skill description is obviously too weak to be useful.
-
-    Parameters
-    ----------
-    description
-        The skill description text to evaluate.
-
-    Returns
-    -------
-    bool
-        True if the description looks like a low-information placeholder, False
-        otherwise.
-    """
-
-    normalized = _normalize_quality_text(description)
-
-    if normalized in {"etc", "etc.", "idem", "same as above", "n/a", "na", "none"}:
-        return True
-
-    if not any(ch.isalpha() for ch in normalized):
-        return True
-
-    return False
-
-
 def _looks_like_whole_standard_echo(*, description: str, source_text: str) -> bool:
     """Return True when a skill appears to just echo the full source expectation.
 
@@ -161,6 +109,32 @@ def _looks_like_whole_standard_echo(*, description: str, source_text: str) -> bo
 
     token_overlap = len(desc_tokens & source_tokens) / max(len(desc_tokens), 1)
     return len(desc_tokens) >= 6 and ratio >= 0.92 and token_overlap >= 0.85
+
+
+def _normalize_quality_text(text: str) -> str:
+    """Normalize text for heuristic quality checks.
+
+    This intentionally performs more aggressive normalization than the runtime export
+    pipeline because it is only used for validator-side similarity and duplicate
+    heuristics.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        A normalized version of the text suitable for quality heuristics.
+    """
+
+    s = unicodedata.normalize("NFKD", str(text or ""))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    s = re.sub(r"[\u00ad\u200b\u200c\u200d\ufeff]+", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
 
 def _quality_tokens(text: str) -> list[str]:
@@ -342,12 +316,6 @@ def _validate_single_skill(
 
     if not description:
         raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty description.")
-
-    if _looks_like_low_information_skill(description):
-        raise QualityError(
-            f"sfi_uuid {sfi_uuid} has a low-information skill description: "
-            f"{description!r}."
-        )
 
     # Use the stronger validator-side normalizer so duplicate detection is robust to
     # accent, punctuation, and minor formatting differences.
