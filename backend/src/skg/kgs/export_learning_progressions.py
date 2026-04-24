@@ -33,7 +33,7 @@ from loguru import logger
 
 # Package Library
 from skg.kgs.export_academic_standards import AcademicStandardsExport
-from skg.kgs.llm import infer_progression_edges
+from skg.kgs.llm import KGUsageTracker, infer_progression_edges
 from skg.kgs.prompts import (
     cross_grade_builds_towards,
     cross_grade_relates_to,
@@ -1421,7 +1421,10 @@ def _group_threads_by_grade_and_subject(
 
 
 def _infer_cross_grade_builds_towards(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
+    *,
+    by_grade: dict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
     """Perform Phase 2 inference: Cross-grade buildsTowards relationships with optional
     cross-stage fallback.
@@ -1437,6 +1440,9 @@ def _infer_cross_grade_builds_towards(
         Dictionary mapping grade labels to lists of bucket dictionaries.
     config
         The knowledge graph run configuration.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process.
 
     Returns
     -------
@@ -1508,6 +1514,7 @@ def _infer_cross_grade_builds_towards(
                 inference_type=inference_type,
                 prompt_builder=prompt_builder,
                 thread_key=thread_key,
+                usage_tracker=usage_tracker,
             )
         )
 
@@ -1523,6 +1530,7 @@ def _infer_cross_grade_relates_to(
     by_grade: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     forbidden_builds_pairs: set[tuple[UUID, UUID]],
+    usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
     """Perform Phase 4 inference: Cross-grade relatesTo relationships with optional
     cross-stage fallback.
@@ -1536,6 +1544,9 @@ def _infer_cross_grade_relates_to(
     forbidden_builds_pairs
         A set of (source, target) UUID tuples representing existing buildsTowards
         relationships which should be excluded from relatesTo inference.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process.
 
     Returns
     -------
@@ -1597,6 +1608,7 @@ def _infer_cross_grade_relates_to(
             subject_label=wi["subject_label"],
             total_calls=total_calls,
             upper=wi["upper"],
+            usage_tracker=usage_tracker,
         )
 
         candidates.extend(item_candidates)
@@ -1607,7 +1619,10 @@ def _infer_cross_grade_relates_to(
 
 
 def _infer_within_grade_builds_towards(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
+    *,
+    by_grade: dict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
     """Perform Phase 1 inference: Within-grade buildsTowards relationships.
 
@@ -1617,6 +1632,9 @@ def _infer_within_grade_builds_towards(
         Dictionary mapping grade labels to lists of bucket dictionaries.
     config
         The knowledge graph run configuration.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process.
 
     Returns
     -------
@@ -1672,6 +1690,7 @@ def _infer_within_grade_builds_towards(
 
         response = infer_progression_edges(
             instructions=prompt.system_message,
+            usage_tracker=usage_tracker,
             user_message=prompt.user_message,
             validator=partial(
                 validate_within_grade_builds_towards,
@@ -1715,7 +1734,10 @@ def _infer_within_grade_builds_towards(
 
 
 def _infer_within_grade_relates_to(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
+    *,
+    by_grade: dict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
     """Perform Phase 3 inference: Within-grade cross-subject relatesTo relationships.
 
@@ -1730,6 +1752,9 @@ def _infer_within_grade_relates_to(
         Dictionary mapping grade labels to lists of bucket dictionaries.
     config
         The knowledge graph run configuration.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process.
 
     Returns
     -------
@@ -1884,6 +1909,7 @@ def _infer_within_grade_relates_to(
 
         resp_ab = infer_progression_edges(
             instructions=prompt_ab.system_message,
+            usage_tracker=usage_tracker,
             user_message=prompt_ab.user_message,
             validator=partial(
                 validate_within_grade_relates_to,
@@ -1914,6 +1940,7 @@ def _infer_within_grade_relates_to(
 
         resp_ba = infer_progression_edges(
             instructions=prompt_ba.system_message,
+            usage_tracker=usage_tracker,
             user_message=prompt_ba.user_message,
             validator=partial(
                 validate_within_grade_relates_to,
@@ -2724,6 +2751,7 @@ def _process_builds_towards_work_item(
     inference_type: str,
     prompt_builder: Callable[..., Any],
     thread_key: str,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
     """Process a single pair of adjacent buckets to infer progression edges.
 
@@ -2741,6 +2769,9 @@ def _process_builds_towards_work_item(
         The function used to build the LLM prompt.
     thread_key
         The string identifier for the current thread.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process.
 
     Returns
     -------
@@ -2789,6 +2820,7 @@ def _process_builds_towards_work_item(
 
     response = infer_progression_edges(
         instructions=prompt.system_message,
+        usage_tracker=usage_tracker,
         user_message=prompt.user_message,
         validator=partial(
             validate_cross_grade_builds_towards,
@@ -2863,6 +2895,7 @@ def _process_relates_to_work_item(
     subject_label: str,
     total_calls: int,
     upper: dict[str, Any],
+    usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
     """Execute bidirectional relatesTo inference for a single level-pair.
 
@@ -2897,6 +2930,9 @@ def _process_relates_to_work_item(
         The total number of planned LLM calls across all work items.
     upper
         The upper-level bucket dictionary containing items and labels.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process.
 
     Returns
     -------
@@ -2939,6 +2975,7 @@ def _process_relates_to_work_item(
 
     resp_lo_hi = infer_progression_edges(
         instructions=prompt_lo_hi.system_message,
+        usage_tracker=usage_tracker,
         user_message=prompt_lo_hi.user_message,
         validator=partial(
             validate_cross_grade_relates_to,
@@ -2972,6 +3009,7 @@ def _process_relates_to_work_item(
 
     resp_hi_lo = infer_progression_edges(
         instructions=prompt_hi_lo.system_message,
+        usage_tracker=usage_tracker,
         user_message=prompt_hi_lo.user_message,
         validator=partial(
             validate_cross_grade_relates_to,
@@ -3457,6 +3495,7 @@ def export_learning_progressions(
     config: CreateKGConfig,
     ctx: ExportContext,
     kg_dirs: KGDirs,
+    usage_tracker: KGUsageTracker,
 ) -> LearningProgressionsExport:
     """Export Learning Progressions KG artifacts.
 
@@ -3470,6 +3509,9 @@ def export_learning_progressions(
         The KG export context.
     kg_dirs
         The knowledge graph run directories.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process
 
     Returns
     -------
@@ -3502,28 +3544,31 @@ def export_learning_progressions(
 
     # Phase 1: Within-grade buildsTowards.
     p1_candidates, p1_prov = _infer_within_grade_builds_towards(
-        by_grade=by_grade, config=config
+        by_grade=by_grade, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p1_candidates)
     provenance_rows.extend(p1_prov)
 
     # Phase 2: Cross-grade buildsTowards.
     p2_candidates, p2_prov, cross_level_build_pairs = _infer_cross_grade_builds_towards(
-        by_grade=by_grade, config=config
+        by_grade=by_grade, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p2_candidates)
     provenance_rows.extend(p2_prov)
 
     # Phase 3: Within-grade relatesTo.
     p3_candidates, p3_prov = _infer_within_grade_relates_to(
-        by_grade=by_grade, config=config
+        by_grade=by_grade, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p3_candidates)
     provenance_rows.extend(p3_prov)
 
     # Phase 4: Cross-grade relatesTo.
     p4_candidates, p4_prov = _infer_cross_grade_relates_to(
-        by_grade=by_grade, config=config, forbidden_builds_pairs=cross_level_build_pairs
+        by_grade=by_grade,
+        config=config,
+        forbidden_builds_pairs=cross_level_build_pairs,
+        usage_tracker=usage_tracker,
     )
     candidates.extend(p4_candidates)
     provenance_rows.extend(p4_prov)
@@ -3777,6 +3822,7 @@ def load_or_export_learning_progressions(
     config: CreateKGConfig,
     ctx: ExportContext,
     kg_dirs: KGDirs,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[LearningProgressionsExport, bool]:
     """Load an existing Learning Progressions KG from disk or export a new one.
 
@@ -3794,6 +3840,9 @@ def load_or_export_learning_progressions(
         The ExportContext for the CanonicalIR.
     kg_dirs
         The KG output directories.
+    usage_tracker
+        The KGUsageTracker for recording KG generation and validation calls during the
+        export process.
 
     Returns
     -------
@@ -3810,6 +3859,7 @@ def load_or_export_learning_progressions(
         logger.warning(
             "Learning Progressions KG already exists and overwrite=False---loading from disk."
         )
+
         learning_progressions = load_learning_progressions_export(kg_dirs)
         lp_reused = True
     else:
@@ -3824,6 +3874,7 @@ def load_or_export_learning_progressions(
             config=config,
             ctx=ctx,
             kg_dirs=kg_dirs,
+            usage_tracker=usage_tracker,
         )
 
     return learning_progressions, lp_reused

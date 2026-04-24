@@ -88,7 +88,7 @@ class ExtractionUsageTracker:
         Returns
         -------
         dict[str, object]
-            Dictionary containing `agents` breakdown and `totals`.
+            Dictionary containing `agents` breakdown and totals.
         """
 
         extraction_d = self.extraction.to_dict()

@@ -42,6 +42,7 @@ from skg.canonical_ir.schemas import CanonicalIR
 from skg.kgs.export_academic_standards import load_or_export_academic_standards
 from skg.kgs.export_learning_components import load_or_export_learning_components
 from skg.kgs.export_learning_progressions import load_or_export_learning_progressions
+from skg.kgs.llm import KGUsageTracker
 from skg.kgs.reporting import (
     build_entity_provenance_export,
     build_policy_coverage_report,
@@ -71,6 +72,7 @@ def create_kgs(
     config: CreateKGConfig,
     kg_dirs: KGDirs,
     provenance_context: dict | None = None,
+    usage_tracker: KGUsageTracker,
 ) -> None:
     """Create Learning Commons knowledge graphs from a single CanonicalIR.
 
@@ -101,6 +103,8 @@ def create_kgs(
     provenance_context
         An optional dictionary containing provenance context information to be included
         in the knowledge graphs.
+    usage_tracker
+        Tracker to accumulate token usage across all KG generation and validation calls.
 
     Raises
     ------
@@ -128,6 +132,7 @@ def create_kgs(
         config=config,
         ctx=kg_export_ctx,
         kg_dirs=kg_dirs,
+        usage_tracker=usage_tracker,
     )
 
     # Sentinels needed for combined bundles.
@@ -163,6 +168,7 @@ def create_kgs(
             config=config,
             ctx=kg_export_ctx,
             kg_dirs=kg_dirs,
+            usage_tracker=usage_tracker,
         )
 
         # Combined Academic Standards + Learning Components + Learning Progressions
@@ -242,8 +248,10 @@ def create(
 
     1. Load config and validate extraction run existence.
     2. Cross-check canonical IR run results.
-    3. Persist KG creation run metadata.
-    4. Create Learning Commons knowledge graphs.
+    3. Create a usage tracker to accumulate token costs across all KG generation and
+        validation calls.
+    4. Persist KG creation run metadata.
+    5. Create Learning Commons knowledge graphs.
 
     Parameters
     ----------
@@ -289,8 +297,11 @@ def create(
     kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
+    # 4.
+    usage_tracker = KGUsageTracker()
+
     try:
-        # 4.
+        # 5.
         logger.info(
             f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
         )
@@ -312,6 +323,7 @@ def create(
                     "render_dpi": extraction_config.dpi,
                 }
             },
+            usage_tracker=usage_tracker,
         )
         kg_run.extra["status"] = "success"
 

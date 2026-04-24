@@ -26,7 +26,7 @@ from loguru import logger
 
 # Package Library
 from skg.kgs.export_academic_standards import AcademicStandardsExport
-from skg.kgs.llm import infer_atomic_skills
+from skg.kgs.llm import KGUsageTracker, infer_atomic_skills
 from skg.kgs.prompts import decompose_atomic_skills
 from skg.kgs.schemas import LearningComponent, Relationship, StandardsFrameworkItem
 from skg.kgs.utils import (
@@ -1129,6 +1129,7 @@ def _process_atomic_skills_batch(
     fw_metadata: dict[str, Any],
     max_splits: int,
     total_batches: int,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[
     list[LearningComponent],
     list[Relationship],
@@ -1156,6 +1157,8 @@ def _process_atomic_skills_batch(
         The maximum number of splits allowed per standard.
     total_batches
         The total number of batches to process.
+    usage_tracker
+        Tracker to accumulate token usage across KG generation and validation calls.
 
     Returns
     -------
@@ -1208,6 +1211,7 @@ def _process_atomic_skills_batch(
     try:
         parsed = infer_atomic_skills(
             instructions=prompt.system_message,
+            usage_tracker=usage_tracker,
             user_message=prompt.user_message,
             validator=partial(
                 validate_atomic_skills,
@@ -1785,6 +1789,7 @@ def export_learning_components(
     config: CreateKGConfig,
     ctx: ExportContext,
     kg_dirs: KGDirs,
+    usage_tracker: KGUsageTracker,
 ) -> LearningComponentsExport:
     """Export Learning Components KG artifacts.
 
@@ -1799,6 +1804,9 @@ def export_learning_components(
         ExportContext (doc_key, framework metadata, indexes).
     kg_dirs
         The KGDirs for output.
+    usage_tracker
+        The KGUsageTracker instance used to accumulate token usage across LLM calls for
+        generation and validation calls.
 
     Returns
     -------
@@ -1818,6 +1826,7 @@ def export_learning_components(
             config=config,
             ctx=ctx,
             kg_dirs=kg_dirs,
+            usage_tracker=usage_tracker,
         )
         return _finalize_lc_export(
             config=config,
@@ -1895,6 +1904,7 @@ def export_learning_components_using_llm(
     config: CreateKGConfig,
     ctx: ExportContext,
     kg_dirs: KGDirs,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[list[LearningComponent], list[Relationship], dict[str, Any]]:
     """Export LearningComponents using LLM-based atomic skills decomposition.
 
@@ -1913,6 +1923,9 @@ def export_learning_components_using_llm(
         metadata needed for ID generation and provenance.
     kg_dirs
         The KGDirs for output, used for writing debug information.
+    usage_tracker
+        The KGUsageTracker instance used to accumulate token usage across LLM calls for
+        generation and validation calls.
 
     Returns
     -------
@@ -1996,6 +2009,7 @@ def export_learning_components_using_llm(
                 fw_metadata=fw_metadata,
                 max_splits=max_splits,
                 total_batches=total_batches,
+                usage_tracker=usage_tracker,
             )
         )
         lcs.extend(batch_lcs)
@@ -2070,6 +2084,7 @@ def load_or_export_learning_components(
     config: CreateKGConfig,
     ctx: ExportContext,
     kg_dirs: KGDirs,
+    usage_tracker: KGUsageTracker,
 ) -> tuple[LearningComponentsExport, bool]:
     """Load an existing Learning Components KG from disk or export a new one.
 
@@ -2087,6 +2102,8 @@ def load_or_export_learning_components(
         The ExportContext for the CanonicalIR.
     kg_dirs
         The KG output directories.
+    usage_tracker
+        The KGUsageTracker instance for tracking LLM usage during export.
 
     Returns
     -------
@@ -2119,6 +2136,7 @@ def load_or_export_learning_components(
             config=config,
             ctx=ctx,
             kg_dirs=kg_dirs,
+            usage_tracker=usage_tracker,
         )
 
     return learning_components, lc_reused
