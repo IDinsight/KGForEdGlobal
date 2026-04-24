@@ -94,12 +94,6 @@ def _looks_like_whole_standard_echo(*, description: str, source_text: str) -> bo
     if not desc_norm or not source_norm:
         return False
 
-    if desc_norm == source_norm:
-        return _source_is_likely_composite(source_text)
-
-    if not _source_is_likely_composite(source_text):
-        return False
-
     ratio = SequenceMatcher(None, desc_norm, source_norm).ratio()
     desc_tokens = set(_quality_tokens(desc_norm))
     source_tokens = set(_quality_tokens(source_norm))
@@ -154,47 +148,6 @@ def _quality_tokens(text: str) -> list[str]:
     normalized = _normalize_quality_text(text)
     normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
     return [tok for tok in normalized.split() if tok]
-
-
-def _source_is_likely_composite(source_text: str) -> bool:
-    """Heuristically detect whether the source expectation is multi-part.
-
-    This is intentionally conservative. The goal is only to detect obvious cases where
-    copying the whole expectation back as a single skill would violate the prompt's
-    "atomic skill" intent.
-
-    Parameters
-    ----------
-    source_text
-        The source expectation text to evaluate.
-
-    Returns
-    -------
-    bool
-        True if the source text appears to be composite and thus should not be echoed
-        as a single skill, False otherwise.
-    """
-
-    text = str(source_text or "")
-    tokens = _quality_tokens(text)
-    markers = 0
-
-    if re.search(r"[\n;•·]", text):
-        markers += 1
-
-    if " / " in text:
-        markers += 1
-
-    if ":" in text:
-        markers += 1
-
-    if text.count(",") >= 2:
-        markers += 1
-
-    if len(tokens) >= 18:
-        markers += 1
-
-    return markers >= 2
 
 
 def _validate_batch_coverage(

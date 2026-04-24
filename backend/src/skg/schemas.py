@@ -733,7 +733,7 @@ class CreateKGConfig(BaseSchema):
         description=(
             "Minimum number of atomic skills required per SFI in the LLM response. "
             "If unmet, the batch will be corrected/retried; if still failing, the "
-            "export falls back to a 1-to-1 LC for affected SFIs."
+            "export falls back to a 1-to-1 LC for the affected batch."
         ),
         ge=1,
         le=25,
