@@ -126,6 +126,90 @@ def _build_lc_graph_bundle(
     }
 
 
+def _build_lc_source_level_quality_report(
+    learning_components: list[LearningComponent],
+) -> dict[str, Any]:
+    """Build a descriptive QA report for the SFI levels that produced Learning
+    Components.
+
+    This report is intentionally curriculum-agnostic. It does not classify any source
+    label or path pattern as "good" or "bad". Instead, it exposes Learning Components
+    by source-label, statement-type, and role-only path-pattern so broad or unexpected
+    LC sources become visible during review.
+
+    Parameters
+    ----------
+    learning_components
+        The LearningComponents emitted by the export.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable source-level quality report.
+    """
+
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    records = [_lc_source_level_record(lc) for lc in learning_components]
+    supporting_sfi_uuids = {
+        record["supporting_sfi_case_uuid"]
+        for record in records
+        if record["supporting_sfi_case_uuid"] != "(missing)"
+    }
+    total_lcs = len(records)
+
+    source_label_rows = _summarize_lc_source_level_records(
+        group_key="supporting_sfi_source_label", records=records, total_lcs=total_lcs
+    )
+    statement_type_rows = _summarize_lc_source_level_records(
+        group_key="supporting_sfi_statement_type", records=records, total_lcs=total_lcs
+    )
+    path_pattern_rows = _summarize_lc_source_level_records(
+        group_key="supporting_sfi_path_pattern", records=records, total_lcs=total_lcs
+    )
+
+    return {
+        "counts": {
+            "by_supporting_sfi_source_label": source_label_rows,
+            "by_supporting_sfi_statement_type": statement_type_rows,
+            "by_supporting_sfi_path_pattern": path_pattern_rows,
+        },
+        "description": (
+            "Descriptive QA report showing which source SFI labels, statement types, "
+            "and hierarchy path patterns produced LearningComponents. Use this to "
+            "spot unexpectedly broad or weakly-labeled LC sources before treating an "
+            "export as production quality."
+        ),
+        "generated_at": generated_at,
+        "report_type": "learning_components_source_level_quality",
+        "review_guidance": [
+            "This report is descriptive only; it does not drop or relabel any LCs.",
+            "Rows with high Learning Component counts at shallow path patterns may indicate broad framework-level sources worth reviewing.",
+            "Rows with '(missing)' values indicate metadata gaps in the supporting SFI export.",
+        ],
+        "total_lcs": total_lcs,
+        "total_supporting_sfis": len(supporting_sfi_uuids),
+    }
+
+
+def _clean_source_level_report_value(value: Any) -> str:
+    """Normalize a source-level grouping value for Learning Components QA reporting.
+
+    Parameters
+    ----------
+    value
+        Raw metadata value from a LearningComponent or supporting SFI.
+
+    Returns
+    -------
+    str
+        A normalized non-empty string. Missing/blank values are represented with the
+        explicit "(missing)" sentinel so gaps are visible in reports.
+    """
+
+    cleaned = normalize_ws(str(value or ""))
+    return cleaned if cleaned else "(missing)"
+
+
 def _build_lc_semantic_context_from_sfi(sfi: StandardsFrameworkItem) -> dict[str, Any]:
     """Extract stable semantic context from the supporting SFI for LC metadata.
 
@@ -784,6 +868,10 @@ def _finalize_lc_export(
         json_info=lc_stats,
     )
     write_to_json(
+        fp=kg_dirs.learning_components / "learning_components_source_level_report.json",
+        json_info=_build_lc_source_level_quality_report(sorted_lcs),
+    )
+    write_to_json(
         fp=kg_dirs.learning_components / "learning_components_kg.json",
         json_info=_build_lc_graph_bundle(
             doc_key=ctx.doc_key,
@@ -1094,6 +1182,43 @@ def _iter_expectation_sfis(
     return expectation_sfis
 
 
+def _lc_source_level_record(lc: LearningComponent) -> dict[str, str]:
+    """Extract the source-level fields used by the LC source-level QA report.
+
+    Parameters
+    ----------
+    lc
+        The LearningComponent to summarize.
+
+    Returns
+    -------
+    dict[str, str]
+        A small normalized record with supporting SFI UUID, source label, statement
+        type, canonical path key, and role-only path pattern.
+    """
+
+    metadata = lc.metadata or {}
+    canonical_path_key = metadata.get("supporting_sfi_canonical_path_key")
+    return {
+        "lc_uuid": str(lc.identifier),
+        "supporting_sfi_canonical_path_key": _clean_source_level_report_value(
+            canonical_path_key
+        ),
+        "supporting_sfi_case_uuid": _clean_source_level_report_value(
+            metadata.get("supporting_sfi_case_uuid")
+        ),
+        "supporting_sfi_path_pattern": _path_pattern_from_canonical_path_key(
+            canonical_path_key
+        ),
+        "supporting_sfi_source_label": _clean_source_level_report_value(
+            metadata.get("supporting_sfi_source_label")
+        ),
+        "supporting_sfi_statement_type": _clean_source_level_report_value(
+            metadata.get("supporting_sfi_statement_type")
+        ),
+    }
+
+
 def _pair_id_and_display_parts(
     *, display_parts: list[str], id_parts: list[str]
 ) -> list[tuple[str, str]]:
@@ -1117,6 +1242,46 @@ def _pair_id_and_display_parts(
         return list(zip(id_parts, display_parts))
 
     return [(part, part) for part in id_parts]
+
+
+def _path_pattern_from_canonical_path_key(path_key: Any) -> str:
+    """Convert a canonical path key into a role-only path pattern. For example,
+    `section:foo/stage:bar/expectation::abc` becomes `section/stage/expectation`.
+
+    This intentionally removes labels, codes, and hashes so the report stays general
+    across curricula and highlights which *level* of the hierarchy produced LCs.
+
+    Parameters
+    ----------
+    path_key
+        Canonical SFI path key, usually from
+        `LearningComponent.metadata["supporting_sfi_canonical_path_key"]`.
+
+    Returns
+    -------
+    str
+        Slash-delimited role pattern, or "(missing)" if no usable path is present.
+    """
+
+    path_key_str = normalize_ws(str(path_key or ""))
+
+    if not path_key_str:
+        return "(missing)"
+
+    roles: list[str] = []
+
+    for raw_part in path_key_str.split("/"):
+        part = normalize_ws(raw_part)
+
+        if not part:
+            continue
+
+        role = normalize_ws(part.split(":", 1)[0] if ":" in part else part)
+
+        if role:
+            roles.append(role)
+
+    return "/".join(roles) if roles else "(missing)"
 
 
 def _process_atomic_skills_batch(
@@ -1592,6 +1757,63 @@ def _split_lc_parts(
         cleaned_parts = cleaned_parts[:max_splits]
 
     return cleaned_parts, truncated
+
+
+def _summarize_lc_source_level_records(
+    *, group_key: str, records: list[dict[str, str]], total_lcs: int
+) -> list[dict[str, Any]]:
+    """Summarize LC counts and distinct supporting-SFI counts by a report key.
+
+    Parameters
+    ----------
+    group_key
+        Record key to group by (e.g., `supporting_sfi_source_label`).
+    records
+        Source-level records, one per LearningComponent.
+    total_lcs
+        Total number of LCs in the export; used for percent calculations.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Rows sorted by descending LC count and then by grouping value.
+    """
+
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for record in records:
+        value = record[group_key]
+        row = grouped.setdefault(
+            value, {"value": value, "lc_count": 0, "supporting_sfi_case_uuids": set()}
+        )
+        row["lc_count"] += 1
+
+        if record["supporting_sfi_case_uuid"] != "(missing)":
+            row["supporting_sfi_case_uuids"].add(record["supporting_sfi_case_uuid"])
+
+    rows: list[dict[str, Any]] = []
+
+    for value, row in grouped.items():
+        supporting_sfi_count = len(row["supporting_sfi_case_uuids"])
+        lc_count = int(row["lc_count"])
+        out_row: dict[str, Any] = {
+            "avg_lcs_per_supporting_sfi": (
+                round(lc_count / supporting_sfi_count, 4)
+                if supporting_sfi_count
+                else 0.0
+            ),
+            "lc_count": lc_count,
+            "lc_percent": round(lc_count / total_lcs, 4) if total_lcs else 0.0,
+            "supporting_sfi_count": supporting_sfi_count,
+            "value": value,
+        }
+
+        if group_key == "supporting_sfi_path_pattern":
+            out_row["path_depth"] = 0 if value == "(missing)" else len(value.split("/"))
+
+        rows.append(out_row)
+
+    return sorted(rows, key=lambda x: (-int(x["lc_count"]), str(x["value"])))
 
 
 def _trim_text(*, max_chars: int, s: str) -> str:
