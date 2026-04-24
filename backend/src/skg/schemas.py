@@ -1075,7 +1075,7 @@ class CreateKGConfig(BaseSchema):
         Parameters
         ----------
         v
-            The configured path pattern list. Entries that start with `r0e:` are
+            The configured path pattern list. Entries that start with `re:` are
             compiled to ensure malformed regexes fail fast before KG export.
         info
             Pydantic field validation info; used to report the field name.
