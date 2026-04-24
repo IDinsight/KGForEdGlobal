@@ -88,6 +88,28 @@
 		"lc_output_language_policy": "source",
 		"lc_output_language_tag": null,
 		"lc_policy": "llm_atomic_skills",
+		"lc_source_labels_exclude": [],
+		"lc_source_labels_include": [],
+		"lc_source_max_path_depth": null,
+		"lc_source_min_path_depth": null,
+		"lc_source_normalized_statement_types": [
+			"Standard"
+		],
+		"lc_source_path_patterns_exclude": [],
+		"lc_source_path_patterns_include": [],
+		"lc_source_roles_exclude": [],
+		"lc_source_roles_include": [
+			"expectation"
+		],
+		"lc_source_statement_types_exclude": [
+			"Compétence / libellé structurel",
+			"Compétence de base — Lecture-Écriture",
+			"Compétence de base — Récitation",
+			"Compétence de base — Expression orale",
+			"Compétence de base — Production d'écrits",
+			"expectation"
+		],
+		"lc_source_statement_types_include": [],
 		"lp_builds_towards_min_confidence": 0.75,
 		"lp_cross_grade_builds_towards": false,
 		"lp_cross_grade_match_roles": [

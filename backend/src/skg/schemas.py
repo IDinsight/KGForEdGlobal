@@ -204,6 +204,7 @@ LanguageField = Annotated[
         description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
     ),
 ]
+LCSourceNormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 
 
 class BaseSchema(BaseModel):
@@ -716,6 +717,92 @@ class CreateKGConfig(BaseSchema):
             "'llm_atomic_skills' uses an LLM to decompose each expectation into 1–N atomic skill LCs."
         ),
     )
+    lc_source_labels_exclude: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Optional blocklist of SFI metadata.source_label values excluded from LC "
+            "generation."
+        ),
+    )
+    lc_source_labels_include: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Optional allowlist of SFI metadata.source_label values eligible for LC "
+            "generation. Empty set means no source-label allowlist restriction."
+        ),
+    )
+    lc_source_max_path_depth: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional maximum canonical_path_key depth for LC source eligibility. "
+            "Use with care; statement type/source-label filters are usually clearer."
+        ),
+        ge=0,
+    )
+    lc_source_min_path_depth: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional minimum canonical_path_key depth for LC source eligibility. "
+            "Use with care; statement type/source-label filters are usually clearer."
+        ),
+        ge=0,
+    )
+    lc_source_normalized_statement_types: set[LCSourceNormalizedStatementType] = Field(
+        default_factory=lambda: cast(
+            set[LCSourceNormalizedStatementType], {"Standard"}
+        ),
+        description=(
+            "Normalized StandardsFrameworkItem types eligible to generate "
+            "LearningComponents. This is an LC-source decision, not an Academic "
+            "Standards export decision. Default keeps current behavior by considering "
+            "only normative Standard SFIs."
+        ),
+    )
+    lc_source_path_patterns_exclude: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional exclude patterns for SFI metadata.canonical_path_key or its "
+            "role-only path pattern. Supported forms: substring, glob (*, ?, []), or "
+            "regex prefixed with 're:'."
+        ),
+    )
+    lc_source_path_patterns_include: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional include patterns for SFI metadata.canonical_path_key or its "
+            "role-only path pattern. Supported forms: substring, glob (*, ?, []), or "
+            "regex prefixed with 're:'. Empty list means no path include restriction."
+        ),
+    )
+    lc_source_roles_exclude: set[str] = Field(
+        default_factory=set,
+        description=(
+            "SFI metadata.role values that must never generate LearningComponents. "
+            "Compared case-insensitively after whitespace normalization."
+        ),
+    )
+    lc_source_roles_include: set[str] = Field(
+        default_factory=lambda: {"expectation"},
+        description=(
+            "SFI metadata.role values eligible to generate LearningComponents. "
+            "Empty set means no role include restriction. Default is {'expectation'}."
+        ),
+    )
+    lc_source_statement_types_exclude: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Optional blocklist of SFI.statement_type values excluded from LC generation. "
+            "Use this to keep broad competency Standards in Academic Standards while "
+            "preventing them from becoming LC sources."
+        ),
+    )
+    lc_source_statement_types_include: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Optional allowlist of SFI.statement_type values eligible for LC generation. "
+            "Empty set means no statement-type allowlist restriction."
+        ),
+    )
     lp_builds_towards_min_confidence: float = Field(
         default=0.60,
         description="Minimum confidence to emit buildsTowards relationships.",
@@ -892,6 +979,28 @@ class CreateKGConfig(BaseSchema):
             raise ValueError(
                 "lc_output_language_policy='explicit_tag' requires "
                 "lc_output_language_tag to be provided."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_lc_source_path_depth_bounds(self) -> Self:
+        """Validate optional LC source path-depth bounds.
+
+        Raises
+        ------
+        ValueError
+            If both `lc_source_min_path_depth` and `lc_source_max_path_depth` are
+            provided but min > max.
+        """
+
+        if (
+            self.lc_source_min_path_depth is not None
+            and self.lc_source_max_path_depth is not None
+            and self.lc_source_min_path_depth > self.lc_source_max_path_depth
+        ):
+            raise ValueError(
+                "lc_source_min_path_depth must be <= lc_source_max_path_depth."
             )
 
         return self

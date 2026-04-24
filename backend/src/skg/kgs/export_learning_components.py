@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from fnmatch import fnmatchcase
 from functools import partial
 from typing import Any, Iterable
 from uuid import UUID, uuid5
@@ -59,6 +60,22 @@ class LearningComponentsExport:
     lc_stats: dict[str, Any]
     learning_components: list[LearningComponent]
     supports_relationships: list[Relationship]
+
+
+@dataclass(frozen=True)
+class LearningComponentsSourceDecision:
+    """Eligibility decision for whether one SFI should generate LearningComponents.
+
+    Academic Standards export and Learning Components export make different decisions:
+    a StandardsFrameworkItem may be a valid standards node while still being too broad
+    to decompose into granular LearningComponents. This decision record makes that
+    second LC-source decision explicit, reportable, and configurable.
+    """
+
+    eligible: bool
+    fields: dict[str, Any]
+    reasons: list[str]
+    sfi: StandardsFrameworkItem
 
 
 def _bbox_reading_order(metadata: dict[str, Any]) -> tuple[float, float]:
@@ -115,6 +132,12 @@ def _build_lc_graph_bundle(
     dict[str, Any]
         A dictionary representing the graph bundle, with nodes and relationships in a
         shape-preserving format.
+
+    Raises
+    ------
+    ValueError
+        If any relationship in `supports_relationships` does not have the expected
+        relationship type defined by the `SUPPORTS` constant.
     """
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -132,9 +155,9 @@ def _build_lc_graph_bundle(
     relationships: list[dict[str, Any]] = []
 
     for r in supports_relationships:
-        assert (
-            r.relationship_type == SUPPORTS
-        ), f"{r.relationship_type} is not '{SUPPORTS}'"
+        if r.relationship_type != SUPPORTS:
+            raise ValueError(f"{r.relationship_type} is not '{SUPPORTS}'")
+
         relationships.append(
             {
                 "id": str(r.identifier),
@@ -152,6 +175,131 @@ def _build_lc_graph_bundle(
         "graph_type": "learning_components",
         "nodes": nodes,
         "relationships": relationships,
+    }
+
+
+def _build_lc_semantic_context_from_sfi(sfi: StandardsFrameworkItem) -> dict[str, Any]:
+    """Extract stable semantic context from the supporting SFI for LC metadata.
+
+    The goal is to make each LearningComponent more self-describing when inspected on
+    its own, without changing LC identity semantics or duplicating low-level provenance
+    fields that already live under `metadata["provenance"]`.
+
+    Included fields are intentionally limited to higher-level semantic context that is
+    useful for downstream inspection, filtering, and debugging, such as statement
+    typing, canonical placement, progression context, and attached auxiliary
+    statements.
+
+    Parameters
+    ----------
+    sfi
+        The supporting StandardsFrameworkItem.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary of selected semantic context fields copied from the supporting SFI
+        and its metadata.
+    """
+
+    metadata = sfi.metadata or {}
+    semantic_context: dict[str, Any] = {
+        "supporting_sfi_canonical_path_key": metadata.get("canonical_path_key"),
+        "supporting_sfi_grade_level": list(sfi.grade_level or []),
+        "supporting_sfi_in_language": str(sfi.in_language or ""),
+        "supporting_sfi_normalized_statement_type": sfi.normalized_statement_type,
+        "supporting_sfi_role": metadata.get("role"),
+        "supporting_sfi_source_label": metadata.get("source_label"),
+        "supporting_sfi_statement_code": sfi.statement_code,
+        "supporting_sfi_statement_type": sfi.statement_type,
+    }
+    progression_context = metadata.get("progression_context")
+
+    if isinstance(progression_context, dict) and progression_context:
+        semantic_context["supporting_sfi_progression_context"] = deepcopy(
+            progression_context
+        )
+
+    aux_statements = metadata.get("aux_statements")
+
+    if isinstance(aux_statements, list) and aux_statements:
+        semantic_context["supporting_sfi_aux_statements"] = deepcopy(aux_statements)
+
+    return {
+        key: value
+        for key, value in semantic_context.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+
+
+def _build_lc_source_eligibility_report(
+    decisions: list[LearningComponentsSourceDecision],
+) -> dict[str, Any]:
+    """Build a pre-generation report of which SFIs are eligible LC sources.
+
+    Parameters
+    ----------
+    decisions
+        A list of LearningComponentsSourceDecision records for all SFIs considered as
+        LC sources.
+
+    Returns
+    -------
+    dict[str, Any]
+        A JSON-serializable report dictionary summarizing LC source eligibility
+        decisions, including counts by various SFI metadata fields, example eligible
+        and excluded SFIs with reasons, and overall statistics.
+    """
+
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    eligible = [decision for decision in decisions if decision.eligible]
+    excluded = [decision for decision in decisions if not decision.eligible]
+    reason_counts: Counter[str] = Counter()
+
+    for decision in decisions:
+        for reason in decision.reasons:
+            reason_counts[reason] += 1
+
+    return {
+        "counts": {
+            "by_normalized_statement_type": _summarize_lc_source_decisions(
+                decisions=decisions, group_key="normalized_statement_type"
+            ),
+            "by_path_pattern": _summarize_lc_source_decisions(
+                decisions=decisions, group_key="path_pattern"
+            ),
+            "by_role": _summarize_lc_source_decisions(
+                decisions=decisions, group_key="role"
+            ),
+            "by_source_label": _summarize_lc_source_decisions(
+                decisions=decisions, group_key="source_label"
+            ),
+            "by_statement_type": _summarize_lc_source_decisions(
+                decisions=decisions, group_key="statement_type"
+            ),
+        },
+        "description": (
+            "Pre-generation report showing which StandardsFrameworkItems were eligible "
+            "to generate LearningComponents under the configured LC source filters. "
+            "Excluded SFIs remain valid standards items; they simply do not produce LCs."
+        ),
+        "examples": {
+            "eligible": [_lc_source_decision_example(d) for d in eligible[:25]],
+            "excluded": [_lc_source_decision_example(d) for d in excluded[:50]],
+        },
+        "generated_at": generated_at,
+        "report_type": "learning_components_source_eligibility",
+        "review_guidance": [
+            "Use this report before inspecting generated LCs: it explains which standards were allowed to become LC sources.",
+            "Broad framework competencies should usually remain in Academic Standards but may be excluded here.",
+            "Tighten or loosen lc_source_* config fields, then re-export Learning Components.",
+        ],
+        "summary": {
+            "eligible_sfis": len(eligible),
+            "excluded_sfis": len(excluded),
+            "reason_counts": dict(sorted(reason_counts.items())),
+            "total_sfis_considered": len(decisions),
+        },
     }
 
 
@@ -217,79 +365,6 @@ def _build_lc_source_level_quality_report(
         ],
         "total_lcs": total_lcs,
         "total_supporting_sfis": len(supporting_sfi_uuids),
-    }
-
-
-def _clean_source_level_report_value(value: Any) -> str:
-    """Normalize a source-level grouping value for Learning Components QA reporting.
-
-    Parameters
-    ----------
-    value
-        Raw metadata value from a LearningComponent or supporting SFI.
-
-    Returns
-    -------
-    str
-        A normalized non-empty string. Missing/blank values are represented with the
-        explicit "(missing)" sentinel so gaps are visible in reports.
-    """
-
-    cleaned = normalize_ws(str(value or ""))
-    return cleaned if cleaned else "(missing)"
-
-
-def _build_lc_semantic_context_from_sfi(sfi: StandardsFrameworkItem) -> dict[str, Any]:
-    """Extract stable semantic context from the supporting SFI for LC metadata.
-
-    The goal is to make each LearningComponent more self-describing when inspected on
-    its own, without changing LC identity semantics or duplicating low-level provenance
-    fields that already live under `metadata["provenance"]`.
-
-    Included fields are intentionally limited to higher-level semantic context that is
-    useful for downstream inspection, filtering, and debugging, such as statement
-    typing, canonical placement, progression context, and attached auxiliary
-    statements.
-
-    Parameters
-    ----------
-    sfi
-        The supporting StandardsFrameworkItem.
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary of selected semantic context fields copied from the supporting SFI
-        and its metadata.
-    """
-
-    metadata = sfi.metadata or {}
-    semantic_context: dict[str, Any] = {
-        "supporting_sfi_canonical_path_key": metadata.get("canonical_path_key"),
-        "supporting_sfi_grade_level": list(sfi.grade_level or []),
-        "supporting_sfi_in_language": str(sfi.in_language or ""),
-        "supporting_sfi_normalized_statement_type": sfi.normalized_statement_type,
-        "supporting_sfi_role": metadata.get("role"),
-        "supporting_sfi_source_label": metadata.get("source_label"),
-        "supporting_sfi_statement_code": sfi.statement_code,
-        "supporting_sfi_statement_type": sfi.statement_type,
-    }
-    progression_context = metadata.get("progression_context")
-
-    if isinstance(progression_context, dict) and progression_context:
-        semantic_context["supporting_sfi_progression_context"] = deepcopy(
-            progression_context
-        )
-
-    aux_statements = metadata.get("aux_statements")
-
-    if isinstance(aux_statements, list) and aux_statements:
-        semantic_context["supporting_sfi_aux_statements"] = deepcopy(aux_statements)
-
-    return {
-        key: value
-        for key, value in semantic_context.items()
-        if value is not None and value != "" and value != [] and value != {}
     }
 
 
@@ -487,6 +562,86 @@ def _build_single_prompt_item(
             payload["aux_statements"] = aux_statements
 
     return payload
+
+
+def _clean_lc_source_filter_value(value: Any) -> str:
+    """Normalize a config/source value for LC source eligibility comparisons.
+
+    Parameters
+    ----------
+    value
+        Raw config or SFI metadata value to normalize for eligibility filtering.
+
+    Returns
+    -------
+    str
+        A normalized string suitable for case-insensitive comparison. Missing/blank
+        values are normalized to an empty string.
+    """
+
+    return normalize_ws(str(value or "")).casefold()
+
+
+def _clean_lc_source_report_value(value: Any) -> str:
+    """Normalize a source-selection report value without case-folding display text.
+
+    Parameters
+    ----------
+    value
+        Raw metadata value from a LearningComponent or supporting SFI.
+
+    Returns
+    -------
+    str
+        A normalized non-empty string. Missing/blank values are represented with the
+        explicit "(missing)" sentinel so gaps are visible in reports.
+    """
+
+    cleaned = normalize_ws(str(value or ""))
+    return cleaned if cleaned else "(missing)"
+
+
+def _clean_source_level_report_value(value: Any) -> str:
+    """Normalize a source-level grouping value for Learning Components QA reporting.
+
+    Parameters
+    ----------
+    value
+        Raw metadata value from a LearningComponent or supporting SFI.
+
+    Returns
+    -------
+    str
+        A normalized non-empty string. Missing/blank values are represented with the
+        explicit "(missing)" sentinel so gaps are visible in reports.
+    """
+
+    cleaned = normalize_ws(str(value or ""))
+    return cleaned if cleaned else "(missing)"
+
+
+def _config_value_set(values: Iterable[Any] | None) -> set[str]:
+    """Return normalized non-empty config values as a set.
+
+    Parameters
+    ----------
+    values
+        An iterable of raw config values to normalize and convert to a set. Missing or
+        blank values are ignored.
+
+    Returns
+    -------
+    set[str]
+        A set of normalized, non-empty strings suitable for eligibility comparisons. If
+        the input is None or contains no valid values, an empty set is returned.
+    """
+
+    if not values:
+        return set()
+
+    return {
+        cleaned for value in values if (cleaned := _clean_lc_source_filter_value(value))
+    }
 
 
 def _create_lcs_for_expectation(
@@ -885,9 +1040,12 @@ def _finalize_lc_export(
         If integrity checks fail.
     """
 
+    source_eligibility_report = lc_stats.pop("_source_eligibility_report", None)
+
     _validate_lc_export_integrity(
         lcs=lcs, rels=rels, valid_sfi_case_uuids=valid_sfi_case_uuids
     )
+
     sorted_lcs, sorted_rels = _sort_lc_export_artifacts(lcs=lcs, rels=rels)
 
     write_to_json(
@@ -907,6 +1065,14 @@ def _finalize_lc_export(
         fp=kg_dirs.learning_components / "learning_components_source_level_report.json",
         json_info=_build_lc_source_level_quality_report(sorted_lcs),
     )
+
+    if source_eligibility_report is not None:
+        write_to_json(
+            fp=kg_dirs.learning_components
+            / "learning_components_source_eligibility_report.json",
+            json_info=source_eligibility_report,
+        )
+
     write_to_json(
         fp=kg_dirs.learning_components / "learning_components_kg.json",
         json_info=_build_lc_graph_bundle(
@@ -1211,33 +1377,73 @@ def _has_usable_text(sfi: StandardsFrameworkItem) -> bool:
     return bool(id_source or display)
 
 
-def _iter_expectation_sfis(
-    items: Iterable[StandardsFrameworkItem],
-) -> list[StandardsFrameworkItem]:
-    """Return a list of StandardsFrameworkItems that represents normative expectations.
+def _lc_source_decision_example(
+    decision: LearningComponentsSourceDecision,
+) -> dict[str, Any]:
+    """Return a compact, JSON-serializable example for an eligibility decision.
 
     Parameters
     ----------
-    items
-        An iterable of StandardsFrameworkItems to filter.
+    decision
+        The LearningComponentsSourceDecision to summarize.
 
     Returns
     -------
-    list[StandardsFrameworkItem]
-        A list of StandardsFrameworkItems that are considered normative expectations,
-        based on their normalized_statement_type being "Standard". This is a policy
-        decision that may be refined in the future with more sophisticated logic, but
-        for now serves as a simple heuristic to identify which SFIs should be supported
-        by Learning Components.
+    dict[str, Any]
+        A dictionary containing key fields from the decision, suitable for inclusion in
+        a JSON report. This includes identifiers, canonical path information, statement
+        type, role, source label, eligibility result, reasons, and a description
+        preview for context.
     """
 
-    expectation_sfis = [
-        sfi for sfi in items if sfi.normalized_statement_type == "Standard"
-    ]
+    fields = decision.fields
+    return {
+        "canonical_node_id": fields.get("canonical_node_id"),
+        "canonical_path_key": fields.get("canonical_path_key"),
+        "case_identifier_uuid": fields.get("case_identifier_uuid"),
+        "description_preview": fields.get("description_preview"),
+        "eligible": decision.eligible,
+        "path_pattern": fields.get("path_pattern"),
+        "reasons": decision.reasons,
+        "role": fields.get("role"),
+        "source_label": fields.get("source_label"),
+        "statement_type": fields.get("statement_type"),
+    }
 
-    logger.info(f"Found {len(expectation_sfis)} expectation SFIs.")
 
-    return expectation_sfis
+def _lc_source_fields(sfi: StandardsFrameworkItem) -> dict[str, Any]:
+    """Extract the SFI fields used by LC source eligibility filtering and reporting.
+
+    Parameters
+    ----------
+    sfi
+        The StandardsFrameworkItem to extract fields from.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the extracted and normalized fields relevant for LC
+        source eligibility and reporting. This includes identifiers, canonical path
+        information, statement type, role, source label, and a trimmed description
+        preview for context.
+    """
+
+    metadata = sfi.metadata or {}
+    canonical_path_key = normalize_ws(str(metadata.get("canonical_path_key") or ""))
+    path_pattern = _path_pattern_from_canonical_path_key(canonical_path_key)
+    return {
+        "canonical_node_id": metadata.get("canonical_node_id"),
+        "canonical_path_key": canonical_path_key,
+        "case_identifier_uuid": str(sfi.case_identifier_uuid),
+        "description_preview": _trim_text(max_chars=240, s=sfi.description or ""),
+        "normalized_statement_type": sfi.normalized_statement_type,
+        "path_depth": _lc_source_path_depth(canonical_path_key),
+        "path_pattern": path_pattern,
+        "role": normalize_ws(str(metadata.get("role") or "")),
+        "source_label": normalize_ws(str(metadata.get("source_label") or "")),
+        "statement_code": sfi.statement_code,
+        "statement_type": normalize_ws(str(sfi.statement_type or "")),
+    }
 
 
 def _lc_source_level_record(lc: LearningComponent) -> dict[str, str]:
@@ -1275,6 +1481,95 @@ def _lc_source_level_record(lc: LearningComponent) -> dict[str, str]:
             metadata.get("supporting_sfi_statement_type")
         ),
     }
+
+
+def _lc_source_path_depth(path_key: str) -> int:
+    """Return the number of non-empty path pieces in a canonical path key.
+
+    Parameters
+    ----------
+    path_key
+        The canonical path key string, typically from SFI metadata.
+
+    Returns
+    -------
+    int
+        The count of non-empty path pieces, which indicates the depth of the SFI in the
+        curriculum hierarchy. A path key of "" or None is considered to have depth 0.
+    """
+
+    if not path_key:
+        return 0
+
+    return len([part for part in path_key.split("/") if normalize_ws(part)])
+
+
+def _lc_source_path_matches_any(
+    *, path_key: str, path_pattern: str, patterns: Iterable[str] | None
+) -> bool:
+    """Return True if any configured path pattern matches the path key or role pattern.
+
+    Pattern semantics are intentionally simple and curriculum-agnostic:
+
+    - `re:<expr>` runs a case-insensitive regular expression.
+    - Glob patterns containing `*`, `?`, or `[` use fnmatch-style matching.
+    - All other patterns are case-insensitive substring matches.
+
+    Both the full canonical path key and the role-only path pattern are tested so
+    reviewers can filter either exact curriculum paths or broad structural shapes.
+
+    Parameters
+    ----------
+    path_key
+        The canonical path key from SFI metadata.
+    path_pattern
+        The role-only path pattern derived from the canonical path key.
+    patterns
+        An iterable of path patterns to match against, which may be None or empty. If
+        None or empty, this function returns False (no matches).
+
+    Returns
+    -------
+    bool
+        True if any pattern matches the path key or role pattern, False otherwise.
+    """
+
+    cleaned_patterns = [normalize_ws(str(p or "")) for p in (patterns or [])]
+    cleaned_patterns = [p for p in cleaned_patterns if p]
+
+    if not cleaned_patterns:
+        return False
+
+    candidates = [
+        _clean_lc_source_filter_value(path_key),
+        _clean_lc_source_filter_value(path_pattern),
+    ]
+
+    for raw_pattern in cleaned_patterns:
+        pattern = _clean_lc_source_filter_value(raw_pattern)
+
+        if pattern.startswith("re:"):
+            regex = raw_pattern[3:].strip()
+
+            if not regex:
+                continue
+
+            for candidate in (path_key, path_pattern):
+                if re.search(regex, candidate or "", flags=re.IGNORECASE):
+                    return True
+
+            continue
+
+        if any(ch in pattern for ch in "*?["):
+            if any(fnmatchcase(candidate, pattern) for candidate in candidates):
+                return True
+
+            continue
+
+        if any(pattern in candidate for candidate in candidates):
+            return True
+
+    return False
 
 
 def _natural_sort_key(value: Any) -> tuple[tuple[int, int | str], ...]:
@@ -1693,6 +1988,40 @@ def _resolve_prompt_display_text(sfi: StandardsFrameworkItem) -> str:
     return display_text or fallback_text
 
 
+def _select_lc_source_sfis_for_export(
+    *, config: CreateKGConfig, sfis: Iterable[StandardsFrameworkItem]
+) -> tuple[list[StandardsFrameworkItem], dict[str, Any]]:
+    """Return eligible LC source SFIs plus their pre-generation eligibility report.
+
+    Parameters
+    ----------
+    config
+        The KG export configuration containing LC source selection policies.
+    sfis
+        An iterable of StandardsFrameworkItems to evaluate for LC source eligibility.
+
+    Returns
+    -------
+    tuple[list[StandardsFrameworkItem], dict[str, Any]]
+        A tuple of `(eligible_sfis, report)` where `eligible_sfis` is a
+        list of StandardsFrameworkItems that passed the LC source selection criteria,
+        and `report` is a dictionary summarizing the eligibility decisions for all
+        considered SFIs, suitable for JSON serialization and export as a QA artifact.
+    """
+
+    decisions = select_lc_source_sfis(config=config, sfis=sfis)
+    report = _build_lc_source_eligibility_report(decisions)
+    eligible_sfis = [decision.sfi for decision in decisions if decision.eligible]
+
+    logger.info(
+        f"LC source selection: "
+        f"{len(eligible_sfis)} eligible / {len(decisions)} considered "
+        f"({len(decisions) - len(eligible_sfis)} excluded)."
+    )
+
+    return eligible_sfis, report
+
+
 def _sort_lc_export_artifacts(
     *, lcs: list[LearningComponent], rels: list[Relationship]
 ) -> tuple[list[LearningComponent], list[Relationship]]:
@@ -1974,6 +2303,62 @@ def _split_lc_parts(
         cleaned_parts = cleaned_parts[:max_splits]
 
     return cleaned_parts, truncated
+
+
+def _summarize_lc_source_decisions(
+    *, decisions: list[LearningComponentsSourceDecision], group_key: str
+) -> list[dict[str, Any]]:
+    """Summarize LC source eligibility decisions by one extracted field.
+
+    Parameters
+    ----------
+    decisions
+        The list of LC source eligibility decisions to summarize.
+    group_key
+        The key of the extracted SFI field to group by (e.g., `source_label` or
+        `path_pattern`).
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of summary rows, one per distinct value of the grouping field, sorted by
+        descending total SFI count and then by grouping value. Each row contains the
+        grouping value, counts of eligible and excluded SFIs, total SFI count, and a
+        breakdown of exclusion reasons with their respective counts.
+    """
+
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for decision in decisions:
+        value = _clean_lc_source_report_value(decision.fields.get(group_key))
+        row = grouped.setdefault(
+            value,
+            {
+                "eligible_sfis": 0,
+                "excluded_sfis": 0,
+                "exclusion_reasons": Counter(),
+                "total_sfis": 0,
+                "value": value,
+            },
+        )
+        row["total_sfis"] += 1
+
+        if decision.eligible:
+            row["eligible_sfis"] += 1
+        else:
+            row["excluded_sfis"] += 1
+
+            for reason in decision.reasons:
+                row["exclusion_reasons"][reason] += 1
+
+    rows: list[dict[str, Any]] = []
+
+    for row in grouped.values():
+        exclusion_reasons = row.pop("exclusion_reasons")
+        row["exclusion_reasons"] = dict(sorted(exclusion_reasons.items()))
+        rows.append(row)
+
+    return sorted(rows, key=lambda r: (-r["total_sfis"], r["value"]))
 
 
 def _summarize_lc_source_level_records(
@@ -2279,16 +2664,18 @@ def export_learning_components(
             },
         )
 
-    expectation_sfis = _iter_expectation_sfis(academic_standards.items)
+    lc_source_sfis, source_eligibility_report = _select_lc_source_sfis_for_export(
+        config=config, sfis=academic_standards.items
+    )
     fw_metadata = ctx.get_framework_metadata()
     lcs = []
     rels = []
     splits_per_sfi: defaultdict[int, int] = defaultdict(int)
 
     # Deterministic curriculum/document order keeps related SFIs adjacent.
-    expectation_sfis_sorted = _sort_sfis_for_lc_generation(expectation_sfis)
+    lc_source_sfis_sorted = _sort_sfis_for_lc_generation(lc_source_sfis)
 
-    for sfi in expectation_sfis_sorted:
+    for sfi in lc_source_sfis_sorted:
         created_lcs = _create_lcs_for_expectation(
             config=config, doc_key=ctx.doc_key, fw_metadata=fw_metadata, sfi=sfi
         )
@@ -2311,15 +2698,26 @@ def export_learning_components(
 
     if zero_lc_count > 0:
         logger.warning(
-            f"Learning Components: {zero_lc_count} expectation SFI(s) produced 0 "
+            f"Learning Components: {zero_lc_count} eligible LC source SFI(s) produced 0 "
             f"LearningComponents (empty text). These SFIs have no `supports` edges."
         )
 
     lc_stats = {
+        "_source_eligibility_report": source_eligibility_report,
         "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
+        "source_eligibility_summary": source_eligibility_report["summary"],
         "split_policy": config.lc_policy,
         "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
-        "total_expectations": len(expectation_sfis_sorted),
+        "total_expectations": len(lc_source_sfis_sorted),
+        "total_lc_source_sfis_considered": source_eligibility_report["summary"][
+            "total_sfis_considered"
+        ],
+        "total_lc_source_sfis_eligible": source_eligibility_report["summary"][
+            "eligible_sfis"
+        ],
+        "total_lc_source_sfis_excluded": source_eligibility_report["summary"][
+            "excluded_sfis"
+        ],
         "total_lcs": len(lcs),
     }
     return _finalize_lc_export(
@@ -2373,12 +2771,14 @@ def export_learning_components_using_llm(
         debugging.
     """
 
-    expectation_sfis = _iter_expectation_sfis(academic_standards.items)
+    lc_source_sfis, source_eligibility_report = _select_lc_source_sfis_for_export(
+        config=config, sfis=academic_standards.items
+    )
     fw_metadata = ctx.get_framework_metadata()
 
     # Deterministic curriculum/document order keeps related SFIs adjacent before
     # batching, while still falling back to SFI UUID as the final tiebreaker.
-    expectation_sfis_sorted = _sort_sfis_for_lc_generation(expectation_sfis)
+    lc_source_sfis_sorted = _sort_sfis_for_lc_generation(lc_source_sfis)
 
     # Pre-filter: remove SFIs whose text is entirely empty so they never reach the LLM.
     # These would produce 0 LCs anyway (same outcome as the
@@ -2387,7 +2787,7 @@ def export_learning_components_using_llm(
     batchable_sfis: list[StandardsFrameworkItem] = []
     empty_text_sfis: list[StandardsFrameworkItem] = []
 
-    for sfi in expectation_sfis_sorted:
+    for sfi in lc_source_sfis_sorted:
         if _has_usable_text(sfi):
             batchable_sfis.append(sfi)
         else:
@@ -2395,7 +2795,7 @@ def export_learning_components_using_llm(
 
     if empty_text_sfis:
         logger.warning(
-            f"LLM atomic skills: skipping {len(empty_text_sfis)} expectation SFI(s) "
+            f"LLM atomic skills: skipping {len(empty_text_sfis)} eligible LC source SFI(s) "
             f"with empty text (no `normalized_text` or `description`). These SFIs will "
             f"have no LearningComponents or `supports` edges. UUIDs: "
             f"{[str(s.case_identifier_uuid) for s in empty_text_sfis[:20]]}"
@@ -2420,10 +2820,10 @@ def export_learning_components_using_llm(
         splits_per_sfi[0] += len(empty_text_sfis)
 
     logger.info(
-        f"Starting LLM atomic skills export for {total_sfis} SFIs "
-        f"across {total_batches} batches (batch size: {batch_size})."
+        f"Starting LLM atomic skills export for {total_sfis} batchable LC source "
+        f"SFI(s) across {total_batches} batches (batch size: {batch_size})."
         + (
-            f" ({len(empty_text_sfis)} empty text SFI(s) excluded.)"
+            f" ({len(empty_text_sfis)} eligible LC source SFI(s) excluded for empty text.)"
             if empty_text_sfis
             else ""
         )
@@ -2465,14 +2865,25 @@ def export_learning_components_using_llm(
     logger.success(f"Saved LLM atomic skills debug info to: {save_fp}")
 
     lc_stats = {
+        "_source_eligibility_report": source_eligibility_report,
         "fallback_sfis_count": len(set(fallback_sfis_total)),
         "llm_batches": len(debug_batches),
         "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
+        "source_eligibility_summary": source_eligibility_report["summary"],
         "split_policy": "llm_atomic_skills",
         "splits_distribution": {str(k): v for k, v in sorted(splits_per_sfi.items())},
-        "total_expectations": len(batchable_sfis) + len(empty_text_sfis),
-        "total_expectations_batchable": len(batchable_sfis),
-        "total_expectations_empty_text": len(empty_text_sfis),
+        "total_lc_source_sfis": len(batchable_sfis) + len(empty_text_sfis),
+        "total_lc_source_sfis_batchable": len(batchable_sfis),
+        "total_lc_source_sfis_considered": source_eligibility_report["summary"][
+            "total_sfis_considered"
+        ],
+        "total_lc_source_sfis_empty_text": len(empty_text_sfis),
+        "total_lc_source_sfis_eligible": source_eligibility_report["summary"][
+            "eligible_sfis"
+        ],
+        "total_lc_source_sfis_excluded": source_eligibility_report["summary"][
+            "excluded_sfis"
+        ],
         "total_lcs": len(lcs),
     }
     return lcs, rels, lc_stats
@@ -2576,3 +2987,120 @@ def load_or_export_learning_components(
         )
 
     return learning_components, lc_reused
+
+
+def select_lc_source_sfis(
+    *, config: CreateKGConfig, sfis: Iterable[StandardsFrameworkItem]
+) -> list[LearningComponentsSourceDecision]:
+    """Decide which StandardsFrameworkItems are eligible LC-generation sources.
+
+    This is intentionally separate from Academic Standards export. Broad competencies
+    may remain valid StandardsFrameworkItems while being excluded from
+    LearningComponent generation through config.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig containing the LC source filtering criteria.
+    sfis
+        The iterable of StandardsFrameworkItems to evaluate for LC source eligibility.
+
+    Returns
+    -------
+    list[LearningComponentsSourceDecision]
+        A list of decisions, one per input SFI, indicating whether it is eligible as an
+        LC source and the reasons for exclusion if not eligible.
+    """
+
+    allowed_normalized_types = set(config.lc_source_normalized_statement_types or [])
+    roles_inc = _config_value_set(config.lc_source_roles_include)
+    roles_exc = _config_value_set(config.lc_source_roles_exclude)
+    stmt_types_inc = _config_value_set(config.lc_source_statement_types_include)
+    stmt_types_exc = _config_value_set(config.lc_source_statement_types_exclude)
+    labels_inc = _config_value_set(config.lc_source_labels_include)
+    labels_exc = _config_value_set(config.lc_source_labels_exclude)
+    decisions: list[LearningComponentsSourceDecision] = []
+
+    for sfi in sfis:
+        fields = _lc_source_fields(sfi)
+        reasons: list[str] = []
+        norm_type = fields["normalized_statement_type"]
+        role = _clean_lc_source_filter_value(fields["role"])
+        stmt_type = _clean_lc_source_filter_value(fields["statement_type"])
+        label = _clean_lc_source_filter_value(fields["source_label"])
+
+        if allowed_normalized_types and norm_type not in allowed_normalized_types:
+            reasons.append("excluded_normalized_statement_type")
+
+        set_checks = [
+            (
+                role,
+                roles_inc,
+                "excluded_role_not_in_include",
+                roles_exc,
+                "excluded_role",
+            ),
+            (
+                stmt_type,
+                stmt_types_inc,
+                "excluded_statement_type_not_in_include",
+                stmt_types_exc,
+                "excluded_statement_type",
+            ),
+            (
+                label,
+                labels_inc,
+                "excluded_source_label_not_in_include",
+                labels_exc,
+                "excluded_source_label",
+            ),
+        ]
+
+        for val, inc_set, inc_reason, exc_set, exc_reason in set_checks:
+            if inc_set and val not in inc_set:
+                reasons.append(inc_reason)
+
+            if exc_set and val in exc_set:
+                reasons.append(exc_reason)
+
+        path_key = str(fields["canonical_path_key"] or "")
+        path_pattern = str(fields["path_pattern"] or "")
+
+        if config.lc_source_path_patterns_include and not _lc_source_path_matches_any(
+            path_key=path_key,
+            path_pattern=path_pattern,
+            patterns=config.lc_source_path_patterns_include,
+        ):
+            reasons.append("excluded_path_pattern_not_in_include")
+
+        if config.lc_source_path_patterns_exclude and _lc_source_path_matches_any(
+            path_key=path_key,
+            path_pattern=path_pattern,
+            patterns=config.lc_source_path_patterns_exclude,
+        ):
+            reasons.append("excluded_path_pattern")
+
+        depth = int(fields["path_depth"] or 0)
+
+        if (
+            config.lc_source_min_path_depth is not None
+            and depth < config.lc_source_min_path_depth
+        ):
+            reasons.append("excluded_path_depth_below_min")
+
+        if (
+            config.lc_source_max_path_depth is not None
+            and depth > config.lc_source_max_path_depth
+        ):
+            reasons.append("excluded_path_depth_above_max")
+
+        decisions.append(
+            LearningComponentsSourceDecision(
+                eligible=not reasons,
+                fields=fields,
+                reasons=reasons or ["eligible"],
+                sfi=sfi,
+            )
+        )
+
+    return decisions
