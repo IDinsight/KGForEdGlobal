@@ -823,6 +823,17 @@ def _create_lcs_from_atomic_skills(
         deduped.append((description, rationale))
         seen_desc.add(canonical_desc)
 
+    min_splits = int(config.lc_atomic_skills_min_per_sfi)
+
+    if deduped and len(deduped) < min_splits:
+        logger.warning(
+            f"SFI {sfi.case_identifier_uuid}: atomic-skills output passed validation "
+            f"with {len(norm_skills)} normalized skill(s), but post-validation "
+            f"deduplication reduced this to {len(deduped)} LC(s), below "
+            f"lc_atomic_skills_min_per_sfi={min_splits}. "
+            f"Continuing with {len(deduped)} emitted LC(s)."
+        )
+
     truncated = False
 
     if len(deduped) > max_splits:
@@ -837,7 +848,7 @@ def _create_lcs_from_atomic_skills(
                 config=config,
                 description=description,
                 doc_key=doc_key,
-                extra_metadata={"llm_rationale": rationale or None},
+                extra_metadata={"llm_rationale": rationale} if rationale else None,
                 fw_metadata=fw_metadata,
                 id_source_kind="llm_atomic_skills.description",
                 policy=policy,
@@ -891,7 +902,7 @@ def _emit_supports(
         author=str(fw_metadata["author"]),
         date_created=date_created,
         date_modified=date_modified,
-        description="",
+        description="LearningComponent supports StandardsFrameworkItem",
         identifier=uuid5(
             config.namespace_uuid,
             f"lc:curriculum:{doc_key}:rel:supports:{lc.identifier}:{sfi.case_identifier_uuid}",
