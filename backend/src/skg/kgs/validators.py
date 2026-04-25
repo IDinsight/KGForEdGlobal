@@ -96,25 +96,6 @@ def _normalize_quality_text(text: str) -> str:
     return s.strip()
 
 
-def _quality_tokens(text: str) -> list[str]:
-    """Tokenize normalized text for lightweight semantic heuristics.
-
-    Parameters
-    ----------
-    text
-        The text to tokenize.
-
-    Returns
-    -------
-    list[str]
-        A list of normalized tokens suitable for quality heuristics.
-    """
-
-    normalized = _normalize_quality_text(text)
-    normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
-    return [tok for tok in normalized.split() if tok]
-
-
 def _validate_batch_coverage(
     *, allowed_sfi_uuids: set[UUID], returned_sfi_uuids: set[UUID]
 ) -> None:
@@ -251,10 +232,10 @@ def validate_atomic_skills(
 ) -> None:
     """Validate AtomicSkillsResponse for a given batch of SFIs.
 
-    In addition to strict structural checks (UUID coverage, duplicate UUIDs, min/max
-    skill counts), this validator also applies lightweight source-aware heuristics to
-    better enforce the spirit of the prompt such as atomic skills should not be empty,
-    duplicated within an SFI, etc.
+    In addition to structural checks, this validator applies lightweight response-level
+    quality checks such as non-empty skill descriptions, duplicate normalized skill
+    descriptions within an SFI, and rationale presence when required. It does not
+    validate semantic grounding against the source text.
 
     Parameters
     ----------

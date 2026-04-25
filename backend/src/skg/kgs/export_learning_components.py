@@ -518,8 +518,9 @@ def _build_single_prompt_item(
         A dictionary representing the SFI with the fields needed for the atomic-skills
         decomposition prompt. Includes an item-specific language instruction so
         mixed-language batches can still be handled correctly. The full untrimmed
-        source text is intentionally NOT included here; validator grounding carries it
-        separately to avoid inflating the prompt.
+        source text is intentionally not included here to keep prompt size bounded.
+        Validation checks response structure, allowed SFI UUIDs, min/max skill counts,
+        and rationale policy.
     """
 
     metadata = sfi.metadata or {}
