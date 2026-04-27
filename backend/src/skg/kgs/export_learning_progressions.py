@@ -1149,83 +1149,6 @@ def _finalize_lp_export(
     return learning_progressions
 
 
-def _get_or_create_bucket(
-    *,
-    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
-    effective_bucket_key: str,
-    grade_label: str,
-    level_hi: int,
-    level_lo: int,
-    progression_context: dict[str, Any],
-    stage_key: str | None,
-    subject_label: str,
-    thread_key: str,
-    topic_key: str,
-    topic_path_parts: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Retrieve an existing bucket or create and initialize a new one.
-
-    Parameters
-    ----------
-    buckets
-        A nested dictionary for organizing standards into buckets.
-    effective_bucket_key
-        The computed effective bucket key.
-    grade_label
-        The formatted grade label (e.g., "LEVEL 1-2").
-    level_hi
-        The highest grade/stage ordinal for the bucket.
-    level_lo
-        The lowest grade/stage ordinal for the bucket.
-    progression_context
-        The progression context extracted from the standard item's metadata.
-    stage_key
-        The original stage key string, if available.
-    subject_label
-        The resolved subject label.
-    thread_key
-        The computed thread key.
-    topic_key
-        The canonical topic path key.
-    topic_path_parts
-        A list of topic path part dictionaries.
-
-    Returns
-    -------
-    dict[str, Any]
-        The initialized or retrieved bucket dictionary.
-    """
-
-    b = buckets[grade_label].get(effective_bucket_key)
-
-    if not b:
-        b = buckets[grade_label][effective_bucket_key] = {
-            "bucket_key": f"{grade_label}::{effective_bucket_key}",
-            "effective_bucket_key": effective_bucket_key,
-            "grade_level": grade_label,
-            "grade_ordinal": level_lo,
-            "grade_ordinal_low": level_lo,
-            "grade_ordinal_high": level_hi,
-            "stage_key": (
-                stage_key.strip()
-                if isinstance(stage_key, str) and stage_key.strip()
-                else None
-            ),
-            "subject_label": subject_label,
-            "lp_thread_key": thread_key,
-            "lp_bucket_key": effective_bucket_key,
-            "canonical_topic_path_key": topic_key,
-            "normalized_topic_path_key": str(
-                progression_context.get("thread_key") or ""
-            ),
-            "topic_path": _path_string(topic_path_parts),
-            "topic_path_parts": topic_path_parts,
-            "items": [],
-        }
-
-    return b
-
-
 def _group_threads_by_grade_and_subject(
     *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -2557,19 +2480,32 @@ def _process_single_standard(
     )
 
     # Bucket management.
-    bucket = _get_or_create_bucket(
-        buckets=buckets,
-        effective_bucket_key=effective_bucket_key,
-        grade_label=grade_label,
-        level_hi=level_hi,
-        level_lo=level_lo,
-        progression_context=progression_context,
-        stage_key=stage_key,
-        subject_label=subject_label,
-        thread_key=thread_key,
-        topic_key=topic_key,
-        topic_path_parts=topic_path_parts,
-    )
+    bucket = buckets[grade_label].get(effective_bucket_key)
+
+    if not bucket:
+        bucket = buckets[grade_label][effective_bucket_key] = {
+            "bucket_key": f"{grade_label}::{effective_bucket_key}",
+            "effective_bucket_key": effective_bucket_key,
+            "grade_level": grade_label,
+            "grade_ordinal": level_lo,
+            "grade_ordinal_low": level_lo,
+            "grade_ordinal_high": level_hi,
+            "stage_key": (
+                stage_key.strip()
+                if isinstance(stage_key, str) and stage_key.strip()
+                else None
+            ),
+            "subject_label": subject_label,
+            "lp_thread_key": thread_key,
+            "lp_bucket_key": effective_bucket_key,
+            "canonical_topic_path_key": topic_key,
+            "normalized_topic_path_key": str(
+                progression_context.get("thread_key") or ""
+            ),
+            "topic_path": _path_string(topic_path_parts),
+            "topic_path_parts": topic_path_parts,
+            "items": [],
+        }
 
     # Payload generation and append.
     payload = _build_sfi_payload(
