@@ -3248,7 +3248,8 @@ def export_learning_progressions(
     candidates.extend(p4_candidates)
     provenance_rows.extend(p4_prov)
 
-    # Dedupe, filter, limit, and emit final relationships, and gather stats for the report.
+    # Dedupe, filter, limit, and emit final relationships, and gather stats for the
+    # report.
     builds_rels, relates_rels, lp_stats, disposition_map, dedupe_winners = (
         _process_and_filter_candidates(
             candidates=candidates,
@@ -3289,7 +3290,7 @@ def export_learning_progressions(
         # deduplication. The disposition_map only records the final outcome for the
         # single dedupe winner per canonical edge key. To avoid mislabeling duplicates
         # as "kept"/"dropped_low_conf"/etc., mark non-winners explicitly as
-        # dropped_dedupe.
+        # `dropped_dedupe`.
         winner, is_winner = dedupe_winners.get(key), False
 
         if winner is not None:
