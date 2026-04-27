@@ -8,6 +8,7 @@ This module implements a shape-preserving Learning Commons Learning Components e
 """
 
 # Standard Library
+import json
 import math
 import re
 
@@ -79,12 +80,22 @@ class LearningComponentsSourceDecision:
 
 
 def _atomic_skills_cache_key_from_prompt_item(prompt_item: dict[str, Any]) -> str:
-    """Build a deterministic cache key for atomic-skills inference.
+    """Build a deterministic semantic cache key for atomic-skills inference.
 
-    The key intentionally uses only the normalized prompt text, source statement type,
-    and topic-context role path. This lets repeated source statements reuse the same
-    decomposition across weeks/paliers while still allowing different structural shapes
-    to be cached independently.
+    The key includes the meaning-bearing prompt fields that can legitimately affect
+    atomic-skill decomposition:
+
+    1. `display_text`
+    2.`language_instruction`
+    3. `statement_type`
+    4. `topic_context` (grade/stage keys and topic role+label path)
+    5. `aux_statements` (role+text only)
+
+    The key intentionally excludes SFI identity, source labels, statement codes,
+    provenance, and debug-only truncation fields. This allows repeated equivalent
+    prompt content to reuse the same decomposition while avoiding false cache hits when
+    topic context, auxiliary statements, or output-language instructions change the
+    effective prompt meaning.
 
     Parameters
     ----------
@@ -97,30 +108,27 @@ def _atomic_skills_cache_key_from_prompt_item(prompt_item: dict[str, Any]) -> st
         A stable cache key suitable for a within-run atomic-skills cache.
     """
 
-    display_text = canonicalize_stable_text(str(prompt_item.get("display_text") or ""))
-    statement_type = canonicalize_stable_text(
-        str(prompt_item.get("statement_type") or "")
+    cache_basis = {
+        "aux_statements": _normalize_atomic_skills_cache_aux_statements(
+            prompt_item.get("aux_statements")
+        ),
+        "display_text": _normalize_atomic_skills_cache_text(
+            prompt_item.get("display_text")
+        ),
+        "language_instruction": _normalize_atomic_skills_cache_text(
+            prompt_item.get("language_instruction")
+        ),
+        "statement_type": _normalize_atomic_skills_cache_text(
+            prompt_item.get("statement_type")
+        ),
+        "topic_context": _normalize_atomic_skills_cache_topic_context(
+            prompt_item.get("topic_context")
+        ),
+    }
+    cache_basis_json = json.dumps(
+        cache_basis, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
-    topic_context = prompt_item.get("topic_context") or {}
-    topic_path_parts = topic_context.get("topic_path_parts") or []
-    role_parts: list[str] = []
-
-    if isinstance(topic_path_parts, list):
-        for part in topic_path_parts:
-            if not isinstance(part, dict):
-                continue
-
-            role = canonicalize_stable_text(part["role"])
-            assert role, f"{part = }"
-            role_parts.append(role)
-
-    topic_context_role_path = "/".join(role_parts)
-    cache_basis = (
-        f"display_text={display_text}\x1f"
-        f"statement_type={statement_type}\x1f"
-        f"topic_context_role_path={topic_context_role_path}"
-    )
-    return f"atomic_skills:{stable_text_hash(s=cache_basis)}"
+    return f"atomic_skills:{stable_text_hash(s=cache_basis_json)}"
 
 
 def _bbox_reading_order(metadata: dict[str, Any]) -> tuple[float, float]:
@@ -1690,6 +1698,122 @@ def _natural_sort_key(value: Any) -> tuple[tuple[int, int | str], ...]:
     return tuple(key_parts)
 
 
+def _normalize_atomic_skills_cache_aux_statements(value: Any) -> list[dict[str, str]]:
+    """Normalize meaning-bearing auxiliary statements for the cache key.
+
+    Only the auxiliary statement role and text are retained. Debug-only truncation
+    fields such as `text_truncated`, `text_original_length`, and `text_max_chars` are
+    intentionally excluded because they do not add semantic meaning beyond the text
+    actually shown to the LLM.
+
+    Parameters
+    ----------
+    value
+        The raw value of the `aux_statements` field from SFI metadata, which is
+        expected to be a list of dictionaries, each containing at least a "role" and
+        "text" field.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        A list of dictionaries with normalized "role" and "text" fields, suitable for
+        inclusion in the atomic skills cache key. Non-string values are coerced to
+        strings, and None values become empty strings. Invalid entries are skipped.
+    """
+
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+
+        role = _normalize_atomic_skills_cache_text(item["role"])
+        text = _normalize_atomic_skills_cache_text(item.get("text"))
+        normalized.append({"role": role, "text": text})
+
+    return normalized
+
+
+def _normalize_atomic_skills_cache_text(value: Any) -> str:
+    """Normalize a prompt value for atomic-skills cache-key construction.
+
+    This uses the same stable text canonicalization policy as the rest of the KG export
+    path so semantically equivalent whitespace/case/Unicode variants collapse to the
+    same cache-key value.
+
+    Parameters
+    ----------
+    value
+        Any value to be normalized as text for cache key construction. Non-string
+        values will be coerced to strings, and None will become an empty string.
+
+    Returns
+    -------
+    str
+        The normalized text string, suitable for use in cache key construction.
+    """
+
+    return canonicalize_stable_text(str(value or ""))
+
+
+def _normalize_atomic_skills_cache_topic_context(value: Any) -> dict[str, Any]:
+    """Normalize meaning-bearing topic context for the atomic-skills cache key.
+
+    Only semantic fields that may affect decomposition are retained. Provenance,
+    ordering, and debug-only fields are intentionally excluded.
+
+    Parameters
+    ----------
+    value
+        The raw value of the `progression_context` field from SFI metadata, which is
+        expected to be a dictionary potentially containing "grade_key", "stage_key",
+        and "topic_path_parts".
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing normalized topic context fields relevant for cache key
+        construction. Non-string values are coerced to strings, and None values become
+        empty strings. Invalid entries are skipped, and only fields that add semantic
+        meaning are retained to ensure that the cache key reflects the information that
+        may influence the LLM's decomposition output.
+    """
+
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, Any] = {}
+    grade_key = _normalize_atomic_skills_cache_text(value.get("grade_key"))
+    stage_key = _normalize_atomic_skills_cache_text(value.get("stage_key"))
+
+    if grade_key:
+        normalized["grade_key"] = grade_key
+
+    if stage_key:
+        normalized["stage_key"] = stage_key
+
+    topic_path_parts: list[dict[str, str]] = []
+
+    if isinstance(value.get("topic_path_parts"), list):
+        for part in value["topic_path_parts"]:
+            if not isinstance(part, dict):
+                continue
+
+            role = _normalize_atomic_skills_cache_text(part.get("role"))
+            label = _normalize_atomic_skills_cache_text(part.get("label"))
+
+            if role or label:
+                topic_path_parts.append({"role": role, "label": label})
+
+    if topic_path_parts:
+        normalized["topic_path_parts"] = topic_path_parts
+
+    return normalized
+
+
 def _pair_id_and_display_parts(
     *, display_parts: list[str], id_parts: list[str]
 ) -> list[tuple[str, str]]:
@@ -1877,9 +2001,10 @@ def _process_atomic_skills_batch(
     """Process a single batch of SFIs via LLM inference to create LCs.
 
     Repeated prompt items are served from a deterministic within-run cache keyed by
-    normalized `display_text`, `statement_type`, and topic-context role path. Cache
-    misses are sent to the LLM; cache hits reuse the previously validated atomic skills
-    and are materialized for the current SFI without another model call.
+    prompt content. Cache misses are sent to the LLM, and the parsed skills are stored
+    back in the cache for potential reuse within the same run. If LLM inference or
+    post-processing fails, only the SFIs that missed the cache fall back to 1-to-1 LC
+    creation; cached SFIs still produce LCs from their cached skills.
 
     Parameters
     ----------
