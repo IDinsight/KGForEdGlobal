@@ -519,8 +519,8 @@ def _build_single_prompt_item(
         decomposition prompt. Includes an item-specific language instruction so
         mixed-language batches can still be handled correctly. The full untrimmed
         source text is intentionally not included here to keep prompt size bounded.
-        Validation checks response structure, allowed SFI UUIDs, min/max skill counts,
-        and rationale policy.
+        Downstream validation checks response structure, allowed SFI UUIDs, min/max
+        skill counts, and rationale policy.
     """
 
     metadata = sfi.metadata or {}
