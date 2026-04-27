@@ -986,6 +986,60 @@ class CreateKGConfig(BaseSchema):
     )
     overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
 
+    @field_validator(
+        "as_academic_subject_default",
+        "as_adoption_status",
+        "as_attribution_statement",
+        "as_author",
+        "as_case_uri_base",
+        "as_jurisdiction_default",
+        "as_license",
+        "as_provider",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty_kg_strings(cls, v: Any, info: Any) -> str:
+        """Strip required KG string config fields and reject empty values.
+
+        These fields are copied into required LC KG entity fields during export.
+        Validating them at config-load time catches bad run configs before the exporter
+        starts writing nodes, relationships, or intermediate artifacts.
+
+        Parameters
+        ----------
+        v
+            The configured value for the field being validated.
+        info
+            Pydantic field validation info; used to name the bad field in errors.
+
+        Returns
+        -------
+        str
+            The stripped, non-empty string value.
+
+        Raises
+        ------
+        TypeError
+            If the configured value is not a string.
+        ValueError
+            If the configured value is None or empty after stripping whitespace.
+        """
+
+        if v is None:
+            raise ValueError(f"{info.field_name} must be a non-empty string.")
+
+        if not isinstance(v, str):
+            raise TypeError(
+                f"{info.field_name} must be a string. Got {type(v).__name__}."
+            )
+
+        v2 = v.strip()
+
+        if not v2:
+            raise ValueError(f"{info.field_name} must be a non-empty string.")
+
+        return v2
+
     @model_validator(mode="after")
     def _validate_atomic_skills_bounds(self) -> Self:
         """Validate that `lc_atomic_skills_min_per_sfi` is less than or equal to

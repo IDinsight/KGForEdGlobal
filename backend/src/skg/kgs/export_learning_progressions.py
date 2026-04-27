@@ -305,25 +305,25 @@ def _build_order_index_lookup(
     lookup: dict[str, int] = {}
 
     for sfi in academic_standards.items:
-        meta = sfi.metadata or {}
-        pc = meta.get("progression_context") or {}
-        oi = pc.get("order_index_within_parent")
+        metadata = sfi.metadata or {}
+        pc = metadata.get("progression_context") or {}
+        oiwp = pc.get("order_index_within_parent")
 
-        if not isinstance(oi, int):
+        if not isinstance(oiwp, int):  # int or None
             continue
 
         legacy_uuid = str(sfi.case_identifier_uuid or sfi.identifier).strip()
 
         if legacy_uuid:
-            lookup[legacy_uuid] = oi
+            lookup[legacy_uuid] = oiwp
 
-        # Academic Standards export stores the canonical node id at the top level of
+        # Academic Standards export stores the canonical node ID at the top level of
         # `sfi.metadata`, not inside `progression_context`.
-        canonical_node_id = meta.get("canonical_node_id")
+        canonical_node_id = metadata.get("canonical_node_id")
         canonical_key = str(canonical_node_id).strip() if canonical_node_id else ""
 
         if canonical_key:
-            lookup[canonical_key] = oi
+            lookup[canonical_key] = oiwp
 
     return lookup
 
