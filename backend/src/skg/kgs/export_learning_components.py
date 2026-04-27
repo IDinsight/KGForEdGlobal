@@ -86,7 +86,7 @@ def _atomic_skills_cache_key_from_prompt_item(prompt_item: dict[str, Any]) -> st
     atomic-skill decomposition:
 
     1. `display_text`
-    2.`language_instruction`
+    2. `language_instruction`
     3. `statement_type`
     4. `topic_context` (grade/stage keys and topic role+label path)
     5. `aux_statements` (role+text only)
@@ -1768,9 +1768,9 @@ def _normalize_atomic_skills_cache_topic_context(value: Any) -> dict[str, Any]:
     Parameters
     ----------
     value
-        The raw value of the `progression_context` field from SFI metadata, which is
-        expected to be a dictionary potentially containing "grade_key", "stage_key",
-        and "topic_path_parts".
+        The raw value of the prompt item's `topic_context` field, which is expected to
+        be a dictionary potentially containing "grade_key", "stage_key", and
+        "topic_path_parts".
 
     Returns
     -------
@@ -2001,10 +2001,10 @@ def _process_atomic_skills_batch(
     """Process a single batch of SFIs via LLM inference to create LCs.
 
     Repeated prompt items are served from a deterministic within-run cache keyed by
-    prompt content. Cache misses are sent to the LLM, and the parsed skills are stored
-    back in the cache for potential reuse within the same run. If LLM inference or
-    post-processing fails, only the SFIs that missed the cache fall back to 1-to-1 LC
-    creation; cached SFIs still produce LCs from their cached skills.
+    semantic prompt fields: normalized `display_text`, `language_instruction`,
+    `statement_type`, `topic_context`, and `aux_statements`. Cache misses are sent to
+    the LLM; cache hits reuse the previously validated atomic skills and are
+    materialized for the current SFI without another model call.
 
     Parameters
     ----------
@@ -2099,6 +2099,7 @@ def _process_atomic_skills_batch(
                 sfi_uuid = str(it.get("sfi_uuid"))
                 skills = list(it.get("skills") or [])
                 skills_by_sfi[sfi_uuid] = skills
+                batch_debug["response_source_by_sfi_uuid"][sfi_uuid] = "llm"
 
                 if retrieved_key := key_by_sfi_uuid.get(sfi_uuid):
                     atomic_skills_cache[retrieved_key] = deepcopy(skills)
@@ -2108,6 +2109,10 @@ def _process_atomic_skills_batch(
 
             batch_debug["error"] = f"{e.__class__.__name__}: {e}"
             batch_debug["fallback_sfi_uuids"] = cache_miss_uuids
+
+            for sfi_uuid in cache_miss_uuids:
+                batch_debug["response_source_by_sfi_uuid"][sfi_uuid] = "fallback_1_to_1"
+
             fallback_sfis_total.extend(cache_miss_uuids)
 
             logger.warning(
