@@ -246,7 +246,7 @@ def _build_order_index_lookup(
 
 
 def _build_sfi_index(
-    *, by_grade: dict[str, list[dict[str, Any]]]
+    by_grade: dict[str, list[dict[str, Any]]],
 ) -> dict[str, dict[str, Any]]:
     """Build a lookup table of SFI UUID -> context/provenance hints.
 
@@ -367,8 +367,8 @@ def _build_sfi_payload(
         missing_default=0,
         order_index_lookup=order_index_lookup,
     )
-    numeric_order_missing_count = _count_unresolved_order_path(
-        canon_order_path=canon_order_path, order_index_lookup=order_index_lookup
+    numeric_order_missing_count = sum(
+        1 for u in canon_order_path if str(u).strip() not in order_index_lookup
     )
 
     indices = metadata.get("page_indices")
@@ -836,34 +836,6 @@ def _compute_lp_thread_key(
             segments.append(f"{role}={val}")
 
     return "|".join(segments) if segments else None
-
-
-def _count_unresolved_order_path(
-    *, canon_order_path: list[Any], order_index_lookup: dict[str, int]
-) -> int:
-    """Count how many UUIDs in `canon_order_path` cannot be resolved.
-
-    Parameters
-    ----------
-    canon_order_path
-        The UUID-like canonical order path.
-    order_index_lookup
-        The UUID -> order index lookup.
-
-    Returns
-    -------
-    int
-        The number of UUIDs in `canon_order_path` that are not present in
-        `order_index_lookup`.
-    """
-
-    unresolved = 0
-
-    for u in canon_order_path or []:
-        if str(u).strip() not in order_index_lookup:
-            unresolved += 1
-
-    return unresolved
 
 
 def _dedupe_edges(
@@ -3450,7 +3422,7 @@ def export_learning_progressions(
     by_grade: dict[str, list[dict[str, Any]]] = buckets_info.get("by_grade") or {}
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
-    sfi_index = _build_sfi_index(by_grade=by_grade)
+    sfi_index = _build_sfi_index(by_grade)
 
     # Phase 1: Within-grade buildsTowards.
     p1_candidates, p1_prov = _infer_within_grade_builds_towards(
