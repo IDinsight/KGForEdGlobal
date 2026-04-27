@@ -3466,7 +3466,6 @@ def load_learning_progressions_export(kg_dirs: KGDirs) -> LearningProgressionsEx
     """
 
     d = kg_dirs.learning_progressions
-
     builds_towards = [
         Relationship.model_validate(raw)
         for raw in open_json_type(
@@ -3481,7 +3480,6 @@ def load_learning_progressions_export(kg_dirs: KGDirs) -> LearningProgressionsEx
     ]
     lp_kg = open_json_type(d / "learning_progressions_kg.json")
     report = open_json_type(d / "learning_progressions_report.json")
-
     return LearningProgressionsExport(
         builds_towards_relationships=builds_towards,
         lp_kg=lp_kg,
