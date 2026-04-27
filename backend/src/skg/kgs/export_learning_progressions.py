@@ -524,7 +524,11 @@ def _build_sfi_payload(
     indices = metadata.get("page_indices")
     valid_indices = indices if isinstance(indices, list) else []
     doc_pos_page_index = min(valid_indices) if valid_indices else None
-    doc_pos_y0 = _extract_bbox_y0(bbox=metadata.get("bbox"))
+    bbox = metadata.get("bbox")
+    doc_pos_y0: Optional[float] = None
+
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        doc_pos_y0 = float(bbox[1])
 
     payload: dict[str, Any] = {
         "description": sfi.description,
@@ -1133,31 +1137,6 @@ def _emit_relationship(
         source=candidate.source_sfi_uuid,
         target=candidate.target_sfi_uuid,
     )
-
-
-def _extract_bbox_y0(bbox: Any) -> Optional[float]:
-    """Extract the top-y coordinate from a bbox if it looks like [x0,y0,x1,y1].
-
-    Parameters
-    ----------
-    bbox
-        The raw bbox value from the SFI context metadata, which may be in various
-        formats.
-
-    Returns
-    -------
-    Optional[float]
-        The extracted y0 coordinate as a float if the input is a list or tuple of
-        length 4 and the second element can be converted to a float; otherwise, None.
-    """
-
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-        try:
-            return float(bbox[1])
-        except (TypeError, ValueError):
-            return None
-
-    return None
 
 
 def _extract_code_tuple(
