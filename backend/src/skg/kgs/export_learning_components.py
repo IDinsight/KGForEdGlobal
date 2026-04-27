@@ -1278,7 +1278,7 @@ def _handle_atomic_skills_success(
     -------
     tuple[list[LearningComponent], list[Relationship], dict[int, int], list[str]]
         A tuple containing the generated LCs, supports relationships, split statistics,
-        and any fallback SFI UUIDs triggered during empty/invalid creation.
+        and any fallback SFI UUIDs triggered during empty post-processing output.
 
     Raises
     ------
