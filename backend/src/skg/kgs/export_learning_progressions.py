@@ -78,7 +78,7 @@ class LearningProgressionsExport:
     """The output of exporting Learning Progressions KG artifacts."""
 
     builds_towards_relationships: list[Relationship]
-    graph_bundle: dict[str, Any]
+    lp_kg: dict[str, Any]
     relates_to_relationships: list[Relationship]
     report: dict[str, Any]
 
@@ -977,7 +977,7 @@ def _finalize_lp_export(
             }
         )
 
-    graph_bundle = {
+    lp_kg = {
         "doc_key": ctx.doc_key,
         "export_dialect": config.as_export_dialect,
         "generated_at": generated_at,
@@ -987,7 +987,7 @@ def _finalize_lp_export(
     }
     write_to_json(
         fp=kg_dirs.learning_progressions / "learning_progressions_kg.json",
-        json_info=graph_bundle,
+        json_info=lp_kg,
     )
 
     report = {
@@ -1018,7 +1018,7 @@ def _finalize_lp_export(
 
     learning_progressions = LearningProgressionsExport(
         builds_towards_relationships=builds_rels,
-        graph_bundle=graph_bundle,
+        lp_kg=lp_kg,
         relates_to_relationships=relates_rels,
         report=report,
     )
@@ -3479,12 +3479,12 @@ def load_learning_progressions_export(kg_dirs: KGDirs) -> LearningProgressionsEx
             d / "learning_progressions_relates_to_relationships.json"
         )
     ]
-    graph_bundle = open_json_type(d / "learning_progressions_kg.json")
+    lp_kg = open_json_type(d / "learning_progressions_kg.json")
     report = open_json_type(d / "learning_progressions_report.json")
 
     return LearningProgressionsExport(
         builds_towards_relationships=builds_towards,
-        graph_bundle=graph_bundle,
+        lp_kg=lp_kg,
         relates_to_relationships=relates_to,
         report=report,
     )
