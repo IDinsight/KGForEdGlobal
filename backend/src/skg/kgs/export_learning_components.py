@@ -1797,7 +1797,7 @@ def _partition_batch_and_init_debug(
         "response": None,
         "response_source_by_sfi_uuid": {
             **{sfi_uuid: "cache" for sfi_uuid in cache_hit_uuids},
-            **{sfi_uuid: "llm" for sfi_uuid in cache_miss_uuids},
+            **{sfi_uuid: "pending_llm" for sfi_uuid in cache_miss_uuids},
         },
         "zero_lc_fallback_sfi_uuids": [],
     }
