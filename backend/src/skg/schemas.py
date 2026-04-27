@@ -26,6 +26,7 @@ from skg.utils.constants import (
     DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
     NodeRole,
     SegmentDecisionType,
+    StatementRole,
 )
 from skg.utils.general import make_dir
 
@@ -539,6 +540,154 @@ class CreateCanonicalConfig(BaseSchema):
     )
 
 
+class AcademicStandardsDefaultLevelContext(BaseSchema):
+    """Document-level fallback level context for Academic Standards export.
+
+    This is useful when the source curriculum has a clear document-wide level (e.g., a
+    single-grade CE1 PDF) but the canonical hierarchy does not contain an explicit
+    grade/stage ancestor above every expectation. Explicit ancestor-derived grade/stage
+    context remains the preferred source of truth when `apply_when_missing_only` is
+    True.
+
+    Examples
+    --------
+    1. Single-grade Senegal reading PDF
+        A PDF title says "2ème étape (CE1)", but most extracted expectations live under
+        section/palier/week nodes rather than an explicit `grade_level` ancestor. Use:
+
+            {
+                "kind": "grade_level",
+                "label": "CE1",
+                "ordinal_low": 1,
+                "ordinal_high": 1,
+                "source": "config: framework title says 2ème étape (CE1)",
+                "apply_to_roles": ["expectation"],
+                "apply_when_missing_only": true
+            }
+
+        Exported expectation SFIs without explicit level context receive
+        `grade_key='CE1'` and grade ordinals `1..1` in `metadata.progression_context`.
+
+    2. Banded stage-only framework
+        A framework covers Standards III–VI as one band. Use:
+
+            {
+                "kind": "stage",
+                "label": "Standard III–VI",
+                "ordinal_low": 3,
+                "ordinal_high": 6,
+                "source": "config: document scope",
+                "apply_to_roles": ["expectation"],
+                "apply_when_missing_only": true
+            }
+
+        Exported expectation SFIs without explicit level context receive
+        `stage_key='Standard III–VI'` and stage ordinals `3..6`.
+    """
+
+    apply_to_roles: set[StatementRole] = Field(
+        default_factory=lambda: {StatementRole.EXPECTATION},
+        description=(
+            "Canonical statement roles that receive this default when their explicit "
+            "grade/stage context is missing. Default applies only to expectation nodes."
+        ),
+    )
+    apply_when_missing_only: bool = Field(
+        default=True,
+        description=(
+            "If true, preserve explicit ancestor-derived grade/stage context and use "
+            "this default only when no level context is present. If false, this default "
+            "can override explicit context for the configured roles."
+        ),
+    )
+    kind: Literal["grade_level", "stage"] = Field(
+        default="grade_level",
+        description=(
+            "Which progression-context fields this default populates: grade_* for "
+            "'grade_level' or stage_* for 'stage'."
+        ),
+    )
+    label: str = Field(
+        description="Human-readable level label, e.g. 'CE1' or 'Standard III–VI'.",
+        min_length=1,
+    )
+    ordinal_high: int = Field(
+        description="Highest ordinal for this level or band.", ge=0
+    )
+    ordinal_low: int = Field(description="Lowest ordinal for this level or band.", ge=0)
+    source: str = Field(
+        default="config",
+        description=(
+            "Human-readable provenance for the default, e.g. 'config: document title' "
+            "or 'human_review'."
+        ),
+        min_length=1,
+    )
+
+    @field_validator("label", "source", mode="before")
+    @classmethod
+    def _strip_default_level_strings(cls, v: Any, info: Any) -> str:
+        """Strip required default-level strings and reject empty values.
+
+        Parameters
+        ----------
+        v
+            The configured value for the field being validated.
+        info
+            Pydantic field validation info; used to name the bad field in errors.
+
+        Returns
+        -------
+        str
+            The stripped, non-empty string value.
+
+        Raises
+        ------
+        TypeError
+            If the configured value is not a string.
+        ValueError
+            If the configured value is empty after stripping whitespace.
+        """
+
+        if not isinstance(v, str):
+            raise TypeError(
+                f"as_default_level_context.{info.field_name} must be a string. "
+                f"Got {type(v).__name__}."
+            )
+
+        v2 = v.strip()
+
+        if not v2:
+            raise ValueError(
+                f"as_default_level_context.{info.field_name} must be non-empty."
+            )
+
+        return v2
+
+    @model_validator(mode="after")
+    def _validate_ordinal_bounds(self) -> Self:
+        """Validate that the low ordinal is not greater than the high ordinal.
+
+        Returns
+        -------
+        Self
+            The validated DefaultLevelContext object.
+
+        Raises
+        ------
+        ValueError
+            If `ordinal_low` is greater than `ordinal_high`.
+        """
+
+        if self.ordinal_low > self.ordinal_high:
+            raise ValueError(
+                "as_default_level_context.ordinal_low must be <= "
+                "as_default_level_context.ordinal_high."
+            )
+
+        return self
+
+
 class CreateKGConfig(BaseSchema):
     """Configuration for knowledge graph creation from canonical IR.
 
@@ -587,6 +736,17 @@ class CreateKGConfig(BaseSchema):
     as_case_uri_base: str = Field(
         default="urn:lc:case:",
         description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
+    )
+    as_default_level_context: Optional[AcademicStandardsDefaultLevelContext] = Field(
+        default=None,
+        description=(
+            "Optional document-level fallback level context for Academic Standards "
+            "export. Use for single-grade/single-stage PDFs where the document scope "
+            "is clear but not represented as an explicit grade/stage ancestor above "
+            "every expectation. The fallback is written into SFI grade_level and "
+            "metadata.progression_context so Learning Progressions can bucket "
+            "within-grade standards."
+        ),
     )
     as_description_text_policy: Literal["source", "prefer_text_en"] = Field(
         default="source",

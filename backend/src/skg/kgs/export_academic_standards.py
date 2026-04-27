@@ -565,10 +565,12 @@ def _build_academic_standards_graph_bundle(
         end_id = r.target_entity_value  # Already `case_identifier_uuid` as string
         props = r.model_dump(mode="json")
         order_index = order_index_by_edge.get((start_id, end_id))
-        assert r.relationship_type == HAS_CHILD, (
-            f"Unexpected relationship type '{r.relationship_type}' "
-            f"in Academic Standards export bundle."
-        )
+
+        if r.relationship_type != HAS_CHILD:
+            raise ValueError(
+                f"Unexpected relationship type '{r.relationship_type}' "
+                f"in Academic Standards export bundle."
+            )
 
         if order_index is None:
             raise ValueError(
@@ -821,24 +823,29 @@ def _build_progression_context(
 
     grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
     stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
+    level_context = _resolve_effective_level_context(
+        config=config,
+        explicit_grade_high=grade_high,
+        explicit_grade_key=grade_key,
+        explicit_grade_low=grade_low,
+        explicit_stage_high=stage_high,
+        explicit_stage_key=stage_key,
+        explicit_stage_low=stage_low,
+        node_role=node["role"],
+    )
     code_raw = node.get("local_code") or ""
     code_features = _parse_code_features(
-        code=str(code_raw), grade_ordinal_low=grade_low
+        code=str(code_raw), grade_ordinal_low=level_context.get("grade_ordinal_low")
     )
 
     return {
         "canon_order_path": canon_order_path,
         "canonical_order_index_within_parent": canonical_order_index_within_parent,
-        "grade_key": grade_key,
-        "grade_ordinal_high": grade_high,
-        "grade_ordinal_low": grade_low,
         "order_index_within_parent": order_index_within_parent,
-        "stage_key": stage_key,
-        "stage_ordinal_high": stage_high,
-        "stage_ordinal_low": stage_low,
         "thread_key": _normalize_thread_key(topic_path_key=topic_path_key),
         "topic_path_key": topic_path_key,
         "topic_path_parts": topic_path_parts,  # For debugging
+        **level_context,
         **code_features,
     }
 
@@ -1040,77 +1047,74 @@ def _build_relationships_and_order(
     return relationships, order_map
 
 
-def _collect_grade_levels(
+def _collect_effective_grade_levels(
     *,
+    config: CreateKGConfig,
     ctx: ExportContext,
     node_id: str,
     parent_by_child: dict[str, str] | None = None,
     prefer_text_en: bool,
+    role: str,
 ) -> list[str]:
-    """Collect grade level tags by walking ancestors and capturing nodes whose role ==
-    grade_level.
+    """Collect SFI grade-level labels, applying a document default when needed.
+
+    The exporter first walks the finalized export ancestry to collect explicit grade
+    levels. If no explicit grade-level ancestors are found and the run config provides
+    `as_default_level_context` with `kind='grade_level'` for the node's role, the
+    configured label is returned as a single grade-level tag.
+
+    This is intentionally a property-level fallback. It does not synthesize a
+    `grade_level` grouping node or rewrite the `hasChild` hierarchy.
 
     Examples
     --------
-    1. Single grade ancestor
-        Suppose the ancestry is:
-
-            framework -> grade_level("Grade 2") -> topic -> expectation
-
-        Then:
-
-            _collect_grade_levels(..., node_id=expectation_id, prefer_text_en=False)
-
-        returns:
+    1. Explicit grade ancestor
+        If an expectation sits under `grade_level('Grade 2')`, the function returns:
 
             ["Grade 2"]
 
-    2. Multiple grade-level wrappers
-        Suppose the ancestry contains two grade-level nodes:
+        The config default is ignored because explicit hierarchy context exists.
 
-            framework -> grade_level("Primary") -> grade_level("Grade 2") -> expectation
+    2. Single-grade document default
+        If an expectation has no grade ancestor and the config contains:
 
-        Then the function returns:
+            as_default_level_context = {
+                "kind": "grade_level",
+                "label": "CE1",
+                "ordinal_low": 1,
+                "ordinal_high": 1,
+                "apply_to_roles": ["expectation"]
+            }
 
-            ["Primary", "Grade 2"]
-
-    3. De-duplication
-        Suppose the ancestry contains repeated grade labels due to wrapper duplication:
-
-            framework -> grade_level("CE1") -> section -> grade_level("CE1") -> expectation
-
-        Then the returned list is de-duplicated while preserving order:
+        the function returns:
 
             ["CE1"]
 
-    4. No grade-level ancestors
-        If no ancestor has role == "grade_level", the function returns:
-
-            []
+    3. Stage-only default
+        If `as_default_level_context.kind == 'stage'`, the function returns the
+        explicit ancestry-derived grade levels only. Stage defaults are stored in
+        `metadata.progression_context` but do not populate the SFI `grade_level`
+        property.
 
     Parameters
     ----------
+    config
+        The KG export config, optionally including `as_default_level_context`.
     ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        hierarchy.
+        The ExportContext for the CanonicalIR.
     node_id
-        The ID of the canonical node for which to collect grade levels.
+        The canonical node ID for which to collect grade levels.
     parent_by_child
-        Optional mapping of canonical child node ID to parent node ID to use for
-        walking ancestors. If None, will use ctx.parent_by_child. This allows grade
-        level collection to reflect the finalized export hierarchy after hoisting or
-        reparenting.
+        Optional finalized export parent lookup. If omitted, canonical ancestry is used.
     prefer_text_en
-        If True, prefer "text_en" over "text" when extracting display text for grade
-        level nodes.
+        Whether to prefer English text when extracting ancestor labels.
+    role
+        Canonical node role for the SFI being emitted.
 
     Returns
     -------
     list[str]
-        A deduplicated list of grade level labels found in the node's ancestry, ordered
-        from the highest level (farthest ancestor) down to the lowest level (closest
-        ancestor). If no grade level nodes are encountered during the traversal, an
-        empty list is returned.
+        Explicit or default grade-level labels, deduplicated and ordered.
     """
 
     ancestry = _walk_ancestors(
@@ -1121,7 +1125,7 @@ def _collect_grade_levels(
     for aid in ancestry:
         node = ctx.nodes_by_id.get(aid) or {}
 
-        if node["role"] == NodeRole.GRADE_LEVEL.value:
+        if node.get("role") == NodeRole.GRADE_LEVEL.value:
             label = node.get("normalized_text") or _node_display_text(
                 node=node, prefer_text_en=prefer_text_en
             )
@@ -1131,15 +1135,43 @@ def _collect_grade_levels(
                 output.append(label)
 
     # De-dupe while preserving order.
-    deduped: list[str] = []
+    grade_levels: list[str] = []
     dset: set[str] = set()
 
     for g in output:
         if g not in dset:
-            deduped.append(g)
+            grade_levels.append(g)
             dset.add(g)
 
-    return deduped
+    # Return explicit grade levels if found.
+    if grade_levels:
+        default_context = config.as_default_level_context
+
+        if (
+            default_context is not None
+            and default_context.kind == NodeRole.GRADE_LEVEL.value
+            and not default_context.apply_when_missing_only
+            and role
+            in {default_role.value for default_role in default_context.apply_to_roles}
+        ):
+            return [default_context.label]
+
+        return grade_levels
+
+    # Fallback to document default.
+    default_context = config.as_default_level_context
+
+    if default_context is None or default_context.kind != NodeRole.GRADE_LEVEL.value:
+        return grade_levels
+
+    allowed_roles = {
+        default_role.value for default_role in default_context.apply_to_roles
+    }
+
+    if role not in allowed_roles:
+        return grade_levels
+
+    return [default_context.label]
 
 
 def _compute_export_children(
@@ -1892,6 +1924,14 @@ def _emit_sfi(
             prefer_text_en=prefer_en,
         )
 
+    grade_levels = _collect_effective_grade_levels(
+        config=config,
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_en,
+        role=role,
+    )
     return StandardsFrameworkItem(
         academic_subject=fw_metadata["academic_subject_default"],
         attribution_statement=config.as_attribution_statement,
@@ -1901,12 +1941,7 @@ def _emit_sfi(
         date_created=canonical_ir_created_at,
         date_modified=None,
         description=desc,
-        grade_level=_collect_grade_levels(
-            ctx=ctx,
-            node_id=node_id,
-            parent_by_child=export_parent_by_child,
-            prefer_text_en=prefer_en,
-        ),
+        grade_level=grade_levels,
         identifier=sfi_id,
         in_language=sfi_in_language,
         jurisdiction=fw_metadata["jurisdiction"],
@@ -3470,6 +3505,198 @@ def _resolve_description_and_language(
     return desc, sfi_in_language
 
 
+def _resolve_effective_level_context(
+    *,
+    config: CreateKGConfig,
+    explicit_grade_high: int | None,
+    explicit_grade_key: str | None,
+    explicit_grade_low: int | None,
+    explicit_stage_high: int | None,
+    explicit_stage_key: str | None,
+    explicit_stage_low: int | None,
+    node_role: str,
+) -> dict[str, Any]:
+    """Resolve grade/stage context for progression metadata.
+
+    Explicit grade/stage context derived from the exported hierarchy is preserved by
+    default. A document-level default from `config.as_default_level_context` is used
+    only when the configured node role matches and either:
+
+    1. No explicit grade/stage context exists, or
+    2. `apply_when_missing_only` is false.
+
+    This keeps the Academic Standards KG shape-preserving for multi-grade curricula
+    while still allowing single-grade/single-stage PDFs to carry enough level context
+    for within-grade Learning Progressions inference.
+
+    Examples
+    --------
+    1. Explicit grade ancestor wins
+        If an expectation sits under a `grade_level` ancestor labelled `Grade 2`:
+
+            explicit_grade_key = "Grade 2"
+            explicit_grade_low = 2
+            explicit_grade_high = 2
+            explicit_stage_key = None
+            explicit_stage_low = None
+            explicit_stage_high = None
+
+        the function returns grade context from the hierarchy, even if the config also
+        defines a default level:
+
+            {
+                "grade_key": "Grade 2",
+                "grade_ordinal_low": 2,
+                "grade_ordinal_high": 2,
+                "stage_key": None,
+                "stage_ordinal_low": None,
+                "stage_ordinal_high": None,
+                "level_context_source": "ancestor"
+            }
+
+    2. Single-grade PDF default fills missing context
+        If an expectation has no grade/stage ancestor and the config contains:
+
+            as_default_level_context = {
+                "kind": "grade_level",
+                "label": "CE1",
+                "ordinal_low": 1,
+                "ordinal_high": 1,
+                "source": "config: framework title says 2ème étape (CE1)",
+                "apply_to_roles": ["expectation"],
+                "apply_when_missing_only": True
+            }
+
+        then the function returns:
+
+            {
+                "grade_key": "CE1",
+                "grade_ordinal_low": 1,
+                "grade_ordinal_high": 1,
+                "stage_key": None,
+                "stage_ordinal_low": None,
+                "stage_ordinal_high": None,
+                "level_context_source": "config_default",
+                "level_context_default_source": "config: framework title says 2ème étape (CE1)"
+            }
+
+    3. Stage-band default
+        If the default is stage-based:
+
+            as_default_level_context = {
+                "kind": "stage",
+                "label": "Standard III–VI",
+                "ordinal_low": 3,
+                "ordinal_high": 6,
+                "source": "config: document scope",
+                "apply_to_roles": ["expectation"],
+                "apply_when_missing_only": True
+            }
+
+        then a missing-context expectation receives:
+
+            {
+                "grade_key": None,
+                "grade_ordinal_low": None,
+                "grade_ordinal_high": None,
+                "stage_key": "Standard III–VI",
+                "stage_ordinal_low": 3,
+                "stage_ordinal_high": 6,
+                "level_context_source": "config_default",
+                "level_context_default_source": "config: document scope"
+            }
+
+    4. Non-matching role does not receive the default
+        If the default applies only to `expectation` but `node_role` is `guidance`, the
+        function returns the explicit values unchanged and marks the source as
+        `missing` when no explicit context exists.
+
+    Parameters
+    ----------
+    config
+        The KG export config, optionally including `as_default_level_context`.
+    explicit_grade_high
+        Parsed high grade ordinal from an ancestor-derived grade label, if available.
+    explicit_grade_key
+        Ancestor-derived grade label, if available.
+    explicit_grade_low
+        Parsed low grade ordinal from an ancestor-derived grade label, if available.
+    explicit_stage_high
+        Parsed high stage ordinal from an ancestor-derived stage label, if available.
+    explicit_stage_key
+        Ancestor-derived stage label, if available.
+    explicit_stage_low
+        Parsed low stage ordinal from an ancestor-derived stage label, if available.
+    node_role
+        Canonical node role for the SFI being emitted.
+
+    Returns
+    -------
+    dict[str, Any]
+        Grade/stage fields plus provenance fields describing whether level context came
+        from the hierarchy, a config default, or remained missing.
+    """
+
+    has_explicit_usable_context = (
+        explicit_grade_low is not None and explicit_grade_high is not None
+    ) or (explicit_stage_low is not None and explicit_stage_high is not None)
+    has_explicit_context = any(
+        value is not None
+        for value in (
+            explicit_grade_high,
+            explicit_grade_key,
+            explicit_grade_low,
+            explicit_stage_high,
+            explicit_stage_key,
+            explicit_stage_low,
+        )
+    )
+    level_context: dict[str, Any] = {
+        "grade_key": explicit_grade_key,
+        "grade_ordinal_high": explicit_grade_high,
+        "grade_ordinal_low": explicit_grade_low,
+        "level_context_source": "ancestor" if has_explicit_context else "missing",
+        "stage_key": explicit_stage_key,
+        "stage_ordinal_high": explicit_stage_high,
+        "stage_ordinal_low": explicit_stage_low,
+    }
+    default_context = config.as_default_level_context
+
+    if default_context is None:
+        return level_context
+
+    allowed_roles = {role.value for role in default_context.apply_to_roles}
+
+    if node_role not in allowed_roles:
+        return level_context
+
+    if default_context.apply_when_missing_only and has_explicit_usable_context:
+        return level_context
+
+    if default_context.kind == NodeRole.GRADE_LEVEL.value:
+        level_context.update(
+            {
+                "grade_key": default_context.label,
+                "grade_ordinal_high": default_context.ordinal_high,
+                "grade_ordinal_low": default_context.ordinal_low,
+                "level_context_default_source": default_context.source,
+                "level_context_source": "config_default",
+            }
+        )
+    else:
+        level_context.update(
+            {
+                "level_context_default_source": default_context.source,
+                "level_context_source": "config_default",
+                "stage_key": default_context.label,
+                "stage_ordinal_high": default_context.ordinal_high,
+                "stage_ordinal_low": default_context.ordinal_low,
+            }
+        )
+
+    return level_context
+
+
 def _should_emit_node_with_reason(
     *, config: CreateKGConfig, ctx: ExportContext, node_id: str
 ) -> tuple[bool, str]:
@@ -4253,13 +4480,11 @@ def export_academic_standards(
     1. Emit the framework node.
     2. Precompute node-level emit flags based on segment-drop, statement-role, and
         grouping-role policies.
-    3. Compute export-time aux parenting based on preceding expectation siblings to
-        include:
-            - Building the export tree
-            - Handling root and grouping parents
-            - Supporting sibling and child layouts
-            - Collecting attachment payloads
-            - Tracking orphan aux nodes
+    3. Compute export-time aux attachment/reparenting for descriptor/guidance nodes:
+        - Sibling layout: attach aux siblings to the most recent preceding expectation
+        - Child layout: attach aux children already nested under an expectation
+        - Build the initial export tree
+        - Collect attachment payloads and orphan aux stats
     4. Attach-only discovery pass: when aux nodes remain as siblings (or children) but
         export config requests attaching them to expectation metadata, discover and
         attach without modifying hierarchy:

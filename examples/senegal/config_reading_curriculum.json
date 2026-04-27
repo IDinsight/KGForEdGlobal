@@ -51,6 +51,17 @@
 		"as_author": "Ministère de l’Éducation nationale",
 		"as_aux_statement_parenting": "under_expectation",
 		"as_case_uri_base": "urn:lc:case:",
+		"as_default_level_context": {
+			"apply_to_roles": [
+				"expectation"
+			],
+			"apply_when_missing_only": true,
+			"kind": "grade_level",
+			"label": "CE1",
+			"ordinal_high": 1,
+			"ordinal_low": 1,
+			"source": "config: Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)"
+		},
 		"as_description_text_policy": "source",
 		"as_descriptor_handling": "attach_to_expectation_metadata",
 		"as_export_dialect": "global_relaxed",
