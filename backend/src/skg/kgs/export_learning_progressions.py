@@ -192,89 +192,6 @@ def _build_item_payload(
     return payload
 
 
-def _build_learning_progressions_graph_bundle(
-    *,
-    academic_standards: AcademicStandardsExport,
-    ctx: ExportContext,
-    export_dialect: str,
-    relationships: list[Relationship],
-) -> dict[str, Any]:
-    """Build a graph bundle for learning progressions.
-
-    Parameters
-    ----------
-    academic_standards
-        The exported Academic Standards KG artifacts, containing the framework and
-        items to include as nodes in the graph.
-    ctx
-        The KG export context, providing information such as the document key for the
-        graph bundle metadata.
-    export_dialect
-        A string indicating the export dialect or format of the graph bundle, to be
-        included in the bundle metadata.
-    relationships
-        A list of Relationship objects representing the buildsTowards and relatesTo
-        relationships to include in the graph bundle.
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary representing the graph bundle for learning progressions,
-        containing metadata such as the document key, export dialect, generation
-        timestamp, graph type, and the lists of nodes and relationships to be included
-        in the graph. The nodes include the StandardsFramework and
-        StandardsFrameworkItem entities from the academic standards export, while the
-        relationships include the inferred buildsTowards and relatesTo relationships
-        between the StandardsFrameworkItems.
-    """
-
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    nodes: list[dict[str, Any]] = []
-
-    # Include framework + SFIs for standalone graph use.
-    fw = academic_standards.framework
-    nodes.append(
-        {
-            "id": str(fw.case_identifier_uuid),
-            "labels": ["StandardsFramework"],
-            "properties": fw.model_dump(mode="json"),
-        }
-    )
-
-    for sfi in academic_standards.items:
-        nodes.append(
-            {
-                "id": str(sfi.case_identifier_uuid),
-                "labels": ["StandardsFrameworkItem"],
-                "properties": sfi.model_dump(mode="json"),
-            }
-        )
-
-    rels: list[dict[str, Any]] = []
-
-    for r in relationships:
-        start_id = r.source_entity_value
-        end_id = r.target_entity_value
-        rels.append(
-            {
-                "id": str(r.identifier),
-                "type": r.relationship_type,
-                "start": start_id,
-                "end": end_id,
-                "properties": r.model_dump(mode="json"),
-            }
-        )
-
-    return {
-        "doc_key": ctx.doc_key,
-        "export_dialect": export_dialect,
-        "generated_at": generated_at,
-        "graph_type": "learning_progressions",
-        "nodes": nodes,
-        "relationships": rels,
-    }
-
-
 def _build_order_index_lookup(
     academic_standards: AcademicStandardsExport,
 ) -> dict[str, int]:
@@ -1248,12 +1165,51 @@ def _finalize_lp_export(
     )
 
     # Include nodes for standalone use in graph bundle.
-    graph_bundle = _build_learning_progressions_graph_bundle(
-        academic_standards=academic_standards,
-        ctx=ctx,
-        export_dialect=config.as_export_dialect,
-        relationships=(builds_rels + relates_rels),
+    # Include nodes for standalone use in graph bundle.
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nodes: list[dict[str, Any]] = []
+
+    # Include framework + SFIs for standalone graph use.
+    fw = academic_standards.framework
+    nodes.append(
+        {
+            "id": str(fw.case_identifier_uuid),
+            "labels": ["StandardsFramework"],
+            "properties": fw.model_dump(mode="json"),
+        }
     )
+
+    for sfi in academic_standards.items:
+        nodes.append(
+            {
+                "id": str(sfi.case_identifier_uuid),
+                "labels": ["StandardsFrameworkItem"],
+                "properties": sfi.model_dump(mode="json"),
+            }
+        )
+
+    rels: list[dict[str, Any]] = []
+
+    # Combine builds_rels and relates_rels for the relationship loop.
+    for r in builds_rels + relates_rels:
+        rels.append(
+            {
+                "id": str(r.identifier),
+                "type": r.relationship_type,
+                "start": r.source_entity_value,
+                "end": r.target_entity_value,
+                "properties": r.model_dump(mode="json"),
+            }
+        )
+
+    graph_bundle = {
+        "doc_key": ctx.doc_key,
+        "export_dialect": config.as_export_dialect,
+        "generated_at": generated_at,
+        "graph_type": "learning_progressions",
+        "nodes": nodes,
+        "relationships": rels,
+    }
     write_to_json(
         fp=kg_dirs.learning_progressions / "learning_progressions_kg.json",
         json_info=graph_bundle,
