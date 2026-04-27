@@ -812,7 +812,8 @@ def _create_lcs_from_atomic_skills(
 
     1. Skill ordering preserves the validated LLM/source order.
     2. Deduplication uses the same canonical text normalization as `stable_text_hash()`.
-    3. LC UUID seed uses split_hash derived from description.
+    3. LC UUID seed uses the split policy, supporting SFI UUID, split index, and
+        `split_hash` derived from description.
 
     Parameters
     ----------
@@ -835,16 +836,16 @@ def _create_lcs_from_atomic_skills(
         and are assumed to be pre-validated according to the specified criteria (e.g.,
         allowed SFI UUIDs, min/max skills per SFI, presence of rationale if required).
         Each skill will be transformed into a LearningComponent entity, with
-        deterministic UUID generation based on the skill description and its position
-        in the validated LLM/source order.
+        deterministic UUID generation based on the split policy, supporting SFI UUID,
+        skill position, and stable hash of the skill description.
 
     Returns
     -------
     list[LearningComponent]
         A list of LearningComponent entities created from the provided atomic skills
         for the given expectation SFI. Each LC will have a deterministic UUID based on
-        the doc_key, SFI UUID, skill index, and a hash of the skill description to
-        ensure stable IDs across runs.
+        the doc_key, split policy, SFI UUID, skill index, and a hash of the skill
+        description to ensure stable IDs across runs.
     """
 
     norm_skills: list[tuple[str, str]] = []
