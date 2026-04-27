@@ -927,7 +927,7 @@ class CreateKGConfig(BaseSchema):
             "position in the sequence (not necessarily the grade number); "
             "adjacency is determined by ordinals differing by exactly 1. "
             "Multiple grade_keys may map to the same ordinal to merge subtrees "
-            "(e.g., 'paliers du niveau ce1' and 'planification ce1' both → 1). "
+            "(e.g., 'paliers du niveau ce1' and 'planification ce1' both -> 1). "
             "Config keys must be lowercase + stripped. When None, falls back to "
             "_parse_ordinal heuristics on grade_ordinal_low/high."
         ),

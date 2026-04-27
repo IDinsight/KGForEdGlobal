@@ -2558,8 +2558,7 @@ def _process_single_standard(
 
     1. **Level bounds** are resolved primarily from ordinals in `progression_context`
         (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
-        we fall back to `config.progressions_grade_label_map` using `grade_key` or
-        `stage_key`.
+        we fall back to `config.lp_grade_label_map` using `grade_key` or `stage_key`.
     2. **Subject label** is resolved via `config.lp_subject_role`. Items without a
         matching role get `UNSPECIFIED_SUBJECT`.
     3. **Thread key** uses `config.lp_cross_grade_match_roles` when provided. When that
@@ -2853,7 +2852,7 @@ def _resolve_level_ordinals(
             )
             return None
 
-        mapped = (config.progressions_grade_label_map or {}).get(normalized_level_key)
+        mapped = (config.lp_grade_label_map or {}).get(normalized_level_key)
 
         if mapped is None:
             logger.warning(
@@ -3343,7 +3342,7 @@ def group_standards_for_learning_progressions(
     Uses config-driven bucketing as follows:
 
     1. **Level bounds** resolved from `progression_context` ordinals when present, with
-        a fallback to `config.progressions_grade_label_map`.
+        a fallback to `config.lp_grade_label_map`.
     2. **Subject label** resolved via `config.lp_subject_role`.
     3. **Thread key** computed via `config.lp_cross_grade_match_roles`, or from
         `progression_context.thread_key` when that config is None.
