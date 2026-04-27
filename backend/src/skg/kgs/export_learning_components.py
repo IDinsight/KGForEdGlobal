@@ -88,12 +88,13 @@ def _atomic_skills_cache_key_from_prompt_item(prompt_item: dict[str, Any]) -> st
     1. `display_text`
     2. `language_instruction`
     3. `statement_type`
-    4. `topic_context` (grade/stage keys and topic role+label path)
-    5. `aux_statements` (role+text only)
+    4. `source_label` when present in the prompt payload
+    5. `topic_context` (grade/stage keys and topic role+label path)
+    6. `aux_statements` (role+text only)
 
-    The key intentionally excludes SFI identity, source labels, statement codes,
-    provenance, and debug-only truncation fields. This allows repeated equivalent
-    prompt content to reuse the same decomposition while avoiding false cache hits when
+    The key intentionally excludes SFI identity, statement codes, provenance, and
+    debug-only truncation fields. This allows repeated equivalent prompt content to
+    reuse the same decomposition while avoiding false cache hits when source labels,
     topic context, auxiliary statements, or output-language instructions change the
     effective prompt meaning.
 
@@ -120,6 +121,9 @@ def _atomic_skills_cache_key_from_prompt_item(prompt_item: dict[str, Any]) -> st
         ),
         "statement_type": _normalize_atomic_skills_cache_text(
             prompt_item.get("statement_type")
+        ),
+        "source_label": _normalize_atomic_skills_cache_text(
+            prompt_item.get("source_label")
         ),
         "topic_context": _normalize_atomic_skills_cache_topic_context(
             prompt_item.get("topic_context")
@@ -2002,9 +2006,10 @@ def _process_atomic_skills_batch(
 
     Repeated prompt items are served from a deterministic within-run cache keyed by
     semantic prompt fields: normalized `display_text`, `language_instruction`,
-    `statement_type`, `topic_context`, and `aux_statements`. Cache misses are sent to
-    the LLM; cache hits reuse the previously validated atomic skills and are
-    materialized for the current SFI without another model call.
+    `statement_type`, `source_label` when present, `topic_context`, and
+    `aux_statements`. Cache misses are sent to the LLM; cache hits reuse the previously
+    validated atomic skills and are materialized for the current SFI without another
+    model call.
 
     Parameters
     ----------
