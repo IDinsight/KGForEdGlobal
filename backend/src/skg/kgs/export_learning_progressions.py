@@ -1139,46 +1139,6 @@ def _emit_relationship(
     )
 
 
-def _extract_code_tuple(
-    *, code_string: str, raw_code_tuple: Any
-) -> tuple[int, ...] | None:
-    """Extract a numeric tuple from a raw code tuple or falls back to the code string.
-
-    Evaluates the raw code tuple to parse integer sequences from strings, mixed lists,
-    or pure integer lists. If no valid integers are found, attempts to parse digits
-    from the fallback code string.
-
-    Parameters
-    ----------
-    code_string
-        The stripped statement code string used as a fallback for digit extraction.
-    raw_code_tuple
-        The raw 'code_tuple' value retrieved from the item dictionary.
-
-    Returns
-    -------
-    tuple[int, ...] | None
-        A tuple of extracted integers, or None if no numeric values could be parsed.
-    """
-
-    nums: list[int] = []
-
-    # Process all list types (pure int, pure str, or mixed) in a single pass.
-    if isinstance(raw_code_tuple, list):
-        for item in raw_code_tuple:
-            if isinstance(item, (int, float)):
-                nums.append(int(item))
-            elif isinstance(item, str):
-                # re.findall(r"\d+") guarantees digits, making int() conversion safe.
-                nums.extend(int(match) for match in re.findall(r"\d+", item))
-
-    # Fallback to code_string if no digits were extracted from the tuple.
-    if not nums and code_string:
-        nums = [int(match) for match in re.findall(r"\d+", code_string)]
-
-    return tuple(nums) if nums else None
-
-
 def _filter_builds_towards_within_grade_order(
     *, edges: list[CandidateEdge], sfi_index: dict[str, dict[str, Any]]
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
@@ -3529,14 +3489,24 @@ def _sort_key_for_bucket_sfi(
     order_index = order_index if isinstance(order_index, int) else 10**9
     code = (s.get("statement_code") or "").strip()
 
-    code_tuple = _extract_code_tuple(
-        code_string=code, raw_code_tuple=s.get("code_tuple")
-    )
+    raw_code_tuple = s.get("code_tuple")
+    nums: list[int] = []
+
+    if isinstance(raw_code_tuple, list):
+        for item in raw_code_tuple:
+            if isinstance(item, (int, float)):
+                nums.append(int(item))
+            elif isinstance(item, str):
+                nums.extend(int(match) for match in re.findall(r"\d+", item))
+
+    if not nums and code:
+        nums = [int(match) for match in re.findall(r"\d+", code)]
+
+    code_tuple = tuple(nums) if nums else None
 
     missing_code_tuple = 1 if code_tuple is None else 0
     code_tuple_key = code_tuple if code_tuple is not None else (10**9,)
     uuid_key = s.get("sfi_uuid") or s.get("case_identifier_uuid") or ""
-
     return order_index, missing_code_tuple, code_tuple_key, code, uuid_key
 
 
