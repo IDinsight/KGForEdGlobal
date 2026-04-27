@@ -1005,7 +1005,7 @@ def _finalize_lc_export(
     rels: list[Relationship],
     valid_sfi_case_uuids: set[str],
 ) -> LearningComponentsExport:
-    """Verify, persist, and wrap LC export artifacts.
+    """Verify, persist, and wrap LearningComponents export artifacts.
 
     Parameters
     ----------

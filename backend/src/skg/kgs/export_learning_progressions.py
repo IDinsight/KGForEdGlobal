@@ -1245,6 +1245,123 @@ def _filter_builds_towards_within_grade_order(
     return kept, dropped
 
 
+def _finalize_lp_export(
+    *,
+    academic_standards: AcademicStandardsExport,
+    builds_rels: list[Relationship],
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    drops: dict[str, Any],
+    kg_dirs: KGDirs,
+    lp_stats: dict[str, int],
+    provenance_rows: list[dict[str, Any]],
+    relates_rels: list[Relationship],
+) -> LearningProgressionsExport:
+    """Verify, persist, and wrap LearningProgressions export artifacts.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported Academic Standards KG artifacts, used here for building the graph
+        bundle with nodes.
+    builds_rels
+        The list of emitted buildsTowards relationships after processing and filtering.
+    config
+        KG export configuration.
+    ctx
+        ExportContext (doc_key).
+    drops
+        The dictionary of dropped items collected during the bucketing process,
+        included in the final report.
+    kg_dirs
+        Output directories.
+    lp_stats
+        The dictionary of statistics about the emitted relationships and filtering
+        outcomes, included in the final report.
+    provenance_rows
+        The list of provenance dictionaries for all candidate edges, enriched with
+        final disposition after filtering and deduplication. This is included in the
+        export for transparency and debugging purposes.
+    relates_rels
+        The list of emitted relatesTo relationships after processing and filtering.
+
+    Returns
+    -------
+    LearningProgressionsExport
+        The wrapped export object.
+    """
+
+    # Write artifacts.
+    write_to_json(
+        fp=kg_dirs.learning_progressions
+        / "learning_progressions_builds_towards_relationships.json",
+        json_info=[r.model_dump(mode="json") for r in builds_rels],
+    )
+    write_to_json(
+        fp=kg_dirs.learning_progressions
+        / "learning_progressions_relates_to_relationships.json",
+        json_info=[r.model_dump(mode="json") for r in relates_rels],
+    )
+    write_to_json(
+        fp=kg_dirs.learning_progressions
+        / "learning_progressions_candidate_edges_provenance.json",
+        json_info=provenance_rows,
+    )
+
+    # Include nodes for standalone use in graph bundle.
+    graph_bundle = _build_learning_progressions_graph_bundle(
+        academic_standards=academic_standards,
+        ctx=ctx,
+        export_dialect=config.as_export_dialect,
+        relationships=(builds_rels + relates_rels),
+    )
+    write_to_json(
+        fp=kg_dirs.learning_progressions / "learning_progressions_kg.json",
+        json_info=graph_bundle,
+    )
+
+    report = {
+        "doc_key": ctx.doc_key,
+        "counts": lp_stats,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "phase_toggles": {
+            "within_grade_builds_towards": config.lp_within_grade_builds_towards,
+            "cross_grade_builds_towards": config.lp_cross_grade_builds_towards,
+            "cross_stage_builds_towards": config.lp_cross_stage_builds_towards,
+            "within_grade_relates_to": config.lp_within_grade_relates_to,
+            "cross_grade_relates_to": config.lp_cross_grade_relates_to,
+            "cross_stage_relates_to": config.lp_cross_stage_relates_to,
+        },
+        "thresholds": {
+            "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
+            "relates_to_min_confidence": config.lp_relates_to_min_confidence,
+            "relates_to_max_edges_per_sfi": config.lp_relates_to_max_edges_per_sfi,
+            "within_grade_relates_to_max_items_per_subject": config.lp_within_grade_relates_to_max_items_per_subject,
+            "cross_grade_relates_to_max_items_per_subject": config.lp_cross_grade_relates_to_max_items_per_subject,
+        },
+        "drops": drops,
+    }
+    write_to_json(
+        fp=kg_dirs.learning_progressions / "learning_progressions_report.json",
+        json_info=report,
+    )
+
+    learning_progressions = LearningProgressionsExport(
+        builds_towards_relationships=builds_rels,
+        graph_bundle=graph_bundle,
+        relates_to_relationships=relates_rels,
+        report=report,
+    )
+
+    logger.success(
+        f"Exported Learning Progressions KG: "
+        f"{len(learning_progressions.builds_towards_relationships)} `buildsTowards` relationships, "
+        f"{len(learning_progressions.relates_to_relationships)} `relatesTo` relationships"
+    )
+
+    return learning_progressions
+
+
 def _format_learning_progressions_dict(
     *,
     buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
@@ -3574,7 +3691,7 @@ def export_learning_progressions(
     provenance_rows.extend(p4_prov)
 
     # Dedupe, filter, limit, and emit final relationships, and gather stats for the report.
-    builds_rels, relates_rels, stats, disposition_map, dedupe_winners = (
+    builds_rels, relates_rels, lp_stats, disposition_map, dedupe_winners = (
         _process_and_filter_candidates(
             candidates=candidates,
             config=config,
@@ -3643,75 +3760,17 @@ def export_learning_progressions(
             else disposition_map.get(key, "dropped_dedupe")
         )
 
-    # Write artifacts.
-    write_to_json(
-        fp=kg_dirs.learning_progressions
-        / "learning_progressions_builds_towards_relationships.json",
-        json_info=[r.model_dump(mode="json") for r in builds_rels],
-    )
-    write_to_json(
-        fp=kg_dirs.learning_progressions
-        / "learning_progressions_relates_to_relationships.json",
-        json_info=[r.model_dump(mode="json") for r in relates_rels],
-    )
-    write_to_json(
-        fp=kg_dirs.learning_progressions
-        / "learning_progressions_candidate_edges_provenance.json",
-        json_info=provenance_rows,
-    )
-
-    # Include nodes for standalone use in graph bundle.
-    graph_bundle = _build_learning_progressions_graph_bundle(
+    return _finalize_lp_export(
         academic_standards=academic_standards,
+        builds_rels=builds_rels,
+        config=config,
         ctx=ctx,
-        export_dialect=config.as_export_dialect,
-        relationships=(builds_rels + relates_rels),
+        drops=buckets_info.get("drops") or {},
+        kg_dirs=kg_dirs,
+        lp_stats=lp_stats,
+        provenance_rows=provenance_rows,
+        relates_rels=relates_rels,
     )
-    write_to_json(
-        fp=kg_dirs.learning_progressions / "learning_progressions_kg.json",
-        json_info=graph_bundle,
-    )
-
-    report = {
-        "doc_key": ctx.doc_key,
-        "counts": stats,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "phase_toggles": {
-            "within_grade_builds_towards": config.lp_within_grade_builds_towards,
-            "cross_grade_builds_towards": config.lp_cross_grade_builds_towards,
-            "cross_stage_builds_towards": config.lp_cross_stage_builds_towards,
-            "within_grade_relates_to": config.lp_within_grade_relates_to,
-            "cross_grade_relates_to": config.lp_cross_grade_relates_to,
-            "cross_stage_relates_to": config.lp_cross_stage_relates_to,
-        },
-        "thresholds": {
-            "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
-            "relates_to_min_confidence": config.lp_relates_to_min_confidence,
-            "relates_to_max_edges_per_sfi": config.lp_relates_to_max_edges_per_sfi,
-            "within_grade_relates_to_max_items_per_subject": config.lp_within_grade_relates_to_max_items_per_subject,
-            "cross_grade_relates_to_max_items_per_subject": config.lp_cross_grade_relates_to_max_items_per_subject,
-        },
-        "drops": buckets_info.get("drops") or {},
-    }
-    write_to_json(
-        fp=kg_dirs.learning_progressions / "learning_progressions_report.json",
-        json_info=report,
-    )
-
-    learning_progressions = LearningProgressionsExport(
-        builds_towards_relationships=builds_rels,
-        graph_bundle=graph_bundle,
-        relates_to_relationships=relates_rels,
-        report=report,
-    )
-
-    logger.info(
-        f"Exported Learning Progressions KG: "
-        f"{len(learning_progressions.builds_towards_relationships)} `buildsTowards` relationships, "
-        f"{len(learning_progressions.relates_to_relationships)} `relatesTo` relationships"
-    )
-
-    return learning_progressions
 
 
 def group_standards_for_learning_progressions(
@@ -3722,7 +3781,7 @@ def group_standards_for_learning_progressions(
 ) -> dict[str, Any]:
     """Build learning progression buckets for the LLM.
 
-    Uses config-driven three-axis bucketing:
+    Uses config-driven bucketing as follows:
 
     1. **Level bounds** resolved from `progression_context` ordinals when present, with
         a fallback to `config.progressions_grade_label_map`.
@@ -3735,8 +3794,8 @@ def group_standards_for_learning_progressions(
     academic_standards
         The exported Academic Standards KG artifacts.
     config
-        The KG creation config with LP-specific fields that drive the three-axis
-        bucketing logic in `_process_single_standard`.
+        The KG creation config with LP-specific fields that drive the bucketing logic
+        in `_process_single_standard`.
     include_provenance
         Whether to include provenance metadata in the payload for each standard item,
         which the LLM can use as signals when deciding buildsTowards relationships.
@@ -3759,8 +3818,8 @@ def group_standards_for_learning_progressions(
         "unmapped_grade_key": [],
     }
 
-    # Build a lookup from UUID -> order_index_within_parent for *all* SFIs (including
-    # groupings). This is needed to convert UUID-based canon_order_path values into
+    # Build a lookup from UUID -> `order_index_within_parent` for *all* SFIs (including
+    # groupings). This is needed to convert UUID-based `canon_order_path` values into
     # numeric order paths for correct document-order sorting within buckets.
     order_index_lookup = _build_order_index_lookup(academic_standards)
 

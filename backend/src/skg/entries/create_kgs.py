@@ -138,6 +138,7 @@ def create_kgs(
     # Sentinels needed for combined bundles.
     as_sentinel = kg_dirs.academic_standards / "academic_standards_kg.json"
     lc_sentinel = kg_dirs.learning_components / "learning_components_kg.json"
+    lp_sentinel = kg_dirs.learning_progressions / "learning_progressions_kg.json"
 
     # Combined Academic Standards + Learning Components bundle.
     combined_as_lc_fp = (
@@ -150,10 +151,10 @@ def create_kgs(
             "(both components reused)--skipping."
         )
     else:
-        academic_bundle = open_json_type(as_sentinel)
+        as_bundle = open_json_type(as_sentinel)
         lc_bundle = open_json_type(lc_sentinel)
         combined_bundle = merge_graph_bundles(
-            bundles=[academic_bundle, lc_bundle],
+            bundles=[as_bundle, lc_bundle],
             doc_key=kg_export_ctx.doc_key,
             export_dialect=config.as_export_dialect,
         )
@@ -180,16 +181,15 @@ def create_kgs(
 
         if combined_all_fp.exists() and as_reused and lc_reused and lp_reused:
             logger.info(
-                "Combined AS+LC+LP bundle already exists (all components reused)---skipping."
+                "Combined Academic Standards, Learning Components, and Learning Progressions "
+                "bundle already exists (all components reused)--skipping."
             )
         else:
-            academic_bundle = open_json_type(as_sentinel)
+            as_bundle = open_json_type(as_sentinel)
             lc_bundle = open_json_type(lc_sentinel)
-            lp_bundle = open_json_type(
-                kg_dirs.learning_progressions / "learning_progressions_kg.json"
-            )
+            lp_bundle = open_json_type(lp_sentinel)
             combined_bundle = merge_graph_bundles(
-                bundles=[academic_bundle, lc_bundle, lp_bundle],
+                bundles=[as_bundle, lc_bundle, lp_bundle],
                 doc_key=kg_export_ctx.doc_key,
                 export_dialect=config.as_export_dialect,
             )
