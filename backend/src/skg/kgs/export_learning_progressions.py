@@ -264,103 +264,6 @@ def _build_sfi_index(
     return index
 
 
-def _build_sfi_payload(
-    *,
-    effective_bucket_key: str,
-    include_provenance: bool,
-    metadata: dict[str, Any],
-    order_index_lookup: dict[str, int],
-    progression_context: dict[str, Any],
-    sfi: StandardsFrameworkItem,
-    sfi_uuid: str,
-    thread_key: str,
-    topic_key: str,
-    topic_path_parts: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Construct the payload dictionary for a standard item.
-
-    Parameters
-    ----------
-    effective_bucket_key
-        The computed effective bucket key.
-    include_provenance
-        Whether to include provenance information.
-    metadata
-        The standard item's metadata dictionary.
-    order_index_lookup
-        A mapping from SFI UUIDs to their order index values.
-    progression_context
-        The progression context extracted from the standard item's metadata.
-    sfi
-        The standard item to process.
-    sfi_uuid
-        The UUID of the standard item.
-    thread_key
-        The computed thread key.
-    topic_key
-        The canonical topic path key.
-    topic_path_parts
-        A list of topic path part dictionaries.
-
-    Returns
-    -------
-    dict[str, Any]
-        The constructed payload dictionary ready to be appended to a bucket.
-    """
-
-    canon_order_path = progression_context.get("canon_order_path", []) or []
-    numeric_order_path = _resolve_numeric_order_path(
-        canon_order_path=canon_order_path,
-        missing_default=0,
-        order_index_lookup=order_index_lookup,
-    )
-    numeric_order_missing_count = sum(
-        1 for u in canon_order_path if str(u).strip() not in order_index_lookup
-    )
-
-    indices = metadata.get("page_indices")
-    valid_indices = indices if isinstance(indices, list) else []
-    doc_pos_page_index = min(valid_indices) if valid_indices else None
-    bbox = metadata.get("bbox")
-    doc_pos_y0: Optional[float] = None
-
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-        doc_pos_y0 = float(bbox[1])
-
-    payload: dict[str, Any] = {
-        "description": sfi.description,
-        "notes": sfi.notes,
-        "order_index_within_parent": progression_context.get(
-            "order_index_within_parent"
-        ),
-        "code_tuple": progression_context.get("code_tuple"),
-        "sfi_uuid": sfi_uuid,
-        "statement_code": sfi.statement_code,
-        "statement_type": sfi.statement_type,
-        "canon_order_path": canon_order_path,
-        "numeric_order_path": numeric_order_path,
-        "numeric_order_missing_count": numeric_order_missing_count,
-        # Provenance-derived ordering fallback (kept even when include_provenance=False).
-        "doc_pos_page_index": doc_pos_page_index,
-        "doc_pos_y0": doc_pos_y0,
-        # Item-level topic context.
-        "topic_path_key": topic_key,
-        "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
-        "topic_path": _path_string(topic_path_parts),
-        # Bucket/thread context kept separately for debugging.
-        "bucket_lp_bucket_key": effective_bucket_key,
-        "bucket_lp_thread_key": thread_key,
-        # Back-compat/debug aliases.
-        "bucket_topic_path_key": effective_bucket_key,
-        "bucket_thread_key": thread_key,
-    }
-
-    if include_provenance:
-        payload["page_index"] = doc_pos_page_index
-
-    return payload
-
-
 def _build_thread_map(
     by_grade: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -2787,18 +2690,55 @@ def _process_single_standard(
         }
 
     # Payload generation and append.
-    payload = _build_sfi_payload(
-        effective_bucket_key=effective_bucket_key,
-        include_provenance=include_provenance,
-        metadata=metadata,
+    canon_order_path = progression_context.get("canon_order_path", []) or []
+    numeric_order_path = _resolve_numeric_order_path(
+        canon_order_path=canon_order_path,
+        missing_default=0,
         order_index_lookup=order_index_lookup,
-        progression_context=progression_context,
-        sfi=sfi,
-        sfi_uuid=sfi_uuid,
-        thread_key=thread_key,
-        topic_key=topic_key,
-        topic_path_parts=topic_path_parts,
     )
+    numeric_order_missing_count = sum(
+        1 for u in canon_order_path if str(u).strip() not in order_index_lookup
+    )
+
+    indices = metadata.get("page_indices")
+    valid_indices = indices if isinstance(indices, list) else []
+    doc_pos_page_index = min(valid_indices) if valid_indices else None
+    bbox = metadata.get("bbox")
+    doc_pos_y0: Optional[float] = None
+
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        doc_pos_y0 = float(bbox[1])
+
+    payload: dict[str, Any] = {
+        "description": sfi.description,
+        "notes": sfi.notes,
+        "order_index_within_parent": progression_context.get(
+            "order_index_within_parent"
+        ),
+        "code_tuple": progression_context.get("code_tuple"),
+        "sfi_uuid": sfi_uuid,
+        "statement_code": sfi.statement_code,
+        "statement_type": sfi.statement_type,
+        "canon_order_path": canon_order_path,
+        "numeric_order_path": numeric_order_path,
+        "numeric_order_missing_count": numeric_order_missing_count,
+        # Provenance-derived ordering fallback (kept even when include_provenance=False).
+        "doc_pos_page_index": doc_pos_page_index,
+        "doc_pos_y0": doc_pos_y0,
+        # Item-level topic context.
+        "topic_path_key": topic_key,
+        "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
+        "topic_path": _path_string(topic_path_parts),
+        # Bucket/thread context kept separately for debugging.
+        "bucket_lp_bucket_key": effective_bucket_key,
+        "bucket_lp_thread_key": thread_key,
+        # Back-compat/debug aliases.
+        "bucket_topic_path_key": effective_bucket_key,
+        "bucket_thread_key": thread_key,
+    }
+
+    if include_provenance:
+        payload["page_index"] = doc_pos_page_index
 
     bucket["items"].append(payload)
 
