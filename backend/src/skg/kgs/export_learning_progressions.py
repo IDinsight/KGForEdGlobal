@@ -2363,167 +2363,6 @@ def _process_and_filter_candidates(
     )
 
 
-def _process_single_standard(
-    *,
-    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
-    config: CreateKGConfig,
-    drops: dict[str, list[dict[str, Any]]],
-    include_provenance: bool,
-    order_index_lookup: dict[str, int],
-    sfi: StandardsFrameworkItem,
-) -> None:
-    """Process a single standard item and sort it into buckets or drops.
-
-    The bucketing logic computes three independent axes—grade ordinal, subject label,
-    and thread key—using config-driven mappings:
-
-    1. **Level bounds** are resolved primarily from ordinals in `progression_context`
-        (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
-        we fall back to `config.progressions_grade_label_map` using `grade_key` or
-        `stage_key`.
-    2. **Subject label** is resolved via `config.lp_subject_role`. Items without a
-        matching role get `UNSPECIFIED_SUBJECT`.
-    3. **Thread key** uses `config.lp_cross_grade_match_roles` when provided. When that
-        config is None, we reuse the default `progression_context.thread_key` produced
-        by Academic Standards export. Items with no usable thread key receive a
-        per-level sentinel to prevent false cross-level matching.
-
-    NB: Banded/stage-level curricula (e.g., Tanzania "Standard I–II",
-    "Standard III–VI"): When `progression_context` includes a true range
-        (low != high), the bucket stores `grade_ordinal_low != grade_ordinal_high`,
-        enabling cross-stage inference phases. If ordinals are unavailable and we rely
-        on the config map, the bucket is treated as a single representative level
-        (low == high).
-
-    Parameters
-    ----------
-    buckets
-        A nested dictionary for organizing standards into buckets based on grade and
-        effective bucket key.
-    config
-        The KG creation config with LP-specific fields.
-    drops
-        A dictionary for collecting standards that are dropped due to validation
-        issues, categorized by the reason for dropping.
-    include_provenance
-        Whether to include provenance information (e.g., page index) in the payload for
-        LLM inference.
-    order_index_lookup
-        A mapping from SFI UUID strings to their `order_index_within_parent` values,
-        used to convert canonical-node-id-based `canon_order_path` into a numeric order
-        path for correct document-order sorting.
-    sfi
-        The standard item to process.
-    """
-
-    metadata = sfi.metadata or {}
-    progression_context = metadata.get("progression_context") or {}
-    sfi_uuid = str(sfi.case_identifier_uuid or sfi.identifier)
-
-    # Statement type validation.
-    if sfi.normalized_statement_type != "Standard":
-        drops.setdefault("non_standard_item", []).append(
-            {
-                "description": sfi.description,
-                "normalized_statement_type": sfi.normalized_statement_type,
-                "sfi_uuid": sfi_uuid,
-                "statement_type": sfi.statement_type,
-            }
-        )
-        return
-
-    # Level validation (grade or stage).
-    level_data = _resolve_level_ordinals(
-        config=config,
-        drops=drops,
-        progression_context=progression_context,
-        sfi_description=sfi.description,
-        sfi_uuid=sfi_uuid,
-    )
-
-    if not level_data:
-        return
-
-    level_lo, level_hi, stage_key, normalized_level_key = level_data
-
-    # Bucket label (used as the top-level key for grouping buckets).
-    grade_label = (
-        f"LEVEL {level_lo}-{level_hi}" if level_hi != level_lo else f"LEVEL {level_lo}"
-    )
-
-    # Topic path validation.
-    topic_key = progression_context.get("topic_path_key", "")
-
-    if not (isinstance(topic_key, str) and topic_key.strip()):
-        drops.setdefault("missing_topic_path_key", []).append(
-            {"description": sfi.description, "grade": grade_label, "sfi_uuid": sfi_uuid}
-        )
-        return
-
-    # Subject label and topic parts setup.
-    raw_parts = progression_context.get("topic_path_parts")
-    topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
-
-    subject_label = _resolve_subject_label(
-        subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
-    )
-
-    # Threading and bucket keys.
-    effective_bucket_key, thread_key = _compute_bucket_keys(
-        cross_roles=config.lp_cross_grade_match_roles,
-        default_thread_key=(
-            str(progression_context.get("thread_key") or "").strip() or None
-        ),
-        normalized_level_key=normalized_level_key,
-        subject_label=subject_label,
-        topic_path_parts=topic_path_parts,
-    )
-
-    # Bucket management.
-    bucket = buckets[grade_label].get(effective_bucket_key)
-
-    if not bucket:
-        bucket = buckets[grade_label][effective_bucket_key] = {
-            "bucket_key": f"{grade_label}::{effective_bucket_key}",
-            "effective_bucket_key": effective_bucket_key,
-            "grade_level": grade_label,
-            "grade_ordinal": level_lo,
-            "grade_ordinal_low": level_lo,
-            "grade_ordinal_high": level_hi,
-            "stage_key": (
-                stage_key.strip()
-                if isinstance(stage_key, str) and stage_key.strip()
-                else None
-            ),
-            "subject_label": subject_label,
-            "lp_thread_key": thread_key,
-            "lp_bucket_key": effective_bucket_key,
-            "canonical_topic_path_key": topic_key,
-            "normalized_topic_path_key": str(
-                progression_context.get("thread_key") or ""
-            ),
-            "topic_path": _path_string(topic_path_parts),
-            "topic_path_parts": topic_path_parts,
-            "items": [],
-        }
-
-    # Payload generation and append.
-    payload = _build_sfi_payload(
-        effective_bucket_key=effective_bucket_key,
-        include_provenance=include_provenance,
-        metadata=metadata,
-        order_index_lookup=order_index_lookup,
-        progression_context=progression_context,
-        sfi=sfi,
-        sfi_uuid=sfi_uuid,
-        thread_key=thread_key,
-        topic_key=topic_key,
-        topic_path_parts=topic_path_parts,
-    )
-
-    bucket["items"].append(payload)
-
-
 def _process_builds_towards_work_item(
     *,
     b_hi: dict[str, Any],
@@ -2854,6 +2693,167 @@ def _process_relates_to_work_item(
         )
 
     return candidates, provenance_rows
+
+
+def _process_single_standard(
+    *,
+    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
+    config: CreateKGConfig,
+    drops: dict[str, list[dict[str, Any]]],
+    include_provenance: bool,
+    order_index_lookup: dict[str, int],
+    sfi: StandardsFrameworkItem,
+) -> None:
+    """Process a single standard item and sort it into buckets or drops.
+
+    The bucketing logic computes three independent axes—grade ordinal, subject label,
+    and thread key—using config-driven mappings:
+
+    1. **Level bounds** are resolved primarily from ordinals in `progression_context`
+        (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
+        we fall back to `config.progressions_grade_label_map` using `grade_key` or
+        `stage_key`.
+    2. **Subject label** is resolved via `config.lp_subject_role`. Items without a
+        matching role get `UNSPECIFIED_SUBJECT`.
+    3. **Thread key** uses `config.lp_cross_grade_match_roles` when provided. When that
+        config is None, we reuse the default `progression_context.thread_key` produced
+        by Academic Standards export. Items with no usable thread key receive a
+        per-level sentinel to prevent false cross-level matching.
+
+    NB: Banded/stage-level curricula (e.g., Tanzania "Standard I–II",
+    "Standard III–VI"): When `progression_context` includes a true range
+        (low != high), the bucket stores `grade_ordinal_low != grade_ordinal_high`,
+        enabling cross-stage inference phases. If ordinals are unavailable and we rely
+        on the config map, the bucket is treated as a single representative level
+        (low == high).
+
+    Parameters
+    ----------
+    buckets
+        A nested dictionary for organizing standards into buckets based on grade and
+        effective bucket key.
+    config
+        The KG creation config with LP-specific fields.
+    drops
+        A dictionary for collecting standards that are dropped due to validation
+        issues, categorized by the reason for dropping.
+    include_provenance
+        Whether to include provenance information (e.g., page index) in the payload for
+        LLM inference.
+    order_index_lookup
+        A mapping from SFI UUID strings to their `order_index_within_parent` values,
+        used to convert canonical-node-id-based `canon_order_path` into a numeric order
+        path for correct document-order sorting.
+    sfi
+        The standard item to process.
+    """
+
+    metadata = sfi.metadata or {}
+    progression_context = metadata.get("progression_context") or {}
+    sfi_uuid = str(sfi.case_identifier_uuid or sfi.identifier)
+
+    # Statement type validation.
+    if sfi.normalized_statement_type != "Standard":
+        drops.setdefault("non_standard_item", []).append(
+            {
+                "description": sfi.description,
+                "normalized_statement_type": sfi.normalized_statement_type,
+                "sfi_uuid": sfi_uuid,
+                "statement_type": sfi.statement_type,
+            }
+        )
+        return
+
+    # Level validation (grade or stage).
+    level_data = _resolve_level_ordinals(
+        config=config,
+        drops=drops,
+        progression_context=progression_context,
+        sfi_description=sfi.description,
+        sfi_uuid=sfi_uuid,
+    )
+
+    if not level_data:
+        return
+
+    level_lo, level_hi, stage_key, normalized_level_key = level_data
+
+    # Bucket label (used as the top-level key for grouping buckets).
+    grade_label = (
+        f"LEVEL {level_lo}-{level_hi}" if level_hi != level_lo else f"LEVEL {level_lo}"
+    )
+
+    # Topic path validation.
+    topic_key = progression_context.get("topic_path_key", "")
+
+    if not (isinstance(topic_key, str) and topic_key.strip()):
+        drops.setdefault("missing_topic_path_key", []).append(
+            {"description": sfi.description, "grade": grade_label, "sfi_uuid": sfi_uuid}
+        )
+        return
+
+    # Subject label and topic parts setup.
+    raw_parts = progression_context.get("topic_path_parts")
+    topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
+
+    subject_label = _resolve_subject_label(
+        subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
+    )
+
+    # Threading and bucket keys.
+    effective_bucket_key, thread_key = _compute_bucket_keys(
+        cross_roles=config.lp_cross_grade_match_roles,
+        default_thread_key=(
+            str(progression_context.get("thread_key") or "").strip() or None
+        ),
+        normalized_level_key=normalized_level_key,
+        subject_label=subject_label,
+        topic_path_parts=topic_path_parts,
+    )
+
+    # Bucket management.
+    bucket = buckets[grade_label].get(effective_bucket_key)
+
+    if not bucket:
+        bucket = buckets[grade_label][effective_bucket_key] = {
+            "bucket_key": f"{grade_label}::{effective_bucket_key}",
+            "effective_bucket_key": effective_bucket_key,
+            "grade_level": grade_label,
+            "grade_ordinal": level_lo,
+            "grade_ordinal_low": level_lo,
+            "grade_ordinal_high": level_hi,
+            "stage_key": (
+                stage_key.strip()
+                if isinstance(stage_key, str) and stage_key.strip()
+                else None
+            ),
+            "subject_label": subject_label,
+            "lp_thread_key": thread_key,
+            "lp_bucket_key": effective_bucket_key,
+            "canonical_topic_path_key": topic_key,
+            "normalized_topic_path_key": str(
+                progression_context.get("thread_key") or ""
+            ),
+            "topic_path": _path_string(topic_path_parts),
+            "topic_path_parts": topic_path_parts,
+            "items": [],
+        }
+
+    # Payload generation and append.
+    payload = _build_sfi_payload(
+        effective_bucket_key=effective_bucket_key,
+        include_provenance=include_provenance,
+        metadata=metadata,
+        order_index_lookup=order_index_lookup,
+        progression_context=progression_context,
+        sfi=sfi,
+        sfi_uuid=sfi_uuid,
+        thread_key=thread_key,
+        topic_key=topic_key,
+        topic_path_parts=topic_path_parts,
+    )
+
+    bucket["items"].append(payload)
 
 
 def _resolve_forbidden_pairs(
