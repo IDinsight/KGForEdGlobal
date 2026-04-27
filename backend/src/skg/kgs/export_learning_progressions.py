@@ -245,73 +245,6 @@ def _build_order_index_lookup(
     return lookup
 
 
-def _build_relationship(
-    *,
-    config: CreateKGConfig,
-    doc_key: str,
-    metadata: dict[str, Any],
-    rel_type: str,
-    source: UUID,
-    target: UUID,
-) -> Relationship:
-    """Helper to build a Relationship object from a CandidateEdge, using config for
-    attribution and metadata from the CandidateEdge. The identifier is a UUID5 of the
-    source and target UUIDs and the relationship type, within a namespace UUID from the
-    config to ensure stability across runs. The relationship is always from source to
-    target, and the source and target entities are both "StandardsFrameworkItem" with
-    the key "case_identifier_uuid" and the value of the respective UUIDs as strings.
-
-    Parameters
-    ----------
-    config
-        The knowledge graph run configuration, containing attribution and namespace
-        information.
-    doc_key
-        The document key for this export, included in the ID namespace string for
-        consistency with the rest of the pipeline.
-    metadata
-        A dictionary of metadata to include in the Relationship, typically derived from
-        the CandidateEdge.
-    rel_type
-        The type of relationship to create (e.g., "buildsTowards" or "relatesTo").
-    source
-        The UUID of the source StandardsFrameworkItem in the relationship.
-    target
-        The UUID of the target StandardsFrameworkItem in the relationship.
-
-    Returns
-    -------
-    Relationship
-        A Relationship object representing the specified relationship between the
-        source and target SFIs, with appropriate attribution, metadata, and a stable
-        identifier.
-    """
-
-    rid = uuid5(
-        config.namespace_uuid,
-        f"lc:curriculum:{doc_key}:rel:{rel_type}:{source}:{target}",
-    )
-
-    return Relationship(
-        attribution_statement=config.as_attribution_statement,
-        author=config.as_author,
-        date_created=None,
-        date_modified=None,
-        description="",
-        identifier=rid,
-        license=config.as_license,
-        metadata=metadata,
-        provider=config.as_provider,
-        relationship_type=rel_type,
-        source_entity="StandardsFrameworkItem",
-        source_entity_key="case_identifier_uuid",
-        source_entity_value=str(source),
-        target_entity="StandardsFrameworkItem",
-        target_entity_key="case_identifier_uuid",
-        target_entity_value=str(target),
-    )
-
-
 def _build_sfi_index(
     *, by_grade: dict[str, list[dict[str, Any]]]
 ) -> dict[str, dict[str, Any]]:
@@ -1046,13 +979,27 @@ def _emit_relationship(
         metadata["source_sfi_context"] = sfi_index.get(str(candidate.source_sfi_uuid))
         metadata["target_sfi_context"] = sfi_index.get(str(candidate.target_sfi_uuid))
 
-    return _build_relationship(
-        config=config,
-        doc_key=doc_key,
+    rid = uuid5(
+        config.namespace_uuid,
+        f"lc:curriculum:{doc_key}:rel:{candidate.rel_type}:{candidate.source_sfi_uuid}:{candidate.target_sfi_uuid}",
+    )
+    return Relationship(
+        attribution_statement=config.as_attribution_statement,
+        author=config.as_author,
+        date_created=None,
+        date_modified=None,
+        description="",
+        identifier=rid,
+        license=config.as_license,
         metadata=metadata,
-        rel_type=candidate.rel_type,
-        source=candidate.source_sfi_uuid,
-        target=candidate.target_sfi_uuid,
+        provider=config.as_provider,
+        relationship_type=candidate.rel_type,
+        source_entity="StandardsFrameworkItem",
+        source_entity_key="case_identifier_uuid",
+        source_entity_value=str(candidate.source_sfi_uuid),
+        target_entity="StandardsFrameworkItem",
+        target_entity_key="case_identifier_uuid",
+        target_entity_value=str(candidate.target_sfi_uuid),
     )
 
 
