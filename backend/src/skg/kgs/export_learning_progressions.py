@@ -676,75 +676,6 @@ def _collect_relates_to_work_items(
     return work_items
 
 
-def _compare_within_grade_order(
-    *, source_context: dict[str, Any], target_context: dict[str, Any]
-) -> Optional[int]:
-    """Compare two SFI contexts by within-grade curriculum order.
-
-    This comparison is only intended for within-grade edges where the two SFIs are in
-    the same comparable ordering domain (same grade and same topic/thread key). It uses
-    the most reliable ordering signal available:
-
-    1, `numeric_order_path` when both contexts have complete paths
-        (`numeric_order_missing_count == 0`)
-    2. provenance-based fallback `(page_index, bbox_y0)` when available.
-
-    Parameters
-    ----------
-    source_context
-        Context dictionary for the candidate edge source SFI.
-    target_context
-        Context dictionary for the candidate edge target SFI.
-
-    Returns
-    -------
-    Optional[int]
-        -1 if source is before target, 0 if equal, 1 if after target, or None if the
-        order cannot be determined.
-    """
-
-    source_grade = source_context.get("grade_label")
-    target_grade = target_context.get("grade_label")
-
-    if source_grade != target_grade:
-        return None
-
-    source_topic = source_context.get("topic_path_key")
-    target_topic = target_context.get("topic_path_key")
-
-    if source_topic != target_topic:
-        # Different ordering domains (includes the case where only one side has a
-        # topic_path_key). Comparing items from different domains—or one known domain
-        # against an unknown one—can produce incorrect ordering conclusions, so bail.
-        return None
-
-    src_missing = int(source_context.get("numeric_order_missing_count") or 0)
-    tgt_missing = int(target_context.get("numeric_order_missing_count") or 0)
-    src_path = source_context.get("numeric_order_path") or []
-    tgt_path = target_context.get("numeric_order_path") or []
-
-    if src_missing == 0 and tgt_missing == 0 and src_path and tgt_path:
-        return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
-
-    # Provenance fallback: (page, y0).
-    src_page = source_context.get("doc_pos_page_index")
-    src_page = src_page or source_context.get("page_index")
-
-    tgt_page = target_context.get("doc_pos_page_index")
-    tgt_page = tgt_page or target_context.get("page_index")
-
-    if not isinstance(src_page, int) or not isinstance(tgt_page, int):
-        return None
-
-    src_y0 = source_context.get("doc_pos_y0")
-    tgt_y0 = target_context.get("doc_pos_y0")
-
-    src_key = (src_page, float(src_y0) if isinstance(src_y0, (int, float)) else 0.0)
-    tgt_key = (tgt_page, float(tgt_y0) if isinstance(tgt_y0, (int, float)) else 0.0)
-
-    return -1 if src_key < tgt_key else (1 if src_key > tgt_key else 0)
-
-
 def _compute_bucket_keys(
     *,
     cross_roles: list[str] | None,
@@ -992,6 +923,75 @@ def _filter_builds_towards_within_grade_order(
     tuple[list[CandidateEdge], list[CandidateEdge]]
         (kept_edges, dropped_edges)
     """
+
+    def _compare_within_grade_order(
+        *, source_context: dict[str, Any], target_context: dict[str, Any]
+    ) -> Optional[int]:
+        """Compare two SFI contexts by within-grade curriculum order.
+
+        This comparison is only intended for within-grade edges where the two SFIs are
+        in the same comparable ordering domain (same grade and same topic/thread key).
+        It uses the most reliable ordering signal available:
+
+        1, `numeric_order_path` when both contexts have complete paths
+            (`numeric_order_missing_count == 0`)
+        2. provenance-based fallback `(page_index, bbox_y0)` when available.
+
+        Parameters
+        ----------
+        source_context
+            Context dictionary for the candidate edge source SFI.
+        target_context
+            Context dictionary for the candidate edge target SFI.
+
+        Returns
+        -------
+        Optional[int]
+            -1 if source is before target, 0 if equal, 1 if after target, or None if
+            the order cannot be determined.
+        """
+
+        source_grade = source_context.get("grade_label")
+        target_grade = target_context.get("grade_label")
+
+        if source_grade != target_grade:
+            return None
+
+        source_topic = source_context.get("topic_path_key")
+        target_topic = target_context.get("topic_path_key")
+
+        if source_topic != target_topic:
+            # Different ordering domains (includes the case where only one side has a
+            # topic_path_key). Comparing items from different domains—or one known
+            # domain against an unknown one—can produce incorrect ordering conclusions,
+            # so bail.
+            return None
+
+        src_missing = int(source_context.get("numeric_order_missing_count") or 0)
+        tgt_missing = int(target_context.get("numeric_order_missing_count") or 0)
+        src_path = source_context.get("numeric_order_path") or []
+        tgt_path = target_context.get("numeric_order_path") or []
+
+        if src_missing == 0 and tgt_missing == 0 and src_path and tgt_path:
+            return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
+
+        # Provenance fallback: (page, y0).
+        src_page = source_context.get("doc_pos_page_index")
+        src_page = src_page or source_context.get("page_index")
+
+        tgt_page = target_context.get("doc_pos_page_index")
+        tgt_page = tgt_page or target_context.get("page_index")
+
+        if not isinstance(src_page, int) or not isinstance(tgt_page, int):
+            return None
+
+        src_y0 = source_context.get("doc_pos_y0")
+        tgt_y0 = target_context.get("doc_pos_y0")
+
+        src_key = (src_page, float(src_y0) if isinstance(src_y0, (int, float)) else 0.0)
+        tgt_key = (tgt_page, float(tgt_y0) if isinstance(tgt_y0, (int, float)) else 0.0)
+
+        return -1 if src_key < tgt_key else (1 if src_key > tgt_key else 0)
 
     kept: list[CandidateEdge] = []
     dropped: list[CandidateEdge] = []
