@@ -1258,13 +1258,14 @@ def _handle_atomic_skills_fallback(
     current_batch_num: int,
     fw_metadata: dict[str, Any],
 ) -> tuple[list[LearningComponent], list[Relationship], dict[int, int], list[str]]:
-    """Handle batch-level fallback by creating 1-to-1 LCs for each SFI.
+    """Handle fallback by creating 1-to-1 LCs for each provided SFI.
 
-    This function is used when atomic-skills inference fails for the entire batch.
-    Every SFI in the batch is routed through the deterministic `1_to_1` LC path. Most
-    SFIs will therefore produce exactly one LearningComponent, but SFIs whose usable
-    text sources are both empty can still produce zero LearningComponents and thus no
-    `supports` relationship.
+    This function is commonly used for uncached SFIs whose atomic-skills inference
+    failed. Cached SFIs from the same processing batch may still be handled through the
+    atomic-skills success path. Every provided SFI is routed through the deterministic
+    `1_to_1` LC path. Most SFIs will therefore produce exactly one LearningComponent,
+    but SFIs whose usable text sources are both empty can still produce zero
+    LearningComponents and thus no `supports` relationship.
 
     Parameters
     ----------
@@ -1424,6 +1425,12 @@ def _handle_atomic_skills_success(
                 policy_override="1_to_1",
                 sfi=sfi,
             )
+            previous_source = batch_debug["response_source_by_sfi_uuid"].get(
+                sfi_uuid_str, "unknown"
+            )
+            batch_debug["response_source_by_sfi_uuid"][
+                sfi_uuid_str
+            ] = f"{previous_source}_then_fallback_1_to_1"
             batch_debug["fallback_sfi_uuids"].append(sfi_uuid_str)
             fallback_uuids.append(sfi_uuid_str)
 
