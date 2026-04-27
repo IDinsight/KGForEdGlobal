@@ -1950,7 +1950,7 @@ def _emit_sfi(
         normalized_statement_type=_normalized_statement_type(config=config, role=role),
         notes=None,
         provider=config.as_provider,
-        statement_code=node.get("local_code"),
+        statement_code=node.get("local_code", None),
         statement_type=(node.get("source_label") or role or None),
     )
 
