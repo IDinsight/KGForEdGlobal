@@ -192,59 +192,6 @@ def _build_item_payload(
     return payload
 
 
-def _build_order_index_lookup(
-    academic_standards: AcademicStandardsExport,
-) -> dict[str, int]:
-    """Build a lookup mapping multiple SFI identifier namespaces to order indices.
-
-    This exporter receives ordering paths (`progression_context.canon_order_path`) that
-    may refer to *canonical node IDs* rather than the SFI's external identifier
-    (`identifier`) or CASE identifier UUID (`case_identifier_uuid`).
-
-    This function keys the lookup by:
-
-    1. `str(sfi.case_identifier_uuid or sfi.identifier)`
-    2. `metadata.canonical_node_id` (when present)
-
-    Parameters
-    ----------
-    academic_standards
-        The exported Academic Standards KG artifacts, containing the full set of
-        StandardsFrameworkItem entities (both groupings and standards).
-
-    Returns
-    -------
-    dict[str, int]
-        A dictionary mapping identifier strings to integer `order_index_within_parent`
-        values. Items without a valid integer order index are omitted.
-    """
-
-    lookup: dict[str, int] = {}
-
-    for sfi in academic_standards.items:
-        metadata = sfi.metadata or {}
-        pc = metadata.get("progression_context") or {}
-        oiwp = pc.get("order_index_within_parent")
-
-        if not isinstance(oiwp, int):  # int or None
-            continue
-
-        legacy_uuid = str(sfi.case_identifier_uuid or sfi.identifier).strip()
-
-        if legacy_uuid:
-            lookup[legacy_uuid] = oiwp
-
-        # Academic Standards export stores the canonical node ID at the top level of
-        # `sfi.metadata`, not inside `progression_context`.
-        canonical_node_id = metadata.get("canonical_node_id")
-        canonical_key = str(canonical_node_id).strip() if canonical_node_id else ""
-
-        if canonical_key:
-            lookup[canonical_key] = oiwp
-
-    return lookup
-
-
 def _build_sfi_index(
     by_grade: dict[str, list[dict[str, Any]]],
 ) -> dict[str, dict[str, Any]]:
@@ -3495,7 +3442,32 @@ def group_standards_for_learning_progressions(
     # Build a lookup from UUID -> `order_index_within_parent` for *all* SFIs (including
     # groupings). This is needed to convert UUID-based `canon_order_path` values into
     # numeric order paths for correct document-order sorting within buckets.
-    order_index_lookup = _build_order_index_lookup(academic_standards)
+    #
+    # This keys the lookup by:
+    # 1. `str(sfi.case_identifier_uuid or sfi.identifier)`
+    # 2. `metadata.canonical_node_id` (when present)
+    order_index_lookup: dict[str, int] = {}
+
+    for sfi in academic_standards.items:
+        metadata = sfi.metadata or {}
+        pc = metadata.get("progression_context") or {}
+        oiwp = pc.get("order_index_within_parent")
+
+        if not isinstance(oiwp, int):  # int or None
+            continue
+
+        legacy_uuid = str(sfi.case_identifier_uuid or sfi.identifier).strip()
+
+        if legacy_uuid:
+            order_index_lookup[legacy_uuid] = oiwp
+
+        # Academic Standards export stores the canonical node ID at the top level of
+        # `sfi.metadata`, not inside `progression_context`.
+        canonical_node_id = metadata.get("canonical_node_id")
+        canonical_key = str(canonical_node_id).strip() if canonical_node_id else ""
+
+        if canonical_key:
+            order_index_lookup[canonical_key] = oiwp
 
     for sfi in academic_standards.items:
         _process_single_standard(
