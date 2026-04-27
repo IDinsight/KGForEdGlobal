@@ -420,13 +420,46 @@ def _collect_builds_towards_work_items(
             5. The prompt building function.
     """
 
+    def _levels_adjacent(*, lower: dict[str, Any], upper: dict[str, Any]) -> bool:
+        """Determine if the grade levels of two buckets are adjacent based on their
+        ordinals.
+
+        Parameters
+        ----------
+        lower
+            A bucket dictionary representing the lower grade level, which may contain
+            grade ordinal information.
+        upper
+            A bucket dictionary representing the upper grade level, which may contain
+            grade ordinal information.
+
+        Returns
+        -------
+        bool
+            True if the grade levels of the two buckets are adjacent (i.e., the high
+            ordinal of the lower bucket is exactly one less than the low ordinal of the
+            upper bucket), False otherwise. If the necessary ordinal information is not
+            available or valid in either bucket, the function returns False, indicating
+            that adjacency cannot be determined.
+        """
+
+        lo_lo, lo_hi = _level_bounds(lower)
+        hi_lo, hi_hi = _level_bounds(upper)
+
+        if (not isinstance(lo_lo, int) or not isinstance(lo_hi, int)) or (
+            not isinstance(hi_lo, int) or not isinstance(hi_hi, int)
+        ):
+            return False
+
+        return lo_hi + 1 == hi_lo
+
     work_items: list[
         tuple[str, dict[str, Any], dict[str, Any], str, Callable[..., Any]]
     ] = []
 
     for thread_key, buckets in thread_map.items():
         for b_lo, b_hi in zip(buckets, buckets[1:]):
-            if not _levels_adjacent(b_lo, b_hi):
+            if not _levels_adjacent(lower=b_lo, upper=b_hi):
                 continue
 
             lower_items = b_lo.get("items") or []
@@ -1754,41 +1787,6 @@ def _level_label(b: dict[str, Any]) -> str:
     )
 
 
-def _levels_adjacent(lower: dict[str, Any], upper: dict[str, Any]) -> bool:
-    """Determine if the grade levels of two buckets are adjacent based on their
-    ordinals.
-
-    Parameters
-    ----------
-    lower
-        A bucket dictionary representing the lower grade level, which may contain grade
-        ordinal information.
-    upper
-        A bucket dictionary representing the upper grade level, which may contain grade
-        ordinal information.
-
-    Returns
-    -------
-    bool
-        True if the grade levels of the two buckets are adjacent (i.e., the high
-        ordinal of the lower bucket is exactly one less than the low ordinal of the
-        upper bucket), False otherwise. If the necessary ordinal information is not
-        available or valid in either bucket, the function returns False, indicating
-        that adjacency cannot be determined.
-    """
-
-    lo_lo, lo_hi = _level_bounds(lower)
-    hi_lo, hi_hi = _level_bounds(upper)
-
-    if not isinstance(lo_lo, int) or not isinstance(lo_hi, int):
-        return False
-
-    if not isinstance(hi_lo, int) or not isinstance(hi_hi, int):
-        return False
-
-    return lo_hi + 1 == hi_lo
-
-
 def _limit_relates_to_edges_per_sfi(
     *, edges: list[CandidateEdge], max_edges_per_sfi: int
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
@@ -2116,8 +2114,7 @@ def _process_and_filter_candidates(
 
         phase_1_kept, builds_dropped_doc_order = (
             _filter_builds_towards_within_grade_order(
-                edges=phase_1,
-                sfi_index=sfi_index,
+                edges=phase_1, sfi_index=sfi_index
             )
         )
         builds_kept = [*phase_1_kept, *non_phase_1]
