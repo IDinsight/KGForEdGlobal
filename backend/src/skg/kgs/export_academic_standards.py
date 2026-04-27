@@ -2649,13 +2649,13 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
 def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
     """Retrieve text from a title/body TextUnit dict.
 
-    This helper returns only the text portion of ``_pick_text_with_lang()`` and keeps
+    This helper returns only the text portion of `_pick_text_with_lang()` and keeps
     existing call sites concise when language provenance is not needed.
 
     Parameters
     ----------
     prefer_text_en
-        If True, prefer ``text_en`` over ``text`` when both are present.
+        If True, prefer `text_en` over `text` when both are present.
     unit
         The title/body unit dict (or None).
 
@@ -3518,16 +3518,23 @@ def _resolve_effective_level_context(
 ) -> dict[str, Any]:
     """Resolve grade/stage context for progression metadata.
 
-    Explicit grade/stage context derived from the exported hierarchy is preserved by
-    default. A document-level default from `config.as_default_level_context` is used
-    only when the configured node role matches and either:
+    Explicit grade and explicit stage context are handled independently. This matters
+    for single-grade PDFs that also contain a source-derived stage wrapper. For
+    example, Senegal CE1 reading expectations may sit under an explicit `stage`
+    ancestor such as "étape 2" while still lacking any explicit `grade_level` ancestor.
+    In that case, a configured `grade_level` default should fill the missing grade
+    fields without overwriting the explicit stage fields.
 
-    1. No explicit grade/stage context exists, or
+    A document-level default from `config.as_default_level_context` is applied only
+    when the configured node role matches and either:
+
+    1. The default's own kind is missing or unusable in the exported ancestry, or
     2. `apply_when_missing_only` is false.
 
-    This keeps the Academic Standards KG shape-preserving for multi-grade curricula
-    while still allowing single-grade/single-stage PDFs to carry enough level context
-    for within-grade Learning Progressions inference.
+    In other words, a `grade_level` default checks for missing grade context only; it
+    does not get blocked by explicit stage context. Likewise, a `stage` default checks
+    for missing stage context only and does not get blocked by explicit grade
+    context.
 
     Examples
     --------
@@ -3541,8 +3548,8 @@ def _resolve_effective_level_context(
             explicit_stage_low = None
             explicit_stage_high = None
 
-        the function returns grade context from the hierarchy, even if the config also
-        defines a default level:
+        and the default is also `kind='grade_level'` with
+        `apply_when_missing_only=True`, the function preserves the explicit grade:
 
             {
                 "grade_key": "Grade 2",
@@ -3554,8 +3561,17 @@ def _resolve_effective_level_context(
                 "level_context_source": "ancestor"
             }
 
-    2. Single-grade PDF default fills missing context
-        If an expectation has no grade/stage ancestor and the config contains:
+    2. Single-grade PDF default fills missing grade while preserving explicit stage
+        If an expectation has an explicit stage ancestor but no grade ancestor:
+
+            explicit_grade_key = None
+            explicit_grade_low = None
+            explicit_grade_high = None
+            explicit_stage_key = "étape 2"
+            explicit_stage_low = 2
+            explicit_stage_high = 2
+
+        and the config contains:
 
             as_default_level_context = {
                 "kind": "grade_level",
@@ -3567,21 +3583,22 @@ def _resolve_effective_level_context(
                 "apply_when_missing_only": True
             }
 
-        then the function returns:
+        then the function returns both the default grade and the explicit stage:
 
             {
                 "grade_key": "CE1",
                 "grade_ordinal_low": 1,
                 "grade_ordinal_high": 1,
-                "stage_key": None,
-                "stage_ordinal_low": None,
-                "stage_ordinal_high": None,
-                "level_context_source": "config_default",
+                "stage_key": "étape 2",
+                "stage_ordinal_low": 2,
+                "stage_ordinal_high": 2,
+                "level_context_source": "ancestor+config_default",
                 "level_context_default_source": "config: framework title says 2ème étape (CE1)"
             }
 
-    3. Stage-band default
-        If the default is stage-based:
+    3. Stage-band default fills missing stage while preserving explicit grade
+        If an expectation has explicit grade context but no stage context and the
+        default is stage-based:
 
             as_default_level_context = {
                 "kind": "stage",
@@ -3593,23 +3610,12 @@ def _resolve_effective_level_context(
                 "apply_when_missing_only": True
             }
 
-        then a missing-context expectation receives:
-
-            {
-                "grade_key": None,
-                "grade_ordinal_low": None,
-                "grade_ordinal_high": None,
-                "stage_key": "Standard III–VI",
-                "stage_ordinal_low": 3,
-                "stage_ordinal_high": 6,
-                "level_context_source": "config_default",
-                "level_context_default_source": "config: document scope"
-            }
+        then the function preserves the grade fields and fills only the stage fields.
 
     4. Non-matching role does not receive the default
-        If the default applies only to `expectation` but `node_role` is `guidance`, the
-        function returns the explicit values unchanged and marks the source as
-        `missing` when no explicit context exists.
+        If the default applies only to `expectation` but `node_role` is
+        `guidance`, the function returns the explicit values unchanged and marks the
+        source as `missing` when no explicit context exists.
 
     Parameters
     ----------
@@ -3634,22 +3640,23 @@ def _resolve_effective_level_context(
     -------
     dict[str, Any]
         Grade/stage fields plus provenance fields describing whether level context came
-        from the hierarchy, a config default, or remained missing.
+        from the hierarchy, a config default, both, or remained missing.
     """
 
-    has_explicit_usable_context = (
-        explicit_grade_low is not None and explicit_grade_high is not None
-    ) or (explicit_stage_low is not None and explicit_stage_high is not None)
-    has_explicit_context = any(
+    has_explicit_grade_context = any(
         value is not None
-        for value in (
-            explicit_grade_high,
-            explicit_grade_key,
-            explicit_grade_low,
-            explicit_stage_high,
-            explicit_stage_key,
-            explicit_stage_low,
-        )
+        for value in (explicit_grade_high, explicit_grade_key, explicit_grade_low)
+    )
+    has_explicit_stage_context = any(
+        value is not None
+        for value in (explicit_stage_high, explicit_stage_key, explicit_stage_low)
+    )
+    has_explicit_context = has_explicit_grade_context or has_explicit_stage_context
+    has_usable_explicit_grade_context = (
+        explicit_grade_low is not None and explicit_grade_high is not None
+    )
+    has_usable_explicit_stage_context = (
+        explicit_stage_low is not None and explicit_stage_high is not None
     )
     level_context: dict[str, Any] = {
         "grade_key": explicit_grade_key,
@@ -3670,30 +3677,29 @@ def _resolve_effective_level_context(
     if node_role not in allowed_roles:
         return level_context
 
-    if default_context.apply_when_missing_only and has_explicit_usable_context:
+    if default_context.kind == NodeRole.GRADE_LEVEL.value:
+        has_usable_matching_context = has_usable_explicit_grade_context
+        default_fields = {
+            "grade_key": default_context.label,
+            "grade_ordinal_high": default_context.ordinal_high,
+            "grade_ordinal_low": default_context.ordinal_low,
+        }
+    else:
+        has_usable_matching_context = has_usable_explicit_stage_context
+        default_fields = {
+            "stage_key": default_context.label,
+            "stage_ordinal_high": default_context.ordinal_high,
+            "stage_ordinal_low": default_context.ordinal_low,
+        }
+
+    if default_context.apply_when_missing_only and has_usable_matching_context:
         return level_context
 
-    if default_context.kind == NodeRole.GRADE_LEVEL.value:
-        level_context.update(
-            {
-                "grade_key": default_context.label,
-                "grade_ordinal_high": default_context.ordinal_high,
-                "grade_ordinal_low": default_context.ordinal_low,
-                "level_context_default_source": default_context.source,
-                "level_context_source": "config_default",
-            }
-        )
-    else:
-        level_context.update(
-            {
-                "level_context_default_source": default_context.source,
-                "level_context_source": "config_default",
-                "stage_key": default_context.label,
-                "stage_ordinal_high": default_context.ordinal_high,
-                "stage_ordinal_low": default_context.ordinal_low,
-            }
-        )
-
+    level_context.update(default_fields)
+    level_context["level_context_default_source"] = default_context.source
+    level_context["level_context_source"] = (
+        "ancestor+config_default" if has_explicit_context else "config_default"
+    )
     return level_context
 
 
