@@ -1301,65 +1301,6 @@ def _finalize_lp_export(
     return learning_progressions
 
 
-def _format_learning_progressions_dict(
-    *,
-    buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
-    drops: dict[str, list[dict[str, Any]]],
-) -> dict[str, Any]:
-    """Sort and structure the raw buckets.
-
-    Parameters
-    ----------
-    buckets
-        The raw buckets of standards grouped by grade and thread, as built by
-        group_standards_for_learning_progressions.
-    drops
-        The dropped items report, containing lists of items that were dropped due to
-        various data issues (e.g., missing topic path key, multiple grade tags, etc.).
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary containing the sorted and structured standards by grade and
-        thread, as well as the drops report, ready for use in the LLM prompt or output
-        artifacts.
-    """
-
-    by_grade: dict[str, list[dict[str, Any]]] = {}
-    by_thread: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-
-    for grade_label, per_thread in buckets.items():
-        grade_buckets: list[dict[str, Any]] = []
-
-        for tkey, b in per_thread.items():
-            # Sort items by numeric_order_path (document position resolved to integer
-            # order indices) to preserve the intended pedagogical sequence across all
-            # weeks/substages within a strand, with _sort_key_for_bucket_sfi as a
-            # tiebreaker.
-            #
-            # The numeric_order_path resolves each UUID to its
-            # order_index_within_parent, so siblings are correctly ordered by their
-            # position within their parent.
-            b["items"] = sorted(
-                b["items"],
-                key=lambda s: (
-                    int(s.get("numeric_order_missing_count") or 0),
-                    s.get("numeric_order_path") or [],
-                    _item_doc_position_key(item=s),
-                    _sort_key_for_bucket_sfi(s),
-                ),
-            )
-            grade_buckets.append(b)
-            by_thread[tkey][grade_label] = b
-
-        by_grade[grade_label] = sorted(
-            grade_buckets,
-            key=lambda x: (x.get("topic_path") or "", x.get("lp_bucket_key") or ""),
-        )
-
-    return {"by_grade": by_grade, "by_thread": dict(by_thread), "drops": drops}
-
-
 def _get_or_create_bucket(
     *,
     buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
@@ -3782,7 +3723,39 @@ def group_standards_for_learning_progressions(
             sfi=sfi,
         )
 
-    return _format_learning_progressions_dict(buckets=buckets, drops=drops)
+    by_grade: dict[str, list[dict[str, Any]]] = {}
+    by_thread: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+
+    for grade_label, per_thread in buckets.items():
+        grade_buckets: list[dict[str, Any]] = []
+
+        for tkey, b in per_thread.items():
+            # Sort items by numeric_order_path (document position resolved to integer
+            # order indices) to preserve the intended pedagogical sequence across all
+            # weeks/substages within a strand, with _sort_key_for_bucket_sfi as a
+            # tiebreaker.
+            #
+            # The numeric_order_path resolves each UUID to its
+            # `order_index_within_parent`, so siblings are correctly ordered by their
+            # position within their parent.
+            b["items"] = sorted(
+                b["items"],
+                key=lambda s: (
+                    int(s.get("numeric_order_missing_count") or 0),
+                    s.get("numeric_order_path") or [],
+                    _item_doc_position_key(item=s),
+                    _sort_key_for_bucket_sfi(s),
+                ),
+            )
+            grade_buckets.append(b)
+            by_thread[tkey][grade_label] = b
+
+        by_grade[grade_label] = sorted(
+            grade_buckets,
+            key=lambda x: (x.get("topic_path") or "", x.get("lp_bucket_key") or ""),
+        )
+
+    return {"by_grade": by_grade, "by_thread": dict(by_thread), "drops": drops}
 
 
 def load_learning_progressions_export(kg_dirs: KGDirs) -> LearningProgressionsExport:
