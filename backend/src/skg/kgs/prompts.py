@@ -555,7 +555,8 @@ HARD RULES:
 10. If the source restates the same competency in multiple languages, interpret it as ONE competency unless the meanings genuinely differ.
 11. Do NOT produce two semantically identical skills just because the source provides parallel-language restatements.
 12. No duplicate skills within an SFI (dedupe by description meaning, not surface wording alone).
-13. Keep rationales brief (1–2 sentences max). {rationale_req}
+13. When the same source `display_text` appears repeatedly across input SFIs, prefer identical atomic-skill descriptions unless `topic_context` clearly changes the meaning.
+14. Keep rationales brief (1–2 sentences max). {rationale_req}
 """
     )
 

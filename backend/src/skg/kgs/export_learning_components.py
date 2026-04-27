@@ -78,6 +78,51 @@ class LearningComponentsSourceDecision:
     sfi: StandardsFrameworkItem
 
 
+def _atomic_skills_cache_key_from_prompt_item(prompt_item: dict[str, Any]) -> str:
+    """Build a deterministic cache key for atomic-skills inference.
+
+    The key intentionally uses only the normalized prompt text, source statement type,
+    and topic-context role path. This lets repeated source statements reuse the same
+    decomposition across weeks/paliers while still allowing different structural shapes
+    to be cached independently.
+
+    Parameters
+    ----------
+    prompt_item
+        A prompt item produced by `_build_single_prompt_item()`.
+
+    Returns
+    -------
+    str
+        A stable cache key suitable for a within-run atomic-skills cache.
+    """
+
+    display_text = canonicalize_stable_text(str(prompt_item.get("display_text") or ""))
+    statement_type = canonicalize_stable_text(
+        str(prompt_item.get("statement_type") or "")
+    )
+    topic_context = prompt_item.get("topic_context") or {}
+    topic_path_parts = topic_context.get("topic_path_parts") or []
+    role_parts: list[str] = []
+
+    if isinstance(topic_path_parts, list):
+        for part in topic_path_parts:
+            if not isinstance(part, dict):
+                continue
+
+            role = canonicalize_stable_text(part["role"])
+            assert role, f"{part = }"
+            role_parts.append(role)
+
+    topic_context_role_path = "/".join(role_parts)
+    cache_basis = (
+        f"display_text={display_text}\x1f"
+        f"statement_type={statement_type}\x1f"
+        f"topic_context_role_path={topic_context_role_path}"
+    )
+    return f"atomic_skills:{stable_text_hash(s=cache_basis)}"
+
+
 def _bbox_reading_order(metadata: dict[str, Any]) -> tuple[float, float]:
     """Return a `(top, left)` reading-order key from SFI bbox metadata.
 
@@ -105,6 +150,39 @@ def _bbox_reading_order(metadata: dict[str, Any]) -> tuple[float, float]:
         return _sort_number(value=bbox[1]), _sort_number(value=bbox[0])
 
     return float("inf"), float("inf")
+
+
+def _build_atomic_skills_response_dict(
+    *,
+    sfis: list[StandardsFrameworkItem],
+    skills_by_sfi: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Build a schema-shaped AtomicSkillsResponse dictionary in SFI order.
+
+    Parameters
+    ----------
+    sfis
+        SFIs whose order should be preserved in the response-shaped debug object.
+    skills_by_sfi
+        Mapping from SFI UUID string to skill dictionaries.
+
+    Returns
+    -------
+    dict[str, Any]
+        A JSON-serializable dictionary shaped like AtomicSkillsResponse.
+    """
+
+    return {
+        "items": [
+            {
+                "sfi_uuid": str(sfi.case_identifier_uuid),
+                "skills": deepcopy(
+                    skills_by_sfi.get(str(sfi.case_identifier_uuid), [])
+                ),
+            }
+            for sfi in sfis
+        ]
+    }
 
 
 def _build_lc_graph_bundle(
@@ -1636,6 +1714,106 @@ def _pair_id_and_display_parts(
     return [(part, part) for part in id_parts]
 
 
+def _partition_batch_and_init_debug(
+    *,
+    atomic_skills_cache: dict[str, list[dict[str, Any]]],
+    batch: list[StandardsFrameworkItem],
+    batch_index: int,
+    prompt_items: list[dict[str, Any]],
+) -> tuple[
+    dict[str, Any],
+    list[StandardsFrameworkItem],
+    dict[str, list[dict[str, Any]]],
+    list[str],
+    dict[str, str],
+    dict[str, list[dict[str, Any]]],
+    list[StandardsFrameworkItem],
+    list[dict[str, Any]],
+]:
+    """Partition batch items by cache presence and initialize debug payload.
+
+    Parameters
+    ----------
+    atomic_skills_cache
+        The current run's cache mapping prompt keys to validated skill dictionaries.
+    batch
+        The list of StandardsFrameworkItem items in the current batch.
+    batch_index
+        The normalized batch index (0-based) for debugging.
+    prompt_items
+        The generated prompt items corresponding to the SFIs in the batch.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the initialized state variables needed for batch processing:
+            - batch_debug
+            - cached_batch
+            - cached_skills_by_sfi
+            - fallback_sfis_total
+            - key_by_sfi_uuid
+            - skills_by_sfi
+            - uncached_batch
+            - uncached_prompt_items
+    """
+
+    key_by_sfi_uuid: dict[str, str] = {}
+    cached_batch: list[StandardsFrameworkItem] = []
+    cached_skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
+    uncached_batch: list[StandardsFrameworkItem] = []
+    uncached_prompt_items: list[dict[str, Any]] = []
+
+    for sfi, prompt_item in zip(batch, prompt_items):
+        sfi_uuid = str(sfi.case_identifier_uuid)
+        cache_key = _atomic_skills_cache_key_from_prompt_item(prompt_item)
+        key_by_sfi_uuid[sfi_uuid] = cache_key
+
+        if cache_key in atomic_skills_cache:
+            cached_batch.append(sfi)
+            cached_skills_by_sfi[sfi_uuid] = deepcopy(atomic_skills_cache[cache_key])
+        else:
+            uncached_batch.append(sfi)
+            uncached_prompt_items.append(prompt_item)
+
+    cache_hit_uuids = [str(sfi.case_identifier_uuid) for sfi in cached_batch]
+    cache_miss_uuids = [str(sfi.case_identifier_uuid) for sfi in uncached_batch]
+    llm_called = bool(uncached_batch)
+    batch_debug: dict[str, Any] = {
+        "atomic_skills_cache": {
+            "hit_sfi_uuids": cache_hit_uuids,
+            "hits": len(cache_hit_uuids),
+            "key_by_sfi_uuid": key_by_sfi_uuid,
+            "miss_sfi_uuids": cache_miss_uuids,
+            "misses": len(cache_miss_uuids),
+        },
+        "batch_index": batch_index,
+        "error": None,
+        "fallback_sfi_uuids": [],
+        "input_items": prompt_items,
+        "llm_called": llm_called,
+        "llm_input_items": uncached_prompt_items,
+        "llm_response": None,
+        "response": None,
+        "response_source_by_sfi_uuid": {
+            **{sfi_uuid: "cache" for sfi_uuid in cache_hit_uuids},
+            **{sfi_uuid: "llm" for sfi_uuid in cache_miss_uuids},
+        },
+        "zero_lc_fallback_sfi_uuids": [],
+    }
+    fallback_sfis_total: list[str] = []
+    skills_by_sfi: dict[str, list[dict[str, Any]]] = dict(cached_skills_by_sfi)
+    return (
+        batch_debug,
+        cached_batch,
+        cached_skills_by_sfi,
+        fallback_sfis_total,
+        key_by_sfi_uuid,
+        skills_by_sfi,
+        uncached_batch,
+        uncached_prompt_items,
+    )
+
+
 def _path_pattern_from_canonical_path_key(path_key: Any) -> str:
     """Convert a canonical path key into a role-only path pattern. For example,
     `section:foo/stage:bar/expectation::abc` becomes `section/stage/expectation`.
@@ -1678,6 +1856,7 @@ def _path_pattern_from_canonical_path_key(path_key: Any) -> str:
 
 def _process_atomic_skills_batch(
     *,
+    atomic_skills_cache: dict[str, list[dict[str, Any]]],
     batch: list[StandardsFrameworkItem],
     batch_index: int,
     config: CreateKGConfig,
@@ -1696,8 +1875,17 @@ def _process_atomic_skills_batch(
 ]:
     """Process a single batch of SFIs via LLM inference to create LCs.
 
+    Repeated prompt items are served from a deterministic within-run cache keyed by
+    normalized `display_text`, `statement_type`, and topic-context role path. Cache
+    misses are sent to the LLM; cache hits reuse the previously validated atomic skills
+    and are materialized for the current SFI without another model call.
+
     Parameters
     ----------
+    atomic_skills_cache
+        Within-run cache mapping deterministic prompt keys to validated atomic-skill
+        dictionaries. The cache is intentionally not persisted across runs because its
+        values are model outputs tied to the current prompt/schema policy.
     batch
         The list of SFI items in the current batch.
     batch_index
@@ -1738,66 +1926,123 @@ def _process_atomic_skills_batch(
         _build_single_prompt_item(config=config, fw_metadata=fw_metadata, sfi=sfi)
         for sfi in batch
     ]
-    prompt = decompose_atomic_skills(
-        default_language_instruction=_DEFAULT_LC_PROMPT_LANGUAGE_INSTRUCTION,
-        items=prompt_items,
-        max_per_sfi=max_splits,
-        min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
-        require_rationale=bool(config.lc_atomic_skills_require_rationale),
+
+    (
+        batch_debug,
+        cached_batch,
+        cached_skills_by_sfi,
+        fallback_sfis_total,
+        key_by_sfi_uuid,
+        skills_by_sfi,
+        uncached_batch,
+        uncached_prompt_items,
+    ) = _partition_batch_and_init_debug(
+        atomic_skills_cache=atomic_skills_cache,
+        batch=batch,
+        batch_index=batch_index,
+        prompt_items=prompt_items,
     )
 
-    allowed = {UUID(str(s.case_identifier_uuid)) for s in batch}
-    batch_debug: dict[str, Any] = {
-        "batch_index": batch_index,
-        "error": None,
-        "fallback_sfi_uuids": [],
-        "input_items": prompt_items,
-        "response": None,
-        "zero_lc_fallback_sfi_uuids": [],
-    }
-    fallback_sfis_total: list[str] = []
-    skills_by_sfi: dict[str, list[dict[str, Any]]] = {}
-
-    try:
-        parsed = infer_atomic_skills(
-            instructions=prompt.system_message,
-            usage_tracker=usage_tracker,
-            user_message=prompt.user_message,
-            validator=partial(
-                validate_atomic_skills,
-                allowed_sfi_uuids=allowed,
-                min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
-                max_per_sfi=max_splits,
-                require_rationale=bool(config.lc_atomic_skills_require_rationale),
-            ),
+    if uncached_batch:
+        prompt = decompose_atomic_skills(
+            default_language_instruction=_DEFAULT_LC_PROMPT_LANGUAGE_INSTRUCTION,
+            items=uncached_prompt_items,
+            max_per_sfi=max_splits,
+            min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
+            require_rationale=bool(config.lc_atomic_skills_require_rationale),
         )
-        parsed_dict = parsed.model_dump(mode="json")
-        batch_debug["response"] = parsed_dict
+        allowed = {UUID(str(s.case_identifier_uuid)) for s in uncached_batch}
 
-        for it in parsed_dict.get("items", []):
-            sfi_uuid = str(it.get("sfi_uuid"))
-            skills_by_sfi[sfi_uuid] = list(it.get("skills") or [])
-    except Exception as e:  # pylint: disable=broad-except
-        batch_debug["error"] = f"{e.__class__.__name__}: {e}"
-        batch_debug["fallback_sfi_uuids"] = [str(s.case_identifier_uuid) for s in batch]
-        fallback_sfis_total.extend(batch_debug["fallback_sfi_uuids"])
+        try:
+            parsed = infer_atomic_skills(
+                instructions=prompt.system_message,
+                usage_tracker=usage_tracker,
+                user_message=prompt.user_message,
+                validator=partial(
+                    validate_atomic_skills,
+                    allowed_sfi_uuids=allowed,
+                    min_per_sfi=int(config.lc_atomic_skills_min_per_sfi),
+                    max_per_sfi=max_splits,
+                    require_rationale=bool(config.lc_atomic_skills_require_rationale),
+                ),
+            )
+            parsed_dict = parsed.model_dump(mode="json")
+            batch_debug["llm_response"] = parsed_dict
 
-        logger.warning(
-            f"Atomic skills batch {current_batch_num} failed "
-            f"({e.__class__.__name__}); all {len(batch)} SFI(s) in this batch "
-            f"fall back to 1_to_1. SFI UUIDs: "
-            f"{batch_debug['fallback_sfi_uuids']}"
-        )
+            for it in parsed_dict.get("items", []):
+                sfi_uuid = str(it.get("sfi_uuid"))
+                skills = list(it.get("skills") or [])
+                skills_by_sfi[sfi_uuid] = skills
 
-        lcs, rels, splits, zero_lc_fallback_sfi_uuids = _handle_atomic_skills_fallback(
-            batch=batch,
-            config=config,
-            ctx=ctx,
-            current_batch_num=current_batch_num,
-            fw_metadata=fw_metadata,
-        )
-        batch_debug["zero_lc_fallback_sfi_uuids"] = zero_lc_fallback_sfi_uuids
-        return lcs, rels, splits, batch_debug, fallback_sfis_total
+                if retrieved_key := key_by_sfi_uuid.get(sfi_uuid):
+                    atomic_skills_cache[retrieved_key] = deepcopy(skills)
+        except Exception as e:  # pylint: disable=broad-except
+            # Reconstruct the missing UUIDs from `uncached_batch`.
+            cache_miss_uuids = [str(sfi.case_identifier_uuid) for sfi in uncached_batch]
+
+            batch_debug["error"] = f"{e.__class__.__name__}: {e}"
+            batch_debug["fallback_sfi_uuids"] = cache_miss_uuids
+            fallback_sfis_total.extend(cache_miss_uuids)
+
+            logger.warning(
+                f"Atomic skills batch {current_batch_num} failed "
+                f"({e.__class__.__name__}); all {len(uncached_batch)} uncached "
+                f"SFI(s) in this batch fall back to 1_to_1. Cached SFI(s), if any, "
+                f"will still reuse cached atomic skills. Fallback SFI UUIDs: "
+                f"{batch_debug['fallback_sfi_uuids']}"
+            )
+
+            lcs: list[LearningComponent] = []
+            rels: list[Relationship] = []
+            splits: dict[int, int] = defaultdict(int)
+
+            if cached_batch:
+                cached_lcs, cached_rels, cached_splits, cached_fallbacks = (
+                    _handle_atomic_skills_success(
+                        batch=cached_batch,
+                        batch_debug=batch_debug,
+                        config=config,
+                        ctx=ctx,
+                        current_batch_num=current_batch_num,
+                        fw_metadata=fw_metadata,
+                        max_splits=max_splits,
+                        skills_by_sfi=cached_skills_by_sfi,
+                    )
+                )
+                lcs.extend(cached_lcs)
+                rels.extend(cached_rels)
+                fallback_sfis_total.extend(cached_fallbacks)
+
+                for split_count, occurrences in cached_splits.items():
+                    splits[split_count] += occurrences
+
+            (
+                fallback_lcs,
+                fallback_rels,
+                fallback_splits,
+                zero_lc_fallback_sfi_uuids,
+            ) = _handle_atomic_skills_fallback(
+                batch=uncached_batch,
+                config=config,
+                ctx=ctx,
+                current_batch_num=current_batch_num,
+                fw_metadata=fw_metadata,
+            )
+            lcs.extend(fallback_lcs)
+            rels.extend(fallback_rels)
+
+            for split_count, occurrences in fallback_splits.items():
+                splits[split_count] += occurrences
+
+            batch_debug["response"] = _build_atomic_skills_response_dict(
+                skills_by_sfi=cached_skills_by_sfi, sfis=cached_batch
+            )
+            batch_debug["zero_lc_fallback_sfi_uuids"] = zero_lc_fallback_sfi_uuids
+            return lcs, rels, dict(splits), batch_debug, fallback_sfis_total
+
+    batch_debug["response"] = _build_atomic_skills_response_dict(
+        skills_by_sfi=skills_by_sfi, sfis=batch
+    )
 
     lcs, rels, splits, fallback_uuids = _handle_atomic_skills_success(
         batch=batch,
@@ -2822,6 +3067,7 @@ def export_learning_components_using_llm(
         )
     )
 
+    atomic_skills_cache: dict[str, list[dict[str, Any]]] = {}
     debug_batches: list[dict[str, Any]] = []
     fallback_sfis_total: list[str] = []
 
@@ -2830,6 +3076,7 @@ def export_learning_components_using_llm(
         batch = batchable_sfis[batch_index : batch_index + batch_size]
         batch_lcs, batch_rels, batch_splits, batch_debug, batch_fallbacks = (
             _process_atomic_skills_batch(
+                atomic_skills_cache=atomic_skills_cache,
                 batch=batch,
                 batch_index=batch_index // batch_size,
                 config=config,
@@ -2857,10 +3104,26 @@ def export_learning_components_using_llm(
 
     logger.success(f"Saved LLM atomic skills debug info to: {save_fp}")
 
+    cache_hits_sfis = sum(
+        int(batch_debug.get("atomic_skills_cache", {}).get("hits", 0))
+        for batch_debug in debug_batches
+    )
+    cache_misses_sfis = sum(
+        int(batch_debug.get("atomic_skills_cache", {}).get("misses", 0))
+        for batch_debug in debug_batches
+    )
+    llm_batches_executed = sum(
+        1 for batch_debug in debug_batches if batch_debug.get("llm_called")
+    )
+
     lc_stats = {
         "_source_eligibility_report": source_eligibility_report,
+        "atomic_skills_cache_entries": len(atomic_skills_cache),
+        "atomic_skills_cache_hit_sfis": cache_hits_sfis,
+        "atomic_skills_cache_miss_sfis": cache_misses_sfis,
         "fallback_sfis_count": len(set(fallback_sfis_total)),
-        "llm_batches": len(debug_batches),
+        "llm_batches": llm_batches_executed,
+        "llm_processing_batches": len(debug_batches),
         "max_splits_observed": max(splits_per_sfi.keys()) if splits_per_sfi else 0,
         "source_eligibility_summary": source_eligibility_report["summary"],
         "split_policy": "llm_atomic_skills",
