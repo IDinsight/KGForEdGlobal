@@ -707,7 +707,26 @@ def _compute_bucket_keys(
     """
 
     if cross_roles:
-        lp_thread_key = _compute_lp_thread_key(topic_path_parts, cross_roles)
+        parts_by_role: dict[str, list[str]] = {}
+        roles_set = set(cross_roles)
+
+        # Map entries to their roles.
+        for entry in topic_path_parts:
+            r = entry.get("role", "")
+            label = entry.get("label", "")
+
+            if r and label and r in roles_set:
+                parts_by_role.setdefault(r, []).append(
+                    normalize_key_token(label=label, separator="_")
+                )
+
+        segments: list[str] = []
+
+        for role in cross_roles:  # Iterate in user-specified order
+            for val in parts_by_role.get(role, []):
+                segments.append(f"{role}={val}")
+
+        lp_thread_key = "|".join(segments) if segments else None
     else:
         raw_default = str(default_thread_key or "").strip()
         lp_thread_key = raw_default or None
@@ -721,52 +740,6 @@ def _compute_bucket_keys(
     thread_key = lp_thread_key if lp_thread_key is not None else sentinel
 
     return effective_bucket_key, thread_key
-
-
-def _compute_lp_thread_key(
-    topic_path_parts: list[dict[str, Any]], roles: list[str]
-) -> str | None:
-    """Compute an LP thread key from topic_path_parts filtered to the given roles.
-
-    Only entries in `topic_path_parts` whose `role` is in `roles` contribute to the
-    key. Segments are emitted in the order specified by `roles` (not the order they
-    appear in `topic_path_parts`), which makes the key stable across curricula with
-    differing hierarchy depth.
-
-    Parameters
-    ----------
-    topic_path_parts
-        The topic_path_parts from progression_context (list of dicts with
-        "role" and "label" keys).
-    roles
-        Ordered list of roles to include in the thread key.
-
-    Returns
-    -------
-    str | None
-        The computed thread key (e.g., "strand=activites_numeriques"), or None
-        if no matching roles are found in topic_path_parts.
-    """
-
-    parts_by_role: dict[str, list[str]] = {}
-    roles_set = set(roles)
-
-    for entry in topic_path_parts:
-        r = entry.get("role", "")
-        label = entry.get("label", "")
-
-        if r and label and r in roles_set:
-            parts_by_role.setdefault(r, []).append(
-                normalize_key_token(label=label, separator="_")
-            )
-
-    segments: list[str] = []
-
-    for role in roles:  # Iterate in user-specified order
-        for val in parts_by_role.get(role, []):
-            segments.append(f"{role}={val}")
-
-    return "|".join(segments) if segments else None
 
 
 def _dedupe_edges(
