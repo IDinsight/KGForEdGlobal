@@ -2479,6 +2479,59 @@ def _limit_relates_to_edges_per_sfi(
     return kept, dropped
 
 
+def _lp_statement_type_drop_reason(
+    *, config: CreateKGConfig, statement_type: Optional[str]
+) -> Optional[str]:
+    """Return the LP drop reason for a statement type, or None if it is eligible.
+
+    Exclude filters take precedence over include filters. This is intentional: a value
+    present in both config sets is treated as explicitly blocked, not allowed.
+
+    Parameters
+    ----------
+    config
+        KG creation config containing LP-specific source statement-type filters.
+    statement_type
+        The source statement type from the StandardsFrameworkItem.
+
+    Returns
+    -------
+    Optional[str]
+        "lp_statement_type_excluded", "lp_statement_type_not_included", or None.
+    """
+
+    # Normalize the target statement type.
+    normalized_statement_type = " ".join(str(statement_type or "").split()).casefold()
+
+    # Normalization and zblank-dropping for the exclude set.
+    excluded_statement_types = {
+        normalized_value
+        for value in (config.lp_source_statement_types_exclude or set())
+        if (normalized_value := " ".join(str(value or "").split()).casefold())
+    }
+
+    if (
+        excluded_statement_types
+        and normalized_statement_type in excluded_statement_types
+    ):
+        return "lp_statement_type_excluded"
+
+    # Normalization and blank-dropping for the include set.
+    included_statement_types = {
+        normalized_value
+        for value in (config.lp_source_statement_types_include or set())
+        if (normalized_value := " ".join(str(value or "").split()).casefold())
+    }
+
+    if (
+        included_statement_types
+        and normalized_statement_type not in included_statement_types
+    ):
+        return "lp_statement_type_not_included"
+
+    return None
+
+
 def _make_provenance_row(
     *, candidate: CandidateEdge, inference_type: str, phase: int, **extra: Any
 ) -> dict[str, Any]:
@@ -3196,14 +3249,19 @@ def _process_single_standard(
     The bucketing logic computes independent axes (level ordinal, subject label,
     within-level bucket key, and cross-level thread key) using config-driven mappings:
 
-    1. **Level bounds** are resolved primarily from ordinals in `progression_context`
+    1. **LP source eligibility** is checked first. The item must be an exported
+        normative Standard SFI and must pass
+        `lp_source_statement_types_include`/`lp_source_statement_types_exclude`
+        filters. This lets broad structural competency statements remain in the
+        Academic Standards KG while being excluded from LP inference.
+    2. **Level bounds** are resolved primarily from ordinals in `progression_context`
         (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
         we fall back to `config.lp_level_label_map` using `grade_key` or `stage_key`.
-    2. **Subject label** is resolved via `config.lp_subject_role`. Items without a
+    3. **Subject label** is resolved via `config.lp_subject_role`. Items without a
         matching role get `UNSPECIFIED_SUBJECT`.
-    3. **Within-level bucket key** uses `config.lp_within_level_bucket_roles`, with
+    4. **Within-level bucket key** uses `config.lp_within_level_bucket_roles`, with
         configured `lp_within_level_fallback_fields` as a source-field fallback.
-    4. **Cross-level thread key** uses `config.lp_cross_level_thread_roles`, or the
+    5. **Cross-level thread key** uses `config.lp_cross_level_thread_roles`, or the
         default `progression_context.thread_key` when that config is None. Items with
         no usable key receive a per-level sentinel to prevent false cross-level
         matching.
@@ -3290,9 +3348,26 @@ def _process_single_standard(
     progression_context = metadata.get("progression_context") or {}
     sfi_uuid = str(sfi.case_identifier_uuid or sfi.identifier)
 
-    # Statement type validation.
+    # LP source eligibility: only exported normative Standards can participate in LP
+    # inference, and broad/source-structural statement types can be blocked explicitly
+    # without removing them from the Academic Standards KG.
     if sfi.normalized_statement_type != "Standard":
         drops.setdefault("non_standard_item", []).append(
+            {
+                "description": sfi.description,
+                "normalized_statement_type": sfi.normalized_statement_type,
+                "sfi_uuid": sfi_uuid,
+                "statement_type": sfi.statement_type,
+            }
+        )
+        return
+
+    statement_type_drop_reason = _lp_statement_type_drop_reason(
+        config=config, statement_type=sfi.statement_type
+    )
+
+    if statement_type_drop_reason:
+        drops.setdefault(statement_type_drop_reason, []).append(
             {
                 "description": sfi.description,
                 "normalized_statement_type": sfi.normalized_statement_type,
@@ -4451,13 +4526,15 @@ def group_standards_for_learning_progressions(
 
     Uses config-driven bucketing as follows:
 
-    1. **Level bounds** resolved from `progression_context` ordinals when present, with
+    1. **LP source eligibility** checked via normalized statement type plus
+        `config.lp_source_statement_types_include`/`config.lp_source_statement_types_exclude`.
+    2. **Level bounds** resolved from `progression_context` ordinals when present, with
         a fallback to `config.lp_level_label_map`.
-    2. **Subject label** resolved via `config.lp_subject_role`.
-    3. **Within-level bucket key** computed via `config.lp_within_level_bucket_roles`,
+    3. **Subject label** resolved via `config.lp_subject_role`.
+    4. **Within-level bucket key** computed via `config.lp_within_level_bucket_roles`,
         with optional `config.lp_within_level_fallback_fields` when hierarchy roles are
         missing.
-    4. **Cross-level thread key** computed via `config.lp_cross_level_thread_roles`, or
+    5. **Cross-level thread key** computed via `config.lp_cross_level_thread_roles`, or
         from `progression_context.thread_key` when that config is None.
 
     Parameters
@@ -4492,6 +4569,8 @@ def group_standards_for_learning_progressions(
     # for dropping, and the value is a list of dictionaries containing relevant
     # information about each dropped standard item.
     drops: dict[str, list[dict[str, Any]]] = {
+        "lp_statement_type_excluded": [],
+        "lp_statement_type_not_included": [],
         "missing_level_key": [],
         "missing_topic_path_key": [],
         "non_standard_item": [],
