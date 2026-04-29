@@ -294,6 +294,8 @@ def _build_sfi_index(
             "doc_pos_page_index": it.get("doc_pos_page_index"),
             "doc_pos_y0": it.get("doc_pos_y0"),
             "grade_label": grade_label,
+            "level_basis": it.get("level_basis") or b.get("level_basis"),
+            "level_key": it.get("level_key") or b.get("level_key"),
             "normalized_topic_path_key": it.get("normalized_topic_path_key")
             or b.get("normalized_topic_path_key"),
             "numeric_order_missing_count": it.get("numeric_order_missing_count"),
@@ -2651,7 +2653,7 @@ def _process_single_standard(
 
     1. **Level bounds** are resolved primarily from ordinals in `progression_context`
         (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
-        we fall back to `config.lp_grade_label_map` using `grade_key` or `stage_key`.
+        we fall back to `config.lp_level_label_map` using `grade_key` or `stage_key`.
     2. **Subject label** is resolved via `config.lp_subject_role`. Items without a
         matching role get `UNSPECIFIED_SUBJECT`.
     3. **Within-level bucket key** uses `config.lp_within_level_bucket_roles`, with
@@ -2719,7 +2721,7 @@ def _process_single_standard(
     if not level_data:
         return
 
-    level_lo, level_hi, stage_key, normalized_level_key = level_data
+    level_lo, level_hi, level_key, normalized_level_key, level_basis = level_data
 
     # Bucket label (used as the top-level key for grouping buckets).
     grade_label = (
@@ -2816,12 +2818,20 @@ def _process_single_standard(
             "grade_ordinal_low": level_lo,
             "grade_ordinal_high": level_hi,
             "items": [],
+            "level_basis": level_basis,
+            "level_key": (
+                level_key.strip()
+                if isinstance(level_key, str) and level_key.strip()
+                else None
+            ),
             "lp_bucket_key": bucket_key_value,
             "lp_thread_key": thread_key_value,
             "normalized_topic_path_key": default_thread_key or "",
             "stage_key": (
-                stage_key.strip()
-                if isinstance(stage_key, str) and stage_key.strip()
+                level_key.strip()
+                if level_basis in {"stage_ordinals", "level_label_map_stage_key"}
+                and isinstance(level_key, str)
+                and level_key.strip()
                 else None
             ),
             "subject_label": subject_label,
@@ -2865,31 +2875,37 @@ def _process_single_standard(
         doc_pos_y0 = float(bbox[1])
 
     payload: dict[str, Any] = {
+        "canon_order_path": canon_order_path,
+        "code_tuple": progression_context.get("code_tuple"),
         "description": sfi.description,
         "notes": sfi.notes,
+        "numeric_order_missing_count": numeric_order_missing_count,
+        "numeric_order_path": numeric_order_path,
+        "level_basis": level_basis,
+        "level_key": (
+            level_key.strip()
+            if isinstance(level_key, str) and level_key.strip()
+            else None
+        ),
         "order_index_within_parent": progression_context.get(
             "order_index_within_parent"
         ),
-        "code_tuple": progression_context.get("code_tuple"),
         "sfi_uuid": sfi_uuid,
         "statement_code": sfi.statement_code,
         "statement_type": sfi.statement_type,
-        "canon_order_path": canon_order_path,
-        "numeric_order_path": numeric_order_path,
-        "numeric_order_missing_count": numeric_order_missing_count,
         # Provenance-derived ordering fallback (kept even when include_provenance=False).
         "doc_pos_page_index": doc_pos_page_index,
         "doc_pos_y0": doc_pos_y0,
         # Item-level topic context.
-        "topic_path_key": topic_key,
         "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
         "topic_path": _path_string(topic_path_parts),
+        "topic_path_key": topic_key,
         # Bucket/thread context kept separately for debugging.
-        "within_level_bucket_key": within_bucket_key,
-        "within_level_thread_key": within_thread_key,
         "cross_level_bucket_key": cross_bucket_key,
         "cross_level_thread_key": cross_thread_key,
+        "within_level_bucket_key": within_bucket_key,
         "within_level_fallback_segments": fallback_segments,
+        "within_level_thread_key": within_thread_key,
     }
 
     if include_provenance:
@@ -2966,14 +2982,19 @@ def _resolve_level_ordinals(
     progression_context: dict[str, Any],
     sfi_description: str | None,
     sfi_uuid: str,
-) -> tuple[int, int, str | None, str] | None:
+) -> tuple[int, int, str | None, str, str] | None:
     """Resolve grade/stage level ordinals for LP bucketing.
 
     Preference order:
 
     1. Explicit grade ordinal range from `progression_context`.
     2. Explicit stage ordinal range from `progression_context`.
-    3. Config fallback via `config.lp_grade_label_map` using `grade_key` or `stage_key`.
+    3. Config fallback via `config.lp_level_label_map` using `grade_key` or
+       `stage_key`.
+
+    The returned `level_key` and `level_basis` identify which source actually resolved
+    the level. This avoids carrying an unrelated `stage_key` when grade ordinals won
+    the resolution.
 
     Examples
     --------
@@ -2993,10 +3014,11 @@ def _resolve_level_ordinals(
 
         The function returns:
 
-            (1, 1, None, "ce1")
+            (1, 1, "CE1", "ce1", "grade_ordinals")
 
-        The returned tuple means: level low = 1, level high = 1, no stage key,
-        and the lowercased/stripped level key is "ce1".
+        The returned tuple means: level low = 1, level high = 1, the resolved
+        level key is "CE1", the normalized level key is "ce1", and the level was
+        resolved from grade ordinals.
 
     2. Explicit grade band
 
@@ -3013,7 +3035,7 @@ def _resolve_level_ordinals(
 
         The function returns:
 
-            (3, 6, None, "standard iii–vi")
+            (3, 6, "Standard III–VI", "standard iii–vi", "grade_ordinals")
 
         Downstream code can identify this as a banded bucket because
         `level_lo != level_hi`.
@@ -3034,7 +3056,7 @@ def _resolve_level_ordinals(
 
         The function returns:
 
-            (2, 2, "Étape 2", "étape 2")
+            (2, 2, "Étape 2", "étape 2", "stage_ordinals")
 
         Stage ordinals are used only when grade ordinals are unavailable.
 
@@ -3054,11 +3076,11 @@ def _resolve_level_ordinals(
 
         and the run config contains:
 
-            lp_grade_label_map = {"ce1": 1}
+            lp_level_label_map = {"ce1": 1}
 
         then the function returns:
 
-            (1, 1, None, "ce1")
+            (1, 1, "CE1", "ce1", "level_label_map_grade_key")
 
         Config fallback maps a label to a single representative ordinal only;
         it does not infer grade bands.
@@ -3078,11 +3100,11 @@ def _resolve_level_ordinals(
 
         and the run config contains:
 
-            lp_grade_label_map = {"étape 2": 2}
+            lp_level_label_map = {"étape 2": 2}
 
         then the function returns:
 
-            (2, 2, "Étape 2", "étape 2")
+            (2, 2, "Étape 2", "étape 2", "level_label_map_stage_key")
 
         Note that fallback keys are currently matched using lowercase + strip,
         not ASCII folding or `normalize_key_token()`.
@@ -3118,7 +3140,7 @@ def _resolve_level_ordinals(
                 "stage_ordinal_high": None,
             }
 
-            config.lp_grade_label_map = None
+            config.lp_level_label_map = None
 
         the function appends a record to `drops["unmapped_level_key"]` and returns:
 
@@ -3139,9 +3161,9 @@ def _resolve_level_ordinals(
 
     Returns
     -------
-    tuple[int, int, str | None, str]
-        (level_lo, level_hi, stage_key, normalized_level_key), or None when no usable
-        level can be resolved.
+    tuple[int, int, str | None, str, str]
+        (level_lo, level_hi, level_key, normalized_level_key, level_basis), or None
+        when no usable level can be resolved.
     """
 
     grade_key = progression_context.get("grade_key")
@@ -3157,8 +3179,12 @@ def _resolve_level_ordinals(
 
     if isinstance(g_lo, int) and isinstance(g_hi, int):
         level_lo, level_hi = min(g_lo, g_hi), max(g_lo, g_hi)
+        level_key = grade_key if normalized_grade_key else None
+        level_basis = "grade_ordinals"
     elif isinstance(s_lo, int) and isinstance(s_hi, int):
         level_lo, level_hi = min(s_lo, s_hi), max(s_lo, s_hi)
+        level_key = stage_key if normalized_stage_key else None
+        level_basis = "stage_ordinals"
     else:
         if not normalized_level_key:
             drops.setdefault("missing_level_key", []).append(
@@ -3166,12 +3192,12 @@ def _resolve_level_ordinals(
             )
             return None
 
-        mapped = (config.lp_grade_label_map or {}).get(normalized_level_key)
+        mapped = (config.lp_level_label_map or {}).get(normalized_level_key)
 
         if mapped is None:
             logger.warning(
-                f"lp_grade_label_map: level key {normalized_level_key!r} "
-                f"(grade_key={grade_key!r}, stage_key={stage_key!r}) not found in map. "
+                f"lp_level_label_map: level key {normalized_level_key} "
+                f"(grade_key={grade_key}, stage_key={stage_key}) not found in map. "
                 f"Excluding SFI {sfi_uuid} from LP inference."
             )
             drops.setdefault("unmapped_level_key", []).append(
@@ -3186,6 +3212,13 @@ def _resolve_level_ordinals(
 
         level_lo = level_hi = int(mapped)
 
+        if normalized_grade_key:
+            level_key = grade_key
+            level_basis = "level_label_map_grade_key"
+        else:
+            level_key = stage_key
+            level_basis = "level_label_map_stage_key"
+
     if not normalized_level_key:
         normalized_level_key = (
             f"level:{level_lo}-{level_hi}"
@@ -3193,7 +3226,10 @@ def _resolve_level_ordinals(
             else f"level:{level_lo}"
         )
 
-    return level_lo, level_hi, stage_key, normalized_level_key
+    if level_key is None:
+        level_key = normalized_level_key
+
+    return level_lo, level_hi, level_key, normalized_level_key, level_basis
 
 
 def _resolve_numeric_order_path(
@@ -3834,7 +3870,7 @@ def group_standards_for_learning_progressions(
     Uses config-driven bucketing as follows:
 
     1. **Level bounds** resolved from `progression_context` ordinals when present, with
-        a fallback to `config.lp_grade_label_map`.
+        a fallback to `config.lp_level_label_map`.
     2. **Subject label** resolved via `config.lp_subject_role`.
     3. **Within-level bucket key** computed via `config.lp_within_level_bucket_roles`,
         with optional `config.lp_within_level_fallback_fields` when hierarchy roles are

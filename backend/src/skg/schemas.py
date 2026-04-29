@@ -1077,18 +1077,21 @@ class CreateKGConfig(BaseSchema):
             "unmapped items in cross-subject pairing adds noise without value."
         ),
     )
-    lp_grade_label_map: Optional[dict[str, int]] = Field(
+    lp_level_label_map: Optional[dict[str, int]] = Field(
         default=None,
         description=(
-            "Explicit mapping from grade_key labels (as they appear in "
-            "progression_context.grade_key, normalized to lowercase + strip) to "
-            "integer ordinals for LP inference. Ordinals represent each level's "
-            "position in the sequence (not necessarily the grade number); "
-            "adjacency is determined by ordinals differing by exactly 1. "
-            "Multiple grade_keys may map to the same ordinal to merge subtrees "
-            "(e.g., 'paliers du niveau ce1' and 'planification ce1' both -> 1). "
-            "Config keys must be lowercase + stripped. When None, falls back to "
-            "_parse_ordinal heuristics on grade_ordinal_low/high."
+            "Explicit mapping from level labels to integer ordinals for LP inference. "
+            "Keys are matched against progression_context.grade_key first, then "
+            "progression_context.stage_key; keys must be normalized to lowercase + "
+            "strip. Ordinals represent each level's position in the sequence (not "
+            "necessarily the grade number); adjacency is determined by ordinals "
+            "differing by exactly 1. Multiple level labels may map to the same "
+            "ordinal to merge subtrees (e.g., 'paliers du niveau ce1' and "
+            "'planification ce1' both -> 1). When None, LP inference relies on "
+            "already-populated integer ordinals in "
+            "progression_context.grade_ordinal_low/high or "
+            "progression_context.stage_ordinal_low/high; label parsing is not "
+            "attempted during LP export."
         ),
     )
     lp_relates_to_max_edges_per_sfi: int = Field(
