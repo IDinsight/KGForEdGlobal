@@ -1703,7 +1703,7 @@ def _get_or_create_bucket(
     bucket = store[level_label].get(bucket_key_value)
 
     # Handle existing bucket updates.
-    if bucket:
+    if bucket is not None:
         examples = bucket.setdefault("topic_path_examples", [])
         if topic_path and topic_path not in examples and len(examples) < 10:
             examples.append(topic_path)
