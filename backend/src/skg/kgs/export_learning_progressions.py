@@ -3014,9 +3014,9 @@ def _resolve_level_ordinals(
 
             (1, 1, "CE1", "ce1", "grade_ordinals")
 
-        The returned tuple means: level low = 1, level high = 1, the resolved
-        level key is "CE1", the normalized level key is "ce1", and the level was
-        resolved from grade ordinals.
+        The returned tuple means: level low = 1, level high = 1, the resolved level key
+        is "CE1", the normalized level key is "ce1", and the level was resolved from
+        grade ordinals.
 
     2. Explicit grade band
 
@@ -3040,8 +3040,8 @@ def _resolve_level_ordinals(
 
     3. Explicit stage ordinals
 
-        Stage-based curricula may not provide grade ordinals, but may provide
-        stage ordinals:
+        Stage-based curricula may not provide grade ordinals, but may provide stage
+        ordinals:
 
             progression_context = {
                 "grade_key": None,
@@ -3060,8 +3060,8 @@ def _resolve_level_ordinals(
 
     4. Config fallback from a grade label
 
-        If the Academic Standards export preserved a grade label but did not
-        populate ordinals:
+        If the Academic Standards export preserved a grade label but did not populate
+        ordinals:
 
             progression_context = {
                 "grade_key": "CE1",
@@ -3080,8 +3080,8 @@ def _resolve_level_ordinals(
 
             (1, 1, "CE1", "ce1", "level_label_map_grade_key")
 
-        Config fallback maps a label to a single representative ordinal only;
-        it does not infer grade bands.
+        Config fallback maps a label to a single representative ordinal only; it does
+        not infer grade bands.
 
     5. Config fallback from a stage label
 
@@ -3104,8 +3104,8 @@ def _resolve_level_ordinals(
 
             (2, 2, "Étape 2", "étape 2", "level_label_map_stage_key")
 
-        Note that fallback keys are currently matched using lowercase + strip,
-        not ASCII folding or `normalize_key_token()`.
+        Note that fallback keys are currently matched using lowercase + strip, not
+        ASCII folding or `normalize_key_token()`.
 
     6. Missing level key and missing ordinals
 
@@ -3126,8 +3126,7 @@ def _resolve_level_ordinals(
 
     7. Unmapped level key
 
-        If a level label exists but there is no explicit ordinal and no config
-        fallback:
+        If a level label exists but there is no explicit ordinal and no config fallback:
 
             progression_context = {
                 "grade_key": "CE1",
@@ -3176,13 +3175,13 @@ def _resolve_level_ordinals(
     s_hi = progression_context.get("stage_ordinal_high")
 
     if isinstance(g_lo, int) and isinstance(g_hi, int):
-        level_lo, level_hi = min(g_lo, g_hi), max(g_lo, g_hi)
-        level_key = grade_key if normalized_grade_key else None
         level_basis = "grade_ordinals"
+        level_key = grade_key if normalized_grade_key else None
+        level_lo, level_hi = min(g_lo, g_hi), max(g_lo, g_hi)
     elif isinstance(s_lo, int) and isinstance(s_hi, int):
-        level_lo, level_hi = min(s_lo, s_hi), max(s_lo, s_hi)
-        level_key = stage_key if normalized_stage_key else None
         level_basis = "stage_ordinals"
+        level_key = stage_key if normalized_stage_key else None
+        level_lo, level_hi = min(s_lo, s_hi), max(s_lo, s_hi)
     else:
         if not normalized_level_key:
             drops.setdefault("missing_level_key", []).append(
@@ -3211,11 +3210,11 @@ def _resolve_level_ordinals(
         level_lo = level_hi = int(mapped)
 
         if normalized_grade_key:
-            level_key = grade_key
             level_basis = "level_label_map_grade_key"
+            level_key = grade_key
         else:
-            level_key = stage_key
             level_basis = "level_label_map_stage_key"
+            level_key = stage_key
 
     if not normalized_level_key:
         normalized_level_key = (
@@ -3224,9 +3223,7 @@ def _resolve_level_ordinals(
             else f"level:{level_lo}"
         )
 
-    if level_key is None:
-        level_key = normalized_level_key
-
+    level_key = level_key or normalized_level_key
     return level_lo, level_hi, level_key, normalized_level_key, level_basis
 
 
