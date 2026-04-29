@@ -248,9 +248,9 @@ def create(
 
     1. Load config and validate extraction run existence.
     2. Cross-check canonical IR run results.
-    3. Create a usage tracker to accumulate token costs across all KG generation and
+    3. Persist KG creation run metadata.
+    4. Create a usage tracker to accumulate token costs across all KG generation and
         validation calls.
-    4. Persist KG creation run metadata.
     5. Create Learning Commons knowledge graphs.
 
     Parameters
