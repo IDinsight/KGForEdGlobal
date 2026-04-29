@@ -4807,10 +4807,10 @@ def group_standards_for_learning_progressions(
     by_cross_level, by_cross_thread = _finalize_bucket_store(cross_level_buckets)
 
     return {
-        "by_within_level": by_within_level,
-        "by_within_thread": by_within_thread,
         "by_cross_level": by_cross_level,
         "by_cross_thread": by_cross_thread,
+        "by_within_level": by_within_level,
+        "by_within_thread": by_within_thread,
         "drops": drops,
     }
 
