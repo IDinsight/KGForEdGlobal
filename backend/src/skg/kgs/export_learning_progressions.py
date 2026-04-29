@@ -176,6 +176,12 @@ def _build_fallback_segments(
         A list of strings representing fallback key segments derived from the specified
         source fields in the configuration, which can be used for within-level
         bucketing when hierarchy-based roles do not yield a key.
+
+    Raises
+    ------
+    ValueError
+        If `config.lp_within_level_fallback_fields` contains a field name that is not
+        recognized or supported for fallback segment extraction.
     """
 
     segments: list[str] = []
@@ -3315,14 +3321,11 @@ def _resolve_numeric_order_path(
 def _resolve_subject_label(
     *, subject_role: str | None, topic_path_parts: list[dict[str, Any]]
 ) -> str:
-    """Resolve the subject label from the topic path parts.
+    """Resolve the subject-like label used for LP grouping.
 
-    When `subject_role` is explicitly set, the function searches for that role in
-    `topic_path_parts`. When `subject_role` is None, the function falls back to
-    searching for "subject" then "learning_area" roles in order. If a match is found,
-    it returns the first matching label. With an explicit `subject_role`, fallback
-    roles are not tried. If no match is found in any case, "UNSPECIFIED_SUBJECT" is
-    returned.
+    This label partitions buckets for Phase 3 within-level cross-subject `relatesTo`
+    and Phase 4 cross-level same-subject `relatesTo`. In some curricula this is a true
+    subject; in single-subject PDFs, it may intentionally be a strand or learning area.
 
     Examples
     --------
