@@ -3438,15 +3438,17 @@ def _process_single_standard(
         return
 
     # Subject label and topic parts setup.
-    raw_parts = progression_context.get("topic_path_parts")
-    topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
+    raw_topic_path_parts = progression_context.get("topic_path_parts")
+    topic_path_parts = (
+        raw_topic_path_parts if isinstance(raw_topic_path_parts, list) else []
+    )
     subject_label = _resolve_subject_label(
         subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
     )
 
-    default_thread_key = (
-        str(progression_context.get("thread_key") or "").strip() or None
-    )
+    # Fallback segments for within-level thread/bucket keys. This is a list of strings
+    # that can be joined and used as a fallback key when the primary role-based keys
+    # are not available.
     fallback_segments = _build_fallback_segments(
         config=config, metadata=metadata, sfi=sfi
     )
@@ -3454,6 +3456,9 @@ def _process_single_standard(
     # Within-level and cross-level keys are deliberately separate. The within-level key
     # controls which items the Phase 1 LLM can compare inside one level. The
     # cross-level key controls which buckets can be matched across adjacent levels.
+    default_thread_key = (
+        str(progression_context.get("thread_key") or "").strip() or None
+    )
     within_bucket_key, within_thread_key = _compute_bucket_keys(
         default_thread_key=default_thread_key,
         fallback_segments=fallback_segments,
