@@ -561,7 +561,7 @@ def _collect_relates_to_work_items(
 
 def _compute_bucket_keys(
     *,
-    cross_roles: list[str] | None,
+    cross_grade_match_roles: list[str] | None,
     default_thread_key: str | None,
     normalized_level_key: str,
     subject_label: str,
@@ -571,7 +571,7 @@ def _compute_bucket_keys(
 
     Parameters
     ----------
-    cross_roles
+    cross_grade_match_roles
         A list of roles used for cross-grade matching.
     default_thread_key
         The default thread key emitted by Academic Standards export in
@@ -589,35 +589,38 @@ def _compute_bucket_keys(
         A tuple containing the effective_bucket_key and the thread_key.
     """
 
-    if cross_roles:
+    if cross_grade_match_roles:
         parts_by_role: dict[str, list[str]] = {}
-        roles_set = set(cross_roles)
+        roles_set = set(cross_grade_match_roles)
 
         # Map entries to their roles.
         for entry in topic_path_parts:
-            r = entry.get("role", "")
+            role = entry["role"]
             label = entry.get("label", "")
 
-            if r and label and r in roles_set:
-                parts_by_role.setdefault(r, []).append(
+            if label and role in roles_set:
+                parts_by_role.setdefault(role, []).append(
                     normalize_key_token(label=label, separator="_")
                 )
 
         segments: list[str] = []
 
-        for role in cross_roles:  # Iterate in user-specified order
+        for role in cross_grade_match_roles:  # Iterate in user-specified order
             for val in parts_by_role.get(role, []):
                 segments.append(f"{role}={val}")
 
         lp_thread_key = "|".join(segments) if segments else None
     else:
-        raw_default = str(default_thread_key or "").strip()
-        lp_thread_key = raw_default or None
+        lp_thread_key = str(default_thread_key or "").strip() or None
 
     # For unthreaded items, keep the sentinel level-specific so:
     #
-    #   1. within-grade bucketing does not collapse all same-subject items together, and
-    #   2. cross-level matching is prevented unless we have a real thread key.
+    # 1. within-grade bucketing does not collapse all same-subject items together, and
+    # 2. cross-level matching is prevented unless we have a real thread key.
+    #
+    # The idea is to prevent cross-level matching for items that do not have a real
+    # thread key. The level key makes the sentinel level-specific, so (e.g.) CE1 and
+    # CE2 **unthreaded** buckets would not accidentally match across levels.
     sentinel = f"__unthreaded__::{subject_label}::{normalized_level_key}"
     effective_bucket_key = lp_thread_key if lp_thread_key is not None else sentinel
     thread_key = lp_thread_key if lp_thread_key is not None else sentinel
@@ -2553,8 +2556,8 @@ def _process_single_standard(
 ) -> None:
     """Process a single standard item and sort it into buckets or drops.
 
-    The bucketing logic computes three independent axes—grade ordinal, subject label,
-    and thread key—using config-driven mappings:
+    The bucketing logic computes three independent axes (grade ordinal, subject label,
+    and thread key) using config-driven mappings:
 
     1. **Level bounds** are resolved primarily from ordinals in `progression_context`
         (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
@@ -2641,14 +2644,13 @@ def _process_single_standard(
     # Subject label and topic parts setup.
     raw_parts = progression_context.get("topic_path_parts")
     topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
-
     subject_label = _resolve_subject_label(
         subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
     )
 
     # Threading and bucket keys.
     effective_bucket_key, thread_key = _compute_bucket_keys(
-        cross_roles=config.lp_cross_grade_match_roles,
+        cross_grade_match_roles=config.lp_cross_grade_match_roles,
         default_thread_key=(
             str(progression_context.get("thread_key") or "").strip() or None
         ),
@@ -2817,46 +2819,30 @@ def _resolve_level_ordinals(
 
     Examples
     --------
-    1. Grade ordinals already present
-        If Academic Standards export produced explicit grade ordinals:
+    1. Explicit single-grade ordinals
+
+        Academic Standards export usually writes parsed or config-derived grade
+        ordinals into `metadata.progression_context`. For a Senegal CE1 item:
 
             progression_context = {
-                "grade_key": "Grade 2",
-                "grade_ordinal_low": 2,
-                "grade_ordinal_high": 2,
+                "grade_key": "CE1",
+                "grade_ordinal_low": 1,
+                "grade_ordinal_high": 1,
                 "stage_key": None,
                 "stage_ordinal_low": None,
                 "stage_ordinal_high": None,
             }
 
-        Then the function returns:
+        The function returns:
 
-            (2, 2, None, "grade 2")
+            (1, 1, None, "ce1")
 
-        Grade ordinals take precedence over stage ordinals because they are the most
-        direct signal for grade-level LP bucketing.
+        The returned tuple means: level low = 1, level high = 1, no stage key,
+        and the lowercased/stripped level key is "ce1".
 
-    2. Stage ordinals already present
-        If the curriculum is stage-based rather than grade-based:
+    2. Explicit grade band
 
-            progression_context = {
-                "grade_key": None,
-                "grade_ordinal_low": None,
-                "grade_ordinal_high": None,
-                "stage_key": "Étape 2",
-                "stage_ordinal_low": 2,
-                "stage_ordinal_high": 2,
-            }
-
-        Then the function returns:
-
-            (2, 2, "Étape 2", "étape 2")
-
-        This is useful for curricula where the source document uses stages, standards,
-        or bands instead of grade labels.
-
-    3. Banded level from explicit ordinals
-        If a curriculum item applies to a band such as Standard III–VI:
+        Some curricula assign an item to a multi-grade band:
 
             progression_context = {
                 "grade_key": "Standard III–VI",
@@ -2867,18 +2853,37 @@ def _resolve_level_ordinals(
                 "stage_ordinal_high": None,
             }
 
-        Then the function returns:
+        The function returns:
 
             (3, 6, None, "standard iii–vi")
 
-        Downstream LP code can treat this as a banded level. With
-        `lp_within_grade_allow_banded_levels=False`, within-grade inference skips this
-        bucket; with it set to True, the bucket can participate in within-level
-        inference.
+        Downstream code can identify this as a banded bucket because
+        `level_lo != level_hi`.
 
-    4. Config fallback when ordinals are missing
-        If Academic Standards export preserved a grade label but did not parse its
-        ordinal:
+    3. Explicit stage ordinals
+
+        Stage-based curricula may not provide grade ordinals, but may provide
+        stage ordinals:
+
+            progression_context = {
+                "grade_key": None,
+                "grade_ordinal_low": None,
+                "grade_ordinal_high": None,
+                "stage_key": "Étape 2",
+                "stage_ordinal_low": 2,
+                "stage_ordinal_high": 2,
+            }
+
+        The function returns:
+
+            (2, 2, "Étape 2", "étape 2")
+
+        Stage ordinals are used only when grade ordinals are unavailable.
+
+    4. Config fallback from a grade label
+
+        If the Academic Standards export preserved a grade label but did not
+        populate ordinals:
 
             progression_context = {
                 "grade_key": "CE1",
@@ -2893,14 +2898,40 @@ def _resolve_level_ordinals(
 
             lp_grade_label_map = {"ce1": 1}
 
-        Then the function returns:
+        then the function returns:
 
             (1, 1, None, "ce1")
 
-        Config fallback maps labels to single representative ordinals only.
+        Config fallback maps a label to a single representative ordinal only;
+        it does not infer grade bands.
 
-    5. Missing level key and missing ordinals
-        If neither ordinals nor a usable grade/stage key exist:
+    5. Config fallback from a stage label
+
+        If only a stage label exists:
+
+            progression_context = {
+                "grade_key": None,
+                "grade_ordinal_low": None,
+                "grade_ordinal_high": None,
+                "stage_key": "Étape 2",
+                "stage_ordinal_low": None,
+                "stage_ordinal_high": None,
+            }
+
+        and the run config contains:
+
+            lp_grade_label_map = {"étape 2": 2}
+
+        then the function returns:
+
+            (2, 2, "Étape 2", "étape 2")
+
+        Note that fallback keys are currently matched using lowercase + strip,
+        not ASCII folding or `normalize_key_token()`.
+
+    6. Missing level key and missing ordinals
+
+        If neither grade/stage ordinals nor a usable grade/stage key exist:
 
             progression_context = {
                 "grade_key": None,
@@ -2911,15 +2942,14 @@ def _resolve_level_ordinals(
                 "stage_ordinal_high": None,
             }
 
-        Then the function records the SFI under drops["missing_level_key"] and returns:
+        the function appends a record to `drops["missing_level_key"]` and returns:
 
             None
 
-        This prevents standards with no comparable level signal from entering LP
-        bucketing, where they could otherwise be compared against unrelated items.
+    7. Unmapped level key
 
-    6. Unmapped level key
-        If a label is present but no ordinal can be found:
+        If a level label exists but there is no explicit ordinal and no config
+        fallback:
 
             progression_context = {
                 "grade_key": "CE1",
@@ -2930,8 +2960,9 @@ def _resolve_level_ordinals(
                 "stage_ordinal_high": None,
             }
 
-        and the run config has no mapping for "ce1", the function records the SFI under
-        drops["unmapped_level_key"] and returns:
+            config.lp_grade_label_map = None
+
+        the function appends a record to `drops["unmapped_level_key"]` and returns:
 
             None
 
@@ -3057,8 +3088,146 @@ def _resolve_subject_label(
 
     When `subject_role` is explicitly set, the function searches for that role in
     `topic_path_parts`. When `subject_role` is None, the function falls back to
-    searching for "subject" then "learning_area" roles in order. If no match is found
-    in any case, "UNSPECIFIED_SUBJECT" is returned.
+    searching for "subject" then "learning_area" roles in order. If a match is found,
+    it returns the first matching label. With an explicit `subject_role`, fallback
+    roles are not tried. If no match is found in any case, "UNSPECIFIED_SUBJECT" is
+    returned.
+
+    Examples
+    --------
+    1. Explicit subject role from Senegal reading curriculum
+
+        For the Senegal reading curriculum, the run config uses:
+
+            lp_subject_role = "strand"
+
+        and Academic Standards export may produce topic path parts like:
+
+            topic_path_parts = [
+                {
+                    "role": "strand",
+                    "label": "communication écrite - production d'écrits",
+                    "canonical_node_id": "7080b096-e23d-55a1-b6c5-ec3f36bddbe9",
+                },
+                {
+                    "role": "substage",
+                    "label": "palier 2 - production d'écrits",
+                    "canonical_node_id": "8f5408fb-e847-5aa1-b957-96ff1e929bf3",
+                },
+            ]
+
+        Calling:
+
+            _resolve_subject_label(
+                subject_role="strand", topic_path_parts=topic_path_parts
+            )
+
+        returns:
+
+            "communication écrite - production d'écrits"
+
+        This lets LP Phase 3 treat strands as subject-like buckets for within-grade
+        cross-strand `relatesTo` inference.
+
+    2. Explicit subject role returns the first matching role
+
+        If multiple entries have the configured role:
+
+            topic_path_parts = [
+                {"role": "strand", "label": "Lecture"},
+                {"role": "strand", "label": "Production d'écrits"},
+            ]
+
+        Calling:
+
+            _resolve_subject_label(
+                subject_role="strand", topic_path_parts=topic_path_parts
+            )
+
+        returns:
+
+            "Lecture"
+
+        The function intentionally uses the first matching label in document/path order.
+
+    3. Explicit subject role does not fall back
+
+        If `subject_role` is set but no matching role exists:
+
+            topic_path_parts = [
+                {"role": "learning_area", "label": "Langue et Communication"},
+                {"role": "substage", "label": "Palier 1"},
+            ]
+
+        Calling:
+
+            _resolve_subject_label(
+                subject_role="strand", topic_path_parts=topic_path_parts
+            )
+
+        returns:
+
+            "UNSPECIFIED_SUBJECT"
+
+        Because an explicit role was provided, the fallback roles "subject" and
+        "learning_area" are not tried.
+
+    4. Default fallback to subject
+
+        If `subject_role` is None:
+
+            topic_path_parts = [
+                {"role": "subject", "label": "Mathematics"},
+                {"role": "strand", "label": "Number"},
+            ]
+
+        Calling:
+
+            _resolve_subject_label(
+                subject_role=None, topic_path_parts=topic_path_parts
+            )
+
+        returns:
+
+            "Mathematics"
+
+    5. Default fallback to learning area
+
+        If `subject_role` is None and no `"subject"` role exists:
+
+            topic_path_parts = [
+                {"role": "learning_area", "label": "Langue et Communication"},
+                {"role": "strand", "label": "Lecture"},
+            ]
+
+        Calling:
+
+            _resolve_subject_label(
+                subject_role=None, topic_path_parts=topic_path_parts
+            )
+
+        returns:
+
+            "Langue et Communication"
+
+    6. No usable subject-like role
+
+        If no configured or fallback role exists:
+
+            topic_path_parts = [
+                {"role": "substage", "label": "Palier 1"},
+                {"role": "week", "label": "Semaine 3"},
+            ]
+
+        Calling:
+
+            _resolve_subject_label(
+                subject_role=None, topic_path_parts=topic_path_parts
+            )
+
+        returns:
+
+            "UNSPECIFIED_SUBJECT"
 
     Parameters
     ----------
@@ -3085,9 +3254,9 @@ def _resolve_subject_label(
     for role in roles_to_try:
         label = next(
             (
-                str(p["label"])
-                for p in topic_path_parts
-                if p.get("role") == role and p.get("label")
+                str(tpp["label"]).strip()
+                for tpp in topic_path_parts
+                if tpp["role"] == role and str(tpp.get("label") or "").strip()
             ),
             None,
         )
@@ -3502,10 +3671,10 @@ def group_standards_for_learning_progressions(
         lambda: defaultdict(dict)
     )
     drops: dict[str, list[dict[str, Any]]] = {
-        "missing_grade_key": [],
+        "missing_level_key": [],
         "missing_topic_path_key": [],
         "non_standard_item": [],
-        "unmapped_grade_key": [],
+        "unmapped_level_key": [],
     }
 
     # Build a lookup from UUID -> `order_index_within_parent` for *all* SFIs (including
