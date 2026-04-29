@@ -3583,7 +3583,7 @@ def _process_single_standard(
     )
 
     # Payload generation and append.
-    canon_order_path = progression_context.get("canon_order_path", []) or []
+    canon_order_path = progression_context.get("canon_order_path", [])
     numeric_order_path = _resolve_numeric_order_path(
         canon_order_path=canon_order_path,
         missing_default=0,
