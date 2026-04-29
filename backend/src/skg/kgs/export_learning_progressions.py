@@ -55,6 +55,7 @@ from skg.kgs.validators import (
     validate_within_grade_relates_to,
 )
 from skg.schemas import CreateKGConfig
+from skg.utils.constants import NodeRole
 from skg.utils.general import open_json_type, write_to_json
 
 
@@ -152,10 +153,135 @@ def _build_fallback_segments(
 ) -> list[str]:
     """Build configured source-field fallback key segments for within-level bucketing.
 
-    These fallbacks are used only when `lp_within_level_bucket_roles` cannot produce a
-    hierarchy-role key. They let a curriculum-specific but still general source field,
-    such as `statement_type`, define a within-level progression thread when the
-    hierarchy path is too shallow.
+    The returned segments are passed to `_compute_bucket_keys()` and are used only if
+    the configured hierarchy roles do not produce a within-level bucket key. They let a
+    curriculum-specific but still general source field, such as `statement_type`,
+    define a within-level progression thread when the hierarchy path is too shallow.
+
+    Examples
+    --------
+    1. Senegal reading: fallback to statement_type when no strand is present
+
+        The Senegal reading config uses:
+
+            lp_within_level_bucket_roles = ["strand"]
+            lp_within_level_fallback_fields = ["statement_type"]
+
+        Some written-language expectations may have only a substage in the topic path:
+
+            progression_context = {
+                "topic_path_parts": [
+                    {
+                        "role": "substage",
+                        "label": "palier 1 - communication écrite",
+                    }
+                ]
+            }
+
+        but the exported SFI still has:
+
+            sfi.statement_type = "Grammaire"
+
+        Calling:
+
+            _build_fallback_segments(
+                config=config,
+                metadata=sfi.metadata,
+                sfi=sfi,
+            )
+
+        returns:
+
+            ["statement_type=grammaire"]
+
+        `_compute_bucket_keys()` can then use this fallback if no configured
+        within-level role, such as "strand", is present.
+
+    2. Fallback is built even when hierarchy roles later succeed
+
+        If an item has both a strand and a statement type:
+
+            progression_context = {
+                "topic_path_parts": [
+                    {"role": "strand", "label": "Lecture"},
+                ]
+            }
+            sfi.statement_type = "Objectif spécifique"
+
+        and the config contains:
+
+            lp_within_level_fallback_fields = ["statement_type"]
+
+        this function returns:
+
+            ["statement_type=objectif_specifique"]
+
+        However, `_compute_bucket_keys()` will ignore this fallback if the configured
+        within-level bucket role "strand" successfully produces a key.
+
+    3. Multiple fallback fields preserve configured order
+
+        If the config contains:
+
+            lp_within_level_fallback_fields = ["statement_type", "source_label"]
+
+        and the item has:
+
+            sfi.statement_type = "Écriture / Copie"
+            sfi.metadata = {"source_label": "Copie"}
+
+        the function returns:
+
+            [
+                "statement_type=ecriture_copie",
+                "source_label=copie",
+            ]
+
+        The joined fallback key would be:
+
+            "statement_type=ecriture_copie|source_label=copie"
+
+    4. Blank configured fields are skipped
+
+        If the config contains:
+
+            lp_within_level_fallback_fields = ["statement_code", "statement_type"]
+
+        and the item has:
+
+            sfi.statement_code = None
+            sfi.statement_type = "Orthographe"
+
+        the function returns:
+
+            ["statement_type=orthographe"]
+
+    5. Academic subject fallback is usually broad
+
+        If the config contains:
+
+            lp_within_level_fallback_fields = ["academic_subject"]
+
+        and the item has:
+
+            sfi.academic_subject = "Langue et Communication"
+
+        the function returns:
+
+            ["academic_subject=langue_et_communication"]
+
+        Use this carefully: for a single-subject PDF, it may collapse too many items
+        into one broad fallback bucket.
+
+    6. Unsupported fallback fields fail fast
+
+        If a malformed config somehow contains:
+
+            lp_within_level_fallback_fields = ["source_column"]
+
+        the function raises:
+
+            ValueError("Unsupported fallback field name: source_column")
 
     Parameters
     ----------
@@ -634,7 +760,7 @@ def _compute_bucket_keys(
     default_thread_key: str | None,
     fallback_segments: list[str] | None = None,
     normalized_level_key: str,
-    roles: list[str] | None,
+    roles: list[NodeRole] | None,
     subject_label: str,
     topic_path_parts: list[dict[str, Any]],
 ) -> tuple[str, str]:
@@ -650,10 +776,172 @@ def _compute_bucket_keys(
     The sentinel includes the best available local context so unmatched items do not
     collapse into one broad same-subject/same-level bucket.
 
+    Examples
+    --------
+    1. Within-level Senegal reading bucket from strand
+
+        The Senegal reading config uses:
+
+            lp_within_level_bucket_roles = ["strand"]
+            lp_within_level_fallback_fields = ["statement_type"]
+
+        Given:
+
+            topic_path_parts = [
+                {"role": "strand", "label": "Communication écrite - Production d'écrits"},
+                {"role": "substage", "label": "Palier 1 - Production d'écrits"},
+                {"role": "subtopic", "label": "Grammaire"},
+            ]
+
+        Calling:
+
+            _compute_bucket_keys(
+                default_thread_key="strand=communication_ecrite_production_d_ecrits|substage=palier_1",
+                fallback_segments=["statement_type=grammaire"],
+                normalized_level_key="ce1",
+                roles=["strand"],
+                subject_label="Communication écrite - Production d'écrits",
+                topic_path_parts=topic_path_parts,
+            )
+
+        returns:
+
+            (
+                "strand=communication_ecrite_production_d_ecrits",
+                "strand=communication_ecrite_production_d_ecrits",
+            )
+
+        The fallback is ignored because the configured hierarchy role produced a key.
+
+    2. Within-level fallback when no configured role is present
+
+        Given:
+
+            topic_path_parts = [
+                {"role": "substage", "label": "Palier 1 - Communication écrite"},
+            ]
+
+        and:
+
+            fallback_segments = ["statement_type=grammaire"]
+
+        Calling with:
+
+            roles=["strand"]
+
+        returns:
+
+            (
+                "statement_type=grammaire",
+                "statement_type=grammaire",
+            )
+
+        This keeps no-strand items available for Phase 1 sequencing without placing
+        them in an unspecified cross-subject bucket.
+
+    3. Default thread key when roles is None
+
+        Given:
+
+            default_thread_key = "strand=lecture|substage=palier_1_lecture"
+
+        Calling:
+
+            _compute_bucket_keys(
+                default_thread_key=default_thread_key,
+                fallback_segments=["statement_type=objectif_specifique"],
+                normalized_level_key="ce1",
+                roles=None,
+                subject_label="Lecture",
+                topic_path_parts=[],
+            )
+
+        returns:
+
+            (
+                "strand=lecture|substage=palier_1_lecture",
+                "strand=lecture|substage=palier_1_lecture",
+            )
+
+        The fallback is ignored because the default thread key is available.
+
+    4. Cross-level key from multiple configured roles
+
+        Given:
+
+            topic_path_parts = [
+                {"role": "strand", "label": "Lecture"},
+                {"role": "substage", "label": "Palier 2 - Lecture"},
+                {"role": "week", "label": "Semaine 12"},
+            ]
+
+        Calling with:
+
+            roles=["strand", "substage"]
+
+        returns:
+
+            (
+                "strand=lecture|substage=palier_2_lecture",
+                "strand=lecture|substage=palier_2_lecture",
+            )
+
+        The output preserves the configured role order, not necessarily the order in
+        `topic_path_parts`.
+
+    5. Partial role match
+
+        Given:
+
+            topic_path_parts = [
+                {"role": "substage", "label": "Palier 2 - Lecture"},
+            ]
+
+        Calling with:
+
+            roles=["strand", "substage"]
+
+        returns:
+
+            (
+                "substage=palier_2_lecture",
+                "substage=palier_2_lecture",
+            )
+
+        The current function treats the role list as "use any matching roles in this
+        order", not "require all roles".
+
+    6. Unthreaded sentinel
+
+        Given no matching roles, no fallback segments, and no default thread key:
+
+            topic_path_parts = [
+                {"role": "week", "label": "Semaine 12"},
+            ]
+
+        Calling with:
+
+            normalized_level_key="ce1"
+            subject_label="UNSPECIFIED_SUBJECT"
+            roles=["strand"]
+
+        returns something like:
+
+            (
+                "__unthreaded__::unspecified_subject::ce1::week=semaine_12",
+                "__unthreaded__::unspecified_subject::ce1::week=semaine_12",
+            )
+
+        Including the level in the sentinel prevents these weakly threaded items from
+        being matched across adjacent grades or stages.
+
     Parameters
     ----------
     default_thread_key
-        The default thread key to use when `roles` is None or does not yield a key.
+        The source/default thread key from `progression_context.thread_key`. Used
+        directly only when `roles` is None. When `roles` is provided and no role-based
+        key is found, this value may still be included as local context inside the
+        unthreaded sentinel, but it is not used as the bucket key.
     fallback_segments
         A list of pre-computed fallback segments to use when `roles` is provided but
         does not yield any key segments. These are typically derived from
@@ -682,23 +970,29 @@ def _compute_bucket_keys(
         yield a key.
     """
 
-    if roles:
-        parts_by_role: dict[str, list[str]] = {}
-        roles_set = set(roles)
+    role_values = [role.value for role in roles or []]
+    role_values = [role for role in role_values if role]
 
-        # Map entries to their roles.
-        for entry in topic_path_parts:
-            role = entry["role"]
-            label = str(entry.get("label") or "").strip()
+    if role_values:
+        parts_by_role: dict[str, list[str]] = {}
+        roles_set = set(role_values)
+
+        for tpp in topic_path_parts or []:
+            if not isinstance(tpp, dict):
+                continue
+
+            role = tpp["role"]
+            label = str(tpp.get("label") or "").strip()
 
             if label and role in roles_set:
-                parts_by_role.setdefault(role, []).append(
-                    normalize_key_token(label=label, separator="_")
-                )
+                val = normalize_key_token(label=label, separator="_")
+
+                if val:
+                    parts_by_role.setdefault(role, []).append(val)
 
         segments: list[str] = []
 
-        for role in roles:
+        for role in role_values:
             for val in parts_by_role.get(role, []):
                 segments.append(f"{role}={val}")
 
@@ -719,8 +1013,15 @@ def _compute_bucket_keys(
             or _topic_path_signature(topic_path_parts)
             or "no_topic_path"
         )
-        safe_subject = normalize_key_token(label=subject_label, separator="_")
-        key = f"__unthreaded__::{safe_subject}::{normalized_level_key}::{local_context}"
+        safe_subject = (
+            normalize_key_token(label=subject_label, separator="_")
+            or "unspecified_subject"
+        )
+        safe_level = (
+            normalize_key_token(label=normalized_level_key, separator="_")
+            or "unspecified_level"
+        )
+        key = f"__unthreaded__::{safe_subject}::{safe_level}::{local_context}"
 
     return key, key
 
@@ -2676,6 +2977,54 @@ def _process_single_standard(
         on the config map, the bucket is treated as a single representative level
         (low == high).
 
+    NB: Phase 3 is specifically trying to infer cross-subject or cross-strand
+    associative links**, not sequence links. As an example, in the Senegal reading
+    setup, `lp_subject_role = "strand"` means: “For Phase 3, treat each `strand` as the
+    subject-like partition.” So Phase 3 asks questions like: "Are there meaningful
+    `relatesTo` links between expectations in **Lecture** and expectations in
+    **Production d’écrits**?" or "Are expectations in **Communication orale**
+    associated with expectations in **Communication écrite**?" For that to work, each
+    item needs a reliable strand label. If an item has no `strand`, the code cannot
+    know which side of the comparison it belongs to. It becomes "UNSPECIFIED_SUBJECT",
+    and including those items would create comparisons like:
+
+        UNSPECIFIED_SUBJECT × Lecture
+        UNSPECIFIED_SUBJECT × Production d’écrits
+        UNSPECIFIED_SUBJECT × Communication orale
+
+    Those edges are likely noisy because “unspecified” is not a real pedagogical
+    category. It is an extraction/mapping gap.
+
+    In other words, the key distinction is:
+
+        Phase 1 buildsTowards:
+            "Within this bucket, does item A build toward item B?"
+
+        Phase 3 relatesTo:
+            "Across subject-like partitions, is item A related to item B?"
+
+    For Phase 1, a missing `strand` is less dangerous because the fallback can still
+    create a meaningful local bucket from `statement_type`, for example:
+
+        statement_type=orthographe
+        statement_type=grammaire
+        statement_type=ecriture_copie
+
+    That can still support sequence inference: Orthographe item 1 -> Orthographe item 2.
+
+    But for Phase 3, `statement_type` is not a clean replacement for `strand`. If we
+    used `statement_type` as the subject-like partition, we would be asking
+    cross-“subject” questions like:
+
+        Orthographe × Grammaire
+        Écriture / Copie × Vocabulaire
+        Objectif spécifique × Contenus
+
+    Some of those may be useful, but they are not the same semantic layer as
+    strand-to-strand relationships. We would be mixing source column labels, skill
+    tracks, and actual curriculum strands. That can create a lot of false `relatesTo`
+    edges.
+
     Parameters
     ----------
     cross_level_buckets
@@ -2742,40 +3091,6 @@ def _process_single_standard(
             {"description": sfi.description, "grade": grade_label, "sfi_uuid": sfi_uuid}
         )
         return
-
-    # Subject label and topic parts setup.
-    raw_parts = progression_context.get("topic_path_parts")
-    topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
-    subject_label = _resolve_subject_label(
-        subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
-    )
-
-    default_thread_key = (
-        str(progression_context.get("thread_key") or "").strip() or None
-    )
-    fallback_segments = _build_fallback_segments(
-        config=config, metadata=metadata, sfi=sfi
-    )
-
-    # Within-level and cross-level keys are deliberately separate. The within-level key
-    # controls which items the Phase 1 LLM can compare inside one level. The
-    # cross-level key controls which buckets can be matched across adjacent levels.
-    within_bucket_key, within_thread_key = _compute_bucket_keys(
-        default_thread_key=default_thread_key,
-        fallback_segments=fallback_segments,
-        normalized_level_key=normalized_level_key,
-        roles=config.lp_within_level_bucket_roles,
-        subject_label=subject_label,
-        topic_path_parts=topic_path_parts,
-    )
-    cross_bucket_key, cross_thread_key = _compute_bucket_keys(
-        default_thread_key=default_thread_key,
-        fallback_segments=None,
-        normalized_level_key=normalized_level_key,
-        roles=config.lp_cross_level_thread_roles,
-        subject_label=subject_label,
-        topic_path_parts=topic_path_parts,
-    )
 
     def _get_or_create_bucket(
         *,
@@ -2846,6 +3161,40 @@ def _process_single_standard(
             "within_level_fallback_segments": fallback_segments,
         }
         return bucket
+
+    # Subject label and topic parts setup.
+    raw_parts = progression_context.get("topic_path_parts")
+    topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
+    subject_label = _resolve_subject_label(
+        subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
+    )
+
+    default_thread_key = (
+        str(progression_context.get("thread_key") or "").strip() or None
+    )
+    fallback_segments = _build_fallback_segments(
+        config=config, metadata=metadata, sfi=sfi
+    )
+
+    # Within-level and cross-level keys are deliberately separate. The within-level key
+    # controls which items the Phase 1 LLM can compare inside one level. The
+    # cross-level key controls which buckets can be matched across adjacent levels.
+    within_bucket_key, within_thread_key = _compute_bucket_keys(
+        default_thread_key=default_thread_key,
+        fallback_segments=fallback_segments,
+        normalized_level_key=normalized_level_key,
+        roles=config.lp_within_level_bucket_roles,
+        subject_label=subject_label,
+        topic_path_parts=topic_path_parts,
+    )
+    cross_bucket_key, cross_thread_key = _compute_bucket_keys(
+        default_thread_key=default_thread_key,
+        fallback_segments=None,
+        normalized_level_key=normalized_level_key,
+        roles=config.lp_cross_level_thread_roles,
+        subject_label=subject_label,
+        topic_path_parts=topic_path_parts,
+    )
 
     within_bucket = _get_or_create_bucket(
         bucket_key_value=within_bucket_key,
@@ -3697,9 +4046,9 @@ def _topic_path_signature(topic_path_parts: list[dict[str, Any]]) -> str:
 
     segments: list[str] = []
 
-    for entry in topic_path_parts:
-        role = entry["role"]
-        label = str(entry.get("label") or "").strip()
+    for tpp in topic_path_parts:
+        role = tpp["role"]
+        label = str(tpp.get("label") or "").strip()
 
         if label:
             segments.append(f"{role}={normalize_key_token(label=label, separator='_')}")
