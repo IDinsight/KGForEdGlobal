@@ -1083,6 +1083,109 @@ def _compute_bucket_keys(
     return key, key
 
 
+def _create_new_bucket(
+    *,
+    bucket_key_value: str,
+    bucket_scope: str,
+    bucket_used_fallback: bool,
+    cleaned_fallbacks: list[str],
+    default_thread_key: str | None,
+    level_basis: str,
+    level_hi: int,
+    level_key: str | None,
+    level_label: str,
+    level_lo: int,
+    subject_label: str,
+    thread_key_value: str,
+    topic_key_str: str,
+    topic_path: str,
+) -> dict[str, Any]:
+    """Create a new learning-progression inference bucket dictionary.
+
+    Constructs the base dictionary payload for a bucket, populating basic metadata
+    along with conditional fallback metadata if the scope is `within_level`.
+
+    Parameters
+    ----------
+    bucket_key_value
+        The computed key for the bucket in the given scope.
+    bucket_scope
+        The bucket scope (`"within_level"` or `"cross_level"`).
+    bucket_used_fallback
+        True if the bucket key was produced from fallback segments.
+    cleaned_fallbacks
+        Cleaned source-field fallback segments.
+    default_thread_key
+        The source/default thread key from the progression context.
+    level_basis
+        How level ordinals were resolved.
+    level_hi
+        Highest level ordinal represented by the bucket.
+    level_key
+        Human-readable source level key.
+    level_label
+        The level label used as the outer key in the bucket store.
+    level_lo
+        Lowest level ordinal represented by the bucket.
+    subject_label
+        Subject-like label for the bucket.
+    thread_key_value
+        Thread key associated with this bucket.
+    topic_key_str
+        Cleaned canonical topic path key.
+    topic_path
+        Cleaned topic path string.
+
+    Returns
+    -------
+    dict[str, Any]
+        The newly created bucket.
+    """
+
+    default_thread_key_s = str(default_thread_key or "").strip() or None
+    level_key_str = (
+        level_key.strip() if isinstance(level_key, str) and level_key.strip() else None
+    )
+    grade_key = (
+        level_key_str
+        if level_basis in {"grade_ordinals", "level_label_map_grade_key"}
+        else None
+    )
+    stage_key = (
+        level_key_str
+        if level_basis in {"stage_ordinals", "level_label_map_stage_key"}
+        else None
+    )
+    bucket: dict[str, Any] = {
+        "bucket_key": f"{level_label}::{bucket_key_value}",
+        "bucket_scope": bucket_scope,
+        "default_thread_key": default_thread_key_s,
+        "effective_bucket_key": bucket_key_value,
+        "grade_key": grade_key,
+        "items": [],
+        "level_basis": level_basis,
+        "level_key": level_key_str,
+        "level_label": level_label,
+        "level_ordinal": level_lo,
+        "level_ordinal_high": level_hi,
+        "level_ordinal_low": level_lo,
+        "lp_bucket_key": bucket_key_value,
+        "lp_thread_key": thread_key_value,
+        "stage_key": stage_key,
+        "subject_label": subject_label,
+        "topic_path_examples": [topic_path] if topic_path else [],
+        "topic_path_keys": [topic_key_str] if topic_key_str else [],
+    }
+
+    if bucket_scope == "within_level":
+        bucket["within_level_bucket_used_fallback"] = bucket_used_fallback
+        bucket["within_level_fallback_segments"] = (
+            cleaned_fallbacks if bucket_used_fallback else []
+        )
+
+    return bucket
+
+
 def _dedupe_edges(
     edges: list[CandidateEdge],
 ) -> tuple[list[CandidateEdge], dict[tuple[str, str, str], CandidateEdge], int]:
@@ -1702,75 +1805,37 @@ def _get_or_create_bucket(
     )
     bucket = store[level_label].get(bucket_key_value)
 
-    # Handle existing bucket updates.
     if bucket is not None:
-        examples = bucket.setdefault("topic_path_examples", [])
-        if topic_path and topic_path not in examples and len(examples) < 10:
-            examples.append(topic_path)
-
-        keys = bucket.setdefault("topic_path_keys", [])
-        if topic_key_str and topic_key_str not in keys:
-            keys.append(topic_key_str)
-
-        if bucket_scope == "within_level":
-            if bucket_used_fallback:
-                bucket["within_level_bucket_used_fallback"] = True
-                existing_segments = bucket.setdefault(
-                    "within_level_fallback_segments", []
-                )
-
-                for seg in cleaned_fallbacks:
-                    if seg not in existing_segments:
-                        existing_segments.append(seg)
-            else:
-                bucket.setdefault("within_level_bucket_used_fallback", False)
-                bucket.setdefault("within_level_fallback_segments", [])
-
-        return bucket
-
-    # Handle new bucket creation.
-    default_thread_key_s = str(default_thread_key or "").strip() or None
-    level_key_str = (
-        level_key.strip() if isinstance(level_key, str) and level_key.strip() else None
-    )
-    grade_key = (
-        level_key_str
-        if level_basis in {"grade_ordinals", "level_label_map_grade_key"}
-        else None
-    )
-    stage_key = (
-        level_key_str
-        if level_basis in {"stage_ordinals", "level_label_map_stage_key"}
-        else None
-    )
-    bucket = {
-        "bucket_key": f"{level_label}::{bucket_key_value}",
-        "bucket_scope": bucket_scope,
-        "default_thread_key": default_thread_key_s,
-        "effective_bucket_key": bucket_key_value,
-        "grade_key": grade_key,
-        "items": [],
-        "level_basis": level_basis,
-        "level_key": level_key_str,
-        "level_label": level_label,
-        "level_ordinal": level_lo,
-        "level_ordinal_high": level_hi,
-        "level_ordinal_low": level_lo,
-        "lp_bucket_key": bucket_key_value,
-        "lp_thread_key": thread_key_value,
-        "stage_key": stage_key,
-        "subject_label": subject_label,
-        "topic_path_examples": [topic_path] if topic_path else [],
-        "topic_path_keys": [topic_key_str] if topic_key_str else [],
-    }
-
-    if bucket_scope == "within_level":
-        bucket["within_level_bucket_used_fallback"] = bucket_used_fallback
-        bucket["within_level_fallback_segments"] = (
-            cleaned_fallbacks if bucket_used_fallback else []
+        _update_existing_bucket(
+            bucket=bucket,
+            bucket_key_value=bucket_key_value,
+            bucket_scope=bucket_scope,
+            bucket_used_fallback=bucket_used_fallback,
+            cleaned_fallbacks=cleaned_fallbacks,
+            level_label=level_label,
+            subject_label=subject_label,
+            topic_key_str=topic_key_str,
+            topic_path=topic_path,
         )
+    else:
+        bucket = _create_new_bucket(
+            bucket_key_value=bucket_key_value,
+            bucket_scope=bucket_scope,
+            bucket_used_fallback=bucket_used_fallback,
+            cleaned_fallbacks=cleaned_fallbacks,
+            default_thread_key=default_thread_key,
+            level_basis=level_basis,
+            level_hi=level_hi,
+            level_key=level_key,
+            level_label=level_label,
+            level_lo=level_lo,
+            subject_label=subject_label,
+            thread_key_value=thread_key_value,
+            topic_key_str=topic_key_str,
+            topic_path=topic_path,
+        )
+        store[level_label][bucket_key_value] = bucket
 
-    store[level_label][bucket_key_value] = bucket
     return bucket
 
 
@@ -3542,12 +3607,12 @@ def _process_single_standard(
         topic_path_parts=topic_path_parts,
     )
 
-    # Get or create buckets for the SFI. The bucket keys determine how items are
-    # grouped for LLM comparison in Phase 1 (within-level) and Phase 3 (cross-level).
-    # Items with the same bucket key are presented together to the LLM, so the keys
-    # should reflect meaningful pedagogical groupings. The thread keys are included in
-    # the bucket data for debugging and potential future use but do not control
-    # grouping directly.
+    # Get or create buckets for the SFI. Within-level buckets are used by Phase 1
+    # within-level buildsTowards inference and Phase 3 within-level cross-subject
+    # relatesTo inference. Cross-level buckets are used by Phase 2/4 adjacent-level
+    # inference. Items with the same bucket key are presented together to the LLM, so
+    # the keys should reflect meaningful pedagogical groupings. The thread keys are
+    # included in the bucket data for debugging and cross-level grouping.
     within_bucket = _get_or_create_bucket(
         bucket_key_value=within_bucket_key,
         bucket_scope="within_level",
@@ -4443,6 +4508,110 @@ def _topic_path_signature(topic_path_parts: list[dict[str, Any]]) -> str:
             segments.append(f"{role}={value}")
 
     return "|".join(segments)
+
+
+def _update_existing_bucket(
+    *,
+    bucket: dict[str, Any],
+    bucket_key_value: str,
+    bucket_scope: str,
+    bucket_used_fallback: bool,
+    cleaned_fallbacks: list[str],
+    level_label: str,
+    subject_label: str,
+    topic_key_str: str,
+    topic_path: str,
+) -> None:
+    """Update an existing bucket with incoming item metadata.
+
+    Modifies the provided bucket dictionary in place, updating topic path examples/keys
+    and subject label anomalies, as well as preserving fallback usage metadata if
+    applicable.
+
+    Parameters
+    ----------
+    bucket
+        The existing bucket to update.
+    bucket_key_value
+        The computed key for the bucket in the given scope.
+    bucket_scope
+        The bucket scope (`"within_level"` or `"cross_level"`).
+    bucket_used_fallback
+        True if the incoming item's bucket key was produced from fallback segments.
+    cleaned_fallbacks
+        Cleaned source-field fallback segments.
+    level_label
+        The level label for logging context.
+    subject_label
+        Subject-like label for the incoming item.
+    topic_key_str
+        Cleaned canonical topic path key.
+    topic_path
+        Cleaned topic path string.
+    """
+
+    existing_subject_label = (
+        str(bucket.get("subject_label") or "").strip() or "UNSPECIFIED_SUBJECT"
+    )
+    incoming_subject_label = str(subject_label or "").strip() or "UNSPECIFIED_SUBJECT"
+
+    # Subject label anomalies.
+    if existing_subject_label != incoming_subject_label:
+        subject_labels = bucket.setdefault("subject_label_examples", [])
+        should_log = incoming_subject_label not in subject_labels
+
+        # Deduplicate while preserving order.
+        bucket["subject_label_examples"] = list(
+            dict.fromkeys(
+                subject_labels + [existing_subject_label, incoming_subject_label]
+            )
+        )
+
+        if should_log:
+            is_fallback = bool(bucket.get("within_level_bucket_used_fallback"))
+
+            if bucket_scope == "within_level" and (bucket_used_fallback or is_fallback):
+                logger.warning(
+                    f"Within-level fallback LP bucket reused across different "
+                    f"subject labels; bucket identity does not include "
+                    f"subject_label, so metadata remains first-SFI-wins. "
+                    f"bucket_key={bucket_key_value!r}, level={level_label!r}, "
+                    f"existing_subject={existing_subject_label!r}, "
+                    f"incoming_subject={incoming_subject_label!r}."
+                )
+            else:
+                logger.warning(
+                    f"LP bucket reused across different subject labels; "
+                    f"bucket metadata remains first-SFI-wins. "
+                    f"bucket_scope={bucket_scope!r}, "
+                    f"bucket_key={bucket_key_value!r}, level={level_label!r}, "
+                    f"existing_subject={existing_subject_label!r}, "
+                    f"incoming_subject={incoming_subject_label!r}."
+                )
+
+    # Topic path examples.
+    if topic_path:
+        examples = bucket.setdefault("topic_path_examples", [])
+        bucket["topic_path_examples"] = list(dict.fromkeys(examples + [topic_path]))[
+            :10
+        ]
+
+    # Topic path keys.
+    if topic_key_str:
+        keys = bucket.setdefault("topic_path_keys", [])
+        bucket["topic_path_keys"] = list(dict.fromkeys(keys + [topic_key_str]))
+
+    # Fallback segments.
+    if bucket_scope == "within_level":
+        bucket["within_level_bucket_used_fallback"] = bool(
+            bucket.get("within_level_bucket_used_fallback") or bucket_used_fallback
+        )
+        existing_segments = bucket.setdefault("within_level_fallback_segments", [])
+
+        if bucket_used_fallback:
+            bucket["within_level_fallback_segments"] = list(
+                dict.fromkeys(existing_segments + cleaned_fallbacks)
+            )
 
 
 def _uuid(x: str) -> UUID:
