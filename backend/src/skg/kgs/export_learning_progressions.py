@@ -3495,6 +3495,12 @@ def _process_single_standard(
         topic_path_parts=topic_path_parts,
     )
 
+    # Get or create buckets for the SFI. The bucket keys determine how items are
+    # grouped for LLM comparison in Phase 1 (within-level) and Phase 3 (cross-level).
+    # Items with the same bucket key are presented together to the LLM, so the keys
+    # should reflect meaningful pedagogical groupings. The thread keys are included in
+    # the bucket data for debugging and potential future use but do not control
+    # grouping directly.
     within_bucket = _get_or_create_bucket(
         bucket_key_value=within_bucket_key,
         bucket_scope="within_level",
@@ -4002,7 +4008,7 @@ def _resolve_numeric_order_path(
 
 
 def _resolve_subject_label(
-    *, subject_role: str | None, topic_path_parts: list[dict[str, Any]]
+    *, subject_role: NodeRole | None, topic_path_parts: list[dict[str, Any]]
 ) -> str:
     """Resolve the subject-like label used for LP grouping.
 
@@ -4165,7 +4171,7 @@ def _resolve_subject_label(
     # role, only that role is tried. Otherwise, fall back to the two most common
     # curriculum-document roles for subject/learning-area groupings.
     roles_to_try: list[str] = (
-        [subject_role] if subject_role else ["subject", "learning_area"]
+        [subject_role.value] if subject_role else ["subject", "learning_area"]
     )
 
     for role in roles_to_try:
