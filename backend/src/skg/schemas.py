@@ -1352,6 +1352,50 @@ class CreateKGConfig(BaseSchema):
 
         return validate_regex_prefixed_patterns(field_name=info.field_name, patterns=v)
 
+    @field_validator("lp_within_level_fallback_fields")
+    @classmethod
+    def _validate_lp_within_level_fallback_fields_unique(
+        cls, v: list[str], info: Any
+    ) -> list[str]:
+        """Validate that fallback source fields are unique while preserving order.
+
+        The fallback field list is ordered and each entry contributes one segment to a
+        within-level fallback bucket key. Duplicates would produce redundant key
+        segments such as ``statement_type=grammaire|statement_type=grammaire`` and do
+        not add information, so they are rejected at config-load time.
+
+        Parameters
+        ----------
+        v
+            The ordered fallback field list used when hierarchy-derived within-level
+            bucket roles do not produce a key.
+        info
+            Pydantic field validation info used to report the field name.
+
+        Returns
+        -------
+        list[str]
+            The original fallback field list, unchanged, if all entries are unique.
+
+        Raises
+        ------
+        ValueError
+            If the fallback field list contains duplicates.
+        """
+
+        seen_fields: set[str] = set()
+
+        for field_name in v or []:
+            if field_name in seen_fields:
+                raise ValueError(
+                    f"{info.field_name} must not contain duplicate fields. "
+                    f"Duplicate value: {field_name}."
+                )
+
+            seen_fields.add(field_name)
+
+        return v
+
     @field_validator("lp_within_level_bucket_roles", "lp_cross_level_thread_roles")
     @classmethod
     def _validate_lp_bucket_or_thread_roles(
