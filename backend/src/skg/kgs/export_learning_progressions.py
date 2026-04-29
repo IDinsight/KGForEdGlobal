@@ -2982,7 +2982,7 @@ def _resolve_level_ordinals(
     progression_context: dict[str, Any],
     sfi_description: str | None,
     sfi_uuid: str,
-) -> tuple[int, int, str | None, str, str] | None:
+) -> tuple[int, int, str, str, str] | None:
     """Resolve grade/stage level ordinals for LP bucketing.
 
     Preference order:
@@ -2996,10 +2996,10 @@ def _resolve_level_ordinals(
 
     Examples
     --------
-    1. Explicit single-grade ordinals
+    1. Explicit single-grade ordinals from Academic Standards export
 
-        Academic Standards export usually writes parsed or config-derived grade
-        ordinals into `metadata.progression_context`. For a Senegal CE1 item:
+        For the Senegal CE1 reading curriculum, `as_default_level_context` may write a
+        document-level grade context into each expectation SFI:
 
             progression_context = {
                 "grade_key": "CE1",
@@ -3014,13 +3014,12 @@ def _resolve_level_ordinals(
 
             (1, 1, "CE1", "ce1", "grade_ordinals")
 
-        The returned tuple means: level low = 1, level high = 1, the resolved level key
-        is "CE1", the normalized level key is "ce1", and the level was resolved from
-        grade ordinals.
+        This is the normal path for single-grade PDFs when the Academic Standards
+        export has already populated `metadata.progression_context`.
 
     2. Explicit grade band
 
-        Some curricula assign an item to a multi-grade band:
+        Some curricula assign standards to a multi-grade band:
 
             progression_context = {
                 "grade_key": "Standard III–VI",
@@ -3035,13 +3034,12 @@ def _resolve_level_ordinals(
 
             (3, 6, "Standard III–VI", "standard iii–vi", "grade_ordinals")
 
-        Downstream code can identify this as a banded bucket because
+        Downstream code can detect this as a banded bucket because
         `level_lo != level_hi`.
 
-    3. Explicit stage ordinals
+    3. Explicit stage ordinals when grade ordinals are unavailable
 
-        Stage-based curricula may not provide grade ordinals, but may provide stage
-        ordinals:
+        Stage-based curricula may provide stage ordinals instead of grade ordinals:
 
             progression_context = {
                 "grade_key": None,
@@ -3056,9 +3054,9 @@ def _resolve_level_ordinals(
 
             (2, 2, "Étape 2", "étape 2", "stage_ordinals")
 
-        Stage ordinals are used only when grade ordinals are unavailable.
+        Stage ordinals are used only when a complete grade ordinal range is not present.
 
-    4. Config fallback from a grade label
+    4. Grade label fallback via lp_level_label_map
 
         If the Academic Standards export preserved a grade label but did not populate
         ordinals:
@@ -3080,10 +3078,10 @@ def _resolve_level_ordinals(
 
             (1, 1, "CE1", "ce1", "level_label_map_grade_key")
 
-        Config fallback maps a label to a single representative ordinal only; it does
-        not infer grade bands.
+        Fallback map keys are matched using lowercase + strip. They are not normalized
+        with `normalize_key_token()`.
 
-    5. Config fallback from a stage label
+    5. Stage label fallback via lp_level_label_map
 
         If only a stage label exists:
 
@@ -3104,9 +3102,6 @@ def _resolve_level_ordinals(
 
             (2, 2, "Étape 2", "étape 2", "level_label_map_stage_key")
 
-        Note that fallback keys are currently matched using lowercase + strip, not
-        ASCII folding or `normalize_key_token()`.
-
     6. Missing level key and missing ordinals
 
         If neither grade/stage ordinals nor a usable grade/stage key exist:
@@ -3126,7 +3121,8 @@ def _resolve_level_ordinals(
 
     7. Unmapped level key
 
-        If a level label exists but there is no explicit ordinal and no config fallback:
+        If a level label exists but there is no explicit ordinal and no matching config
+        fallback:
 
             progression_context = {
                 "grade_key": "CE1",
@@ -3158,16 +3154,53 @@ def _resolve_level_ordinals(
 
     Returns
     -------
-    tuple[int, int, str | None, str, str]
+    tuple[int, int, str, str, str] | None
         (level_lo, level_hi, level_key, normalized_level_key, level_basis), or None
         when no usable level can be resolved.
     """
 
+    def _clean_label(value: Any) -> str | None:
+        """Clean a label value for use as a level key in bucket metadata.
+
+        Parameters
+        ----------
+        value
+            The raw label value to clean.
+
+        Returns
+        -------
+        str | None
+            The cleaned label, obtained by converting the input to a string and
+            stripping whitespace. Returns None if the cleaned label is empty.
+        """
+
+        s = str(value or "").strip()
+        return s or None
+
+    def _label_key(value: Any) -> str:
+        """Normalize a label value for lookup in `config.lp_level_label_map`.
+
+        Parameters
+        ----------
+        value
+            The raw label value to normalize.
+
+        Returns
+        -------
+        str
+            The normalized label key, obtained by converting the input to a string,
+        """
+
+        return str(value or "").strip().lower()
+
     grade_key = progression_context.get("grade_key")
     stage_key = progression_context.get("stage_key")
-    normalized_grade_key = str(grade_key or "").strip().lower()
-    normalized_stage_key = str(stage_key or "").strip().lower()
-    normalized_level_key = normalized_grade_key or normalized_stage_key
+
+    grade_label = _clean_label(grade_key)
+    stage_label = _clean_label(stage_key)
+
+    normalized_grade_key = _label_key(grade_label)
+    normalized_stage_key = _label_key(stage_label)
 
     g_lo = progression_context.get("grade_ordinal_low")
     g_hi = progression_context.get("grade_ordinal_high")
@@ -3175,14 +3208,18 @@ def _resolve_level_ordinals(
     s_hi = progression_context.get("stage_ordinal_high")
 
     if isinstance(g_lo, int) and isinstance(g_hi, int):
+        normalized_level_key = normalized_grade_key
         level_basis = "grade_ordinals"
-        level_key = grade_key if normalized_grade_key else None
+        level_key = grade_label
         level_lo, level_hi = min(g_lo, g_hi), max(g_lo, g_hi)
     elif isinstance(s_lo, int) and isinstance(s_hi, int):
+        normalized_level_key = normalized_stage_key
         level_basis = "stage_ordinals"
-        level_key = stage_key if normalized_stage_key else None
+        level_key = stage_label
         level_lo, level_hi = min(s_lo, s_hi), max(s_lo, s_hi)
     else:
+        normalized_level_key = normalized_grade_key or normalized_stage_key
+
         if not normalized_level_key:
             drops.setdefault("missing_level_key", []).append(
                 {"description": sfi_description, "sfi_uuid": sfi_uuid}
@@ -3211,10 +3248,10 @@ def _resolve_level_ordinals(
 
         if normalized_grade_key:
             level_basis = "level_label_map_grade_key"
-            level_key = grade_key
+            level_key = grade_label
         else:
             level_basis = "level_label_map_stage_key"
-            level_key = stage_key
+            level_key = stage_label
 
     if not normalized_level_key:
         normalized_level_key = (
@@ -3223,8 +3260,13 @@ def _resolve_level_ordinals(
             else f"level:{level_lo}"
         )
 
-    level_key = level_key or normalized_level_key
-    return level_lo, level_hi, level_key, normalized_level_key, level_basis
+    return (
+        level_lo,
+        level_hi,
+        level_key or normalized_level_key,
+        normalized_level_key,
+        level_basis,
+    )
 
 
 def _resolve_numeric_order_path(
