@@ -3734,6 +3734,7 @@ def _resolve_level_ordinals(
         -------
         str
             The normalized label key, obtained by converting the input to a string,
+            stripping whitespace, and lowercasing.
         """
 
         return str(value or "").strip().lower()

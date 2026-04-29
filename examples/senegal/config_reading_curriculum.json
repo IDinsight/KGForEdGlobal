@@ -135,6 +135,15 @@
 		],
 		"lp_relates_to_max_edges_per_sfi": 2,
 		"lp_relates_to_min_confidence": 0.9,
+		"lp_source_statement_types_exclude": [
+			"Compétence / libellé structurel",
+			"Compétence de base — Lecture-Écriture",
+			"Compétence de base — Récitation",
+			"Compétence de base — Expression orale",
+			"Compétence de base — Production d'écrits",
+			"expectation"
+		],
+		"lp_source_statement_types_include": [],
 		"lp_subject_role": "strand",
 		"lp_within_grade_allow_banded_levels": true,
 		"lp_within_grade_builds_towards": true,

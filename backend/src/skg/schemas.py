@@ -1105,6 +1105,24 @@ class CreateKGConfig(BaseSchema):
         le=1.0,
         description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
     )
+    lp_source_statement_types_exclude: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Optional blocklist of SFI.statement_type values excluded from Learning "
+            "Progressions inference. Use this to keep broad competency or structural "
+            "Standards in Academic Standards while preventing them from becoming LP "
+            "candidate items. Compared case-insensitively after whitespace "
+            "normalization. Exclude takes precedence over include."
+        ),
+    )
+    lp_source_statement_types_include: set[str] = Field(
+        default_factory=set,
+        description=(
+            "Optional allowlist of SFI.statement_type values eligible for Learning "
+            "Progressions inference. Empty set means no statement-type allowlist "
+            "restriction. Compared case-insensitively after whitespace normalization."
+        ),
+    )
     lp_subject_role: Optional[NodeRole] = Field(
         default=None,
         description=(
