@@ -148,6 +148,53 @@ def _best_map(
     return best
 
 
+def _bucket_topic_context(*, bucket: dict[str, Any], max_examples: int = 3) -> str:
+    """Return topic context for prompts, reports, and sorting.
+
+    Buckets can intentionally contain items from multiple finer-grained topic paths.
+    For example, a within-level Senegal reading bucket keyed only by `strand` may
+    include expectations from several paliers, weeks, and subtopics. In that case, a
+    single bucket-level topic path would be misleading.
+
+    This function prefers the aggregate `topic_path_examples` list maintained by
+    `_get_or_create_bucket()`. If no examples exist, it falls back to topic path keys
+    and then to the LP bucket key.
+
+    Parameters
+    ----------
+    bucket
+        The bucket dictionary created by `_get_or_create_bucket()`.
+    max_examples
+        Maximum number of path examples to include in the returned context string.
+
+    Returns
+    -------
+    str
+        A compact topic-context string suitable for LLM prompts, logs, reports, and
+        deterministic sorting.
+    """
+
+    examples = bucket.get("topic_path_examples")
+
+    if isinstance(examples, list):
+        cleaned_examples = [
+            str(example).strip() for example in examples if str(example or "").strip()
+        ]
+
+        if cleaned_examples:
+            return " | ".join(cleaned_examples[:max_examples])
+
+    tpks = bucket.get("topic_path_keys")
+
+    if isinstance(tpks, list):
+        cleaned_keys = [str(tpk).strip() for tpk in tpks if str(tpk or "").strip()]
+
+        if cleaned_keys:
+            return " | ".join(cleaned_keys[:max_examples])
+
+    return str(bucket.get("lp_bucket_key") or bucket.get("bucket_key") or "").strip()
+
+
 def _build_fallback_segments(
     *, config: CreateKGConfig, metadata: dict[str, Any], sfi: StandardsFrameworkItem
 ) -> list[str]:
@@ -423,13 +470,13 @@ def _build_sfi_index(
             "canon_order_path": it.get("canon_order_path"),
             "cross_level_bucket_key": it.get("cross_level_bucket_key"),
             "cross_level_thread_key": it.get("cross_level_thread_key"),
+            "default_thread_key": it.get("default_thread_key")
+            or b.get("default_thread_key"),
             "doc_pos_page_index": it.get("doc_pos_page_index"),
             "doc_pos_y0": it.get("doc_pos_y0"),
             "grade_label": grade_label,
             "level_basis": it.get("level_basis") or b.get("level_basis"),
             "level_key": it.get("level_key") or b.get("level_key"),
-            "normalized_topic_path_key": it.get("normalized_topic_path_key")
-            or b.get("normalized_topic_path_key"),
             "numeric_order_missing_count": it.get("numeric_order_missing_count"),
             "numeric_order_path": it.get("numeric_order_path"),
             "order_index_within_parent": it.get("order_index_within_parent"),
@@ -437,9 +484,9 @@ def _build_sfi_index(
             "statement_code": it.get("statement_code"),
             "subject_label": b.get("subject_label"),
             "thread_key": b.get("lp_thread_key"),
-            "topic_path": it.get("topic_path") or b.get("topic_path"),
+            "topic_path": it.get("topic_path") or _bucket_topic_context(bucket=b),
             "topic_path_key": it.get("topic_path_key")
-            or b.get("canonical_topic_path_key")
+            or _first_topic_path_key(b)
             or b.get("lp_bucket_key"),
             "within_level_bucket_key": it.get("within_level_bucket_key"),
             "within_level_fallback_segments": it.get("within_level_fallback_segments"),
@@ -528,7 +575,7 @@ def _build_thread_map(
             key=lambda b: (
                 int(_level_bounds(b)[0] or 10**9),
                 int(_level_bounds(b)[1] or 10**9),
-                str(b.get("topic_path") or ""),
+                _bucket_topic_context(bucket=b),
                 str(b.get("lp_bucket_key") or ""),
             ),
         )
@@ -1433,6 +1480,239 @@ def _finalize_lp_export(
     return learning_progressions
 
 
+def _first_topic_path_key(bucket: dict[str, Any]) -> str | None:
+    """Return the first non-empty topic path key stored on a bucket, if any.
+
+    Parameters
+    ----------
+    bucket
+        The bucket dictionary created by `_get_or_create_bucket()`.
+
+    Returns
+    -------
+    str | None
+        The first non-empty value in `bucket["topic_path_keys"]` or `None`.
+    """
+
+    tpks = bucket.get("topic_path_keys")
+
+    if not isinstance(tpks, list):
+        return None
+
+    for tpk in tpks:
+        tpk = str(tpk or "").strip()
+
+        if tpk:
+            return tpk
+
+    return None
+
+
+def _get_or_create_bucket(
+    *,
+    bucket_key_value: str,
+    bucket_scope: str,
+    default_thread_key: str | None,
+    fallback_segments: list[str] | None,
+    grade_label: str,
+    level_basis: str,
+    level_hi: int,
+    level_key: str | None,
+    level_lo: int,
+    store: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
+    subject_label: str,
+    thread_key_value: str,
+    topic_key: str,
+    topic_path_parts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Get or create a learning-progression inference bucket.
+
+    Buckets are the unit of work for learning-progression inference. Each exported
+    StandardsFrameworkItem is normally placed into two independent bucket stores:
+
+    1. a `within_level` bucket, used by within-grade/within-level inference, and
+    2. a `cross_level` bucket, used by cross-grade/cross-stage inference.
+
+    If the bucket already exists, this function returns it and updates only aggregate
+    topic-path bookkeeping fields: `topic_path_examples` and `topic_path_keys`. Other
+    bucket-level metadata remains first-SFI-wins by design. For per-item provenance,
+    downstream code should prefer item-level topic fields over bucket-level aggregate
+    fields.
+
+    `within_level_fallback_segments` are stored only on `within_level` buckets.
+    Cross-level buckets deliberately do not carry within-level fallback fields because
+    those fallbacks are not used to compute cross-level thread keys.
+
+    Examples
+    --------
+    1. Create a within-level Senegal reading bucket
+
+        Given a CE1 item under the strand "Lecture":
+
+            bucket = _get_or_create_bucket(
+                bucket_key_value="strand=lecture",
+                bucket_scope="within_level",
+                default_thread_key="strand=lecture|substage=palier_1_lecture",
+                fallback_segments=["statement_type=objectif_specifique"],
+                grade_label="LEVEL 1",
+                level_basis="grade_ordinals",
+                level_hi=1,
+                level_key="CE1",
+                level_lo=1,
+                store=within_level_buckets,
+                subject_label="Lecture",
+                thread_key_value="strand=lecture",
+                topic_key="strand=lecture|substage=palier_1_lecture",
+                topic_path_parts=[
+                    {"role": "strand", "label": "Lecture"},
+                    {"role": "substage", "label": "Palier 1 - Lecture"},
+                ],
+            )
+
+        the created bucket contains:
+
+            bucket["bucket_scope"] == "within_level"
+            bucket["default_thread_key"] == "strand=lecture|substage=palier_1_lecture"
+            bucket["topic_path_examples"] == [
+                "strand:Lecture -> substage:Palier 1 - Lecture"
+            ]
+            bucket["topic_path_keys"] == [
+                "strand=lecture|substage=palier_1_lecture"
+            ]
+            bucket["within_level_fallback_segments"] == [
+                "statement_type=objectif_specifique"
+            ]
+
+    2. Create a cross-level bucket without within-level fallback fields
+
+        Calling the same function with:
+
+            bucket_scope="cross_level"
+            fallback_segments=None
+            bucket_key_value="strand=lecture|substage=palier_1_lecture"
+
+        creates a bucket that does not include `within_level_fallback_segments`.
+        Cross-level matching should use hierarchy-derived thread keys, not source-field
+        fallbacks such as `statement_type`.
+
+    3. Reuse an existing bucket and update aggregate topic context
+
+        If a later item has the same `grade_label` and `bucket_key_value` but comes
+        from a different subtopic, this function returns the existing bucket and
+        appends the new path to `topic_path_examples` and the new key to
+        `topic_path_keys` when they are not already present.
+
+        This keeps broad buckets truthful for prompts: the bucket can show several
+        representative paths instead of assuming that the first SFI's path describes
+        every item in the bucket.
+
+    Parameters
+    ----------
+    bucket_key_value
+        The computed key for the bucket in the given scope.
+    bucket_scope
+        The bucket scope. Expected values are `"within_level"` and
+        `"cross_level"`.
+    default_thread_key
+        The source/default thread key from `progression_context.thread_key`. Stored
+        as bucket metadata under `default_thread_key` for traceability.
+    fallback_segments
+        Source-field fallback segments used for within-level bucketing. These are
+        stored only when `bucket_scope == "within_level"`.
+    grade_label
+        The level label used as the outer key in the bucket store, e.g. `"LEVEL 1"`
+        or `"LEVEL 3-6"`.
+    level_basis
+        How level ordinals were resolved, e.g. `"grade_ordinals"` or
+        `"stage_ordinals"`.
+    level_hi
+        Highest level ordinal represented by the bucket.
+    level_key
+        Human-readable source level key, e.g. `"CE1"` or `"Standard III–VI"`.
+    level_lo
+        Lowest level ordinal represented by the bucket.
+    store
+        Nested bucket store keyed by `grade_label` then `bucket_key_value`.
+    subject_label
+        Subject-like label for the bucket, often a strand in single-subject curricula.
+    thread_key_value
+        Thread key associated with this bucket, used later for cross-level grouping.
+    topic_key
+        Canonical topic path key for the current SFI.
+    topic_path_parts
+        Topic path parts for the current SFI.
+
+    Returns
+    -------
+    dict[str, Any]
+        The existing or newly created bucket dictionary.
+    """
+
+    if bucket_scope not in {"within_level", "cross_level"}:
+        raise ValueError(
+            "bucket_scope must be either 'within_level' or 'cross_level'. "
+            f"Got: {bucket_scope!r}"
+        )
+
+    topic_key_s = str(topic_key or "").strip()
+    topic_path = _path_string(topic_path_parts)
+
+    bucket = store[grade_label].get(bucket_key_value)
+
+    if bucket:
+        topic_path_examples = bucket.setdefault("topic_path_examples", [])
+
+        if (
+            topic_path
+            and topic_path not in topic_path_examples
+            and len(topic_path_examples) < 10
+        ):
+            topic_path_examples.append(topic_path)
+
+        topic_path_keys = bucket.setdefault("topic_path_keys", [])
+
+        if topic_key_s and topic_key_s not in topic_path_keys:
+            topic_path_keys.append(topic_key_s)
+
+        return bucket
+
+    default_thread_key_s = str(default_thread_key or "").strip()
+    level_key_s = (
+        level_key.strip() if isinstance(level_key, str) and level_key.strip() else None
+    )
+
+    bucket = {
+        "bucket_key": f"{grade_label}::{bucket_key_value}",
+        "bucket_scope": bucket_scope,
+        "default_thread_key": default_thread_key_s or None,
+        "effective_bucket_key": bucket_key_value,
+        "grade_level": grade_label,
+        "grade_ordinal": level_lo,
+        "grade_ordinal_high": level_hi,
+        "grade_ordinal_low": level_lo,
+        "items": [],
+        "level_basis": level_basis,
+        "level_key": level_key_s,
+        "lp_bucket_key": bucket_key_value,
+        "lp_thread_key": thread_key_value,
+        "stage_key": (
+            level_key_s
+            if level_basis in {"stage_ordinals", "level_label_map_stage_key"}
+            else None
+        ),
+        "subject_label": subject_label,
+        "topic_path_examples": [topic_path] if topic_path else [],
+        "topic_path_keys": [topic_key_s] if topic_key_s else [],
+    }
+
+    if bucket_scope == "within_level":
+        bucket["within_level_fallback_segments"] = list(fallback_segments or [])
+
+    store[grade_label][bucket_key_value] = bucket
+
+    return bucket
+
+
 def _group_threads_by_grade_and_subject(
     *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -1730,11 +2010,7 @@ def _infer_within_grade_builds_towards(
             grade_label=str(grade_label),
             items=ordered_items,
             min_confidence=config.lp_builds_towards_min_confidence,
-            thread_path=str(
-                bucket.get("topic_path")
-                or bucket.get("canonical_topic_path_key")
-                or bucket.get("lp_bucket_key")
-            ),
+            thread_path=_bucket_topic_context(bucket=bucket),
         )
 
         pos = {str(it["sfi_uuid"]): idx for idx, it in enumerate(ordered_items)}
@@ -1761,11 +2037,11 @@ def _infer_within_grade_builds_towards(
                 metadata={
                     "phase": 1,
                     "grade_label": grade_label,
-                    "subject_label": bucket.get("subject_label"),
-                    "topic_path": bucket.get("topic_path"),
-                    "canonical_topic_path_key": bucket.get("canonical_topic_path_key"),
                     "lp_bucket_key": bucket.get("lp_bucket_key"),
                     "lp_thread_key": bucket.get("lp_thread_key"),
+                    "subject_label": bucket.get("subject_label"),
+                    "topic_path_examples": bucket.get("topic_path_examples"),
+                    "topic_path_keys": bucket.get("topic_path_keys"),
                 },
                 rel_type="buildsTowards",
                 source_sfi_uuid=_uuid(edge.source_sfi_uuid),
@@ -1875,32 +2151,14 @@ def _infer_within_grade_relates_to(
                         "sampled_a": sampled_a,
                         "sampled_b": sampled_b,
                         "thread_a_path": " | ".join(
-                            str(
-                                b.get("topic_path")
-                                or b.get("canonical_topic_path_key")
-                                or b.get("lp_bucket_key")
-                                or ""
-                            ).strip()
+                            _bucket_topic_context(bucket=b).strip()
                             for b in threads_a[:3]
-                            if (
-                                b.get("topic_path")
-                                or b.get("canonical_topic_path_key")
-                                or b.get("lp_bucket_key")
-                            )
+                            if _bucket_topic_context(bucket=b)
                         ),
                         "thread_b_path": " | ".join(
-                            str(
-                                b.get("topic_path")
-                                or b.get("canonical_topic_path_key")
-                                or b.get("lp_bucket_key")
-                                or ""
-                            ).strip()
+                            _bucket_topic_context(bucket=b).strip()
                             for b in threads_b[:3]
-                            if (
-                                b.get("topic_path")
-                                or b.get("canonical_topic_path_key")
-                                or b.get("lp_bucket_key")
-                            )
+                            if _bucket_topic_context(bucket=b)
                         ),
                     }
                 )
@@ -2147,8 +2405,7 @@ def _level_label(b: dict[str, Any]) -> str:
     ----------
     b
         A bucket dictionary that may contain grade level information, including
-        "grade_ordinal_low", "grade_ordinal_high", "grade_level", and
-        "topic_path_parts" keys.
+        "grade_ordinal_low", "grade_ordinal_high", "grade_level", and "stage_key" keys.
 
     Returns
     -------
@@ -2164,21 +2421,6 @@ def _level_label(b: dict[str, Any]) -> str:
 
         if isinstance(stage_key, str) and stage_key.strip():
             return stage_key.strip()
-
-        parts = b.get("topic_path_parts") or []
-
-        if isinstance(parts, list):
-            stage = next(
-                (
-                    str(p.get("label") or "")
-                    for p in parts
-                    if p.get("role") == "stage" and p.get("label")
-                ),
-                "",
-            ).strip()
-
-            if stage:
-                return stage
 
         return f"GRADES {lo}–{hi}"
 
@@ -2408,7 +2650,7 @@ def _prepare_subject_grade_samples(
             thread_buckets_sorted = sorted(
                 thread_buckets,
                 key=lambda b: (
-                    str(b.get("topic_path") or ""),
+                    _bucket_topic_context(bucket=b),
                     str(b.get("lp_thread_key") or b.get("lp_bucket_key") or ""),
                 ),
             )
@@ -2674,11 +2916,7 @@ def _process_builds_towards_work_item(
         lower_grade_label=lo_label,
         min_confidence=config.lp_builds_towards_min_confidence,
         thread_key=thread_key,
-        thread_path=str(
-            b_hi.get("topic_path")
-            or b_hi.get("canonical_topic_path_key")
-            or b_hi.get("lp_bucket_key")
-        ),
+        thread_path=_bucket_topic_context(bucket=b_hi),
         upper_grade_label=hi_label,
         upper_items=upper_payload,
     )
@@ -2713,10 +2951,10 @@ def _process_builds_towards_work_item(
                 "upper_level_low": hi_lo,
                 "upper_level_high": hi_hi,
                 "thread_key": thread_key,
-                "canonical_topic_path_key_upper": b_hi.get("canonical_topic_path_key"),
                 "lp_bucket_key_upper": b_hi.get("lp_bucket_key"),
                 "lp_thread_key": b_hi.get("lp_thread_key"),
-                "topic_path": b_hi.get("topic_path"),
+                "topic_path_examples_upper": b_hi.get("topic_path_examples"),
+                "topic_path_keys_upper": b_hi.get("topic_path_keys"),
                 "subject_label": b_hi.get("subject_label"),
             },
             rel_type="buildsTowards",
@@ -3092,76 +3330,6 @@ def _process_single_standard(
         )
         return
 
-    def _get_or_create_bucket(
-        *,
-        bucket_key_value: str,
-        bucket_scope: str,
-        store: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
-        thread_key_value: str,
-    ) -> dict[str, Any]:
-        """Helper to get or create a bucket in the specified store (within-level or
-        cross-level).
-
-        Parameters
-        ----------
-        bucket_key_value
-            The computed bucket key value (either within-level or cross-level) to look
-            up or create a bucket for.
-        bucket_scope
-            A string indicating the scope of the bucket ("within_level" or
-            "cross_level"), used for labeling and debugging purposes.
-        store
-            The nested dictionary store (either `within_level_buckets` or
-            `cross_level_buckets`) where the bucket should be retrieved or created.
-        thread_key_value
-            The computed thread key value associated with this bucket, included in the
-            bucket metadata for debugging and potential use in LLM prompting.
-
-        Returns
-        -------
-        dict[str, Any]
-            The retrieved or newly created bucket dictionary containing metadata and an
-            "items" list for accumulating standards.
-        """
-
-        bucket = store[grade_label].get(bucket_key_value)
-
-        if bucket:
-            return bucket
-
-        bucket = store[grade_label][bucket_key_value] = {
-            "bucket_key": f"{grade_label}::{bucket_key_value}",
-            "bucket_scope": bucket_scope,
-            "canonical_topic_path_key": topic_key,
-            "effective_bucket_key": bucket_key_value,
-            "grade_level": grade_label,
-            "grade_ordinal": level_lo,
-            "grade_ordinal_low": level_lo,
-            "grade_ordinal_high": level_hi,
-            "items": [],
-            "level_basis": level_basis,
-            "level_key": (
-                level_key.strip()
-                if isinstance(level_key, str) and level_key.strip()
-                else None
-            ),
-            "lp_bucket_key": bucket_key_value,
-            "lp_thread_key": thread_key_value,
-            "normalized_topic_path_key": default_thread_key or "",
-            "stage_key": (
-                level_key.strip()
-                if level_basis in {"stage_ordinals", "level_label_map_stage_key"}
-                and isinstance(level_key, str)
-                and level_key.strip()
-                else None
-            ),
-            "subject_label": subject_label,
-            "topic_path": _path_string(topic_path_parts),
-            "topic_path_parts": topic_path_parts,
-            "within_level_fallback_segments": fallback_segments,
-        }
-        return bucket
-
     # Subject label and topic parts setup.
     raw_parts = progression_context.get("topic_path_parts")
     topic_path_parts = raw_parts if isinstance(raw_parts, list) else []
@@ -3199,14 +3367,34 @@ def _process_single_standard(
     within_bucket = _get_or_create_bucket(
         bucket_key_value=within_bucket_key,
         bucket_scope="within_level",
+        default_thread_key=default_thread_key,
+        fallback_segments=fallback_segments,
+        grade_label=grade_label,
+        level_basis=level_basis,
+        level_hi=level_hi,
+        level_key=level_key,
+        level_lo=level_lo,
         store=within_level_buckets,
+        subject_label=subject_label,
         thread_key_value=within_thread_key,
+        topic_key=topic_key,
+        topic_path_parts=topic_path_parts,
     )
     cross_bucket = _get_or_create_bucket(
         bucket_key_value=cross_bucket_key,
         bucket_scope="cross_level",
+        default_thread_key=default_thread_key,
+        fallback_segments=None,
+        grade_label=grade_label,
+        level_basis=level_basis,
+        level_hi=level_hi,
+        level_key=level_key,
+        level_lo=level_lo,
         store=cross_level_buckets,
+        subject_label=subject_label,
         thread_key_value=cross_thread_key,
+        topic_key=topic_key,
+        topic_path_parts=topic_path_parts,
     )
 
     # Payload generation and append.
@@ -3252,22 +3440,24 @@ def _process_single_standard(
         "doc_pos_page_index": doc_pos_page_index,
         "doc_pos_y0": doc_pos_y0,
         # Item-level topic context.
-        "normalized_topic_path_key": str(progression_context.get("thread_key") or ""),
+        "default_thread_key": str(progression_context.get("thread_key") or ""),
         "topic_path": _path_string(topic_path_parts),
         "topic_path_key": topic_key,
         # Bucket/thread context kept separately for debugging.
         "cross_level_bucket_key": cross_bucket_key,
         "cross_level_thread_key": cross_thread_key,
         "within_level_bucket_key": within_bucket_key,
-        "within_level_fallback_segments": fallback_segments,
         "within_level_thread_key": within_thread_key,
     }
 
     if include_provenance:
         payload["page_index"] = doc_pos_page_index
 
-    within_bucket["items"].append(dict(payload))
-    cross_bucket["items"].append(dict(payload))
+    within_payload = dict(payload)
+    within_payload["within_level_fallback_segments"] = fallback_segments
+    cross_payload = dict(payload)
+    within_bucket["items"].append(within_payload)
+    cross_bucket["items"].append(cross_payload)
 
 
 def _resolve_forbidden_pairs(
@@ -4003,27 +4193,22 @@ def _sort_key_for_bucket_sfi(
 
 
 def _thread_sort_key(b: dict[str, Any]) -> tuple[str, str]:
-    """Sort threads by topic_path (with fallback to lp_thread_key) to ensure
-    deterministic ordering for sampling and pairing across runs, even if the input
-    order changes.
+    """Return a deterministic sort key for LP thread buckets.
 
     Parameters
     ----------
     b
-        The bucket dictionary representing a thread, which may contain "topic_path"
-        and/or "lp_thread_key" (and optionally "lp_bucket_key") for sorting.
+        A learning-progression bucket dictionary.
 
     Returns
     -------
     tuple[str, str]
-        A tuple used for sorting threads, where the first element is the "topic_path"
-        (or an empty string if not present) and the second element is the
-        "lp_thread_key" (or an empty string if not present). This ensures consistent
-        ordering of threads based on their topic paths, with a fallback to
-        lp_thread_key (or lp_bucket_key) when topic paths are missing.
+        `(_bucket_topic_context(b), lp_thread_key_or_bucket_key)`. The first element
+        uses aggregate topic examples when present so broad buckets sort by truthful
+        topic context rather than a first-item-only path.
     """
 
-    return str(b.get("topic_path") or ""), str(
+    return _bucket_topic_context(bucket=b), str(
         b.get("lp_thread_key") or b.get("lp_bucket_key") or ""
     )
 
@@ -4034,24 +4219,31 @@ def _topic_path_signature(topic_path_parts: list[dict[str, Any]]) -> str:
     Parameters
     ----------
     topic_path_parts
-        A list of dictionaries representing the parts of a topic path, where each
-        dictionary is expected to contain "role" and "label" keys.
+        Topic path entries, each ideally containing `role` and `label` keys.
 
     Returns
     -------
     str
-        A string signature representing the topic path, constructed by concatenating
-        normalized role-label pairs for each part.
+        A pipe-delimited signature such as "strand=lecture|substage=palier_1".
+        Malformed entries and blank roles or labels are skipped.
     """
 
     segments: list[str] = []
 
-    for tpp in topic_path_parts:
+    for tpp in topic_path_parts or []:
+        if not isinstance(tpp, dict):
+            continue
+
         role = tpp["role"]
         label = str(tpp.get("label") or "").strip()
 
-        if label:
-            segments.append(f"{role}={normalize_key_token(label=label, separator='_')}")
+        if not label:
+            continue
+
+        value = normalize_key_token(label=label, separator="_")
+
+        if value:
+            segments.append(f"{role}={value}")
 
     return "|".join(segments)
 
@@ -4396,7 +4588,7 @@ def group_standards_for_learning_progressions(
             by_grade[grade_label] = sorted(
                 grade_buckets,
                 key=lambda x: (
-                    x.get("topic_path") or "",
+                    _bucket_topic_context(bucket=x),
                     x.get("lp_bucket_key") or "",
                 ),
             )
