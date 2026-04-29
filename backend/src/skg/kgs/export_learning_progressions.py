@@ -1543,11 +1543,10 @@ def _get_or_create_bucket(
     1. a `within_level` bucket, used by within-grade/within-level inference, and
     2. a `cross_level` bucket, used by cross-grade/cross-stage inference.
 
-    If the bucket already exists, this function returns it and updates only aggregate
-    topic-path bookkeeping fields: `topic_path_examples` and `topic_path_keys`. Other
-    bucket-level metadata remains first-SFI-wins by design. For per-item provenance,
-    downstream code should prefer item-level topic fields over bucket-level aggregate
-    fields.
+    If the bucket already exists, this function returns it and updates aggregate
+    topic-path bookkeeping fields. For within-level fallback buckets, it also preserves
+    fallback-used metadata. Other bucket-level metadata remains first-SFI-wins by
+    design.
 
     Bucket-level `within_level_fallback_segments` are populated only for `within_level`
     buckets whose key was actually produced from fallback segments. When a within-level
