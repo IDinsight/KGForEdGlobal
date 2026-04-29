@@ -1501,7 +1501,6 @@ def _finalize_lp_export(
     )
 
     # Include nodes for standalone use in graph bundle.
-    # Include nodes for standalone use in graph bundle.
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nodes: list[dict[str, Any]] = []
 
