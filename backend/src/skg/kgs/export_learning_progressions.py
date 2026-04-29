@@ -1567,7 +1567,7 @@ def _get_or_create_bucket(
                 level_basis="grade_ordinals",
                 level_hi=1,
                 level_key="CE1",
-                level_label="LEVEL 1",
+                level_label="CE1",
                 level_lo=1,
                 store=within_level_buckets,
                 subject_label="Lecture",
@@ -1583,7 +1583,7 @@ def _get_or_create_bucket(
 
             bucket["bucket_scope"] == "within_level"
             bucket["default_thread_key"] == "strand=lecture|substage=palier_1_lecture"
-            bucket["level_label"] == "LEVEL 1"
+            bucket["level_label"] == "CE1"
             bucket["topic_path_examples"] == [
                 "strand:Lecture -> substage:Palier 1 - Lecture"
             ]
@@ -1638,8 +1638,9 @@ def _get_or_create_bucket(
     level_key
         Human-readable source level key, e.g. `"CE1"` or `"Standard III–VI"`.
     level_label
-        The level label used as the outer key in the bucket store, e.g. `"LEVEL 1"` or
-        `"LEVEL 3-6"`.
+        The level label used as the outer key in the bucket store. Prefer source labels
+        such as "CE1" or "Standard III–VI [3–6]"; synthetic labels such as "LEVEL 1"
+        are used only when no source label is available.
     level_lo
         Lowest level ordinal represented by the bucket.
     store
@@ -3272,6 +3273,7 @@ def _process_single_standard(
     drops: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     include_provenance: bool,
+    normalized_level_label_map: dict[str, int],
     order_index_lookup: dict[str, int],
     sfi: StandardsFrameworkItem,
     within_level_buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
@@ -3365,6 +3367,8 @@ def _process_single_standard(
     include_provenance
         Whether to include provenance information (e.g., page index) in the payload for
         LLM inference.
+    normalized_level_label_map
+        Precomputed normalized mapping from configured level labels to integer ordinals.
     order_index_lookup
         A mapping from SFI UUID strings to their `order_index_within_parent` values,
         used to convert canonical-node-id-based `canon_order_path` into a numeric order
@@ -3411,8 +3415,8 @@ def _process_single_standard(
 
     # Level validation (grade or stage).
     level_data = _resolve_level_ordinals(
-        config=config,
         drops=drops,
+        normalized_level_label_map=normalized_level_label_map,
         progression_context=progression_context,
         sfi_description=sfi.description,
         sfi_uuid=sfi_uuid,
@@ -3423,10 +3427,25 @@ def _process_single_standard(
 
     level_lo, level_hi, level_key, normalized_level_key, level_basis = level_data
 
-    # Level label (used as the top-level key for grouping buckets).
-    level_label = (
-        f"LEVEL {level_lo}-{level_hi}" if level_hi != level_lo else f"LEVEL {level_lo}"
+    # Level label (used as the top-level key for grouping buckets). Prefer the source
+    # level label (e.g., "CE1" or "Standard III–VI") over synthetic "LEVEL N" labels so
+    # reports and prompt logs remain interpretable.
+    level_key_label = (
+        level_key.strip() if isinstance(level_key, str) and level_key.strip() else None
     )
+
+    if level_key_label:
+        level_label = (
+            f"{level_key_label} [{level_lo}–{level_hi}]"
+            if level_hi != level_lo
+            else level_key_label
+        )
+    else:
+        level_label = (
+            f"LEVEL {level_lo}-{level_hi}"
+            if level_hi != level_lo
+            else f"LEVEL {level_lo}"
+        )
 
     # Topic path validation.
     topic_key = progression_context.get("topic_path_key", "")
@@ -3634,8 +3653,8 @@ def _resolve_forbidden_pairs(
 
 def _resolve_level_ordinals(
     *,
-    config: CreateKGConfig,
     drops: dict[str, list[dict[str, Any]]],
+    normalized_level_label_map: dict[str, int],
     progression_context: dict[str, Any],
     sfi_description: str | None,
     sfi_uuid: str,
@@ -3798,10 +3817,10 @@ def _resolve_level_ordinals(
 
     Parameters
     ----------
-    config
-        The KG creation config with LP-specific fields.
     drops
         A dictionary for collecting standards that are dropped due to validation issues.
+    normalized_level_label_map
+        Precomputed normalized mapping from configured level labels to integer ordinals.
     progression_context
         The progression context extracted from the standard item's metadata.
     sfi_description
@@ -3860,25 +3879,57 @@ def _resolve_level_ordinals(
         level_key = stage_label
         level_lo, level_hi = min(s_lo, s_hi), max(s_lo, s_hi)
     else:
-        normalized_level_key = normalized_grade_key or normalized_stage_key
+        # Try the configured label map in the same precedence order documented in
+        # CreateKGConfig: grade_key first, then stage_key. Importantly, if a
+        # `grade_key` exists but is not mapped, still try the `stage_key` before
+        # dropping the SFI.
+        fallback_candidates = [
+            ("level_label_map_grade_key", grade_key_label, normalized_grade_key),
+            ("level_label_map_stage_key", stage_label, normalized_stage_key),
+        ]
+        attempted_level_keys: list[dict[str, str | None]] = []
+        mapped_level: tuple[str, str | None, str, int] | None = None
 
-        if not normalized_level_key:
+        for (
+            candidate_basis,
+            candidate_label,
+            candidate_normalized_key,
+        ) in fallback_candidates:
+            if not candidate_normalized_key:
+                continue
+
+            attempted_level_keys.append(
+                {
+                    "basis": candidate_basis,
+                    "level_key": candidate_label,
+                    "normalized_level_key": candidate_normalized_key,
+                }
+            )
+
+            mapped = normalized_level_label_map.get(candidate_normalized_key)
+
+            if mapped is not None:
+                mapped_level = (
+                    candidate_basis,
+                    candidate_label,
+                    candidate_normalized_key,
+                    int(mapped),
+                )
+                break
+
+        if not attempted_level_keys:
             drops.setdefault("missing_level_key", []).append(
                 {"description": sfi_description, "sfi_uuid": sfi_uuid}
             )
             return None
 
-        normalized_level_label_map = {
-            _normalize_level_label_key(map_key): map_value
-            for map_key, map_value in (config.lp_level_label_map or {}).items()
-            if _normalize_level_label_key(map_key)
-        }
-        mapped = normalized_level_label_map.get(normalized_level_key)
-
-        if mapped is None:
+        if mapped_level is None:
+            attempted_keys_s = ", ".join(
+                str(item["normalized_level_key"]) for item in attempted_level_keys
+            )
             logger.warning(
-                f"lp_level_label_map: level key {normalized_level_key} "
-                f"(grade_key={grade_key}, stage_key={stage_key}) not found in map. "
+                f"lp_level_label_map: none of the candidate level keys [{attempted_keys_s}] "
+                f"(grade_key={grade_key}, stage_key={stage_key}) were found in map. "
                 f"Excluding SFI {sfi_uuid} from LP inference."
             )
             drops.setdefault("unmapped_level_key", []).append(
@@ -3886,19 +3937,14 @@ def _resolve_level_ordinals(
                     "description": sfi_description,
                     "grade_key": grade_key,
                     "stage_key": stage_key,
+                    "attempted_level_keys": attempted_level_keys,
                     "sfi_uuid": sfi_uuid,
                 }
             )
             return None
 
-        level_lo = level_hi = int(mapped)
-
-        if normalized_grade_key:
-            level_basis = "level_label_map_grade_key"
-            level_key = grade_key_label
-        else:
-            level_basis = "level_label_map_stage_key"
-            level_key = stage_label
+        level_basis, level_key, normalized_level_key, mapped_ordinal = mapped_level
+        level_lo = level_hi = mapped_ordinal
 
     normalized_level_key = normalized_level_key or (
         f"level:{level_lo}-{level_hi}" if level_lo != level_hi else f"level:{level_lo}"
@@ -4599,6 +4645,17 @@ def group_standards_for_learning_progressions(
         "unmapped_level_key": [],
     }
 
+    # Precompute level-label fallback mappings once per run instead of rebuilding them
+    # for every SFI. Keys are normalized with the same helper used in
+    # `_resolve_level_ordinals()`.
+    normalized_level_label_map: dict[str, int] = {}
+
+    for map_key, map_value in (config.lp_level_label_map or {}).items():
+        normalized_map_key = _normalize_level_label_key(map_key)
+
+        if normalized_map_key:
+            normalized_level_label_map[normalized_map_key] = map_value
+
     # Build a lookup from UUID -> `order_index_within_parent` for *all* SFIs (including
     # groupings). This is needed to convert UUID-based `canon_order_path` values into
     # numeric order paths for correct document-order sorting within buckets. NB: We key
@@ -4626,6 +4683,7 @@ def group_standards_for_learning_progressions(
             config=config,
             drops=drops,
             include_provenance=include_provenance,
+            normalized_level_label_map=normalized_level_label_map,
             order_index_lookup=order_index_lookup,
             sfi=sfi,
             within_level_buckets=within_level_buckets,
