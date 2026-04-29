@@ -1549,9 +1549,12 @@ def _get_or_create_bucket(
     downstream code should prefer item-level topic fields over bucket-level aggregate
     fields.
 
-    `within_level_fallback_segments` are stored only on `within_level` buckets.
-    Cross-level buckets deliberately do not carry within-level fallback fields because
-    those fallbacks are not used to compute cross-level thread keys.
+    Bucket-level `within_level_fallback_segments` are populated only for `within_level`
+    buckets whose key was actually produced from fallback segments. When a within-level
+    bucket is keyed by hierarchy roles, fallback segments remain item-level provenance
+    and the bucket records `within_level_bucket_used_fallback` as False. Cross-level
+    buckets deliberately do not carry within-level fallback fields because those
+    fallbacks are not used to compute cross-level thread keys.
 
     Examples
     --------
@@ -1590,11 +1593,29 @@ def _get_or_create_bucket(
             bucket["topic_path_keys"] == [
                 "strand=lecture|substage=palier_1_lecture"
             ]
+            bucket["within_level_bucket_used_fallback"] is False
+            bucket["within_level_fallback_segments"] == []
+
+        The fallback segment is still preserved on the item payload; it is not stored
+        as bucket-level fallback metadata because the bucket key came from `strand`.
+
+    2. Create a within-level fallback bucket
+
+        Given a CE1 item without the configured within-level role but with:
+
+            fallback_segments=["statement_type=grammaire"]
+            bucket_key_value="statement_type=grammaire"
+
+        the created bucket contains:
+
+            bucket["within_level_bucket_used_fallback"] is True
             bucket["within_level_fallback_segments"] == [
-                "statement_type=objectif_specifique"
+                "statement_type=grammaire"
             ]
 
-    2. Create a cross-level bucket without within-level fallback fields
+        If later items reuse this same fallback bucket, the True flag is preserved.
+
+    3. Create a cross-level bucket without within-level fallback fields
 
         Calling the same function with:
 
@@ -1606,7 +1627,7 @@ def _get_or_create_bucket(
         Cross-level matching should use hierarchy-derived thread keys, not source-field
         fallbacks such as `statement_type`.
 
-    3. Reuse an existing bucket and update aggregate topic context
+    4. Reuse an existing bucket and update aggregate topic context
 
         If a later item has the same `level_label` and `bucket_key_value` but comes
         from a different subtopic, this function returns the existing bucket and
@@ -1629,7 +1650,9 @@ def _get_or_create_bucket(
         as bucket metadata under `default_thread_key` for traceability.
     fallback_segments
         Source-field fallback segments used for within-level bucketing. These are
-        stored only when `bucket_scope == "within_level"`.
+        stored as bucket-level metadata only when `bucket_scope == "within_level"` and
+        the bucket key was actually produced from those fallback segments. Otherwise,
+        they remain item-level provenance.
     level_basis
         How level ordinals were resolved, e.g. `"grade_ordinals"` or
         `"stage_ordinals"`.
@@ -1662,66 +1685,93 @@ def _get_or_create_bucket(
 
     if bucket_scope not in {"within_level", "cross_level"}:
         raise ValueError(
-            "bucket_scope must be either 'within_level' or 'cross_level'. "
+            f"bucket_scope must be either 'within_level' or 'cross_level'. "
             f"Got: {bucket_scope!r}"
         )
 
-    topic_key_s = str(topic_key or "").strip()
+    # Clean and prepare key and fallback values for bucket lookup and metadata.
+    topic_key_str = str(topic_key or "").strip()
     topic_path = _path_string(topic_path_parts)
-
+    cleaned_fallbacks = [
+        str(seg).strip() for seg in fallback_segments or [] if str(seg).strip()
+    ]
+    fallback_key = "|".join(cleaned_fallbacks)
+    bucket_used_fallback = (
+        bucket_scope == "within_level"
+        and bool(fallback_key)
+        and bucket_key_value == fallback_key
+    )
     bucket = store[level_label].get(bucket_key_value)
 
+    # Handle existing bucket updates.
     if bucket:
-        topic_path_examples = bucket.setdefault("topic_path_examples", [])
+        examples = bucket.setdefault("topic_path_examples", [])
+        if topic_path and topic_path not in examples and len(examples) < 10:
+            examples.append(topic_path)
 
-        if (
-            topic_path
-            and topic_path not in topic_path_examples
-            and len(topic_path_examples) < 10
-        ):
-            topic_path_examples.append(topic_path)
+        keys = bucket.setdefault("topic_path_keys", [])
+        if topic_key_str and topic_key_str not in keys:
+            keys.append(topic_key_str)
 
-        topic_path_keys = bucket.setdefault("topic_path_keys", [])
+        if bucket_scope == "within_level":
+            if bucket_used_fallback:
+                bucket["within_level_bucket_used_fallback"] = True
+                existing_segments = bucket.setdefault(
+                    "within_level_fallback_segments", []
+                )
 
-        if topic_key_s and topic_key_s not in topic_path_keys:
-            topic_path_keys.append(topic_key_s)
+                for seg in cleaned_fallbacks:
+                    if seg not in existing_segments:
+                        existing_segments.append(seg)
+            else:
+                bucket.setdefault("within_level_bucket_used_fallback", False)
+                bucket.setdefault("within_level_fallback_segments", [])
 
         return bucket
 
-    default_thread_key_s = str(default_thread_key or "").strip()
-    level_key_s = (
+    # Handle new bucket creation.
+    default_thread_key_s = str(default_thread_key or "").strip() or None
+    level_key_str = (
         level_key.strip() if isinstance(level_key, str) and level_key.strip() else None
     )
-
+    grade_key = (
+        level_key_str
+        if level_basis in {"grade_ordinals", "level_label_map_grade_key"}
+        else None
+    )
+    stage_key = (
+        level_key_str
+        if level_basis in {"stage_ordinals", "level_label_map_stage_key"}
+        else None
+    )
     bucket = {
         "bucket_key": f"{level_label}::{bucket_key_value}",
         "bucket_scope": bucket_scope,
-        "default_thread_key": default_thread_key_s or None,
+        "default_thread_key": default_thread_key_s,
         "effective_bucket_key": bucket_key_value,
+        "grade_key": grade_key,
         "items": [],
         "level_basis": level_basis,
-        "level_key": level_key_s,
+        "level_key": level_key_str,
         "level_label": level_label,
         "level_ordinal": level_lo,
         "level_ordinal_high": level_hi,
         "level_ordinal_low": level_lo,
         "lp_bucket_key": bucket_key_value,
         "lp_thread_key": thread_key_value,
-        "stage_key": (
-            level_key_s
-            if level_basis in {"stage_ordinals", "level_label_map_stage_key"}
-            else None
-        ),
+        "stage_key": stage_key,
         "subject_label": subject_label,
         "topic_path_examples": [topic_path] if topic_path else [],
-        "topic_path_keys": [topic_key_s] if topic_key_s else [],
+        "topic_path_keys": [topic_key_str] if topic_key_str else [],
     }
 
     if bucket_scope == "within_level":
-        bucket["within_level_fallback_segments"] = list(fallback_segments or [])
+        bucket["within_level_bucket_used_fallback"] = bucket_used_fallback
+        bucket["within_level_fallback_segments"] = (
+            cleaned_fallbacks if bucket_used_fallback else []
+        )
 
     store[level_label][bucket_key_value] = bucket
-
     return bucket
 
 
@@ -2624,14 +2674,12 @@ def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
 
     chunks: list[str] = []
 
-    for p in topic_path_parts:
-        role = (p.get("role") or "").strip()
-        label = (p.get("label") or "").strip()
+    for tpp in topic_path_parts:
+        role = tpp["role"]
+        label = (tpp.get("label") or "").strip()
 
-        if role and label:
+        if label:
             chunks.append(f"{role}:{label}")
-        elif label:
-            chunks.append(label)
 
     return " -> ".join(chunks)
 
@@ -4155,8 +4203,8 @@ def _resolve_subject_label(
     Parameters
     ----------
     subject_role
-        The role string used to identify the subject in topic path parts. When None,
-        the function searches for "subject" then "learning_area" as fallback roles.
+        The role used to identify the subject in topic path parts. When None, the
+        function searches for "subject" then "learning_area" as fallback roles.
     topic_path_parts
         A list of topic path part dictionaries, each expected to contain "role" and
         "label" keys.
