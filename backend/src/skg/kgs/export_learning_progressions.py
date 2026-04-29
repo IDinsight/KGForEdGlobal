@@ -4486,6 +4486,10 @@ def group_standards_for_learning_progressions(
     cross_level_buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]] = (
         defaultdict(lambda: defaultdict(dict))
     )
+
+    # Track dropped standards for reporting. Each key corresponds to a specific reason
+    # for dropping, and the value is a list of dictionaries containing relevant
+    # information about each dropped standard item.
     drops: dict[str, list[dict[str, Any]]] = {
         "missing_level_key": [],
         "missing_topic_path_key": [],
@@ -4495,11 +4499,9 @@ def group_standards_for_learning_progressions(
 
     # Build a lookup from UUID -> `order_index_within_parent` for *all* SFIs (including
     # groupings). This is needed to convert UUID-based `canon_order_path` values into
-    # numeric order paths for correct document-order sorting within buckets.
-    #
-    # This keys the lookup by:
-    # 1. `str(sfi.case_identifier_uuid or sfi.identifier)`
-    # 2. `metadata.canonical_node_id` (when present)
+    # numeric order paths for correct document-order sorting within buckets. NB: We key
+    # the lookup by `metadata.canonical_node_id`, because
+    # `progression_context.canon_order_path` stores canonical IR node IDs.
     order_index_lookup: dict[str, int] = {}
 
     for sfi in academic_standards.items:
@@ -4510,18 +4512,11 @@ def group_standards_for_learning_progressions(
         if not isinstance(oiwp, int):  # int or None
             continue
 
-        legacy_uuid = str(sfi.case_identifier_uuid or sfi.identifier).strip()
-
-        if legacy_uuid:
-            order_index_lookup[legacy_uuid] = oiwp
-
         # Academic Standards export stores the canonical node ID at the top level of
         # `sfi.metadata`, not inside `progression_context`.
-        canonical_node_id = metadata.get("canonical_node_id")
-        canonical_key = str(canonical_node_id).strip() if canonical_node_id else ""
-
-        if canonical_key:
-            order_index_lookup[canonical_key] = oiwp
+        canonical_key = str(metadata["canonical_node_id"]).strip()
+        assert canonical_key, f"{metadata = }"
+        order_index_lookup[canonical_key] = oiwp
 
     for sfi in academic_standards.items:
         _process_single_standard(
