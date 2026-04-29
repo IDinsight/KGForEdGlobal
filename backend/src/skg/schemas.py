@@ -1031,19 +1031,6 @@ class CreateKGConfig(BaseSchema):
         default=True,
         description="Enable cross-grade buildsTowards progression inference between adjacent single-level grade buckets.",
     )
-    lp_cross_grade_match_roles: Optional[list[NodeRole]] = Field(
-        default=None,
-        description=(
-            "Ordered list of canonical IR node roles whose labels form the "
-            "cross-grade thread identity for LP Phases 2 and 4. Only entries in "
-            "progression_context.topic_path_parts with a role in this list are "
-            "included in the LP thread key. Example: ['strand'] matches "
-            "'Activités numériques' across CE1 and CE2. Also used for Phase 1 "
-            "within-grade grouping (collapses week/substage fragmentation). "
-            "When None, uses thread_key from progression_context (current behavior)."
-        ),
-        min_length=1,
-    )
     lp_cross_grade_relates_to_max_items_per_subject: int = Field(
         default=10,
         description="Cross-grade relatesTo: max sampled Standards per subject per grade.",
@@ -1052,6 +1039,18 @@ class CreateKGConfig(BaseSchema):
     lp_cross_grade_relates_to: bool = Field(
         default=True,
         description="Enable cross-grade relatesTo progression inference between adjacent single-level grade buckets.",
+    )
+    lp_cross_level_thread_roles: Optional[list[NodeRole]] = Field(
+        default=None,
+        description=(
+            "Ordered list of canonical IR node roles whose labels form the "
+            "cross-level thread identity for LP Phases 2 and 4. Only entries in "
+            "progression_context.topic_path_parts with a role in this list are "
+            "included in the LP thread key. Example: ['strand'] matches "
+            "'Activités numériques' across adjacent levels. When None, uses "
+            "thread_key from progression_context."
+        ),
+        min_length=1,
     )
     lp_cross_stage_builds_towards: bool = Field(
         default=False,
@@ -1139,6 +1138,31 @@ class CreateKGConfig(BaseSchema):
         default=5,
         description="Within-grade relatesTo (cross-subject only): max sampled standards per subject (keeps LLM calls bounded).",
         ge=1,
+    )
+    lp_within_level_bucket_roles: Optional[list[NodeRole]] = Field(
+        default=None,
+        description=(
+            "Ordered list of canonical IR node roles whose labels form the "
+            "within-level bucket identity for Phase 1 within-level buildsTowards "
+            "and Phase 3 within-level relatesTo sampling. Use this to decide which "
+            "items are allowed to be compared inside the same level. Example: "
+            "['strand'] groups all items in the same strand across smaller units, "
+            "weeks, topics, or substages. When None, uses thread_key from "
+            "progression_context."
+        ),
+        min_length=1,
+    )
+    lp_within_level_fallback_fields: list[
+        Literal["statement_type", "statement_code", "source_label", "academic_subject"]
+    ] = Field(
+        default_factory=list,
+        description=(
+            "Ordered source fields used as fallback within-level bucket segments "
+            "when `lp_within_level_bucket_roles` cannot produce a key for an item. "
+            "This is useful when the hierarchy path is shallow but source fields "
+            "such as statement_type identify stable skill tracks. Empty list means "
+            "no source-field fallback."
+        ),
     )
     namespace_uuid: UUID = Field(
         default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
@@ -1307,17 +1331,20 @@ class CreateKGConfig(BaseSchema):
 
         return validate_regex_prefixed_patterns(field_name=info.field_name, patterns=v)
 
-    @field_validator("lp_cross_grade_match_roles")
+    @field_validator("lp_within_level_bucket_roles", "lp_cross_level_thread_roles")
     @classmethod
-    def _validate_lp_cross_grade_match_roles(
-        cls, v: Optional[list[NodeRole]]
+    def _validate_lp_bucket_or_thread_roles(
+        cls, v: Optional[list[NodeRole]], info: Any
     ) -> Optional[list[NodeRole]]:
-        """Validate learning progression thread-key roles.
+        """Validate learning progression bucket/thread-key roles.
 
         Parameters
         ----------
         v
-            The ordered role list that defines the cross-grade thread identity.
+            The ordered role list that defines a within-level bucket identity or a
+            cross-level thread identity.
+        info
+            Pydantic field validation info used to report the field name.
 
         Returns
         -------
@@ -1330,7 +1357,7 @@ class CreateKGConfig(BaseSchema):
             If the role list contains duplicates or disallowed roles.
         """
 
-        return validate_lp_roles(field_name="lp_cross_grade_match_roles", roles=v)
+        return validate_lp_roles(field_name=info.field_name, roles=v)
 
     @field_validator("lp_subject_role")
     @classmethod
