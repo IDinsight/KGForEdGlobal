@@ -2989,12 +2989,10 @@ def _resolve_level_ordinals(
 
     1. Explicit grade ordinal range from `progression_context`.
     2. Explicit stage ordinal range from `progression_context`.
-    3. Config fallback via `config.lp_level_label_map` using `grade_key` or
-       `stage_key`.
+    3. Config fallback via `config.lp_level_label_map` using `grade_key` or `stage_key`.
 
     The returned `level_key` and `level_basis` identify which source actually resolved
-    the level. This avoids carrying an unrelated `stage_key` when grade ordinals won
-    the resolution.
+    the level.
 
     Examples
     --------
