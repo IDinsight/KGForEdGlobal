@@ -2503,7 +2503,7 @@ def _lp_statement_type_drop_reason(
     # Normalize the target statement type.
     normalized_statement_type = " ".join(str(statement_type or "").split()).casefold()
 
-    # Normalization and zblank-dropping for the exclude set.
+    # Normalization and blank-dropping for the exclude set.
     excluded_statement_types = {
         normalized_value
         for value in (config.lp_source_statement_types_exclude or set())
