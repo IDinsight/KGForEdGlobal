@@ -429,7 +429,7 @@ def _build_item_payload(
 
 
 def _build_sfi_index(
-    by_grade: dict[str, list[dict[str, Any]]],
+    by_level: dict[str, list[dict[str, Any]]],
 ) -> dict[str, dict[str, Any]]:
     """Build a lookup table of SFI UUID -> context/provenance hints.
 
@@ -440,27 +440,37 @@ def _build_sfi_index(
     buckets when configured within-level bucket roles do not match any roles for an
     item). Therefore, this index MUST prefer *item-level* topic fields when present,
     rather than relying on bucket-level `topic_path`/`lp_bucket_key` values.
+
+    Parameters
+    ----------
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        SFI UUID string -> item and bucket context used for relationship metadata and
+        within-level ordering checks.
     """
 
     def _iter_items() -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:
-        """Iterate all items across all buckets and yield (grade_label, bucket, item)
-        tuples.
+        """Iterate all items across all buckets.
 
         Returns
         -------
         Iterator[tuple[str, dict[str, Any], dict[str, Any]]]
-            An iterator yielding tuples of (grade_label, bucket_dict, item_dict) for
-            each item found in the buckets organized by grade.
+            Tuples of (level_label, bucket_dict, item_dict) for each item found in the
+            buckets organized by level.
         """
 
-        for grade_label, grade_buckets in (by_grade or {}).items():
-            for bucket in grade_buckets or []:
+        for level_label, level_buckets in (by_level or {}).items():
+            for bucket in level_buckets or []:
                 for item in bucket.get("items") or []:
-                    yield grade_label, bucket, item
+                    yield level_label, bucket, item
 
     index: dict[str, dict[str, Any]] = {}
 
-    for grade_label, b, it in _iter_items():
+    for level_label, b, it in _iter_items():
         u = str(it.get("sfi_uuid") or "").strip()
 
         if not u:
@@ -474,9 +484,9 @@ def _build_sfi_index(
             or b.get("default_thread_key"),
             "doc_pos_page_index": it.get("doc_pos_page_index"),
             "doc_pos_y0": it.get("doc_pos_y0"),
-            "grade_label": grade_label,
             "level_basis": it.get("level_basis") or b.get("level_basis"),
             "level_key": it.get("level_key") or b.get("level_key"),
+            "level_label": level_label,
             "numeric_order_missing_count": it.get("numeric_order_missing_count"),
             "numeric_order_path": it.get("numeric_order_path"),
             "order_index_within_parent": it.get("order_index_within_parent"),
@@ -508,7 +518,7 @@ def _build_sfi_index(
 
 
 def _build_thread_map(
-    by_grade: dict[str, list[dict[str, Any]]],
+    by_level: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
     """Organize buckets by thread key and level-range order.
 
@@ -517,21 +527,21 @@ def _build_thread_map(
       - banded buckets (low!=high) for cross-stage adjacency.
 
     The returned mapping groups buckets by thread key and sorts them by
-    (grade_ordinal_low, grade_ordinal_high).
+    (level_ordinal_low, level_ordinal_high).
 
     Parameters
     ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that grade.
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries, where each
+        bucket contains information about a thread of standards within that level.
 
     Returns
     -------
     dict[str, list[dict[str, Any]]]
         A dictionary mapping thread keys to lists of bucket dictionaries, where each
-        list is sorted by (grade_ordinal_low, grade_ordinal_high) to facilitate
+        list is sorted by (level_ordinal_low, level_ordinal_high) to facilitate
         cross-grade and cross-stage buildsTowards inference. Buckets without integer
-        grade bounds are skipped and counted for logging purposes.
+        level bounds are skipped and counted for logging purposes.
 
     Raises
     ------
@@ -546,8 +556,8 @@ def _build_thread_map(
     missing_thread_key = 0
     missing_thread_key_examples: list[str] = []
 
-    for grade_buckets in by_grade.values():
-        for b in grade_buckets:
+    for level_buckets in by_level.values():
+        for b in level_buckets:
             lo, hi = _level_bounds(b)
 
             if not isinstance(lo, int) or not isinstance(hi, int):
@@ -600,7 +610,7 @@ def _build_thread_map(
 
     if skipped_no_bounds > 0:
         logger.warning(
-            f"Skipped {skipped_no_bounds} buckets without integer grade bounds "
+            f"Skipped {skipped_no_bounds} buckets without integer level bounds "
             f"(missing grade/stage ordinal data)."
         )
 
@@ -1213,12 +1223,12 @@ def _emit_relationship(
 def _filter_builds_towards_within_grade_order(
     *, edges: list[CandidateEdge], sfi_index: dict[str, dict[str, Any]]
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
-    """Drop Phase-1 buildsTowards edges that contradict within-grade document order.
+    """Drop Phase-1 buildsTowards edges that contradict within-level document order.
 
     Parameters
     ----------
     edges
-        Candidate edges (expected to be Phase 1 within-grade buildsTowards).
+        Candidate edges (expected to be Phase 1 within-level buildsTowards).
     sfi_index
         SFI UUID -> context index from `_build_sfi_index`.
 
@@ -1231,10 +1241,10 @@ def _filter_builds_towards_within_grade_order(
     def _compare_within_grade_order(
         *, source_context: dict[str, Any], target_context: dict[str, Any]
     ) -> Optional[int]:
-        """Compare two SFI contexts by within-grade curriculum order.
+        """Compare two SFI contexts by within-level curriculum order.
 
         This comparison is only intended for within-grade edges where the two SFIs are
-        in the same comparable ordering domain (same grade and same topic/thread key).
+        in the same comparable ordering domain (same level and same topic/thread key).
         It uses the most reliable ordering signal available:
 
         1, `numeric_order_path` when both contexts have complete paths
@@ -1255,10 +1265,10 @@ def _filter_builds_towards_within_grade_order(
             the order cannot be determined.
         """
 
-        source_grade = source_context.get("grade_label")
-        target_grade = target_context.get("grade_label")
+        source_level = source_context.get("level_label")
+        target_level = target_context.get("level_label")
 
-        if source_grade != target_grade:
+        if source_level != target_level:
             return None
 
         source_topic = source_context.get("topic_path_key")
@@ -1514,10 +1524,10 @@ def _get_or_create_bucket(
     bucket_scope: str,
     default_thread_key: str | None,
     fallback_segments: list[str] | None,
-    grade_label: str,
     level_basis: str,
     level_hi: int,
     level_key: str | None,
+    level_label: str,
     level_lo: int,
     store: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
     subject_label: str,
@@ -1554,10 +1564,10 @@ def _get_or_create_bucket(
                 bucket_scope="within_level",
                 default_thread_key="strand=lecture|substage=palier_1_lecture",
                 fallback_segments=["statement_type=objectif_specifique"],
-                grade_label="LEVEL 1",
                 level_basis="grade_ordinals",
                 level_hi=1,
                 level_key="CE1",
+                level_label="LEVEL 1",
                 level_lo=1,
                 store=within_level_buckets,
                 subject_label="Lecture",
@@ -1573,6 +1583,7 @@ def _get_or_create_bucket(
 
             bucket["bucket_scope"] == "within_level"
             bucket["default_thread_key"] == "strand=lecture|substage=palier_1_lecture"
+            bucket["level_label"] == "LEVEL 1"
             bucket["topic_path_examples"] == [
                 "strand:Lecture -> substage:Palier 1 - Lecture"
             ]
@@ -1597,7 +1608,7 @@ def _get_or_create_bucket(
 
     3. Reuse an existing bucket and update aggregate topic context
 
-        If a later item has the same `grade_label` and `bucket_key_value` but comes
+        If a later item has the same `level_label` and `bucket_key_value` but comes
         from a different subtopic, this function returns the existing bucket and
         appends the new path to `topic_path_examples` and the new key to
         `topic_path_keys` when they are not already present.
@@ -1619,9 +1630,6 @@ def _get_or_create_bucket(
     fallback_segments
         Source-field fallback segments used for within-level bucketing. These are
         stored only when `bucket_scope == "within_level"`.
-    grade_label
-        The level label used as the outer key in the bucket store, e.g. `"LEVEL 1"`
-        or `"LEVEL 3-6"`.
     level_basis
         How level ordinals were resolved, e.g. `"grade_ordinals"` or
         `"stage_ordinals"`.
@@ -1629,10 +1637,13 @@ def _get_or_create_bucket(
         Highest level ordinal represented by the bucket.
     level_key
         Human-readable source level key, e.g. `"CE1"` or `"Standard III–VI"`.
+    level_label
+        The level label used as the outer key in the bucket store, e.g. `"LEVEL 1"` or
+        `"LEVEL 3-6"`.
     level_lo
         Lowest level ordinal represented by the bucket.
     store
-        Nested bucket store keyed by `grade_label` then `bucket_key_value`.
+        Nested bucket store keyed by `level_label` then `bucket_key_value`.
     subject_label
         Subject-like label for the bucket, often a strand in single-subject curricula.
     thread_key_value
@@ -1657,7 +1668,7 @@ def _get_or_create_bucket(
     topic_key_s = str(topic_key or "").strip()
     topic_path = _path_string(topic_path_parts)
 
-    bucket = store[grade_label].get(bucket_key_value)
+    bucket = store[level_label].get(bucket_key_value)
 
     if bucket:
         topic_path_examples = bucket.setdefault("topic_path_examples", [])
@@ -1682,17 +1693,17 @@ def _get_or_create_bucket(
     )
 
     bucket = {
-        "bucket_key": f"{grade_label}::{bucket_key_value}",
+        "bucket_key": f"{level_label}::{bucket_key_value}",
         "bucket_scope": bucket_scope,
         "default_thread_key": default_thread_key_s or None,
         "effective_bucket_key": bucket_key_value,
-        "grade_level": grade_label,
-        "grade_ordinal": level_lo,
-        "grade_ordinal_high": level_hi,
-        "grade_ordinal_low": level_lo,
         "items": [],
         "level_basis": level_basis,
         "level_key": level_key_s,
+        "level_label": level_label,
+        "level_ordinal": level_lo,
+        "level_ordinal_high": level_hi,
+        "level_ordinal_low": level_lo,
         "lp_bucket_key": bucket_key_value,
         "lp_thread_key": thread_key_value,
         "stage_key": (
@@ -1708,21 +1719,21 @@ def _get_or_create_bucket(
     if bucket_scope == "within_level":
         bucket["within_level_fallback_segments"] = list(fallback_segments or [])
 
-    store[grade_label][bucket_key_value] = bucket
+    store[level_label][bucket_key_value] = bucket
 
     return bucket
 
 
-def _group_threads_by_grade_and_subject(
-    *, by_grade: dict[str, list[dict[str, Any]]], config: CreateKGConfig
+def _group_threads_by_level_and_subject(
+    *, by_level: dict[str, list[dict[str, Any]]], config: CreateKGConfig
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    """Group threads by grade and subject, filtering invalid items.
+    """Group threads by level and subject, filtering invalid items.
 
     Parameters
     ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that grade, and
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries, where each
+        bucket contains information about a thread of standards within that level, and
         may include a "subject_label" key indicating the subject of the thread.
     config
         The knowledge graph run configuration.
@@ -1730,31 +1741,31 @@ def _group_threads_by_grade_and_subject(
     Returns
     -------
     dict[str, dict[str, list[dict[str, Any]]]]
-        A nested dictionary mapping grade labels to subject labels to lists of bucket
-        dictionaries, representing the organization of threads by grade and subject for
-        within-grade relatesTo inference. Only buckets that are allowed for
-        within-grade inference based on the configuration (e.g., single-grade buckets
+        A nested dictionary mapping level labels to subject labels to lists of bucket
+        dictionaries, representing the organization of threads by level and subject for
+        within-level relatesTo inference. Only buckets that are allowed for
+        within-level inference based on the configuration (e.g., single-level buckets
         if lp_within_grade_allow_banded_levels=False) are included in the output.
     """
 
-    grade_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+    level_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
         lambda: defaultdict(list)
     )
 
-    for grade_label, grade_buckets in by_grade.items():
-        for b in grade_buckets:
+    for level_label, level_buckets in by_level.items():
+        for b in level_buckets:
             if not _allow_within_grade_inference(bucket=b, config=config):
                 continue
 
             subject = str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            grade_subject_threads[grade_label][subject].append(b)
+            level_subject_threads[level_label][subject].append(b)
 
-    return grade_subject_threads
+    return level_subject_threads
 
 
 def _infer_cross_grade_builds_towards(
     *,
-    by_grade: dict[str, list[dict[str, Any]]],
+    by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
@@ -1768,8 +1779,8 @@ def _infer_cross_grade_builds_towards(
 
     Parameters
     ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries.
     config
         The knowledge graph run configuration.
     usage_tracker
@@ -1795,16 +1806,16 @@ def _infer_cross_grade_builds_towards(
     ):
         return candidates, provenance_rows, cross_level_build_pairs
 
-    thread_map = _build_thread_map(by_grade)
+    thread_map = _build_thread_map(by_level)
 
     # Debug: count unthreaded sentinel buckets that will be excluded from cross-grade
-    # matching because their grade-specific sentinels prevent cross-grade pairing.
+    # matching because their level-specific sentinels prevent cross-grade pairing.
     unthreaded_count = sum(1 for tk in thread_map if tk.startswith("__unthreaded__::"))
 
     if unthreaded_count > 0:
         logger.info(
             f"Cross-grade matching: {unthreaded_count} unthreaded thread(s) "
-            f"excluded (grade-specific sentinel prevents cross-grade pairing)"
+            f"excluded (level-specific sentinel prevents cross-grade pairing)"
         )
 
     work_items = _collect_builds_towards_work_items(
@@ -1859,7 +1870,7 @@ def _infer_cross_grade_builds_towards(
 
 def _infer_cross_grade_relates_to(
     *,
-    by_grade: dict[str, list[dict[str, Any]]],
+    by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     forbidden_builds_pairs: set[tuple[UUID, UUID]],
     usage_tracker: KGUsageTracker,
@@ -1869,8 +1880,8 @@ def _infer_cross_grade_relates_to(
 
     Parameters
     ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries.
     config
         The knowledge graph run configuration.
     forbidden_builds_pairs
@@ -1896,8 +1907,8 @@ def _infer_cross_grade_relates_to(
     max_items = int(config.lp_cross_grade_relates_to_max_items_per_subject)
     max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
 
-    subject_level_samples = _prepare_subject_grade_samples(
-        by_grade=by_grade,
+    subject_level_samples = _prepare_subject_level_samples(
+        by_level=by_level,
         excluded_subject_labels=set(config.lp_excluded_subject_labels or []),
         max_items=max_items,
     )
@@ -1952,7 +1963,7 @@ def _infer_cross_grade_relates_to(
 
 def _infer_within_grade_builds_towards(
     *,
-    by_grade: dict[str, list[dict[str, Any]]],
+    by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
@@ -1960,8 +1971,8 @@ def _infer_within_grade_builds_towards(
 
     Parameters
     ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries.
     config
         The knowledge graph run configuration.
     usage_tracker
@@ -1983,23 +1994,23 @@ def _infer_within_grade_builds_towards(
 
     # Collect eligible buckets so total_calls is exact.
     eligible: list[tuple[str, dict[str, Any]]] = [
-        (grade_label, bucket)
-        for grade_label, grade_buckets in by_grade.items()
-        for bucket in grade_buckets
+        (level_label, bucket)
+        for level_label, level_buckets in by_level.items()
+        for bucket in level_buckets
         if _allow_within_grade_inference(bucket=bucket, config=config)
         and len(bucket.get("items") or []) >= 2
     ]
     total_calls = len(eligible)
     logger.info(
-        f"{total_calls} buckets with 2+ items for within-grade buildsTowards inference."
+        f"{total_calls} buckets with 2+ items for within-level buildsTowards inference."
     )
 
-    for current_call, (grade_label, bucket) in enumerate(eligible, 1):
+    for current_call, (level_label, bucket) in enumerate(eligible, 1):
         items = bucket.get("items") or []
 
         logger.info(
             f"Phase 1 Progress: {current_call}/{total_calls} "
-            f"({grade_label} - {bucket.get('lp_bucket_key')})"
+            f"({level_label} - {bucket.get('lp_bucket_key')})"
         )
 
         ordered_items = [
@@ -2007,7 +2018,7 @@ def _infer_within_grade_builds_towards(
         ]
 
         prompt = within_grade_builds_towards(
-            grade_label=str(grade_label),
+            grade_label=str(level_label),
             items=ordered_items,
             min_confidence=config.lp_builds_towards_min_confidence,
             thread_path=_bucket_topic_context(bucket=bucket),
@@ -2036,7 +2047,7 @@ def _infer_within_grade_builds_towards(
                 llm_confidence=float(edge.confidence),
                 metadata={
                     "phase": 1,
-                    "grade_label": grade_label,
+                    "level_label": level_label,
                     "lp_bucket_key": bucket.get("lp_bucket_key"),
                     "lp_thread_key": bucket.get("lp_thread_key"),
                     "subject_label": bucket.get("subject_label"),
@@ -2063,7 +2074,7 @@ def _infer_within_grade_builds_towards(
 
 def _infer_within_grade_relates_to(
     *,
-    by_grade: dict[str, list[dict[str, Any]]],
+    by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
@@ -2076,8 +2087,8 @@ def _infer_within_grade_relates_to(
 
     Parameters
     ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries.
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries.
     config
         The knowledge graph run configuration.
     usage_tracker
@@ -2101,16 +2112,16 @@ def _infer_within_grade_relates_to(
     max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
 
     # NB: Phase 3 does NOT exclude forbidden buildsTowards pairs (unlike Phase 4). This
-    # is safe because Phase 1 (within-grade buildsTowards) operates within a single
+    # is safe because Phase 1 (within-level buildsTowards) operates within a single
     # thread, while Phase 3 operates strictly *cross-subject*. Since threads are
     # partitioned by subject, the two item sets can never overlap, so a pair that has a
     # Phase 1 buildsTowards edge cannot appear in a Phase 3 relatesTo prompt. If the
     # bucketing invariant (threads are subject-disjoint) ever changes, this assumption
     # should be revisited and a forbidden_builds_pairs parameter added.
 
-    # Group threads by grade -> subject.
-    grade_subject_threads = _group_threads_by_grade_and_subject(
-        by_grade=by_grade, config=config
+    # Group threads by level -> subject.
+    level_subject_threads = _group_threads_by_level_and_subject(
+        by_level=by_level, config=config
     )
 
     work_items: list[dict[str, Any]] = []
@@ -2121,7 +2132,7 @@ def _infer_within_grade_relates_to(
     }
     phase3_excluded_count = 0
 
-    for grade_label, by_subject in grade_subject_threads.items():
+    for level_label, by_subject in level_subject_threads.items():
         subject_keys = [s for s in sorted(by_subject.keys()) if s not in excluded]
         phase3_excluded_count += sum(1 for s in by_subject if s in excluded)
 
@@ -2145,7 +2156,7 @@ def _infer_within_grade_relates_to(
 
                 work_items.append(
                     {
-                        "grade_label": grade_label,
+                        "level_label": level_label,
                         "subject_a": subject_a,
                         "subject_b": subject_b,
                         "sampled_a": sampled_a,
@@ -2180,12 +2191,12 @@ def _infer_within_grade_relates_to(
     current_call = 0
 
     for wi in work_items:
-        grade_label = wi["grade_label"]
+        level_label = wi["level_label"]
         subject_a, subject_b = wi["subject_a"], wi["subject_b"]
         sampled_a, sampled_b = wi["sampled_a"], wi["sampled_b"]
         thread_a_path, thread_b_path = wi["thread_a_path"], wi["thread_b_path"]
 
-        logger.info(f"Phase 3 Pair: ({grade_label}: {subject_a} × {subject_b})")
+        logger.info(f"Phase 3 Pair: ({level_label}: {subject_a} × {subject_b})")
 
         items_a, items_b = [_build_item_payload(item=it) for it in sampled_a], [
             _build_item_payload(item=it) for it in sampled_b
@@ -2198,7 +2209,7 @@ def _infer_within_grade_relates_to(
         # Bidirectional confirmation: run A x B and B x A, then keep only edges that
         # appear in both runs (canonicalized by UUID order).
         prompt_ab = within_grade_relates_to(
-            grade_label=str(grade_label),
+            grade_label=str(level_label),
             items_a=items_a,
             items_b=items_b,
             max_edges_per_sfi=max_edges_per_sfi,
@@ -2214,7 +2225,7 @@ def _infer_within_grade_relates_to(
 
         logger.info(
             f"Phase 3 Progress: {current_call}/{total_calls} "
-            f"({grade_label}: {subject_a} × {subject_b} | relatesTo | A -> B)"
+            f"({level_label}: {subject_a} × {subject_b} | relatesTo | A -> B)"
         )
 
         resp_ab = infer_progression_edges(
@@ -2229,7 +2240,7 @@ def _infer_within_grade_relates_to(
         )
 
         prompt_ba = within_grade_relates_to(
-            grade_label=str(grade_label),
+            grade_label=str(level_label),
             items_a=items_b,
             items_b=items_a,
             max_edges_per_sfi=max_edges_per_sfi,
@@ -2245,7 +2256,7 @@ def _infer_within_grade_relates_to(
 
         logger.info(
             f"Phase 3 Progress: {current_call}/{total_calls} "
-            f"({grade_label}: {subject_a} × {subject_b} | relatesTo | B -> A)"
+            f"({level_label}: {subject_a} × {subject_b} | relatesTo | B -> A)"
         )
 
         resp_ba = infer_progression_edges(
@@ -2281,7 +2292,7 @@ def _infer_within_grade_relates_to(
                 llm_confidence=float(conf),
                 metadata={
                     "phase": 3,
-                    "grade_label": grade_label,
+                    "level_label": level_label,
                     "subject_a": subject_a,
                     "subject_b": subject_b,
                     "bidirectional_confirmed": True,
@@ -2301,7 +2312,7 @@ def _infer_within_grade_relates_to(
                     confidence_rev=float(conf_ba),
                     rationale_fwd=rat_ab,
                     rationale_rev=rat_ba,
-                    grade_label=grade_label,
+                    grade_label=level_label,
                     subject_a=subject_a,
                     subject_b=subject_b,
                 )
@@ -2369,28 +2380,27 @@ def _level_bounds(b: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
     Parameters
     ----------
     b
-        A bucket dictionary that may contain "grade_ordinal_low", "grade_ordinal_high",
-        or "grade_ordinal" keys representing the grade level information for the
+        A bucket dictionary that may contain "level_ordinal_low", "level_ordinal_high",
+        or "level_ordinal" keys representing the curriculum level information for the
         standards contained in the bucket.
 
     Returns
     -------
     tuple[Optional[int], Optional[int]]
-        A tuple containing the low and high grade ordinals for the bucket. If both
-        "grade_ordinal_low" and "grade_ordinal_high" are present and valid integers,
-        those values are returned. If only "grade_ordinal" is present and valid, it is
-        returned as both the low and high ordinal. If neither is available or valid,
-        (None, None) is returned, indicating that the grade level information is not
-        available for this bucket.
+        The low and high level ordinals for the bucket. If both "level_ordinal_low"
+        and "level_ordinal_high" are present and valid integers, those values are
+        returned. If only "level_ordinal" is present and valid, it is returned as both
+        the low and high ordinal. If neither is available or valid, (None, None) is
+        returned.
     """
 
-    lo = b.get("grade_ordinal_low")
-    hi = b.get("grade_ordinal_high")
+    lo = b.get("level_ordinal_low")
+    hi = b.get("level_ordinal_high")
 
     if isinstance(lo, int) and isinstance(hi, int):
         return lo, hi
 
-    ord_ = b.get("grade_ordinal")
+    ord_ = b.get("level_ordinal")
 
     if isinstance(ord_, int):
         return int(ord_), int(ord_)
@@ -2399,18 +2409,18 @@ def _level_bounds(b: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
 
 
 def _level_label(b: dict[str, Any]) -> str:
-    """Human-readable label for grade or banded stage buckets.
+    """Return a human-readable label for a single-level or banded-level bucket.
 
     Parameters
     ----------
     b
-        A bucket dictionary that may contain grade level information, including
-        "grade_ordinal_low", "grade_ordinal_high", "grade_level", and "stage_key" keys.
+        A bucket dictionary that may contain level information, including
+        "level_ordinal_low", "level_ordinal_high", "level_label", and "stage_key" keys.
 
     Returns
     -------
     str
-        A human-readable label for the grade or banded stage represented by the bucket.
+        A human-readable label for the level or banded stage represented by the bucket.
     """
 
     lo, hi = _level_bounds(b)
@@ -2422,11 +2432,11 @@ def _level_label(b: dict[str, Any]) -> str:
         if isinstance(stage_key, str) and stage_key.strip():
             return stage_key.strip()
 
-        return f"GRADES {lo}–{hi}"
+        return f"LEVELS {lo}–{hi}"
 
     return str(
-        b.get("grade_level")
-        or (f"GRADE {lo}" if isinstance(lo, int) else "UNSPECIFIED_GRADE")
+        b.get("level_label")
+        or (f"LEVEL {lo}" if isinstance(lo, int) else "UNSPECIFIED_LEVEL")
     )
 
 
@@ -2570,6 +2580,30 @@ def _make_provenance_row(
     return row
 
 
+def _normalize_level_label_key(value: Any) -> str:
+    """Normalize a grade/stage label for LP level-label map lookup.
+
+    The normalization is intentionally lighter than `normalize_key_token()` because
+    `lp_level_label_map` keys should remain human-recognizable. It converts the value
+    to a string, strips leading/trailing whitespace, collapses internal whitespace, and
+    uses `casefold()` for robust case-insensitive matching while preserving accents and
+    punctuation.
+
+    Parameters
+    ----------
+    value
+        Raw grade or stage label to normalize.
+
+    Returns
+    -------
+    str
+        Normalized label key, or an empty string if the input has no non-whitespace
+        content.
+    """
+
+    return " ".join(str(value or "").split()).casefold()
+
+
 def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
     """Convert a list of topic path parts (with optional "role" and label" keys) into a
     compact, stable-ish context string for the LLM.
@@ -2601,29 +2635,29 @@ def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
     return " -> ".join(chunks)
 
 
-def _prepare_subject_grade_samples(
+def _prepare_subject_level_samples(
     *,
-    by_grade: dict[str, list[dict[str, Any]]],
+    by_level: dict[str, list[dict[str, Any]]],
     excluded_subject_labels: set[str] | None = None,
     max_items: int,
 ) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
     """Group and sample items by subject and level range for Phase 4.
 
-    Instead of keying by a single grade ordinal, we key by (low, high) so stage-banded
+    Instead of keying by a single level ordinal, we key by (low, high) so stage-banded
     buckets (e.g., III–VI) remain truthful in cross-level inference.
 
     Parameters
     ----------
-    by_grade
-        Dictionary mapping grade labels to lists of bucket dictionaries, where each
-        bucket dictionary contains information about the subject, grade ordinal, topic
+    by_level
+        Dictionary mapping level labels to lists of bucket dictionaries, where each
+        bucket dictionary contains information about the subject, level ordinal, topic
         path, and items (standards) within that bucket.
     excluded_subject_labels
         Optional set of subject labels to skip during sampling. Buckets whose
         `subject_label` is in this set are excluded from the returned samples.
         Typically `{"UNSPECIFIED_SUBJECT"}` to avoid noise from unmapped items.
     max_items
-        The maximum number of items to sample across threads for each subject and grade
+        The maximum number of items to sample across threads for each subject and level
         combination. If the total number of items across threads exceeds this limit, a
         sampling strategy will be applied to select a representative subset of items
         for use in the LLM prompt during Phase 4 inference.
@@ -2635,7 +2669,6 @@ def _prepare_subject_grade_samples(
         {
             subject_label: {
                 (level_low, level_high): {
-                    "grade_label": str,
                     "level_label": str,
                     "level_low": int,
                     "level_high": int,
@@ -2648,12 +2681,12 @@ def _prepare_subject_grade_samples(
         defaultdict(dict)
     )
 
-    for grade_label, grade_buckets in by_grade.items():
+    for level_label, level_buckets in by_level.items():
         buckets_by_subject: dict[str, list[dict[str, Any]]] = defaultdict(list)
         bounds: list[tuple[int, int]] = []
         exemplar_bucket: Optional[dict[str, Any]] = None
 
-        for b in grade_buckets:
+        for b in level_buckets:
             lo, hi = _level_bounds(b)
 
             if isinstance(lo, int) and isinstance(hi, int):
@@ -2674,12 +2707,12 @@ def _prepare_subject_grade_samples(
         if any((lo, hi) != level_key for lo, hi in bounds):
             distinct_bounds = sorted(set(bounds))
             logger.warning(
-                f"Phase 4 subject sampling: SKIPPING grade '{grade_label}' due to "
-                f"inconsistent grade bounds across its {len(bounds)} bucket(s). "
+                f"Phase 4 subject sampling: SKIPPING level '{level_label}' due to "
+                f"inconsistent level bounds across its {len(bounds)} bucket(s). "
                 f"Distinct (low, high) values found: {distinct_bounds}. "
                 f"Aggregated level_key would be {level_key}, which could create "
                 f"invalid adjacency relationships. Fix the upstream Academic "
-                f"Standards export so all buckets within a grade_label share "
+                f"Standards export so all buckets within a level_label share "
                 f"identical ordinal bounds."
             )
             continue
@@ -2687,9 +2720,9 @@ def _prepare_subject_grade_samples(
         level_label = _level_label(
             exemplar_bucket
             or {
-                "grade_level": grade_label,
-                "grade_ordinal_low": level_low,
-                "grade_ordinal_high": level_high,
+                "level_label": level_label,
+                "level_ordinal_low": level_low,
+                "level_ordinal_high": level_high,
             }
         )
 
@@ -2719,7 +2752,6 @@ def _prepare_subject_grade_samples(
                 for it in sampled
             ]
             subject_level_samples[subject_label][level_key] = {
-                "grade_label": grade_label,
                 "level_label": level_label,
                 "level_low": level_low,
                 "level_high": level_high,
@@ -2729,7 +2761,7 @@ def _prepare_subject_grade_samples(
         if excluded_count > 0:
             logger.info(
                 f"Phase 4 subject sampling: excluded {excluded_count} subject buckets "
-                f"in grade '{grade_label}' with subject_label in "
+                f"in level '{level_label}' with subject_label in "
                 f"{sorted(excluded_subject_labels or [])}"
             )
 
@@ -2799,7 +2831,7 @@ def _process_and_filter_candidates(
     # The LLM is prompted with items in (supposed) curriculum order and validators
     # enforce directionality relative to the presented list. If the list is misordered,
     # directionality can be inverted even when the model follows instructions. This
-    # post-filter provides a hard safety net for Phase 1 within-grade buildsTowards
+    # post-filter provides a hard safety net for Phase 1 within-level buildsTowards
     # edges.
     builds_dropped_doc_order: list[CandidateEdge] = []
     builds_kept_before_doc_order = len(builds_kept)
@@ -3268,7 +3300,7 @@ def _process_single_standard(
 
     NB: Banded/stage-level curricula (e.g., Tanzania "Standard I–II",
     "Standard III–VI"): When `progression_context` includes a true range
-        (low != high), the bucket stores `grade_ordinal_low != grade_ordinal_high`,
+        (low != high), the bucket stores `level_ordinal_low != level_ordinal_high`,
         enabling cross-stage inference phases. If ordinals are unavailable and we rely
         on the config map, the bucket is treated as a single representative level
         (low == high).
@@ -3391,8 +3423,8 @@ def _process_single_standard(
 
     level_lo, level_hi, level_key, normalized_level_key, level_basis = level_data
 
-    # Bucket label (used as the top-level key for grouping buckets).
-    grade_label = (
+    # Level label (used as the top-level key for grouping buckets).
+    level_label = (
         f"LEVEL {level_lo}-{level_hi}" if level_hi != level_lo else f"LEVEL {level_lo}"
     )
 
@@ -3401,7 +3433,7 @@ def _process_single_standard(
 
     if not (isinstance(topic_key, str) and topic_key.strip()):
         drops.setdefault("missing_topic_path_key", []).append(
-            {"description": sfi.description, "grade": grade_label, "sfi_uuid": sfi_uuid}
+            {"description": sfi.description, "level": level_label, "sfi_uuid": sfi_uuid}
         )
         return
 
@@ -3444,10 +3476,10 @@ def _process_single_standard(
         bucket_scope="within_level",
         default_thread_key=default_thread_key,
         fallback_segments=fallback_segments,
-        grade_label=grade_label,
         level_basis=level_basis,
         level_hi=level_hi,
         level_key=level_key,
+        level_label=level_label,
         level_lo=level_lo,
         store=within_level_buckets,
         subject_label=subject_label,
@@ -3460,10 +3492,10 @@ def _process_single_standard(
         bucket_scope="cross_level",
         default_thread_key=default_thread_key,
         fallback_segments=None,
-        grade_label=grade_label,
         level_basis=level_basis,
         level_hi=level_hi,
         level_key=level_key,
+        level_label=level_label,
         level_lo=level_lo,
         store=cross_level_buckets,
         subject_label=subject_label,
@@ -3698,8 +3730,8 @@ def _resolve_level_ordinals(
 
             (1, 1, "CE1", "ce1", "level_label_map_grade_key")
 
-        Fallback map keys are matched using lowercase + strip. They are not normalized
-        with `normalize_key_token()`.
+        Fallback map keys are matched using whitespace collapse + `casefold()`. They
+        are not normalized with `normalize_key_token()`.
 
     5. Stage label fallback via lp_level_label_map
 
@@ -3790,38 +3822,22 @@ def _resolve_level_ordinals(
         Returns
         -------
         str | None
-            The cleaned label, obtained by converting the input to a string and
-            stripping whitespace. Returns None if the cleaned label is empty.
+            The cleaned label, obtained by converting the input to a string, stripping
+            leading/trailing whitespace, and collapsing internal whitespace. Returns
+            None if the cleaned label is empty.
         """
 
-        s = str(value or "").strip()
+        s = " ".join(str(value or "").split())
         return s or None
-
-    def _label_key(value: Any) -> str:
-        """Normalize a label value for lookup in `config.lp_level_label_map`.
-
-        Parameters
-        ----------
-        value
-            The raw label value to normalize.
-
-        Returns
-        -------
-        str
-            The normalized label key, obtained by converting the input to a string,
-            stripping whitespace, and lowercasing.
-        """
-
-        return str(value or "").strip().lower()
 
     grade_key = progression_context.get("grade_key")
     stage_key = progression_context.get("stage_key")
 
-    grade_label = _clean_label(grade_key)
+    grade_key_label = _clean_label(grade_key)
     stage_label = _clean_label(stage_key)
 
-    normalized_grade_key = _label_key(grade_label)
-    normalized_stage_key = _label_key(stage_label)
+    normalized_grade_key = _normalize_level_label_key(grade_key_label)
+    normalized_stage_key = _normalize_level_label_key(stage_label)
 
     g_lo = progression_context.get("grade_ordinal_low")
     g_hi = progression_context.get("grade_ordinal_high")
@@ -3831,7 +3847,7 @@ def _resolve_level_ordinals(
     if isinstance(g_lo, int) and isinstance(g_hi, int):
         normalized_level_key = normalized_grade_key
         level_basis = "grade_ordinals"
-        level_key = grade_label
+        level_key = grade_key_label
         level_lo, level_hi = min(g_lo, g_hi), max(g_lo, g_hi)
     elif isinstance(s_lo, int) and isinstance(s_hi, int):
         normalized_level_key = normalized_stage_key
@@ -3847,7 +3863,12 @@ def _resolve_level_ordinals(
             )
             return None
 
-        mapped = (config.lp_level_label_map or {}).get(normalized_level_key)
+        normalized_level_label_map = {
+            _normalize_level_label_key(map_key): map_value
+            for map_key, map_value in (config.lp_level_label_map or {}).items()
+            if _normalize_level_label_key(map_key)
+        }
+        mapped = normalized_level_label_map.get(normalized_level_key)
 
         if mapped is None:
             logger.warning(
@@ -3869,14 +3890,18 @@ def _resolve_level_ordinals(
 
         if normalized_grade_key:
             level_basis = "level_label_map_grade_key"
-            level_key = grade_label
+            level_key = grade_key_label
         else:
             level_basis = "level_label_map_stage_key"
             level_key = stage_label
 
-    normalized_level_key = normalized_level_key or (
-        f"level:{level_lo}-{level_hi}" if level_lo != level_hi else f"level:{level_lo}"
-    )
+    if not normalized_level_key:
+        normalized_level_key = (
+            f"level:{level_lo}-{level_hi}"
+            if level_lo != level_hi
+            else f"level:{level_lo}"
+        )
+
     return (
         level_lo,
         level_hi,
@@ -4397,30 +4422,30 @@ def export_learning_progressions(
     provenance_rows: list[dict[str, Any]] = []
     sfi_index = _build_sfi_index(by_within_level)
 
-    # Phase 1: Within-grade buildsTowards.
+    # Phase 1: Within-level buildsTowards.
     p1_candidates, p1_prov = _infer_within_grade_builds_towards(
-        by_grade=by_within_level, config=config, usage_tracker=usage_tracker
+        by_level=by_within_level, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p1_candidates)
     provenance_rows.extend(p1_prov)
 
-    # Phase 2: Cross-grade buildsTowards.
+    # Phase 2: Cross-level buildsTowards.
     p2_candidates, p2_prov, cross_level_build_pairs = _infer_cross_grade_builds_towards(
-        by_grade=by_cross_level, config=config, usage_tracker=usage_tracker
+        by_level=by_cross_level, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p2_candidates)
     provenance_rows.extend(p2_prov)
 
-    # Phase 3: Within-grade relatesTo.
+    # Phase 3: Within-level relatesTo.
     p3_candidates, p3_prov = _infer_within_grade_relates_to(
-        by_grade=by_within_level, config=config, usage_tracker=usage_tracker
+        by_level=by_within_level, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p3_candidates)
     provenance_rows.extend(p3_prov)
 
-    # Phase 4: Cross-grade relatesTo.
+    # Phase 4: Cross-level relatesTo.
     p4_candidates, p4_prov = _infer_cross_grade_relates_to(
-        by_grade=by_cross_level,
+        by_level=by_cross_level,
         config=config,
         forbidden_builds_pairs=cross_level_build_pairs,
         usage_tracker=usage_tracker,
@@ -4614,7 +4639,7 @@ def group_standards_for_learning_progressions(
         Parameters
         ----------
         store
-            A nested defaultdict structure where the first level keys are grade labels,
+            A nested defaultdict structure where the first level keys are level labels,
             the second level keys are thread or bucket keys, and the values are
             dictionaries containing bucket information and lists of items (standards).
 
@@ -4622,23 +4647,23 @@ def group_standards_for_learning_progressions(
         -------
         tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, dict[str, Any]]]]
             A tuple containing:
-                1. A dictionary mapping grade labels to lists of bucket dictionaries,
+                1. A dictionary mapping level labels to lists of bucket dictionaries,
                     where each bucket dictionary contains information about the bucket
                     and a sorted list of items (standards) belonging to that bucket.
-                    The buckets within each grade are sorted by their topic path and
+                    The buckets within each level are sorted by their topic path and
                     bucket key to ensure a stable order for the LLM.
-                2. A nested dictionary mapping thread or bucket keys to grade labels
+                2. A nested dictionary mapping thread or bucket keys to level labels
                     and their corresponding bucket dictionaries. This structure allows
-                    for quick lookup of buckets by thread or bucket key and grade
+                    for quick lookup of buckets by thread or bucket key and level
                     label, which can be useful for certain inference strategies that
-                    need to access standards grouped by thread across grades.
+                    need to access standards grouped by thread across levels.
         """
 
-        by_grade: dict[str, list[dict[str, Any]]] = {}
+        by_level: dict[str, list[dict[str, Any]]] = {}
         by_thread: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
-        for grade_label, per_thread in store.items():
-            grade_buckets: list[dict[str, Any]] = []
+        for level_label, per_thread in store.items():
+            level_buckets: list[dict[str, Any]] = []
 
             for tkey, b in per_thread.items():
                 # Sort items by numeric_order_path (document position resolved to
@@ -4653,18 +4678,18 @@ def group_standards_for_learning_progressions(
                         _sort_key_for_bucket_sfi(s),
                     ),
                 )
-                grade_buckets.append(b)
-                by_thread[tkey][grade_label] = b
+                level_buckets.append(b)
+                by_thread[tkey][level_label] = b
 
-            by_grade[grade_label] = sorted(
-                grade_buckets,
+            by_level[level_label] = sorted(
+                level_buckets,
                 key=lambda x: (
                     _bucket_topic_context(bucket=x),
                     x.get("lp_bucket_key") or "",
                 ),
             )
 
-        return by_grade, dict(by_thread)
+        return by_level, dict(by_thread)
 
     by_within_level, by_within_thread = _finalize_bucket_store(within_level_buckets)
     by_cross_level, by_cross_thread = _finalize_bucket_store(cross_level_buckets)
