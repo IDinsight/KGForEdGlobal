@@ -3895,13 +3895,9 @@ def _resolve_level_ordinals(
             level_basis = "level_label_map_stage_key"
             level_key = stage_label
 
-    if not normalized_level_key:
-        normalized_level_key = (
-            f"level:{level_lo}-{level_hi}"
-            if level_lo != level_hi
-            else f"level:{level_lo}"
-        )
-
+    normalized_level_key = normalized_level_key or (
+        f"level:{level_lo}-{level_hi}" if level_lo != level_hi else f"level:{level_lo}"
+    )
     return (
         level_lo,
         level_hi,
