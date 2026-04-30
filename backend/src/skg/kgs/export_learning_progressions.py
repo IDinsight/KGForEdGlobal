@@ -132,7 +132,8 @@ def _allow_within_grade_inference(
 def _assign_candidate_uids(
     *, candidates: list[CandidateEdge], provenance_rows: list[dict[str, Any]]
 ) -> list[CandidateEdge]:
-    """Attach deterministic candidate UIDs to candidates and provenance rows.
+    """Build a deterministic identifier for this ordered raw-candidate occurrence
+    within the current export run.
 
     Candidate inference functions append exactly one provenance row for each raw
     candidate edge, in the same order. This function validates that invariant, assigns
