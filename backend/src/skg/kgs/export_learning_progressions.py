@@ -1504,6 +1504,68 @@ def _filter_builds_towards_within_grade_order(
     return kept, dropped
 
 
+def _finalize_bucket_store(
+    store: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, dict[str, Any]]]]:
+    """Finalize the bucket store by sorting items within each bucket and organizing the
+    data into the final output structures.
+
+    Parameters
+    ----------
+    store
+        A nested dict structure where the first level keys are level labels, the second
+        level keys are thread or bucket keys, and the values are dictionaries
+        containing bucket information and lists of items (standards).
+
+    Returns
+    -------
+    tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, dict[str, Any]]]]
+        A tuple containing:
+            1. A dictionary mapping level labels to lists of bucket dictionaries, where
+                each bucket dictionary contains information about the bucket and a
+                sorted list of items (standards) belonging to that bucket. The buckets
+                within each level are sorted by their topic path and bucket key to
+                ensure a stable order for the LLM.
+            2. A nested dictionary mapping thread or bucket keys to level labels and
+                their corresponding bucket dictionaries. This structure allows for
+                quick lookup of buckets by thread or bucket key and level label, which
+                can be useful for certain inference strategies that need to access
+                standards grouped by thread across levels.
+    """
+
+    by_level: dict[str, list[dict[str, Any]]] = {}
+    by_thread: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+
+    for level_label, per_thread in store.items():
+        level_buckets: list[dict[str, Any]] = []
+
+        for tkey, b in per_thread.items():
+            # Sort items by numeric_order_path (document position resolved to integer
+            # order indices) to preserve intended pedagogical sequence within each
+            # configured inference bucket.
+            b["items"] = sorted(
+                b["items"],
+                key=lambda s: (
+                    int(s.get("numeric_order_missing_count") or 0),
+                    s.get("numeric_order_path") or [],
+                    _item_doc_position_key(item=s),
+                    _sort_key_for_bucket_sfi(s),
+                ),
+            )
+            level_buckets.append(b)
+            by_thread[tkey][level_label] = b
+
+        by_level[level_label] = sorted(
+            level_buckets,
+            key=lambda x: (
+                _bucket_topic_context(bucket=x),
+                x.get("lp_bucket_key") or "",
+            ),
+        )
+
+    return by_level, dict(by_thread)
+
+
 def _finalize_lp_export(
     *,
     academic_standards: AcademicStandardsExport,
@@ -5183,70 +5245,8 @@ def group_standards_for_learning_progressions(
             within_level_buckets=within_level_buckets,
         )
 
-    def _finalize_bucket_store(
-        store: DefaultDict[str, DefaultDict[str, dict[str, Any]]],
-    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, dict[str, Any]]]]:
-        """Finalize the bucket store by sorting items within each bucket and organizing
-        the data into the final output structures.
-
-        Parameters
-        ----------
-        store
-            A nested defaultdict structure where the first level keys are level labels,
-            the second level keys are thread or bucket keys, and the values are
-            dictionaries containing bucket information and lists of items (standards).
-
-        Returns
-        -------
-        tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, dict[str, Any]]]]
-            A tuple containing:
-                1. A dictionary mapping level labels to lists of bucket dictionaries,
-                    where each bucket dictionary contains information about the bucket
-                    and a sorted list of items (standards) belonging to that bucket.
-                    The buckets within each level are sorted by their topic path and
-                    bucket key to ensure a stable order for the LLM.
-                2. A nested dictionary mapping thread or bucket keys to level labels
-                    and their corresponding bucket dictionaries. This structure allows
-                    for quick lookup of buckets by thread or bucket key and level
-                    label, which can be useful for certain inference strategies that
-                    need to access standards grouped by thread across levels.
-        """
-
-        by_level: dict[str, list[dict[str, Any]]] = {}
-        by_thread: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-
-        for level_label, per_thread in store.items():
-            level_buckets: list[dict[str, Any]] = []
-
-            for tkey, b in per_thread.items():
-                # Sort items by numeric_order_path (document position resolved to
-                # integer order indices) to preserve intended pedagogical sequence
-                # within each configured inference bucket.
-                b["items"] = sorted(
-                    b["items"],
-                    key=lambda s: (
-                        int(s.get("numeric_order_missing_count") or 0),
-                        s.get("numeric_order_path") or [],
-                        _item_doc_position_key(item=s),
-                        _sort_key_for_bucket_sfi(s),
-                    ),
-                )
-                level_buckets.append(b)
-                by_thread[tkey][level_label] = b
-
-            by_level[level_label] = sorted(
-                level_buckets,
-                key=lambda x: (
-                    _bucket_topic_context(bucket=x),
-                    x.get("lp_bucket_key") or "",
-                ),
-            )
-
-        return by_level, dict(by_thread)
-
     by_within_level, by_within_thread = _finalize_bucket_store(within_level_buckets)
     by_cross_level, by_cross_thread = _finalize_bucket_store(cross_level_buckets)
-
     return {
         "by_cross_level": by_cross_level,
         "by_cross_thread": by_cross_thread,
