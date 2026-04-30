@@ -299,14 +299,14 @@ def _build_combined_sfi_context_index(
     cross_sfi_index: dict[str, dict[str, Any]],
     within_sfi_index: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Merge scoped SFI indexes into the metadata shape.
+    """Merge scoped SFI indexes into the emission-time metadata shape.
 
     Each scoped index describes the same SFI from one inference-bucket perspective. The
-    combined index keeps the common source-item facts under `base_context` and
-    preserves the two bucket-specific views under `within_level_context` and
-    `cross_level_context`. This keeps emitted LP relationship metadata separated:
-    reviewers can see both the source item and the bucket semantics that may have
-    produced an edge.
+    combined index keeps scope-neutral source-item facts under `item_context` and
+    preserves bucket-derived facts under `within_level_context` and
+    `cross_level_context`. This separation prevents a within-level bucket fallback from
+    being mistaken for source-item context when emitting cross-level edges, and vice
+    versa.
 
     Parameters
     ----------
@@ -318,7 +318,7 @@ def _build_combined_sfi_context_index(
     Returns
     -------
     dict[str, dict[str, Any]]
-        SFI UUID -> combined context with `base_context`, `within_level_context`,
+        SFI UUID -> combined context with `item_context`, `within_level_context`,
         `cross_level_context`, and `available_context_scopes`.
     """
 
@@ -327,9 +327,9 @@ def _build_combined_sfi_context_index(
     for sfi_uuid in sorted(set(within_sfi_index) | set(cross_sfi_index)):
         within_entry = within_sfi_index.get(sfi_uuid) or {}
         cross_entry = cross_sfi_index.get(sfi_uuid) or {}
-        base_context = (
-            within_entry.get("base_context")
-            or cross_entry.get("base_context")
+        item_context = (
+            within_entry.get("item_context")
+            or cross_entry.get("item_context")
             or {"sfi_uuid": sfi_uuid}
         )
         available_context_scopes: list[str] = []
@@ -342,7 +342,7 @@ def _build_combined_sfi_context_index(
 
         combined[sfi_uuid] = {
             "available_context_scopes": available_context_scopes,
-            "base_context": base_context,
+            "item_context": item_context,
             "cross_level_context": cross_entry.get("cross_level_context"),
             "within_level_context": within_entry.get("within_level_context"),
         }
@@ -657,7 +657,7 @@ def _build_scoped_sfi_index(
     Within-level and cross-level bucket stores answer different questions and can use
     different bucket keys. This function therefore builds only one scoped view at a
     time. Use `_build_combined_sfi_context_index()` to create the emission-time index
-    that contains both views.
+    that contains the scope-neutral item facts plus both bucket-derived views.
 
     Parameters
     ----------
@@ -671,8 +671,9 @@ def _build_scoped_sfi_index(
     Returns
     -------
     dict[str, dict[str, Any]]
-        SFI UUID -> context dictionary containing `base_context` plus exactly one
-        scoped context block (`within_level_context` or `cross_level_context`).
+        SFI UUID -> context dictionary containing `item_context` plus exactly one
+        bucket-derived scoped context block (`within_level_context` or
+        `cross_level_context`).
 
     Raises
     ------
@@ -688,6 +689,11 @@ def _build_scoped_sfi_index(
 
     for level_label, level_buckets in (by_level or {}).items():
         for bucket in level_buckets or []:
+            bucket_topic_path = _bucket_topic_context(bucket=bucket)
+            bucket_topic_path_key = _first_topic_path_key(bucket) or bucket.get(
+                "lp_bucket_key"
+            )
+
             for item in bucket.get("items") or []:
                 sfi_uuid = str(item.get("sfi_uuid") or "").strip()
 
@@ -700,10 +706,12 @@ def _build_scoped_sfi_index(
 
                 item_topic_path = str(item.get("topic_path") or "").strip()
                 item_topic_path_key = str(item.get("topic_path_key") or "").strip()
-                base_context = {
+                item_context = {
                     "description": item.get("description"),
                     "doc_pos_page_index": item.get("doc_pos_page_index"),
                     "doc_pos_y0": item.get("doc_pos_y0"),
+                    "item_topic_path": item_topic_path or None,
+                    "item_topic_path_key": item_topic_path_key or None,
                     "level_basis": item.get("level_basis") or bucket.get("level_basis"),
                     "level_key": item.get("level_key") or bucket.get("level_key"),
                     "level_label": level_label,
@@ -713,17 +721,15 @@ def _build_scoped_sfi_index(
                     "sfi_uuid": sfi_uuid,
                     "statement_code": item.get("statement_code"),
                     "statement_type": item.get("statement_type"),
+                }
+
+                common_scoped_context = {
                     "subject_label": bucket.get("subject_label"),
-                    "topic_path": item_topic_path
-                    or _bucket_topic_context(bucket=bucket),
+                    "topic_path": item_topic_path or bucket_topic_path,
                     "topic_path_context_source": (
                         "item" if item_topic_path else "bucket_fallback"
                     ),
-                    "topic_path_key": (
-                        item_topic_path_key
-                        or _first_topic_path_key(bucket)
-                        or bucket.get("lp_bucket_key")
-                    ),
+                    "topic_path_key": item_topic_path_key or bucket_topic_path_key,
                     "topic_path_key_context_source": (
                         "item" if item_topic_path_key else "bucket_fallback"
                     ),
@@ -731,6 +737,7 @@ def _build_scoped_sfi_index(
 
                 if scope == "within_level":
                     scoped_context = {
+                        **common_scoped_context,
                         "canon_order_path": item.get("canon_order_path"),
                         "numeric_order_missing_count": item.get(
                             "numeric_order_missing_count"
@@ -757,19 +764,20 @@ def _build_scoped_sfi_index(
                             or item.get("within_level_thread_key")
                             or bucket.get("lp_thread_key")
                             or item.get("topic_path_key")
-                            or _first_topic_path_key(bucket)
+                            or bucket_topic_path_key
                         ),
                         "within_level_thread_key": (
                             item.get("within_level_thread_key")
                             or bucket.get("lp_thread_key")
                         ),
                     }
-                    candidate = {
-                        "base_context": base_context,
+                    entry = {
+                        "item_context": item_context,
                         "within_level_context": scoped_context,
                     }
                 else:
                     scoped_context = {
+                        **common_scoped_context,
                         "cross_level_bucket_key": (
                             item.get("cross_level_bucket_key")
                             or bucket.get("lp_bucket_key")
@@ -793,8 +801,8 @@ def _build_scoped_sfi_index(
                             or bucket.get("default_thread_key")
                         ),
                     }
-                    candidate = {
-                        "base_context": base_context,
+                    entry = {
+                        "item_context": item_context,
                         "cross_level_context": scoped_context,
                     }
 
@@ -805,13 +813,13 @@ def _build_scoped_sfi_index(
                         f"Duplicate SFI UUID encountered while building LP SFI context "
                         f"index. Each SFI must appear at most once in a scoped bucket "
                         f"store. scope={scope!r}; sfi_uuid={sfi_uuid}; "
-                        f"existing_level={existing.get('base_context', {}).get('level_label')!r}; "
+                        f"existing_level={existing.get('item_context', {}).get('level_label')!r}; "
                         f"existing_bucket={existing_context.get(f'{scope}_bucket_key')!r}; "
                         f"new_level={level_label!r}; "
                         f"new_bucket={scoped_context.get(f'{scope}_bucket_key')!r}."
                     )
 
-                index[sfi_uuid] = candidate
+                index[sfi_uuid] = entry
 
     return index
 
@@ -1799,10 +1807,10 @@ def _filter_builds_towards_within_grade_order(
         Parameters
         ----------
         source_context
-            Source SFI context entry containing `base_context` and
+            Source SFI context entry containing `item_context` and
             `within_level_context`.
         target_context
-            Target SFI context entry containing `base_context` and
+            Target SFI context entry containing `item_context` and
             `within_level_context`.
 
         Returns
@@ -1812,20 +1820,24 @@ def _filter_builds_towards_within_grade_order(
             None if the order cannot be determined safely.
         """
 
-        source_base = source_context.get("base_context") or {}
+        source_item = source_context.get("item_context") or {}
         source_within = source_context.get("within_level_context") or {}
-        target_base = target_context.get("base_context") or {}
+        target_item = target_context.get("item_context") or {}
         target_within = target_context.get("within_level_context") or {}
 
-        if source_base.get("level_label") != target_base.get("level_label"):
+        if source_item.get("level_label") != target_item.get("level_label"):
             return None
 
-        source_domain = source_within.get(
-            "within_level_ordering_domain_key"
-        ) or source_base.get("topic_path_key")
-        target_domain = target_within.get(
-            "within_level_ordering_domain_key"
-        ) or target_base.get("topic_path_key")
+        source_domain = (
+            source_within.get("within_level_ordering_domain_key")
+            or source_within.get("topic_path_key")
+            or source_item.get("item_topic_path_key")
+        )
+        target_domain = (
+            target_within.get("within_level_ordering_domain_key")
+            or target_within.get("topic_path_key")
+            or target_item.get("item_topic_path_key")
+        )
 
         if source_domain != target_domain:
             return None
@@ -1838,17 +1850,17 @@ def _filter_builds_towards_within_grade_order(
         if src_missing == 0 and tgt_missing == 0 and src_path and tgt_path:
             return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
 
-        src_page = source_base.get("doc_pos_page_index")
-        src_page = source_base.get("page_index") if src_page is None else src_page
+        src_page = source_item.get("doc_pos_page_index")
+        src_page = source_item.get("page_index") if src_page is None else src_page
 
-        tgt_page = target_base.get("doc_pos_page_index")
-        tgt_page = target_base.get("page_index") if tgt_page is None else tgt_page
+        tgt_page = target_item.get("doc_pos_page_index")
+        tgt_page = target_item.get("page_index") if tgt_page is None else tgt_page
 
         if not isinstance(src_page, int) or not isinstance(tgt_page, int):
             return None
 
-        src_y0 = source_base.get("doc_pos_y0")
-        tgt_y0 = target_base.get("doc_pos_y0")
+        src_y0 = source_item.get("doc_pos_y0")
+        tgt_y0 = target_item.get("doc_pos_y0")
         src_key = (src_page, float(src_y0) if isinstance(src_y0, (int, float)) else 0.0)
         tgt_key = (tgt_page, float(tgt_y0) if isinstance(tgt_y0, (int, float)) else 0.0)
 
@@ -3574,7 +3586,7 @@ def _process_and_filter_candidates(
         strings for consistency with the rest of the pipeline.
     sfi_context_index
         Optional combined SFI context index used to enrich emitted relationship
-        metadata with base, within-level, and cross-level context blocks.
+        metadata with item-level, within-level, and cross-level context blocks.
     within_sfi_index
         Optional scoped within-level SFI context index used by the Phase 1
         document-order safety filter.
