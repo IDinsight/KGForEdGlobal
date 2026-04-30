@@ -3548,8 +3548,8 @@ def _process_single_standard(
         (low == high).
 
     NB: Phase 3 is specifically trying to infer cross-subject or cross-strand
-    associative links**, not sequence links. As an example, in the Senegal reading
-    setup, `lp_subject_role = "strand"` means: “For Phase 3, treat each `strand` as the
+    associative links, not sequence links. As an example, in the Senegal reading setup,
+    `lp_subject_role = "strand"` means: “For Phase 3, treat each `strand` as the
     subject-like partition.” So Phase 3 asks questions like: "Are there meaningful
     `relatesTo` links between expectations in **Lecture** and expectations in
     **Production d’écrits**?" or "Are expectations in **Communication orale**
@@ -3690,20 +3690,27 @@ def _process_single_standard(
         )
     )
 
-    # Topic path validation.
-    topic_key = progression_context.get("topic_path_key", "")
+    # Topic path setup and validation. Prefer the exported aggregate `topic_path_key`,
+    # but if it is missing, derive a local signature from `topic_path_parts` so
+    # `_compute_bucket_keys()` can still use configured role-based keys, fallbacks, or
+    # its unthreaded sentinel.
+    raw_topic_path_parts = progression_context.get("topic_path_parts")
+    topic_path_parts = (
+        raw_topic_path_parts if isinstance(raw_topic_path_parts, list) else []
+    )
+    raw_topic_key = progression_context.get("topic_path_key", "")
+    topic_key = raw_topic_key.strip() if isinstance(raw_topic_key, str) else ""
 
-    if not (isinstance(topic_key, str) and topic_key.strip()):
+    if not topic_key:
+        topic_key = _topic_path_signature(topic_path_parts)
+
+    if not topic_key:
         drops.setdefault("missing_topic_path_key", []).append(
             {"description": sfi.description, "level": level_label, "sfi_uuid": sfi_uuid}
         )
         return
 
-    # Subject label and topic parts setup.
-    raw_topic_path_parts = progression_context.get("topic_path_parts")
-    topic_path_parts = (
-        raw_topic_path_parts if isinstance(raw_topic_path_parts, list) else []
-    )
+    # Subject label setup.
     subject_label = _resolve_subject_label(
         subject_role=config.lp_subject_role, topic_path_parts=topic_path_parts
     )
