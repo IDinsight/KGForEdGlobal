@@ -2719,8 +2719,8 @@ def _normalize_level_label_key(value: Any) -> str:
 
 
 def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
-    """Convert a list of topic path parts (with optional "role" and label" keys) into a
-    compact, stable-ish context string for the LLM.
+    """Convert a list of topic path parts (with optional "role" and "label" keys) into
+    a compact, stable-ish context string for the LLM.
 
     Parameters
     ----------
