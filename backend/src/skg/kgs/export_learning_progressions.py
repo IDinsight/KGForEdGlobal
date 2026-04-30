@@ -500,12 +500,260 @@ def _build_sfi_index(
     """Build a lookup table of SFI UUID -> context/provenance hints.
 
     This is used to enrich emitted Relationship.metadata so downstream consumers can
-    reason about edges without having to join back to the source node payloads.
+    reason about edges without having to join back to the source node payloads. The
+    same index also carries ordering-domain hints used by Phase 1 within-level
+    buildsTowards filtering.
 
-    NB: Buckets may intentionally mix multiple topic paths (e.g. "__unthreaded__"
-    buckets when configured within-level bucket roles do not match any roles for an
-    item). Therefore, this index MUST prefer *item-level* topic fields when present,
-    rather than relying on bucket-level `topic_path`/`lp_bucket_key` values.
+    NB: Buckets may intentionally mix multiple topic paths. For example, a Senegal
+    reading bucket keyed by a broad strand may contain items from multiple paliers and
+    weeks. Therefore, this index MUST preserve *item-level* topic fields when present,
+    rather than replacing them with bucket-level `topic_path`/`lp_bucket_key` values.
+
+    `within_level_ordering_domain_key` is intentionally broader than `topic_path_key`.
+    It represents the Phase 1 within-level bucket in which two items were compared.
+    Downstream order checks can use it to compare items across finer topic paths
+    (e.g., Palier 1 vs. Palier 2) when the configured within-level bucket intentionally
+    grouped those items together.
+
+    Examples
+    --------
+    1. Build a simple SFI context index from one CE1 within-level bucket
+
+        Given a finalized `by_within_level` structure:
+
+            by_level = {
+                "CE1": [
+                    {
+                        "lp_bucket_key": "strand=lecture",
+                        "lp_thread_key": "strand=lecture",
+                        "subject_label": "Lecture",
+                        "level_basis": "grade",
+                        "level_key": "CE1",
+                        "items": [
+                            {
+                                "sfi_uuid": "11111111-1111-1111-1111-111111111111",
+                                "description": "Lire un texte narratif simple.",
+                                "canon_order_path": ["section-a", "palier-1", "item-1"],
+                                "numeric_order_path": [2, 1, 0],
+                                "numeric_order_missing_count": 0,
+                                "order_index_within_parent": 0,
+                                "page_index": 12,
+                                "doc_pos_page_index": 12,
+                                "doc_pos_y0": 400.0,
+                                "topic_path": "strand:Lecture / substage:Palier 1",
+                                "topic_path_key": (
+                                    "strand=lecture|substage=palier_1"
+                                ),
+                                "within_level_bucket_key": "strand=lecture",
+                                "within_level_thread_key": "strand=lecture",
+                                "cross_level_bucket_key": (
+                                    "strand=lecture|substage=palier_1"
+                                ),
+                                "cross_level_thread_key": (
+                                    "strand=lecture|substage=palier_1"
+                                ),
+                                "default_thread_key": (
+                                    "strand=lecture|substage=palier_1"
+                                ),
+                                "statement_code": None,
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        Calling:
+
+            index = _build_sfi_index(by_level)
+
+        returns:
+
+            {
+                "11111111-1111-1111-1111-111111111111": {
+                    "canon_order_path": ["section-a", "palier-1", "item-1"],
+                    "cross_level_bucket_key": "strand=lecture|substage=palier_1",
+                    "cross_level_thread_key": "strand=lecture|substage=palier_1",
+                    "default_thread_key": "strand=lecture|substage=palier_1",
+                    "doc_pos_page_index": 12,
+                    "doc_pos_y0": 400.0,
+                    "level_basis": "grade",
+                    "level_key": "CE1",
+                    "level_label": "CE1",
+                    "numeric_order_missing_count": 0,
+                    "numeric_order_path": [2, 1, 0],
+                    "order_index_within_parent": 0,
+                    "page_index": 12,
+                    "statement_code": None,
+                    "subject_label": "Lecture",
+                    "thread_key": "strand=lecture",
+                    "topic_path": "strand:Lecture / substage:Palier 1",
+                    "topic_path_key": "strand=lecture|substage=palier_1",
+                    "within_level_bucket_key": "strand=lecture",
+                    "within_level_fallback_segments": None,
+                    "within_level_ordering_domain_key": "strand=lecture",
+                    "within_level_thread_key": "strand=lecture",
+                }
+            }
+
+        The precise item topic path is preserved for provenance, while
+        `within_level_ordering_domain_key` records the broader Phase 1 bucket used for
+        within-level ordering checks.
+
+    2. Preserve item-level topic context while keeping a broader ordering domain
+
+        A bucket can group several paliers under one strand-level bucket:
+
+            by_level = {
+                "CE1": [
+                    {
+                        "lp_bucket_key": "strand=communication_orale",
+                        "lp_thread_key": "strand=communication_orale",
+                        "subject_label": "Communication orale",
+                        "topic_path_examples": [
+                            "strand:Communication orale / substage:Palier 1",
+                            "strand:Communication orale / substage:Palier 2",
+                        ],
+                        "topic_path_keys": [
+                            "strand=communication_orale|substage=palier_1",
+                            "strand=communication_orale|substage=palier_2",
+                        ],
+                        "items": [
+                            {
+                                "sfi_uuid": "22222222-2222-2222-2222-222222222222",
+                                "topic_path": (
+                                    "strand:Communication orale / substage:Palier 2"
+                                ),
+                                "topic_path_key": (
+                                    "strand=communication_orale|substage=palier_2"
+                                ),
+                                "within_level_bucket_key": (
+                                    "strand=communication_orale"
+                                ),
+                                "within_level_thread_key": (
+                                    "strand=communication_orale"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        Calling:
+
+            index = _build_sfi_index(by_level)
+
+        gives the item-specific topic fields:
+
+            index["22222222-2222-2222-2222-222222222222"]["topic_path"]
+            # "strand:Communication orale / substage:Palier 2"
+
+            index["22222222-2222-2222-2222-222222222222"]["topic_path_key"]
+            # "strand=communication_orale|substage=palier_2"
+
+        and the broader ordering domain used for Phase 1 order checks:
+
+            index["22222222-2222-2222-2222-222222222222"][
+                "within_level_ordering_domain_key"
+            ]
+            # "strand=communication_orale"
+
+    3. Fill missing item fields from bucket-level context
+
+        If an item is missing `topic_path` and `topic_path_key`, the function falls
+        back to bucket-level topic context while still using the within-level bucket as
+        the ordering domain:
+
+            by_level = {
+                "CE1": [
+                    {
+                        "lp_bucket_key": "statement_type=orthographe",
+                        "lp_thread_key": "statement_type=orthographe",
+                        "subject_label": "UNSPECIFIED_SUBJECT",
+                        "level_basis": "grade",
+                        "level_key": "CE1",
+                        "topic_path_examples": [
+                            "substage:Palier 2 - Communication écrite",
+                        ],
+                        "topic_path_keys": [
+                            "substage=palier_2_communication_ecrite",
+                        ],
+                        "items": [
+                            {
+                                "sfi_uuid": "33333333-3333-3333-3333-333333333333",
+                                "topic_path": "",
+                                "topic_path_key": "",
+                                "within_level_bucket_key": (
+                                    "statement_type=orthographe"
+                                ),
+                                "within_level_thread_key": (
+                                    "statement_type=orthographe"
+                                ),
+                                "within_level_fallback_segments": [
+                                    "statement_type=orthographe",
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        Calling:
+
+            index = _build_sfi_index(by_level)
+
+        returns fallback topic context:
+
+            index["33333333-3333-3333-3333-333333333333"]["topic_path"]
+            # "substage:Palier 2 - Communication écrite"
+
+            index["33333333-3333-3333-3333-333333333333"]["topic_path_key"]
+            # "substage=palier_2_communication_ecrite"
+
+            index["33333333-3333-3333-3333-333333333333"][
+                "within_level_ordering_domain_key"
+            ]
+            # "statement_type=orthographe"
+
+    4. Fail hard on duplicate SFI UUIDs
+
+        Each SFI should appear at most once in the provided bucket store. If upstream
+        grouping places the same SFI into two buckets, the function raises immediately:
+
+            by_level = {
+                "CE1": [
+                    {
+                        "lp_bucket_key": "statement_type=grammaire",
+                        "lp_thread_key": "statement_type=grammaire",
+                        "items": [
+                            {
+                                "sfi_uuid": "44444444-4444-4444-4444-444444444444",
+                                "within_level_bucket_key": "statement_type=grammaire",
+                            }
+                        ],
+                    },
+                    {
+                        "lp_bucket_key": "statement_type=orthographe",
+                        "lp_thread_key": "statement_type=orthographe",
+                        "items": [
+                            {
+                                "sfi_uuid": "44444444-4444-4444-4444-444444444444",
+                                "within_level_bucket_key": "statement_type=orthographe",
+                            }
+                        ],
+                    },
+                ]
+            }
+
+        Calling:
+
+            _build_sfi_index(by_level)
+
+        raises:
+
+            AssertionError: Duplicate SFI UUID encountered while building LP SFI index
+
+        This behavior prevents relationship metadata and ordering checks from silently
+        using an arbitrary bucket context.
 
     Parameters
     ----------
@@ -517,10 +765,33 @@ def _build_sfi_index(
     dict[str, dict[str, Any]]
         SFI UUID string -> item and bucket context used for relationship metadata and
         within-level ordering checks.
+
+    Raises
+    ------
+    AssertionError
+        If the same SFI UUID appears more than once in the provided bucket store. A
+        duplicate means upstream bucketing produced a non-unique within-level placement
+        for a StandardsFrameworkItem, so the run should stop immediately.
     """
 
     def _iter_items() -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:
-        """Iterate all items across all buckets.
+        """Iterate through every bucket item as:
+
+        by_level[level_label][bucket]["items"][item]
+
+        and yields:
+
+        (level_label, bucket, item)
+
+        For example, for Senegal (conceptually):
+
+        CE1
+            - strand=communication_orale_expression_orale_et_recitation
+                - SFI A
+                - SFI B
+                - SFI C
+
+        becomes one stream of (level_label, bucket, item) tuples.
 
         Returns
         -------
@@ -536,49 +807,63 @@ def _build_sfi_index(
 
     index: dict[str, dict[str, Any]] = {}
 
-    for level_label, b, it in _iter_items():
-        u = str(it.get("sfi_uuid") or "").strip()
+    for level_label, bucket, item in _iter_items():
+        sfi_uuid = str(item.get("sfi_uuid") or "").strip()
 
-        if not u:
+        if not sfi_uuid:
             continue
 
         candidate = {
-            "canon_order_path": it.get("canon_order_path"),
-            "cross_level_bucket_key": it.get("cross_level_bucket_key"),
-            "cross_level_thread_key": it.get("cross_level_thread_key"),
-            "default_thread_key": it.get("default_thread_key")
-            or b.get("default_thread_key"),
-            "doc_pos_page_index": it.get("doc_pos_page_index"),
-            "doc_pos_y0": it.get("doc_pos_y0"),
-            "level_basis": it.get("level_basis") or b.get("level_basis"),
-            "level_key": it.get("level_key") or b.get("level_key"),
+            "canon_order_path": item.get("canon_order_path"),
+            "cross_level_bucket_key": item.get("cross_level_bucket_key"),
+            "cross_level_thread_key": item.get("cross_level_thread_key"),
+            "default_thread_key": item.get("default_thread_key")
+            or bucket.get("default_thread_key"),
+            "doc_pos_page_index": item.get("doc_pos_page_index"),
+            "doc_pos_y0": item.get("doc_pos_y0"),
+            "level_basis": item.get("level_basis") or bucket.get("level_basis"),
+            "level_key": item.get("level_key") or bucket.get("level_key"),
             "level_label": level_label,
-            "numeric_order_missing_count": it.get("numeric_order_missing_count"),
-            "numeric_order_path": it.get("numeric_order_path"),
-            "order_index_within_parent": it.get("order_index_within_parent"),
-            "page_index": it.get("page_index"),
-            "statement_code": it.get("statement_code"),
-            "subject_label": b.get("subject_label"),
-            "thread_key": b.get("lp_thread_key"),
-            "topic_path": it.get("topic_path") or _bucket_topic_context(bucket=b),
-            "topic_path_key": it.get("topic_path_key")
-            or _first_topic_path_key(b)
-            or b.get("lp_bucket_key"),
-            "within_level_bucket_key": it.get("within_level_bucket_key"),
-            "within_level_fallback_segments": it.get("within_level_fallback_segments"),
-            "within_level_thread_key": it.get("within_level_thread_key"),
+            "numeric_order_missing_count": item.get("numeric_order_missing_count"),
+            "numeric_order_path": item.get("numeric_order_path"),
+            "order_index_within_parent": item.get("order_index_within_parent"),
+            "page_index": item.get("page_index"),
+            "statement_code": item.get("statement_code"),
+            "subject_label": bucket.get("subject_label"),
+            "thread_key": bucket.get("lp_thread_key"),
+            "topic_path": item.get("topic_path")
+            or _bucket_topic_context(bucket=bucket),
+            "topic_path_key": item.get("topic_path_key")
+            or _first_topic_path_key(bucket)
+            or bucket.get("lp_bucket_key"),
+            "within_level_bucket_key": item.get("within_level_bucket_key"),
+            "within_level_fallback_segments": item.get(
+                "within_level_fallback_segments"
+            ),
+            "within_level_ordering_domain_key": (
+                item.get("within_level_bucket_key")
+                or bucket.get("lp_bucket_key")
+                or item.get("within_level_thread_key")
+                or bucket.get("lp_thread_key")
+                or item.get("topic_path_key")
+                or _first_topic_path_key(bucket)
+            ),
+            "within_level_thread_key": item.get("within_level_thread_key"),
         }
 
-        existing = index.setdefault(u, candidate)
+        if sfi_uuid in index:
+            existing = index[sfi_uuid]
+            raise AssertionError(
+                f"Duplicate SFI UUID encountered while building LP SFI index. "
+                f"Each SFI must appear at most once in the provided bucket store. "
+                f"sfi_uuid={sfi_uuid}; "
+                f"existing_level={existing.get('level_label')!r}; "
+                f"existing_bucket={existing.get('within_level_bucket_key')!r}; "
+                f"new_level={level_label!r}; "
+                f"new_bucket={candidate.get('within_level_bucket_key')!r}."
+            )
 
-        # If 'existing' is the exact same object as 'candidate', it was just inserted.
-        # If it's different, the key already existed, and we need to merge.
-        if existing is not candidate:
-            _empty = (None, "")
-
-            for k, v in candidate.items():
-                if existing.get(k) in _empty and v not in _empty:
-                    existing[k] = v
+        index[sfi_uuid] = candidate
 
     return index
 
@@ -1394,6 +1679,14 @@ def _filter_builds_towards_within_grade_order(
     *, edges: list[CandidateEdge], sfi_index: dict[str, dict[str, Any]]
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
     """Drop Phase-1 buildsTowards edges that contradict within-level document order.
+
+    TODO
+    ----
+    Prefer `within_level_ordering_domain_key` from `_build_sfi_index()` over
+    `topic_path_key` when deciding whether two SFIs are in the same comparable ordering
+    domain. Phase 1 inference is scoped by the within-level bucket, which may
+    intentionally group multiple finer topic paths (for example, paliers/weeks) under
+    one strand.
 
     Parameters
     ----------
@@ -5410,13 +5703,13 @@ def group_standards_for_learning_progressions(
             within_level_buckets=within_level_buckets,
         )
 
-    by_within_level, by_within_thread = _finalize_bucket_store(within_level_buckets)
-    by_cross_level, by_cross_thread = _finalize_bucket_store(cross_level_buckets)
+    by_within_level, by_within_bucket_key = _finalize_bucket_store(within_level_buckets)
+    by_cross_level, by_cross_bucket_key = _finalize_bucket_store(cross_level_buckets)
     return {
+        "by_cross_bucket_key": by_cross_bucket_key,
         "by_cross_level": by_cross_level,
-        "by_cross_thread": by_cross_thread,
+        "by_within_bucket_key": by_within_bucket_key,
         "by_within_level": by_within_level,
-        "by_within_thread": by_within_thread,
         "drops": drops,
     }
 
