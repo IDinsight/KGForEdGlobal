@@ -5187,21 +5187,21 @@ def export_learning_progressions(
         the UUID generation logic that could lead to non-unique identifiers.
     """
 
-    buckets_info = group_standards_for_learning_progressions(
+    lp_buckets = group_standards_for_learning_progressions(
         academic_standards=academic_standards, config=config, include_provenance=True
     )
 
     # Write the buckets artifact for debugging.
     write_to_json(
         fp=kg_dirs.learning_progressions / "learning_progressions_buckets.json",
-        json_info=buckets_info,
+        json_info=lp_buckets,
     )
 
     by_within_level: dict[str, list[dict[str, Any]]] = (
-        buckets_info.get("by_within_level") or {}
+        lp_buckets.get("by_within_level") or {}
     )
     by_cross_level: dict[str, list[dict[str, Any]]] = (
-        buckets_info.get("by_cross_level") or {}
+        lp_buckets.get("by_cross_level") or {}
     )
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
@@ -5314,7 +5314,7 @@ def export_learning_progressions(
         builds_rels=builds_rels,
         config=config,
         ctx=ctx,
-        drops=buckets_info.get("drops") or {},
+        drops=lp_buckets.get("drops") or {},
         kg_dirs=kg_dirs,
         lp_stats=lp_stats,
         provenance_rows=provenance_rows,

@@ -122,14 +122,14 @@
 		],
 		"lc_source_statement_types_include": [],
 		"lp_builds_towards_min_confidence": 0.75,
-		"lp_cross_grade_builds_towards": false,
-		"lp_cross_grade_relates_to": false,
+		"lp_cross_grade_builds_towards": true,
+		"lp_cross_grade_relates_to": true,
 		"lp_cross_level_thread_roles": [
 			"strand",
 			"substage"
 		],
-		"lp_cross_stage_builds_towards": false,
-		"lp_cross_stage_relates_to": false,
+		"lp_cross_stage_builds_towards": true,
+		"lp_cross_stage_relates_to": true,
 		"lp_excluded_subject_labels": [
 			"UNSPECIFIED_SUBJECT"
 		],
