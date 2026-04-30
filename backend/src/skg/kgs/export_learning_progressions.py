@@ -1146,6 +1146,7 @@ def _compute_bucket_keys(
         )
         key = f"__unthreaded__::{safe_subject}::{safe_level}::{local_context}"
 
+    # Currently identical but separated for future policy expansion.
     return key, key
 
 
@@ -3717,19 +3718,16 @@ def _process_single_standard(
     canon_order_path = (
         raw_canon_order_path if isinstance(raw_canon_order_path, list) else []
     )
-    numeric_order_path = _resolve_numeric_order_path(
-        canon_order_path=canon_order_path,
-        missing_default=0,
-        order_index_lookup=order_index_lookup,
+    numeric_order_path, numeric_order_missing_count = (
+        _resolve_canonical_order_path_to_indices(
+            canon_order_path=canon_order_path,
+            missing_default=0,
+            order_index_lookup=order_index_lookup,
+        )
     )
-    numeric_order_missing_count = 0
 
-    for value in canon_order_path:
-        key = str(value or "").strip()
-
-        if key and key not in order_index_lookup:
-            numeric_order_missing_count += 1
-
+    # Provenance-derived document position (page index and y0) for potential fallback
+    # ordering signals.
     indices = metadata.get("page_indices")
     valid_indices = indices if isinstance(indices, list) else []
     doc_pos_page_index = min(valid_indices) if valid_indices else None
@@ -3739,6 +3737,10 @@ def _process_single_standard(
     if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
         doc_pos_y0 = float(bbox[1])
 
+    # Build a comprehensive payload for the item that includes all relevant context for
+    # LLM inference and debugging. This payload is included in both the within-level
+    # and cross-level buckets, as it may be useful for both types of inference and for
+    # understanding how items are grouped and compared.
     payload: dict[str, Any] = {
         "canon_order_path": canon_order_path,
         "code_tuple": progression_context.get("code_tuple"),
@@ -3780,6 +3782,252 @@ def _process_single_standard(
     cross_payload = dict(payload)
     within_bucket["items"].append(within_payload)
     cross_bucket["items"].append(cross_payload)
+
+
+def _resolve_canonical_order_path_to_indices(
+    *,
+    canon_order_path: Any,
+    missing_default: int = 0,
+    order_index_lookup: dict[str, int],
+) -> tuple[list[int], int]:
+    """Convert a canonical-node path into sibling-order indices.
+
+    Academic Standards SFIs store `progression_context.canon_order_path` as canonical
+    IR node IDs from the exported hierarchy down to the leaf expectation. UUIDs are
+    stable identifiers, but they are not sortable in curriculum order. This function
+    resolves each canonical node ID to the sibling order index recorded during Academic
+    Standards export, producing a lexicographically comparable numeric path.
+
+    The numeric path is used to:
+
+    1. Sort items inside LP inference buckets before prompting the LLM, and
+    2. Filter Phase-1 `buildsTowards` edges that contradict within-level curriculum
+        order.
+
+    Missing canonical IDs are replaced with `missing_default`.
+
+    At a high level, this function converts this:
+
+    [
+        "canonical_section_node_id",
+        "canonical_palier_node_id",
+        "canonical_week_node_id",
+        "canonical_expectation_node_id",
+    ]
+
+    into this:
+
+    [4, 1, 6, 3]
+
+    where each number is the node's sibling order index in the Academic Standards
+    hierarchy.
+
+    This is important because `canon_order_path` stores canonical node IDs, but UUIDs
+    are not pedagogically sortable. The function uses `order_index_lookup`, which is
+    built from Academic Standards hasChild relationship metadata such as
+    `canonical_child_id`, `canonical_order_index`, and `export_order_index`.
+
+    For example, for a Senegal reading item, a path like:
+
+    "canon_order_path": [
+      "46d148dc-0eda-5f8a-ac3b-d025d17e6f7a",
+      "e9f53d00-b113-5a37-9949-7d9549312e80",
+      "99b0d4f5-b3d4-53a6-9a96-adf5cbe09033",
+      "13ceb96a-ff49-56b0-a362-8a738900793a"
+    ]
+
+    can become something like:
+
+    [4, 1, 6, 3]
+
+    meaning roughly:
+
+    4th top-level exported section
+    -> 1st child under that section
+    -> 6th child under that palier/substage
+    -> 3rd leaf item in that local table/row group
+
+    NB: This function is needed for two later steps.
+
+    First, it lets the LP exporter sort items inside each bucket in curriculum order
+    before sending them to the LLM. The final bucket-sort key uses:
+
+    (
+        numeric_order_missing_count,
+        numeric_order_path,
+        _item_doc_position_key(...),
+        _sort_key_for_bucket_sfi(...)
+    )
+
+    So complete numeric order paths win; page/bbox position is only a fallback.
+
+    Second, it lets the exporter reject bad within-grade buildsTowards edges that go
+    backward. The reverse-edge filter compares `numeric_order_path` when both source
+    and target have complete paths; only if that fails does it fall back to provenance
+    position (page_index, bbox_y0).
+
+    Examples
+    --------
+    1. Complete canonical path from Senegal reading
+
+        The Academic Standards export stores canonical node IDs in each SFI's
+        progression context:
+
+            canon_order_path = [
+                "46d148dc-0eda-5f8a-ac3b-d025d17e6f7a",  # section
+                "e9f53d00-b113-5a37-9949-7d9549312e80",  # palier/substage
+                "99b0d4f5-b3d4-53a6-9a96-adf5cbe09033",  # week/table row group
+                "13ceb96a-ff49-56b0-a362-8a738900793a",  # expectation leaf
+            ]
+
+        and `_build_order_index_lookup()` resolves each canonical node ID to its
+        sibling order index:
+
+            order_index_lookup = {
+                "46d148dc-0eda-5f8a-ac3b-d025d17e6f7a": 4,
+                "e9f53d00-b113-5a37-9949-7d9549312e80": 1,
+                "99b0d4f5-b3d4-53a6-9a96-adf5cbe09033": 6,
+                "13ceb96a-ff49-56b0-a362-8a738900793a": 4,
+            }
+
+        Calling:
+
+            _resolve_canonical_order_path_to_indices(
+                canon_order_path=canon_order_path,
+                missing_default=0,
+                order_index_lookup=order_index_lookup,
+            )
+
+        returns:
+
+            [4, 1, 6, 4], 0
+
+        This numeric path can be compared lexicographically with another item's path
+        to preserve curriculum order inside a progression bucket.
+
+    2. Adjacent items in the same local ordering domain
+
+        Suppose two Orthographe expectations are under the same section and palier but
+        appear in different week/table-row positions:
+
+            item_a_path = ["section_id", "palier_2_id", "week_14_id", "leaf_a_id"]
+            item_b_path = ["section_id", "palier_2_id", "week_16_id", "leaf_b_id"]
+
+            order_index_lookup = {
+                "section_id": 4,
+                "palier_2_id": 1,
+                "week_14_id": 4,
+                "week_16_id": 6,
+                "leaf_a_id": 3,
+                "leaf_b_id": 3,
+            }
+
+        The resolved paths are:
+
+            item_a_numeric = [4, 1, 4, 3]
+            item_b_numeric = [4, 1, 6, 3]
+
+        Since:
+
+            item_a_numeric < item_b_numeric
+
+        item A precedes item B. A Phase-1 `buildsTowards` edge from A to B is
+        **directionally** plausible; an edge from B to A can be filtered as backwards.
+
+    3. Missing canonical node IDs
+
+        If one canonical ID is missing from the lookup:
+
+            canon_order_path = ["section_id", "unknown_week_id", "leaf_id"]
+
+            order_index_lookup = {
+                "section_id": 4,
+                "leaf_id": 2,
+            }
+
+        then:
+
+            _resolve_canonical_order_path_to_indices(
+                canon_order_path=canon_order_path,
+                missing_default=0,
+                order_index_lookup=order_index_lookup,
+            )
+
+        returns:
+
+            [4, 0, 2], 1
+
+        The function counts the missing ID:
+
+            numeric_order_missing_count = 1
+
+        Downstream ordering logic should only trust `numeric_order_path` fully when
+        `numeric_order_missing_count == 0`; otherwise it can fall back to page/bbox
+        provenance.
+
+    4. Non-list or blank path values
+
+        Non-list inputs return an empty path and zero missing counts:
+
+            _resolve_canonical_order_path_to_indices(
+                canon_order_path=None,
+                missing_default=0,
+                order_index_lookup={},
+            )
+
+        returns:
+
+            [], 0
+
+        Blank values inside a list are skipped:
+
+            _resolve_canonical_order_path_to_indices(
+                canon_order_path=["section_id", "", None, "leaf_id"],
+                missing_default=0,
+                order_index_lookup={"section_id": 1, "leaf_id": 5},
+            )
+
+        returns:
+
+            [1, 5], 0
+
+    Parameters
+    ----------
+    canon_order_path
+        A list of canonical IR node IDs representing the path from the exported
+        hierarchy root to the leaf node. Non-list values return an empty path.
+    missing_default
+        The integer value to use for canonical node IDs that are not present in
+        `order_index_lookup`.
+    order_index_lookup
+        A mapping from canonical IR node ID strings to sibling order indices.
+
+    Returns
+    -------
+    tuple[list[int], int]
+        A list of integer order indices corresponding to `canon_order_path` and the
+        count of missing canonical node IDs that were not found in `order_index_lookup`.
+    """
+
+    if not isinstance(canon_order_path, list):
+        canon_order_path = []
+
+    numeric_order_missing_count = 0
+    numeric_path: list[int] = []
+
+    for value in canon_order_path:
+        key = str(value or "").strip()
+
+        if not key:
+            continue
+
+        if key in order_index_lookup:
+            numeric_path.append(order_index_lookup[key])
+        else:
+            numeric_path.append(missing_default)
+            numeric_order_missing_count += 1
+
+    return numeric_path, numeric_order_missing_count
 
 
 def _resolve_forbidden_pairs(
@@ -4147,54 +4395,6 @@ def _resolve_level_ordinals(
         normalized_level_key,
         level_basis,
     )
-
-
-def _resolve_numeric_order_path(
-    *,
-    canon_order_path: Any,
-    missing_default: int = 0,
-    order_index_lookup: dict[str, int],
-) -> list[int]:
-    """Convert a canonical-node order path into a numeric order path.
-
-    The Academic Standards export stores `progression_context.canon_order_path` for
-    each eligible leaf SFI. That path contains canonical IR node IDs from the exported
-    hierarchy down to the leaf node. This function resolves each canonical node ID to
-    its sibling order index using `order_index_lookup`. Missing IDs resolve to
-    `missing_default`; the caller tracks "missingness" separately and can use
-    provenance-based fallbacks for ordering when needed.
-
-    Parameters
-    ----------
-    canon_order_path
-        A list of canonical IR node IDs representing the path from the exported
-        hierarchy root to the leaf node. Non-list values return an empty path.
-    missing_default
-        The integer value to use for canonical node IDs that are not present in
-        `order_index_lookup`.
-    order_index_lookup
-        A mapping from canonical IR node ID strings to sibling order indices.
-
-    Returns
-    -------
-    list[int]
-        A list of integer order indices corresponding to `canon_order_path`.
-    """
-
-    if not isinstance(canon_order_path, list):
-        return []
-
-    numeric_path: list[int] = []
-
-    for value in canon_order_path:
-        key = str(value or "").strip()
-
-        if not key:
-            continue
-
-        numeric_path.append(order_index_lookup.get(key, missing_default))
-
-    return numeric_path
 
 
 def _resolve_subject_label(
