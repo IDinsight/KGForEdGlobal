@@ -3543,8 +3543,10 @@ def _process_single_standard(
         A dictionary for collecting standards that are dropped due to validation
         issues, categorized by the reason for dropping.
     include_provenance
-        Whether to include provenance information (e.g., page index) in the payload for
-        LLM inference.
+        Whether to include prompt-facing provenance fields such as `page_index`.
+        Internal ordering fields such as `doc_pos_page_index` and `doc_pos_y0` are
+        always retained because they are used for deterministic sorting and
+        reverse-edge filtering.
     normalized_level_label_map
         Precomputed normalized mapping from configured level labels to integer ordinals.
     order_index_lookup
@@ -3728,13 +3730,21 @@ def _process_single_standard(
 
     # Provenance-derived document position (page index and y0) for potential fallback
     # ordering signals.
-    indices = metadata.get("page_indices")
-    valid_indices = indices if isinstance(indices, list) else []
+    raw_indices = metadata.get("page_indices")
+    valid_indices = (
+        [idx for idx in raw_indices or [] if isinstance(idx, int)]
+        if isinstance(raw_indices, list)
+        else []
+    )
     doc_pos_page_index = min(valid_indices) if valid_indices else None
     bbox = metadata.get("bbox")
     doc_pos_y0: Optional[float] = None
 
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+    if (
+        isinstance(bbox, (list, tuple))
+        and len(bbox) == 4
+        and isinstance(bbox[1], (int, float))
+    ):
         doc_pos_y0 = float(bbox[1])
 
     # Build a comprehensive payload for the item that includes all relevant context for
