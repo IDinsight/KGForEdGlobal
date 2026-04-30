@@ -1511,8 +1511,9 @@ def _finalize_bucket_store(
     data into the final output structures.
 
     This function mutates each bucket dictionary in place by replacing
-    `bucket["items"]` with its sorted version; the returned views reference the same
-    bucket objects.
+    `bucket["items"]` with its sorted version and rebuilding
+    `bucket["topic_path_examples"]`/`bucket["topic_path_keys"]` from the sorted item
+    list; the returned views reference the same bucket objects.
 
     Examples
     --------
@@ -1689,6 +1690,29 @@ def _finalize_bucket_store(
                     _sort_key_for_bucket_sfi(s),
                 ),
             )
+
+            # Rebuild aggregate topic context from the sorted item list so prompts and
+            # reports show representative paths in the same pedagogical order as the
+            # bucket items. `_get_or_create_bucket()` maintains these fields while
+            # building buckets, but its insertion order can differ from final sorted
+            # item order when items are encountered out of curriculum sequence.
+            topic_path_examples: list[str] = []
+            topic_path_keys: list[str] = []
+
+            for item in b["items"]:
+                topic_path = str(item.get("topic_path") or "").strip()
+
+                if topic_path and topic_path not in topic_path_examples:
+                    topic_path_examples.append(topic_path)
+
+                topic_path_key = str(item.get("topic_path_key") or "").strip()
+
+                if topic_path_key and topic_path_key not in topic_path_keys:
+                    topic_path_keys.append(topic_path_key)
+
+            b["topic_path_examples"] = topic_path_examples
+            b["topic_path_keys"] = topic_path_keys
+
             level_buckets.append(b)
             by_bucket_key[tkey][level_label] = b
 
