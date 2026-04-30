@@ -11,14 +11,17 @@ work for non-US curriculum documents mapped into the LC "academic standards" sha
 
 Phases (toggleable via CreateKGConfig):
 
-1. Within-grade buildsTowards
-2. Cross-grade buildsTowards (adjacent levels, normalized thread matching)
-3. Within-grade relatesTo (cross-subject within a grade; subject-pair sampling)
-4. Cross-grade relatesTo (adjacent levels within the same subject, excluding
-    buildsTowards pairs)
+1. Within-level buildsTowards
+2. Cross-grade/cross-stage buildsTowards (adjacent levels, normalized thread matching)
+3. Within-level relatesTo (cross-subject/cross-strand within a level;
+    subject-pair sampling)
+4. Cross-grade/cross-stage relatesTo (adjacent levels within the same subject,
+    excluding buildsTowards pairs)
 """
 
 # Standard Library
+import hashlib
+import json
 import re
 
 from collections import Counter, defaultdict
@@ -124,6 +127,88 @@ def _allow_within_grade_inference(
         return True
 
     return _is_single_grade_bucket(bucket)
+
+
+def _assign_candidate_uids(
+    *, candidates: list[CandidateEdge], provenance_rows: list[dict[str, Any]]
+) -> list[CandidateEdge]:
+    """Attach deterministic candidate UIDs to candidates and provenance rows.
+
+    Candidate inference functions append exactly one provenance row for each raw
+    candidate edge, in the same order. This function validates that invariant, assigns
+    a deterministic UID and order index to every candidate, mirrors the UID into the
+    matching provenance row, and returns updated immutable CandidateEdge instances.
+
+    Parameters
+    ----------
+    candidates
+        Full raw candidate list before deduplication.
+    provenance_rows
+        Full raw provenance-row list before post-filter disposition enrichment. This
+        list is updated in place with `candidate_uid` and `candidate_order_index`.
+
+    Returns
+    -------
+    list[CandidateEdge]
+        Candidate list with `candidate_uid` and `candidate_order_index` stored in each
+        candidate metadata dictionary.
+
+    Raises
+    ------
+    ValueError
+        If the candidate and provenance-row counts differ.
+    """
+
+    if len(candidates) != len(provenance_rows):
+        raise ValueError(
+            f"Candidate/provenance cardinality mismatch before LP candidate processing: "
+            f"{len(candidates)} candidate(s) vs {len(provenance_rows)} provenance "
+            f"row(s). Each raw candidate must have exactly one provenance row so "
+            f"dedupe audit disposition can be joined unambiguously."
+        )
+
+    updated_candidates: list[CandidateEdge] = []
+
+    for occurrence_index, candidate in enumerate(candidates):
+        metadata = (
+            dict(candidate.metadata) if isinstance(candidate.metadata, dict) else {}
+        )
+        uid = str(metadata.get("candidate_uid") or "").strip()
+
+        if not uid:
+            # Build a deterministic per-run identifier for the raw candidate edge.
+            stable_metadata = {
+                str(key): value
+                for key, value in metadata.items()
+                if key not in {"candidate_order_index", "candidate_uid", "dedupe"}
+            }
+            payload = {
+                "confidence": float(candidate.confidence),
+                "evidence": candidate.evidence,
+                "inference_source": candidate.inference_source,
+                "inference_type": candidate.inference_type,
+                "llm_confidence": candidate.llm_confidence,
+                "metadata": stable_metadata,
+                "occurrence_index": int(occurrence_index),
+                "rel_type": candidate.rel_type,
+                "source_sfi_uuid": str(candidate.source_sfi_uuid),
+                "target_sfi_uuid": str(candidate.target_sfi_uuid),
+            }
+            encoded = json.dumps(
+                payload, default=str, ensure_ascii=False, sort_keys=True
+            ).encode("utf-8")
+            uid = hashlib.sha256(encoded).hexdigest()[:24]
+
+        metadata["candidate_order_index"] = occurrence_index
+        metadata["candidate_uid"] = uid
+        updated_candidate = _replace_candidate_metadata(
+            candidate=candidate, metadata=metadata
+        )
+        provenance_rows[occurrence_index]["candidate_order_index"] = occurrence_index
+        provenance_rows[occurrence_index]["candidate_uid"] = uid
+        updated_candidates.append(updated_candidate)
+
+    return updated_candidates
 
 
 def _best_map(
@@ -901,19 +986,16 @@ def _canonicalize_candidate_for_dedupe(
             )
             source = UUID(canonical_source)
             target = UUID(canonical_target)
-            candidate = _replace_candidate_metadata(
-                candidate=CandidateEdge(
-                    confidence=candidate.confidence,
-                    evidence=candidate.evidence,
-                    inference_source=candidate.inference_source,
-                    inference_type=candidate.inference_type,
-                    llm_confidence=candidate.llm_confidence,
-                    metadata=metadata,
-                    rel_type=candidate.rel_type,
-                    source_sfi_uuid=source,
-                    target_sfi_uuid=target,
-                ),
+            candidate = CandidateEdge(
+                confidence=candidate.confidence,
+                evidence=candidate.evidence,
+                inference_source=candidate.inference_source,
+                inference_type=candidate.inference_type,
+                llm_confidence=candidate.llm_confidence,
                 metadata=metadata,
+                rel_type=candidate.rel_type,
+                source_sfi_uuid=source,
+                target_sfi_uuid=target,
             )
 
     key = (candidate.rel_type, str(source), str(target))
@@ -1457,6 +1539,50 @@ def _create_new_bucket(
     return bucket
 
 
+def _dedupe_winner_sort_key(*, candidate: CandidateEdge) -> tuple[Any, ...]:
+    """Return a deterministic sort key for selecting a dedupe winner.
+
+    Higher confidence wins first. Ties prefer earlier pipeline phases, then earlier raw
+    candidate order, then stable string fields so the result is deterministic even when
+    all substantive scores are identical.
+
+    Parameters
+    ----------
+    candidate
+        Candidate edge in a single canonical dedupe group.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        Sort key suitable for `max()`.
+    """
+
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    phase_raw = metadata.get("phase")
+
+    try:
+        phase = 999 if phase_raw is None else int(phase_raw)
+    except (TypeError, ValueError):
+        phase = 999
+
+    order_raw = metadata.get("candidate_order_index")
+
+    try:
+        candidate_order_index = 10**9 if order_raw is None else int(order_raw)
+    except (TypeError, ValueError):
+        candidate_order_index = 10**9
+
+    return (
+        float(candidate.confidence),
+        -phase,
+        -candidate_order_index,
+        str(candidate.inference_type),
+        str(candidate.source_sfi_uuid),
+        str(candidate.target_sfi_uuid),
+        str(metadata.get("candidate_uid") or ""),
+    )
+
+
 def _dedupe_edges(
     edges: list[CandidateEdge],
 ) -> tuple[
@@ -1503,7 +1629,10 @@ def _dedupe_edges(
     best: dict[tuple[str, str, str], CandidateEdge] = {}
 
     for key, group in groups.items():
-        winner_index, _ = max(enumerate(group), key=lambda pair: pair[1].confidence)
+        winner_index, _ = max(
+            enumerate(group),
+            key=lambda pair: _dedupe_winner_sort_key(candidate=pair[1]),
+        )
         audit_records: list[dict[str, Any]] = []
 
         for idx, candidate in enumerate(group):
@@ -1514,6 +1643,10 @@ def _dedupe_edges(
 
             audit_records.append(
                 {
+                    "candidate_order_index": candidate_metadata.get(
+                        "candidate_order_index"
+                    ),
+                    "candidate_uid": candidate_metadata.get("candidate_uid"),
                     "confidence": float(candidate.confidence),
                     "dedupe_key": list(key),
                     "disposition": disposition,
@@ -1705,9 +1838,10 @@ def _filter_builds_towards_within_grade_order(
             return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
 
         src_page = source_base.get("doc_pos_page_index")
-        src_page = src_page or source_base.get("page_index")
+        src_page = source_base.get("page_index") if src_page is None else src_page
+
         tgt_page = target_base.get("doc_pos_page_index")
-        tgt_page = tgt_page or target_base.get("page_index")
+        tgt_page = target_base.get("page_index") if tgt_page is None else tgt_page
 
         if not isinstance(src_page, int) or not isinstance(tgt_page, int):
             return None
@@ -2415,8 +2549,8 @@ def _infer_cross_grade_builds_towards(
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
-    """Perform Phase 2 inference: Cross-grade buildsTowards relationships with optional
-    cross-stage fallback.
+    """Perform Phase 2 inference: Cross-grade/cross-stage buildsTowards relationships
+    with optional cross-stage fallback.
 
     1. If BOTH adjacent buckets represent single grades (low == high), run true
         cross-grade.
@@ -2521,7 +2655,7 @@ def _infer_cross_grade_relates_to(
     forbidden_builds_pairs: set[tuple[UUID, UUID]],
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 4 inference: Cross-grade relatesTo relationships with optional
+    """Perform Phase 4 inference: Cross-grade/cross-stage relatesTo relationships with optional
     cross-stage fallback.
 
     Parameters
@@ -5180,7 +5314,7 @@ def _select_sfi_inference_context(
     context
         Combined SFI context entry from `_build_combined_sfi_context_index()`.
     scope
-        Scope returned by `_candidate_context_scope()`.
+        Scope inferred from `candidate.inference_type` in `_emit_relationship()`.
 
     Returns
     -------
@@ -5568,6 +5702,10 @@ def export_learning_progressions(
     candidates.extend(p4_candidates)
     provenance_rows.extend(p4_prov)
 
+    candidates = _assign_candidate_uids(
+        candidates=candidates, provenance_rows=provenance_rows
+    )
+
     # Dedupe, filter, limit, and emit final relationships, and gather stats for the
     # report.
     builds_rels, relates_rels, lp_stats, disposition_map, dedupe_winners = (
@@ -5615,24 +5753,16 @@ def export_learning_progressions(
         winner, is_winner = dedupe_winners.get(key), False
 
         if winner is not None:
-            try:
-                same_phase = int(row.get("phase") or -1) == int(
-                    (winner.metadata or {}).get("phase") or -2
-                )
-            except (TypeError, ValueError):
-                same_phase = False
-
-            same_type = row.get("inference_type") == winner.inference_type
-
-            try:
-                same_conf = (
-                    abs(float(row.get("confidence", 0.0)) - float(winner.confidence))
-                    < 1e-9
-                )
-            except (TypeError, ValueError):
-                same_conf = False
-
-            is_winner = bool(same_phase and same_type and same_conf)
+            winner_metadata = (
+                winner.metadata if isinstance(winner.metadata, dict) else {}
+            )
+            row_candidate_uid = str(row.get("candidate_uid") or "").strip()
+            winner_candidate_uid = str(
+                winner_metadata.get("candidate_uid") or ""
+            ).strip()
+            is_winner = bool(
+                row_candidate_uid and row_candidate_uid == winner_candidate_uid
+            )
 
         row["disposition"] = (
             "dropped_dedupe"
