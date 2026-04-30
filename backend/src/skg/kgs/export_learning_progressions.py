@@ -1510,6 +1510,143 @@ def _finalize_bucket_store(
     """Finalize the bucket store by sorting items within each bucket and organizing the
     data into the final output structures.
 
+    This function mutates each bucket dictionary in place by replacing
+    `bucket["items"]` with its sorted version; the returned views reference the same
+    bucket objects.
+
+    Examples
+    --------
+    1. Finalize a within-level Senegal reading bucket
+
+        Suppose `_process_single_standard()` has grouped two CE1 Orthographe items into
+        the same within-level fallback bucket:
+
+            store = defaultdict(dict)
+            store["CE1"]["statement_type=orthographe"] = {
+                "bucket_key": "CE1::statement_type=orthographe",
+                "bucket_scope": "within_level",
+                "lp_bucket_key": "statement_type=orthographe",
+                "lp_thread_key": "statement_type=orthographe",
+                "subject_label": "UNSPECIFIED_SUBJECT",
+                "topic_path_examples": [
+                    "substage:Palier 2 - Communication écrite",
+                ],
+                "topic_path_keys": [
+                    "substage=palier_2_communication_ecrite",
+                ],
+                "items": [
+                    {
+                        "sfi_uuid": "uuid-week-16",
+                        "description": "Orthographier des mots fréquents...",
+                        "numeric_order_missing_count": 0,
+                        "numeric_order_path": [4, 2, 16, 3],
+                        "doc_pos_page_index": 43,
+                        "doc_pos_y0": 703.3,
+                        "order_index_within_parent": 3,
+                    },
+                    {
+                        "sfi_uuid": "uuid-week-15",
+                        "description": "Orthographier des mots fréquents...",
+                        "numeric_order_missing_count": 0,
+                        "numeric_order_path": [4, 2, 15, 3],
+                        "doc_pos_page_index": 42,
+                        "doc_pos_y0": 55.0,
+                        "order_index_within_parent": 3,
+                    },
+                ],
+            }
+
+        Calling:
+
+            by_level, by_bucket_key = _finalize_bucket_store(store)
+
+        returns a level-oriented view:
+
+            by_level["CE1"] == [
+                {
+                    "bucket_key": "CE1::statement_type=orthographe",
+                    "items": [
+                        {"sfi_uuid": "uuid-week-15", ...},
+                        {"sfi_uuid": "uuid-week-16", ...},
+                    ],
+                    ...
+                }
+            ]
+
+        and a key-oriented view:
+
+            by_bucket_key["statement_type=orthographe"]["CE1"] is by_level["CE1"][0]
+
+        The items are sorted by `numeric_order_path`, so week 15 comes before week 16
+        even if the input list arrived in the opposite order.
+
+    2. Prefer complete numeric order paths over fallback document position
+
+        If one item has a complete numeric path and another item is missing part of its
+        numeric path:
+
+            complete = {
+                "sfi_uuid": "uuid-complete",
+                "numeric_order_missing_count": 0,
+                "numeric_order_path": [4, 1, 6, 3],
+                "doc_pos_page_index": 50,
+                "doc_pos_y0": 100.0,
+            }
+            incomplete = {
+                "sfi_uuid": "uuid-incomplete",
+                "numeric_order_missing_count": 1,
+                "numeric_order_path": [4, 1, 999999],
+                "doc_pos_page_index": 10,
+                "doc_pos_y0": 50.0,
+            }
+
+        the complete item sorts first because the sort key begins with
+        `numeric_order_missing_count`. Page/bbox position is only a fallback after
+        numeric curriculum order quality has been considered.
+
+    3. Sort buckets within a level by aggregate topic context
+
+        Suppose CE1 has two finalized buckets:
+
+            store["CE1"]["strand=lecture"] = {
+                "lp_bucket_key": "strand=lecture",
+                "topic_path_examples": ["strand:Lecture -> substage:Palier 1"],
+                "items": [...],
+            }
+            store["CE1"]["strand=production_d_ecrits"] = {
+                "lp_bucket_key": "strand=production_d_ecrits",
+                "topic_path_examples": [
+                    "strand:Production d'écrits -> subtopic:Grammaire",
+                    "strand:Production d'écrits -> subtopic:Vocabulaire",
+                ],
+                "items": [...],
+            }
+
+        `_finalize_bucket_store()` sorts the bucket list using
+        `_bucket_topic_context(bucket)` and then `lp_bucket_key`, giving stable,
+        human-readable bucket order for reports and downstream inference planning.
+
+    4. Same approach works for within-level and cross-level stores
+
+        The function does not care whether the input store came from
+        `within_level_buckets` or `cross_level_buckets`.
+
+        For within-level buckets, the second-level key is usually a within-level
+        inference bucket such as:
+
+            "strand=lecture"
+            "statement_type=orthographe"
+
+        For cross-level buckets, the second-level key is usually a cross-level thread
+        key such as:
+
+            "strand=lecture|substage=palier_1_lecture"
+
+        In both cases, the return shape is:
+
+            by_level[level_label] -> list of sorted bucket dictionaries
+            by_bucket_key[key][level_label] -> bucket dictionary
+
     Parameters
     ----------
     store
@@ -1534,7 +1671,7 @@ def _finalize_bucket_store(
     """
 
     by_level: dict[str, list[dict[str, Any]]] = {}
-    by_thread: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    by_bucket_key: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
     for level_label, per_thread in store.items():
         level_buckets: list[dict[str, Any]] = []
@@ -1553,7 +1690,7 @@ def _finalize_bucket_store(
                 ),
             )
             level_buckets.append(b)
-            by_thread[tkey][level_label] = b
+            by_bucket_key[tkey][level_label] = b
 
         by_level[level_label] = sorted(
             level_buckets,
@@ -1563,7 +1700,7 @@ def _finalize_bucket_store(
             ),
         )
 
-    return by_level, dict(by_thread)
+    return by_level, dict(by_bucket_key)
 
 
 def _finalize_lp_export(
@@ -2614,7 +2751,7 @@ def _item_doc_position_key(item: dict[str, Any]) -> tuple[int, float]:
 
     y0 = item.get("doc_pos_y0")
     y0_f = float(y0) if isinstance(y0, (int, float)) else float(10**9)
-    return (page_i, y0_f)
+    return page_i, y0_f
 
 
 def _level_bounds(b: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
@@ -4760,8 +4897,8 @@ def _set_disposition(
 def _sort_key_for_bucket_sfi(
     s: dict[str, Any],
 ) -> tuple[int, int, tuple[int, ...], str, str]:
-    """Stable ordering inside a bucket. Prefer explicit order_index; fall back to
-    numeric code tuple (if available), then statement_code, then uuid.
+    """Stable ordering inside a bucket. Prefer explicit `order_index`; fall back to
+    numeric code tuple (if available), then `statement_code`, then `uuid`.
 
     Parameters
     ----------
@@ -4774,22 +4911,21 @@ def _sort_key_for_bucket_sfi(
         A tuple representing the sort key for the given StandardsFrameworkItem,
         structured as follows:
         1. An integer representing the order index within the parent context. If the
-           order index is not available or not an integer, a large default value (10^9)
-           is used to ensure it sorts last.
+            order index is not available or not an integer, a large default value (10^9)
+            is used to ensure it sorts last.
         2. An integer indicating whether the code tuple is missing (1) or present (0).
         3. A tuple of integers representing the code tuple extracted from the item. If
-           the code tuple is not available or not valid, a default tuple (10^9,) is
-           used to ensure it sorts last.
+            the code tuple is not available or not valid, a default tuple (10^9,) is
+            used to ensure it sorts last.
         4. A string representing the statement code, stripped of leading and trailing
-           whitespace.
+            whitespace.
         5. A string representing the SFI UUID or case identifier UUID, used as a
-           tiebreaker in sorting.
+            tiebreaker in sorting.
     """
 
     order_index = s.get("order_index_within_parent")
     order_index = order_index if isinstance(order_index, int) else 10**9
     code = (s.get("statement_code") or "").strip()
-
     raw_code_tuple = s.get("code_tuple")
     nums: list[int] = []
 
@@ -4804,7 +4940,6 @@ def _sort_key_for_bucket_sfi(
         nums = [int(match) for match in re.findall(r"\d+", code)]
 
     code_tuple = tuple(nums) if nums else None
-
     missing_code_tuple = 1 if code_tuple is None else 0
     code_tuple_key = code_tuple if code_tuple is not None else (10**9,)
     uuid_key = s.get("sfi_uuid") or s.get("case_identifier_uuid") or ""
