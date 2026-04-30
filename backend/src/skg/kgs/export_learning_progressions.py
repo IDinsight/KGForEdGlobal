@@ -3851,10 +3851,13 @@ def _process_single_standard(
         )
     )
 
-    # Topic path setup and validation. Prefer the exported aggregate `topic_path_key`,
-    # but if it is missing, derive a local signature from `topic_path_parts` so
-    # `_compute_bucket_keys()` can still use configured role-based keys, fallbacks, or
-    # its unthreaded sentinel.
+    # Topic path setup. Prefer the exported aggregate `topic_path_key`, but if it is
+    # missing, derive a local signature from `topic_path_parts`.
+    #
+    # Do not drop the SFI when no topic path is available. `_compute_bucket_keys()` can
+    # still place the item into a configured source-field fallback bucket (e.g.,
+    # `statement_type=orthographe`) or, failing that, a level-specific unthreaded
+    # sentinel. Treat a missing topic path as weak context, not as LP ineligibility.
     raw_topic_path_parts = progression_context.get("topic_path_parts")
     topic_path_parts = (
         raw_topic_path_parts if isinstance(raw_topic_path_parts, list) else []
@@ -3865,11 +3868,7 @@ def _process_single_standard(
     if not topic_key:
         topic_key = _topic_path_signature(topic_path_parts)
 
-    if not topic_key:
-        drops.setdefault("missing_topic_path_key", []).append(
-            {"description": sfi.description, "level": level_label, "sfi_uuid": sfi_uuid}
-        )
-        return
+    topic_path_key_missing = not bool(topic_key)
 
     # Subject label setup.
     subject_label = _resolve_subject_label(
@@ -4007,6 +4006,7 @@ def _process_single_standard(
         "default_thread_key": str(progression_context.get("thread_key") or ""),
         "topic_path": _path_string(topic_path_parts),
         "topic_path_key": topic_key,
+        "topic_path_key_missing": topic_path_key_missing,
         # Bucket/thread context kept separately for debugging.
         "cross_level_bucket_key": cross_bucket_key,
         "cross_level_thread_key": cross_thread_key,
@@ -5357,8 +5357,8 @@ def group_standards_for_learning_progressions(
     Returns
     -------
     dict[str, Any]
-        A dictionary containing grouped standards by grade and thread, as well as any
-        dropped items due to missing or non-standard data.
+        A dictionary containing grouped standards by level and thread, as well as any
+        dropped items due to ineligible or unmapped source data.
     """
 
     # level label -> effective bucket/thread key -> bucket. Keep within-level and
@@ -5378,7 +5378,6 @@ def group_standards_for_learning_progressions(
         "lp_statement_type_excluded": [],
         "lp_statement_type_not_included": [],
         "missing_level_key": [],
-        "missing_topic_path_key": [],
         "non_standard_item": [],
         "unmapped_level_key": [],
     }
