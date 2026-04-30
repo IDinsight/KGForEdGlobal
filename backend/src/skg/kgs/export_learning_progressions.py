@@ -25,7 +25,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Callable, DefaultDict, Iterator, Optional
+from typing import Any, Callable, DefaultDict, Literal, Optional
 from uuid import UUID, uuid5
 
 # Third Party Library
@@ -57,6 +57,19 @@ from skg.kgs.validators import (
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole
 from skg.utils.general import open_json_type, write_to_json
+
+CROSS_LEVEL_INFERENCE_TYPES: set[str] = {
+    "cross_grade_builds_towards",
+    "cross_grade_relates_to",
+    "cross_stage_builds_towards",
+    "cross_stage_relates_to",
+}
+SFIContextScope = Literal["cross_level", "within_level"]
+WITHIN_LEVEL_INFERENCE_TYPES: set[str] = {
+    "within_grade_builds_towards",
+    "within_grade_cross_subject_relates_to",
+    "within_grade_relates_to",
+}
 
 
 @dataclass(frozen=True)
@@ -193,6 +206,62 @@ def _bucket_topic_context(*, bucket: dict[str, Any], max_examples: int = 3) -> s
             return " | ".join(cleaned_keys[:max_examples])
 
     return str(bucket.get("lp_bucket_key") or bucket.get("bucket_key") or "").strip()
+
+
+def _build_combined_sfi_context_index(
+    *,
+    cross_sfi_index: dict[str, dict[str, Any]],
+    within_sfi_index: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Merge scoped SFI indexes into the metadata shape.
+
+    Each scoped index describes the same SFI from one inference-bucket perspective. The
+    combined index keeps the common source-item facts under `base_context` and
+    preserves the two bucket-specific views under `within_level_context` and
+    `cross_level_context`. This keeps emitted LP relationship metadata separated:
+    reviewers can see both the source item and the bucket semantics that may have
+    produced an edge.
+
+    Parameters
+    ----------
+    cross_sfi_index
+        SFI UUID -> context entries built from the cross-level bucket store.
+    within_sfi_index
+        SFI UUID -> context entries built from the within-level bucket store.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        SFI UUID -> combined context with `base_context`, `within_level_context`,
+        `cross_level_context`, and `available_context_scopes`.
+    """
+
+    combined: dict[str, dict[str, Any]] = {}
+
+    for sfi_uuid in sorted(set(within_sfi_index) | set(cross_sfi_index)):
+        within_entry = within_sfi_index.get(sfi_uuid) or {}
+        cross_entry = cross_sfi_index.get(sfi_uuid) or {}
+        base_context = (
+            within_entry.get("base_context")
+            or cross_entry.get("base_context")
+            or {"sfi_uuid": sfi_uuid}
+        )
+        available_context_scopes: list[str] = []
+
+        if within_entry.get("within_level_context") is not None:
+            available_context_scopes.append("within_level")
+
+        if cross_entry.get("cross_level_context") is not None:
+            available_context_scopes.append("cross_level")
+
+        combined[sfi_uuid] = {
+            "available_context_scopes": available_context_scopes,
+            "base_context": base_context,
+            "cross_level_context": cross_entry.get("cross_level_context"),
+            "within_level_context": within_entry.get("within_level_context"),
+        }
+
+    return combined
 
 
 def _build_fallback_segments(
@@ -494,380 +563,169 @@ def _build_order_index_lookup(
     return order_index_lookup
 
 
-def _build_sfi_index(
-    by_level: dict[str, list[dict[str, Any]]],
+def _build_scoped_sfi_index(
+    *, by_level: dict[str, list[dict[str, Any]]], scope: SFIContextScope
 ) -> dict[str, dict[str, Any]]:
-    """Build a lookup table of SFI UUID -> context/provenance hints.
+    """Build an SFI UUID -> context index for one LP bucket semantics scope.
 
-    This is used to enrich emitted Relationship.metadata so downstream consumers can
-    reason about edges without having to join back to the source node payloads. The
-    same index also carries ordering-domain hints used by Phase 1 within-level
-    buildsTowards filtering.
-
-    NB: Buckets may intentionally mix multiple topic paths. For example, a Senegal
-    reading bucket keyed by a broad strand may contain items from multiple paliers and
-    weeks. Therefore, this index MUST preserve *item-level* topic fields when present,
-    rather than replacing them with bucket-level `topic_path`/`lp_bucket_key` values.
-
-    `within_level_ordering_domain_key` is intentionally broader than `topic_path_key`.
-    It represents the Phase 1 within-level bucket in which two items were compared.
-    Downstream order checks can use it to compare items across finer topic paths
-    (e.g., Palier 1 vs. Palier 2) when the configured within-level bucket intentionally
-    grouped those items together.
-
-    Examples
-    --------
-    1. Build a simple SFI context index from one CE1 within-level bucket
-
-        Given a finalized `by_within_level` structure:
-
-            by_level = {
-                "CE1": [
-                    {
-                        "lp_bucket_key": "strand=lecture",
-                        "lp_thread_key": "strand=lecture",
-                        "subject_label": "Lecture",
-                        "level_basis": "grade",
-                        "level_key": "CE1",
-                        "items": [
-                            {
-                                "sfi_uuid": "11111111-1111-1111-1111-111111111111",
-                                "description": "Lire un texte narratif simple.",
-                                "canon_order_path": ["section-a", "palier-1", "item-1"],
-                                "numeric_order_path": [2, 1, 0],
-                                "numeric_order_missing_count": 0,
-                                "order_index_within_parent": 0,
-                                "page_index": 12,
-                                "doc_pos_page_index": 12,
-                                "doc_pos_y0": 400.0,
-                                "topic_path": "strand:Lecture / substage:Palier 1",
-                                "topic_path_key": (
-                                    "strand=lecture|substage=palier_1"
-                                ),
-                                "within_level_bucket_key": "strand=lecture",
-                                "within_level_thread_key": "strand=lecture",
-                                "cross_level_bucket_key": (
-                                    "strand=lecture|substage=palier_1"
-                                ),
-                                "cross_level_thread_key": (
-                                    "strand=lecture|substage=palier_1"
-                                ),
-                                "default_thread_key": (
-                                    "strand=lecture|substage=palier_1"
-                                ),
-                                "statement_code": None,
-                            }
-                        ],
-                    }
-                ]
-            }
-
-        Calling:
-
-            index = _build_sfi_index(by_level)
-
-        returns:
-
-            {
-                "11111111-1111-1111-1111-111111111111": {
-                    "canon_order_path": ["section-a", "palier-1", "item-1"],
-                    "cross_level_bucket_key": "strand=lecture|substage=palier_1",
-                    "cross_level_thread_key": "strand=lecture|substage=palier_1",
-                    "default_thread_key": "strand=lecture|substage=palier_1",
-                    "doc_pos_page_index": 12,
-                    "doc_pos_y0": 400.0,
-                    "level_basis": "grade",
-                    "level_key": "CE1",
-                    "level_label": "CE1",
-                    "numeric_order_missing_count": 0,
-                    "numeric_order_path": [2, 1, 0],
-                    "order_index_within_parent": 0,
-                    "page_index": 12,
-                    "statement_code": None,
-                    "subject_label": "Lecture",
-                    "thread_key": "strand=lecture",
-                    "topic_path": "strand:Lecture / substage:Palier 1",
-                    "topic_path_key": "strand=lecture|substage=palier_1",
-                    "within_level_bucket_key": "strand=lecture",
-                    "within_level_fallback_segments": None,
-                    "within_level_ordering_domain_key": "strand=lecture",
-                    "within_level_thread_key": "strand=lecture",
-                }
-            }
-
-        The precise item topic path is preserved for provenance, while
-        `within_level_ordering_domain_key` records the broader Phase 1 bucket used for
-        within-level ordering checks.
-
-    2. Preserve item-level topic context while keeping a broader ordering domain
-
-        A bucket can group several paliers under one strand-level bucket:
-
-            by_level = {
-                "CE1": [
-                    {
-                        "lp_bucket_key": "strand=communication_orale",
-                        "lp_thread_key": "strand=communication_orale",
-                        "subject_label": "Communication orale",
-                        "topic_path_examples": [
-                            "strand:Communication orale / substage:Palier 1",
-                            "strand:Communication orale / substage:Palier 2",
-                        ],
-                        "topic_path_keys": [
-                            "strand=communication_orale|substage=palier_1",
-                            "strand=communication_orale|substage=palier_2",
-                        ],
-                        "items": [
-                            {
-                                "sfi_uuid": "22222222-2222-2222-2222-222222222222",
-                                "topic_path": (
-                                    "strand:Communication orale / substage:Palier 2"
-                                ),
-                                "topic_path_key": (
-                                    "strand=communication_orale|substage=palier_2"
-                                ),
-                                "within_level_bucket_key": (
-                                    "strand=communication_orale"
-                                ),
-                                "within_level_thread_key": (
-                                    "strand=communication_orale"
-                                ),
-                            }
-                        ],
-                    }
-                ]
-            }
-
-        Calling:
-
-            index = _build_sfi_index(by_level)
-
-        gives the item-specific topic fields:
-
-            index["22222222-2222-2222-2222-222222222222"]["topic_path"]
-            # "strand:Communication orale / substage:Palier 2"
-
-            index["22222222-2222-2222-2222-222222222222"]["topic_path_key"]
-            # "strand=communication_orale|substage=palier_2"
-
-        and the broader ordering domain used for Phase 1 order checks:
-
-            index["22222222-2222-2222-2222-222222222222"][
-                "within_level_ordering_domain_key"
-            ]
-            # "strand=communication_orale"
-
-    3. Fill missing item fields from bucket-level context
-
-        If an item is missing `topic_path` and `topic_path_key`, the function falls
-        back to bucket-level topic context while still using the within-level bucket as
-        the ordering domain:
-
-            by_level = {
-                "CE1": [
-                    {
-                        "lp_bucket_key": "statement_type=orthographe",
-                        "lp_thread_key": "statement_type=orthographe",
-                        "subject_label": "UNSPECIFIED_SUBJECT",
-                        "level_basis": "grade",
-                        "level_key": "CE1",
-                        "topic_path_examples": [
-                            "substage:Palier 2 - Communication écrite",
-                        ],
-                        "topic_path_keys": [
-                            "substage=palier_2_communication_ecrite",
-                        ],
-                        "items": [
-                            {
-                                "sfi_uuid": "33333333-3333-3333-3333-333333333333",
-                                "topic_path": "",
-                                "topic_path_key": "",
-                                "within_level_bucket_key": (
-                                    "statement_type=orthographe"
-                                ),
-                                "within_level_thread_key": (
-                                    "statement_type=orthographe"
-                                ),
-                                "within_level_fallback_segments": [
-                                    "statement_type=orthographe",
-                                ],
-                            }
-                        ],
-                    }
-                ]
-            }
-
-        Calling:
-
-            index = _build_sfi_index(by_level)
-
-        returns fallback topic context:
-
-            index["33333333-3333-3333-3333-333333333333"]["topic_path"]
-            # "substage:Palier 2 - Communication écrite"
-
-            index["33333333-3333-3333-3333-333333333333"]["topic_path_key"]
-            # "substage=palier_2_communication_ecrite"
-
-            index["33333333-3333-3333-3333-333333333333"][
-                "within_level_ordering_domain_key"
-            ]
-            # "statement_type=orthographe"
-
-    4. Fail hard on duplicate SFI UUIDs
-
-        Each SFI should appear at most once in the provided bucket store. If upstream
-        grouping places the same SFI into two buckets, the function raises immediately:
-
-            by_level = {
-                "CE1": [
-                    {
-                        "lp_bucket_key": "statement_type=grammaire",
-                        "lp_thread_key": "statement_type=grammaire",
-                        "items": [
-                            {
-                                "sfi_uuid": "44444444-4444-4444-4444-444444444444",
-                                "within_level_bucket_key": "statement_type=grammaire",
-                            }
-                        ],
-                    },
-                    {
-                        "lp_bucket_key": "statement_type=orthographe",
-                        "lp_thread_key": "statement_type=orthographe",
-                        "items": [
-                            {
-                                "sfi_uuid": "44444444-4444-4444-4444-444444444444",
-                                "within_level_bucket_key": "statement_type=orthographe",
-                            }
-                        ],
-                    },
-                ]
-            }
-
-        Calling:
-
-            _build_sfi_index(by_level)
-
-        raises:
-
-            AssertionError: Duplicate SFI UUID encountered while building LP SFI index
-
-        This behavior prevents relationship metadata and ordering checks from silently
-        using an arbitrary bucket context.
+    Within-level and cross-level bucket stores answer different questions and can use
+    different bucket keys. This function therefore builds only one scoped view at a
+    time. Use `_build_combined_sfi_context_index()` to create the emission-time index
+    that contains both views.
 
     Parameters
     ----------
     by_level
-        Dictionary mapping level labels to lists of bucket dictionaries.
+        Finalized bucket store view keyed by level label. Pass `by_within_level` when
+        `scope="within_level"` and `by_cross_level` when `scope="cross_level"`.
+    scope
+        The bucket semantics represented by the index: `within_level` for Phase 1/3
+        buckets or `cross_level` for Phase 2/4 buckets.
 
     Returns
     -------
     dict[str, dict[str, Any]]
-        SFI UUID string -> item and bucket context used for relationship metadata and
-        within-level ordering checks.
+        SFI UUID -> context dictionary containing `base_context` plus exactly one
+        scoped context block (`within_level_context` or `cross_level_context`).
 
     Raises
     ------
     ValueError
-        If the same SFI UUID appears more than once in the provided bucket store. A
-        duplicate means upstream bucketing produced a non-unique within-level placement
-        for a StandardsFrameworkItem, so the run should stop immediately.
-        If any item is missing an `sfi_uuid`, which is required for indexing.
+        If an item is missing `sfi_uuid`, if a duplicate SFI UUID appears within the
+        same scoped bucket store, or if an unsupported scope is supplied.
     """
 
-    def _iter_items() -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:
-        """Iterate through every bucket item as:
-
-        by_level[level_label][bucket]["items"][item]
-
-        and yields:
-
-        (level_label, bucket, item)
-
-        For example, for Senegal (conceptually):
-
-        CE1
-            - strand=communication_orale_expression_orale_et_recitation
-                - SFI A
-                - SFI B
-                - SFI C
-
-        becomes one stream of (level_label, bucket, item) tuples.
-
-        Returns
-        -------
-        Iterator[tuple[str, dict[str, Any], dict[str, Any]]]
-            Tuples of (level_label, bucket_dict, item_dict) for each item found in the
-            buckets organized by level.
-        """
-
-        for level_label, level_buckets in (by_level or {}).items():
-            for bucket in level_buckets or []:
-                for item in bucket.get("items") or []:
-                    yield level_label, bucket, item
+    if scope not in {"cross_level", "within_level"}:
+        raise ValueError(f"Unsupported SFI context scope: {scope}")
 
     index: dict[str, dict[str, Any]] = {}
 
-    for level_label, bucket, item in _iter_items():
-        sfi_uuid = str(item.get("sfi_uuid") or "").strip()
+    for level_label, level_buckets in (by_level or {}).items():
+        for bucket in level_buckets or []:
+            for item in bucket.get("items") or []:
+                sfi_uuid = str(item.get("sfi_uuid") or "").strip()
 
-        if not sfi_uuid:
-            raise ValueError(
-                f"Missing sfi_uuid while building LP SFI index. "
-                f"level={level_label!r}; bucket={bucket.get('lp_bucket_key')}"
-            )
+                if not sfi_uuid:
+                    raise ValueError(
+                        f"Missing sfi_uuid while building LP SFI context index. "
+                        f"scope={scope!r}; level={level_label!r}; "
+                        f"bucket={bucket.get('lp_bucket_key')!r}."
+                    )
 
-        candidate = {
-            "canon_order_path": item.get("canon_order_path"),
-            "cross_level_bucket_key": item.get("cross_level_bucket_key"),
-            "cross_level_thread_key": item.get("cross_level_thread_key"),
-            "default_thread_key": item.get("default_thread_key")
-            or bucket.get("default_thread_key"),
-            "doc_pos_page_index": item.get("doc_pos_page_index"),
-            "doc_pos_y0": item.get("doc_pos_y0"),
-            "level_basis": item.get("level_basis") or bucket.get("level_basis"),
-            "level_key": item.get("level_key") or bucket.get("level_key"),
-            "level_label": level_label,
-            "numeric_order_missing_count": item.get("numeric_order_missing_count"),
-            "numeric_order_path": item.get("numeric_order_path"),
-            "order_index_within_parent": item.get("order_index_within_parent"),
-            "page_index": item.get("page_index"),
-            "statement_code": item.get("statement_code"),
-            "subject_label": bucket.get("subject_label"),
-            "thread_key": bucket.get("lp_thread_key"),
-            "topic_path": item.get("topic_path")
-            or _bucket_topic_context(bucket=bucket),
-            "topic_path_key": item.get("topic_path_key")
-            or _first_topic_path_key(bucket)
-            or bucket.get("lp_bucket_key"),
-            "within_level_bucket_key": item.get("within_level_bucket_key"),
-            "within_level_fallback_segments": item.get(
-                "within_level_fallback_segments"
-            ),
-            "within_level_ordering_domain_key": (
-                item.get("within_level_bucket_key")
-                or bucket.get("lp_bucket_key")
-                or item.get("within_level_thread_key")
-                or bucket.get("lp_thread_key")
-                or item.get("topic_path_key")
-                or _first_topic_path_key(bucket)
-            ),
-            "within_level_thread_key": item.get("within_level_thread_key"),
-        }
+                item_topic_path = str(item.get("topic_path") or "").strip()
+                item_topic_path_key = str(item.get("topic_path_key") or "").strip()
+                base_context = {
+                    "description": item.get("description"),
+                    "doc_pos_page_index": item.get("doc_pos_page_index"),
+                    "doc_pos_y0": item.get("doc_pos_y0"),
+                    "level_basis": item.get("level_basis") or bucket.get("level_basis"),
+                    "level_key": item.get("level_key") or bucket.get("level_key"),
+                    "level_label": level_label,
+                    "level_ordinal_high": bucket.get("level_ordinal_high"),
+                    "level_ordinal_low": bucket.get("level_ordinal_low"),
+                    "page_index": item.get("page_index"),
+                    "sfi_uuid": sfi_uuid,
+                    "statement_code": item.get("statement_code"),
+                    "statement_type": item.get("statement_type"),
+                    "subject_label": bucket.get("subject_label"),
+                    "topic_path": item_topic_path
+                    or _bucket_topic_context(bucket=bucket),
+                    "topic_path_context_source": (
+                        "item" if item_topic_path else "bucket_fallback"
+                    ),
+                    "topic_path_key": (
+                        item_topic_path_key
+                        or _first_topic_path_key(bucket)
+                        or bucket.get("lp_bucket_key")
+                    ),
+                    "topic_path_key_context_source": (
+                        "item" if item_topic_path_key else "bucket_fallback"
+                    ),
+                }
 
-        if sfi_uuid in index:
-            existing = index[sfi_uuid]
-            raise ValueError(
-                f"Duplicate SFI UUID encountered while building LP SFI index. "
-                f"Each SFI must appear at most once in the provided bucket store. "
-                f"sfi_uuid={sfi_uuid}; "
-                f"existing_level={existing.get('level_label')!r}; "
-                f"existing_bucket={existing.get('within_level_bucket_key')!r}; "
-                f"new_level={level_label!r}; "
-                f"new_bucket={candidate.get('within_level_bucket_key')!r}."
-            )
+                if scope == "within_level":
+                    scoped_context = {
+                        "canon_order_path": item.get("canon_order_path"),
+                        "numeric_order_missing_count": item.get(
+                            "numeric_order_missing_count"
+                        ),
+                        "numeric_order_path": item.get("numeric_order_path"),
+                        "order_index_within_parent": item.get(
+                            "order_index_within_parent"
+                        ),
+                        "within_level_bucket_key": (
+                            item.get("within_level_bucket_key")
+                            or bucket.get("lp_bucket_key")
+                        ),
+                        "within_level_bucket_scope": bucket.get("bucket_scope"),
+                        "within_level_bucket_used_fallback": bucket.get(
+                            "within_level_bucket_used_fallback"
+                        ),
+                        "within_level_fallback_segments": item.get(
+                            "within_level_fallback_segments"
+                        )
+                        or bucket.get("within_level_fallback_segments"),
+                        "within_level_ordering_domain_key": (
+                            item.get("within_level_bucket_key")
+                            or bucket.get("lp_bucket_key")
+                            or item.get("within_level_thread_key")
+                            or bucket.get("lp_thread_key")
+                            or item.get("topic_path_key")
+                            or _first_topic_path_key(bucket)
+                        ),
+                        "within_level_thread_key": (
+                            item.get("within_level_thread_key")
+                            or bucket.get("lp_thread_key")
+                        ),
+                    }
+                    candidate = {
+                        "base_context": base_context,
+                        "within_level_context": scoped_context,
+                    }
+                else:
+                    scoped_context = {
+                        "cross_level_bucket_key": (
+                            item.get("cross_level_bucket_key")
+                            or bucket.get("lp_bucket_key")
+                        ),
+                        "cross_level_bucket_scope": bucket.get("bucket_scope"),
+                        "cross_level_level_basis": (
+                            item.get("level_basis") or bucket.get("level_basis")
+                        ),
+                        "cross_level_level_key": (
+                            item.get("level_key") or bucket.get("level_key")
+                        ),
+                        "cross_level_level_label": level_label,
+                        "cross_level_ordinal_high": bucket.get("level_ordinal_high"),
+                        "cross_level_ordinal_low": bucket.get("level_ordinal_low"),
+                        "cross_level_thread_key": (
+                            item.get("cross_level_thread_key")
+                            or bucket.get("lp_thread_key")
+                        ),
+                        "default_thread_key": (
+                            item.get("default_thread_key")
+                            or bucket.get("default_thread_key")
+                        ),
+                    }
+                    candidate = {
+                        "base_context": base_context,
+                        "cross_level_context": scoped_context,
+                    }
 
-        index[sfi_uuid] = candidate
+                if sfi_uuid in index:
+                    existing = index[sfi_uuid]
+                    existing_context = existing.get(f"{scope}_context") or {}
+                    raise ValueError(
+                        f"Duplicate SFI UUID encountered while building LP SFI context "
+                        f"index. Each SFI must appear at most once in a scoped bucket "
+                        f"store. scope={scope!r}; sfi_uuid={sfi_uuid}; "
+                        f"existing_level={existing.get('base_context', {}).get('level_label')!r}; "
+                        f"existing_bucket={existing_context.get(f'{scope}_bucket_key')!r}; "
+                        f"new_level={level_label!r}; "
+                        f"new_bucket={scoped_context.get(f'{scope}_bucket_key')!r}."
+                    )
+
+                index[sfi_uuid] = candidate
 
     return index
 
@@ -1003,6 +861,63 @@ def _canon_disposition_key(
         return rel_type, a, b
 
     return rel_type, source, target
+
+
+def _canonicalize_candidate_for_dedupe(
+    candidate: CandidateEdge,
+) -> tuple[tuple[str, str, str], CandidateEdge]:
+    """Canonicalize a candidate edge into the key used for deduplication.
+
+    `buildsTowards` is directional, so endpoint order is preserved. `relatesTo` is
+    associative, so endpoints are sorted using `canon_str_pair`. When a `relatesTo`
+    candidate is reordered, the returned candidate preserves the original endpoint
+    order in metadata for auditability.
+
+    Parameters
+    ----------
+    candidate
+        Raw candidate edge emitted by an LP inference phase.
+
+    Returns
+    -------
+    tuple[tuple[str, str, str], CandidateEdge]
+        The canonical dedupe key and a candidate whose endpoints match that key.
+    """
+
+    source = candidate.source_sfi_uuid
+    target = candidate.target_sfi_uuid
+
+    if candidate.rel_type == "relatesTo":
+        canonical_source, canonical_target = canon_str_pair(str(source), str(target))
+
+        if canonical_source != str(source):
+            metadata = dict(candidate.metadata)
+            metadata.update(
+                {
+                    "dedupe_canonicalized_endpoints": True,
+                    "dedupe_original_source_sfi_uuid": str(source),
+                    "dedupe_original_target_sfi_uuid": str(target),
+                }
+            )
+            source = UUID(canonical_source)
+            target = UUID(canonical_target)
+            candidate = _replace_candidate_metadata(
+                candidate=CandidateEdge(
+                    confidence=candidate.confidence,
+                    evidence=candidate.evidence,
+                    inference_source=candidate.inference_source,
+                    inference_type=candidate.inference_type,
+                    llm_confidence=candidate.llm_confidence,
+                    metadata=metadata,
+                    rel_type=candidate.rel_type,
+                    source_sfi_uuid=source,
+                    target_sfi_uuid=target,
+                ),
+                metadata=metadata,
+            )
+
+    key = (candidate.rel_type, str(source), str(target))
+    return key, candidate
 
 
 def _collect_builds_towards_work_items(
@@ -1544,67 +1459,93 @@ def _create_new_bucket(
 
 def _dedupe_edges(
     edges: list[CandidateEdge],
-) -> tuple[list[CandidateEdge], dict[tuple[str, str, str], CandidateEdge], int]:
-    """Deduplicate by (rel_type, canonical endpoints). Keep highest confidence.
+) -> tuple[
+    list[CandidateEdge],
+    dict[tuple[str, str, str], CandidateEdge],
+    int,
+    dict[tuple[str, str, str], list[dict[str, Any]]],
+]:
+    """Deduplicate by `(rel_type, canonical endpoints)` and audit all candidates.
 
     Canonicalization is direction-aware: for directed `buildsTowards` edges the
-    original (source, target) order is preserved, while for undirected `relatesTo`
+    original `(source, target)` order is preserved, while for associative `relatesTo`
     edges the endpoints are lexicographically ordered via `canon_str_pair` so that
-    (A, B) and (B, A) are treated as the same edge.
+    `(A, B)` and `(B, A)` are treated as the same edge.
+
+    The winning candidate for each dedupe group receives a `dedupe` metadata block with
+    every candidate source considered for that group. This lets reviewers inspect which
+    phase/source won and which duplicate candidates were dropped.
 
     Parameters
     ----------
     edges
-        A list of CandidateEdge instances that may contain duplicates based on their
-        relationship type and canonicalized endpoints.
+        Candidate edges from all inference phases.
 
     Returns
     -------
     tuple
         A tuple containing:
-        1. A deduplicated list of CandidateEdge instances.
+        1. Deduplicated CandidateEdge instances, each enriched with dedupe audit
+            metadata.
         2. A mapping from canonical key `(rel_type, source_uuid, target_uuid)` to the
-           winning CandidateEdge.
+            winning CandidateEdge.
         3. The number of edges dropped during deduplication.
+        4. A mapping from canonical key to candidate-source audit records.
     """
 
+    groups: dict[tuple[str, str, str], list[CandidateEdge]] = defaultdict(list)
+
+    for edge in edges:
+        key, canonical_edge = _canonicalize_candidate_for_dedupe(edge)
+        groups[key].append(canonical_edge)
+
+    audit_by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     best: dict[tuple[str, str, str], CandidateEdge] = {}
 
-    for e in edges:
-        s, t = e.source_sfi_uuid, e.target_sfi_uuid
+    for key, group in groups.items():
+        winner_index, _ = max(enumerate(group), key=lambda pair: pair[1].confidence)
+        audit_records: list[dict[str, Any]] = []
 
-        if e.rel_type == "relatesTo":
-            cs, _ = canon_str_pair(str(s), str(t))
-
-            if cs != str(s):  # Canonical order differs from original; swap UUIDs
-                s, t = t, s
-
-        k = (e.rel_type, str(s), str(t))
-
-        # If the endpoints were swapped, create a new edge object; otherwise reuse
-        # existing.
-        e2 = (
-            e
-            if (s, t) == (e.source_sfi_uuid, e.target_sfi_uuid)
-            else CandidateEdge(
-                confidence=e.confidence,
-                evidence=e.evidence,
-                inference_source=e.inference_source,
-                inference_type=e.inference_type,
-                llm_confidence=e.llm_confidence,
-                metadata=e.metadata,
-                rel_type=e.rel_type,
-                source_sfi_uuid=s,
-                target_sfi_uuid=t,
+        for idx, candidate in enumerate(group):
+            disposition = "dedupe_winner" if idx == winner_index else "dropped_dedupe"
+            candidate_metadata = (
+                candidate.metadata if isinstance(candidate.metadata, dict) else {}
             )
-        )
 
-        if k not in best or e2.confidence > best[k].confidence:
-            best[k] = e2
+            audit_records.append(
+                {
+                    "confidence": float(candidate.confidence),
+                    "dedupe_key": list(key),
+                    "disposition": disposition,
+                    "evidence": candidate.evidence,
+                    "inference_source": candidate.inference_source,
+                    "inference_type": candidate.inference_type,
+                    "llm_confidence": candidate.llm_confidence,
+                    "metadata": candidate_metadata,
+                    "phase": candidate_metadata.get("phase"),
+                    "rel_type": candidate.rel_type,
+                    "source_sfi_uuid": str(candidate.source_sfi_uuid),
+                    "target_sfi_uuid": str(candidate.target_sfi_uuid),
+                }
+            )
+
+        winner = group[winner_index]
+        winner_metadata = dict(winner.metadata)
+        winner_metadata["dedupe"] = {
+            "candidate_count": len(group),
+            "candidate_sources": audit_records,
+            "dedupe_key": list(key),
+            "dropped_count": len(group) - 1,
+            "winner_confidence": float(winner.confidence),
+            "winner_inference_type": winner.inference_type,
+        }
+        winner = _replace_candidate_metadata(candidate=winner, metadata=winner_metadata)
+        audit_by_key[key] = audit_records
+        best[key] = winner
 
     deduped = list(best.values())
     dropped = len(edges) - len(deduped)
-    return deduped, best, dropped
+    return deduped, best, dropped, audit_by_key
 
 
 def _emit_relationship(
@@ -1612,48 +1553,61 @@ def _emit_relationship(
     candidate: CandidateEdge,
     config: CreateKGConfig,
     doc_key: str,
-    sfi_index: Optional[dict[str, dict[str, Any]]] = None,
+    sfi_context_index: Optional[dict[str, dict[str, Any]]] = None,
 ) -> Relationship:
-    """Convert a CandidateEdge to a Relationship, enriching metadata as needed.
+    """Convert a CandidateEdge to an LC KG Relationship.
+
+    The emitted metadata includes the candidate evidence, inference metadata, dedupe
+    audit metadata when present, the full source/target SFI context blocks, and the
+    scoped source/target context that matches the candidate's inference phase.
 
     Parameters
     ----------
     candidate
-        The CandidateEdge instance to convert into a Relationship. This edge is
-        expected to have attributes such as confidence, evidence, inference_source,
-        inference_type, rel_type, source_sfi_uuid, target_sfi_uuid, and metadata
-        containing any additional information from the inference process.
+        Candidate edge to convert into a Relationship.
     config
         The knowledge graph run configuration.
     doc_key
         The document key for this export, included in the relationship ID namespace
         string for consistency with the rest of the pipeline.
-    sfi_index
-        An optional index mapping SFI UUIDs to their corresponding data, which can be
-        used to enrich the metadata of the final relationships if needed.
+    sfi_context_index
+        Optional combined SFI context index from `_build_combined_sfi_context_index()`.
 
     Returns
     -------
     Relationship
-        A Relationship instance constructed from the CandidateEdge, with enriched
-        metadata that includes the original metadata from the edge as well as
-        additional fields such as confidence, evidence, inference source/type, and
-        optionally source/target SFI context if an sfi_index is provided.
+        Relationship instance constructed from the candidate edge.
     """
+
+    if candidate.inference_type in WITHIN_LEVEL_INFERENCE_TYPES:
+        inference_context_scope: Optional[SFIContextScope] = "within_level"
+    elif candidate.inference_type in CROSS_LEVEL_INFERENCE_TYPES:
+        inference_context_scope = "cross_level"
+    else:
+        inference_context_scope = None
 
     metadata = dict(candidate.metadata)
     metadata.update(
         {
             "confidence": candidate.confidence,
             "evidence": candidate.evidence,
+            "inference_context_scope": inference_context_scope,
             "inference_source": candidate.inference_source,
             "inference_type": candidate.inference_type,
         }
     )
 
-    if sfi_index:
-        metadata["source_sfi_context"] = sfi_index.get(str(candidate.source_sfi_uuid))
-        metadata["target_sfi_context"] = sfi_index.get(str(candidate.target_sfi_uuid))
+    if sfi_context_index:
+        source_context = sfi_context_index.get(str(candidate.source_sfi_uuid))
+        target_context = sfi_context_index.get(str(candidate.target_sfi_uuid))
+        metadata["source_sfi_context"] = source_context
+        metadata["target_sfi_context"] = target_context
+        metadata["source_sfi_inference_context"] = _select_sfi_inference_context(
+            context=source_context, scope=inference_context_scope
+        )
+        metadata["target_sfi_inference_context"] = _select_sfi_inference_context(
+            context=target_context, scope=inference_context_scope
+        )
 
     rid = uuid5(
         config.namespace_uuid,
@@ -1680,95 +1634,86 @@ def _emit_relationship(
 
 
 def _filter_builds_towards_within_grade_order(
-    *, edges: list[CandidateEdge], sfi_index: dict[str, dict[str, Any]]
+    *, edges: list[CandidateEdge], within_sfi_index: dict[str, dict[str, Any]]
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
     """Drop Phase-1 buildsTowards edges that contradict within-level document order.
 
-    TODO
-    ----
-    Prefer `within_level_ordering_domain_key` from `_build_sfi_index()` over
-    `topic_path_key` when deciding whether two SFIs are in the same comparable ordering
-    domain. Phase 1 inference is scoped by the within-level bucket, which may
-    intentionally group multiple finer topic paths (for example, paliers/weeks) under
-    one strand.
+    Phase 1 inference is scoped by the within-level bucket. Therefore order comparisons
+    use `within_level_ordering_domain_key`, not item-level `topic_path_key`, as the
+    comparable-domain gate. This lets broad but intentional buckets such as
+    `strand=lecture` compare items across finer paliers/weeks while still avoiding
+    comparisons between unrelated ordering domains.
 
     Parameters
     ----------
     edges
-        Candidate edges (expected to be Phase 1 within-level buildsTowards).
-    sfi_index
-        SFI UUID -> context index from `_build_sfi_index`.
+        Candidate edges expected to be Phase 1 within-level buildsTowards edges.
+    within_sfi_index
+        Scoped SFI index built from `by_within_level` by `_build_scoped_sfi_index()`.
 
     Returns
     -------
     tuple[list[CandidateEdge], list[CandidateEdge]]
-        (kept_edges, dropped_edges)
+        `(kept_edges, dropped_edges)`.
     """
 
     def _compare_within_grade_order(
         *, source_context: dict[str, Any], target_context: dict[str, Any]
     ) -> Optional[int]:
-        """Compare two SFI contexts by within-level curriculum order.
-
-        This comparison is only intended for within-grade edges where the two SFIs are
-        in the same comparable ordering domain (same level and same topic/thread key).
-        It uses the most reliable ordering signal available:
-
-        1, `numeric_order_path` when both contexts have complete paths
-            (`numeric_order_missing_count == 0`)
-        2. provenance-based fallback `(page_index, bbox_y0)` when available.
+        """Compare two scoped SFI contexts by within-level curriculum order.
 
         Parameters
         ----------
         source_context
-            Context dictionary for the candidate edge source SFI.
+            Source SFI context entry containing `base_context` and
+            `within_level_context`.
         target_context
-            Context dictionary for the candidate edge target SFI.
+            Target SFI context entry containing `base_context` and
+            `within_level_context`.
 
         Returns
         -------
         Optional[int]
-            -1 if source is before target, 0 if equal, 1 if after target, or None if
-            the order cannot be determined.
+            -1 if source is before target, 0 if equal, 1 if source is after target, or
+            None if the order cannot be determined safely.
         """
 
-        source_level = source_context.get("level_label")
-        target_level = target_context.get("level_label")
+        source_base = source_context.get("base_context") or {}
+        source_within = source_context.get("within_level_context") or {}
+        target_base = target_context.get("base_context") or {}
+        target_within = target_context.get("within_level_context") or {}
 
-        if source_level != target_level:
+        if source_base.get("level_label") != target_base.get("level_label"):
             return None
 
-        source_topic = source_context.get("topic_path_key")
-        target_topic = target_context.get("topic_path_key")
+        source_domain = source_within.get(
+            "within_level_ordering_domain_key"
+        ) or source_base.get("topic_path_key")
+        target_domain = target_within.get(
+            "within_level_ordering_domain_key"
+        ) or target_base.get("topic_path_key")
 
-        if source_topic != target_topic:
-            # Different ordering domains (includes the case where only one side has a
-            # topic_path_key). Comparing items from different domains—or one known
-            # domain against an unknown one—can produce incorrect ordering conclusions,
-            # so bail.
+        if source_domain != target_domain:
             return None
 
-        src_missing = int(source_context.get("numeric_order_missing_count") or 0)
-        tgt_missing = int(target_context.get("numeric_order_missing_count") or 0)
-        src_path = source_context.get("numeric_order_path") or []
-        tgt_path = target_context.get("numeric_order_path") or []
+        src_missing = int(source_within.get("numeric_order_missing_count") or 0)
+        tgt_missing = int(target_within.get("numeric_order_missing_count") or 0)
+        src_path = source_within.get("numeric_order_path") or []
+        tgt_path = target_within.get("numeric_order_path") or []
 
         if src_missing == 0 and tgt_missing == 0 and src_path and tgt_path:
             return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
 
-        # Provenance fallback: (page, y0).
-        src_page = source_context.get("doc_pos_page_index")
-        src_page = src_page or source_context.get("page_index")
-
-        tgt_page = target_context.get("doc_pos_page_index")
-        tgt_page = tgt_page or target_context.get("page_index")
+        src_page = source_base.get("doc_pos_page_index")
+        src_page = src_page or source_base.get("page_index")
+        tgt_page = target_base.get("doc_pos_page_index")
+        tgt_page = tgt_page or target_base.get("page_index")
 
         if not isinstance(src_page, int) or not isinstance(tgt_page, int):
             return None
 
-        src_y0 = source_context.get("doc_pos_y0")
-        tgt_y0 = target_context.get("doc_pos_y0")
-
+        src_y0 = source_base.get("doc_pos_y0")
+        tgt_y0 = target_base.get("doc_pos_y0")
         src_key = (src_page, float(src_y0) if isinstance(src_y0, (int, float)) else 0.0)
         tgt_key = (tgt_page, float(tgt_y0) if isinstance(tgt_y0, (int, float)) else 0.0)
 
@@ -1777,26 +1722,26 @@ def _filter_builds_towards_within_grade_order(
     kept: list[CandidateEdge] = []
     dropped: list[CandidateEdge] = []
 
-    for e in edges:
-        src = sfi_index.get(str(e.source_sfi_uuid))
-        tgt = sfi_index.get(str(e.target_sfi_uuid))
+    for edge in edges:
+        source_context = within_sfi_index.get(str(edge.source_sfi_uuid))
+        target_context = within_sfi_index.get(str(edge.target_sfi_uuid))
 
-        if not src or not tgt:
-            kept.append(e)
+        if not source_context or not target_context:
+            kept.append(edge)
             continue
 
-        cmp = _compare_within_grade_order(source_context=src, target_context=tgt)
+        comparison = _compare_within_grade_order(
+            source_context=source_context, target_context=target_context
+        )
 
-        # If we can't compare, keep (do not over-prune).
-        if cmp is None:
-            kept.append(e)
+        if comparison is None:
+            kept.append(edge)
             continue
 
-        # For buildsTowards, source must precede target.
-        if cmp >= 0:
-            dropped.append(e)
+        if comparison >= 0:
+            dropped.append(edge)
         else:
-            kept.append(e)
+            kept.append(edge)
 
     return kept, dropped
 
@@ -3472,7 +3417,8 @@ def _process_and_filter_candidates(
     candidates: list[CandidateEdge],
     config: CreateKGConfig,
     doc_key: str,
-    sfi_index: Optional[dict[str, dict[str, Any]]] = None,
+    sfi_context_index: Optional[dict[str, dict[str, Any]]] = None,
+    within_sfi_index: Optional[dict[str, dict[str, Any]]] = None,
 ) -> tuple[
     list[Relationship],
     list[Relationship],
@@ -3491,10 +3437,12 @@ def _process_and_filter_candidates(
     doc_key
         The document key for this export, included in relationship ID namespace
         strings for consistency with the rest of the pipeline.
-    sfi_index
-        An optional index mapping SFI UUIDs to their corresponding data, which can be
-        used to enrich the metadata of the final relationships if needed. The structure
-        is expected to be {sfi_uuid: {"description": str, "statement_code": str, ...}}.
+    sfi_context_index
+        Optional combined SFI context index used to enrich emitted relationship
+        metadata with base, within-level, and cross-level context blocks.
+    within_sfi_index
+        Optional scoped within-level SFI context index used by the Phase 1
+        document-order safety filter.
 
     Returns
     -------
@@ -3509,7 +3457,9 @@ def _process_and_filter_candidates(
     """
 
     candidate_edges_total_pre_dedupe = len(candidates)
-    candidates, dedupe_winners, dedupe_dropped = _dedupe_edges(candidates)
+    candidates, dedupe_winners, dedupe_dropped, dedupe_audit_by_key = _dedupe_edges(
+        candidates
+    )
 
     builds_candidates = [e for e in candidates if e.rel_type == "buildsTowards"]
     relates_candidates = [e for e in candidates if e.rel_type == "relatesTo"]
@@ -3535,13 +3485,13 @@ def _process_and_filter_candidates(
     builds_dropped_doc_order: list[CandidateEdge] = []
     builds_kept_before_doc_order = len(builds_kept)
 
-    if sfi_index:
+    if within_sfi_index:
         phase_1 = [e for e in builds_kept if int(e.metadata.get("phase") or 0) == 1]
         non_phase_1 = [e for e in builds_kept if int(e.metadata.get("phase") or 0) != 1]
 
         phase_1_kept, builds_dropped_doc_order = (
             _filter_builds_towards_within_grade_order(
-                edges=phase_1, sfi_index=sfi_index
+                edges=phase_1, within_sfi_index=within_sfi_index
             )
         )
         builds_kept = [*phase_1_kept, *non_phase_1]
@@ -3565,14 +3515,20 @@ def _process_and_filter_candidates(
 
     builds_relationships: list[Relationship] = [
         _emit_relationship(
-            candidate=e, config=config, doc_key=doc_key, sfi_index=sfi_index
+            candidate=e,
+            config=config,
+            doc_key=doc_key,
+            sfi_context_index=sfi_context_index,
         )
         for e in builds_kept
     ]
 
     relates_relationships: list[Relationship] = [
         _emit_relationship(
-            candidate=e, config=config, doc_key=doc_key, sfi_index=sfi_index
+            candidate=e,
+            config=config,
+            doc_key=doc_key,
+            sfi_context_index=sfi_context_index,
         )
         for e in relates_kept
     ]
@@ -3580,6 +3536,10 @@ def _process_and_filter_candidates(
     stats = {
         "candidate_edges_total_pre_dedupe": candidate_edges_total_pre_dedupe,
         "candidate_edges_total_after_dedupe": len(candidates),
+        "candidate_edges_dedupe_duplicate_groups": sum(
+            1 for records in dedupe_audit_by_key.values() if len(records) > 1
+        ),
+        "candidate_edges_dedupe_groups": len(dedupe_audit_by_key),
         "candidate_edges_dropped_dedupe": int(dedupe_dropped),
         "candidate_builds_towards": len(builds_candidates),
         "candidate_relates_to": len(relates_candidates),
@@ -4319,6 +4279,37 @@ def _process_single_standard(
     cross_payload = dict(payload)
     within_bucket["items"].append(within_payload)
     cross_bucket["items"].append(cross_payload)
+
+
+def _replace_candidate_metadata(
+    *, candidate: CandidateEdge, metadata: dict[str, Any]
+) -> CandidateEdge:
+    """Return a CandidateEdge copy with updated metadata.
+
+    Parameters
+    ----------
+    candidate
+        Existing candidate edge.
+    metadata
+        Replacement metadata dictionary.
+
+    Returns
+    -------
+    CandidateEdge
+        Candidate copy with all original fields preserved except metadata.
+    """
+
+    return CandidateEdge(
+        confidence=candidate.confidence,
+        evidence=candidate.evidence,
+        inference_source=candidate.inference_source,
+        inference_type=candidate.inference_type,
+        llm_confidence=candidate.llm_confidence,
+        metadata=metadata,
+        rel_type=candidate.rel_type,
+        source_sfi_uuid=candidate.source_sfi_uuid,
+        target_sfi_uuid=candidate.target_sfi_uuid,
+    )
 
 
 def _resolve_canonical_order_path_to_indices(
@@ -5179,6 +5170,31 @@ def _sample_items_across_threads(
     return sampled
 
 
+def _select_sfi_inference_context(
+    *, context: Optional[dict[str, Any]], scope: Optional[SFIContextScope]
+) -> Optional[dict[str, Any]]:
+    """Select the scoped SFI context used by the candidate's inference phase.
+
+    Parameters
+    ----------
+    context
+        Combined SFI context entry from `_build_combined_sfi_context_index()`.
+    scope
+        Scope returned by `_candidate_context_scope()`.
+
+    Returns
+    -------
+    Optional[dict[str, Any]]
+        The relevant scoped context block, or None when either the context or scope is
+        unavailable.
+    """
+
+    if not context or not scope:
+        return None
+
+    return context.get(f"{scope}_context")
+
+
 def _set_disposition(
     *,
     candidate: CandidateEdge,
@@ -5484,6 +5500,9 @@ def export_learning_progressions(
         the UUID generation logic that could lead to non-unique identifiers.
     """
 
+    # Group standards into learning progression buckets, which are the basis for
+    # candidate generation. This step also enriches each SFI with metadata used for
+    # inference and provenance, such as resolved level ordinals and subject labels.
     lp_buckets = group_standards_for_learning_progressions(
         academic_standards=academic_standards, config=config, include_provenance=True
     )
@@ -5494,6 +5513,7 @@ def export_learning_progressions(
         json_info=lp_buckets,
     )
 
+    # Extract the within-level and cross-level buckets.
     by_within_level: dict[str, list[dict[str, Any]]] = (
         lp_buckets.get("by_within_level") or {}
     )
@@ -5502,7 +5522,20 @@ def export_learning_progressions(
     )
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
-    sfi_index = _build_sfi_index(by_within_level)
+
+    # Build indices for candidate context lookup during inference and provenance
+    # enrichment. These indices are used to efficiently retrieve relevant SFI metadata
+    # when evaluating candidate edges, such as the level and subject of the source and
+    # target SFIs.
+    within_sfi_index = _build_scoped_sfi_index(
+        by_level=by_within_level, scope="within_level"
+    )
+    cross_sfi_index = _build_scoped_sfi_index(
+        by_level=by_cross_level, scope="cross_level"
+    )
+    sfi_context_index = _build_combined_sfi_context_index(
+        cross_sfi_index=cross_sfi_index, within_sfi_index=within_sfi_index
+    )
 
     # Phase 1: Within-level buildsTowards.
     p1_candidates, p1_prov = _infer_within_grade_builds_towards(
@@ -5542,7 +5575,8 @@ def export_learning_progressions(
             candidates=candidates,
             config=config,
             doc_key=ctx.doc_key,
-            sfi_index=sfi_index,
+            sfi_context_index=sfi_context_index,
+            within_sfi_index=within_sfi_index,
         )
     )
 
