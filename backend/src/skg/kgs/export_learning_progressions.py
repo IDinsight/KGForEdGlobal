@@ -768,10 +768,11 @@ def _build_sfi_index(
 
     Raises
     ------
-    AssertionError
+    ValueError
         If the same SFI UUID appears more than once in the provided bucket store. A
         duplicate means upstream bucketing produced a non-unique within-level placement
         for a StandardsFrameworkItem, so the run should stop immediately.
+        If any item is missing an `sfi_uuid`, which is required for indexing.
     """
 
     def _iter_items() -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:
@@ -811,7 +812,10 @@ def _build_sfi_index(
         sfi_uuid = str(item.get("sfi_uuid") or "").strip()
 
         if not sfi_uuid:
-            continue
+            raise ValueError(
+                f"Missing sfi_uuid while building LP SFI index. "
+                f"level={level_label!r}; bucket={bucket.get('lp_bucket_key')}"
+            )
 
         candidate = {
             "canon_order_path": item.get("canon_order_path"),
@@ -853,7 +857,7 @@ def _build_sfi_index(
 
         if sfi_uuid in index:
             existing = index[sfi_uuid]
-            raise AssertionError(
+            raise ValueError(
                 f"Duplicate SFI UUID encountered while building LP SFI index. "
                 f"Each SFI must appear at most once in the provided bucket store. "
                 f"sfi_uuid={sfi_uuid}; "
