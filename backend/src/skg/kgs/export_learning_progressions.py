@@ -428,6 +428,72 @@ def _build_item_payload(
     return payload
 
 
+def _build_order_index_lookup(
+    academic_standards: AcademicStandardsExport,
+) -> dict[str, int]:
+    """Build canonical-node-id to sibling-order-index lookup.
+
+    `progression_context.canon_order_path` stores canonical IR node IDs. Academic
+    Standards `hasChild` relationship metadata is therefore the best source for
+    resolving numeric order paths because it includes `canonical_child_id` plus
+    export/canonical order metadata for grouping ancestors as well as leaf SFIs. SFI
+    progression metadata is used only as a supplement so the relationship-derived
+    ordering wins when both sources are available.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported Academic Standards KG artifacts.
+
+    Returns
+    -------
+    dict[str, int]
+        A mapping from canonical IR node ID strings to sibling order indices.
+    """
+
+    order_index_lookup: dict[str, int] = {}
+
+    for rel in academic_standards.relationships:
+        if rel.relationship_type != "hasChild":
+            continue
+
+        metadata = rel.metadata if isinstance(rel.metadata, dict) else {}
+        canonical_child_id = str(metadata.get("canonical_child_id") or "").strip()
+
+        if not canonical_child_id:
+            continue
+
+        order_index = metadata.get("export_order_index")
+
+        if not isinstance(order_index, int):
+            order_index = metadata.get("canonical_order_index")
+
+        if not isinstance(order_index, int):
+            continue
+
+        order_index_lookup[canonical_child_id] = order_index
+
+    for sfi in academic_standards.items:
+        metadata = sfi.metadata if isinstance(sfi.metadata, dict) else {}
+        canonical_node_id = str(metadata.get("canonical_node_id") or "").strip()
+        progression_context = metadata.get("progression_context")
+
+        if not isinstance(progression_context, dict) or not canonical_node_id:
+            continue
+
+        order_index = progression_context.get("order_index_within_parent")
+
+        if not isinstance(order_index, int):
+            order_index = progression_context.get("canonical_order_index_within_parent")
+
+        if not isinstance(order_index, int):
+            continue
+
+        order_index_lookup.setdefault(canonical_node_id, order_index)
+
+    return order_index_lookup
+
+
 def _build_sfi_index(
     by_level: dict[str, list[dict[str, Any]]],
 ) -> dict[str, dict[str, Any]]:
@@ -3481,9 +3547,9 @@ def _process_single_standard(
     normalized_level_label_map
         Precomputed normalized mapping from configured level labels to integer ordinals.
     order_index_lookup
-        A mapping from SFI UUID strings to their `order_index_within_parent` values,
-        used to convert canonical-node-id-based `canon_order_path` into a numeric order
-        path for correct document-order sorting.
+        A mapping from canonical IR node ID strings to sibling order indices. Used to
+        convert `progression_context.canon_order_path` into a numeric order path for
+        correct document-order sorting.
     sfi
         The standard item to process.
     within_level_buckets
@@ -3545,18 +3611,19 @@ def _process_single_standard(
         level_key.strip() if isinstance(level_key, str) and level_key.strip() else None
     )
 
-    if level_key_label:
-        level_label = (
+    level_label = (
+        (
             f"{level_key_label} [{level_lo}–{level_hi}]"
             if level_hi != level_lo
             else level_key_label
         )
-    else:
-        level_label = (
+        if level_key_label
+        else (
             f"LEVEL {level_lo}-{level_hi}"
             if level_hi != level_lo
             else f"LEVEL {level_lo}"
         )
+    )
 
     # Topic path validation.
     topic_key = progression_context.get("topic_path_key", "")
@@ -3646,15 +3713,22 @@ def _process_single_standard(
     )
 
     # Payload generation and append.
-    canon_order_path = progression_context.get("canon_order_path", [])
+    raw_canon_order_path = progression_context.get("canon_order_path", [])
+    canon_order_path = (
+        raw_canon_order_path if isinstance(raw_canon_order_path, list) else []
+    )
     numeric_order_path = _resolve_numeric_order_path(
         canon_order_path=canon_order_path,
         missing_default=0,
         order_index_lookup=order_index_lookup,
     )
-    numeric_order_missing_count = sum(
-        1 for u in canon_order_path if str(u).strip() not in order_index_lookup
-    )
+    numeric_order_missing_count = 0
+
+    for value in canon_order_path:
+        key = str(value or "").strip()
+
+        if key and key not in order_index_lookup:
+            numeric_order_missing_count += 1
 
     indices = metadata.get("page_indices")
     valid_indices = indices if isinstance(indices, list) else []
@@ -4077,36 +4151,29 @@ def _resolve_level_ordinals(
 
 def _resolve_numeric_order_path(
     *,
-    canon_order_path: list[Any],
+    canon_order_path: Any,
     missing_default: int = 0,
     order_index_lookup: dict[str, int],
 ) -> list[int]:
-    """Convert a UUID-based canonical order path into a numeric order path.
+    """Convert a canonical-node order path into a numeric order path.
 
-    The Academic Standards export stores a `progression_context.canon_order_path` for
-    each leaf SFI: a list of UUID-like values representing the hierarchy path down to
-    the leaf. This function converts that list into a list of integers by resolving
-    each UUID to its `order_index_within_parent` via `order_index_lookup`.
-
-    NB:
-
-    1. A missing UUID (not found in the lookup) is resolved to `missing_default`. This
-        exporter tracks missing-ness separately via `_count_unresolved_order_path` and
-        uses provenance-based fallbacks for ordering when needed.
-    2. The resulting list preserves tree-depth ordering. Two siblings share the full
-        prefix and differ at the last element, which enables correct lexicographic
-        sorting by document sequence.
+    The Academic Standards export stores `progression_context.canon_order_path` for
+    each eligible leaf SFI. That path contains canonical IR node IDs from the exported
+    hierarchy down to the leaf node. This function resolves each canonical node ID to
+    its sibling order index using `order_index_lookup`. Missing IDs resolve to
+    `missing_default`; the caller tracks "missingness" separately and can use
+    provenance-based fallbacks for ordering when needed.
 
     Parameters
     ----------
     canon_order_path
-        A list of UUID-like values representing the path from the hierarchy root to the
-        leaf node.
+        A list of canonical IR node IDs representing the path from the exported
+        hierarchy root to the leaf node. Non-list values return an empty path.
     missing_default
-        The integer value to use for UUIDs that are not present in `order_index_lookup`.
+        The integer value to use for canonical node IDs that are not present in
+        `order_index_lookup`.
     order_index_lookup
-        A mapping from UUID strings (in any supported namespace) to integer order
-        indices.
+        A mapping from canonical IR node ID strings to sibling order indices.
 
     Returns
     -------
@@ -4114,8 +4181,20 @@ def _resolve_numeric_order_path(
         A list of integer order indices corresponding to `canon_order_path`.
     """
 
-    path = canon_order_path or []
-    return [order_index_lookup.get(str(u).strip(), missing_default) for u in path]
+    if not isinstance(canon_order_path, list):
+        return []
+
+    numeric_path: list[int] = []
+
+    for value in canon_order_path:
+        key = str(value or "").strip()
+
+        if not key:
+            continue
+
+        numeric_path.append(order_index_lookup.get(key, missing_default))
+
+    return numeric_path
 
 
 def _resolve_subject_label(
@@ -4877,26 +4956,10 @@ def group_standards_for_learning_progressions(
         if normalized_map_key:
             normalized_level_label_map[normalized_map_key] = map_value
 
-    # Build a lookup from UUID -> `order_index_within_parent` for *all* SFIs (including
-    # groupings). This is needed to convert UUID-based `canon_order_path` values into
-    # numeric order paths for correct document-order sorting within buckets. NB: We key
-    # the lookup by `metadata.canonical_node_id`, because
-    # `progression_context.canon_order_path` stores canonical IR node IDs.
-    order_index_lookup: dict[str, int] = {}
-
-    for sfi in academic_standards.items:
-        metadata = sfi.metadata or {}
-        pc = metadata.get("progression_context") or {}
-        oiwp = pc.get("order_index_within_parent")
-
-        if not isinstance(oiwp, int):  # int or None
-            continue
-
-        # Academic Standards export stores the canonical node ID at the top level of
-        # `sfi.metadata`, not inside `progression_context`.
-        canonical_key = str(metadata["canonical_node_id"]).strip()
-        assert canonical_key, f"{metadata = }"
-        order_index_lookup[canonical_key] = oiwp
+    # Build canonical-node-id -> sibling order index. Prefer Academic Standards
+    # hasChild relationship metadata because it covers grouping ancestors as well as
+    # leaf SFIs; supplement from SFI progression metadata when needed.
+    order_index_lookup = _build_order_index_lookup(academic_standards)
 
     for sfi in academic_standards.items:
         _process_single_standard(
