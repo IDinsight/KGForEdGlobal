@@ -2771,12 +2771,17 @@ def _infer_cross_level_builds_towards(
 
     if config.lp_cross_level_builds_towards:
         logger.info(
-            f"{cross_level_calls} adjacent single-level pairs for cross-level buildsTowards inference."
+            f"{cross_level_calls} adjacent single-level pairs for "
+            f"cross-level buildsTowards inference."
         )
+
     if config.lp_cross_stage_builds_towards:
         logger.info(
-            f"{cross_stage_calls} adjacent level pairs for cross-stage buildsTowards inference."
+            f"{cross_stage_calls} adjacent level pairs for "
+            f"cross-stage buildsTowards inference."
         )
+
+    min_confidence = config.lp_builds_towards_min_confidence
 
     for current_call, (
         thread_key,
@@ -2785,26 +2790,95 @@ def _infer_cross_level_builds_towards(
         inference_type,
         prompt_builder,
     ) in enumerate(work_items, 1):
+        lo_label = _level_label(b_lo)
+        hi_label = _level_label(b_hi)
+
         logger.info(
             f"Phase 2 Progress: {current_call}/{total_calls} "
-            f"({_level_label(b_lo)} -> {_level_label(b_hi)} | {thread_key} | {inference_type})"
+            f"({lo_label} -> {hi_label} | {thread_key} | {inference_type})"
         )
 
-        item_candidates, item_provenance, item_pairs = (
-            _process_builds_towards_work_item(
-                b_hi=b_hi,
-                b_lo=b_lo,
-                config=config,
+        lo_lo, lo_hi = _level_bounds(b_lo)
+        hi_lo, hi_hi = _level_bounds(b_hi)
+        lower_payload = [
+            _build_item_payload(include_order_index=True, item=it)
+            for it in (b_lo.get("items") or [])
+        ]
+        upper_payload = [
+            _build_item_payload(include_order_index=True, item=it)
+            for it in (b_hi.get("items") or [])
+        ]
+
+        prompt = prompt_builder(
+            lower_items=lower_payload,
+            lower_level_label=lo_label,
+            min_confidence=min_confidence,
+            thread_key=thread_key,
+            thread_path=_bucket_topic_context(bucket=b_hi),
+            upper_items=upper_payload,
+            upper_level_label=hi_label,
+        )
+
+        response = infer_progression_edges(
+            instructions=prompt.system_message,
+            usage_tracker=usage_tracker,
+            user_message=prompt.user_message,
+            validator=partial(
+                validate_cross_level_builds_towards,
+                allowed_lo={str(it["sfi_uuid"]) for it in lower_payload},
+                allowed_hi={str(it["sfi_uuid"]) for it in upper_payload},
+                min_confidence=min_confidence,
+            ),
+        )
+
+        for e in response.edges:
+            confidence_val = float(e.confidence)
+            source_uuid = _uuid(e.source_sfi_uuid)
+            target_uuid = _uuid(e.target_sfi_uuid)
+            ce = CandidateEdge(
+                confidence=confidence_val,
+                evidence={"rationale": e.rationale},
+                inference_source="llm",
+                llm_confidence=confidence_val,
                 inference_type=inference_type,
-                prompt_builder=prompt_builder,
-                thread_key=thread_key,
-                usage_tracker=usage_tracker,
+                metadata={
+                    "lower_level_high": lo_hi,
+                    "lower_level_label": lo_label,
+                    "lower_level_low": lo_lo,
+                    "lp_bucket_key_upper": b_hi.get("lp_bucket_key"),
+                    "lp_thread_key": b_hi.get("lp_thread_key"),
+                    "phase": 2,
+                    "subject_label": b_hi.get("subject_label"),
+                    "thread_key": thread_key,
+                    "topic_path_examples_upper": b_hi.get("topic_path_examples"),
+                    "topic_path_keys_upper": b_hi.get("topic_path_keys"),
+                    "upper_level_high": hi_hi,
+                    "upper_level_label": hi_label,
+                    "upper_level_low": hi_lo,
+                },
+                rel_type=BUILDS_TOWARDS,
+                source_sfi_uuid=source_uuid,
+                target_sfi_uuid=target_uuid,
             )
-        )
+            candidates.append(ce)
 
-        candidates.extend(item_candidates)
-        provenance_rows.extend(item_provenance)
-        cross_level_build_pairs.update(item_pairs)
+            # Validator-side checks should already enforce the confidence threshold.
+            # Keep this guard just in case so only final-threshold buildsTowards pairs
+            # suppressPhase 4 relatesTo candidates.
+            if confidence_val >= min_confidence:
+                cross_level_build_pairs.add((source_uuid, target_uuid))
+
+            provenance_rows.append(
+                _make_provenance_row(
+                    candidate=ce,
+                    inference_type=inference_type,
+                    phase=2,
+                    lower_level=lo_label,
+                    rationale=e.rationale,
+                    thread_key=thread_key,
+                    upper_level=hi_label,
+                )
+            )
 
     return candidates, provenance_rows, cross_level_build_pairs
 
@@ -3892,138 +3966,6 @@ def _process_and_filter_candidates(
         disposition_map,
         dedupe_winners,
     )
-
-
-def _process_builds_towards_work_item(
-    *,
-    b_hi: dict[str, Any],
-    b_lo: dict[str, Any],
-    config: CreateKGConfig,
-    inference_type: str,
-    prompt_builder: Callable[..., Any],
-    thread_key: str,
-    usage_tracker: KGUsageTracker,
-) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
-    """Process a single pair of adjacent buckets to infer progression edges.
-
-    Parameters
-    ----------
-    b_hi
-        The upper-level bucket dictionary.
-    b_lo
-        The lower-level bucket dictionary.
-    config
-        The knowledge graph run configuration.
-    inference_type
-        The type of inference being executed (cross-level or cross-stage).
-    prompt_builder
-        The function used to build the LLM prompt.
-    thread_key
-        The string identifier for the current thread.
-    usage_tracker
-        The KGUsageTracker for recording KG generation and validation calls during the
-        export process.
-
-    Returns
-    -------
-    tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]
-        A tuple containing:
-            1. Generated candidate edges for this pair.
-            2. Provenance rows for the generated edges.
-            3. Set of (source_uuid, target_uuid) tuples.
-    """
-
-    candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
-    cross_level_build_pairs: set[tuple[UUID, UUID]] = set()
-
-    lo_label = _level_label(b_lo)
-    hi_label = _level_label(b_hi)
-    lo_lo, lo_hi = _level_bounds(b_lo)
-    hi_lo, hi_hi = _level_bounds(b_hi)
-
-    lower_items = b_lo.get("items") or []
-    upper_items = b_hi.get("items") or []
-
-    lower_payload = [
-        _build_item_payload(include_order_index=True, item=it) for it in lower_items
-    ]
-    upper_payload = [
-        _build_item_payload(include_order_index=True, item=it) for it in upper_items
-    ]
-
-    prompt = prompt_builder(
-        lower_items=lower_payload,
-        lower_level_label=lo_label,
-        min_confidence=config.lp_builds_towards_min_confidence,
-        thread_key=thread_key,
-        thread_path=_bucket_topic_context(bucket=b_hi),
-        upper_items=upper_payload,
-        upper_level_label=hi_label,
-    )
-
-    allowed_lo = {str(it["sfi_uuid"]) for it in lower_payload}
-    allowed_hi = {str(it["sfi_uuid"]) for it in upper_payload}
-
-    response = infer_progression_edges(
-        instructions=prompt.system_message,
-        usage_tracker=usage_tracker,
-        user_message=prompt.user_message,
-        validator=partial(
-            validate_cross_level_builds_towards,
-            allowed_lo=allowed_lo,
-            allowed_hi=allowed_hi,
-            min_confidence=config.lp_builds_towards_min_confidence,
-        ),
-    )
-
-    for e in response.edges:
-        ce = CandidateEdge(
-            confidence=float(e.confidence),
-            evidence={"rationale": e.rationale},
-            inference_source="llm",
-            llm_confidence=float(e.confidence),
-            inference_type=inference_type,
-            metadata={
-                "phase": 2,
-                "lower_level_label": lo_label,
-                "upper_level_label": hi_label,
-                "lower_level_low": lo_lo,
-                "lower_level_high": lo_hi,
-                "upper_level_low": hi_lo,
-                "upper_level_high": hi_hi,
-                "thread_key": thread_key,
-                "lp_bucket_key_upper": b_hi.get("lp_bucket_key"),
-                "lp_thread_key": b_hi.get("lp_thread_key"),
-                "topic_path_examples_upper": b_hi.get("topic_path_examples"),
-                "topic_path_keys_upper": b_hi.get("topic_path_keys"),
-                "subject_label": b_hi.get("subject_label"),
-            },
-            rel_type=BUILDS_TOWARDS,
-            source_sfi_uuid=_uuid(e.source_sfi_uuid),
-            target_sfi_uuid=_uuid(e.target_sfi_uuid),
-        )
-        candidates.append(ce)
-
-        # Validator-side checks should already enforce the confidence threshold. Keep
-        # this guard just in case so only final-threshold buildsTowards pairs suppress
-        # Phase 4 relatesTo candidates.
-        if ce.confidence >= config.lp_builds_towards_min_confidence:
-            cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
-
-        provenance_rows.append(
-            _make_provenance_row(
-                candidate=ce,
-                inference_type=inference_type,
-                phase=2,
-                rationale=e.rationale,
-                lower_level=lo_label,
-                upper_level=hi_label,
-                thread_key=thread_key,
-            )
-        )
-
-    return candidates, provenance_rows, cross_level_build_pairs
 
 
 def _process_relates_to_work_item(
