@@ -4118,20 +4118,20 @@ def _prepare_subject_level_samples(
     )
 
     for level_label, level_buckets in by_level.items():
-        buckets_by_subject: dict[str, list[dict[str, Any]]] = defaultdict(list)
         bounds: list[tuple[int, int]] = []
+        buckets_by_subject: dict[str, list[dict[str, Any]]] = defaultdict(list)
         exemplar_bucket: Optional[dict[str, Any]] = None
 
-        for b in level_buckets:
-            lo, hi = _level_bounds(b)
+        for bucket in level_buckets:
+            lo, hi = _level_bounds(bucket)
 
             if isinstance(lo, int) and isinstance(hi, int):
                 bounds.append((lo, hi))
-                exemplar_bucket = exemplar_bucket or b
+                exemplar_bucket = exemplar_bucket or bucket
 
             buckets_by_subject[
-                str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            ].append(b)
+                str(bucket.get("subject_label") or "UNSPECIFIED_SUBJECT")
+            ].append(bucket)
 
         if not bounds:
             continue
@@ -4184,8 +4184,8 @@ def _prepare_subject_level_samples(
                 continue
 
             prompt_items = [
-                _build_item_payload(item=it, thread_key_field="_thread_key")
-                for it in sampled
+                _build_item_payload(item=item, thread_key_field="_thread_key")
+                for item in sampled
             ]
             subject_level_samples[subject_label][level_key] = {
                 "level_label": level_label,
