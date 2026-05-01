@@ -765,7 +765,7 @@ Definition:
 Rules:
 1. Use only the supplied `sfi_uuid` values.
 2. Prefer sparse, high-quality edges over many weak edges.
-3. Preserve sequence direction: `items_in_sequence_order` is already in intended curriculum order, so the source must have a lower list index than the target.
+3. Preserve sequence direction: `items_in_sequence_order` is already in intended curriculum order. Each item also includes `sequence_index`; the source must have a lower `sequence_index` than the target.
 4. Use `statement_type`, `topic_path`, and `topic_path_key` as context only; do not infer an edge solely because two items share labels or topic path.
 5. Do not connect duplicate or repeated statements unless the later item clearly increases complexity or depends on the earlier item.
 
@@ -780,7 +780,8 @@ Return an empty `edges` list if there are no clear prerequisites.
             "level_label": level_label,
             "thread_path": thread_path,
             "sequence_order_policy": (
-                "Array order is intended curriculum sequence; lower index is earlier."
+                "Array order is intended curriculum sequence. Each item includes "
+                "sequence_index; lower sequence_index is earlier."
             ),
             "items_in_sequence_order": items,
         },

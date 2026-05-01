@@ -584,6 +584,7 @@ def _build_item_payload(
     *,
     include_order_index: bool = False,
     item: dict[str, Any],
+    sequence_index: Optional[int] = None,
     thread_key_field: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build a compact item payload for the LLM prompt from a bucket item.
@@ -598,6 +599,9 @@ def _build_item_payload(
     include_order_index
         Whether to include `order_index_within_parent` in the payload. Used by
         buildsTowards phases where sequence ordering matters.
+    sequence_index
+        Optional zero-based position of the item within the ordered prompt list. Used
+        by within-level buildsTowards prompts to make sequence direction explicit.
     thread_key_field
         If provided, the item key to read for an additional `thread_key` field in the
         payload (e.g., `"_thread_key"`). Used by Phase 4 cross-level relatesTo.
@@ -618,6 +622,9 @@ def _build_item_payload(
         "topic_path": item.get("topic_path"),
         "topic_path_key": item.get("topic_path_key"),
     }
+
+    if sequence_index is not None:
+        payload["sequence_index"] = sequence_index
 
     if include_order_index:
         payload["order_index_within_parent"] = item.get("order_index_within_parent")
@@ -2646,8 +2653,8 @@ def _infer_cross_level_builds_towards(
     """
 
     candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
     cross_level_build_pairs: set[tuple[UUID, UUID]] = set()
+    provenance_rows: list[dict[str, Any]] = []
 
     if not (
         config.lp_cross_level_builds_towards or config.lp_cross_stage_builds_towards
@@ -2661,7 +2668,7 @@ def _infer_cross_level_builds_towards(
     unthreaded_count = sum(1 for tk in thread_map if tk.startswith("__unthreaded__::"))
 
     if unthreaded_count > 0:
-        logger.info(
+        logger.warning(
             f"Cross-level matching: {unthreaded_count} unthreaded thread(s) "
             f"excluded (level-specific sentinel prevents cross-level pairing)"
         )
@@ -2865,7 +2872,8 @@ def _infer_within_level_builds_towards(
         )
 
         ordered_items = [
-            _build_item_payload(include_order_index=True, item=item) for item in items
+            _build_item_payload(include_order_index=True, item=item, sequence_index=idx)
+            for idx, item in enumerate(items)
         ]
         pos = {str(item["sfi_uuid"]): idx for idx, item in enumerate(ordered_items)}
         allowed = set(pos.keys())
