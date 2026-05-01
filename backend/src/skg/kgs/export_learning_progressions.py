@@ -898,6 +898,48 @@ def _build_thread_map(
     The returned mapping groups buckets by thread key and sorts them by
     (level_ordinal_low, level_ordinal_high).
 
+    Examples
+    --------
+    1. Same conceptual thread across adjacent single levels
+
+        Given buckets shaped like:
+
+            {
+                "Grade 1": [
+                    {
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_thread_key": "strand=reading",
+                        "lp_bucket_key": "strand=reading",
+                    }
+                ],
+                "Grade 2": [
+                    {
+                        "level_ordinal_low": 2,
+                        "level_ordinal_high": 2,
+                        "lp_thread_key": "strand=reading",
+                        "lp_bucket_key": "strand=reading",
+                    }
+                ],
+            }
+
+        this function returns:
+
+            {
+                "strand=reading": [<Grade 1 bucket>, <Grade 2 bucket>]
+            }
+
+        `_collect_builds_towards_work_items()` can then decide whether to run a
+        cross-level prompt for the Grade 1 -> Grade 2 pair.
+
+    2. Banded stages remain in the same thread
+
+        Buckets with ranges such as I-II (`level_ordinal_low=1`,
+        `level_ordinal_high=2`) and III-VI (`level_ordinal_low=3`,
+        `level_ordinal_high=6`) are grouped by the same `lp_thread_key` and sorted by
+        their ordinal ranges. The next step decides whether to run cross-stage
+        inference based on adjacency and config toggles.
+
     Parameters
     ----------
     by_level
@@ -920,10 +962,28 @@ def _build_thread_map(
         of bucket keys that are missing the thread key to aid in debugging.
     """
 
-    thread_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    skipped_no_bounds = 0
+    def _bound_or_last(value: Optional[int]) -> int:
+        """Sort valid ordinal 0 before positive ordinals; place missing bounds last.
+
+        Parameters
+        ----------
+        value
+            The level ordinal bound to evaluate.
+
+        Returns
+        -------
+        int
+            The original value if it's a valid integer (including 0), or a large number
+            (10^9) if the value is missing or invalid, to ensure that buckets with
+            missing bounds are sorted after those with valid ordinals.
+        """
+
+        return value if isinstance(value, int) else 10**9
+
     missing_thread_key = 0
     missing_thread_key_examples: list[str] = []
+    skipped_no_bounds = 0
+    thread_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for level_buckets in by_level.values():
         for b in level_buckets:
@@ -952,8 +1012,8 @@ def _build_thread_map(
         thread_map[k] = sorted(
             thread_map[k],
             key=lambda b: (
-                int(_level_bounds(b)[0] or 10**9),
-                int(_level_bounds(b)[1] or 10**9),
+                _bound_or_last(_level_bounds(b)[0]),
+                _bound_or_last(_level_bounds(b)[1]),
                 _bucket_topic_context(bucket=b),
                 str(b.get("lp_bucket_key") or ""),
             ),
@@ -963,7 +1023,7 @@ def _build_thread_map(
     # not be masked by the non-fatal warning about skipped bounds.
     if missing_thread_key > 0:
         # The check is deferred until after full iteration so we can collect all
-        # examples for a more actionable error message. Clear the partial thread_map
+        # examples for a more actionable error message. Clear the partial `thread_map`
         # before raising so callers that catch the exception cannot accidentally use
         # incomplete data.
         thread_map.clear()
@@ -1077,6 +1137,32 @@ def _collect_builds_towards_work_items(
     *, config: CreateKGConfig, thread_map: dict[str, list[dict[str, Any]]]
 ) -> list[tuple[str, dict[str, Any], dict[str, Any], str, Callable[..., Any]]]:
     """Collect and configure eligible adjacent pairs of buckets for inference.
+
+    This function receives the thread-grouped output of `_build_thread_map()` and turns
+    adjacent bucket pairs into concrete LLM work items. It does not call the LLM; it
+    only decides which prompt type should be used for each adjacent pair.
+
+    Examples
+    --------
+    1. Adjacent single levels
+
+        If `thread_map["strand=reading"]` contains Grade 1 and Grade 2 buckets, and
+        both buckets have `level_ordinal_low == level_ordinal_high`, the pair becomes
+        a `cross_level_builds_towards` work item when
+        `config.lp_cross_level_builds_towards` is enabled.
+
+    2. Adjacent banded stages
+
+        If the lower bucket covers Standards I-II (`low=1`, `high=2`) and the upper
+        bucket covers Standards III-VI (`low=3`, `high=6`), the pair becomes a
+        `cross_stage_builds_towards` work item when
+        `config.lp_cross_stage_builds_towards` is enabled.
+
+    3. Non-adjacent levels are skipped
+
+        If the lower bucket ends at ordinal 1 and the next bucket starts at ordinal 3,
+        the pair is skipped because the function only accepts
+        `lower_high + 1 == upper_low`.
 
     Parameters
     ----------
@@ -2625,7 +2711,7 @@ def _infer_cross_level_builds_towards(
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
     """Perform Phase 2 inference: Cross-level/cross-stage buildsTowards relationships
-    with optional cross-stage fallback.
+    with optional cross-stage handling.
 
     1. If BOTH adjacent buckets represent single levels (low == high), run true
         cross-level.
@@ -3919,10 +4005,9 @@ def _process_builds_towards_work_item(
         )
         candidates.append(ce)
 
-        # Only record as a forbidden pair for Phase 4 relatesTo exclusion when the edge
-        # meets the confidence threshold. Sub-threshold edges will be dropped during
-        # post-processing, so forbidding their relatesTo counterparts would
-        # unnecessarily suppress valid cross-level associations.
+        # Validator-side checks should already enforce the confidence threshold. Keep
+        # this guard just in case so only final-threshold buildsTowards pairs suppress
+        # Phase 4 relatesTo candidates.
         if ce.confidence >= config.lp_builds_towards_min_confidence:
             cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
 
