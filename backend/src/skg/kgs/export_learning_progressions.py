@@ -3428,27 +3428,73 @@ def _infer_cross_level_relates_to(
     forbidden_builds_pairs: set[tuple[UUID, UUID]],
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 4 inference: Cross-level/cross-stage relatesTo relationships with
-    optional cross-stage fallback.
+    """Perform Phase 4 inference: cross-level/cross-stage `relatesTo` edges.
+
+    Phase 4 compares sampled StandardsFrameworkItems from adjacent level ranges within
+    the **same** subject-like label. It is intentionally associative rather than
+    prerequisite-oriented: pairs already accepted as cross-level/cross-stage
+    `buildsTowards` are passed as forbidden pairs and must not also be emitted as
+    `relatesTo`.
+
+    The process is as follows:
+
+    1. Return no candidates when both `config.lp_cross_level_relates_to` and
+        `config.lp_cross_stage_relates_to` are disabled.
+    2. Use Phase 4 limits from config: max relatesTo edges per SFI and max sampled
+        items per subject per level range.
+    3. Prepare subject-level samples with `_prepare_subject_level_samples()`, producing
+        `subject_label -> (level_low, level_high) -> sampled items + sampling
+        provenance`. Excluded subject labels are omitted before level-bound checks.
+    4. Build adjacent same-subject work items with `_collect_relates_to_work_items()`.
+        Adjacent single-level ranges use the cross-level prompt when enabled; pairs
+        where either side is banded use the cross-stage prompt when enabled.
+    5. For each work item, resolve prompt-specific forbidden pairs with
+        `_resolve_forbidden_pairs()`. These are accepted `buildsTowards` pairs whose
+        endpoints both appear in the current lower/upper sampled item lists.
+    6. Run the selected prompt builder in the lower -> upper presentation order and
+        validate with `validate_cross_level_relates_to()`.
+    7. Run the same prompt builder in the upper -> lower presentation order, swapping
+        both item lists and level labels so the prompt remains self-consistent.
+    8. Canonicalize both outputs with `_best_map()` and keep only pairs that appear in
+        both orientations. The confirmed candidate confidence is the lower of the two
+        orientation-specific confidence scores.
+    9. Emit one undirected `relatesTo` `CandidateEdge` plus one raw provenance row for
+        each bidirectionally confirmed pair, preserving lower/upper level metadata,
+        sampling provenance, confidence/rationale from both orientations, and the Phase
+        4 inference type.
+
+    NB: `lp_cross_level_relates_to_max_items_per_subject` is an upper bound, not a
+    required item count. For each subject-like label and level range, the sampler
+    returns up to this many StandardsFrameworkItems. If fewer are available, all
+    available items are used and no error is raised.
+
+    NB: Phase 4 compares adjacent ranges only. It does not compare Grade 1 directly to
+    Grade 3 when Grade 2 is missing, and it treats banded ranges such as I-II -> III-VI
+    as cross-stage, not single-grade cross-level, comparisons.
+
+    NB: The returned `relatesTo` candidates use canonicalized endpoint order because
+    the relationship is conceptually undirected. Lower/upper curriculum context is
+    preserved separately in candidate metadata and provenance.
 
     Parameters
     ----------
     by_level
-        Dictionary mapping level labels to lists of bucket dictionaries.
+        Dictionary mapping level labels to finalized cross-level bucket dictionaries.
+        This should usually be the `by_cross_level` view returned by
+        `group_standards_for_learning_progressions()`.
     config
         The knowledge graph run configuration.
     forbidden_builds_pairs
-        A set of (source, target) UUID tuples representing existing buildsTowards
-        relationships which should be excluded from relatesTo inference.
+        Global set of accepted Phase 2 cross-level/cross-stage `buildsTowards` pairs.
+        Pairs whose endpoints both appear in the current Phase 4 prompt are excluded
+        from `relatesTo` inference.
     usage_tracker
-        The KGUsageTracker for recording KG generation and validation calls during the
-        export process.
+        Tracker for KG generation and validation LLM calls.
 
     Returns
     -------
     tuple[list[CandidateEdge], list[dict[str, Any]]]
-        A tuple containing the list of generated candidate edges and the list of
-        provenance dictionaries.
+        Generated candidate edges and corresponding raw provenance rows.
     """
 
     candidates: list[CandidateEdge] = []
