@@ -740,15 +740,22 @@ RULES:
 
 def within_level_builds_towards(
     *,
+    bucket_key: str,
     items: list[dict[str, Any]],
     level_label: str,
     min_confidence: float,
+    subject_label: str,
+    thread_key: str,
     thread_path: str,
 ) -> PromptPair:
     """Within-level buildsTowards in a single level/thread bucket.
 
     Parameters
     ----------
+    bucket_key
+        Stable bucket key for the specific within-level inference group. This helps
+        distinguish broad hierarchy buckets from fallback buckets such as
+        `statement_type=orthographe`.
     items
         The list of items in the level/thread bucket, presented in intended curriculum
         sequence order.
@@ -758,9 +765,13 @@ def within_level_builds_towards(
     min_confidence
         The minimum confidence threshold from the config; edges below this should be
         omitted.
+    subject_label
+        Human-readable subject-like label for the bucket, when available.
+    thread_key
+        Stable thread key for the within-level inference group, when available.
     thread_path
-        The conceptual thread path for the items (for example, "Mathematics > Geometry
-        > Shapes").
+        The conceptual thread path for the items (for example, "Mathematics -> Geometry
+        -> Shapes").
 
     Returns
     -------
@@ -794,6 +805,9 @@ Return an empty `edges` list if there are no clear prerequisites.
     user_message = json.dumps(
         {
             "level_label": level_label,
+            "bucket_key": bucket_key,
+            "thread_key": thread_key,
+            "subject_label": subject_label,
             "thread_path": thread_path,
             "sequence_order_policy": (
                 "Array order is intended curriculum sequence. Each item includes "

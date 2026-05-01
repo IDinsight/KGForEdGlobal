@@ -3758,16 +3758,21 @@ def _infer_within_level_builds_towards(
         )
 
         ordered_items = [
-            _build_item_payload(include_order_index=True, item=item, sequence_index=idx)
+            _build_item_payload(item=item, sequence_index=idx)
             for idx, item in enumerate(items)
         ]
         pos = {str(item["sfi_uuid"]): idx for idx, item in enumerate(ordered_items)}
         allowed = set(pos.keys())
 
         prompt = within_level_builds_towards(
+            bucket_key=str(
+                bucket.get("lp_bucket_key") or bucket.get("bucket_key") or ""
+            ),
             items=ordered_items,
             level_label=str(level_label),
             min_confidence=config.lp_builds_towards_min_confidence,
+            subject_label=str(bucket.get("subject_label") or ""),
+            thread_key=str(bucket.get("lp_thread_key") or ""),
             thread_path=_bucket_topic_context(bucket=bucket),
         )
         response = infer_progression_edges(
@@ -3809,7 +3814,16 @@ def _infer_within_level_builds_towards(
                     inference_type=inference_type,
                     phase=1,
                     bucket_key=bucket.get("bucket_key"),
+                    level_label=level_label,
+                    llm_confidence=float(edge.confidence),
+                    lp_bucket_key=bucket.get("lp_bucket_key"),
+                    lp_thread_key=bucket.get("lp_thread_key"),
                     rationale=edge.rationale,
+                    source_sequence_index=pos.get(edge.source_sfi_uuid),
+                    subject_label=bucket.get("subject_label"),
+                    target_sequence_index=pos.get(edge.target_sfi_uuid),
+                    topic_path_examples=bucket.get("topic_path_examples"),
+                    topic_path_keys=bucket.get("topic_path_keys"),
                 )
             )
 
