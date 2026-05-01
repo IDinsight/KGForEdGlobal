@@ -723,8 +723,9 @@ def _build_scoped_sfi_index(
     Raises
     ------
     ValueError
-        If an item is missing `sfi_uuid`, if a duplicate SFI UUID appears within the
-        same scoped bucket store, or if an unsupported scope is supplied.
+        If an item is missing `sfi_uuid`, if a bucket's `bucket_scope` conflicts with
+        the requested scope, if a duplicate SFI UUID appears within the same scoped
+        bucket store, or if an unsupported scope is supplied.
     """
 
     if scope not in {"cross_level", "within_level"}:
@@ -734,6 +735,15 @@ def _build_scoped_sfi_index(
 
     for level_label, level_buckets in (by_level or {}).items():
         for bucket in level_buckets or []:
+            bucket_scope = bucket.get("bucket_scope")
+
+            if bucket_scope is not None and bucket_scope != scope:
+                raise ValueError(
+                    f"Bucket scope mismatch while building LP SFI context index. "
+                    f"expected={scope!r}; actual={bucket_scope!r}; "
+                    f"level={level_label!r}; bucket={bucket.get('lp_bucket_key')!r}."
+                )
+
             bucket_topic_path = _bucket_topic_context(bucket=bucket)
             bucket_topic_path_key = _first_topic_path_key(bucket) or bucket.get(
                 "lp_bucket_key"
