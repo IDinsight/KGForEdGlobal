@@ -2365,7 +2365,8 @@ def _get_or_create_bucket(
     Buckets are the unit of work for learning-progression inference. Each exported
     StandardsFrameworkItem is normally placed into two independent bucket stores:
 
-    1. a `within_level` bucket, used by within-level/within-level inference, and
+    1. a `within_level` bucket, used by within-level buildsTowards and within-level
+        relatesTo inference and
     2. a `cross_level` bucket, used by cross-level/cross-stage inference.
 
     If the bucket already exists, this function returns it and updates aggregate
