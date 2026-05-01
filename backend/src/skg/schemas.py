@@ -1027,18 +1027,18 @@ class CreateKGConfig(BaseSchema):
         ge=0.0,
         le=1.0,
     )
-    lp_cross_grade_builds_towards: bool = Field(
+    lp_cross_level_builds_towards: bool = Field(
         default=True,
-        description="Enable cross-grade buildsTowards progression inference between adjacent single-level grade buckets.",
+        description="Enable cross-level buildsTowards progression inference between adjacent single-level level buckets.",
     )
-    lp_cross_grade_relates_to_max_items_per_subject: int = Field(
+    lp_cross_level_relates_to: bool = Field(
+        default=True,
+        description="Enable cross-level relatesTo progression inference between adjacent single-level level buckets.",
+    )
+    lp_cross_level_relates_to_max_items_per_subject: int = Field(
         default=10,
-        description="Cross-grade relatesTo: max sampled Standards per subject per grade.",
+        description="Cross-level relatesTo: max sampled Standards per subject per level.",
         ge=1,
-    )
-    lp_cross_grade_relates_to: bool = Field(
-        default=True,
-        description="Enable cross-grade relatesTo progression inference between adjacent single-level grade buckets.",
     )
     lp_cross_level_thread_roles: Optional[list[NodeRole]] = Field(
         default=None,
@@ -1055,7 +1055,7 @@ class CreateKGConfig(BaseSchema):
     lp_cross_stage_builds_towards: bool = Field(
         default=False,
         description=(
-            "Cross-grade buildsTowards fallback: if either adjacent level bucket is "
+            "Cross-level buildsTowards fallback: if either adjacent level bucket is "
             "banded (low != high), infer buildsTowards across adjacent level ranges "
             "(e.g., I–II -> III–VI)."
         ),
@@ -1063,7 +1063,7 @@ class CreateKGConfig(BaseSchema):
     lp_cross_stage_relates_to: bool = Field(
         default=False,
         description=(
-            "Cross-grade relatesTo fallback: if either adjacent level bucket is banded "
+            "Cross-level relatesTo fallback: if either adjacent level bucket is banded "
             "(low!=high), infer relatesTo across adjacent level ranges "
             "(e.g., I–II <-> III–VI)."
         ),
@@ -1071,8 +1071,8 @@ class CreateKGConfig(BaseSchema):
     lp_excluded_subject_labels: list[str] = Field(
         default=["UNSPECIFIED_SUBJECT"],
         description=(
-            "Subject labels to exclude from Phase 3 (within-grade cross-subject "
-            "relatesTo) and Phase 4 (cross-grade same-subject relatesTo) "
+            "Subject labels to exclude from Phase 3 (within-level cross-subject "
+            "relatesTo) and Phase 4 (cross-level same-subject relatesTo) "
             "sampling. Default excludes 'UNSPECIFIED_SUBJECT' since including "
             "unmapped items in cross-subject pairing adds noise without value."
         ),
@@ -1083,7 +1083,7 @@ class CreateKGConfig(BaseSchema):
             "Explicit mapping from level labels to integer ordinals for LP inference. "
             "Keys are matched against progression_context.grade_key first, then "
             "progression_context.stage_key; keys must be normalized. Ordinals represent "
-            "each level's position in the sequence (not necessarily the grade number); "
+            "each level's position in the sequence (not necessarily the level number); "
             "adjacency is determined by ordinals differing by exactly 1. Multiple level "
             "labels may map to the same ordinal to merge subtrees "
             "(e.g., 'paliers du niveau ce1' and 'planification ce1' both -> 1). "
@@ -1126,38 +1126,22 @@ class CreateKGConfig(BaseSchema):
         default=None,
         description=(
             "Canonical IR node role to use as the 'subject' for Phase 3 "
-            "(within-grade cross-subject relatesTo) and Phase 4 "
-            "(cross-grade same-subject relatesTo). When set, the LP bucketing "
+            "(within-level cross-subject relatesTo) and Phase 4 "
+            "(cross-level same-subject relatesTo). When set, the LP bucketing "
             "code looks for this role in each expectation's "
             "progression_context.topic_path_parts and uses the first matching "
             "label as subject_label. When None, defaults to searching for "
             "'subject' then 'learning_area' roles."
         ),
     )
-    lp_within_grade_allow_banded_levels: bool = Field(
+    lp_within_level_allow_banded_levels: bool = Field(
         default=False,
         description=(
-            "If false (default), Phase 1 and Phase 3 'within-grade' inference only runs "
-            "on single-level buckets where grade_ordinal_low == grade_ordinal_high. "
-            "If true, allow within-grade inference to also run on banded/stage buckets "
+            "If false (default), Phase 1 and Phase 3 within-level inference only runs "
+            "on single-level buckets where level_ordinal_low == level_ordinal_high. "
+            "If true, allow within-level inference to also run on banded/stage buckets "
             "(low != high), e.g., 'Std I–II'."
         ),
-    )
-    lp_within_grade_builds_towards: bool = Field(
-        default=True,
-        description="Enable within-grade buildsTowards progression inference (sequential standards within the same grade/subject thread).",
-    )
-    lp_within_grade_relates_to: bool = Field(
-        default=True,
-        description=(
-            "Enable within-grade relatesTo inference (cross-subject only). "
-            "Threads within the same subject are skipped to reduce noise."
-        ),
-    )
-    lp_within_grade_relates_to_max_items_per_subject: int = Field(
-        default=5,
-        description="Within-grade relatesTo (cross-subject only): max sampled standards per subject (keeps LLM calls bounded).",
-        ge=1,
     )
     lp_within_level_bucket_roles: Optional[list[NodeRole]] = Field(
         default=None,
@@ -1172,6 +1156,10 @@ class CreateKGConfig(BaseSchema):
         ),
         min_length=1,
     )
+    lp_within_level_builds_towards: bool = Field(
+        default=True,
+        description="Enable within-level buildsTowards progression inference (sequential standards within the same level/grade/subject thread).",
+    )
     lp_within_level_fallback_fields: list[
         Literal["statement_type", "statement_code", "source_label", "academic_subject"]
     ] = Field(
@@ -1183,6 +1171,18 @@ class CreateKGConfig(BaseSchema):
             "such as statement_type identify stable skill tracks. Empty list means "
             "no source-field fallback."
         ),
+    )
+    lp_within_level_relates_to: bool = Field(
+        default=True,
+        description=(
+            "Enable within-level relatesTo inference (cross-subject only). "
+            "Threads within the same subject are skipped to reduce noise."
+        ),
+    )
+    lp_within_level_relates_to_max_items_per_subject: int = Field(
+        default=5,
+        description="Within-level relatesTo (cross-subject only): max sampled standards per subject (keeps LLM calls bounded).",
+        ge=1,
     )
     namespace_uuid: UUID = Field(
         default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),

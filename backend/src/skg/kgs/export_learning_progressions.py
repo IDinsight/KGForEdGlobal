@@ -12,10 +12,10 @@ work for non-US curriculum documents mapped into the LC "academic standards" sha
 Phases (toggleable via CreateKGConfig):
 
 1. Within-level buildsTowards
-2. Cross-grade/cross-stage buildsTowards (adjacent levels, normalized thread matching)
+2. Cross-level/cross-stage buildsTowards (adjacent levels, normalized thread matching)
 3. Within-level relatesTo (cross-subject/cross-strand within a level;
     subject-pair sampling)
-4. Cross-grade/cross-stage relatesTo (adjacent levels within the same subject,
+4. Cross-level/cross-stage relatesTo (adjacent levels within the same subject,
     excluding buildsTowards pairs)
 """
 
@@ -38,12 +38,12 @@ from loguru import logger
 from skg.kgs.export_academic_standards import AcademicStandardsExport
 from skg.kgs.llm import KGUsageTracker, infer_progression_edges
 from skg.kgs.prompts import (
-    cross_grade_builds_towards,
-    cross_grade_relates_to,
+    cross_level_builds_towards,
+    cross_level_relates_to,
     cross_stage_builds_towards,
     cross_stage_relates_to,
-    within_grade_relates_to,
     within_level_builds_towards,
+    within_level_relates_to,
 )
 from skg.kgs.schemas import (
     ProgressionEdgesResponse,
@@ -52,26 +52,28 @@ from skg.kgs.schemas import (
 )
 from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair, normalize_key_token
 from skg.kgs.validators import (
-    validate_cross_grade_builds_towards,
-    validate_cross_grade_relates_to,
-    validate_within_grade_builds_towards,
-    validate_within_grade_relates_to,
+    validate_cross_level_builds_towards,
+    validate_cross_level_relates_to,
+    validate_within_level_builds_towards,
+    validate_within_level_relates_to,
 )
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole
 from skg.utils.general import open_json_type, write_to_json
 
+BUILDS_TOWARDS = "buildsTowards"
 CROSS_LEVEL_INFERENCE_TYPES: set[str] = {
-    "cross_grade_builds_towards",
-    "cross_grade_relates_to",
+    "cross_level_builds_towards",
+    "cross_level_relates_to",
     "cross_stage_builds_towards",
     "cross_stage_relates_to",
 }
+RELATES_TO = "relatesTo"
 SFIContextScope = Literal["cross_level", "within_level"]
 WITHIN_LEVEL_INFERENCE_TYPES: set[str] = {
-    "within_grade_builds_towards",
-    "within_grade_cross_subject_relates_to",
-    "within_grade_relates_to",
+    "within_level_builds_towards",
+    "within_level_cross_subject_relates_to",
+    "within_level_relates_to",
 }
 
 
@@ -100,33 +102,33 @@ class LearningProgressionsExport:
     report: dict[str, Any]
 
 
-def _allow_within_grade_inference(
+def _allow_within_level_inference(
     *, bucket: dict[str, Any], config: CreateKGConfig
 ) -> bool:
-    """Return True if Phase 1/3 within-grade inference should consider this bucket.
+    """Return True if Phase 1/3 within-level inference should consider this bucket.
 
-    By default, we only run within-grade inference for single-grade buckets. If
-    config.lp_within_grade_allow_banded_levels=True, banded/stage buckets are allowed.
+    By default, we only run within-level inference for single-level buckets. If
+    config.lp_within_level_allow_banded_levels=True, banded/stage buckets are allowed.
 
     Parameters
     ----------
     bucket
         The bucket dictionary containing information about a thread of standards within
-        a grade, which may include grade bounds and other contextual information.
+        a level, which may include level bounds and other contextual information.
     config
         The knowledge graph run configuration.
 
     Returns
     -------
     bool
-        True if within-grade inference should be allowed for this bucket based on the
-        configuration and whether it represents a single grade or a banded level.
+        True if within-level inference should be allowed for this bucket based on the
+        configuration and whether it represents a single level or a banded level.
     """
 
-    if config.lp_within_grade_allow_banded_levels:
+    if config.lp_within_level_allow_banded_levels:
         return True
 
-    return _is_single_grade_bucket(bucket)
+    return _is_single_level_bucket(bucket)
 
 
 def _assign_candidate_uids(
@@ -598,7 +600,7 @@ def _build_item_payload(
         buildsTowards phases where sequence ordering matters.
     thread_key_field
         If provided, the item key to read for an additional `thread_key` field in the
-        payload (e.g., `"_thread_key"`). Used by Phase 4 cross-grade relatesTo.
+        payload (e.g., `"_thread_key"`). Used by Phase 4 cross-level relatesTo.
 
     Returns
     -------
@@ -873,7 +875,7 @@ def _build_thread_map(
     """Organize buckets by thread key and level-range order.
 
     For cross-level inference we need to handle both:
-      - single-grade buckets (low==high) for true cross-grade adjacency, and
+      - single-level buckets (low==high) for true cross-level adjacency, and
       - banded buckets (low!=high) for cross-stage adjacency.
 
     The returned mapping groups buckets by thread key and sorts them by
@@ -890,7 +892,7 @@ def _build_thread_map(
     dict[str, list[dict[str, Any]]]
         A dictionary mapping thread keys to lists of bucket dictionaries, where each
         list is sorted by (level_ordinal_low, level_ordinal_high) to facilitate
-        cross-grade and cross-stage buildsTowards inference. Buckets without integer
+        cross-level and cross-stage buildsTowards inference. Buckets without integer
         level bounds are skipped and counted for logging purposes.
 
     Raises
@@ -961,7 +963,7 @@ def _build_thread_map(
     if skipped_no_bounds > 0:
         logger.warning(
             f"Skipped {skipped_no_bounds} buckets without integer level bounds "
-            f"(missing grade/stage ordinal data)."
+            f"(missing level/stage ordinal data)."
         )
 
     return thread_map
@@ -993,7 +995,7 @@ def _canon_disposition_key(
         `(a, b)` is canonicalized for undirected relationship types.
     """
 
-    if rel_type == "relatesTo":
+    if rel_type == RELATES_TO:
         a, b = canon_str_pair(source, target)
         return rel_type, a, b
 
@@ -1024,7 +1026,7 @@ def _canonicalize_candidate_for_dedupe(
     source = candidate.source_sfi_uuid
     target = candidate.target_sfi_uuid
 
-    if candidate.rel_type == "relatesTo":
+    if candidate.rel_type == RELATES_TO:
         canonical_source, canonical_target = canon_str_pair(str(source), str(target))
 
         if canonical_source != str(source):
@@ -1078,24 +1080,23 @@ def _collect_builds_towards_work_items(
     """
 
     def _levels_adjacent(*, lower: dict[str, Any], upper: dict[str, Any]) -> bool:
-        """Determine if the grade levels of two buckets are adjacent based on their
-        ordinals.
+        """Determine if the levels of two buckets are adjacent based on their ordinals.
 
         Parameters
         ----------
         lower
-            A bucket dictionary representing the lower grade level, which may contain
-            grade ordinal information.
+            A bucket dictionary representing the lower level, which may contain level
+            ordinal information.
         upper
-            A bucket dictionary representing the upper grade level, which may contain
-            grade ordinal information.
+            A bucket dictionary representing the upper level, which may contain level
+            ordinal information.
 
         Returns
         -------
         bool
-            True if the grade levels of the two buckets are adjacent (i.e., the high
-            ordinal of the lower bucket is exactly one less than the low ordinal of the
-            upper bucket), False otherwise. If the necessary ordinal information is not
+            True if the levels of the two buckets are adjacent (i.e., the high ordinal
+            of the lower bucket is exactly one less than the low ordinal of the upper
+            bucket), False otherwise. If the necessary ordinal information is not
             available or valid in either bucket, the function returns False, indicating
             that adjacency cannot be determined.
         """
@@ -1125,16 +1126,16 @@ def _collect_builds_towards_work_items(
             if not lower_items or not upper_items:
                 continue
 
-            both_single = _is_single_grade_bucket(b_lo) and _is_single_grade_bucket(
+            both_single = _is_single_level_bucket(b_lo) and _is_single_level_bucket(
                 b_hi
             )
 
             if both_single:
-                if not config.lp_cross_grade_builds_towards:
+                if not config.lp_cross_level_builds_towards:
                     continue
 
-                inference_type = "cross_grade_builds_towards"
-                prompt_builder = cross_grade_builds_towards
+                inference_type = "cross_level_builds_towards"
+                prompt_builder = cross_level_builds_towards
             else:
                 if not config.lp_cross_stage_builds_towards:
                     continue
@@ -1157,7 +1158,7 @@ def _collect_relates_to_work_items(
     config
         The knowledge graph run configuration.
     subject_level_samples
-        Dictionary mapping subjects to grade-level boundaries and bucket data.
+        Dictionary mapping subjects to level boundaries and bucket data.
 
     Returns
     -------
@@ -1187,11 +1188,11 @@ def _collect_relates_to_work_items(
             both_single = (lo_low == lo_high) and (hi_low == hi_high)
 
             if both_single:
-                if not config.lp_cross_grade_relates_to:
+                if not config.lp_cross_level_relates_to:
                     continue
 
-                inference_type = "cross_grade_relates_to"
-                prompt_builder = cross_grade_relates_to
+                inference_type = "cross_level_relates_to"
+                prompt_builder = cross_level_relates_to
             else:
                 if not config.lp_cross_stage_relates_to:
                     continue
@@ -1394,7 +1395,7 @@ def _compute_bucket_keys(
             )
 
         Including the level in the sentinel prevents these weakly threaded items from
-        being matched across adjacent grades or stages.
+        being matched across adjacent levels or stages.
 
     Parameters
     ----------
@@ -1818,7 +1819,7 @@ def _emit_relationship(
     )
 
 
-def _filter_builds_towards_within_grade_order(
+def _filter_builds_towards_within_level_order(
     *, edges: list[CandidateEdge], within_sfi_index: dict[str, dict[str, Any]]
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
     """Drop Phase-1 buildsTowards edges that contradict within-level document order.
@@ -1842,7 +1843,7 @@ def _filter_builds_towards_within_grade_order(
         `(kept_edges, dropped_edges)`.
     """
 
-    def _compare_within_grade_order(
+    def _compare_within_level_order(
         *, source_context: dict[str, Any], target_context: dict[str, Any]
     ) -> Optional[int]:
         """Compare two scoped SFI contexts by within-level curriculum order.
@@ -1920,7 +1921,7 @@ def _filter_builds_towards_within_grade_order(
             kept.append(edge)
             continue
 
-        comparison = _compare_within_grade_order(
+        comparison = _compare_within_level_order(
             source_context=source_context, target_context=target_context
         )
 
@@ -2277,19 +2278,19 @@ def _finalize_lp_export(
         "counts": lp_stats,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "phase_toggles": {
-            "within_grade_builds_towards": config.lp_within_grade_builds_towards,
-            "cross_grade_builds_towards": config.lp_cross_grade_builds_towards,
+            "cross_level_builds_towards": config.lp_cross_level_builds_towards,
+            "cross_level_relates_to": config.lp_cross_level_relates_to,
             "cross_stage_builds_towards": config.lp_cross_stage_builds_towards,
-            "within_grade_relates_to": config.lp_within_grade_relates_to,
-            "cross_grade_relates_to": config.lp_cross_grade_relates_to,
             "cross_stage_relates_to": config.lp_cross_stage_relates_to,
+            "within_level_builds_towards": config.lp_within_level_builds_towards,
+            "within_level_relates_to": config.lp_within_level_relates_to,
         },
         "thresholds": {
             "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
-            "relates_to_min_confidence": config.lp_relates_to_min_confidence,
+            "cross_level_relates_to_max_items_per_subject": config.lp_cross_level_relates_to_max_items_per_subject,
             "relates_to_max_edges_per_sfi": config.lp_relates_to_max_edges_per_sfi,
-            "within_grade_relates_to_max_items_per_subject": config.lp_within_grade_relates_to_max_items_per_subject,
-            "cross_grade_relates_to_max_items_per_subject": config.lp_cross_grade_relates_to_max_items_per_subject,
+            "relates_to_min_confidence": config.lp_relates_to_min_confidence,
+            "within_level_relates_to_max_items_per_subject": config.lp_within_level_relates_to_max_items_per_subject,
         },
         "drops": drops,
     }
@@ -2364,8 +2365,8 @@ def _get_or_create_bucket(
     Buckets are the unit of work for learning-progression inference. Each exported
     StandardsFrameworkItem is normally placed into two independent bucket stores:
 
-    1. a `within_level` bucket, used by within-grade/within-level inference, and
-    2. a `cross_level` bucket, used by cross-grade/cross-stage inference.
+    1. a `within_level` bucket, used by within-level/within-level inference, and
+    2. a `cross_level` bucket, used by cross-level/cross-stage inference.
 
     If the bucket already exists, this function returns it and updates aggregate
     topic-path bookkeeping fields. For within-level fallback buckets, it also preserves
@@ -2581,7 +2582,7 @@ def _group_threads_by_level_and_subject(
         dictionaries, representing the organization of threads by level and subject for
         within-level relatesTo inference. Only buckets that are allowed for
         within-level inference based on the configuration (e.g., single-level buckets
-        if lp_within_grade_allow_banded_levels=False) are included in the output.
+        if lp_within_level_allow_banded_levels=False) are included in the output.
     """
 
     level_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
@@ -2590,7 +2591,7 @@ def _group_threads_by_level_and_subject(
 
     for level_label, level_buckets in by_level.items():
         for b in level_buckets:
-            if not _allow_within_grade_inference(bucket=b, config=config):
+            if not _allow_within_level_inference(bucket=b, config=config):
                 continue
 
             subject = str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
@@ -2599,17 +2600,17 @@ def _group_threads_by_level_and_subject(
     return level_subject_threads
 
 
-def _infer_cross_grade_builds_towards(
+def _infer_cross_level_builds_towards(
     *,
     by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]], set[tuple[UUID, UUID]]]:
-    """Perform Phase 2 inference: Cross-grade/cross-stage buildsTowards relationships
+    """Perform Phase 2 inference: Cross-level/cross-stage buildsTowards relationships
     with optional cross-stage fallback.
 
-    1. If BOTH adjacent buckets represent single grades (low == high), run true
-        cross-grade.
+    1. If BOTH adjacent buckets represent single levels (low == high), run true
+        cross-level.
     2. If EITHER side is banded (low != high) and cross-stage is enabled, run
         cross-stage.
 
@@ -2638,20 +2639,20 @@ def _infer_cross_grade_builds_towards(
     cross_level_build_pairs: set[tuple[UUID, UUID]] = set()
 
     if not (
-        config.lp_cross_grade_builds_towards or config.lp_cross_stage_builds_towards
+        config.lp_cross_level_builds_towards or config.lp_cross_stage_builds_towards
     ):
         return candidates, provenance_rows, cross_level_build_pairs
 
     thread_map = _build_thread_map(by_level)
 
-    # Debug: count unthreaded sentinel buckets that will be excluded from cross-grade
-    # matching because their level-specific sentinels prevent cross-grade pairing.
+    # Debug: count unthreaded sentinel buckets that will be excluded from cross-level
+    # matching because their level-specific sentinels prevent cross-level pairing.
     unthreaded_count = sum(1 for tk in thread_map if tk.startswith("__unthreaded__::"))
 
     if unthreaded_count > 0:
         logger.info(
-            f"Cross-grade matching: {unthreaded_count} unthreaded thread(s) "
-            f"excluded (level-specific sentinel prevents cross-grade pairing)"
+            f"Cross-level matching: {unthreaded_count} unthreaded thread(s) "
+            f"excluded (level-specific sentinel prevents cross-level pairing)"
         )
 
     work_items = _collect_builds_towards_work_items(
@@ -2659,14 +2660,14 @@ def _infer_cross_grade_builds_towards(
     )
 
     total_calls = len(work_items)
-    cross_grade_calls = sum(
-        1 for _, _, _, it, _ in work_items if it == "cross_grade_builds_towards"
+    cross_level_calls = sum(
+        1 for _, _, _, it, _ in work_items if it == "cross_level_builds_towards"
     )
-    cross_stage_calls = total_calls - cross_grade_calls
+    cross_stage_calls = total_calls - cross_level_calls
 
-    if config.lp_cross_grade_builds_towards:
+    if config.lp_cross_level_builds_towards:
         logger.info(
-            f"{cross_grade_calls} adjacent single-grade pairs for cross-grade buildsTowards inference."
+            f"{cross_level_calls} adjacent single-level pairs for cross-level buildsTowards inference."
         )
     if config.lp_cross_stage_builds_towards:
         logger.info(
@@ -2704,15 +2705,15 @@ def _infer_cross_grade_builds_towards(
     return candidates, provenance_rows, cross_level_build_pairs
 
 
-def _infer_cross_grade_relates_to(
+def _infer_cross_level_relates_to(
     *,
     by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     forbidden_builds_pairs: set[tuple[UUID, UUID]],
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 4 inference: Cross-grade/cross-stage relatesTo relationships with optional
-    cross-stage fallback.
+    """Perform Phase 4 inference: Cross-level/cross-stage relatesTo relationships with
+    optional cross-stage fallback.
 
     Parameters
     ----------
@@ -2737,10 +2738,10 @@ def _infer_cross_grade_relates_to(
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
 
-    if not (config.lp_cross_grade_relates_to or config.lp_cross_stage_relates_to):
+    if not (config.lp_cross_level_relates_to or config.lp_cross_stage_relates_to):
         return candidates, provenance_rows
 
-    max_items = int(config.lp_cross_grade_relates_to_max_items_per_subject)
+    max_items = int(config.lp_cross_level_relates_to_max_items_per_subject)
     max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
 
     subject_level_samples = _prepare_subject_level_samples(
@@ -2753,15 +2754,15 @@ def _infer_cross_grade_relates_to(
         config=config, subject_level_samples=subject_level_samples
     )
 
-    cross_grade_calls = sum(
-        1 for w in work_items if w["inference_type"] == "cross_grade_relates_to"
+    cross_level_calls = sum(
+        1 for w in work_items if w["inference_type"] == "cross_level_relates_to"
     )
-    cross_stage_calls = len(work_items) - cross_grade_calls
+    cross_stage_calls = len(work_items) - cross_level_calls
     total_calls = len(work_items) * 2
 
-    if config.lp_cross_grade_relates_to:
+    if config.lp_cross_level_relates_to:
         logger.info(
-            f"{cross_grade_calls} adjacent single-grade pairs for cross-grade relatesTo inference."
+            f"{cross_level_calls} adjacent single-level pairs for cross-level relatesTo inference."
         )
 
     if config.lp_cross_stage_relates_to:
@@ -2825,7 +2826,7 @@ def _infer_within_level_builds_towards(
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
 
-    if not config.lp_within_grade_builds_towards:
+    if not config.lp_within_level_builds_towards:
         return candidates, provenance_rows
 
     # Collect eligible buckets so `total_calls` is exact.
@@ -2833,7 +2834,7 @@ def _infer_within_level_builds_towards(
         (level_label, bucket)
         for level_label, level_buckets in by_level.items()
         for bucket in level_buckets
-        if _allow_within_grade_inference(bucket=bucket, config=config)
+        if _allow_within_level_inference(bucket=bucket, config=config)
         and len(bucket.get("items") or []) >= 2
     ]
     total_calls = len(eligible)
@@ -2841,6 +2842,8 @@ def _infer_within_level_builds_towards(
     logger.info(
         f"{total_calls} buckets with 2+ items for within-level buildsTowards inference."
     )
+
+    inference_type = "within_level_builds_towards"
 
     for current_call, (level_label, bucket) in enumerate(eligible, 1):
         items = bucket["items"]  # Should have at least 2 items due to the filter above
@@ -2853,6 +2856,8 @@ def _infer_within_level_builds_towards(
         ordered_items = [
             _build_item_payload(include_order_index=True, item=item) for item in items
         ]
+        pos = {str(item["sfi_uuid"]): idx for idx, item in enumerate(ordered_items)}
+        allowed = set(pos.keys())
 
         prompt = within_level_builds_towards(
             items=ordered_items,
@@ -2860,16 +2865,12 @@ def _infer_within_level_builds_towards(
             min_confidence=config.lp_builds_towards_min_confidence,
             thread_path=_bucket_topic_context(bucket=bucket),
         )
-
-        pos = {str(it["sfi_uuid"]): idx for idx, it in enumerate(ordered_items)}
-        allowed = set(pos.keys())
-
         response = infer_progression_edges(
             instructions=prompt.system_message,
             usage_tracker=usage_tracker,
             user_message=prompt.user_message,
             validator=partial(
-                validate_within_grade_builds_towards,
+                validate_within_level_builds_towards,
                 allowed_uuids=allowed,
                 min_confidence=config.lp_builds_towards_min_confidence,
                 uuid_positions=pos,
@@ -2881,7 +2882,7 @@ def _infer_within_level_builds_towards(
                 confidence=float(edge.confidence),
                 evidence={"rationale": edge.rationale},
                 inference_source="llm",
-                inference_type="within_grade_builds_towards",
+                inference_type=inference_type,
                 llm_confidence=float(edge.confidence),
                 metadata={
                     "phase": 1,
@@ -2892,7 +2893,7 @@ def _infer_within_level_builds_towards(
                     "topic_path_examples": bucket.get("topic_path_examples"),
                     "topic_path_keys": bucket.get("topic_path_keys"),
                 },
-                rel_type="buildsTowards",
+                rel_type=BUILDS_TOWARDS,
                 source_sfi_uuid=_uuid(edge.source_sfi_uuid),
                 target_sfi_uuid=_uuid(edge.target_sfi_uuid),
             )
@@ -2900,25 +2901,25 @@ def _infer_within_level_builds_towards(
             provenance_rows.append(
                 _make_provenance_row(
                     candidate=candidate_edge,
-                    inference_type="within_grade_builds_towards",
+                    inference_type=inference_type,
                     phase=1,
-                    rationale=edge.rationale,
                     bucket_key=bucket.get("bucket_key"),
+                    rationale=edge.rationale,
                 )
             )
 
     return candidates, provenance_rows
 
 
-def _infer_within_grade_relates_to(
+def _infer_within_level_relates_to(
     *,
     by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 3 inference: Within-grade cross-subject relatesTo relationships.
+    """Perform Phase 3 inference: Within-level cross-subject relatesTo relationships.
 
-    For each grade, compare *subjects* (not within-subject threads) to find
+    For each level, compare *subjects* (not within-subject threads) to find
     cross-curricular connections (i.e., the Coherence Map pattern). Within-subject
     relatesTo is skipped---those connections are lower value and more likely to produce
     noise.
@@ -2943,10 +2944,10 @@ def _infer_within_grade_relates_to(
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
 
-    if not config.lp_within_grade_relates_to:
+    if not config.lp_within_level_relates_to:
         return candidates, provenance_rows
 
-    max_items = int(config.lp_within_grade_relates_to_max_items_per_subject)
+    max_items = int(config.lp_within_level_relates_to_max_items_per_subject)
     max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
 
     # NB: Phase 3 does NOT exclude forbidden buildsTowards pairs (unlike Phase 4). This
@@ -3022,7 +3023,7 @@ def _infer_within_grade_relates_to(
         )
 
     logger.info(
-        f"{total_pairs} within-grade cross-subject pairs for relatesTo inference "
+        f"{total_pairs} within-level cross-subject pairs for relatesTo inference "
         f"(bidirectional confirmation => {total_calls} LLM calls)."
     )
 
@@ -3046,10 +3047,10 @@ def _infer_within_grade_relates_to(
 
         # Bidirectional confirmation: run A x B and B x A, then keep only edges that
         # appear in both runs (canonicalized by UUID order).
-        prompt_ab = within_grade_relates_to(
-            grade_label=str(level_label),
+        prompt_ab = within_level_relates_to(
             items_a=items_a,
             items_b=items_b,
+            level_label=str(level_label),
             max_edges_per_sfi=max_edges_per_sfi,
             min_confidence=config.lp_relates_to_min_confidence,
             subject_label=f"{subject_a} × {subject_b}",
@@ -3071,16 +3072,16 @@ def _infer_within_grade_relates_to(
             usage_tracker=usage_tracker,
             user_message=prompt_ab.user_message,
             validator=partial(
-                validate_within_grade_relates_to,
+                validate_within_level_relates_to,
                 allowed_uuids_a=allowed_a,
                 allowed_uuids_b=allowed_b,
             ),
         )
 
-        prompt_ba = within_grade_relates_to(
-            grade_label=str(level_label),
+        prompt_ba = within_level_relates_to(
             items_a=items_b,
             items_b=items_a,
+            level_label=str(level_label),
             max_edges_per_sfi=max_edges_per_sfi,
             min_confidence=config.lp_relates_to_min_confidence,
             subject_label=f"{subject_b} × {subject_a}",
@@ -3102,7 +3103,7 @@ def _infer_within_grade_relates_to(
             usage_tracker=usage_tracker,
             user_message=prompt_ba.user_message,
             validator=partial(
-                validate_within_grade_relates_to,
+                validate_within_level_relates_to,
                 allowed_uuids_a=allowed_b,
                 allowed_uuids_b=allowed_a,
             ),
@@ -3126,7 +3127,7 @@ def _infer_within_grade_relates_to(
                     "bidirectional_confirmed": True,
                 },
                 inference_source="llm",
-                inference_type="within_grade_cross_subject_relates_to",
+                inference_type="within_level_cross_subject_relates_to",
                 llm_confidence=float(conf),
                 metadata={
                     "phase": 3,
@@ -3135,7 +3136,7 @@ def _infer_within_grade_relates_to(
                     "subject_b": subject_b,
                     "bidirectional_confirmed": True,
                 },
-                rel_type="relatesTo",
+                rel_type=RELATES_TO,
                 source_sfi_uuid=_uuid(u_a),
                 target_sfi_uuid=_uuid(u_b),
             )
@@ -3143,14 +3144,14 @@ def _infer_within_grade_relates_to(
             provenance_rows.append(
                 _make_provenance_row(
                     candidate=ce,
-                    inference_type="within_grade_cross_subject_relates_to",
+                    inference_type="within_level_cross_subject_relates_to",
                     phase=3,
                     bidirectional_confirmed=True,
                     confidence_fwd=float(conf_ab),
                     confidence_rev=float(conf_ba),
+                    level_label=level_label,
                     rationale_fwd=rat_ab,
                     rationale_rev=rat_ba,
-                    grade_label=level_label,
                     subject_a=subject_a,
                     subject_b=subject_b,
                 )
@@ -3159,20 +3160,19 @@ def _infer_within_grade_relates_to(
     return candidates, provenance_rows
 
 
-def _is_single_grade_bucket(bucket: dict[str, Any]) -> bool:
-    """Determine if a bucket corresponds to a single grade level based on its grade
-    ordinal.
+def _is_single_level_bucket(bucket: dict[str, Any]) -> bool:
+    """Determine if a bucket corresponds to a single level based on its level ordinal.
 
     Parameters
     ----------
     bucket
-        A bucket dictionary that may contain grade ordinal information.
+        A bucket dictionary that may contain level ordinal information.
 
     Returns
     -------
     bool
-        True if the bucket corresponds to a single grade level (i.e., low and high
-        ordinals are both integers and equal), False otherwise.
+        True if the bucket corresponds to a single level (i.e., low and high ordinals
+        are both integers and equal), False otherwise.
     """
 
     lo, hi = _level_bounds(bucket)
@@ -3292,7 +3292,7 @@ def _limit_relates_to_edges_per_sfi(
     max_edges_per_sfi
         The maximum number of relatesTo edges to allow per SFI (undirected cap). Must
         be >= 1. To disable relatesTo inference, use the phase toggles
-        (lp_within_grade_relates_to/lp_cross_grade_relates_to).
+        (lp_within_level_relates_to/lp_cross_level_relates_to).
 
     Returns
     -------
@@ -3386,7 +3386,7 @@ def _make_provenance_row(
     """Build a provenance row from a CandidateEdge plus phase-specific extras.
 
     This is the single source of truth for the common fields present in every
-    provenance row. Phase-specific fields (e.g., rationale, grade labels, bidirectional
+    provenance row. Phase-specific fields (e.g., rationale, level labels, bidirectional
     confirmation flags) are passed as keyword arguments.
 
     Parameters
@@ -3394,7 +3394,7 @@ def _make_provenance_row(
     candidate
         The CandidateEdge that produced this row.
     inference_type
-        The inference type string (e.g., `"within_grade_builds_towards"`).
+        The inference type string (e.g., `"within_level_builds_towards"`).
     phase
         The numeric phase identifier (1–4).
     **extra
@@ -3407,19 +3407,19 @@ def _make_provenance_row(
     """
 
     row: dict[str, Any] = {
-        "phase": phase,
+        "confidence": candidate.confidence,
         "inference_type": inference_type,
+        "phase": phase,
         "rel_type": candidate.rel_type,
         "source": str(candidate.source_sfi_uuid),
         "target": str(candidate.target_sfi_uuid),
-        "confidence": candidate.confidence,
     }
     row.update(extra)
     return row
 
 
 def _normalize_level_label_key(value: Any) -> str:
-    """Normalize a grade/stage label for LP level-label map lookup.
+    """Normalize a level/stage label for LP level-label map lookup.
 
     The normalization is intentionally lighter than `normalize_key_token()` because
     `lp_level_label_map` keys should remain human-recognizable. It converts the value
@@ -3430,7 +3430,7 @@ def _normalize_level_label_key(value: Any) -> str:
     Parameters
     ----------
     value
-        Raw grade or stage label to normalize.
+        Raw level or stage label to normalize.
 
     Returns
     -------
@@ -3653,8 +3653,8 @@ def _process_and_filter_candidates(
         candidates
     )
 
-    builds_candidates = [e for e in candidates if e.rel_type == "buildsTowards"]
-    relates_candidates = [e for e in candidates if e.rel_type == "relatesTo"]
+    builds_candidates = [e for e in candidates if e.rel_type == BUILDS_TOWARDS]
+    relates_candidates = [e for e in candidates if e.rel_type == RELATES_TO]
 
     # Confidence thresholds.
     builds_kept = [
@@ -3668,7 +3668,7 @@ def _process_and_filter_candidates(
         if e.confidence < config.lp_builds_towards_min_confidence
     ]
 
-    # Enforce within-grade directionality using the exporter-derived document order.
+    # Enforce within-level directionality using the exporter-derived document order.
     # The LLM is prompted with items in (supposed) curriculum order and validators
     # enforce directionality relative to the presented list. If the list is misordered,
     # directionality can be inverted even when the model follows instructions. This
@@ -3682,7 +3682,7 @@ def _process_and_filter_candidates(
         non_phase_1 = [e for e in builds_kept if int(e.metadata.get("phase") or 0) != 1]
 
         phase_1_kept, builds_dropped_doc_order = (
-            _filter_builds_towards_within_grade_order(
+            _filter_builds_towards_within_level_order(
                 edges=phase_1, within_sfi_index=within_sfi_index
             )
         )
@@ -3810,7 +3810,7 @@ def _process_builds_towards_work_item(
     config
         The knowledge graph run configuration.
     inference_type
-        The type of inference being executed (cross-grade or cross-stage).
+        The type of inference being executed (cross-level or cross-stage).
     prompt_builder
         The function used to build the LLM prompt.
     thread_key
@@ -3849,12 +3849,12 @@ def _process_builds_towards_work_item(
 
     prompt = prompt_builder(
         lower_items=lower_payload,
-        lower_grade_label=lo_label,
+        lower_level_label=lo_label,
         min_confidence=config.lp_builds_towards_min_confidence,
         thread_key=thread_key,
         thread_path=_bucket_topic_context(bucket=b_hi),
-        upper_grade_label=hi_label,
         upper_items=upper_payload,
+        upper_level_label=hi_label,
     )
 
     allowed_lo = {str(it["sfi_uuid"]) for it in lower_payload}
@@ -3865,7 +3865,7 @@ def _process_builds_towards_work_item(
         usage_tracker=usage_tracker,
         user_message=prompt.user_message,
         validator=partial(
-            validate_cross_grade_builds_towards,
+            validate_cross_level_builds_towards,
             allowed_lo=allowed_lo,
             allowed_hi=allowed_hi,
         ),
@@ -3893,7 +3893,7 @@ def _process_builds_towards_work_item(
                 "topic_path_keys_upper": b_hi.get("topic_path_keys"),
                 "subject_label": b_hi.get("subject_label"),
             },
-            rel_type="buildsTowards",
+            rel_type=BUILDS_TOWARDS,
             source_sfi_uuid=_uuid(e.source_sfi_uuid),
             target_sfi_uuid=_uuid(e.target_sfi_uuid),
         )
@@ -3902,7 +3902,7 @@ def _process_builds_towards_work_item(
         # Only record as a forbidden pair for Phase 4 relatesTo exclusion when the edge
         # meets the confidence threshold. Sub-threshold edges will be dropped during
         # post-processing, so forbidding their relatesTo counterparts would
-        # unnecessarily suppress valid cross-grade associations.
+        # unnecessarily suppress valid cross-level associations.
         if ce.confidence >= config.lp_builds_towards_min_confidence:
             cross_level_build_pairs.add((ce.source_sfi_uuid, ce.target_sfi_uuid))
 
@@ -3950,16 +3950,16 @@ def _process_relates_to_work_item(
     forbidden_builds_pairs
         A set of UUID tuples representing buildsTowards relationships to exclude.
     hi_high
-        The upper bound integer of the higher grade level.
+        The upper bound integer of the higher level.
     hi_low
-        The lower bound integer of the higher grade level.
+        The lower bound integer of the higher level.
     inference_type
-        The type of inference being executed ("cross_grade_relates_to" or
+        The type of inference being executed ("cross_level_relates_to" or
         "cross_stage_relates_to").
     lo_high
-        The upper bound integer of the lower grade level.
+        The upper bound integer of the lower level.
     lo_low
-        The lower bound integer of the lower grade level.
+        The lower bound integer of the lower level.
     lower
         The lower-level bucket dictionary containing items and labels.
     max_edges_per_sfi
@@ -3999,10 +3999,10 @@ def _process_relates_to_work_item(
     # Call 1: lower -> upper.
     prompt_lo_hi = prompt_builder(
         forbidden_pairs=forbidden_pairs,
-        list_a_grade_label=str(lower["level_label"]),
         list_a_items=lower_items,
-        list_b_grade_label=str(upper["level_label"]),
+        list_a_level_label=str(lower["level_label"]),
         list_b_items=upper_items,
+        list_b_level_label=str(upper["level_label"]),
         max_edges_per_sfi=max_edges_per_sfi,
         min_confidence=config.lp_relates_to_min_confidence,
         subject_label=subject_label,
@@ -4020,7 +4020,7 @@ def _process_relates_to_work_item(
         usage_tracker=usage_tracker,
         user_message=prompt_lo_hi.user_message,
         validator=partial(
-            validate_cross_grade_relates_to,
+            validate_cross_level_relates_to,
             allowed_lo={str(it["sfi_uuid"]) for it in lower_items},
             allowed_hi={str(it["sfi_uuid"]) for it in upper_items},
             forbidden_pairs=forbidden_pairs_set,
@@ -4030,13 +4030,13 @@ def _process_relates_to_work_item(
     # Call 2: upper -> lower (reverse presentation order for bidirectional
     # confirmation). We swap BOTH items and labels so the LLM sees a self-consistent
     # view. The neutral "List A"/"List B" names in the prompt avoid the semantic
-    # confusion of calling upper-grade items "lower".
+    # confusion of calling upper-level items "lower".
     prompt_hi_lo = prompt_builder(
         forbidden_pairs=forbidden_pairs,
-        list_a_grade_label=str(upper["level_label"]),
         list_a_items=upper_items,
-        list_b_grade_label=str(lower["level_label"]),
+        list_a_level_label=str(upper["level_label"]),
         list_b_items=lower_items,
+        list_b_level_label=str(lower["level_label"]),
         max_edges_per_sfi=max_edges_per_sfi,
         min_confidence=config.lp_relates_to_min_confidence,
         subject_label=subject_label,
@@ -4054,7 +4054,7 @@ def _process_relates_to_work_item(
         usage_tracker=usage_tracker,
         user_message=prompt_hi_lo.user_message,
         validator=partial(
-            validate_cross_grade_relates_to,
+            validate_cross_level_relates_to,
             allowed_lo={str(it["sfi_uuid"]) for it in upper_items},
             allowed_hi={str(it["sfi_uuid"]) for it in lower_items},
             forbidden_pairs=forbidden_pairs_set,
@@ -4093,7 +4093,7 @@ def _process_relates_to_work_item(
                 "upper_level_low": hi_low,
                 "upper_level_high": hi_high,
             },
-            rel_type="relatesTo",
+            rel_type=RELATES_TO,
             source_sfi_uuid=_uuid(a),
             target_sfi_uuid=_uuid(b),
         )
@@ -4139,8 +4139,8 @@ def _process_single_standard(
         filters. This lets broad structural competency statements remain in the
         Academic Standards KG while being excluded from LP inference.
     2. **Level bounds** are resolved primarily from ordinals in `progression_context`
-        (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
-        we fall back to `config.lp_level_label_map` using `grade_key` or `stage_key`.
+        (`level_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
+        we fall back to `config.lp_level_label_map` using `level_key` or `stage_key`.
     3. **Subject label** is resolved via `config.lp_subject_role`. Items without a
         matching role get `UNSPECIFIED_SUBJECT`.
     4. **Within-level bucket key** uses `config.lp_within_level_bucket_roles`, with
@@ -4265,7 +4265,7 @@ def _process_single_standard(
         )
         return
 
-    # Level validation (grade or stage).
+    # Level validation (level or stage).
     level_data = _resolve_level_ordinals(
         drops=drops,
         normalized_level_label_map=normalized_level_label_map,
@@ -4581,7 +4581,7 @@ def _resolve_canonical_order_path_to_indices(
 
     So complete numeric order paths win; page/bbox position is only a fallback.
 
-    Second, it lets the exporter reject bad within-grade buildsTowards edges that go
+    Second, it lets the exporter reject bad within-level buildsTowards edges that go
     backward. The reverse-edge filter compares `numeric_order_path` when both source
     and target have complete paths; only if that fails does it fall back to provenance
     position (page_index, bbox_y0).
@@ -4768,11 +4768,11 @@ def _resolve_forbidden_pairs(
         step.
     lower_items
         A list of dictionaries representing the Standards Framework Items (SFIs) in the
-        lower grade level bucket for the current iteration. Each dictionary contains
+        lower level bucket for the current iteration. Each dictionary contains
         information about an SFI, including its UUID and other relevant fields.
     upper_items
         A list of dictionaries representing the Standards Framework Items (SFIs) in the
-        upper grade level bucket for the current iteration. Each dictionary contains
+        upper level bucket for the current iteration. Each dictionary contains
         information about an SFI, including its UUID and other relevant fields.
 
     Returns
@@ -4831,7 +4831,7 @@ def _resolve_level_ordinals(
 
     Examples
     --------
-    1. Explicit single-grade ordinals from Academic Standards export
+    1. Explicit single-level ordinals from Academic Standards export
 
         For the Senegal CE1 reading curriculum, `as_default_level_context` may write a
         document-level grade context into each expectation SFI:
@@ -4849,7 +4849,7 @@ def _resolve_level_ordinals(
 
             (1, 1, "CE1", "ce1", "grade_ordinals")
 
-        This is the normal path for single-grade PDFs when the Academic Standards
+        This is the normal path for single-level PDFs when the Academic Standards
         export has already populated `metadata.progression_context`.
 
     2. Explicit grade band
@@ -5159,7 +5159,7 @@ def _resolve_subject_label(
 
             "communication écrite - production d'écrits"
 
-        This lets LP Phase 3 treat strands as subject-like buckets for within-grade
+        This lets LP Phase 3 treat strands as subject-like buckets for within-level
         cross-strand `relatesTo` inference.
 
     2. Explicit subject role returns the first matching role
@@ -5736,21 +5736,21 @@ def export_learning_progressions(
     provenance_rows.extend(p1_prov)
 
     # Phase 2: Cross-level buildsTowards.
-    p2_candidates, p2_prov, cross_level_build_pairs = _infer_cross_grade_builds_towards(
+    p2_candidates, p2_prov, cross_level_build_pairs = _infer_cross_level_builds_towards(
         by_level=by_cross_level, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p2_candidates)
     provenance_rows.extend(p2_prov)
 
     # Phase 3: Within-level relatesTo.
-    p3_candidates, p3_prov = _infer_within_grade_relates_to(
+    p3_candidates, p3_prov = _infer_within_level_relates_to(
         by_level=by_within_level, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p3_candidates)
     provenance_rows.extend(p3_prov)
 
     # Phase 4: Cross-level relatesTo.
-    p4_candidates, p4_prov = _infer_cross_grade_relates_to(
+    p4_candidates, p4_prov = _infer_cross_level_relates_to(
         by_level=by_cross_level,
         config=config,
         forbidden_builds_pairs=cross_level_build_pairs,

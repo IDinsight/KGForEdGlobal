@@ -295,19 +295,19 @@ def validate_atomic_skills(
     )
 
 
-def validate_cross_grade_builds_towards(
+def validate_cross_level_builds_towards(
     response: ProgressionEdgesResponse, allowed_lo: set[str], allowed_hi: set[str]
 ) -> None:
-    """Validate cross-grade buildsTowards.
+    """Validate cross-level buildsTowards.
 
     Parameters
     ----------
     response
         The response containing the buildsTowards edges to validate.
     allowed_lo
-        The set of allowed source SFI UUIDs (must be in LOWER grade list).
+        The set of allowed source SFI UUIDs (must be in LOWER level list).
     allowed_hi
-        The set of allowed target SFI UUIDs (must be in UPPER grade list).
+        The set of allowed target SFI UUIDs (must be in UPPER level list).
 
     Raises
     ------
@@ -320,33 +320,33 @@ def validate_cross_grade_builds_towards(
     for e in response.edges:
         if e.source_sfi_uuid not in allowed_lo:
             raise QualityError(
-                "Cross-grade buildsTowards source must be in LOWER grade list."
+                "Cross-level buildsTowards source must be in LOWER level list."
             )
         if e.target_sfi_uuid not in allowed_hi:
             raise QualityError(
-                "Cross-grade buildsTowards target must be in UPPER grade list."
+                "Cross-level buildsTowards target must be in UPPER level list."
             )
         if e.source_sfi_uuid == e.target_sfi_uuid:
             raise QualityError("Self-edge is not allowed.")
 
 
-def validate_cross_grade_relates_to(
+def validate_cross_level_relates_to(
     response: ProgressionEdgesResponse,
     allowed_lo: set[str],
     allowed_hi: set[str],
     forbidden_pairs: set[tuple[str, str]],
 ) -> None:
-    """Validate cross-grade relatesTo edges. Ensures edges connect items between
-    adjacent grades and do not duplicate existing buildsTowards relationships.
+    """Validate cross-level relatesTo edges. Ensures edges connect items between
+    adjacent levels and do not duplicate existing buildsTowards relationships.
 
     Parameters
     ----------
     response
         The response containing the relatesTo edges to validate.
     allowed_lo
-        The set of allowed SFI UUIDs for the lower grade.
+        The set of allowed SFI UUIDs for the lower level.
     allowed_hi
-        The set of allowed SFI UUIDs for the upper grade.
+        The set of allowed SFI UUIDs for the upper level.
     forbidden_pairs
         The set of undirected (uuid_a, uuid_b) pairs that are not allowed (e.g.,
         because they already have a buildsTowards relationship). Pairs are
@@ -355,7 +355,7 @@ def validate_cross_grade_relates_to(
     Raises
     ------
     QualityError
-        If edges are self-referential, fail to cross grades, or are forbidden.
+        If edges are self-referential, fail to cross levels, or are forbidden.
     """
 
     _check_common_edge_invariants(directed=False, response=response)
@@ -372,8 +372,8 @@ def validate_cross_grade_relates_to(
         # Valid scenarios: (Src in Low AND Tgt in High) OR (Src in High AND Tgt in Low)
         if not ((in_lo_src and in_hi_tgt) or (in_hi_src and in_lo_tgt)):
             raise QualityError(
-                "Cross-grade relatesTo must connect one lower-grade and one "
-                "upper-grade item."
+                "Cross-level relatesTo must connect one lower-level and one "
+                "upper-level item."
             )
 
         # Treat forbidden_pairs as undirected (canonicalized pairs).
@@ -383,13 +383,13 @@ def validate_cross_grade_relates_to(
             raise QualityError("Edge is in forbidden_pairs (already buildsTowards).")
 
 
-def validate_within_grade_builds_towards(
+def validate_within_level_builds_towards(
     response: ProgressionEdgesResponse,
     allowed_uuids: set[str],
     min_confidence: float,
     uuid_positions: dict[str, int],
 ) -> None:
-    """Validate within-grade buildsTowards edges against constraints.
+    """Validate within-level buildsTowards edges against constraints.
 
     Parameters
     ----------
@@ -425,7 +425,7 @@ def validate_within_grade_builds_towards(
 
         if float(e.confidence) < min_confidence:
             raise QualityError(
-                f"Within-grade buildsTowards edge confidence {float(e.confidence):.3f} "
+                f"Within-level buildsTowards edge confidence {float(e.confidence):.3f} "
                 f"is below the configured minimum {min_confidence:.3f}. Omit this edge or "
                 f"return it with a justified confidence at or above the threshold."
             )
@@ -433,16 +433,16 @@ def validate_within_grade_builds_towards(
         # Ensure the source appears before the target in the original list.
         if uuid_positions[e.source_sfi_uuid] >= uuid_positions[e.target_sfi_uuid]:
             raise QualityError(
-                "Within-grade buildsTowards must follow the provided order."
+                "Within-level buildsTowards must follow the provided order."
             )
 
 
-def validate_within_grade_relates_to(
+def validate_within_level_relates_to(
     response: ProgressionEdgesResponse,
     allowed_uuids_a: set[str],
     allowed_uuids_b: set[str],
 ) -> None:
-    """Validate within-grade relatesTo edges. Ensures edges connect items across the
+    """Validate within-level relatesTo edges. Ensures edges connect items across the
     two distinct threads provided.
 
     Parameters
@@ -491,5 +491,5 @@ def validate_within_grade_relates_to(
         # A).
         if not ((src_in_a and tgt_in_b) or (src_in_b and tgt_in_a)):
             raise QualityError(
-                "Within-grade relatesTo must connect one item from each thread."
+                "Within-level relatesTo must connect one item from each thread."
             )

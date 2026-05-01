@@ -37,43 +37,43 @@ def _builds_towards_confidence_guidance(min_confidence: float) -> str:
 
 def _builds_towards_cross_level(
     *,
-    lower_grade_label: str,
     lower_items: list[dict[str, Any]],
+    lower_level_label: str,
     min_confidence: float,
     note_suffix: str = "",
     task_description: str,
     task_label: str,
     thread_key: str,
     thread_path: str,
-    upper_grade_label: str,
     upper_items: list[dict[str, Any]],
+    upper_level_label: str,
 ) -> PromptPair:
-    """Shared implementation for cross-grade and cross-stage buildsTowards prompts.
+    """Shared implementation for cross-level and cross-stage buildsTowards prompts.
 
     Parameters
     ----------
-    lower_grade_label
-        The label of the lower grade (e.g., "Grade 3").
     lower_items
-        The list of items from the lower grade.
+        The list of items from the lower level.
+    lower_level_label
+        The label of the lower level (e.g., "Grade 3").
     min_confidence
         The minimum confidence threshold from the config; edges below this should be
         omitted.
     note_suffix
         Optional text appended to the system message (e.g., banded-stage notes).
     task_description
-        The description sentence for the TASK header (varies by grade vs stage).
+        The description sentence for the TASK header (varies by level vs. stage).
     task_label
-        The task label for the TASK header (e.g., "Cross-Grade" or "Cross-Stage").
+        The task label for the TASK header (e.g., "Cross-Level" or "Cross-Stage").
     thread_key
         The normalized thread key for context (e.g., "math_geometry_shapes").
     thread_path
         The human-readable thread path for context (e.g., "Mathematics > Geometry >
         Shapes").
-    upper_grade_label
-        The label of the upper grade (e.g., "Grade 4").
     upper_items
-        The list of items from the upper grade.
+        The list of items from the upper level.
+    upper_level_label
+        The label of the upper level (e.g., "Grade 4").
 
     Returns
     -------
@@ -88,11 +88,11 @@ def _builds_towards_cross_level(
 
 TASK ({task_label} buildsTowards):
 {task_description}
-Decide which lower-grade items are meaningful prerequisites for upper-grade items.
+Decide which lower-level items are meaningful prerequisites for upper-level items.
 
 HARD RULES:
 1. Use ONLY the provided items. Do NOT invent new items.
-2. Direction constraint: source MUST be from the LOWER grade list, target MUST be from the UPPER grade list.
+2. Direction constraint: source MUST be from the LOWER level list, target MUST be from the UPPER level list.
 3. Do NOT emit "obvious but weak" links. Only emit when the lower item truly builds foundation.
 4. Prefer fewer, higher-quality edges.
 
@@ -105,12 +105,12 @@ HARD RULES:
 
     user_message = json.dumps(
         {
-            "lower_grade_label": lower_grade_label,
-            "upper_grade_label": upper_grade_label,
+            "lower_level_label": lower_level_label,
+            "upper_level_label": upper_level_label,
             "thread_key": thread_key,
             "thread_path": thread_path,
-            "lower_grade_items": lower_items,
-            "upper_grade_items": upper_items,
+            "lower_level_items": lower_items,
+            "upper_level_items": upper_items,
         },
         ensure_ascii=False,
         separators=(",", ":"),  # Remove spaces after commas/colons
@@ -147,10 +147,10 @@ def _relates_to_confidence_guidance(min_confidence: float) -> str:
 def _relates_to_cross_level(
     *,
     forbidden_pairs: list[dict[str, str]],
-    list_a_grade_label: str,
     list_a_items: list[dict[str, Any]],
-    list_b_grade_label: str,
+    list_a_level_label: str,
     list_b_items: list[dict[str, Any]],
+    list_b_level_label: str,
     max_edges_per_sfi: int,
     min_confidence: float,
     note_suffix: str = "",
@@ -158,7 +158,7 @@ def _relates_to_cross_level(
     task_description: str,
     task_label: str,
 ) -> PromptPair:
-    """Shared implementation for cross-grade and cross-stage relatesTo prompts.
+    """Shared implementation for cross-level and cross-stage relatesTo prompts.
 
     Uses neutral "List A"/"List B" positional names so that bidirectional confirmation
     can swap items *and* labels without creating a semantic contradiction in the prompt.
@@ -168,14 +168,14 @@ def _relates_to_cross_level(
     forbidden_pairs
         A list of item pairs (dicts with "a_sfi_uuid" and "b_sfi_uuid") that are
         already connected by buildsTowards and MUST NOT be returned as relatesTo.
-    list_a_grade_label
-        The grade/level label for the items in List A (e.g., "Grade 3").
     list_a_items
         The list of items for List A.
-    list_b_grade_label
-        The grade/level label for the items in List B (e.g., "Grade 4").
+    list_a_level_label
+        The level label for the items in List A (e.g., "Grade 3").
     list_b_items
         The list of items for List B.
+    list_b_level_label
+        The level label for the items in List B (e.g., "Grade 4").
     max_edges_per_sfi
         A soft cap on the number of relatesTo edges per item to keep the graph sparse.
     min_confidence
@@ -186,9 +186,9 @@ def _relates_to_cross_level(
     subject_label
         The subject label for context (e.g., "Mathematics").
     task_description
-        The description sentence for the TASK header (varies by grade vs stage).
+        The description sentence for the TASK header (varies by level vs. stage).
     task_label
-        The task label for the TASK header (e.g., "Cross-Grade" or "Cross-Stage").
+        The task label for the TASK header (e.g., "Cross-Level" or "Cross-Stage").
 
     Returns
     -------
@@ -203,7 +203,7 @@ def _relates_to_cross_level(
 
 TASK ({task_label} relatesTo):
 {task_description}
-List A contains standards from {list_a_grade_label}. List B contains standards from {list_b_grade_label}.
+List A contains standards from {list_a_level_label}. List B contains standards from {list_b_level_label}.
 Some pairs are already connected by buildsTowards and MUST NOT be returned.
 For the remaining possibilities, decide which cross-list item pairs are conceptually related (shared concept), but NOT a prerequisite chain.
 
@@ -225,8 +225,8 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
 
     user_message = json.dumps(
         {
-            "list_a_grade_label": list_a_grade_label,
-            "list_b_grade_label": list_b_grade_label,
+            "list_a_level_label": list_a_level_label,
+            "list_b_level_label": list_b_level_label,
             "subject_label": subject_label,
             "forbidden_pairs": forbidden_pairs,
             "list_a_items": list_a_items,
@@ -241,24 +241,24 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
     )
 
 
-def cross_grade_builds_towards(
+def cross_level_builds_towards(
     *,
-    lower_grade_label: str,
     lower_items: list[dict[str, Any]],
+    lower_level_label: str,
     min_confidence: float,
     thread_key: str,
     thread_path: str,
-    upper_grade_label: str,
     upper_items: list[dict[str, Any]],
+    upper_level_label: str,
 ) -> PromptPair:
-    """Cross-grade buildsTowards between adjacent grades within a normalized thread.
+    """Cross-level buildsTowards between adjacent levels within a normalized thread.
 
     Parameters
     ----------
-    lower_grade_label
-        The label of the lower grade (e.g., "Grade 3").
     lower_items
-        The list of items from the lower grade.
+        The list of items from the lower level.
+    lower_level_label
+        The label of the lower level (e.g., "Grade 3").
     min_confidence
         The minimum confidence threshold from the config; edges below this should be
         omitted.
@@ -267,10 +267,10 @@ def cross_grade_builds_towards(
     thread_path
         The human-readable thread path for context (e.g., "Mathematics > Geometry >
         Shapes").
-    upper_grade_label
-        The label of the upper grade (e.g., "Grade 4").
     upper_items
-        The list of items from the upper grade.
+        The list of items from the upper level.
+    upper_level_label
+        The label of the upper level (e.g., "Grade 4").
 
     Returns
     -------
@@ -279,33 +279,33 @@ def cross_grade_builds_towards(
     """
 
     return _builds_towards_cross_level(
-        lower_grade_label=lower_grade_label,
         lower_items=lower_items,
+        lower_level_label=lower_level_label,
         min_confidence=min_confidence,
         task_description=(
-            "You will receive standards from two ADJACENT grades that belong to "
+            "You will receive standards from two ADJACENT levels that belong to "
             "the SAME conceptual thread."
         ),
-        task_label="Cross-Grade",
+        task_label="Cross-Level",
         thread_key=thread_key,
         thread_path=thread_path,
-        upper_grade_label=upper_grade_label,
         upper_items=upper_items,
+        upper_level_label=upper_level_label,
     )
 
 
-def cross_grade_relates_to(
+def cross_level_relates_to(
     *,
     forbidden_pairs: list[dict[str, str]],
-    list_a_grade_label: str,
     list_a_items: list[dict[str, Any]],
-    list_b_grade_label: str,
+    list_a_level_label: str,
     list_b_items: list[dict[str, Any]],
+    list_b_level_label: str,
     max_edges_per_sfi: int,
     min_confidence: float,
     subject_label: str,
 ) -> PromptPair:
-    """Cross-grade relatesTo between adjacent grades (same subject) excluding
+    """Cross-level relatesTo between adjacent levels (same subject) excluding
     buildsTowards pairs.
 
     Parameters
@@ -313,14 +313,14 @@ def cross_grade_relates_to(
     forbidden_pairs
         A list of item pairs (dicts with "a_sfi_uuid" and "b_sfi_uuid") that are
         already connected by buildsTowards and MUST NOT be returned as relatesTo.
-    list_a_grade_label
-        The grade label for the items in List A (e.g., "Grade 3").
     list_a_items
         The list of items for List A.
-    list_b_grade_label
-        The grade label for the items in List B (e.g., "Grade 4").
+    list_a_level_label
+        The level label for the items in List A (e.g., "Grade 3").
     list_b_items
         The list of items for List B.
+    list_b_level_label
+        The level label for the items in List B (e.g., "Grade 4").
     max_edges_per_sfi
         A soft cap on the number of relatesTo edges per item to keep the graph sparse.
     min_confidence
@@ -337,29 +337,29 @@ def cross_grade_relates_to(
 
     return _relates_to_cross_level(
         forbidden_pairs=forbidden_pairs,
-        list_a_grade_label=list_a_grade_label,
         list_a_items=list_a_items,
-        list_b_grade_label=list_b_grade_label,
+        list_a_level_label=list_a_level_label,
         list_b_items=list_b_items,
+        list_b_level_label=list_b_level_label,
         max_edges_per_sfi=max_edges_per_sfi,
         min_confidence=min_confidence,
         subject_label=subject_label,
         task_description=(
-            "You will receive two lists of standards from ADJACENT grades in the SAME subject."
+            "You will receive two lists of standards from ADJACENT levels in the SAME subject."
         ),
-        task_label="Cross-Grade",
+        task_label="Cross-Level",
     )
 
 
 def cross_stage_builds_towards(
     *,
-    lower_grade_label: str,
     lower_items: list[dict[str, Any]],
+    lower_level_label: str,
     min_confidence: float,
     thread_key: str,
     thread_path: str,
-    upper_grade_label: str,
     upper_items: list[dict[str, Any]],
+    upper_level_label: str,
 ) -> PromptPair:
     """Cross-stage buildsTowards between adjacent *level ranges* within a normalized
     thread.
@@ -370,22 +370,22 @@ def cross_stage_builds_towards(
 
     Parameters
     ----------
-    lower_grade_label
-        The label of the lower grade (e.g., "Grade 3").
     lower_items
         The list of items from the lower grade.
+    lower_level_label
+        The label of the lower level (e.g., "Grade 3").
     min_confidence
         The minimum confidence threshold from the config; passed through to the
-        underlying cross-grade prompt.
+        underlying cross-level prompt.
     thread_key
         The normalized thread key for context (e.g., "math_geometry_shapes").
     thread_path
         The human-readable thread path for context (e.g., "Mathematics > Geometry >
         Shapes").
-    upper_grade_label
-        The label of the upper grade (e.g., "Grade 5").
     upper_items
-        The list of items from the upper grade.
+        The list of items from the upper level.
+    upper_level_label
+        The label of the upper level (e.g., "Grade 5").
 
     Returns
     -------
@@ -394,34 +394,34 @@ def cross_stage_builds_towards(
     """
 
     return _builds_towards_cross_level(
-        lower_grade_label=lower_grade_label,
         lower_items=lower_items,
+        lower_level_label=lower_level_label,
         min_confidence=min_confidence,
         note_suffix=(
             "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), "
-            "not single grades. Treat this as adjacent level *ranges*; do not invent "
-            "per-grade steps and do not assume missing intermediate grades beyond what "
+            "not single levels. Treat this as adjacent level *ranges*; do not invent "
+            "per-level steps and do not assume missing intermediate levels beyond what "
             "is provided."
         ),
         task_description=(
             "You will receive standards from two ADJACENT level ranges (each may be a "
-            "single grade or a banded stage) that belong to the SAME conceptual thread."
+            "single level or a banded stage) that belong to the SAME conceptual thread."
         ),
         task_label="Cross-Stage",
         thread_key=thread_key,
         thread_path=thread_path,
-        upper_grade_label=upper_grade_label,
         upper_items=upper_items,
+        upper_level_label=upper_level_label,
     )
 
 
 def cross_stage_relates_to(
     *,
     forbidden_pairs: list[dict[str, str]],
-    list_a_grade_label: str,
     list_a_items: list[dict[str, Any]],
-    list_b_grade_label: str,
+    list_a_level_label: str,
     list_b_items: list[dict[str, Any]],
+    list_b_level_label: str,
     max_edges_per_sfi: int,
     min_confidence: float,
     subject_label: str,
@@ -437,19 +437,19 @@ def cross_stage_relates_to(
     forbidden_pairs
         A list of item pairs (dicts with "a_sfi_uuid" and "b_sfi_uuid") that are
         already connected by buildsTowards and MUST NOT be returned as relatesTo.
-    list_a_grade_label
-        The grade/level label for the items in List A (e.g., "Grade 3").
     list_a_items
         The list of items for List A.
-    list_b_grade_label
-        The grade/level label for the items in List B (e.g., "Grade 5").
+    list_a_level_label
+        The level label for the items in List A (e.g., "Grade 3").
     list_b_items
         The list of items for List B.
+    list_b_level_label
+        The level label for the items in List B (e.g., "Grade 5").
     max_edges_per_sfi
         A soft cap on the number of relatesTo edges per item to keep the graph sparse.
     min_confidence
         The minimum confidence threshold from the config; passed through to the
-        underlying cross-grade prompt.
+        underlying cross-level prompt.
     subject_label
         The subject label for context (e.g., "Mathematics").
 
@@ -461,21 +461,21 @@ def cross_stage_relates_to(
 
     return _relates_to_cross_level(
         forbidden_pairs=forbidden_pairs,
-        list_a_grade_label=list_a_grade_label,
         list_a_items=list_a_items,
-        list_b_grade_label=list_b_grade_label,
+        list_a_level_label=list_a_level_label,
         list_b_items=list_b_items,
+        list_b_level_label=list_b_level_label,
         max_edges_per_sfi=max_edges_per_sfi,
         min_confidence=min_confidence,
         note_suffix=(
             "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), "
-            "not single grades. Only emit relatesTo when the overlap is genuinely "
+            "not single levels. Only emit relatesTo when the overlap is genuinely "
             "useful for teaching across these adjacent levels."
         ),
         subject_label=subject_label,
         task_description=(
             "You will receive two lists of standards from ADJACENT level ranges "
-            "(each may be a single grade or a banded stage) in the SAME subject."
+            "(each may be a single level or a banded stage) in the SAME subject."
         ),
         task_label="Cross-Stage",
     )
@@ -722,98 +722,6 @@ RULES:
     )
 
 
-def within_grade_relates_to(
-    *,
-    grade_label: str,
-    items_a: list[dict[str, Any]],
-    items_b: list[dict[str, Any]],
-    max_edges_per_sfi: int,
-    min_confidence: float,
-    subject_label: str,
-    thread_a_key: str,
-    thread_b_key: str,
-    thread_a_path: str,
-    thread_b_path: str,
-) -> PromptPair:
-    """Within-grade relatesTo between two different threads (which may be from different
-    subjects) in the same grade.
-
-    Parameters
-    ----------
-    grade_label
-        The grade label for the items (e.g., "Grade 3").
-    items_a
-        The list of items from thread A.
-    items_b
-        The list of items from thread B.
-    max_edges_per_sfi
-        A soft cap on the number of relatesTo edges per item to keep the graph sparse.
-    min_confidence
-        The minimum confidence threshold from the config; edges below this should be
-        omitted.
-    subject_label
-        The subject label for context (e.g., "Mathematics").
-    thread_a_key
-        The normalized thread key for thread A (e.g., "math_geometry_shapes").
-    thread_b_key
-        The normalized thread key for thread B (e.g., "math_measurement_length").
-    thread_a_path
-        The human-readable thread path for thread A (e.g., "Mathematics > Geometry >
-        Shapes").
-    thread_b_path
-        The human-readable thread path for thread B (e.g., "Mathematics > Measurement >
-        Length").
-
-    Returns
-    -------
-    PromptPair
-        A PromptPair containing 'system_message' and 'user_message'.
-    """
-
-    confidence_block = _relates_to_confidence_guidance(min_confidence)
-
-    system_message = dedent(
-        f"""You are a strict curriculum concept-connection analyst.
-
-TASK (Within-Grade relatesTo):
-Two different threads (which may be from different subjects) within the SAME grade are provided.
-Identify conceptual associations between items across the two threads.
-
-Definition:
-- relatesTo(A -- B) means the concepts meaningfully overlap such that a teacher would reasonably connect them instructionally (reinforcement, application, shared concept), BUT it is NOT a prerequisite chain.
-
-HARD RULES:
-1. Use ONLY the provided items. Do NOT invent new items.
-2. Only emit edges ACROSS the two threads: one endpoint must come from ``thread_a_items``, the other from ``thread_b_items``.
-3. Do NOT output edges that are "related" only because they are in the same grade.
-4. Keep it sparse: prefer a small number of strong conceptual links.
-5. Soft cap: do not exceed about {max_edges_per_sfi} relatesTo edges per item across your output.
-
-{confidence_block}
-
-Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in the output.
-        """
-    )
-
-    user_message = json.dumps(
-        {
-            "grade_label": grade_label,
-            "subject_label": subject_label,
-            "thread_a_key": thread_a_key,
-            "thread_b_key": thread_b_key,
-            "thread_a_path": thread_a_path,
-            "thread_b_path": thread_b_path,
-            "thread_a_items": items_a,
-            "thread_b_items": items_b,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),  # Remove spaces after commas/colons
-    )
-    return PromptPair(
-        system_message=system_message.strip(), user_message=user_message.strip()
-    )
-
-
 def within_level_builds_towards(
     *,
     items: list[dict[str, Any]],
@@ -880,6 +788,98 @@ Return an empty `edges` list if there are no clear prerequisites.
         separators=(",", ":"),  # Remove spaces after commas/colons
     )
 
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def within_level_relates_to(
+    *,
+    items_a: list[dict[str, Any]],
+    items_b: list[dict[str, Any]],
+    level_label: str,
+    max_edges_per_sfi: int,
+    min_confidence: float,
+    subject_label: str,
+    thread_a_key: str,
+    thread_b_key: str,
+    thread_a_path: str,
+    thread_b_path: str,
+) -> PromptPair:
+    """Within-level relatesTo between two different threads (which may be from
+    different subjects) in the same level.
+
+    Parameters
+    ----------
+    items_a
+        The list of items from thread A.
+    items_b
+        The list of items from thread B.
+    level_label
+        The level label for the items (e.g., "Grade 3").
+    max_edges_per_sfi
+        A soft cap on the number of relatesTo edges per item to keep the graph sparse.
+    min_confidence
+        The minimum confidence threshold from the config; edges below this should be
+        omitted.
+    subject_label
+        The subject label for context (e.g., "Mathematics").
+    thread_a_key
+        The normalized thread key for thread A (e.g., "math_geometry_shapes").
+    thread_b_key
+        The normalized thread key for thread B (e.g., "math_measurement_length").
+    thread_a_path
+        The human-readable thread path for thread A (e.g., "Mathematics -> Geometry ->
+        Shapes").
+    thread_b_path
+        The human-readable thread path for thread B (e.g., "Mathematics -> Measurement
+        -> Length").
+
+    Returns
+    -------
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
+    """
+
+    confidence_block = _relates_to_confidence_guidance(min_confidence)
+
+    system_message = dedent(
+        f"""You are a strict curriculum concept-connection analyst.
+
+TASK (Within-Level relatesTo):
+Two different threads (which may be from different subjects) within the SAME level are provided.
+Identify conceptual associations between items across the two threads.
+
+Definition:
+- relatesTo(A -- B) means the concepts meaningfully overlap such that a teacher would reasonably connect them instructionally (reinforcement, application, shared concept), BUT it is NOT a prerequisite chain.
+
+HARD RULES:
+1. Use ONLY the provided items. Do NOT invent new items.
+2. Only emit edges ACROSS the two threads: one endpoint must come from ``thread_a_items``, the other from ``thread_b_items``.
+3. Do NOT output edges that are "related" only because they are in the same level.
+4. Keep it sparse: prefer a small number of strong conceptual links.
+5. Soft cap: do not exceed about {max_edges_per_sfi} relatesTo edges per item across your output.
+
+{confidence_block}
+
+Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in the output.
+        """
+    )
+
+    user_message = json.dumps(
+        {
+            "level_label": level_label,
+            "subject_label": subject_label,
+            "thread_a_key": thread_a_key,
+            "thread_b_key": thread_b_key,
+            "thread_a_path": thread_a_path,
+            "thread_b_path": thread_b_path,
+            "thread_a_items": items_a,
+            "thread_b_items": items_b,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),  # Remove spaces after commas/colons
+    )
     return PromptPair(
         system_message=system_message.strip(), user_message=user_message.strip()
     )
