@@ -3887,6 +3887,7 @@ def _process_builds_towards_work_item(
             validate_cross_level_builds_towards,
             allowed_lo=allowed_lo,
             allowed_hi=allowed_hi,
+            min_confidence=config.lp_builds_towards_min_confidence,
         ),
     )
 

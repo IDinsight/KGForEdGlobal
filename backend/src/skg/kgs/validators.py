@@ -296,7 +296,10 @@ def validate_atomic_skills(
 
 
 def validate_cross_level_builds_towards(
-    response: ProgressionEdgesResponse, allowed_lo: set[str], allowed_hi: set[str]
+    response: ProgressionEdgesResponse,
+    allowed_lo: set[str],
+    allowed_hi: set[str],
+    min_confidence: float,
 ) -> None:
     """Validate cross-level buildsTowards.
 
@@ -308,11 +311,14 @@ def validate_cross_level_builds_towards(
         The set of allowed source SFI UUIDs (must be in LOWER level list).
     allowed_hi
         The set of allowed target SFI UUIDs (must be in UPPER level list).
+    min_confidence
+        Minimum confidence threshold; edges below this value must be omitted.
 
     Raises
     ------
     QualityError
-        If any edge violates validation rules (unknown UUIDs, self-edges, etc).
+        If any edge violates validation rules (unknown UUIDs, self-edges,
+        low confidence, etc).
     """
 
     _check_common_edge_invariants(directed=True, response=response)
@@ -328,6 +334,16 @@ def validate_cross_level_builds_towards(
             )
         if e.source_sfi_uuid == e.target_sfi_uuid:
             raise QualityError("Self-edge is not allowed.")
+
+        confidence = float(e.confidence)
+
+        if confidence < min_confidence:
+            raise QualityError(
+                f"Cross-level buildsTowards edge confidence {confidence:.3f} "
+                f"is below the configured minimum {min_confidence:.3f}. "
+                f"Omit this edge or return it with justified confidence at or above "
+                f"the threshold."
+            )
 
 
 def validate_cross_level_relates_to(
