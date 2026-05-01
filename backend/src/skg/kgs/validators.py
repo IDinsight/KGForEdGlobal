@@ -387,6 +387,7 @@ def validate_within_grade_builds_towards(
     response: ProgressionEdgesResponse,
     allowed_uuids: set[str],
     uuid_positions: dict[str, int],
+    min_confidence: float | None = None,
 ) -> None:
     """Validate within-grade buildsTowards edges against constraints.
 
@@ -399,15 +400,34 @@ def validate_within_grade_builds_towards(
     uuid_positions
         A mapping of SFI UUIDs to their positions in the original list (for ordering
         checks in buildsTowards).
+    min_confidence
+        Optional minimum confidence threshold. If provided, any edge below this value
+        is rejected so the retry/validation agent can correct or omit it before
+        candidate creation.
 
     Raises
     ------
     QualityError
-        If edges reference unknown UUIDs, are self-referential, or violate
-        list ordering.
+        If edges reference unknown UUIDs, are self-referential, violate list ordering,
+        or fall below the configured minimum confidence threshold.
     """
 
     _check_common_edge_invariants(directed=True, response=response)
+
+    threshold: float | None = None
+
+    if min_confidence is not None:
+        try:
+            threshold = float(min_confidence)
+        except (TypeError, ValueError) as exc:
+            raise QualityError(
+                f"min_confidence is not a valid number: {min_confidence!r}"
+            ) from exc
+
+        if threshold < 0.0 or threshold > 1.0:
+            raise QualityError(
+                f"min_confidence must be between 0 and 1, got {threshold}."
+            )
 
     for e in response.edges:
         if (
@@ -419,7 +439,14 @@ def validate_within_grade_builds_towards(
         if e.source_sfi_uuid == e.target_sfi_uuid:
             raise QualityError("Self-edge is not allowed.")
 
-        # Ensure the source appears before the target in the original list
+        if threshold is not None and float(e.confidence) < threshold:
+            raise QualityError(
+                f"Within-grade buildsTowards edge confidence {float(e.confidence):.3f} "
+                f"is below the configured minimum {threshold:.3f}. Omit this edge or "
+                f"return it with a justified confidence at or above the threshold."
+            )
+
+        # Ensure the source appears before the target in the original list.
         if uuid_positions[e.source_sfi_uuid] >= uuid_positions[e.target_sfi_uuid]:
             raise QualityError(
                 "Within-grade buildsTowards must follow the provided order."

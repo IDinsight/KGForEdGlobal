@@ -13,7 +13,7 @@ from skg.utils.general import PromptPair
 
 
 def _builds_towards_confidence_guidance(min_confidence: float) -> str:
-    """Generate the CONFIDENCE section for buildsTowards prompts.
+    """Generate the `confidence_block` section for buildsTowards prompts.
 
     Parameters
     ----------
@@ -722,73 +722,6 @@ RULES:
     )
 
 
-def within_grade_builds_towards(
-    *,
-    grade_label: str,
-    items: list[dict[str, Any]],
-    min_confidence: float,
-    thread_path: str,
-) -> PromptPair:
-    """Within-grade buildsTowards in a single (grade, thread) bucket.
-
-    Parameters
-    ----------
-    grade_label
-        The grade label for the items (e.g., "Grade 3").
-    items
-        The list of items in the grade/thread bucket, presented in intended sequence
-        order.
-    min_confidence
-        The minimum confidence threshold from the config; edges below this should be
-        omitted.
-    thread_path
-        The conceptual thread path for the items (e.g., "Mathematics -> Geometry ->
-        Shapes").
-
-    Returns
-    -------
-    PromptPair
-        A PromptPair containing 'system_message' and 'user_message'.
-    """
-
-    confidence_block = _builds_towards_confidence_guidance(min_confidence)
-
-    system_message = dedent(
-        f"""You are a strict curriculum learning progression analyst.
-
-TASK (Within-Grade buildsTowards):
-Given a list of standards (StandardsFrameworkItems) that belong to the SAME grade and SAME thread, decide which prerequisite relationships exist among them.
-
-Definitions:
-- buildsTowards(A -> B) means learning A is a meaningful prerequisite for learning B. It is NOT just "related" or "in the same topic"; it should be instructional dependency.
-
-HARD RULES:
-1. Use ONLY the provided items. Do NOT invent new items.
-2. Only emit edges that are plausible prerequisites a teacher would rely on.
-3. Prefer fewer, higher-quality edges over many weak edges.
-4. Direction constraint: items are presented in the order they appear in the curriculum document (by position within their parent section, then by statement code). You MUST NOT point from a later item to an earlier item — i.e., source must have a lower list index than target.
-
-{confidence_block}
-
-You may return an empty edges list if there are no clear prerequisites.
-        """
-    )
-
-    user_message = json.dumps(
-        {
-            "grade_label": grade_label,
-            "thread_path": thread_path,
-            "items_in_sequence_order": items,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),  # Remove spaces after commas/colons
-    )
-
-    return PromptPair(
-        system_message=system_message.strip(), user_message=user_message.strip()
-    )
-
-
 def within_grade_relates_to(
     *,
     grade_label: str,
@@ -876,6 +809,77 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
         ensure_ascii=False,
         separators=(",", ":"),  # Remove spaces after commas/colons
     )
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def within_level_builds_towards(
+    *,
+    items: list[dict[str, Any]],
+    level_label: str,
+    min_confidence: float,
+    thread_path: str,
+) -> PromptPair:
+    """Within-level buildsTowards in a single level/thread bucket.
+
+    Parameters
+    ----------
+    items
+        The list of items in the level/thread bucket, presented in intended curriculum
+        sequence order.
+    level_label
+        The source level label for the items (for example, "Grade 3", "CE1", or a
+        stage/band label).
+    min_confidence
+        The minimum confidence threshold from the config; edges below this should be
+        omitted.
+    thread_path
+        The conceptual thread path for the items (for example, "Mathematics > Geometry
+        > Shapes").
+
+    Returns
+    -------
+    PromptPair
+        A PromptPair containing 'system_message' and 'user_message'.
+    """
+
+    confidence_block = _builds_towards_confidence_guidance(min_confidence)
+
+    system_message = dedent(
+        f"""You are a strict curriculum learning progression analyst.
+
+TASK: Given StandardsFrameworkItems from the same level and inference thread, identify only clear `buildsTowards` prerequisite relationships.
+
+Definition:
+- `buildsTowards(A -> B)` means learning A is a meaningful instructional prerequisite for learning B. It is not merely topical similarity, repetition, or association.
+
+Rules:
+1. Use only the supplied `sfi_uuid` values.
+2. Prefer sparse, high-quality edges over many weak edges.
+3. Preserve sequence direction: `items_in_sequence_order` is already in intended curriculum order, so the source must have a lower list index than the target.
+4. Use `statement_type`, `topic_path`, and `topic_path_key` as context only; do not infer an edge solely because two items share labels or topic path.
+5. Do not connect duplicate or repeated statements unless the later item clearly increases complexity or depends on the earlier item.
+
+{confidence_block}
+
+Return an empty `edges` list if there are no clear prerequisites.
+        """
+    )
+
+    user_message = json.dumps(
+        {
+            "level_label": level_label,
+            "thread_path": thread_path,
+            "sequence_order_policy": (
+                "Array order is intended curriculum sequence; lower index is earlier."
+            ),
+            "items_in_sequence_order": items,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),  # Remove spaces after commas/colons
+    )
+
     return PromptPair(
         system_message=system_message.strip(), user_message=user_message.strip()
     )

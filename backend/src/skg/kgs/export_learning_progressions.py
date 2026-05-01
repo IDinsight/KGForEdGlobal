@@ -42,8 +42,8 @@ from skg.kgs.prompts import (
     cross_grade_relates_to,
     cross_stage_builds_towards,
     cross_stage_relates_to,
-    within_grade_builds_towards,
     within_grade_relates_to,
+    within_level_builds_towards,
 )
 from skg.kgs.schemas import (
     ProgressionEdgesResponse,
@@ -332,6 +332,8 @@ def _build_combined_sfi_context_index(
         "description",
         "doc_pos_page_index",
         "doc_pos_y0",
+        "item_topic_path",
+        "item_topic_path_key",
         "level_basis",
         "level_key",
         "level_label",
@@ -2792,13 +2794,13 @@ def _infer_cross_grade_relates_to(
     return candidates, provenance_rows
 
 
-def _infer_within_grade_builds_towards(
+def _infer_within_level_builds_towards(
     *,
     by_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 1 inference: Within-grade buildsTowards relationships.
+    """Perform Phase 1 inference: Within-level buildsTowards relationships.
 
     Parameters
     ----------
@@ -2849,9 +2851,9 @@ def _infer_within_grade_builds_towards(
             _build_item_payload(include_order_index=True, item=item) for item in items
         ]
 
-        prompt = within_grade_builds_towards(
-            grade_label=str(level_label),
+        prompt = within_level_builds_towards(
             items=ordered_items,
+            level_label=str(level_label),
             min_confidence=config.lp_builds_towards_min_confidence,
             thread_path=_bucket_topic_context(bucket=bucket),
         )
@@ -5709,10 +5711,9 @@ def export_learning_progressions(
     candidates: list[CandidateEdge] = []
     provenance_rows: list[dict[str, Any]] = []
 
-    # Build indices for candidate context lookup during inference and provenance
-    # enrichment. These indices are used to efficiently retrieve relevant SFI metadata
-    # when evaluating candidate edges, such as the level and subject of the source and
-    # target SFIs.
+    # Build indices for candidate filtering and relationship metadata enrichment. The
+    # within-level index is used by the Phase 1 document-order safety filter. The
+    # combined index is attached to emitted relationship metadata.
     within_sfi_index = _build_scoped_sfi_index(
         by_level=by_within_level, scope="within_level"
     )
@@ -5724,7 +5725,7 @@ def export_learning_progressions(
     )
 
     # Phase 1: Within-level buildsTowards.
-    p1_candidates, p1_prov = _infer_within_grade_builds_towards(
+    p1_candidates, p1_prov = _infer_within_level_builds_towards(
         by_level=by_within_level, config=config, usage_tracker=usage_tracker
     )
     candidates.extend(p1_candidates)
