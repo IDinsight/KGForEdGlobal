@@ -2905,7 +2905,7 @@ def _group_threads_by_level_and_subject(
     """Group within-level inference buckets by level and subject-like label.
 
     Phase 3 compares buckets across a configurable "subject-like" axis within the same
-    level. The label comes from upstream bucketing as ``bucket["subject_label"]``;
+    level. The label comes from upstream bucketing as `bucket["subject_label"]`;
     depending on `config.lp_subject_role`, it may be a true academic subject, a
     learning area, a strand, or another curriculum grouping. For single-subject
     curricula (e.g., Senegal CE1 reading), this commonly means cross-strand rather than
@@ -3365,11 +3365,25 @@ def _infer_cross_level_relates_to(
                     "lower_level_high": wi["lo_high"],
                     "lower_level_label": lower_lvl_lbl,
                     "lower_level_low": wi["lo_low"],
+                    "lower_max_items": lower_dict.get("max_items"),
+                    "lower_sampled_count": lower_dict.get("sampled_count"),
+                    "lower_sampled_sfi_uuids": lower_dict.get("sampled_sfi_uuids"),
+                    "lower_source_bucket_count": lower_dict.get("source_bucket_count"),
+                    "lower_source_bucket_keys": lower_dict.get("source_bucket_keys"),
+                    "lower_source_item_count": lower_dict.get("source_item_count"),
+                    "lower_source_thread_keys": lower_dict.get("source_thread_keys"),
                     "phase": 4,
                     "subject_label": subject_label,
                     "upper_level_high": wi["hi_high"],
                     "upper_level_label": upper_lvl_lbl,
                     "upper_level_low": wi["hi_low"],
+                    "upper_max_items": upper_dict.get("max_items"),
+                    "upper_sampled_count": upper_dict.get("sampled_count"),
+                    "upper_sampled_sfi_uuids": upper_dict.get("sampled_sfi_uuids"),
+                    "upper_source_bucket_count": upper_dict.get("source_bucket_count"),
+                    "upper_source_bucket_keys": upper_dict.get("source_bucket_keys"),
+                    "upper_source_item_count": upper_dict.get("source_item_count"),
+                    "upper_source_thread_keys": upper_dict.get("source_thread_keys"),
                 },
                 rel_type=RELATES_TO,
                 source_sfi_uuid=_uuid(a),
@@ -3389,6 +3403,20 @@ def _infer_cross_level_relates_to(
                     subject_label=subject_label,
                     lower_level=lower_lvl_lbl,
                     upper_level=upper_lvl_lbl,
+                    lower_max_items=lower_dict.get("max_items"),
+                    lower_sampled_count=lower_dict.get("sampled_count"),
+                    lower_sampled_sfi_uuids=lower_dict.get("sampled_sfi_uuids"),
+                    lower_source_bucket_count=lower_dict.get("source_bucket_count"),
+                    lower_source_bucket_keys=lower_dict.get("source_bucket_keys"),
+                    lower_source_item_count=lower_dict.get("source_item_count"),
+                    lower_source_thread_keys=lower_dict.get("source_thread_keys"),
+                    upper_max_items=upper_dict.get("max_items"),
+                    upper_sampled_count=upper_dict.get("sampled_count"),
+                    upper_sampled_sfi_uuids=upper_dict.get("sampled_sfi_uuids"),
+                    upper_source_bucket_count=upper_dict.get("source_bucket_count"),
+                    upper_source_bucket_keys=upper_dict.get("source_bucket_keys"),
+                    upper_source_item_count=upper_dict.get("source_item_count"),
+                    upper_source_thread_keys=upper_dict.get("source_thread_keys"),
                 )
             )
 
@@ -4079,59 +4107,342 @@ def _prepare_subject_level_samples(
 ) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
     """Group and sample items by subject and level range for Phase 4.
 
-    Instead of keying by a single level ordinal, we key by (low, high) so stage-banded
-    buckets (e.g., III–VI) remain truthful in cross-level inference.
+    Phase 4 cross-level/cross-stage `relatesTo` inference compares sampled items from
+    the same subject-like label across adjacent level ranges. This function returns
+    finalized cross-level buckets into a compact lookup keyed by subject label and
+    `(level_ordinal_low, level_ordinal_high)`. Stage-banded buckets therefore remain
+    truthful: e.g., `Standards I-II` is keyed as `(1, 2)` rather than as a single level.
+
+    The function is intentionally conservative about level bounds. It validates level
+    bounds using only buckets whose `subject_label` is not excluded, so noisy excluded
+    groups such as `UNSPECIFIED_SUBJECT` cannot affect otherwise valid subject-level
+    samples. If the included buckets under a single `level_label` still have
+    inconsistent ordinal bounds, the entire level label is skipped because Phase 4
+    adjacency would be unreliable.
+
+    Examples
+    --------
+    1. Adjacent single-grade levels are grouped by subject
+
+        Suppose the finalized cross-level buckets are:
+
+            by_level = {
+                "Grade 1": [
+                    {
+                        "subject_label": "Reading",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_thread_key": "strand=phonics",
+                        "lp_bucket_key": "strand=phonics",
+                        "items": [
+                            {
+                                "sfi_uuid": "11111111-1111-1111-1111-111111111111",
+                                "description": "Identify letter sounds.",
+                                "statement_type": "Standard",
+                                "topic_path": "Reading > Phonics",
+                                "topic_path_key": "strand=phonics",
+                            }
+                        ],
+                    }
+                ],
+                "Grade 2": [
+                    {
+                        "subject_label": "Reading",
+                        "level_ordinal_low": 2,
+                        "level_ordinal_high": 2,
+                        "lp_thread_key": "strand=fluency",
+                        "lp_bucket_key": "strand=fluency",
+                        "items": [
+                            {
+                                "sfi_uuid": "22222222-2222-2222-2222-222222222222",
+                                "description": "Read grade-level text fluently.",
+                                "statement_type": "Standard",
+                                "topic_path": "Reading > Fluency",
+                                "topic_path_key": "strand=fluency",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+        Calling:
+
+            _prepare_subject_level_samples(
+                by_level=by_level,
+                excluded_subject_labels={"UNSPECIFIED_SUBJECT"},
+                max_items=10,
+            )
+
+        returns a nested shape like:
+
+            {
+                "Reading": {
+                    (1, 1): {
+                        "level_label": "Grade 1",
+                        "level_low": 1,
+                        "level_high": 1,
+                        "items": [
+                            {
+                                "sfi_uuid": "11111111-1111-1111-1111-111111111111",
+                                "description": "Identify letter sounds.",
+                                "statement_type": "Standard",
+                                "topic_path": "Reading > Phonics",
+                                "topic_path_key": "strand=phonics",
+                                "thread_key": "strand=phonics",
+                                ...
+                            }
+                        ],
+                        "sampled_count": 1,
+                        "source_item_count": 1,
+                        "source_bucket_count": 1,
+                        "source_thread_keys": ["strand=phonics"],
+                        "source_bucket_keys": ["strand=phonics"],
+                        "sampled_sfi_uuids": [
+                            "11111111-1111-1111-1111-111111111111"
+                        ],
+                        "max_items": 10,
+                    },
+                    (2, 2): {
+                        "level_label": "Grade 2",
+                        "level_low": 2,
+                        "level_high": 2,
+                        "items": [...],
+                        "sampled_count": 1,
+                        "source_item_count": 1,
+                        "source_bucket_count": 1,
+                        "source_thread_keys": ["strand=fluency"],
+                        "source_bucket_keys": ["strand=fluency"],
+                        "sampled_sfi_uuids": [
+                            "22222222-2222-2222-2222-222222222222"
+                        ],
+                        "max_items": 10,
+                    },
+                }
+            }
+
+        `_collect_relates_to_work_items()` can then compare Reading `(1, 1)`
+        against Reading `(2, 2)` because the ranges are adjacent.
+
+    2. Stage-banded levels are preserved as ranges
+
+        Banded curricula may provide one bucket for Standards I-II and another for
+        Standards III-VI:
+
+            by_level = {
+                "Standards I-II": [
+                    {
+                        "subject_label": "Mathematics",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 2,
+                        "lp_thread_key": "learning_area=number",
+                        "items": [...],
+                    }
+                ],
+                "Standards III-VI": [
+                    {
+                        "subject_label": "Mathematics",
+                        "level_ordinal_low": 3,
+                        "level_ordinal_high": 6,
+                        "lp_thread_key": "learning_area=number",
+                        "items": [...],
+                    }
+                ],
+            }
+
+        The returned keys are:
+
+            {
+                "Mathematics": {
+                    (1, 2): {"level_label": "Standards I-II", ...},
+                    (3, 6): {"level_label": "Standards III-VI", ...},
+                }
+            }
+
+        `_collect_relates_to_work_items()` treats these as adjacent because
+        `2 + 1 == 3`. Since at least one side is banded, the later inference phase
+        uses the cross-stage relatesTo prompt when `lp_cross_stage_relates_to=True`.
+
+    3. Excluded subject labels do not affect level-bound validation
+
+        Given:
+
+            by_level = {
+                "CE1": [
+                    {
+                        "subject_label": "UNSPECIFIED_SUBJECT",
+                        "level_ordinal_low": 99,
+                        "level_ordinal_high": 99,
+                        "items": [...],
+                    },
+                    {
+                        "subject_label": "Lecture",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "items": [...],
+                    },
+                ]
+            }
+
+        Calling with:
+
+            excluded_subject_labels={"UNSPECIFIED_SUBJECT"}
+
+        omits the `UNSPECIFIED_SUBJECT` bucket before checking bounds. The `Lecture`
+        sample for level range `(1, 1)` is still returned. Without this ordering, the
+        excluded `(99, 99)` bucket would make the level label look inconsistent and
+        incorrectly skip the valid `Lecture` sample.
+
+    4. Multiple buckets for the same subject and level are sampled together
+
+        A subject may have several thread buckets at the same level:
+
+            by_level = {
+                "Grade 2": [
+                    {
+                        "subject_label": "Reading",
+                        "level_ordinal_low": 2,
+                        "level_ordinal_high": 2,
+                        "lp_thread_key": "strand=phonics",
+                        "items": [<many phonics items>],
+                    },
+                    {
+                        "subject_label": "Reading",
+                        "level_ordinal_low": 2,
+                        "level_ordinal_high": 2,
+                        "lp_thread_key": "strand=fluency",
+                        "items": [<many fluency items>],
+                    },
+                ]
+            }
+
+        `_sample_items_across_threads()` samples across both Reading thread buckets,
+        capped by `max_items`. This prevents one large thread from completely
+        dominating the Phase 4 prompt.
+
+    5. Duplicate subject/range aliases are warned about
+
+        If two different level labels map to the same subject and ordinal range:
+
+            by_level = {
+                "CE1 planification": [
+                    {
+                        "subject_label": "Lecture",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "items": [...],
+                    }
+                ],
+                "CE1 paliers": [
+                    {
+                        "subject_label": "Lecture",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "items": [...],
+                    }
+                ],
+            }
+
+        both map to `("Lecture", (1, 1))`. For now, this function logs a warning and
+        replaces the previous sample. A future implementation should merge aliases or
+        accumulate buckets before sampling.
+
+    6. Inconsistent included bounds under one level label are skipped
+
+        If included buckets under one level label have different bounds:
+
+            by_level = {
+                "CE1": [
+                    {
+                        "subject_label": "Lecture",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "items": [...],
+                    },
+                    {
+                        "subject_label": "Production d'écrits",
+                        "level_ordinal_low": 2,
+                        "level_ordinal_high": 2,
+                        "items": [...],
+                    },
+                ]
+            }
+
+        the function skips "CE1" entirely and logs a warning. This is intentional since
+        Phase 4 depends on clean adjacent level ranges, and mixed included bounds under
+        one label could create invalid cross-level relationships.
 
     Parameters
     ----------
     by_level
-        Dictionary mapping level labels to lists of bucket dictionaries, where each
-        bucket dictionary contains information about the subject, level ordinal, topic
-        path, and items (standards) within that bucket.
+        Dictionary mapping level labels to lists of bucket dictionaries. Each bucket is
+        expected to contain `subject_label`, level ordinal fields, and an `items` list.
+        Buckets may also include `lp_thread_key`/`lp_bucket_key` for sampling and
+        provenance.
     excluded_subject_labels
         Optional set of subject labels to skip during sampling. Buckets whose
-        `subject_label` is in this set are excluded from the returned samples.
-        Typically `{"UNSPECIFIED_SUBJECT"}` to avoid noise from unmapped items.
+        `subject_label` is in this set are excluded before level-bound validation.
+        Typically, `{"UNSPECIFIED_SUBJECT"}` to avoid noise from unmapped items.
     max_items
-        The maximum number of items to sample across threads for each subject and level
-        combination. If the total number of items across threads exceeds this limit, a
-        sampling strategy will be applied to select a representative subset of items
-        for use in the LLM prompt during Phase 4 inference.
+        Maximum number of items to sample across threads for each subject and level
+        range. If the total source items exceed this limit,
+        `_sample_items_across_threads()` selects a representative subset for the LLM
+        prompt.
 
     Returns
     -------
     dict[str, dict[tuple[int, int], dict[str, Any]]]
-        A nested dictionary structured as follows:
-        {
-            subject_label: {
-                (level_low, level_high): {
-                    "level_label": str,
-                    "level_low": int,
-                    "level_high": int,
-                    "items": list[dict[str, Any]],  # Sampled items for this subject and level range
-                },
-                ...
+        Nested dictionary of sampled items and sampling provenance:
+
+        subject_label -> (level_low, level_high) -> sample_info
+
+        Each `sample_info` dictionary contains at least:
+            - `level_label`: Human-readable source level/stage label
+            - `level_low`/`level_high`: Integer ordinal range
+            - `items`: Prompt-ready sampled item payloads
+            - `sampled_count`: Number of sampled prompt items
+            - `source_item_count`: Number of source items available before sampling
+            - `source_bucket_count`: Number of source buckets sampled across
+            - `source_thread_keys`: Thread keys represented by the source buckets
+            - `source_bucket_keys`: Bucket keys represented by the source buckets
+            - `sampled_sfi_uuids`: Sampled SFI UUIDs included in the prompt payload
+            - `max_items`: Sampling cap used for this subject/level sample
     """
 
     subject_level_samples: dict[str, dict[tuple[int, int], dict[str, Any]]] = (
         defaultdict(dict)
     )
+    excluded_subject_labels = set(excluded_subject_labels or [])
 
-    for level_label, level_buckets in by_level.items():
+    for raw_level_label, level_buckets in by_level.items():
         bounds: list[tuple[int, int]] = []
         buckets_by_subject: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        excluded_bucket_count = 0
+        excluded_labels_seen: set[str] = set()
         exemplar_bucket: Optional[dict[str, Any]] = None
 
         for bucket in level_buckets:
+            subject_label = str(bucket.get("subject_label") or "UNSPECIFIED_SUBJECT")
+
+            if excluded_subject_labels and subject_label in excluded_subject_labels:
+                excluded_bucket_count += 1
+                excluded_labels_seen.add(subject_label)
+                continue
+
             lo, hi = _level_bounds(bucket)
 
             if isinstance(lo, int) and isinstance(hi, int):
                 bounds.append((lo, hi))
                 exemplar_bucket = exemplar_bucket or bucket
 
-            buckets_by_subject[
-                str(bucket.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            ].append(bucket)
+            buckets_by_subject[subject_label].append(bucket)
+
+        if excluded_bucket_count > 0:
+            logger.info(
+                f"Phase 4 subject sampling: excluded {excluded_bucket_count} "
+                f"bucket(s) in level '{raw_level_label}' across "
+                f"{len(excluded_labels_seen)} subject label(s): "
+                f"{sorted(excluded_labels_seen)}"
+            )
 
         if not bounds:
             continue
@@ -4143,63 +4454,35 @@ def _prepare_subject_level_samples(
         if any((lo, hi) != level_key for lo, hi in bounds):
             distinct_bounds = sorted(set(bounds))
             logger.warning(
-                f"Phase 4 subject sampling: SKIPPING level '{level_label}' due to "
-                f"inconsistent level bounds across its {len(bounds)} bucket(s). "
-                f"Distinct (low, high) values found: {distinct_bounds}. "
+                f"Phase 4 subject sampling: SKIPPING level '{raw_level_label}' due to "
+                f"inconsistent level bounds across its {len(bounds)} included bucket(s). "
+                f"Distinct included (low, high) values found: {distinct_bounds}. "
                 f"Aggregated level_key would be {level_key}, which could create "
-                f"invalid adjacency relationships. Fix the upstream Academic "
-                f"Standards export so all buckets within a level_label share "
-                f"identical ordinal bounds."
+                f"invalid adjacency relationships. Excluded subject labels were already "
+                f"removed before this check. Fix the upstream Academic Standards export "
+                f"so all included buckets within a level_label share identical ordinal "
+                f"bounds."
             )
             continue
 
         level_label = _level_label(
             exemplar_bucket
             or {
-                "level_label": level_label,
+                "level_label": raw_level_label,
                 "level_ordinal_low": level_low,
                 "level_ordinal_high": level_high,
             }
         )
 
-        excluded_count = 0
-
-        for subject_label, thread_buckets in buckets_by_subject.items():
-            if excluded_subject_labels and subject_label in excluded_subject_labels:
-                excluded_count += 1
-                continue
-
-            thread_buckets_sorted = sorted(
-                thread_buckets,
-                key=lambda b: (
-                    _bucket_topic_context(bucket=b),
-                    str(b.get("lp_thread_key") or b.get("lp_bucket_key") or ""),
-                ),
-            )
-            sampled = _sample_items_across_threads(
-                max_items=max_items, thread_buckets=thread_buckets_sorted
-            )
-
-            if not sampled:
-                continue
-
-            prompt_items = [
-                _build_item_payload(item=item, thread_key_field="_thread_key")
-                for item in sampled
-            ]
-            subject_level_samples[subject_label][level_key] = {
-                "level_label": level_label,
-                "level_low": level_low,
-                "level_high": level_high,
-                "items": prompt_items,
-            }
-
-        if excluded_count > 0:
-            logger.info(
-                f"Phase 4 subject sampling: excluded {excluded_count} subject buckets "
-                f"in level '{level_label}' with subject_label in "
-                f"{sorted(excluded_subject_labels or [])}"
-            )
+        _process_subject_buckets(
+            buckets_by_subject=buckets_by_subject,
+            level_high=level_high,
+            level_key=level_key,
+            level_label=level_label,
+            level_low=level_low,
+            max_items=max_items,
+            subject_level_samples=subject_level_samples,
+        )
 
     return subject_level_samples
 
@@ -4743,6 +5026,106 @@ def _process_single_standard(
     cross_payload = dict(payload)
     within_bucket["items"].append(within_payload)
     cross_bucket["items"].append(cross_payload)
+
+
+def _process_subject_buckets(
+    *,
+    buckets_by_subject: dict[str, list[dict[str, Any]]],
+    level_high: int,
+    level_key: tuple[int, int],
+    level_label: str,
+    level_low: int,
+    max_items: int,
+    subject_level_samples: dict[str, dict[tuple[int, int], dict[str, Any]]],
+) -> None:
+    """Process and sample items across threads for a specific level range.
+
+    Iterates over buckets grouped by subject, sorts them to ensure deterministic
+    sampling, and samples items across threads. Mutates `subject_level_samples` in
+    place with the newly constructed prompt payload and provenance metadata. If a
+    duplicate subject and level range alias is found, it replaces the existing
+    entry and logs a warning.
+
+    Parameters
+    ----------
+    buckets_by_subject
+        Dictionary mapping subject labels to their lists of buckets.
+    level_high
+        The highest ordinal bound for the current level range.
+    level_key
+        A tuple of `(level_low, level_high)` representing the ordinal range.
+    level_label
+        The human-readable label for the current level or stage.
+    level_low
+        The lowest ordinal bound for the current level range.
+    max_items
+        Maximum number of items to sample across threads for each subject.
+    subject_level_samples
+        The nested dictionary to populate with the finalized samples.
+    """
+
+    for subject_label, thread_buckets in buckets_by_subject.items():
+        thread_buckets_sorted = sorted(
+            thread_buckets,
+            key=lambda b: (
+                _bucket_topic_context(bucket=b),
+                str(b.get("lp_thread_key") or b.get("lp_bucket_key") or ""),
+            ),
+        )
+        sampled = _sample_items_across_threads(
+            max_items=max_items, thread_buckets=thread_buckets_sorted
+        )
+
+        if not sampled:
+            continue
+
+        prompt_items = [
+            _build_item_payload(item=item, thread_key_field="_thread_key")
+            for item in sampled
+        ]
+        source_thread_keys = sorted(
+            {
+                str(b.get("lp_thread_key") or b.get("lp_bucket_key") or "").strip()
+                for b in thread_buckets_sorted
+                if str(b.get("lp_thread_key") or b.get("lp_bucket_key") or "").strip()
+            }
+        )
+        source_bucket_keys = sorted(
+            {
+                str(b.get("lp_bucket_key") or b.get("bucket_key") or "").strip()
+                for b in thread_buckets_sorted
+                if str(b.get("lp_bucket_key") or b.get("bucket_key") or "").strip()
+            }
+        )
+        source_item_count = sum(
+            len(b.get("items") or []) for b in thread_buckets_sorted
+        )
+        sampled_sfi_uuids = [str(it.get("sfi_uuid")) for it in prompt_items]
+
+        existing_sample = subject_level_samples[subject_label].get(level_key)
+
+        if existing_sample is not None:
+            logger.warning(
+                f"Phase 4 subject sampling: duplicate sample for subject "
+                f"'{subject_label}' and level range {level_key}. Existing "
+                f"level_label={existing_sample.get('level_label')}; new "
+                f"level_label={level_label}. Replacing the existing sample for "
+                f"now. Consider merging level-label aliases before sampling."
+            )
+
+        subject_level_samples[subject_label][level_key] = {
+            "level_label": level_label,
+            "level_low": level_low,
+            "level_high": level_high,
+            "items": prompt_items,
+            "max_items": max_items,
+            "sampled_count": len(prompt_items),
+            "sampled_sfi_uuids": sampled_sfi_uuids,
+            "source_bucket_count": len(thread_buckets_sorted),
+            "source_bucket_keys": source_bucket_keys,
+            "source_item_count": source_item_count,
+            "source_thread_keys": source_thread_keys,
+        }
 
 
 def _replace_candidate_metadata(
