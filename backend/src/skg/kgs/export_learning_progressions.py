@@ -3103,6 +3103,21 @@ def _infer_within_level_relates_to(
     relatesTo is skipped---those connections are lower value and more likely to produce
     noise.
 
+    In education, a coherence map shows how one concept supports another. It looks for
+    how a concept in Subject A (e.g., Math) connects to a concept in Subject B (e.g.,
+    Science). Within-subject relatesTo connections are skipped here because it's
+    already obvious that concepts within the same subject are related (e.g., Addition
+    is related to Subtraction), and we want to focus on cross-subject connections that
+    might be less obvious but pedagogically valuable.
+
+    NB: Phase 3 does NOT exclude forbidden buildsTowards pairs (unlike Phase 4). This
+    is safe because Phase 1 (within-level buildsTowards) operates within a single
+    thread, while Phase 3 operates strictly *cross-subject*. Since threads are
+    partitioned by subject, the two item sets can never overlap, so a pair that has a
+    Phase 1 buildsTowards edge cannot appear in a Phase 3 relatesTo prompt. If the
+    bucketing invariant (threads are subject-disjoint) ever changes, this assumption
+    should be revisited and a forbidden_builds_pairs parameter added.
+
     Parameters
     ----------
     by_level
@@ -3126,33 +3141,25 @@ def _infer_within_level_relates_to(
     if not config.lp_within_level_relates_to:
         return candidates, provenance_rows
 
-    max_items = int(config.lp_within_level_relates_to_max_items_per_subject)
-    max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
-
-    # NB: Phase 3 does NOT exclude forbidden buildsTowards pairs (unlike Phase 4). This
-    # is safe because Phase 1 (within-level buildsTowards) operates within a single
-    # thread, while Phase 3 operates strictly *cross-subject*. Since threads are
-    # partitioned by subject, the two item sets can never overlap, so a pair that has a
-    # Phase 1 buildsTowards edge cannot appear in a Phase 3 relatesTo prompt. If the
-    # bucketing invariant (threads are subject-disjoint) ever changes, this assumption
-    # should be revisited and a forbidden_builds_pairs parameter added.
+    max_edges_per_sfi = config.lp_relates_to_max_edges_per_sfi
+    max_items = config.lp_within_level_relates_to_max_items_per_subject
 
     # Group threads by level -> subject.
     level_subject_threads = _group_threads_by_level_and_subject(
         by_level=by_level, config=config
     )
 
-    work_items: list[dict[str, Any]] = []
     excluded = set(config.lp_excluded_subject_labels or []) | {
         "UNSPECIFIED_SUBJECT",
         "UNKNOWN",
         "",
     }
     phase3_excluded_count = 0
+    work_items: list[dict[str, Any]] = []
 
     for level_label, by_subject in level_subject_threads.items():
-        subject_keys = [s for s in sorted(by_subject.keys()) if s not in excluded]
         phase3_excluded_count += sum(1 for s in by_subject if s in excluded)
+        subject_keys = [s for s in sorted(by_subject.keys()) if s not in excluded]
 
         if len(subject_keys) < 2:
             continue
@@ -3206,7 +3213,7 @@ def _infer_within_level_relates_to(
         f"(bidirectional confirmation => {total_calls} LLM calls)."
     )
 
-    current_call = 0
+    current_call, inference_type = 0, "within_level_cross_subject_relates_to"
 
     for wi in work_items:
         level_label = wi["level_label"]
@@ -3299,21 +3306,21 @@ def _infer_within_level_relates_to(
             ce = CandidateEdge(
                 confidence=float(conf),
                 evidence={
-                    "rationale_ab": rat_ab,
-                    "rationale_ba": rat_ba,
+                    "bidirectional_confirmed": True,
                     "confidence_ab": float(conf_ab),
                     "confidence_ba": float(conf_ba),
-                    "bidirectional_confirmed": True,
+                    "rationale_ab": rat_ab,
+                    "rationale_ba": rat_ba,
                 },
                 inference_source="llm",
-                inference_type="within_level_cross_subject_relates_to",
+                inference_type=inference_type,
                 llm_confidence=float(conf),
                 metadata={
-                    "phase": 3,
+                    "bidirectional_confirmed": True,
                     "level_label": level_label,
+                    "phase": 3,
                     "subject_a": subject_a,
                     "subject_b": subject_b,
-                    "bidirectional_confirmed": True,
                 },
                 rel_type=RELATES_TO,
                 source_sfi_uuid=_uuid(u_a),
@@ -3323,7 +3330,7 @@ def _infer_within_level_relates_to(
             provenance_rows.append(
                 _make_provenance_row(
                     candidate=ce,
-                    inference_type="within_level_cross_subject_relates_to",
+                    inference_type=inference_type,
                     phase=3,
                     bidirectional_confirmed=True,
                     confidence_fwd=float(conf_ab),
