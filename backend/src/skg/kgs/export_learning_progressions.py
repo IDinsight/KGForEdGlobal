@@ -3245,38 +3245,152 @@ def _infer_cross_level_relates_to(
 
     if config.lp_cross_level_relates_to:
         logger.info(
-            f"{cross_level_calls} adjacent single-level pairs for cross-level relatesTo inference."
+            f"{cross_level_calls} adjacent single-level pairs for "
+            f"cross-level relatesTo inference."
         )
 
     if config.lp_cross_stage_relates_to:
         logger.info(
-            f"{cross_stage_calls} adjacent level pairs for cross-stage relatesTo inference."
+            f"{cross_stage_calls} adjacent level pairs for "
+            f"cross-stage relatesTo inference."
         )
 
-    current_call_base = 0
+    current_call_idx = 0
 
     for wi in work_items:
-        item_candidates, item_provenance = _process_relates_to_work_item(
-            config=config,
-            current_call_base=current_call_base,
+        lower_dict = wi["lower"]
+        upper_dict = wi["upper"]
+        lower_items = lower_dict["items"]
+        upper_items = upper_dict["items"]
+
+        lower_lbl = str(lower_dict["level_label"])
+        upper_lbl = str(upper_dict["level_label"])
+        subject_label = wi["subject_label"]
+        inference_type = wi["inference_type"]
+        prompt_builder = wi["prompt_builder"]
+
+        forbidden_pairs_set, forbidden_pairs = _resolve_forbidden_pairs(
             forbidden_builds_pairs=forbidden_builds_pairs,
-            hi_high=wi["hi_high"],
-            hi_low=wi["hi_low"],
-            inference_type=wi["inference_type"],
-            lo_high=wi["lo_high"],
-            lo_low=wi["lo_low"],
-            lower=wi["lower"],
-            max_edges_per_sfi=max_edges_per_sfi,
-            prompt_builder=wi["prompt_builder"],
-            subject_label=wi["subject_label"],
-            total_calls=total_calls,
-            upper=wi["upper"],
-            usage_tracker=usage_tracker,
+            lower_items=lower_items,
+            upper_items=upper_items,
         )
 
-        candidates.extend(item_candidates)
-        provenance_rows.extend(item_provenance)
-        current_call_base += 2
+        # Call 1: lower -> upper.
+        prompt_lo_hi = prompt_builder(
+            forbidden_pairs=forbidden_pairs,
+            list_a_items=lower_items,
+            list_a_level_label=lower_lbl,
+            list_b_items=upper_items,
+            list_b_level_label=upper_lbl,
+            max_edges_per_sfi=max_edges_per_sfi,
+            min_confidence=config.lp_relates_to_min_confidence,
+            subject_label=subject_label,
+        )
+
+        current_call_idx += 1
+
+        logger.info(
+            f"Phase 4 Progress: {current_call_idx}/{total_calls} "
+            f"({subject_label}: {lower_lbl} -> {upper_lbl} | {inference_type} | lo -> hi)"
+        )
+
+        resp_lo_hi = infer_progression_edges(
+            instructions=prompt_lo_hi.system_message,
+            usage_tracker=usage_tracker,
+            user_message=prompt_lo_hi.user_message,
+            validator=partial(
+                validate_cross_level_relates_to,
+                allowed_lo={str(it["sfi_uuid"]) for it in lower_items},
+                allowed_hi={str(it["sfi_uuid"]) for it in upper_items},
+                forbidden_pairs=forbidden_pairs_set,
+            ),
+        )
+
+        # Call 2: upper -> lower (reverse presentation order for bidirectional
+        # confirmation). We swap BOTH items and labels so the LLM sees a
+        # self-consistent view. The neutral "List A"/"List B" names in the prompt avoid
+        # the semantic confusion of calling upper-level items "lower".
+        prompt_hi_lo = prompt_builder(
+            forbidden_pairs=forbidden_pairs,
+            list_a_items=upper_items,
+            list_a_level_label=upper_lbl,
+            list_b_items=lower_items,
+            list_b_level_label=lower_lbl,
+            max_edges_per_sfi=max_edges_per_sfi,
+            min_confidence=config.lp_relates_to_min_confidence,
+            subject_label=subject_label,
+        )
+
+        current_call_idx += 1
+
+        logger.info(
+            f"Phase 4 Progress: {current_call_idx}/{total_calls} "
+            f"({subject_label}: {lower_lbl} -> {upper_lbl} | {inference_type} | hi -> lo)"
+        )
+
+        resp_hi_lo = infer_progression_edges(
+            instructions=prompt_hi_lo.system_message,
+            usage_tracker=usage_tracker,
+            user_message=prompt_hi_lo.user_message,
+            validator=partial(
+                validate_cross_level_relates_to,
+                allowed_lo={str(it["sfi_uuid"]) for it in upper_items},
+                allowed_hi={str(it["sfi_uuid"]) for it in lower_items},
+                forbidden_pairs=forbidden_pairs_set,
+            ),
+        )
+
+        m_lo_hi = _best_map(resp_lo_hi)
+        m_hi_lo = _best_map(resp_hi_lo)
+        common_pairs = sorted(set(m_lo_hi.keys()) & set(m_hi_lo.keys()))
+
+        for a, b in common_pairs:
+            conf_lo_hi, rat_lo_hi = m_lo_hi[(a, b)]
+            conf_hi_lo, rat_hi_lo = m_hi_lo[(a, b)]
+            conf = min(conf_lo_hi, conf_hi_lo)
+            ce = CandidateEdge(
+                confidence=float(conf),
+                evidence={
+                    "bidirectional_confirmed": True,
+                    "confidence_hi_lo": float(conf_hi_lo),
+                    "confidence_lo_hi": float(conf_lo_hi),
+                    "rationale_hi_lo": rat_hi_lo,
+                    "rationale_lo_hi": rat_lo_hi,
+                },
+                inference_source="llm",
+                llm_confidence=float(conf),
+                inference_type=inference_type,
+                metadata={
+                    "bidirectional_confirmed": True,
+                    "lower_level_high": wi["lo_high"],
+                    "lower_level_label": lower_lbl,
+                    "lower_level_low": wi["lo_low"],
+                    "phase": 4,
+                    "subject_label": subject_label,
+                    "upper_level_high": wi["hi_high"],
+                    "upper_level_label": upper_lbl,
+                    "upper_level_low": wi["hi_low"],
+                },
+                rel_type=RELATES_TO,
+                source_sfi_uuid=_uuid(a),
+                target_sfi_uuid=_uuid(b),
+            )
+            candidates.append(ce)
+            provenance_rows.append(
+                _make_provenance_row(
+                    candidate=ce,
+                    inference_type=inference_type,
+                    phase=4,
+                    bidirectional_confirmed=True,
+                    confidence_fwd=float(conf_lo_hi),
+                    confidence_rev=float(conf_hi_lo),
+                    rationale_fwd=rat_lo_hi,
+                    rationale_rev=rat_hi_lo,
+                    subject_label=subject_label,
+                    lower_level=lower_lbl,
+                    upper_level=upper_lbl,
+                )
+            )
 
     return candidates, provenance_rows
 
@@ -4273,202 +4387,6 @@ def _process_and_filter_candidates(
         disposition_map,
         dedupe_winners,
     )
-
-
-def _process_relates_to_work_item(
-    *,
-    config: CreateKGConfig,
-    current_call_base: int,
-    forbidden_builds_pairs: set[tuple[UUID, UUID]],
-    hi_high: int,
-    hi_low: int,
-    inference_type: str,
-    lo_high: int,
-    lo_low: int,
-    lower: dict[str, Any],
-    max_edges_per_sfi: int,
-    prompt_builder: Callable[..., Any],
-    subject_label: str,
-    total_calls: int,
-    upper: dict[str, Any],
-    usage_tracker: KGUsageTracker,
-) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Execute bidirectional relatesTo inference for a single level-pair.
-
-    Parameters
-    ----------
-    config
-        The knowledge graph run configuration.
-    current_call_base
-        The starting call index for logging progression (updated by 2 per work item).
-    forbidden_builds_pairs
-        A set of UUID tuples representing buildsTowards relationships to exclude.
-    hi_high
-        The upper bound integer of the higher level.
-    hi_low
-        The lower bound integer of the higher level.
-    inference_type
-        The type of inference being executed ("cross_level_relates_to" or
-        "cross_stage_relates_to").
-    lo_high
-        The upper bound integer of the lower level.
-    lo_low
-        The lower bound integer of the lower level.
-    lower
-        The lower-level bucket dictionary containing items and labels.
-    max_edges_per_sfi
-        The maximum number of relatesTo edges permitted per standard framework item.
-    prompt_builder
-        The function used to build the LLM prompt.
-    subject_label
-        The string identifier for the academic subject.
-    total_calls
-        The total number of planned LLM calls across all work items.
-    upper
-        The upper-level bucket dictionary containing items and labels.
-    usage_tracker
-        The KGUsageTracker for recording KG generation and validation calls during the
-        export process.
-
-    Returns
-    -------
-    tuple[list[CandidateEdge], list[dict[str, Any]]]
-        A tuple containing:
-            1. Bidirectionally confirmed candidate edges.
-            2. Provenance rows for the generated edges.
-    """
-
-    candidates: list[CandidateEdge] = []
-    provenance_rows: list[dict[str, Any]] = []
-
-    lower_items = lower["items"]
-    upper_items = upper["items"]
-
-    forbidden_pairs_set, forbidden_pairs = _resolve_forbidden_pairs(
-        forbidden_builds_pairs=forbidden_builds_pairs,
-        lower_items=lower_items,
-        upper_items=upper_items,
-    )
-
-    # Call 1: lower -> upper.
-    prompt_lo_hi = prompt_builder(
-        forbidden_pairs=forbidden_pairs,
-        list_a_items=lower_items,
-        list_a_level_label=str(lower["level_label"]),
-        list_b_items=upper_items,
-        list_b_level_label=str(upper["level_label"]),
-        max_edges_per_sfi=max_edges_per_sfi,
-        min_confidence=config.lp_relates_to_min_confidence,
-        subject_label=subject_label,
-    )
-
-    call_idx_1 = current_call_base + 1
-
-    logger.info(
-        f"Phase 4 Progress: {call_idx_1}/{total_calls} "
-        f"({subject_label}: {lower['level_label']} -> {upper['level_label']} | {inference_type} | lo→hi)"
-    )
-
-    resp_lo_hi = infer_progression_edges(
-        instructions=prompt_lo_hi.system_message,
-        usage_tracker=usage_tracker,
-        user_message=prompt_lo_hi.user_message,
-        validator=partial(
-            validate_cross_level_relates_to,
-            allowed_lo={str(it["sfi_uuid"]) for it in lower_items},
-            allowed_hi={str(it["sfi_uuid"]) for it in upper_items},
-            forbidden_pairs=forbidden_pairs_set,
-        ),
-    )
-
-    # Call 2: upper -> lower (reverse presentation order for bidirectional
-    # confirmation). We swap BOTH items and labels so the LLM sees a self-consistent
-    # view. The neutral "List A"/"List B" names in the prompt avoid the semantic
-    # confusion of calling upper-level items "lower".
-    prompt_hi_lo = prompt_builder(
-        forbidden_pairs=forbidden_pairs,
-        list_a_items=upper_items,
-        list_a_level_label=str(upper["level_label"]),
-        list_b_items=lower_items,
-        list_b_level_label=str(lower["level_label"]),
-        max_edges_per_sfi=max_edges_per_sfi,
-        min_confidence=config.lp_relates_to_min_confidence,
-        subject_label=subject_label,
-    )
-
-    call_idx_2 = current_call_base + 2
-
-    logger.info(
-        f"Phase 4 Progress: {call_idx_2}/{total_calls} "
-        f"({subject_label}: {lower['level_label']} -> {upper['level_label']} | {inference_type} | hi→lo)"
-    )
-
-    resp_hi_lo = infer_progression_edges(
-        instructions=prompt_hi_lo.system_message,
-        usage_tracker=usage_tracker,
-        user_message=prompt_hi_lo.user_message,
-        validator=partial(
-            validate_cross_level_relates_to,
-            allowed_lo={str(it["sfi_uuid"]) for it in upper_items},
-            allowed_hi={str(it["sfi_uuid"]) for it in lower_items},
-            forbidden_pairs=forbidden_pairs_set,
-        ),
-    )
-
-    m_lo_hi = _best_map(resp_lo_hi)
-    m_hi_lo = _best_map(resp_hi_lo)
-    common_pairs = sorted(set(m_lo_hi.keys()) & set(m_hi_lo.keys()))
-
-    for a, b in common_pairs:
-        conf_lo_hi, rat_lo_hi = m_lo_hi[(a, b)]
-        conf_hi_lo, rat_hi_lo = m_hi_lo[(a, b)]
-        conf = min(conf_lo_hi, conf_hi_lo)
-
-        ce = CandidateEdge(
-            confidence=float(conf),
-            evidence={
-                "rationale_lo_hi": rat_lo_hi,
-                "rationale_hi_lo": rat_hi_lo,
-                "confidence_lo_hi": float(conf_lo_hi),
-                "confidence_hi_lo": float(conf_hi_lo),
-                "bidirectional_confirmed": True,
-            },
-            inference_source="llm",
-            llm_confidence=float(conf),
-            inference_type=inference_type,
-            metadata={
-                "phase": 4,
-                "bidirectional_confirmed": True,
-                "subject_label": subject_label,
-                "lower_level_label": lower["level_label"],
-                "upper_level_label": upper["level_label"],
-                "lower_level_low": lo_low,
-                "lower_level_high": lo_high,
-                "upper_level_low": hi_low,
-                "upper_level_high": hi_high,
-            },
-            rel_type=RELATES_TO,
-            source_sfi_uuid=_uuid(a),
-            target_sfi_uuid=_uuid(b),
-        )
-        candidates.append(ce)
-        provenance_rows.append(
-            _make_provenance_row(
-                candidate=ce,
-                inference_type=inference_type,
-                phase=4,
-                bidirectional_confirmed=True,
-                confidence_fwd=float(conf_lo_hi),
-                confidence_rev=float(conf_hi_lo),
-                rationale_fwd=rat_lo_hi,
-                rationale_rev=rat_hi_lo,
-                subject_label=subject_label,
-                lower_level=lower["level_label"],
-                upper_level=upper["level_label"],
-            )
-        )
-
-    return candidates, provenance_rows
 
 
 def _process_single_standard(
