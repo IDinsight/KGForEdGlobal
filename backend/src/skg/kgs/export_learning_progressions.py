@@ -320,17 +320,55 @@ def _build_combined_sfi_context_index(
     dict[str, dict[str, Any]]
         SFI UUID -> combined context with `item_context`, `within_level_context`,
         `cross_level_context`, and `available_context_scopes`.
+
+    Raises
+    ------
+    ValueError
+        If the same SFI UUID appears in both indexes with conflicting values for any
+        scope-neutral fields (e.g., `description`, `statement_code`, etc.).
     """
 
+    scope_neutral_check_fields = {
+        "description",
+        "doc_pos_page_index",
+        "doc_pos_y0",
+        "level_basis",
+        "level_key",
+        "level_label",
+        "level_ordinal_high",
+        "level_ordinal_low",
+        "page_index",
+        "sfi_uuid",
+        "statement_code",
+        "statement_type",
+    }
     combined: dict[str, dict[str, Any]] = {}
 
     for sfi_uuid in sorted(set(within_sfi_index) | set(cross_sfi_index)):
         within_entry = within_sfi_index.get(sfi_uuid) or {}
         cross_entry = cross_sfi_index.get(sfi_uuid) or {}
+        within_item_context = within_entry.get("item_context") or {}
+        cross_item_context = cross_entry.get("item_context") or {}
+
+        if within_item_context and cross_item_context:
+            diffs = {
+                field_name: {
+                    "within_level": within_item_context.get(field_name),
+                    "cross_level": cross_item_context.get(field_name),
+                }
+                for field_name in sorted(scope_neutral_check_fields)
+                if within_item_context.get(field_name)
+                != cross_item_context.get(field_name)
+            }
+
+            if diffs:
+                raise ValueError(
+                    f"Conflicting scope-neutral SFI context while combining LP SFI "
+                    f"context indexes for SFI {sfi_uuid}: {diffs = }"
+                )
+
         item_context = (
-            within_entry.get("item_context")
-            or cross_entry.get("item_context")
-            or {"sfi_uuid": sfi_uuid}
+            within_item_context or cross_item_context or {"sfi_uuid": sfi_uuid}
         )
         available_context_scopes: list[str] = []
 
