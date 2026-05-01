@@ -5924,9 +5924,9 @@ def group_standards_for_learning_progressions(
         )
 
     by_within_level, by_within_bucket_key = _finalize_bucket_store(within_level_buckets)
-    by_cross_level, by_cross_bucket_key = _finalize_bucket_store(cross_level_buckets)
+    by_cross_level, by_cross_thread_key = _finalize_bucket_store(cross_level_buckets)
     return {
-        "by_cross_bucket_key": by_cross_bucket_key,
+        "by_cross_thread_key": by_cross_thread_key,
         "by_cross_level": by_cross_level,
         "by_within_bucket_key": by_within_bucket_key,
         "by_within_level": by_within_level,
