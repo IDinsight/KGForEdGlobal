@@ -466,24 +466,31 @@ def validate_within_level_relates_to(
     allowed_uuids_a: set[str],
     allowed_uuids_b: set[str],
 ) -> None:
-    """Validate within-level relatesTo edges. Ensures edges connect items across the
-    two distinct threads provided.
+    """Validate within-level relatesTo edges between two disjoint item groups.
 
     Parameters
     ----------
     response
         The response containing the relatesTo edges to validate.
     allowed_uuids_a
-        The set of allowed SFI UUIDs for thread A.
+        The set of allowed SFI UUIDs for group/thread A.
     allowed_uuids_b
-        The set of allowed SFI UUIDs for thread B.
+        The set of allowed SFI UUIDs for group/thread B.
 
     Raises
     ------
     QualityError
-        If edges refer to unknown items, are self-referential, or fail to
-        bridge the two different threads.
+        If the allowed UUID sets overlap, if edges refer to unknown items, if an edge
+        is self-referential, or if an edge fails to bridge the two distinct groups.
     """
+
+    overlap = allowed_uuids_a & allowed_uuids_b
+
+    if overlap:
+        raise QualityError(
+            f"Within-level relatesTo allowed UUID sets must be disjoint. "
+            f"Overlap examples: {sorted(overlap)[:5]}"
+        )
 
     _check_common_edge_invariants(directed=False, response=response)
 
@@ -498,11 +505,11 @@ def validate_within_level_relates_to(
         # each thread" which obscures the real problem.
         if e.source_sfi_uuid not in all_allowed:
             raise QualityError(
-                f"Source UUID {e.source_sfi_uuid} not found in either thread."
+                f"Source UUID {e.source_sfi_uuid} not found in either group."
             )
         if e.target_sfi_uuid not in all_allowed:
             raise QualityError(
-                f"Target UUID {e.target_sfi_uuid} not found in either thread."
+                f"Target UUID {e.target_sfi_uuid} not found in either group."
             )
 
         # Check membership.
@@ -515,5 +522,5 @@ def validate_within_level_relates_to(
         # A).
         if not ((src_in_a and tgt_in_b) or (src_in_b and tgt_in_a)):
             raise QualityError(
-                "Within-level relatesTo must connect one item from each thread."
+                "Within-level relatesTo must connect one item from each group."
             )

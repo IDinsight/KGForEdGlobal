@@ -819,34 +819,35 @@ def within_level_relates_to(
     thread_a_path: str,
     thread_b_path: str,
 ) -> PromptPair:
-    """Within-level relatesTo between two different threads (which may be from
-    different subjects) in the same level.
+    """Within-level relatesTo between two subject-like groups or curriculum threads.
+
+    Each side may contain sampled items from one or more finer-grained threads within
+    the same level. The comparison axis is supplied by the caller and may represent a
+    true subject, a learning area, a strand, or another curriculum grouping.
 
     Parameters
     ----------
     items_a
-        The list of items from thread A.
+        The list of sampled items from group/thread A.
     items_b
-        The list of items from thread B.
+        The list of sampled items from group/thread B.
     level_label
-        The level label for the items (e.g., "Grade 3").
+        The level label for the items (e.g., "Grade 3" or "CE1").
     max_edges_per_sfi
         A soft cap on the number of relatesTo edges per item to keep the graph sparse.
     min_confidence
         The minimum confidence threshold from the config; edges below this should be
         omitted.
     subject_label
-        The subject label for context (e.g., "Mathematics").
+        Human-readable comparison label, often "Group A x Group B".
     thread_a_key
-        The normalized thread key for thread A (e.g., "math_geometry_shapes").
+        Normalized key for group/thread A.
     thread_b_key
-        The normalized thread key for thread B (e.g., "math_measurement_length").
+        Normalized key for group/thread B.
     thread_a_path
-        The human-readable thread path for thread A (e.g., "Mathematics -> Geometry ->
-        Shapes").
+        Human-readable path/context summary for group/thread A.
     thread_b_path
-        The human-readable thread path for thread B (e.g., "Mathematics -> Measurement
-        -> Length").
+        Human-readable path/context summary for group/thread B.
 
     Returns
     -------
@@ -860,18 +861,21 @@ def within_level_relates_to(
         f"""You are a strict curriculum concept-connection analyst.
 
 TASK (Within-Level relatesTo):
-Two different threads (which may be from different subjects) within the SAME level are provided.
-Identify conceptual associations between items across the two threads.
+Two different subject-like groups or curriculum threads within the SAME level are provided.
+Each side may contain sampled items from multiple finer-grained threads.
+Identify only strong teacher-usable conceptual associations between items across the two groups.
 
 Definition:
 - relatesTo(A -- B) means the concepts meaningfully overlap such that a teacher would reasonably connect them instructionally (reinforcement, application, shared concept), BUT it is NOT a prerequisite chain.
 
 HARD RULES:
 1. Use ONLY the provided items. Do NOT invent new items.
-2. Only emit edges ACROSS the two threads: one endpoint must come from ``thread_a_items``, the other from ``thread_b_items``.
+2. Only emit edges ACROSS the two groups: one endpoint must come from ``thread_a_items``, the other from ``thread_b_items``.
 3. Do NOT output edges that are "related" only because they are in the same level.
-4. Keep it sparse: prefer a small number of strong conceptual links.
-5. Soft cap: do not exceed about {max_edges_per_sfi} relatesTo edges per item across your output.
+4. Do NOT emit prerequisite-style relationships; if one item mainly prepares learners for the other, leave it out here.
+5. Keep it sparse: prefer a small number of strong conceptual links.
+6. Soft cap: do not exceed about {max_edges_per_sfi} relatesTo edges per item across your output.
+7. Return an empty `edges` list if there are no strong teacher-usable conceptual connections.
 
 {confidence_block}
 
@@ -882,7 +886,7 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
     user_message = json.dumps(
         {
             "level_label": level_label,
-            "subject_label": subject_label,
+            "comparison_label": subject_label,
             "thread_a_key": thread_a_key,
             "thread_b_key": thread_b_key,
             "thread_a_path": thread_a_path,

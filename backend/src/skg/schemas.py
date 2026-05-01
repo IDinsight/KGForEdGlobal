@@ -1181,7 +1181,11 @@ class CreateKGConfig(BaseSchema):
     )
     lp_within_level_relates_to_max_items_per_subject: int = Field(
         default=5,
-        description="Within-level relatesTo (cross-subject only): max sampled standards per subject (keeps LLM calls bounded).",
+        description=(
+            "Within-level relatesTo (cross-subject only): max sampled standards per "
+            "subject (keeps LLM calls bounded). Smaller values gives higher precision "
+            "but lower recall and vice versa."
+        ),
         ge=1,
     )
     namespace_uuid: UUID = Field(

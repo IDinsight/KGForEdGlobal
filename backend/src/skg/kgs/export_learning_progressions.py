@@ -221,6 +221,81 @@ def _best_map(
     regardless of edge direction, to facilitate bidirectional confirmation of relatesTo
     edges between the two levels.
 
+    Examples
+    --------
+    1. Direction-insensitive pair canonicalization for relatesTo
+
+        `relatesTo` is conceptually undirected, but the LLM response schema still uses
+        `source_sfi_uuid` and `target_sfi_uuid`. The model may therefore return either
+        direction for the same conceptual pair.
+
+        Given edges:
+
+            A -> B, confidence=0.91, rationale="Shared decoding skill..."
+            B -> A, confidence=0.88, rationale="Both involve decoding..."
+
+        `_best_map()` canonicalizes both with `canon_str_pair(A, B)`, so both edges map
+        to the same key:
+
+            (A, B)  # sorted canonical pair
+
+        The returned map keeps the highest-confidence version:
+
+            {
+                (A, B): (0.91, "Shared decoding skill...")
+            }
+
+    2. Keeping the best duplicate pair
+
+        If the LLM returns the same conceptual pair more than once, only the highest
+        confidence/rationale is retained.
+
+        Given edges:
+
+            C -> D, confidence=0.86, rationale="Both require sentence construction..."
+            C -> D, confidence=0.93, rationale="Both involve constructing coherent sentences..."
+
+        `_best_map()` returns:
+
+            {
+                (C, D): (0.93, "Both involve constructing coherent sentences...")
+            }
+
+    3. Supporting bidirectional confirmation
+
+        Phase 3 within-level relatesTo asks the model twice:
+          - once with thread A as List A and thread B as List B
+          - once with the lists swapped
+
+        `_best_map()` converts both responses into canonical pair maps so they can be
+        intersected reliably.
+
+        First pass:
+
+            A -> B, confidence=0.92
+
+            best_ab = {
+                (A, B): (0.92, "...")
+            }
+
+        Swapped pass:
+
+            B -> A, confidence=0.89
+
+            best_ba = {
+                (A, B): (0.89, "...")
+            }
+
+        Because `(A, B)` appears in both maps, the pair is bidirectionally confirmed.
+        Downstream code can then use `min(0.92, 0.89)` as the conservative confirmed
+        confidence.
+
+    4. Not preserving direction
+
+        `_best_map()` should be used only where direction does not matter, such as
+        `relatesTo` confirmation. It is not appropriate for directed `buildsTowards`
+        edge logic, where A -> B and B -> A have different meanings.
+
     Parameters
     ----------
     resp
@@ -699,6 +774,100 @@ def _build_order_index_lookup(
         order_index_lookup.setdefault(canonical_node_id, order_index)
 
     return order_index_lookup
+
+
+def _build_relates_to_work_items(
+    *,
+    excluded: set[str],
+    level_subject_threads: dict[str, dict[str, list[dict[str, Any]]]],
+    max_items: int,
+) -> list[dict[str, Any]]:
+    """Build work items for Phase 3 within-level relatesTo inference.
+
+    Iterates through levels and subjects, excludes specified subjects, pairs remaining
+    subjects, samples prompt items, and compiles the payloads required for
+    bidirectional LLM comparisons.
+
+    Parameters
+    ----------
+    excluded
+        A set of subject labels to exclude from comparison.
+    level_subject_threads
+        A dictionary mapping level labels to dictionaries of subject labels
+        to lists of thread buckets.
+    max_items
+        The maximum number of items to sample per subject-like group.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of work item dictionaries representing subject pairs to compare.
+    """
+
+    phase3_excluded_count = 0
+    work_items: list[dict[str, Any]] = []
+
+    for level_label, by_subject in level_subject_threads.items():
+        phase3_excluded_count += sum(1 for s in by_subject if s in excluded)
+        subject_keys = [s for s in sorted(by_subject.keys()) if s not in excluded]
+
+        if len(subject_keys) < 2:
+            continue
+
+        for i, subject_a in enumerate(subject_keys):
+            for subject_b in subject_keys[i + 1 :]:
+                threads_a = sorted(by_subject[subject_a], key=_thread_sort_key)
+                threads_b = sorted(by_subject[subject_b], key=_thread_sort_key)
+
+                sampled_a = _sample_items_across_threads(
+                    max_items=max_items, thread_buckets=threads_a
+                )
+                sampled_b = _sample_items_across_threads(
+                    max_items=max_items, thread_buckets=threads_b
+                )
+
+                if not sampled_a or not sampled_b:
+                    continue
+
+                thread_a_path = " | ".join(
+                    _bucket_topic_context(bucket=bucket).strip()
+                    for bucket in threads_a[:3]
+                    if _bucket_topic_context(bucket=bucket)
+                )
+                thread_b_path = " | ".join(
+                    _bucket_topic_context(bucket=bucket).strip()
+                    for bucket in threads_b[:3]
+                    if _bucket_topic_context(bucket=bucket)
+                )
+                work_items.append(
+                    {
+                        "level_label": level_label,
+                        "subject_a": subject_a,
+                        "subject_b": subject_b,
+                        "sampled_a": sampled_a,
+                        "sampled_b": sampled_b,
+                        "sampled_a_count": len(sampled_a),
+                        "sampled_b_count": len(sampled_b),
+                        "thread_a_path": thread_a_path,
+                        "thread_b_path": thread_b_path,
+                    }
+                )
+
+    total_pairs = len(work_items)
+    total_calls = total_pairs * 2  # Bidirectional confirmation
+
+    if phase3_excluded_count > 0:
+        logger.info(
+            f"Phase 3: excluded {phase3_excluded_count} subject-like bucket(s) with "
+            f"subject_label in {sorted(excluded)}"
+        )
+
+    logger.info(
+        f"{total_pairs} within-level cross-thread pairs for relatesTo inference "
+        f"(bidirectional confirmation => {total_calls} LLM calls)."
+    )
+
+    return work_items
 
 
 def _build_scoped_sfi_index(
@@ -2681,25 +2850,76 @@ def _get_or_create_bucket(
 def _group_threads_by_level_and_subject(
     *, by_level: dict[str, list[dict[str, Any]]], config: CreateKGConfig
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    """Group threads by level and subject, filtering invalid items.
+    """Group within-level inference buckets by level and subject-like label.
+
+    Phase 3 compares buckets across a configurable "subject-like" axis within the same
+    level. The label comes from upstream bucketing as ``bucket["subject_label"]``;
+    depending on `config.lp_subject_role`, it may be a true academic subject, a
+    learning area, a strand, or another curriculum grouping. For single-subject
+    curricula (e.g., Senegal CE1 reading), this commonly means cross-strand rather than
+    cross-subject comparison.
+
+    Empty buckets are dropped here so later work-item construction only considers
+    buckets with at least one candidate StandardsFrameworkItem. Buckets that are not
+    allowed by `_allow_within_level_inference()` are also skipped, which preserves the
+    configured single-level vs. banded-level policy.
+
+    Examples
+    --------
+    1. Cross-strand grouping for a single-level reading curriculum
+
+        Input `by_level` may contain CE1 buckets like:
+
+            {
+                "CE1": [
+                    {
+                        "subject_label": "Communication écrite - Lecture",
+                        "lp_bucket_key": "strand=lecture",
+                        "items": [<SFI 1>, <SFI 2>],
+                    },
+                    {
+                        "subject_label": "Communication orale",
+                        "lp_bucket_key": "strand=oral",
+                        "items": [<SFI 3>],
+                    },
+                ]
+            }
+
+        The output is::
+
+            {
+                "CE1": {
+                    "Communication écrite - Lecture": [<lecture bucket>],
+                    "Communication orale": [<oral bucket>],
+                }
+            }
+
+        Phase 3 can then compare the two subject-like groups for `relatesTo` edges.
+
+    2. Empty buckets are omitted
+
+        A bucket with `items=[]` is ignored, so a subject-like label with no usable
+        standards does not create an empty work item downstream.
+
+    3. Missing subject labels are retained as explicit sentinels
+
+        A bucket with items but no `subject_label` is grouped under
+        "UNSPECIFIED_SUBJECT". The caller can then exclude that sentinel via the
+        normal Phase 3 exclusion policy.
 
     Parameters
     ----------
     by_level
-        Dictionary mapping level labels to lists of bucket dictionaries, where each
-        bucket contains information about a thread of standards within that level, and
-        may include a "subject_label" key indicating the subject of the thread.
+        Dictionary mapping level labels to lists of finalized within-level bucket
+        dictionaries.
     config
         The knowledge graph run configuration.
 
     Returns
     -------
     dict[str, dict[str, list[dict[str, Any]]]]
-        A nested dictionary mapping level labels to subject labels to lists of bucket
-        dictionaries, representing the organization of threads by level and subject for
-        within-level relatesTo inference. Only buckets that are allowed for
-        within-level inference based on the configuration (e.g., single-level buckets
-        if lp_within_level_allow_banded_levels=False) are included in the output.
+        Nested mapping `level_label -> subject_like_label -> list[bucket]` for Phase 3
+        within-level `relatesTo` inference.
     """
 
     level_subject_threads: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
@@ -2707,12 +2927,15 @@ def _group_threads_by_level_and_subject(
     )
 
     for level_label, level_buckets in by_level.items():
-        for b in level_buckets:
-            if not _allow_within_level_inference(bucket=b, config=config):
+        for bucket in level_buckets:
+            if not (
+                _allow_within_level_inference(bucket=bucket, config=config)
+                and (bucket.get("items") or [])
+            ):
                 continue
 
-            subject = str(b.get("subject_label") or "UNSPECIFIED_SUBJECT")
-            level_subject_threads[level_label][subject].append(b)
+            subject = str(bucket.get("subject_label") or "UNSPECIFIED_SUBJECT")
+            level_subject_threads[level_label][subject].append(bucket)
 
     return level_subject_threads
 
@@ -3126,43 +3349,73 @@ def _infer_within_level_relates_to(
     config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> tuple[list[CandidateEdge], list[dict[str, Any]]]:
-    """Perform Phase 3 inference: Within-level cross-subject relatesTo relationships.
+    """Perform Phase 3 inference: within-level cross-thread `relatesTo` edges.
 
-    For each level, compare *subjects* (not within-subject threads) to find
-    cross-curricular connections (i.e., the Coherence Map pattern). Within-subject
-    relatesTo is skipped---those connections are lower value and more likely to produce
-    noise.
+    Phase 3 compares subject-like groups within the same level. The comparison axis is
+    `subject_label`, which is assigned upstream according to `config.lp_subject_role`.
+    In a multi-subject curriculum this may be a true academic subject; in a
+    single-subject curriculum it may be a strand, learning area, or similar grouping.
 
-    In education, a coherence map shows how one concept supports another. It looks for
-    how a concept in Subject A (e.g., Math) connects to a concept in Subject B (e.g.,
-    Science). Within-subject relatesTo connections are skipped here because it's
-    already obvious that concepts within the same subject are related (e.g., Addition
-    is related to Subtraction), and we want to focus on cross-subject connections that
-    might be less obvious but pedagogically valuable.
+    The process is as follows:
 
-    NB: Phase 3 does NOT exclude forbidden buildsTowards pairs (unlike Phase 4). This
-    is safe because Phase 1 (within-level buildsTowards) operates within a single
-    thread, while Phase 3 operates strictly *cross-subject*. Since threads are
-    partitioned by subject, the two item sets can never overlap, so a pair that has a
-    Phase 1 buildsTowards edge cannot appear in a Phase 3 relatesTo prompt. If the
-    bucketing invariant (threads are subject-disjoint) ever changes, this assumption
-    should be revisited and a forbidden_builds_pairs parameter added.
+    1. Return no candidates when `config.lp_within_level_relates_to` is disabled.
+    2. Use Phase 3 limits from config: max relatesTo edges per SFI and max sampled
+        items per subject-like group.
+    3. Group finalized buckets with `_group_threads_by_level_and_subject()` into
+        `level -> subject_like_label -> buckets`.
+    4. Build the exclusion set from `config.lp_excluded_subject_labels` plus standard
+        sentinel labels such as `UNSPECIFIED_SUBJECT`.
+    5. For each level, enumerate all unordered pairs of non-excluded subject-like
+        labels.
+    6. Stable-sort each side's buckets with `_thread_sort_key`.
+    7. Sample bounded, diverse prompt items from each side with
+        `_sample_items_across_threads()`.
+    8. Store a work item when both sides have at least one sampled item.
+    9. For each work item, build prompt payloads with `_build_item_payload()`.
+    10. Run `within_level_relates_to()` in the A -> B orientation and validate.
+    11. Run the same prompt in the B -> A orientation, then canonicalize both outputs
+        with `_best_map()`.
+    12. Keep only bidirectionally confirmed canonical pairs, using the lower of the two
+        confidence scores, and emit one `CandidateEdge` plus one provenance row for
+        each confirmed pair.
+
+    NB: `lp_within_level_relates_to_max_items_per_subject` is an upper bound, not a
+    required item count. For each subject-like group/thread side in a within-level
+    relatesTo comparison, the sampler returns up to this many StandardsFrameworkItems.
+    If a group contains fewer items than the configured maximum, all available items
+    are used and no error is raised.
+
+    Setting this value too small improves cost, latency, and precision, but reduces
+    recall. The model sees only a small slice of each subject-like group, so legitimate
+    relatesTo edges may be undiscoverable because the relevant SFI was never sampled.
+
+    Setting this value too large improves coverage, but increases prompt size, cost,
+    and latency. Very large prompts can also reduce semantic quality: the model has
+    more opportunities to infer weak/generic links, and structural validators cannot
+    fully catch weak but formally valid relatesTo edges.
+
+    For large curriculum strands, prefer a moderate value or add smarter
+    sampling/chunked comparisons rather than simply increasing this value indefinitely.
+
+    NB: Phase 3 does not take forbidden within-level `buildsTowards` pairs as input. It
+    relies on the bucketing invariant that each prompt compares disjoint subject-like
+    groups. If that invariant changes, pass forbidden pairs into this phase or filter
+    candidate pairs before emission.
 
     Parameters
     ----------
     by_level
-        Dictionary mapping level labels to lists of bucket dictionaries.
+        Dictionary mapping level labels to lists of finalized within-level bucket
+        dictionaries.
     config
         The knowledge graph run configuration.
     usage_tracker
-        The KGUsageTracker for recording KG generation and validation calls during the
-        export process.
+        Tracker for KG generation and validation LLM calls.
 
     Returns
     -------
     tuple[list[CandidateEdge], list[dict[str, Any]]]
-        A tuple containing the list of generated candidate edges and the list of
-        provenance dictionaries.
+        Generated candidate edges and corresponding raw provenance rows.
     """
 
     candidates: list[CandidateEdge] = []
@@ -3174,7 +3427,7 @@ def _infer_within_level_relates_to(
     max_edges_per_sfi = config.lp_relates_to_max_edges_per_sfi
     max_items = config.lp_within_level_relates_to_max_items_per_subject
 
-    # Group threads by level -> subject.
+    # Group threads by level -> subject-like label.
     level_subject_threads = _group_threads_by_level_and_subject(
         by_level=by_level, config=config
     )
@@ -3184,82 +3437,32 @@ def _infer_within_level_relates_to(
         "UNKNOWN",
         "",
     }
-    phase3_excluded_count = 0
-    work_items: list[dict[str, Any]] = []
 
-    for level_label, by_subject in level_subject_threads.items():
-        phase3_excluded_count += sum(1 for s in by_subject if s in excluded)
-        subject_keys = [s for s in sorted(by_subject.keys()) if s not in excluded]
-
-        if len(subject_keys) < 2:
-            continue
-
-        for i, subject_a in enumerate(subject_keys):
-            for subject_b in subject_keys[i + 1 :]:
-                threads_a = sorted(by_subject[subject_a], key=_thread_sort_key)
-                threads_b = sorted(by_subject[subject_b], key=_thread_sort_key)
-
-                sampled_a = _sample_items_across_threads(
-                    max_items=max_items, thread_buckets=threads_a
-                )
-                sampled_b = _sample_items_across_threads(
-                    max_items=max_items, thread_buckets=threads_b
-                )
-
-                if not sampled_a or not sampled_b:
-                    continue
-
-                work_items.append(
-                    {
-                        "level_label": level_label,
-                        "subject_a": subject_a,
-                        "subject_b": subject_b,
-                        "sampled_a": sampled_a,
-                        "sampled_b": sampled_b,
-                        "thread_a_path": " | ".join(
-                            _bucket_topic_context(bucket=b).strip()
-                            for b in threads_a[:3]
-                            if _bucket_topic_context(bucket=b)
-                        ),
-                        "thread_b_path": " | ".join(
-                            _bucket_topic_context(bucket=b).strip()
-                            for b in threads_b[:3]
-                            if _bucket_topic_context(bucket=b)
-                        ),
-                    }
-                )
-
-    total_pairs = len(work_items)
-    total_calls = total_pairs * 2  # Bidirectional confirmation
-
-    if phase3_excluded_count > 0:
-        logger.info(
-            f"Phase 3: excluded {phase3_excluded_count} subject bucket(s) with "
-            f"subject_label in {sorted(excluded)}"
-        )
-
-    logger.info(
-        f"{total_pairs} within-level cross-subject pairs for relatesTo inference "
-        f"(bidirectional confirmation => {total_calls} LLM calls)."
+    work_items = _build_relates_to_work_items(
+        excluded=excluded,
+        level_subject_threads=level_subject_threads,
+        max_items=max_items,
     )
 
-    current_call, inference_type = 0, "within_level_cross_subject_relates_to"
+    current_call = 0
+    inference_type = "within_level_cross_thread_relates_to"
+    total_pairs = len(work_items)
+    total_calls = total_pairs * 2  # Bidirectional confirmation
 
     for wi in work_items:
         level_label = wi["level_label"]
         subject_a, subject_b = wi["subject_a"], wi["subject_b"]
+
+        logger.info(f"Phase 3 Pair: ({level_label}: {subject_a} x {subject_b})")
+
         sampled_a, sampled_b = wi["sampled_a"], wi["sampled_b"]
+        sampled_a_count = wi["sampled_a_count"]
+        sampled_b_count = wi["sampled_b_count"]
         thread_a_path, thread_b_path = wi["thread_a_path"], wi["thread_b_path"]
-
-        logger.info(f"Phase 3 Pair: ({level_label}: {subject_a} × {subject_b})")
-
-        items_a, items_b = [_build_item_payload(item=it) for it in sampled_a], [
-            _build_item_payload(item=it) for it in sampled_b
-        ]
-
-        allowed_a, allowed_b = {str(it["sfi_uuid"]) for it in items_a}, {
-            str(it["sfi_uuid"]) for it in items_b
-        }
+        items_a = [_build_item_payload(item=it) for it in sampled_a]
+        items_b = [_build_item_payload(item=it) for it in sampled_b]
+        allowed_a = {str(it["sfi_uuid"]) for it in items_a}
+        allowed_b = {str(it["sfi_uuid"]) for it in items_b}
 
         # Bidirectional confirmation: run A x B and B x A, then keep only edges that
         # appear in both runs (canonicalized by UUID order).
@@ -3270,8 +3473,8 @@ def _infer_within_level_relates_to(
             max_edges_per_sfi=max_edges_per_sfi,
             min_confidence=config.lp_relates_to_min_confidence,
             subject_label=f"{subject_a} × {subject_b}",
-            thread_a_key=f"subject:{subject_a}",
-            thread_b_key=f"subject:{subject_b}",
+            thread_a_key=f"subject_like:{subject_a}",
+            thread_b_key=f"subject_like:{subject_b}",
             thread_a_path=thread_a_path or subject_a,
             thread_b_path=thread_b_path or subject_b,
         )
@@ -3280,7 +3483,7 @@ def _infer_within_level_relates_to(
 
         logger.info(
             f"Phase 3 Progress: {current_call}/{total_calls} "
-            f"({level_label}: {subject_a} × {subject_b} | relatesTo | A -> B)"
+            f"({level_label}: {subject_a} x {subject_b} | relatesTo | A -> B)"
         )
 
         resp_ab = infer_progression_edges(
@@ -3301,8 +3504,8 @@ def _infer_within_level_relates_to(
             max_edges_per_sfi=max_edges_per_sfi,
             min_confidence=config.lp_relates_to_min_confidence,
             subject_label=f"{subject_b} × {subject_a}",
-            thread_a_key=f"subject:{subject_b}",
-            thread_b_key=f"subject:{subject_a}",
+            thread_a_key=f"subject_like:{subject_b}",
+            thread_b_key=f"subject_like:{subject_a}",
             thread_a_path=thread_b_path or subject_b,
             thread_b_path=thread_a_path or subject_a,
         )
@@ -3311,7 +3514,7 @@ def _infer_within_level_relates_to(
 
         logger.info(
             f"Phase 3 Progress: {current_call}/{total_calls} "
-            f"({level_label}: {subject_a} × {subject_b} | relatesTo | B -> A)"
+            f"({level_label}: {subject_a} x {subject_b} | relatesTo | B -> A)"
         )
 
         resp_ba = infer_progression_edges(
@@ -3325,14 +3528,13 @@ def _infer_within_level_relates_to(
             ),
         )
 
-        m_ab, m_ba = _best_map(resp_ab), _best_map(resp_ba)
-        common_pairs = sorted(set(m_ab.keys()) & set(m_ba.keys()))
+        map_ab, map_ba = _best_map(resp_ab), _best_map(resp_ba)
+        common_pairs = sorted(set(map_ab.keys()) & set(map_ba.keys()))
 
         for u_a, u_b in common_pairs:
-            conf_ab, rat_ab = m_ab[(u_a, u_b)]
-            conf_ba, rat_ba = m_ba[(u_a, u_b)]
+            conf_ab, rat_ab = map_ab[(u_a, u_b)]
+            conf_ba, rat_ba = map_ba[(u_a, u_b)]
             conf = min(conf_ab, conf_ba)
-
             ce = CandidateEdge(
                 confidence=float(conf),
                 evidence={
@@ -3349,8 +3551,12 @@ def _infer_within_level_relates_to(
                     "bidirectional_confirmed": True,
                     "level_label": level_label,
                     "phase": 3,
+                    "sampled_a_count": sampled_a_count,
+                    "sampled_b_count": sampled_b_count,
                     "subject_a": subject_a,
                     "subject_b": subject_b,
+                    "thread_a_path": thread_a_path or subject_a,
+                    "thread_b_path": thread_b_path or subject_b,
                 },
                 rel_type=RELATES_TO,
                 source_sfi_uuid=_uuid(u_a),
@@ -3368,8 +3574,12 @@ def _infer_within_level_relates_to(
                     level_label=level_label,
                     rationale_fwd=rat_ab,
                     rationale_rev=rat_ba,
+                    sampled_a_count=sampled_a_count,
+                    sampled_b_count=sampled_b_count,
                     subject_a=subject_a,
                     subject_b=subject_b,
+                    thread_a_path=thread_a_path or subject_a,
+                    thread_b_path=thread_b_path or subject_b,
                 )
             )
 
@@ -5387,54 +5597,85 @@ def _resolve_subject_label(
 def _sample_items_across_threads(
     *, max_items: int, thread_buckets: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Round-robin sample up to max_items across multiple thread buckets. This keeps
-    calls bounded while retaining cross-thread diversity.
+    """Round-robin sample items across multiple buckets for a prompt-side group.
+
+    Phase 3 may compare subject-like groups that contain more than one bucket/thread.
+    This function keeps each LLM prompt bounded while preserving diversity across those
+    buckets: it takes the first item from each bucket, then the second item from each
+    bucket, and so on until `max_items` is reached or all buckets are exhausted.
+
+    The sampling state is tracked by bucket position rather than by thread key. This is
+    important because two buckets can legitimately share the same `lp_thread_key` or
+    fallback key; they should still be sampled independently.
+
+    Each returned item is a shallow copy of the source item with two prompt/debug helper
+    fields added:
+
+    - `_thread_key`: the bucket's thread key, bucket key, or a synthetic bucket key.
+    - `_thread_path`: compact human-readable topic context for the source bucket.
+
+    Examples
+    --------
+    1. Balanced sampling from two buckets
+
+        Given `max_items=4` and buckets::
+
+            [
+                {"lp_thread_key": "oral", "items": [A1, A2, A3]},
+                {"lp_thread_key": "lecture", "items": [B1, B2]},
+            ]
+
+        the output order is `[A1, B1, A2, B2]`.
+
+    2. Buckets with duplicate thread keys are still independent
+
+        Given two buckets that both have `lp_thread_key="palier_1"`, each bucket gets
+        its own internal index. The second bucket is not skipped or advanced because
+        the first bucket used the same key.
+
+    3. Empty or malformed buckets do not raise
+
+        A bucket with missing `items` or `items=[]` simply contributes no sampled items.
 
     Parameters
     ----------
     max_items
-        The maximum number of items to sample across all threads.
+        Maximum number of items to sample across all supplied buckets.
     thread_buckets
-        A list of thread buckets, where each bucket is a dictionary containing an
-        "lp_thread_key" (and optionally an "lp_bucket_key") and a list of "items"
-        (standards) belonging to that thread.
+        Stable-sorted bucket dictionaries to sample from.
 
     Returns
     -------
     list[dict[str, Any]]
-        A flat list of sampled StandardsFrameworkItem dictionaries drawn across the
-        provided thread buckets. Each returned item preserves SFI fields and may
-        include helper keys like "_thread_key" and "_thread_path".
+        A flat list of sampled item dictionaries for prompt construction.
     """
 
     # Thread buckets should already be stable-sorted by caller.
-    per_thread = [
-        ((b.get("lp_thread_key") or b.get("lp_bucket_key") or ""), list(b["items"]))
-        for b in thread_buckets
-    ]
-    path_by_key = {
-        (b.get("lp_thread_key") or b.get("lp_bucket_key") or ""): b.get(
-            "topic_path", ""
-        )
-        for b in thread_buckets
-    }
+    per_bucket: list[tuple[int, str, str, list[dict[str, Any]]]] = []
 
-    # Track per-thread index.
-    idxs = {t: 0 for t, _ in per_thread}
+    for bucket_idx, b in enumerate(thread_buckets):
+        tkey = str(
+            b.get("lp_thread_key") or b.get("lp_bucket_key") or f"bucket_{bucket_idx}"
+        )
+        thread_path = _bucket_topic_context(bucket=b)
+        items = list(b.get("items") or [])
+        per_bucket.append((bucket_idx, tkey, thread_path, items))
+
+    idxs = {bucket_idx: 0 for bucket_idx, _, _, _ in per_bucket}
     sampled: list[dict[str, Any]] = []
 
     while len(sampled) < max_items:
         progressed = False
 
-        for tkey, items in per_thread:
-            i = idxs[tkey]
+        for bucket_idx, tkey, thread_path, items in per_bucket:
+            i = idxs[bucket_idx]
 
             if i < len(items):
                 sampled_item = dict(items[i])
                 sampled_item["_thread_key"] = tkey
-                sampled_item["_thread_path"] = str(path_by_key.get(tkey, ""))
+                sampled_item["_thread_path"] = thread_path
                 sampled.append(sampled_item)
-                idxs[tkey] = i + 1
+                idxs[bucket_idx] = i + 1
                 progressed = True
 
                 if len(sampled) >= max_items:
