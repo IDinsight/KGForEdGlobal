@@ -386,8 +386,8 @@ def validate_cross_grade_relates_to(
 def validate_within_grade_builds_towards(
     response: ProgressionEdgesResponse,
     allowed_uuids: set[str],
+    min_confidence: float,
     uuid_positions: dict[str, int],
-    min_confidence: float | None = None,
 ) -> None:
     """Validate within-grade buildsTowards edges against constraints.
 
@@ -397,13 +397,12 @@ def validate_within_grade_builds_towards(
         The response containing the buildsTowards edges to validate.
     allowed_uuids
         The set of allowed SFI UUIDs (must be in the provided list).
+    min_confidence
+        Minimum confidence threshold. Any edge below this value is rejected so the
+        retry/validation agent can correct or omit it before candidate creation.
     uuid_positions
         A mapping of SFI UUIDs to their positions in the original list (for ordering
         checks in buildsTowards).
-    min_confidence
-        Optional minimum confidence threshold. If provided, any edge below this value
-        is rejected so the retry/validation agent can correct or omit it before
-        candidate creation.
 
     Raises
     ------
@@ -413,21 +412,6 @@ def validate_within_grade_builds_towards(
     """
 
     _check_common_edge_invariants(directed=True, response=response)
-
-    threshold: float | None = None
-
-    if min_confidence is not None:
-        try:
-            threshold = float(min_confidence)
-        except (TypeError, ValueError) as exc:
-            raise QualityError(
-                f"min_confidence is not a valid number: {min_confidence!r}"
-            ) from exc
-
-        if threshold < 0.0 or threshold > 1.0:
-            raise QualityError(
-                f"min_confidence must be between 0 and 1, got {threshold}."
-            )
 
     for e in response.edges:
         if (
@@ -439,10 +423,10 @@ def validate_within_grade_builds_towards(
         if e.source_sfi_uuid == e.target_sfi_uuid:
             raise QualityError("Self-edge is not allowed.")
 
-        if threshold is not None and float(e.confidence) < threshold:
+        if float(e.confidence) < min_confidence:
             raise QualityError(
                 f"Within-grade buildsTowards edge confidence {float(e.confidence):.3f} "
-                f"is below the configured minimum {threshold:.3f}. Omit this edge or "
+                f"is below the configured minimum {min_confidence:.3f}. Omit this edge or "
                 f"return it with a justified confidence at or above the threshold."
             )
 

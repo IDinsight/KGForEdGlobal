@@ -612,6 +612,9 @@ def _build_item_payload(
         "page_index": item.get("page_index"),
         "sfi_uuid": item["sfi_uuid"],
         "statement_code": item.get("statement_code"),
+        "statement_type": item.get("statement_type"),
+        "topic_path": item.get("topic_path"),
+        "topic_path_key": item.get("topic_path_key"),
     }
 
     if include_order_index:
@@ -2868,6 +2871,7 @@ def _infer_within_level_builds_towards(
             validator=partial(
                 validate_within_grade_builds_towards,
                 allowed_uuids=allowed,
+                min_confidence=config.lp_builds_towards_min_confidence,
                 uuid_positions=pos,
             ),
         )
