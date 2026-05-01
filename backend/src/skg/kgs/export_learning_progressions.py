@@ -5806,6 +5806,9 @@ def export_learning_progressions(
     candidates.extend(p4_candidates)
     provenance_rows.extend(p4_prov)
 
+    # Assign candidate UIDs after all inference phases are complete so that the
+    # provenance records can include the candidate UID for all candidates, including
+    # those that are later dropped during filtering and deduplication.
     candidates = _assign_candidate_uids(
         candidates=candidates, provenance_rows=provenance_rows
     )
