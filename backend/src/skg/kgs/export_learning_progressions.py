@@ -1438,7 +1438,240 @@ def _collect_builds_towards_work_items(
 def _collect_relates_to_work_items(
     *, config: CreateKGConfig, subject_level_samples: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Collect and configure eligible adjacent-level pairs for relatesTo inference.
+    """Collect eligible Phase 4 adjacent-level/adjacent-stage relatesTo work items.
+
+    This function receives the output of `_prepare_subject_level_samples()`, which is
+    organized as:
+
+        subject_label -> (level_low, level_high) -> sampled prompt items + metadata
+
+    It does not call the LLM. It only decides which same-subject adjacent level ranges
+    should be compared, and which prompt builder should be used.
+
+    A pair is eligible when:
+
+      1. The two level ranges are adjacent (`lower_high + 1 == upper_low`);
+      2. Both sides have non-empty sampled `items`;
+      3. The relevant config toggle is enabled:
+        - Adjacent single-level ranges use `cross_level_relates_to`;
+        - Pairs where either side is banded use `cross_stage_relates_to`.
+
+    Examples
+    --------
+    1. Adjacent single-grade levels produce a cross-level relatesTo work item
+
+        Given sampled subject-level data:
+
+            subject_level_samples = {
+                "Reading": {
+                    (1, 1): {
+                        "level_label": "Grade 1",
+                        "level_low": 1,
+                        "level_high": 1,
+                        "items": [
+                            {
+                                "sfi_uuid": "11111111-1111-1111-1111-111111111111",
+                                "description": "Identify letter sounds.",
+                                "thread_key": "strand=phonics",
+                            }
+                        ],
+                        "sampled_count": 1,
+                        "source_item_count": 5,
+                        "source_bucket_count": 1,
+                        "source_thread_keys": ["strand=phonics"],
+                        "source_bucket_keys": ["strand=phonics"],
+                        "sampled_sfi_uuids": [
+                            "11111111-1111-1111-1111-111111111111"
+                        ],
+                        "max_items": 10,
+                    },
+                    (2, 2): {
+                        "level_label": "Grade 2",
+                        "level_low": 2,
+                        "level_high": 2,
+                        "items": [
+                            {
+                                "sfi_uuid": "22222222-2222-2222-2222-222222222222",
+                                "description": "Read grade-level text fluently.",
+                                "thread_key": "strand=fluency",
+                            }
+                        ],
+                        "sampled_count": 1,
+                        "source_item_count": 6,
+                        "source_bucket_count": 1,
+                        "source_thread_keys": ["strand=fluency"],
+                        "source_bucket_keys": ["strand=fluency"],
+                        "sampled_sfi_uuids": [
+                            "22222222-2222-2222-2222-222222222222"
+                        ],
+                        "max_items": 10,
+                    },
+                }
+            }
+
+        If:
+
+            config.lp_cross_level_relates_to = True
+
+        then this function returns one work item:
+
+            [
+                {
+                    "subject_label": "Reading",
+                    "lo_low": 1,
+                    "lo_high": 1,
+                    "hi_low": 2,
+                    "hi_high": 2,
+                    "lower": subject_level_samples["Reading"][(1, 1)],
+                    "upper": subject_level_samples["Reading"][(2, 2)],
+                    "inference_type": "cross_level_relates_to",
+                    "prompt_builder": cross_level_relates_to,
+                }
+            ]
+
+        Later `_infer_cross_level_relates_to()` uses that work item to run
+        bidirectional relatesTo inference between Grade 1 Reading and Grade 2 Reading.
+
+    2. Adjacent banded stages produce a cross-stage relatesTo work item
+
+        Given:
+
+            subject_level_samples = {
+                "Mathematics": {
+                    (1, 2): {
+                        "level_label": "Standards I-II",
+                        "level_low": 1,
+                        "level_high": 2,
+                        "items": [...],
+                    },
+                    (3, 6): {
+                        "level_label": "Standards III-VI",
+                        "level_low": 3,
+                        "level_high": 6,
+                        "items": [...],
+                    },
+                }
+            }
+
+        The ranges are adjacent because `2 + 1 == 3`. Since at least one side is banded
+        (`low != high`), this is not a single-level comparison.
+
+        If:
+
+            config.lp_cross_stage_relates_to = True
+
+        the function returns a work item using:
+
+            inference_type = "cross_stage_relates_to"
+            prompt_builder = cross_stage_relates_to
+
+        If `config.lp_cross_stage_relates_to = False`, the pair is skipped.
+
+    3. Non-adjacent ranges are skipped
+
+        Given:
+
+            subject_level_samples = {
+                "Science": {
+                    (1, 1): {"level_label": "Grade 1", "items": [...]},
+                    (3, 3): {"level_label": "Grade 3", "items": [...]},
+                }
+            }
+
+        the function considers `(1, 1) -> (3, 3)` but skips it because:
+
+            lo_high + 1 != hi_low
+            1 + 1 != 3
+
+        No work item is returned for this subject. This prevents Phase 4 from inventing
+        cross-level associations across a missing Grade 2 level.
+
+    4. Empty sampled sides are skipped
+
+        Given:
+
+            subject_level_samples = {
+                "Reading": {
+                    (1, 1): {"level_label": "Grade 1", "items": []},
+                    (2, 2): {"level_label": "Grade 2", "items": [...]},
+                }
+            }
+
+        the adjacent level pair is skipped because the lower side has no sampled prompt
+        items. This avoids sending empty item lists to the LLM.
+
+    5. Single-level pairs obey the cross-level toggle
+
+        Given adjacent single-level ranges:
+
+            (1, 1) -> (2, 2)
+
+        the function only emits a work item when:
+
+            config.lp_cross_level_relates_to = True
+
+        If that flag is False, the pair is skipped even though the levels are adjacent.
+
+    6. Banded pairs obey the cross-stage toggle
+
+        Given adjacent ranges where either side is banded:
+
+            (1, 2) -> (3, 3)
+            (1, 1) -> (2, 4)
+            (1, 2) -> (3, 6)
+
+        the function only emits a work item when:
+
+            config.lp_cross_stage_relates_to = True
+
+        If that flag is False, the pair is skipped.
+
+    7. More than two levels produce one work item per adjacent pair
+
+        Given:
+
+            subject_level_samples = {
+                "Reading": {
+                    (1, 1): {"level_label": "Grade 1", "items": [...]},
+                    (2, 2): {"level_label": "Grade 2", "items": [...]},
+                    (3, 3): {"level_label": "Grade 3", "items": [...]},
+                }
+            }
+
+        and `config.lp_cross_level_relates_to = True`, the function returns two work
+        items:
+
+            Grade 1 -> Grade 2
+            Grade 2 -> Grade 3
+
+        It does not compare Grade 1 directly to Grade 3.
+
+    8. Different subjects are never compared to each other in Phase 4
+
+        Given:
+
+            subject_level_samples = {
+                "Reading": {
+                    (1, 1): {"level_label": "Grade 1", "items": [...]},
+                    (2, 2): {"level_label": "Grade 2", "items": [...]},
+                },
+                "Writing": {
+                    (1, 1): {"level_label": "Grade 1", "items": [...]},
+                    (2, 2): {"level_label": "Grade 2", "items": [...]},
+                },
+            }
+
+        the function may create:
+
+            Reading Grade 1 -> Reading Grade 2
+            Writing Grade 1 -> Writing Grade 2
+
+        It will not create:
+
+            Reading Grade 1 -> Writing Grade 2
+
+        Cross-subject or cross-strand relationships are handled by Phase 3 within-level
+        relatesTo, not by Phase 4.
 
     Parameters
     ----------
