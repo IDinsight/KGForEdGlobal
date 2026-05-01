@@ -72,7 +72,7 @@ RELATES_TO = "relatesTo"
 SFIContextScope = Literal["cross_level", "within_level"]
 WITHIN_LEVEL_INFERENCE_TYPES: set[str] = {
     "within_level_builds_towards",
-    "within_level_cross_subject_relates_to",
+    "within_level_cross_thread_relates_to",
     "within_level_relates_to",
 }
 
