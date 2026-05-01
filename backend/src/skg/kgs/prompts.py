@@ -44,9 +44,10 @@ def _builds_towards_cross_level(
     task_description: str,
     task_label: str,
     thread_key: str,
-    thread_path: str,
+    lower_topic_context: str,
     upper_items: list[dict[str, Any]],
     upper_level_label: str,
+    upper_topic_context: str,
 ) -> PromptPair:
     """Shared implementation for cross-level and cross-stage buildsTowards prompts.
 
@@ -67,9 +68,10 @@ def _builds_towards_cross_level(
         The task label for the TASK header (e.g., "Cross-Level" or "Cross-Stage").
     thread_key
         The normalized thread key for context (e.g., "math_geometry_shapes").
-    thread_path
-        The human-readable thread path for context (e.g., "Mathematics > Geometry >
-        Shapes").
+    lower_topic_context
+        The human-readable topic/path context for the lower-level items.
+    upper_topic_context
+        The human-readable topic/path context for the upper-level items.
     upper_items
         The list of items from the upper level.
     upper_level_label
@@ -98,6 +100,7 @@ HARD RULES:
 3. Do NOT emit "obvious but weak" links. Only emit when the lower item truly builds foundation.
 4. Prefer fewer, higher-quality edges.
 5. Do not link items merely because they share a topic label; the lower item must provide knowledge, skill, or conceptual foundation needed for the upper item.
+6. Return an empty `edges` list if there are no clear prerequisite relationships.
 
 {confidence_block}
         """
@@ -111,7 +114,8 @@ HARD RULES:
             "lower_level_label": lower_level_label,
             "upper_level_label": upper_level_label,
             "thread_key": thread_key,
-            "thread_path": thread_path,
+            "lower_topic_context": lower_topic_context,
+            "upper_topic_context": upper_topic_context,
             "lower_level_items": lower_items,
             "upper_level_items": upper_items,
         },
@@ -248,11 +252,12 @@ def cross_level_builds_towards(
     *,
     lower_items: list[dict[str, Any]],
     lower_level_label: str,
+    lower_topic_context: str,
     min_confidence: float,
     thread_key: str,
-    thread_path: str,
     upper_items: list[dict[str, Any]],
     upper_level_label: str,
+    upper_topic_context: str,
 ) -> PromptPair:
     """Cross-level buildsTowards between adjacent levels within a normalized thread.
 
@@ -262,18 +267,19 @@ def cross_level_builds_towards(
         The list of items from the lower level.
     lower_level_label
         The label of the lower level (e.g., "Grade 3").
+    lower_topic_context
+        The human-readable topic/path context for the lower-level items.
     min_confidence
         The minimum confidence threshold from the config; edges below this should be
         omitted.
     thread_key
         The normalized thread key for context (e.g., "math_geometry_shapes").
-    thread_path
-        The human-readable thread path for context (e.g., "Mathematics > Geometry >
-        Shapes").
     upper_items
         The list of items from the upper level.
     upper_level_label
         The label of the upper level (e.g., "Grade 4").
+    upper_topic_context
+        The human-readable topic/path context for the upper-level items.
 
     Returns
     -------
@@ -284,15 +290,16 @@ def cross_level_builds_towards(
     return _builds_towards_cross_level(
         lower_items=lower_items,
         lower_level_label=lower_level_label,
+        lower_topic_context=lower_topic_context,
         min_confidence=min_confidence,
         task_description=(
             "You will receive standards from two ADJACENT levels that belong to the SAME conceptual thread."
         ),
         task_label="Cross-Level",
         thread_key=thread_key,
-        thread_path=thread_path,
         upper_items=upper_items,
         upper_level_label=upper_level_label,
+        upper_topic_context=upper_topic_context,
     )
 
 
@@ -357,11 +364,12 @@ def cross_stage_builds_towards(
     *,
     lower_items: list[dict[str, Any]],
     lower_level_label: str,
+    lower_topic_context: str,
     min_confidence: float,
     thread_key: str,
-    thread_path: str,
     upper_items: list[dict[str, Any]],
     upper_level_label: str,
+    upper_topic_context: str,
 ) -> PromptPair:
     """Cross-stage buildsTowards between adjacent *level ranges* within a normalized
     thread.
@@ -381,9 +389,10 @@ def cross_stage_builds_towards(
         underlying cross-level prompt.
     thread_key
         The normalized thread key for context (e.g., "math_geometry_shapes").
-    thread_path
-        The human-readable thread path for context (e.g., "Mathematics > Geometry >
-        Shapes").
+    lower_topic_context
+        The human-readable topic/path context for the lower-level items.
+    upper_topic_context
+        The human-readable topic/path context for the upper-level items.
     upper_items
         The list of items from the upper level.
     upper_level_label
@@ -398,6 +407,7 @@ def cross_stage_builds_towards(
     return _builds_towards_cross_level(
         lower_items=lower_items,
         lower_level_label=lower_level_label,
+        lower_topic_context=lower_topic_context,
         min_confidence=min_confidence,
         note_suffix=(
             "\n\nNOTE: The level labels may be *banded stages* (e.g., I–II, III–VI), "
@@ -411,9 +421,9 @@ def cross_stage_builds_towards(
         ),
         task_label="Cross-Stage",
         thread_key=thread_key,
-        thread_path=thread_path,
         upper_items=upper_items,
         upper_level_label=upper_level_label,
+        upper_topic_context=upper_topic_context,
     )
 
 

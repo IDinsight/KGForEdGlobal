@@ -317,9 +317,17 @@ def validate_cross_level_builds_towards(
     Raises
     ------
     QualityError
-        If any edge violates validation rules (unknown UUIDs, self-edges,
-        low confidence, etc).
+        If any edge violates validation rules (unknown UUIDs, self-edges, low
+        confidence, etc).
     """
+
+    overlap = allowed_lo & allowed_hi
+
+    if overlap:
+        raise QualityError(
+            f"Cross-level buildsTowards lower and upper allowed UUID sets must be "
+            f"disjoint. Overlap examples: {sorted(overlap)[:5]}"
+        )
 
     _check_common_edge_invariants(directed=True, response=response)
 

@@ -1206,45 +1206,58 @@ def _collect_builds_towards_work_items(
 
         lo_lo, lo_hi = _level_bounds(lower)
         hi_lo, hi_hi = _level_bounds(upper)
-
-        if (not isinstance(lo_lo, int) or not isinstance(lo_hi, int)) or (
-            not isinstance(hi_lo, int) or not isinstance(hi_hi, int)
-        ):
-            return False
-
-        return lo_hi + 1 == hi_lo
+        return (
+            False
+            if (not isinstance(lo_lo, int) or not isinstance(lo_hi, int))
+            or (not isinstance(hi_lo, int) or not isinstance(hi_hi, int))
+            else lo_hi + 1 == hi_lo
+        )
 
     work_items: list[
         tuple[str, dict[str, Any], dict[str, Any], str, Callable[..., Any]]
     ] = []
 
     for thread_key, buckets in thread_map.items():
-        for b_lo, b_hi in zip(buckets, buckets[1:]):
-            if not _levels_adjacent(lower=b_lo, upper=b_hi):
-                continue
+        seen_level_ranges: set[tuple[int, int]] = set()
 
+        for bucket in buckets:
+            low, high = _level_bounds(bucket)
+
+            if isinstance(low, int) and isinstance(high, int):
+                level_range = (low, high)
+
+                if level_range in seen_level_ranges:
+                    logger.warning(
+                        f"Duplicate level bounds in cross-level buildsTowards thread "
+                        f"{thread_key}: {level_range}. Only adjacent sorted pairs "
+                        f"will be considered. bucket_key={bucket.get('lp_bucket_key')!r}"
+                    )
+
+                seen_level_ranges.add(level_range)
+
+        for b_lo, b_hi in zip(buckets, buckets[1:]):
             lower_items = b_lo.get("items") or []
             upper_items = b_hi.get("items") or []
 
-            if not lower_items or not upper_items:
+            if not _levels_adjacent(lower=b_lo, upper=b_hi) or (
+                not lower_items or not upper_items
+            ):
                 continue
 
             both_single = _is_single_level_bucket(b_lo) and _is_single_level_bucket(
                 b_hi
             )
 
-            if both_single:
-                if not config.lp_cross_level_builds_towards:
-                    continue
-
+            # Route to the correct prompt builder based on the config and bucket types.
+            if both_single and config.lp_cross_level_builds_towards:
                 inference_type = "cross_level_builds_towards"
                 prompt_builder = cross_level_builds_towards
-            else:
-                if not config.lp_cross_stage_builds_towards:
-                    continue
-
+            elif not both_single and config.lp_cross_stage_builds_towards:
                 inference_type = "cross_stage_builds_towards"
                 prompt_builder = cross_stage_builds_towards
+            else:
+                # Feature is disabled in config for this specific bucket pairing.
+                continue
 
             work_items.append((thread_key, b_lo, b_hi, inference_type, prompt_builder))
 
@@ -2808,15 +2821,18 @@ def _infer_cross_level_builds_towards(
             _build_item_payload(include_order_index=True, item=it)
             for it in (b_hi.get("items") or [])
         ]
+        lower_topic_context = _bucket_topic_context(bucket=b_lo)
+        upper_topic_context = _bucket_topic_context(bucket=b_hi)
 
         prompt = prompt_builder(
             lower_items=lower_payload,
             lower_level_label=lo_label,
+            lower_topic_context=lower_topic_context,
             min_confidence=min_confidence,
             thread_key=thread_key,
-            thread_path=_bucket_topic_context(bucket=b_hi),
             upper_items=upper_payload,
             upper_level_label=hi_label,
+            upper_topic_context=upper_topic_context,
         )
 
         response = infer_progression_edges(
@@ -2845,12 +2861,15 @@ def _infer_cross_level_builds_towards(
                     "lower_level_high": lo_hi,
                     "lower_level_label": lo_label,
                     "lower_level_low": lo_lo,
+                    "lp_bucket_key_lower": b_lo.get("lp_bucket_key"),
                     "lp_bucket_key_upper": b_hi.get("lp_bucket_key"),
                     "lp_thread_key": b_hi.get("lp_thread_key"),
                     "phase": 2,
                     "subject_label": b_hi.get("subject_label"),
                     "thread_key": thread_key,
+                    "topic_path_examples_lower": b_lo.get("topic_path_examples"),
                     "topic_path_examples_upper": b_hi.get("topic_path_examples"),
+                    "topic_path_keys_lower": b_lo.get("topic_path_keys"),
                     "topic_path_keys_upper": b_hi.get("topic_path_keys"),
                     "upper_level_high": hi_hi,
                     "upper_level_label": hi_label,
@@ -2864,7 +2883,7 @@ def _infer_cross_level_builds_towards(
 
             # Validator-side checks should already enforce the confidence threshold.
             # Keep this guard just in case so only final-threshold buildsTowards pairs
-            # suppressPhase 4 relatesTo candidates.
+            # suppress Phase 4 relatesTo candidates.
             if confidence_val >= min_confidence:
                 cross_level_build_pairs.add((source_uuid, target_uuid))
 
@@ -2873,10 +2892,21 @@ def _infer_cross_level_builds_towards(
                     candidate=ce,
                     inference_type=inference_type,
                     phase=2,
+                    lower_bucket_key=b_lo.get("lp_bucket_key"),
+                    lower_item_count=len(lower_payload),
                     lower_level=lo_label,
+                    lower_level_high=lo_hi,
+                    lower_level_low=lo_lo,
+                    lower_topic_context=lower_topic_context,
                     rationale=e.rationale,
+                    subject_label=b_hi.get("subject_label"),
                     thread_key=thread_key,
+                    upper_bucket_key=b_hi.get("lp_bucket_key"),
+                    upper_item_count=len(upper_payload),
                     upper_level=hi_label,
+                    upper_level_high=hi_hi,
+                    upper_level_low=hi_lo,
+                    upper_topic_context=upper_topic_context,
                 )
             )
 
