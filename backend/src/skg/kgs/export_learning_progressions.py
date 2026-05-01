@@ -3224,8 +3224,8 @@ def _infer_cross_level_relates_to(
     if not (config.lp_cross_level_relates_to or config.lp_cross_stage_relates_to):
         return candidates, provenance_rows
 
-    max_items = int(config.lp_cross_level_relates_to_max_items_per_subject)
-    max_edges_per_sfi = int(config.lp_relates_to_max_edges_per_sfi)
+    max_edges_per_sfi = config.lp_relates_to_max_edges_per_sfi
+    max_items = config.lp_cross_level_relates_to_max_items_per_subject
 
     subject_level_samples = _prepare_subject_level_samples(
         by_level=by_level,
@@ -3263,8 +3263,8 @@ def _infer_cross_level_relates_to(
         lower_items = lower_dict["items"]
         upper_items = upper_dict["items"]
 
-        lower_lbl = str(lower_dict["level_label"])
-        upper_lbl = str(upper_dict["level_label"])
+        lower_lvl_lbl = str(lower_dict["level_label"])
+        upper_lvl_lbl = str(upper_dict["level_label"])
         subject_label = wi["subject_label"]
         inference_type = wi["inference_type"]
         prompt_builder = wi["prompt_builder"]
@@ -3279,9 +3279,9 @@ def _infer_cross_level_relates_to(
         prompt_lo_hi = prompt_builder(
             forbidden_pairs=forbidden_pairs,
             list_a_items=lower_items,
-            list_a_level_label=lower_lbl,
+            list_a_level_label=lower_lvl_lbl,
             list_b_items=upper_items,
-            list_b_level_label=upper_lbl,
+            list_b_level_label=upper_lvl_lbl,
             max_edges_per_sfi=max_edges_per_sfi,
             min_confidence=config.lp_relates_to_min_confidence,
             subject_label=subject_label,
@@ -3291,7 +3291,7 @@ def _infer_cross_level_relates_to(
 
         logger.info(
             f"Phase 4 Progress: {current_call_idx}/{total_calls} "
-            f"({subject_label}: {lower_lbl} -> {upper_lbl} | {inference_type} | lo -> hi)"
+            f"({subject_label}: {lower_lvl_lbl} -> {upper_lvl_lbl} | {inference_type} | lo -> hi)"
         )
 
         resp_lo_hi = infer_progression_edges(
@@ -3313,9 +3313,9 @@ def _infer_cross_level_relates_to(
         prompt_hi_lo = prompt_builder(
             forbidden_pairs=forbidden_pairs,
             list_a_items=upper_items,
-            list_a_level_label=upper_lbl,
+            list_a_level_label=upper_lvl_lbl,
             list_b_items=lower_items,
-            list_b_level_label=lower_lbl,
+            list_b_level_label=lower_lvl_lbl,
             max_edges_per_sfi=max_edges_per_sfi,
             min_confidence=config.lp_relates_to_min_confidence,
             subject_label=subject_label,
@@ -3325,7 +3325,7 @@ def _infer_cross_level_relates_to(
 
         logger.info(
             f"Phase 4 Progress: {current_call_idx}/{total_calls} "
-            f"({subject_label}: {lower_lbl} -> {upper_lbl} | {inference_type} | hi -> lo)"
+            f"({subject_label}: {lower_lvl_lbl} -> {upper_lvl_lbl} | {inference_type} | hi -> lo)"
         )
 
         resp_hi_lo = infer_progression_edges(
@@ -3363,12 +3363,12 @@ def _infer_cross_level_relates_to(
                 metadata={
                     "bidirectional_confirmed": True,
                     "lower_level_high": wi["lo_high"],
-                    "lower_level_label": lower_lbl,
+                    "lower_level_label": lower_lvl_lbl,
                     "lower_level_low": wi["lo_low"],
                     "phase": 4,
                     "subject_label": subject_label,
                     "upper_level_high": wi["hi_high"],
-                    "upper_level_label": upper_lbl,
+                    "upper_level_label": upper_lvl_lbl,
                     "upper_level_low": wi["hi_low"],
                 },
                 rel_type=RELATES_TO,
@@ -3387,8 +3387,8 @@ def _infer_cross_level_relates_to(
                     rationale_fwd=rat_lo_hi,
                     rationale_rev=rat_hi_lo,
                     subject_label=subject_label,
-                    lower_level=lower_lbl,
-                    upper_level=upper_lbl,
+                    lower_level=lower_lvl_lbl,
+                    upper_level=upper_lvl_lbl,
                 )
             )
 
