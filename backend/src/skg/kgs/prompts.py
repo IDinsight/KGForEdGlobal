@@ -742,7 +742,7 @@ def within_grade_builds_towards(
         The minimum confidence threshold from the config; edges below this should be
         omitted.
     thread_path
-        The conceptual thread path for the items (e.g., "Mathematics > Geometry >
+        The conceptual thread path for the items (e.g., "Mathematics -> Geometry ->
         Shapes").
 
     Returns

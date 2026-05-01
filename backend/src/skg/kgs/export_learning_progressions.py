@@ -106,7 +106,7 @@ def _allow_within_grade_inference(
     """Return True if Phase 1/3 within-grade inference should consider this bucket.
 
     By default, we only run within-grade inference for single-grade buckets. If
-    lp_within_grade_allow_banded_levels=True, banded/stage buckets are allowed.
+    config.lp_within_grade_allow_banded_levels=True, banded/stage buckets are allowed.
 
     Parameters
     ----------
@@ -605,11 +605,11 @@ def _build_item_payload(
     """
 
     payload: dict[str, Any] = {
-        "sfi_uuid": item["sfi_uuid"],
-        "statement_code": item.get("statement_code"),
         "description": item.get("description"),
         "notes": item.get("notes"),
         "page_index": item.get("page_index"),
+        "sfi_uuid": item["sfi_uuid"],
+        "statement_code": item.get("statement_code"),
     }
 
     if include_order_index:
@@ -2823,7 +2823,7 @@ def _infer_within_grade_builds_towards(
     if not config.lp_within_grade_builds_towards:
         return candidates, provenance_rows
 
-    # Collect eligible buckets so total_calls is exact.
+    # Collect eligible buckets so `total_calls` is exact.
     eligible: list[tuple[str, dict[str, Any]]] = [
         (level_label, bucket)
         for level_label, level_buckets in by_level.items()
@@ -2832,16 +2832,17 @@ def _infer_within_grade_builds_towards(
         and len(bucket.get("items") or []) >= 2
     ]
     total_calls = len(eligible)
+
     logger.info(
         f"{total_calls} buckets with 2+ items for within-level buildsTowards inference."
     )
 
     for current_call, (level_label, bucket) in enumerate(eligible, 1):
-        items = bucket.get("items") or []
+        items = bucket["items"]  # Should have at least 2 items due to the filter above
 
         logger.info(
             f"Phase 1 Progress: {current_call}/{total_calls} "
-            f"({level_label} - {bucket.get('lp_bucket_key')})"
+            f"({level_label}: {bucket.get('lp_bucket_key')})"
         )
 
         ordered_items = [
@@ -3152,13 +3153,13 @@ def _infer_within_grade_relates_to(
     return candidates, provenance_rows
 
 
-def _is_single_grade_bucket(b: dict[str, Any]) -> bool:
+def _is_single_grade_bucket(bucket: dict[str, Any]) -> bool:
     """Determine if a bucket corresponds to a single grade level based on its grade
     ordinal.
 
     Parameters
     ----------
-    b
+    bucket
         A bucket dictionary that may contain grade ordinal information.
 
     Returns
@@ -3168,7 +3169,7 @@ def _is_single_grade_bucket(b: dict[str, Any]) -> bool:
         ordinals are both integers and equal), False otherwise.
     """
 
-    lo, hi = _level_bounds(b)
+    lo, hi = _level_bounds(bucket)
     return isinstance(lo, int) and isinstance(hi, int) and lo == hi
 
 
@@ -3205,12 +3206,12 @@ def _item_doc_position_key(item: dict[str, Any]) -> tuple[int, float]:
     return page_i, y0_f
 
 
-def _level_bounds(b: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+def _level_bounds(bucket: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
     """Return (low, high) ordinals for a bucket when available.
 
     Parameters
     ----------
-    b
+    bucket
         A bucket dictionary that may contain "level_ordinal_low", "level_ordinal_high",
         or "level_ordinal" keys representing the curriculum level information for the
         standards contained in the bucket.
@@ -3221,20 +3222,20 @@ def _level_bounds(b: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
         The low and high level ordinals for the bucket. If both "level_ordinal_low"
         and "level_ordinal_high" are present and valid integers, those values are
         returned. If only "level_ordinal" is present and valid, it is returned as both
-        the low and high ordinal. If neither is available or valid, (None, None) is
+        the low and high ordinal. If neither is available nor valid, (None, None) is
         returned.
     """
 
-    lo = b.get("level_ordinal_low")
-    hi = b.get("level_ordinal_high")
+    lo = bucket.get("level_ordinal_low")
+    hi = bucket.get("level_ordinal_high")
 
     if isinstance(lo, int) and isinstance(hi, int):
         return lo, hi
 
-    ord_ = b.get("level_ordinal")
+    ordinal = bucket.get("level_ordinal")
 
-    if isinstance(ord_, int):
-        return int(ord_), int(ord_)
+    if isinstance(ordinal, int):
+        return int(ordinal), int(ordinal)
 
     return None, None
 
