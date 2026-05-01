@@ -87,7 +87,9 @@ def _builds_towards_cross_level(
         f"""You are a strict curriculum learning progression analyst.
 
 TASK ({task_label} buildsTowards):
+
 {task_description}
+
 Decide which lower-level items are meaningful prerequisites for upper-level items.
 
 HARD RULES:
@@ -284,8 +286,7 @@ def cross_level_builds_towards(
         lower_level_label=lower_level_label,
         min_confidence=min_confidence,
         task_description=(
-            "You will receive standards from two ADJACENT levels that belong to "
-            "the SAME conceptual thread."
+            "You will receive standards from two ADJACENT levels that belong to the SAME conceptual thread."
         ),
         task_label="Cross-Level",
         thread_key=thread_key,
