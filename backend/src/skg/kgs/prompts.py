@@ -95,6 +95,7 @@ HARD RULES:
 2. Direction constraint: source MUST be from the LOWER level list, target MUST be from the UPPER level list.
 3. Do NOT emit "obvious but weak" links. Only emit when the lower item truly builds foundation.
 4. Prefer fewer, higher-quality edges.
+5. Do not link items merely because they share a topic label; the lower item must provide knowledge, skill, or conceptual foundation needed for the upper item.
 
 {confidence_block}
         """
