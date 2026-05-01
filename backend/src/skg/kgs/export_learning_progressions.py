@@ -21,6 +21,7 @@ Phases (toggleable via CreateKGConfig):
 
 # Standard Library
 import hashlib
+import itertools
 import json
 import re
 
@@ -2105,6 +2106,56 @@ def _emit_relationship(
     )
 
 
+def _evenly_spaced_indexes(*, max_items: int, total_items: int) -> list[int]:
+    """Return deterministic, order-preserving indexes spread across a sequence.
+
+    This helper is used when Phase 3 compares a subject-like group represented by one
+    large bucket. Taking the first N items from a long curriculum strand over
+    represents the early part of the source sequence. Evenly spaced indexes preserve
+    deterministic ordering while giving the prompt coverage across the beginning,
+    middle, and end of the bucket.
+
+    Parameters
+    ----------
+    max_items
+        Maximum number of indexes to return.
+    total_items
+        Number of available ordered items.
+
+    Returns
+    -------
+    list[int]
+        Zero-based indexes into the original item list. The list is sorted and contains
+        no duplicates.
+    """
+
+    if max_items <= 0 or total_items <= 0:
+        return []
+
+    if total_items <= max_items:
+        return list(range(total_items))
+
+    if max_items == 1:
+        return [0]
+
+    last_index = total_items - 1
+    indexes = [round(i * last_index / (max_items - 1)) for i in range(max_items)]
+
+    # With total_items > max_items, the step is > 1, so duplicates should not occur.
+    # Keep this defensive de-duplication anyway so the function remains safe if reused.
+    deduped: list[int] = []
+    seen: set[int] = set()
+
+    for idx in indexes:
+        idx = max(0, min(last_index, int(idx)))
+
+        if idx not in seen:
+            deduped.append(idx)
+            seen.add(idx)
+
+    return deduped
+
+
 def _filter_builds_towards_within_level_order(
     *, edges: list[CandidateEdge], within_sfi_index: dict[str, dict[str, Any]]
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
@@ -3462,8 +3513,10 @@ def _infer_within_level_relates_to(
         thread_a_path, thread_b_path = wi["thread_a_path"], wi["thread_b_path"]
         items_a = [_build_item_payload(item=it) for it in sampled_a]
         items_b = [_build_item_payload(item=it) for it in sampled_b]
-        allowed_a = {str(it["sfi_uuid"]) for it in items_a}
-        allowed_b = {str(it["sfi_uuid"]) for it in items_b}
+        sampled_a_sfi_uuids = [str(it["sfi_uuid"]) for it in items_a]
+        sampled_b_sfi_uuids = [str(it["sfi_uuid"]) for it in items_b]
+        allowed_a = set(sampled_a_sfi_uuids)
+        allowed_b = set(sampled_b_sfi_uuids)
 
         # Bidirectional confirmation: run A x B and B x A, then keep only edges that
         # appear in both runs (canonicalized by UUID order).
@@ -3495,6 +3548,7 @@ def _infer_within_level_relates_to(
                 validate_within_level_relates_to,
                 allowed_uuids_a=allowed_a,
                 allowed_uuids_b=allowed_b,
+                min_confidence=config.lp_relates_to_min_confidence,
             ),
         )
 
@@ -3526,6 +3580,7 @@ def _infer_within_level_relates_to(
                 validate_within_level_relates_to,
                 allowed_uuids_a=allowed_b,
                 allowed_uuids_b=allowed_a,
+                min_confidence=config.lp_relates_to_min_confidence,
             ),
         )
 
@@ -3553,7 +3608,9 @@ def _infer_within_level_relates_to(
                     "level_label": level_label,
                     "phase": 3,
                     "sampled_a_count": sampled_a_count,
+                    "sampled_a_sfi_uuids": sampled_a_sfi_uuids,
                     "sampled_b_count": sampled_b_count,
+                    "sampled_b_sfi_uuids": sampled_b_sfi_uuids,
                     "subject_a": subject_a,
                     "subject_b": subject_b,
                     "thread_a_path": thread_a_path or subject_a,
@@ -3576,7 +3633,9 @@ def _infer_within_level_relates_to(
                     rationale_fwd=rat_ab,
                     rationale_rev=rat_ba,
                     sampled_a_count=sampled_a_count,
+                    sampled_a_sfi_uuids=sampled_a_sfi_uuids,
                     sampled_b_count=sampled_b_count,
+                    sampled_b_sfi_uuids=sampled_b_sfi_uuids,
                     subject_a=subject_a,
                     subject_b=subject_b,
                     thread_a_path=thread_a_path or subject_a,
@@ -5598,26 +5657,39 @@ def _resolve_subject_label(
 def _sample_items_across_threads(
     *, max_items: int, thread_buckets: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Round-robin sample items across multiple buckets for a prompt-side group.
+    """Sample prompt items across one or more buckets for a subject-like group.
 
-    Phase 3 may compare subject-like groups that contain more than one bucket/thread.
-    This function keeps each LLM prompt bounded while preserving diversity across those
-    buckets: it takes the first item from each bucket, then the second item from each
-    bucket, and so on until `max_items` is reached or all buckets are exhausted.
+    Phase 3 may compare subject-like groups that contain one bucket/thread or many
+    buckets/threads. The sampler keeps each LLM prompt bounded while trying to preserve
+    useful coverage:
 
-    The sampling state is tracked by bucket position rather than by thread key. This is
-    important because two buckets can legitimately share the same `lp_thread_key` or
-    fallback key; they should still be sampled independently.
+    - For one large bucket, sample evenly across the ordered item sequence instead of
+      taking the first N items. This avoids over representing only the beginning of a
+      long curriculum strand.
+    - For multiple buckets, round-robin across buckets: first item from each bucket,
+      second item from each bucket, and so on until `max_items` is reached or all
+      buckets are exhausted. This preserves diversity across threads.
 
-    Each returned item is a shallow copy of the source item with two prompt/debug helper
+    The sampling state for multi-bucket groups is tracked by bucket position rather
+    than by thread key. This is important because two buckets can legitimately share
+    the same `lp_thread_key` or fallback key; they should still be sampled
+    independently.
+
+    Each returned item is a shallow copy of the source item with prompt/debug helper
     fields added:
 
+    - `_sampling_strategy`: `even_spread_single_bucket` or `round_robin_threads`.
     - `_thread_key`: the bucket's thread key, bucket key, or a synthetic bucket key.
     - `_thread_path`: compact human-readable topic context for the source bucket.
 
     Examples
     --------
-    1. Balanced sampling from two buckets
+    1. Even spread from one large bucket
+
+        Given `max_items=4` and one bucket with 10 ordered items, the sampled indexes
+        are approximately `[0, 3, 6, 9]`.
+
+    2. Balanced sampling from two buckets
 
         Given `max_items=4` and buckets::
 
@@ -5628,13 +5700,13 @@ def _sample_items_across_threads(
 
         the output order is `[A1, B1, A2, B2]`.
 
-    2. Buckets with duplicate thread keys are still independent
+    3. Buckets with duplicate thread keys are still independent
 
         Given two buckets that both have `lp_thread_key="palier_1"`, each bucket gets
         its own internal index. The second bucket is not skipped or advanced because
         the first bucket used the same key.
 
-    3. Empty or malformed buckets do not raise
+    4. Empty or malformed buckets do not raise
 
         A bucket with missing `items` or `items=[]` simply contributes no sampled items.
 
@@ -5651,39 +5723,66 @@ def _sample_items_across_threads(
         A flat list of sampled item dictionaries for prompt construction.
     """
 
-    # Thread buckets should already be stable-sorted by caller.
-    per_bucket: list[tuple[int, str, str, list[dict[str, Any]]]] = []
+    if max_items <= 0:
+        return []
+
+    # Filter and prepare valid buckets.
+    valid_buckets: list[tuple[str, str, list[dict[str, Any]]]] = []
 
     for bucket_idx, b in enumerate(thread_buckets):
+        items = list(b.get("items") or [])
+
+        if not items:
+            continue
+
         tkey = str(
             b.get("lp_thread_key") or b.get("lp_bucket_key") or f"bucket_{bucket_idx}"
         )
         thread_path = _bucket_topic_context(bucket=b)
-        items = list(b.get("items") or [])
-        per_bucket.append((bucket_idx, tkey, thread_path, items))
 
-    idxs = {bucket_idx: 0 for bucket_idx, _, _, _ in per_bucket}
+        valid_buckets.append((tkey, thread_path, items))
+
+    if not valid_buckets:
+        return []
+
+    # Single bucket gets even spread.
+    if len(valid_buckets) == 1:
+        tkey, thread_path, items = valid_buckets[0]
+        return [
+            _with_sampling_debug_fields(
+                item=items[idx],
+                sampling_strategy="even_spread_single_bucket",
+                thread_key=tkey,
+                thread_path=thread_path,
+            )
+            for idx in _evenly_spaced_indexes(
+                max_items=max_items, total_items=len(items)
+            )
+        ]
+
+    # Multiple buckets uses round robin.
+    bucket_generators = [
+        (
+            _with_sampling_debug_fields(
+                item=item,
+                sampling_strategy="round_robin_threads",
+                thread_key=tkey,
+                thread_path=thread_path,
+            )
+            for item in items
+        )
+        for tkey, thread_path, items in valid_buckets
+    ]
+
     sampled: list[dict[str, Any]] = []
 
-    while len(sampled) < max_items:
-        progressed = False
-
-        for bucket_idx, tkey, thread_path, items in per_bucket:
-            i = idxs[bucket_idx]
-
-            if i < len(items):
-                sampled_item = dict(items[i])
-                sampled_item["_thread_key"] = tkey
-                sampled_item["_thread_path"] = thread_path
-                sampled.append(sampled_item)
-                idxs[bucket_idx] = i + 1
-                progressed = True
-
-                if len(sampled) >= max_items:
-                    break
-
-        if not progressed:
-            break
+    # zip_longest pulls one item from each generator, returning None when exhausted.
+    for row in itertools.zip_longest(*bucket_generators):
+        for item in row:
+            if item is not None:
+                sampled.append(item)
+                if len(sampled) == max_items:
+                    return sampled
 
     return sampled
 
@@ -5978,6 +6077,36 @@ def _uuid(x: str) -> UUID:
     """
 
     return UUID(str(x).strip())
+
+
+def _with_sampling_debug_fields(
+    *, item: dict[str, Any], sampling_strategy: str, thread_key: str, thread_path: str
+) -> dict[str, Any]:
+    """Return a shallow item copy annotated with prompt-sampling debug fields.
+
+    Parameters
+    ----------
+    item
+        Source bucket item.
+    sampling_strategy
+        Human-readable strategy used to select the item.
+    thread_key
+        Source thread/bucket key.
+    thread_path
+        Human-readable source bucket context.
+
+    Returns
+    -------
+    dict[str, Any]
+        A shallow copy of the item with `_thread_key`, `_thread_path`, and
+        `_sampling_strategy` fields added.
+    """
+
+    sampled_item = dict(item)
+    sampled_item["_sampling_strategy"] = sampling_strategy
+    sampled_item["_thread_key"] = thread_key
+    sampled_item["_thread_path"] = thread_path
+    return sampled_item
 
 
 def export_learning_progressions(
