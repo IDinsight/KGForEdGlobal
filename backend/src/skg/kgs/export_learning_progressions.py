@@ -1121,7 +1121,8 @@ def _build_thread_map(
         A dictionary mapping thread keys to lists of bucket dictionaries, where each
         list is sorted by (level_ordinal_low, level_ordinal_high) to facilitate
         cross-level and cross-stage buildsTowards inference. Buckets without integer
-        level bounds are skipped and counted for logging purposes.
+        bounds are skipped with a warning. Bounded buckets without `lp_thread_key` are
+        treated as malformed and raise ValueError.
 
     Raises
     ------

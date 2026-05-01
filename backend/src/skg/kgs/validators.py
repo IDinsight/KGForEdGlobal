@@ -465,6 +465,7 @@ def validate_within_level_relates_to(
     response: ProgressionEdgesResponse,
     allowed_uuids_a: set[str],
     allowed_uuids_b: set[str],
+    min_confidence: float,
 ) -> None:
     """Validate within-level relatesTo edges between two disjoint item groups.
 
@@ -476,12 +477,15 @@ def validate_within_level_relates_to(
         The set of allowed SFI UUIDs for group/thread A.
     allowed_uuids_b
         The set of allowed SFI UUIDs for group/thread B.
+    min_confidence
+        Minimum confidence threshold; edges below this value must be omitted.
 
     Raises
     ------
     QualityError
         If the allowed UUID sets overlap, if edges refer to unknown items, if an edge
-        is self-referential, or if an edge fails to bridge the two distinct groups.
+        is self-referential, if an edge fails to bridge the two distinct groups, or if
+        an edge falls below the configured minimum confidence threshold.
     """
 
     overlap = allowed_uuids_a & allowed_uuids_b
@@ -510,6 +514,14 @@ def validate_within_level_relates_to(
         if e.target_sfi_uuid not in all_allowed:
             raise QualityError(
                 f"Target UUID {e.target_sfi_uuid} not found in either group."
+            )
+
+        if float(e.confidence) < min_confidence:
+            raise QualityError(
+                f"Within-level relatesTo edge confidence {float(e.confidence):.3f} "
+                f"is below the configured minimum {min_confidence:.3f}. Omit this "
+                f"edge or return it with a justified confidence at or above the "
+                f"threshold."
             )
 
         # Check membership.
