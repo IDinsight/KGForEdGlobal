@@ -3573,13 +3573,13 @@ def _infer_cross_level_relates_to(
             ),
         )
 
-        m_lo_hi = _best_map(resp_lo_hi)
-        m_hi_lo = _best_map(resp_hi_lo)
-        common_pairs = sorted(set(m_lo_hi.keys()) & set(m_hi_lo.keys()))
+        map_lo_hi = _best_map(resp_lo_hi)
+        map_hi_lo = _best_map(resp_hi_lo)
+        common_pairs = sorted(set(map_lo_hi.keys()) & set(map_hi_lo.keys()))
 
         for a, b in common_pairs:
-            conf_lo_hi, rat_lo_hi = m_lo_hi[(a, b)]
-            conf_hi_lo, rat_hi_lo = m_hi_lo[(a, b)]
+            conf_lo_hi, rat_lo_hi = map_lo_hi[(a, b)]
+            conf_hi_lo, rat_hi_lo = map_hi_lo[(a, b)]
             conf = min(conf_lo_hi, conf_hi_lo)
             ce = CandidateEdge(
                 confidence=float(conf),
@@ -5644,37 +5644,125 @@ def _resolve_forbidden_pairs(
     lower_items: list[dict[str, Any]],
     upper_items: list[dict[str, Any]],
 ) -> tuple[set[tuple[str, str]], list[dict[str, Any]]]:
-    """Calculate forbidden pairs for the current level iteration.
+    """Resolve current prompt relatesTo exclusions from accepted buildsTowards pairs.
+
+    Phase 4 infers cross-level/cross-stage `relatesTo` edges. A pair that already has
+    an accepted Phase 2 `buildsTowards` relationship should not also be emitted as
+    `relatesTo`, because `relatesTo` is reserved for associative concept links rather
+    than prerequisite/progression links.
+
+    This function filters the global set of accepted cross-level/cross-stage
+    buildsTowards pairs down to the pairs that cross the current lower/upper prompt
+    item lists. The returned pairs are canonicalized as undirected UUID-string tuples
+    because `relatesTo` is conceptually undirected and the Phase 4 prompt is run in
+    both lower -> upper and upper -> lower presentation orders.
+
+    Examples
+    --------
+    1. One accepted buildsTowards pair applies to the current prompt
+
+        Given:
+
+            forbidden_builds_pairs = {
+                (
+                    UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                ),
+                (
+                    UUID("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"),
+                    UUID("yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"),
+                ),
+            }
+
+            lower_items = [
+                {"sfi_uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+                {"sfi_uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
+            ]
+
+            upper_items = [
+                {"sfi_uuid": "dddddddd-dddd-dddd-dddd-dddddddddddd"},
+                {"sfi_uuid": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"},
+            ]
+
+        only the A-D pair crosses the current lower/upper item lists, so the function
+        returns:
+
+            (
+                {
+                    (
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                    )
+                },
+                [
+                    {
+                        "a_sfi_uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "b_sfi_uuid": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                    }
+                ],
+            )
+
+    2. Direction does not matter
+
+        If the accepted buildsTowards pair is stored as upper -> lower:
+
+            forbidden_builds_pairs = {
+                (
+                    UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                    UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                )
+            }
+
+        and the current prompt still compares lower item A against upper item D, the
+        pair is still forbidden. The returned set uses `canon_str_pair()`, so the pair
+        is represented in stable lexicographic order regardless of the original
+        buildsTowards direction.
+
+    3. Irrelevant buildsTowards pairs are ignored
+
+        Given:
+
+            forbidden_builds_pairs = {
+                (
+                    UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                )
+            }
+
+            lower_items = [
+                {"sfi_uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
+            ]
+
+            upper_items = [
+                {"sfi_uuid": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"},
+            ]
+
+        no accepted buildsTowards pair crosses the current lower/upper item lists, so
+        the function returns:
+
+            set(), []
 
     Parameters
     ----------
     forbidden_builds_pairs
-        A set of tuples representing pairs of SFI UUIDs that are forbidden from being
-        connected by a buildsTowards relationship, based on prior iterations of the
-        inference process. Each tuple contains two UUIDs corresponding to Standards
-        Framework Items (SFIs) that should not be connected in the current inference
-        step.
+        Global set of accepted Phase 2 cross-level/cross-stage buildsTowards pairs.
+        These pairs should be excluded from Phase 4 relatesTo inference when both
+        endpoints appear in the current lower/upper item lists.
     lower_items
-        A list of dictionaries representing the Standards Framework Items (SFIs) in the
-        lower level bucket for the current iteration. Each dictionary contains
-        information about an SFI, including its UUID and other relevant fields.
+        Prompt payload items for the lower level/range in the current Phase 4
+        comparison. Each item must contain `sfi_uuid`.
     upper_items
-        A list of dictionaries representing the Standards Framework Items (SFIs) in the
-        upper level bucket for the current iteration. Each dictionary contains
-        information about an SFI, including its UUID and other relevant fields.
+        Prompt payload items for the upper level/range in the current Phase 4
+        comparison. Each item must contain `sfi_uuid`.
 
     Returns
     -------
     tuple[set[tuple[str, str]], list[dict[str, Any]]]
         A tuple containing:
-        1. A set of tuples, where each tuple consists of two strings representing the
-           UUIDs of SFIs that are forbidden from being connected by a buildsTowards
-           relationship in the current inference step. The UUIDs in each tuple are
-           ordered lexicographically to ensure consistency.
-        2. A list of dictionaries, where each dictionary represents a forbidden pair of
-           SFIs with keys "a_sfi_uuid" and "b_sfi_uuid" corresponding to the UUIDs of
-           the two SFIs in the pair. This list is sorted by the UUID pairs for stable
-           output and can be used for reporting or debugging purposes.
+        1. `forbidden_pairs_set`: undirected canonical UUID-string pairs for validator
+           membership checks.
+        2. `forbidden_pairs_list`: the same pairs as sorted dictionaries with
+           `a_sfi_uuid` and `b_sfi_uuid`, suitable for JSON prompt payloads.
     """
 
     allowed_lo = {str(it["sfi_uuid"]) for it in lower_items}
