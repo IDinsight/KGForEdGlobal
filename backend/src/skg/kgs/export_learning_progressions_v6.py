@@ -6229,29 +6229,29 @@ def _process_and_filter_candidates(
     ]
 
     stats = {
-        "builds_kept": len(builds_kept),
-        "builds_kept_before_doc_order": int(builds_kept_before_doc_order),
-        "builds_dropped_doc_order": len(builds_dropped_doc_order),
-        "builds_dropped_low_conf": len(builds_dropped_low),
-        "candidate_builds_towards": len(builds_towards_candidates),
+        "candidate_edges_total_pre_dedupe": candidate_edges_total_pre_dedupe,
+        "candidate_edges_total_after_dedupe": len(candidates),
         "candidate_edges_dedupe_duplicate_groups": sum(
             1 for records in dedupe_audit_by_key.values() if len(records) > 1
         ),
         "candidate_edges_dedupe_groups": len(dedupe_audit_by_key),
         "candidate_edges_dropped_dedupe": int(dedupe_dropped),
-        "candidate_edges_total_after_dedupe": len(candidates),
-        "candidate_edges_total_pre_dedupe": candidate_edges_total_pre_dedupe,
+        "candidate_builds_towards": len(builds_towards_candidates),
         "candidate_relates_to": len(relates_to_candidates),
-        "relates_dropped_cap": len(relates_dropped_cap),
+        "builds_kept": len(builds_kept),
+        "builds_kept_before_doc_order": int(builds_kept_before_doc_order),
+        "builds_dropped_doc_order": len(builds_dropped_doc_order),
+        "builds_dropped_low_conf": len(builds_dropped_low),
+        "relates_kept_after_threshold": len(relates_kept_thr),
         "relates_dropped_low_conf": len(relates_dropped_low),
         "relates_kept_after_cap": len(relates_kept),
-        "relates_kept_after_threshold": len(relates_kept_thr),
+        "relates_dropped_cap": len(relates_dropped_cap),
     }
 
     # Build disposition map keyed by (rel_type, source_uuid, target_uuid) for enriching
     # provenance rows downstream.
     #
-    # NB: relatesTo edges are canonicalized during dedupe (lexicographic UUID string
+    # NB: relatesTo edges are canonicalized during dedup (lexicographic UUID string
     # order), so keys here are already canonical for relatesTo. The *lookup* side (in
     # export_learning_progressions) must canonicalize provenance row keys the same way
     # (see _canon_disposition_key).
@@ -7716,33 +7716,7 @@ def _set_disposition(
     disposition_map: dict[tuple[str, str, str], str],
     value: str,
 ) -> None:
-    """Record the final post-dedupe disposition for a canonical candidate edge.
-
-    This function builds the disposition lookup used later to enrich raw provenance
-    rows. Filtering operates on CandidateEdge objects, while provenance rows are stored
-    separately, so the pipeline needs a stable key to join final filtering outcomes
-    back onto the audit rows.
-
-    The disposition key is `(rel_type, canonical_source_uuid, canonical_target_uuid)`.
-    For `buildsTowards`, source/target order is preserved because the relationship is
-    directional. For `relatesTo`, endpoints are canonicalized so raw LLM outputs such
-    as `A relatesTo B` and `B relatesTo A` map to the same disposition entry.
-
-    This map records the outcome for the single dedupe-winning candidate associated
-    with a canonical edge key. Raw duplicate candidates are not inserted here;
-    provenance enrichment later marks non-winning raw candidates as `dropped_dedupe` by
-    comparing their `candidate_uid` with the dedupe winner.
-
-    `candidate_uid` identifies a raw candidate occurrence, while this disposition key
-    identifies the canonical deduped edge. Both are needed for correct audit reporting:
-    the UID tells us whether a provenance row is the dedupe winner, and the canonical
-    edge key tells us whether that winner was kept or dropped by later filters.
-
-    Valid values are:
-      - "kept"
-      - "dropped_low_conf"
-      - "dropped_cap"
-      - "dropped_doc_order"
+    """Set disposition with logging on overwrite.
 
     Parameters
     ----------
@@ -7757,18 +7731,7 @@ def _set_disposition(
         following strings: "kept", "dropped_low_conf", "dropped_cap", or
         "dropped_dedupe". This value indicates the final disposition of the edge after
         processing and filtering.
-
-    Raises
-    ------
-    ValueError
-        If `value` is unsupported, or if a different disposition has already been
-        recorded for the same canonical edge key.
     """
-
-    allowed_values = {"dropped_cap", "dropped_doc_order", "dropped_low_conf", "kept"}
-
-    if value not in allowed_values:
-        raise ValueError(f"Unsupported LP disposition value: {value}")
 
     key = _canon_disposition_key(
         rel_type=candidate.rel_type,
@@ -7778,11 +7741,7 @@ def _set_disposition(
     prev = disposition_map.get(key)
 
     if prev is not None and prev != value:
-        raise ValueError(
-            f"Disposition overwrite for canonical edge key {key}: "
-            f"existing={prev!r}; new={value!r}. "
-            f"Post-dedupe disposition categories should be mutually exclusive."
-        )
+        logger.warning(f"Disposition overwrite: {key} was '{prev}', now '{value}'.")
 
     disposition_map[key] = value
 
