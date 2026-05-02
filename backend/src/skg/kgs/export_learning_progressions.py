@@ -914,7 +914,7 @@ def _build_scoped_sfi_index(
         for bucket in level_buckets or []:
             bucket_scope = bucket.get("bucket_scope")
 
-            if bucket_scope is not None and bucket_scope != scope:
+            if bucket_scope != scope:
                 raise ValueError(
                     f"Bucket scope mismatch while building LP SFI context index. "
                     f"expected={scope!r}; actual={bucket_scope!r}; "
