@@ -359,6 +359,7 @@ def validate_cross_level_relates_to(
     allowed_lo: set[str],
     allowed_hi: set[str],
     forbidden_pairs: set[tuple[str, str]],
+    min_confidence: float,
 ) -> None:
     """Validate cross-level relatesTo edges. Ensures edges connect items between
     adjacent levels and do not duplicate existing buildsTowards relationships.
@@ -375,6 +376,8 @@ def validate_cross_level_relates_to(
         The set of undirected (uuid_a, uuid_b) pairs that are not allowed (e.g.,
         because they already have a buildsTowards relationship). Pairs are
         canonicalized by sorting the two UUID strings.
+    min_confidence
+        Minimum confidence threshold; edges below this value must be omitted.
 
     Raises
     ------
@@ -405,6 +408,12 @@ def validate_cross_level_relates_to(
 
         if pair in forbidden_pairs:
             raise QualityError("Edge is in forbidden_pairs (already buildsTowards).")
+
+        if float(e.confidence) < min_confidence:
+            raise QualityError(
+                f"Cross-level relatesTo edge confidence {float(e.confidence):.3f} "
+                f"is below the configured minimum {min_confidence:.3f}."
+            )
 
 
 def validate_within_level_builds_towards(

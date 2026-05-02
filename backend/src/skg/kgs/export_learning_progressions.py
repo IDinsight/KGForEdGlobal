@@ -3584,6 +3584,7 @@ def _infer_cross_level_relates_to(
                 allowed_lo={str(it["sfi_uuid"]) for it in lower_items},
                 allowed_hi={str(it["sfi_uuid"]) for it in upper_items},
                 forbidden_pairs=forbidden_pairs_set,
+                min_confidence=config.lp_relates_to_min_confidence,
             ),
         )
 
@@ -3618,6 +3619,7 @@ def _infer_cross_level_relates_to(
                 allowed_lo={str(it["sfi_uuid"]) for it in upper_items},
                 allowed_hi={str(it["sfi_uuid"]) for it in lower_items},
                 forbidden_pairs=forbidden_pairs_set,
+                min_confidence=config.lp_relates_to_min_confidence,
             ),
         )
 
