@@ -382,8 +382,18 @@ def validate_cross_level_relates_to(
     Raises
     ------
     QualityError
-        If edges are self-referential, fail to cross levels, or are forbidden.
+        If any edge violates validation rules such as unknown UUIDs, self-edges,
+        failing to connect one item from each level, duplicating buildsTowards
+        relationships, or falling below the confidence threshold.
     """
+
+    overlap = allowed_lo & allowed_hi
+
+    if overlap:
+        raise QualityError(
+            f"Cross-level relatesTo allowed UUID sets must be disjoint. "
+            f"Overlap examples: {sorted(overlap)[:5]}"
+        )
 
     _check_common_edge_invariants(directed=False, response=response)
 
