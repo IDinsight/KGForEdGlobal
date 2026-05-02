@@ -3508,10 +3508,14 @@ def _infer_cross_level_relates_to(
 
     max_edges_per_sfi = config.lp_relates_to_max_edges_per_sfi
     max_items = config.lp_cross_level_relates_to_max_items_per_subject
-
+    excluded_subject_labels = set(config.lp_excluded_subject_labels or []) | {
+        "UNSPECIFIED_SUBJECT",
+        "UNKNOWN",
+        "",
+    }
     subject_level_samples = _prepare_subject_level_samples(
         by_level=by_level,
-        excluded_subject_labels=set(config.lp_excluded_subject_labels or []),
+        excluded_subject_labels=excluded_subject_labels,
         max_items=max_items,
     )
 
