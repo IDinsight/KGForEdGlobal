@@ -112,6 +112,366 @@ def _accumulate_subject_level_buckets(
     them to a canonical subject/range accumulator. Multiple raw level-label aliases
     that map to the same subject and ordinal range are merged rather than replaced.
 
+    Examples
+    --------
+    1. Raw level-label aliases are merged
+
+    Input:
+
+    by_level = {
+        "CE1 planification": [
+            {
+                "subject_label": "Lecture",
+                "level_label": "CE1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=lecture|source=planification",
+                "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+            }
+        ],
+        "CE1 paliers": [
+            {
+                "subject_label": "Lecture",
+                "level_label": "CE1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=lecture|source=paliers",
+                "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+            }
+        ],
+    }
+    excluded_subject_labels = {"UNSPECIFIED_SUBJECT", "UNKNOWN", ""}
+
+    Output shape:
+
+    accumulator = {
+        "Lecture": {
+            (1, 1): {
+                "level_low": 1,
+                "level_high": 1,
+                "raw_level_labels": [
+                    "CE1 paliers",
+                    "CE1 planification",
+                ],
+                "level_labels": [
+                    "CE1",
+                    "CE1",
+                ],
+                "source_buckets": [
+                    {
+                        "subject_label": "Lecture",
+                        "level_label": "CE1",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_bucket_key": "strand=lecture|source=paliers",
+                        "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+                    },
+                    {
+                        "subject_label": "Lecture",
+                        "level_label": "CE1",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_bucket_key": "strand=lecture|source=planification",
+                        "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+                    },
+                ],
+            }
+        }
+    }
+
+    Key point: both raw CE1 sources are preserved under one canonical
+    `("Lecture", (1, 1))` group. Nothing is overwritten.
+
+    2. Different subjects stay separate
+
+    Input:
+
+    by_level = {
+        "Grade 1": [
+            {
+                "subject_label": "Reading",
+                "level_label": "Grade 1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=reading",
+                "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+            },
+            {
+                "subject_label": "Writing",
+                "level_label": "Grade 1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=writing",
+                "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+            },
+        ]
+    }
+
+    Output shape:
+
+    accumulator = {
+        "Reading": {
+            (1, 1): {
+                "level_low": 1,
+                "level_high": 1,
+                "raw_level_labels": ["Grade 1"],
+                "level_labels": ["Grade 1"],
+                "source_buckets": [
+                    {
+                        "subject_label": "Reading",
+                        "level_label": "Grade 1",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_bucket_key": "strand=reading",
+                        "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+                    }
+                ],
+            }
+        },
+        "Writing": {
+            (1, 1): {
+                "level_low": 1,
+                "level_high": 1,
+                "raw_level_labels": ["Grade 1"],
+                "level_labels": ["Grade 1"],
+                "source_buckets": [
+                    {
+                        "subject_label": "Writing",
+                        "level_label": "Grade 1",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_bucket_key": "strand=writing",
+                        "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+                    }
+                ],
+            }
+        },
+    }
+
+    Key point: accumulation is by **subject + ordinal range**, so Reading and Writing
+    do not collapse together.
+
+    3. Adjacent levels stay separate
+
+    Input:
+
+    by_level = {
+        "Grade 1": [
+            {
+                "subject_label": "Reading",
+                "level_label": "Grade 1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=reading",
+                "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+            }
+        ],
+        "Grade 2": [
+            {
+                "subject_label": "Reading",
+                "level_label": "Grade 2",
+                "level_ordinal_low": 2,
+                "level_ordinal_high": 2,
+                "lp_bucket_key": "strand=reading",
+                "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+            }
+        ],
+    }
+
+    Output shape:
+
+    accumulator = {
+        "Reading": {
+            (1, 1): {
+                "level_low": 1,
+                "level_high": 1,
+                "raw_level_labels": ["Grade 1"],
+                "level_labels": ["Grade 1"],
+                "source_buckets": [
+                    {
+                        "subject_label": "Reading",
+                        "level_label": "Grade 1",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_bucket_key": "strand=reading",
+                        "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+                    }
+                ],
+            },
+            (2, 2): {
+                "level_low": 2,
+                "level_high": 2,
+                "raw_level_labels": ["Grade 2"],
+                "level_labels": ["Grade 2"],
+                "source_buckets": [
+                    {
+                        "subject_label": "Reading",
+                        "level_label": "Grade 2",
+                        "level_ordinal_low": 2,
+                        "level_ordinal_high": 2,
+                        "lp_bucket_key": "strand=reading",
+                        "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+                    }
+                ],
+            },
+        }
+    }
+
+    Key point: same subject is accumulated separately for each ordinal range. The
+    function does **not** merge Grade 1 and Grade 2.
+
+    4. Excluded subject labels are removed before validation
+
+    Input:
+
+    by_level = {
+        "CE1": [
+            {
+                "subject_label": "Lecture",
+                "level_label": "CE1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=lecture",
+                "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+            },
+            {
+                "subject_label": "UNSPECIFIED_SUBJECT",
+                "level_label": "CE1",
+                "level_ordinal_low": 999,
+                "level_ordinal_high": 999,
+                "lp_bucket_key": "__unthreaded__::bad",
+                "items": [{"sfi_uuid": "99999999-9999-9999-9999-999999999999"}],
+            },
+        ]
+    }
+    excluded_subject_labels = {"UNSPECIFIED_SUBJECT", "UNKNOWN", ""}
+
+    Output shape:
+
+    accumulator = {
+        "Lecture": {
+            (1, 1): {
+                "level_low": 1,
+                "level_high": 1,
+                "raw_level_labels": ["CE1"],
+                "level_labels": ["CE1"],
+                "source_buckets": [
+                    {
+                        "subject_label": "Lecture",
+                        "level_label": "CE1",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 1,
+                        "lp_bucket_key": "strand=lecture",
+                        "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+                    }
+                ],
+            }
+        }
+    }
+
+    Key point: the excluded `UNSPECIFIED_SUBJECT` bucket is removed before bound
+    validation, so it cannot affect the valid `Lecture` bucket.
+
+    5. Inconsistent included bounds cause that raw level label to be skipped
+
+    Input:
+
+    by_level = {
+        "Grade 1 mixed": [
+            {
+                "subject_label": "Reading",
+                "level_label": "Grade 1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=reading",
+                "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+            },
+            {
+                "subject_label": "Writing",
+                "level_label": "Grade 2",
+                "level_ordinal_low": 2,
+                "level_ordinal_high": 2,
+                "lp_bucket_key": "strand=writing",
+                "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+            },
+        ]
+    }
+
+    Output shape:
+
+    accumulator = {}
+
+    Key point: both buckets are included subjects, but the raw level label contains
+    conflicting ordinal ranges: `(1, 1)` and `(2, 2)`. The function skips the entire
+    raw level label rather than guessing.
+
+    6. Banded stage ranges are preserved
+
+    by_level = {
+        "Standards I-II": [
+            {
+                "subject_label": "Mathematics",
+                "level_label": "Standards I-II",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 2,
+                "lp_bucket_key": "strand=numbers",
+                "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+            }
+        ],
+        "Standards III-VI": [
+            {
+                "subject_label": "Mathematics",
+                "level_label": "Standards III-VI",
+                "level_ordinal_low": 3,
+                "level_ordinal_high": 6,
+                "lp_bucket_key": "strand=numbers",
+                "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+            }
+        ],
+    }
+
+    Output shape:
+
+    accumulator = {
+        "Mathematics": {
+            (1, 2): {
+                "level_low": 1,
+                "level_high": 2,
+                "raw_level_labels": ["Standards I-II"],
+                "level_labels": ["Standards I-II"],
+                "source_buckets": [
+                    {
+                        "subject_label": "Mathematics",
+                        "level_label": "Standards I-II",
+                        "level_ordinal_low": 1,
+                        "level_ordinal_high": 2,
+                        "lp_bucket_key": "strand=numbers",
+                        "items": [{"sfi_uuid": "11111111-1111-1111-1111-111111111111"}],
+                    }
+                ],
+            },
+            (3, 6): {
+                "level_low": 3,
+                "level_high": 6,
+                "raw_level_labels": ["Standards III-VI"],
+                "level_labels": ["Standards III-VI"],
+                "source_buckets": [
+                    {
+                        "subject_label": "Mathematics",
+                        "level_label": "Standards III-VI",
+                        "level_ordinal_low": 3,
+                        "level_ordinal_high": 6,
+                        "lp_bucket_key": "strand=numbers",
+                        "items": [{"sfi_uuid": "22222222-2222-2222-2222-222222222222"}],
+                    }
+                ],
+            },
+        }
+    }
+
+    Key point: the function supports both single-grade ranges like `(1, 1)` and banded
+    ranges like `(1, 2)` or `(3, 6)`. It does not invent grade-by-grade splits.
+
     Parameters
     ----------
     by_level
@@ -1468,15 +1828,8 @@ def _choose_merged_level_label(
     normalized = [normalize_key_token(label=label, separator="_") for label in cleaned]
     non_empty_normalized = [value for value in normalized if value]
 
-    if len(set(non_empty_normalized)) <= 1:
+    if non_empty_normalized and len(set(non_empty_normalized)) == 1:
         return cleaned[0]
-
-    counts = Counter(cleaned)
-    max_count = max(counts.values())
-    winners = [label for label in cleaned if counts[label] == max_count]
-
-    if len(winners) == 1 and max_count > 1:
-        return winners[0]
 
     aliases = sorted(
         cleaned,
@@ -2395,7 +2748,7 @@ def _dedupe_edges(
 
 def _dedupe_phase4_bucket_items_by_sfi_uuid(
     source_buckets: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], int, int]:
+) -> tuple[list[dict[str, Any]], int, int, int]:
     """Return bucket copies whose items are globally unique by SFI UUID.
 
     The same SFI can appear through multiple raw aliases or duplicated bucket sources.
@@ -2403,36 +2756,175 @@ def _dedupe_phase4_bucket_items_by_sfi_uuid(
     function removes later duplicate item occurrences across all buckets while
     preserving the first deterministic occurrence.
 
+    Duplicate SFI UUIDs can occur when this function is invoked because Phase 4 is
+    merging source buckets, not SFIs. The same exported SFI can be present in more than
+    one source bucket before the final Phase 4 sample is built. In other words,
+    duplicate SFI UUIDs are possible because Phase 4 preserves all bucket evidence
+    first, then dedupes sampling candidates.
+
+    Examples
+    --------
+    1. Duplicate SFI inside the same bucket is removed
+
+    Input:
+
+    deduped_source_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+            ],
+        }
+    ]
+
+    Output shape:
+
+    deduped_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+            ],
+        }
+    ]
+    duplicate_sfi_count = 1
+    empty_bucket_count = 0
+
+    Key point: the first occurrence of an SFI is kept; later repeats are removed.
+
+    2. Duplicate SFI across different buckets is removed
+
+    Input:
+
+    deduped_source_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+            ],
+        },
+        {
+            "bucket_key": "Grade 1::strand=phonics",
+            "lp_bucket_key": "strand=phonics",
+            "items": [
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+                {"sfi_uuid": "33333333-3333-3333-3333-333333333333", "description": "Blend sounds into words."},
+            ],
+        },
+    ]
+
+    Output shape:
+
+    deduped_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+            ],
+        },
+        {
+            "bucket_key": "Grade 1::strand=phonics",
+            "lp_bucket_key": "strand=phonics",
+            "items": [
+                {"sfi_uuid": "33333333-3333-3333-3333-333333333333", "description": "Blend sounds into words."},
+            ],
+        },
+    ]
+    duplicate_sfi_count = 1
+    empty_bucket_count = 0
+
+    Key point: duplicate detection is global across all buckets passed into the
+    function, not only within each bucket.
+
+    3. A bucket can be dropped if every item is a duplicate
+
+    Input:
+
+    deduped_source_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+            ],
+        },
+        {
+            "bucket_key": "Grade 1::duplicate-reading",
+            "lp_bucket_key": "duplicate-reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+            ],
+        },
+    ]
+
+    Output shape:
+
+    deduped_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Identify letter sounds."},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Read simple words."},
+            ],
+        }
+    ]
+    duplicate_sfi_count = 2
+    empty_bucket_count = 1
+
+    Key point: after duplicate SFI removal, the second bucket has no remaining unique
+    items, so the bucket is dropped before sampling.
+
     Parameters
     ----------
     source_buckets
         A list of bucket dictionaries, each containing an "items" key with a list of
-        item dictionaries. Each item dictionary may contain an "sfi_uuid" key
+        item dictionaries. Each item dictionary must contain a non-empty "sfi_uuid" key
         representing the unique identifier of a StandardsFrameworkItem (SFI).
 
     Returns
     -------
-    tuple[list[dict[str, Any]], int, int]
-        Deduped bucket copies, item count before dedupe, and unique item count after
-        dedupe.
+    tuple[list[dict[str, Any]], int, int, int]
+        Deduped bucket copies, item count before dedupe, unique item count after
+        dedupe, and the number of buckets that became empty after item dedupe.
+
+    Raises
+    ------
+    ValueError
+        If any sampled source item is missing a non-empty `sfi_uuid`.
     """
 
     deduped_buckets: list[dict[str, Any]] = []
+    empty_after_item_dedupe_bucket_count = 0
     seen_sfi_uuids: set[str] = set()
     source_item_count_before_dedupe = 0
 
     for bucket in source_buckets or []:
         deduped_items: list[dict[str, Any]] = []
 
-        for item in bucket.get("items") or []:
+        for item_index, item in enumerate(bucket.get("items") or []):
             source_item_count_before_dedupe += 1
             sfi_uuid = str(item.get("sfi_uuid") or "").strip()
 
             if not sfi_uuid:
-                # Keep malformed items so downstream validators can surface the real
-                # data-quality problem instead of silently hiding it.
-                deduped_items.append(item)
-                continue
+                raise ValueError(
+                    f"Phase 4 source item is missing required `sfi_uuid` while "
+                    f"deduping subject/level samples. "
+                    f"bucket_key={bucket.get('bucket_key')!r}; "
+                    f"lp_bucket_key={bucket.get('lp_bucket_key')!r}; "
+                    f"item_index={item_index}; item={item!r}."
+                )
 
             if sfi_uuid in seen_sfi_uuids:
                 continue
@@ -2441,13 +2933,86 @@ def _dedupe_phase4_bucket_items_by_sfi_uuid(
             deduped_items.append(item)
 
         if not deduped_items:
+            empty_after_item_dedupe_bucket_count += 1
             continue
 
         bucket_copy = dict(bucket)
         bucket_copy["items"] = deduped_items
         deduped_buckets.append(bucket_copy)
 
-    return deduped_buckets, source_item_count_before_dedupe, len(seen_sfi_uuids)
+    return (
+        deduped_buckets,
+        source_item_count_before_dedupe,
+        len(seen_sfi_uuids),
+        empty_after_item_dedupe_bucket_count,
+    )
+
+
+def _merge_phase4_source_bucket_duplicate(
+    *, existing_bucket: dict[str, Any], incoming_bucket: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge a duplicate Phase 4 source bucket into an existing bucket copy.
+
+    Buckets can share a deterministic dedupe key while carrying different
+    non-overlapping item evidence. In that case, merging preserves the evidence instead
+    of letting a later alias silently overwrite or disappear. Exact duplicate items are
+    collapsed by SFI UUID; final global item dedupe still runs after bucket-level
+    merging.
+
+    Parameters
+    ----------
+    existing_bucket
+        The existing bucket dictionary that has already been processed and is being
+        merged into.
+    incoming_bucket
+        The new bucket dictionary that has the same dedupe key as the existing bucket
+        and is being merged in. This bucket's items and list-valued provenance fields
+        will be combined with those of the existing bucket.
+
+    Returns
+    -------
+    dict[str, Any]
+        A merged bucket dictionary containing the combined unique items and list-valued
+        provenance from both input buckets, along with updated metadata tracking the
+        number of merged duplicates and added items.
+    """
+
+    added_item_count = 0
+    merged = dict(existing_bucket)
+    existing_items = list(merged.get("items") or [])
+    seen_item_uuids = {
+        sfi_uuid
+        for item in existing_items
+        if (sfi_uuid := str(item.get("sfi_uuid") or "").strip())
+    }
+
+    for item in incoming_bucket.get("items") or []:
+        sfi_uuid = str(item.get("sfi_uuid") or "").strip()
+
+        if sfi_uuid and sfi_uuid in seen_item_uuids:
+            continue
+
+        if sfi_uuid:
+            seen_item_uuids.add(sfi_uuid)
+
+        existing_items.append(item)
+        added_item_count += 1
+
+    merged["items"] = existing_items
+
+    for list_key in ("source_decision_ids", "topic_path_examples", "topic_path_keys"):
+        merged[list_key] = _unique_non_empty_strings(
+            list(merged.get(list_key) or []) + list(incoming_bucket.get(list_key) or [])
+        )
+
+    merged["phase4_merged_source_bucket_duplicate_count"] = (
+        int(merged.get("phase4_merged_source_bucket_duplicate_count") or 0) + 1
+    )
+    merged["phase4_merged_source_bucket_added_item_count"] = (
+        int(merged.get("phase4_merged_source_bucket_added_item_count") or 0)
+        + added_item_count
+    )
+    return merged
 
 
 def _dedupe_phase4_source_buckets(
@@ -2456,20 +3021,199 @@ def _dedupe_phase4_source_buckets(
     source_buckets: list[dict[str, Any]],
     subject_label: str,
 ) -> list[dict[str, Any]]:
-    """Dedupe Phase 4 source buckets while preserving deterministic order.
+    """Merge duplicate Phase 4 source buckets in deterministic sorted order.
+
+    Buckets are processed by `_phase4_bucket_sort_key()`, so the first occurrence is
+    deterministic rather than caller-order dependent. Buckets sharing the same dedupe
+    key are merged, not replaced or dropped. Exact duplicate items are collapsed by SFI
+    UUID within the merged bucket; non-overlapping items and list-valued provenance are
+    preserved.
+
+    Examples
+    --------
+    1. Exact duplicate bucket is merged once
+
+    Input:
+
+    source_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "lp_thread_key": "strand=reading",
+            "subject_label": "Reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111"}
+            ],
+            "topic_path_examples": ["Reading"],
+        },
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "lp_thread_key": "strand=reading",
+            "subject_label": "Reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111"}
+            ],
+            "topic_path_examples": ["Reading"],
+        },
+    ]
+
+    Output shape:
+
+    deduped_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "lp_thread_key": "strand=reading",
+            "subject_label": "Reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111"}
+            ],
+            "topic_path_examples": ["Reading"],
+        }
+    ]
+    bucket_merge_count = 1
+
+    Key point: the duplicate bucket does not appear twice.
+
+    2. Same bucket key, different items are merged
+
+    Input:
+
+    source_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "lp_thread_key": "strand=reading",
+            "subject_label": "Reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111"}
+            ],
+            "source_decision_ids": ["decision-a"],
+            "topic_path_examples": ["Reading -> Phonics"],
+        },
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "lp_thread_key": "strand=reading",
+            "subject_label": "Reading",
+            "items": [
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222"}
+            ],
+            "source_decision_ids": ["decision-b"],
+            "topic_path_examples": ["Reading -> Fluency"],
+        },
+    ]
+
+    Output shape:
+
+    deduped_buckets = [
+        {
+            "bucket_key": "Grade 1::strand=reading",
+            "lp_bucket_key": "strand=reading",
+            "lp_thread_key": "strand=reading",
+            "subject_label": "Reading",
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111"},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222"},
+            ],
+            "source_decision_ids": ["decision-a", "decision-b"],
+            "topic_path_examples": [
+                "Reading > Phonics",
+                "Reading > Fluency",
+            ],
+        }
+    ]
+    bucket_merge_count = 1
+
+    Key point: same-key buckets are not silently dropped. Their evidence is merged.
+
+    3. Buckets without `bucket_key` use fallback identity
+
+    When `bucket_key` is missing, the function dedupes using fallback identity fields
+    such as `lp_bucket_key`, `lp_thread_key`, `subject_label`, and level bounds.
+
+    Input:
+
+    source_buckets = [
+        {
+            "lp_bucket_key": "strand=numbers",
+            "lp_thread_key": "strand=numbers",
+            "subject_label": "Mathematics",
+            "level_ordinal_low": 1,
+            "level_ordinal_high": 2,
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111"}
+            ],
+        },
+        {
+            "lp_bucket_key": "strand=numbers",
+            "lp_thread_key": "strand=numbers",
+            "subject_label": "Mathematics",
+            "level_ordinal_low": 1,
+            "level_ordinal_high": 2,
+            "items": [
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222"}
+            ],
+        },
+        {
+            "lp_bucket_key": "strand=numbers",
+            "lp_thread_key": "strand=numbers",
+            "subject_label": "Mathematics",
+            "level_ordinal_low": 3,
+            "level_ordinal_high": 6,
+            "items": [
+                {"sfi_uuid": "33333333-3333-3333-3333-333333333333"}
+            ],
+        },
+    ]
+
+    Output shape:
+
+    deduped_buckets = [
+        {
+            "lp_bucket_key": "strand=numbers",
+            "lp_thread_key": "strand=numbers",
+            "subject_label": "Mathematics",
+            "level_ordinal_low": 1,
+            "level_ordinal_high": 2,
+            "items": [
+                {"sfi_uuid": "11111111-1111-1111-1111-111111111111"},
+                {"sfi_uuid": "22222222-2222-2222-2222-222222222222"},
+            ],
+        },
+        {
+            "lp_bucket_key": "strand=numbers",
+            "lp_thread_key": "strand=numbers",
+            "subject_label": "Mathematics",
+            "level_ordinal_low": 3,
+            "level_ordinal_high": 6,
+            "items": [
+                {"sfi_uuid": "33333333-3333-3333-3333-333333333333"}
+            ],
+        },
+    ]
+    bucket_merge_count = 1
+
+    Key point: the first two buckets merge because they represent the same
+    subject/thread/range. The third stays separate because its ordinal range is
+    different.
 
     Parameters
     ----------
     level_key
+        Canonical `(level_low, level_high)` ordinal range for this Phase 4 sample group.
     source_buckets
+        Raw bucket dictionaries accumulated for one `(subject_label, level_key)` group.
     subject_label
+        Subject-like label for the Phase 4 sample group.
 
     Returns
     -------
     list[dict[str, Any]]
-        A deduplicated list of bucket dictionaries, preserving the original order of
-        first occurrences. Buckets are considered duplicates if they share the same
-        value for any of the following keys (in order of precedence):
+        A list of bucket dictionaries, preserving deterministic sorted first-occurrence
+        order by dedupe key. Bucket keys are considered duplicates using this
+        precedence:
             1. "bucket_key"
             2. The combination of "lp_bucket_key" and "lp_thread_key"
             3. The sorted tuple of "source_decision_ids"
@@ -2477,20 +3221,17 @@ def _dedupe_phase4_source_buckets(
                 SFI UUIDs, level range, subject label, and topic path keys)
     """
 
-    deduped: list[dict[str, Any]] = []
+    deduped_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     level_low, level_high = level_key
-    seen: set[tuple[Any, ...]] = set()
 
     for bucket in sorted(source_buckets or [], key=_phase4_bucket_sort_key):
-        key: tuple[Any, ...]
+        bucket_key = str(bucket.get("bucket_key") or "").strip()
+        lp_bucket_key = str(bucket.get("lp_bucket_key") or "").strip()
+        lp_thread_key = str(bucket.get("lp_thread_key") or "").strip()
 
-        # 1. Try explicit bucket identifier.
-        if bucket_key := str(bucket.get("bucket_key") or "").strip():
-            key = ("bucket_key", bucket_key)
-        # 2. Try thread/bucket/range metadata.
-        elif (lp_bucket_key := str(bucket.get("lp_bucket_key") or "").strip()) or (
-            lp_thread_key := str(bucket.get("lp_thread_key") or "").strip()
-        ):
+        if bucket_key:
+            key: tuple[Any, ...] = ("bucket_key", bucket_key)
+        elif lp_bucket_key or lp_thread_key:
             key = (
                 "lp_bucket_thread_range_subject",
                 subject_label,
@@ -2499,7 +3240,6 @@ def _dedupe_phase4_source_buckets(
                 lp_bucket_key,
                 lp_thread_key,
             )
-        # 3. Try source-decision provenance.
         elif source_decision_ids := tuple(
             sorted(
                 v_str
@@ -2514,7 +3254,6 @@ def _dedupe_phase4_source_buckets(
                 level_high,
                 source_decision_ids,
             )
-        # 4. Fall back to content payload hash.
         else:
             payload = json.dumps(
                 {
@@ -2537,14 +3276,58 @@ def _dedupe_phase4_source_buckets(
                 hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24],
             )
 
-        # Deduplicate using the calculated key.
-        if key in seen:
-            continue
+        if key not in deduped_by_key:
+            bucket_copy = dict(bucket)
+            bucket_copy["items"] = list(bucket.get("items") or [])
+            deduped_by_key[key] = bucket_copy
+        else:
+            added_item_count = 0
+            existing_bucket = deduped_by_key[key]
+            existing_items = existing_bucket["items"]
+            seen_item_uuids = {
+                sfi_uuid
+                for item in existing_items
+                if (sfi_uuid := str(item.get("sfi_uuid") or "").strip())
+            }
 
-        deduped.append(bucket)
-        seen.add(key)
+            for item in bucket.get("items") or []:
+                sfi_uuid = str(item.get("sfi_uuid") or "").strip()
 
-    return deduped
+                if sfi_uuid and sfi_uuid in seen_item_uuids:
+                    continue
+
+                if sfi_uuid:
+                    seen_item_uuids.add(sfi_uuid)
+
+                existing_items.append(item)
+                added_item_count += 1
+
+            for list_key in (
+                "source_decision_ids",
+                "topic_path_examples",
+                "topic_path_keys",
+            ):
+                existing_bucket[list_key] = _unique_non_empty_strings(
+                    list(existing_bucket.get(list_key) or [])
+                    + list(bucket.get(list_key) or [])
+                )
+
+            existing_bucket["phase4_merged_source_bucket_duplicate_count"] = (
+                int(
+                    existing_bucket.get("phase4_merged_source_bucket_duplicate_count")
+                    or 0
+                )
+                + 1
+            )
+            existing_bucket["phase4_merged_source_bucket_added_item_count"] = (
+                int(
+                    existing_bucket.get("phase4_merged_source_bucket_added_item_count")
+                    or 0
+                )
+                + added_item_count
+            )
+
+    return list(deduped_by_key.values())
 
 
 def _dedupe_winner_sort_key(*, candidate: CandidateEdge) -> tuple[Any, ...]:
@@ -4790,6 +5573,259 @@ def _prepare_subject_level_samples(
     and adds alias/dedupe provenance such as `raw_level_labels`, `level_aliases`,
     `merged_duplicate_subject_range_aliases`, and `sample_coverage_ratio`.
 
+    Examples
+    --------
+    1. Two raw aliases merge, dedupe, and sample once
+
+    Input:
+
+    by_level = {
+        "CE1 planification": [
+            {
+                "bucket_key": "CE1 planification::strand=lecture",
+                "subject_label": "Lecture",
+                "level_label": "CE1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=lecture",
+                "lp_thread_key": "strand=lecture",
+                "items": [
+                    {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Lire des mots simples."},
+                    {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Lire des phrases courtes."},
+                ],
+            }
+        ],
+        "CE1 paliers": [
+            {
+                "bucket_key": "CE1 paliers::strand=lecture",
+                "subject_label": "Lecture",
+                "level_label": "CE1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=lecture",
+                "lp_thread_key": "strand=lecture",
+                "items": [
+                    {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Lire des phrases courtes."},
+                    {"sfi_uuid": "33333333-3333-3333-3333-333333333333", "description": "Lire un court texte."},
+                ],
+            }
+        ],
+    }
+    samples = _prepare_subject_level_samples(
+        by_level=by_level,
+        excluded_subject_labels={"UNSPECIFIED_SUBJECT", "UNKNOWN", ""},
+        max_items=10,
+    )
+
+    Output shape:
+
+    samples = {
+        "Lecture": {
+            (1, 1): {
+                "level_label": "CE1",
+                "level_low": 1,
+                "level_high": 1,
+
+                "items": [
+                    {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Lire des mots simples.", ...},
+                    {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Lire des phrases courtes.", ...},
+                    {"sfi_uuid": "33333333-3333-3333-3333-333333333333", "description": "Lire un court texte.", ...},
+                ],
+
+                "sampled_count": 3,
+                "sampled_sfi_uuids": [
+                    "11111111-1111-1111-1111-111111111111",
+                    "22222222-2222-2222-2222-222222222222",
+                    "33333333-3333-3333-3333-333333333333",
+                ],
+
+                "raw_level_labels": ["CE1 paliers", "CE1 planification"],
+                "level_aliases": ["CE1"],
+                "level_alias_count": 2,
+                "merged_duplicate_subject_range_aliases": True,
+
+                "source_bucket_count_before_dedupe": 2,
+                "source_bucket_count_after_bucket_dedupe": 2,
+                "source_bucket_count_after_item_dedupe": 2,
+
+                "source_item_count_before_bucket_dedupe": 4,
+                "source_item_count_before_item_dedupe": 4,
+                "source_item_count_after_item_dedupe": 3,
+
+                "bucket_merge_count": 0,
+                "bucket_dedupe_removed_count": 0,
+                "sfi_dedupe_removed_count": 1,
+                "empty_after_item_dedupe_bucket_count": 0,
+
+                "source_bucket_keys": [
+                    "strand=lecture",
+                ],
+                "source_thread_keys": [
+                    "strand=lecture",
+                ],
+
+                "source_item_count": 3,
+                "source_bucket_count": 2,
+                "max_items": 10,
+                "sample_coverage_ratio": 1.0,
+            }
+        }
+    }
+
+    Key point: both raw aliases are preserved, the duplicate SFI `2222...` appears only
+    once in the final prompt sample, and sampling happens after merge/dedupe.
+
+    2. Sampling caps large groups
+
+    Input:
+
+    by_level = {
+        "Grade 1": [
+            {
+                "bucket_key": "Grade 1::strand=reading",
+                "subject_label": "Reading",
+                "level_label": "Grade 1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=reading",
+                "lp_thread_key": "strand=reading",
+                "items": [
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000001", "description": "Skill 1"},
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000002", "description": "Skill 2"},
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000003", "description": "Skill 3"},
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000004", "description": "Skill 4"},
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000005", "description": "Skill 5"},
+                ],
+            }
+        ]
+    }
+    samples = _prepare_subject_level_samples(
+        by_level=by_level,
+        excluded_subject_labels={"UNSPECIFIED_SUBJECT", "UNKNOWN", ""},
+        max_items=3,
+    )
+
+    Output shape:
+
+    samples = {
+        "Reading": {
+            (1, 1): {
+                "level_label": "Grade 1",
+                "level_low": 1,
+                "level_high": 1,
+
+                # Exact selected UUIDs depend on _sample_items_across_threads(),
+                # but the sample is capped at max_items.
+                "items": [
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000001", "description": "Skill 1", ...},
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000003", "description": "Skill 3", ...},
+                    {"sfi_uuid": "00000000-0000-0000-0000-000000000005", "description": "Skill 5", ...},
+                ],
+
+                "sampled_count": 3,
+                "source_item_count_after_item_dedupe": 5,
+                "source_item_count": 5,
+                "max_items": 3,
+                "sample_coverage_ratio": 0.6,
+
+                "source_bucket_count_before_dedupe": 1,
+                "source_bucket_count_after_bucket_dedupe": 1,
+                "source_bucket_count_after_item_dedupe": 1,
+
+                "bucket_merge_count": 0,
+                "sfi_dedupe_removed_count": 0,
+                "empty_after_item_dedupe_bucket_count": 0,
+
+                "raw_level_labels": ["Grade 1"],
+                "level_aliases": ["Grade 1"],
+                "level_alias_count": 1,
+                "merged_duplicate_subject_range_aliases": False,
+            }
+        }
+    }
+
+    Key point: the function does not send every item to Phase 4 when the group is too
+    large. It records the coverage ratio so reviewers can see sampling was partial.
+
+    3. Bad/noisy buckets are excluded or skipped before sampling
+
+    Input:
+
+    by_level = {
+        "Grade 1": [
+            {
+                "bucket_key": "Grade 1::strand=reading",
+                "subject_label": "Reading",
+                "level_label": "Grade 1",
+                "level_ordinal_low": 1,
+                "level_ordinal_high": 1,
+                "lp_bucket_key": "strand=reading",
+                "lp_thread_key": "strand=reading",
+                "items": [
+                    {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Read simple words."}
+                ],
+            },
+            {
+                "bucket_key": "Grade 1::__unthreaded__",
+                "subject_label": "UNSPECIFIED_SUBJECT",
+                "level_label": "Grade 99",
+                "level_ordinal_low": 99,
+                "level_ordinal_high": 99,
+                "lp_bucket_key": "__unthreaded__::bad",
+                "lp_thread_key": "__unthreaded__::bad",
+                "items": [
+                    {"sfi_uuid": "99999999-9999-9999-9999-999999999999", "description": "Noisy unmapped item."}
+                ],
+            },
+            {
+                "bucket_key": "Grade 1::strand=writing-no-bounds",
+                "subject_label": "Writing",
+                "level_label": "Grade 1",
+                "level_ordinal_low": None,
+                "level_ordinal_high": None,
+                "lp_bucket_key": "strand=writing",
+                "lp_thread_key": "strand=writing",
+                "items": [
+                    {"sfi_uuid": "22222222-2222-2222-2222-222222222222", "description": "Write simple words."}
+                ],
+            },
+        ]
+    }
+    samples = _prepare_subject_level_samples(
+        by_level=by_level,
+        excluded_subject_labels={"UNSPECIFIED_SUBJECT", "UNKNOWN", ""},
+        max_items=10,
+    )
+
+    Output shape:
+
+    samples = {
+        "Reading": {
+            (1, 1): {
+                "level_label": "Grade 1",
+                "level_low": 1,
+                "level_high": 1,
+                "items": [
+                    {"sfi_uuid": "11111111-1111-1111-1111-111111111111", "description": "Read simple words.", ...}
+                ],
+                "sampled_count": 1,
+
+                "raw_level_labels": ["Grade 1"],
+                "level_aliases": ["Grade 1"],
+                "level_alias_count": 1,
+                "merged_duplicate_subject_range_aliases": False,
+
+                "source_item_count": 1,
+                "source_bucket_count": 1,
+                "sample_coverage_ratio": 1.0,
+            }
+        }
+    }
+
+    Key point: `UNSPECIFIED_SUBJECT` is excluded before bound validation, and the
+    `Writing` bucket with missing bounds is skipped because Phase 4 needs clean ordinal
+    ranges for adjacent-level comparison.
+
     Parameters
     ----------
     by_level
@@ -4835,10 +5871,25 @@ def _prepare_subject_level_samples(
                 subject_label=subject_label,
             )
 
+            source_bucket_count_after_bucket_dedupe = len(deduped_source_buckets)
+            bucket_dedupe_removed_count = (
+                source_bucket_count_before_dedupe
+                - source_bucket_count_after_bucket_dedupe
+            )
+            bucket_dedupe_merged_duplicate_count = sum(
+                int(bucket.get("phase4_merged_source_bucket_duplicate_count") or 0)
+                for bucket in deduped_source_buckets
+            )
+            bucket_dedupe_merged_added_item_count = sum(
+                int(bucket.get("phase4_merged_source_bucket_added_item_count") or 0)
+                for bucket in deduped_source_buckets
+            )
+
             (
                 deduped_item_buckets,
                 source_item_count_before_item_dedupe,
-                deduped_sfi_count,
+                source_item_count_after_item_dedupe,
+                empty_after_item_dedupe_bucket_count,
             ) = _dedupe_phase4_bucket_items_by_sfi_uuid(deduped_source_buckets)
 
             if not deduped_item_buckets:
@@ -4893,9 +5944,15 @@ def _prepare_subject_level_samples(
                 )
             )
 
-            source_item_count = deduped_sfi_count
+            source_bucket_count_after_item_dedupe = len(deduped_item_buckets)
+            sfi_dedupe_removed_count = (
+                source_item_count_before_item_dedupe
+                - source_item_count_after_item_dedupe
+            )
             sample_coverage_ratio = (
-                len(prompt_items) / source_item_count if source_item_count else 0.0
+                len(prompt_items) / source_item_count_after_item_dedupe
+                if source_item_count_after_item_dedupe
+                else 0.0
             )
             merged_aliases = len(raw_level_labels) > 1 or len(level_labels) > 1
 
@@ -4907,12 +5964,10 @@ def _prepare_subject_level_samples(
                 )
 
             subject_level_samples[subject_label][level_key] = {
-                "deduped_bucket_count": len(deduped_item_buckets),
-                "deduped_bucket_count_removed": source_bucket_count_before_dedupe
-                - len(deduped_source_buckets),
-                "deduped_sfi_count": deduped_sfi_count,
-                "deduped_sfi_count_removed": source_item_count_before_item_dedupe
-                - deduped_sfi_count,
+                "bucket_dedupe_merged_added_item_count": bucket_dedupe_merged_added_item_count,
+                "bucket_dedupe_merged_duplicate_count": bucket_dedupe_merged_duplicate_count,
+                "bucket_dedupe_removed_count": bucket_dedupe_removed_count,
+                "empty_after_item_dedupe_bucket_count": empty_after_item_dedupe_bucket_count,
                 "items": prompt_items,
                 "level_alias_count": len(raw_level_labels),
                 "level_aliases": sorted(level_labels),
@@ -4930,10 +5985,14 @@ def _prepare_subject_level_samples(
                 "sampled_count": len(prompt_items),
                 "sampled_sfi_uuids": sampled_sfi_uuids,
                 "sampling_strategy_counts": sampling_strategy_counts,
-                "source_bucket_count": len(deduped_item_buckets),
+                "sfi_dedupe_removed_count": sfi_dedupe_removed_count,
+                "source_bucket_count": source_bucket_count_after_item_dedupe,
+                "source_bucket_count_after_bucket_dedupe": source_bucket_count_after_bucket_dedupe,
+                "source_bucket_count_after_item_dedupe": source_bucket_count_after_item_dedupe,
                 "source_bucket_count_before_dedupe": source_bucket_count_before_dedupe,
                 "source_bucket_keys": source_bucket_keys,
-                "source_item_count": source_item_count,
+                "source_item_count": source_item_count_after_item_dedupe,
+                "source_item_count_after_item_dedupe": source_item_count_after_item_dedupe,
                 "source_item_count_before_bucket_dedupe": source_item_count_before_bucket_dedupe,
                 "source_item_count_before_item_dedupe": source_item_count_before_item_dedupe,
                 "source_thread_keys": source_thread_keys,
