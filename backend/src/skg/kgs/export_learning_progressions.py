@@ -447,7 +447,7 @@ def _build_combined_sfi_context_index(
                     f"context indexes for SFI {sfi_uuid}: {diffs = }"
                 )
 
-        item_context = (
+        item_context = dict(
             within_item_context or cross_item_context or {"sfi_uuid": sfi_uuid}
         )
         available_context_scopes: list[str] = []
