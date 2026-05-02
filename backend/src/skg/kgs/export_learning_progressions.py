@@ -102,6 +102,131 @@ class LearningProgressionsExport:
     report: dict[str, Any]
 
 
+def _accumulate_subject_level_buckets(
+    *, by_level: dict[str, list[dict[str, Any]]], excluded_subject_labels: set[str]
+) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
+    """Accumulate Phase 4 buckets by canonical `(subject_label, level_range)`.
+
+    This first pass deliberately does **not** sample. It validates each raw level
+    label's included ordinal bounds, groups included buckets by subject, and appends
+    them to a canonical subject/range accumulator. Multiple raw level-label aliases
+    that map to the same subject and ordinal range are merged rather than replaced.
+
+    Parameters
+    ----------
+    by_level
+    excluded_subject_labels
+
+    Returns
+    -------
+    dict[str, dict[tuple[int, int], dict[str, Any]]]
+        Nested dictionary of accumulated buckets keyed by subject label and canonical
+        level ordinal range. The innermost dictionary contains:
+            - "level_high": The high ordinal for the level range.
+            - "level_labels": A list of raw/effective level labels from all merged
+                aliases.
+            - "level_low": The low ordinal for the level range.
+            - "raw_level_labels": A list of raw level labels that contributed to this
+                group.
+            - "source_buckets": A list of all source bucket dictionaries that fall into
+                this subject/range group after exclusion and validation.
+    """
+
+    accumulator: dict[str, dict[tuple[int, int], dict[str, Any]]] = defaultdict(dict)
+
+    for raw_level_label, level_buckets in sorted(
+        (by_level or {}).items(), key=lambda kv: str(kv[0])
+    ):
+        bounds: list[tuple[int, int]] = []
+        buckets_by_subject: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        excluded_bucket_count = 0
+        excluded_labels_seen: set[str] = set()
+        exemplar_bucket: Optional[dict[str, Any]] = None
+        missing_bounds_count = 0
+
+        for bucket in sorted(level_buckets or [], key=_phase4_bucket_sort_key):
+            subject_label = (
+                str(bucket.get("subject_label") or "UNSPECIFIED_SUBJECT").strip()
+                or "UNSPECIFIED_SUBJECT"
+            )
+
+            if subject_label in excluded_subject_labels:
+                excluded_bucket_count += 1
+                excluded_labels_seen.add(subject_label)
+                continue
+
+            lo, hi = _level_bounds(bucket)
+
+            if not isinstance(lo, int) or not isinstance(hi, int):
+                missing_bounds_count += 1
+                continue
+
+            bounds.append((lo, hi))
+            exemplar_bucket = exemplar_bucket or bucket
+            buckets_by_subject[subject_label].append(bucket)
+
+        if excluded_bucket_count > 0:
+            logger.info(
+                f"Phase 4 subject sampling: excluded {excluded_bucket_count} "
+                f"bucket(s) in level '{raw_level_label}' across "
+                f"{len(excluded_labels_seen)} subject label(s): "
+                f"{sorted(excluded_labels_seen)}"
+            )
+
+        if missing_bounds_count > 0:
+            logger.warning(
+                f"Phase 4 subject sampling: skipped {missing_bounds_count} included "
+                f"bucket(s) in level '{raw_level_label}' because they do not have "
+                f"integer level bounds. These buckets cannot participate in safe "
+                f"adjacent-level relatesTo inference."
+            )
+
+        if not bounds:
+            continue
+
+        distinct_bounds = sorted(set(bounds))
+
+        if len(distinct_bounds) != 1:
+            logger.warning(
+                f"Phase 4 subject sampling: SKIPPING level '{raw_level_label}' due to "
+                f"inconsistent level bounds across its {len(bounds)} included bounded "
+                f"bucket(s). Distinct included (low, high) values found: "
+                f"{distinct_bounds}. Excluded subject labels and missing-bound buckets "
+                f"were removed before this check. Fix the upstream Academic Standards "
+                f"export so all included buckets within a level_label share identical "
+                f"ordinal bounds."
+            )
+            continue
+
+        level_low, level_high = distinct_bounds[0]
+        level_key = (level_low, level_high)
+        level_label = _level_label(
+            exemplar_bucket
+            or {
+                "level_label": raw_level_label,
+                "level_ordinal_low": level_low,
+                "level_ordinal_high": level_high,
+            }
+        )
+
+        for subject_label, subject_buckets in buckets_by_subject.items():
+            entry = accumulator[subject_label].setdefault(
+                level_key,
+                {
+                    "level_high": level_high,
+                    "level_labels": [],
+                    "level_low": level_low,
+                    "raw_level_labels": [],
+                    "source_buckets": [],
+                },
+            )
+            entry["raw_level_labels"].append(str(raw_level_label))
+            entry["level_labels"].append(level_label)
+            entry["source_buckets"].extend(subject_buckets)
+
+    return accumulator
+
+
 def _allow_within_level_inference(
     *, bucket: dict[str, Any], config: CreateKGConfig
 ) -> bool:
@@ -1305,6 +1430,63 @@ def _canonicalize_candidate_for_dedupe(
     return key, candidate
 
 
+def _choose_merged_level_label(
+    *, level_high: int, level_labels: list[Any], level_low: int
+) -> str:
+    """Choose a deterministic display label for a merged Phase 4 level-range group.
+
+    The returned label is only for prompt/report readability. The authoritative Phase 4
+    grouping key remains the integer ordinal range `(level_low, level_high)`. This
+    function therefore avoids inventing curriculum-specific short labels; when labels
+    genuinely differ, it preserves a bounded joined alias string and keeps the complete
+    alias list in sample metadata.
+
+    Parameters
+    ----------
+    level_high
+        Highest ordinal in the canonical level range.
+    level_labels
+        Raw/effective labels contributed by all aliases in the merged group.
+    level_low
+        Lowest ordinal in the canonical level range.
+
+    Returns
+    -------
+    str
+        Human-readable display label for prompts and reports.
+    """
+
+    cleaned = _unique_non_empty_strings(level_labels)
+
+    if not cleaned:
+        return (
+            f"LEVEL {level_low}-{level_high}"
+            if level_low != level_high
+            else f"LEVEL {level_low}"
+        )
+
+    normalized = [normalize_key_token(label=label, separator="_") for label in cleaned]
+    non_empty_normalized = [value for value in normalized if value]
+
+    if len(set(non_empty_normalized)) <= 1:
+        return cleaned[0]
+
+    counts = Counter(cleaned)
+    max_count = max(counts.values())
+    winners = [label for label in cleaned if counts[label] == max_count]
+
+    if len(winners) == 1 and max_count > 1:
+        return winners[0]
+
+    aliases = sorted(
+        cleaned,
+        key=lambda label: (normalize_key_token(label=label, separator="_"), label),
+    )
+    shown = aliases[:3]
+    suffix = " / …" if len(aliases) > len(shown) else ""
+    return " / ".join(shown) + suffix
+
+
 def _collect_builds_towards_work_items(
     *, config: CreateKGConfig, thread_map: dict[str, list[dict[str, Any]]]
 ) -> list[tuple[str, dict[str, Any], dict[str, Any], str, Callable[..., Any]]]:
@@ -2113,50 +2295,6 @@ def _create_new_bucket(
     return bucket
 
 
-def _dedupe_winner_sort_key(*, candidate: CandidateEdge) -> tuple[Any, ...]:
-    """Return a deterministic sort key for selecting a dedupe winner.
-
-    Higher confidence wins first. Ties prefer earlier pipeline phases, then earlier raw
-    candidate order, then stable string fields so the result is deterministic even when
-    all substantive scores are identical.
-
-    Parameters
-    ----------
-    candidate
-        Candidate edge in a single canonical dedupe group.
-
-    Returns
-    -------
-    tuple[Any, ...]
-        Sort key suitable for `max()`.
-    """
-
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    phase_raw = metadata.get("phase")
-
-    try:
-        phase = 999 if phase_raw is None else int(phase_raw)
-    except (TypeError, ValueError):
-        phase = 999
-
-    order_raw = metadata.get("candidate_order_index")
-
-    try:
-        candidate_order_index = 10**9 if order_raw is None else int(order_raw)
-    except (TypeError, ValueError):
-        candidate_order_index = 10**9
-
-    return (
-        float(candidate.confidence),
-        -phase,
-        -candidate_order_index,
-        str(candidate.inference_type),
-        str(candidate.source_sfi_uuid),
-        str(candidate.target_sfi_uuid),
-        str(metadata.get("candidate_uid") or ""),
-    )
-
-
 def _dedupe_edges(
     edges: list[CandidateEdge],
 ) -> tuple[
@@ -2253,6 +2391,204 @@ def _dedupe_edges(
     deduped = list(best.values())
     dropped = len(edges) - len(deduped)
     return deduped, best, dropped, audit_by_key
+
+
+def _dedupe_phase4_bucket_items_by_sfi_uuid(
+    source_buckets: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Return bucket copies whose items are globally unique by SFI UUID.
+
+    The same SFI can appear through multiple raw aliases or duplicated bucket sources.
+    Phase 4 sampling should not give duplicated SFIs extra probability mass, so this
+    function removes later duplicate item occurrences across all buckets while
+    preserving the first deterministic occurrence.
+
+    Parameters
+    ----------
+    source_buckets
+        A list of bucket dictionaries, each containing an "items" key with a list of
+        item dictionaries. Each item dictionary may contain an "sfi_uuid" key
+        representing the unique identifier of a StandardsFrameworkItem (SFI).
+
+    Returns
+    -------
+    tuple[list[dict[str, Any]], int, int]
+        Deduped bucket copies, item count before dedupe, and unique item count after
+        dedupe.
+    """
+
+    deduped_buckets: list[dict[str, Any]] = []
+    seen_sfi_uuids: set[str] = set()
+    source_item_count_before_dedupe = 0
+
+    for bucket in source_buckets or []:
+        deduped_items: list[dict[str, Any]] = []
+
+        for item in bucket.get("items") or []:
+            source_item_count_before_dedupe += 1
+            sfi_uuid = str(item.get("sfi_uuid") or "").strip()
+
+            if not sfi_uuid:
+                # Keep malformed items so downstream validators can surface the real
+                # data-quality problem instead of silently hiding it.
+                deduped_items.append(item)
+                continue
+
+            if sfi_uuid in seen_sfi_uuids:
+                continue
+
+            seen_sfi_uuids.add(sfi_uuid)
+            deduped_items.append(item)
+
+        if not deduped_items:
+            continue
+
+        bucket_copy = dict(bucket)
+        bucket_copy["items"] = deduped_items
+        deduped_buckets.append(bucket_copy)
+
+    return deduped_buckets, source_item_count_before_dedupe, len(seen_sfi_uuids)
+
+
+def _dedupe_phase4_source_buckets(
+    *,
+    level_key: tuple[int, int],
+    source_buckets: list[dict[str, Any]],
+    subject_label: str,
+) -> list[dict[str, Any]]:
+    """Dedupe Phase 4 source buckets while preserving deterministic order.
+
+    Parameters
+    ----------
+    level_key
+    source_buckets
+    subject_label
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A deduplicated list of bucket dictionaries, preserving the original order of
+        first occurrences. Buckets are considered duplicates if they share the same
+        value for any of the following keys (in order of precedence):
+            1. "bucket_key"
+            2. The combination of "lp_bucket_key" and "lp_thread_key"
+            3. The sorted tuple of "source_decision_ids"
+            4. A hash of the bucket's content payload (including effective bucket key,
+                SFI UUIDs, level range, subject label, and topic path keys)
+    """
+
+    deduped: list[dict[str, Any]] = []
+    level_low, level_high = level_key
+    seen: set[tuple[Any, ...]] = set()
+
+    for bucket in sorted(source_buckets or [], key=_phase4_bucket_sort_key):
+        key: tuple[Any, ...]
+
+        # 1. Try explicit bucket identifier.
+        if bucket_key := str(bucket.get("bucket_key") or "").strip():
+            key = ("bucket_key", bucket_key)
+        # 2. Try thread/bucket/range metadata.
+        elif (lp_bucket_key := str(bucket.get("lp_bucket_key") or "").strip()) or (
+            lp_thread_key := str(bucket.get("lp_thread_key") or "").strip()
+        ):
+            key = (
+                "lp_bucket_thread_range_subject",
+                subject_label,
+                level_low,
+                level_high,
+                lp_bucket_key,
+                lp_thread_key,
+            )
+        # 3. Try source-decision provenance.
+        elif source_decision_ids := tuple(
+            sorted(
+                v_str
+                for value in (bucket.get("source_decision_ids") or [])
+                if (v_str := str(value).strip())
+            )
+        ):
+            key = (
+                "source_decision_ids",
+                subject_label,
+                level_low,
+                level_high,
+                source_decision_ids,
+            )
+        # 4. Fall back to content payload hash.
+        else:
+            payload = json.dumps(
+                {
+                    "effective_bucket_key": bucket.get("effective_bucket_key"),
+                    "items": [
+                        str(item.get("sfi_uuid") or "").strip()
+                        for item in bucket.get("items") or []
+                    ],
+                    "level_high": level_high,
+                    "level_low": level_low,
+                    "subject_label": subject_label,
+                    "topic_path_keys": bucket.get("topic_path_keys"),
+                },
+                default=str,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            key = (
+                "bucket_payload_hash",
+                hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24],
+            )
+
+        # Deduplicate using the calculated key.
+        if key in seen:
+            continue
+
+        deduped.append(bucket)
+        seen.add(key)
+
+    return deduped
+
+
+def _dedupe_winner_sort_key(*, candidate: CandidateEdge) -> tuple[Any, ...]:
+    """Return a deterministic sort key for selecting a dedupe winner.
+
+    Higher confidence wins first. Ties prefer earlier pipeline phases, then earlier raw
+    candidate order, then stable string fields so the result is deterministic even when
+    all substantive scores are identical.
+
+    Parameters
+    ----------
+    candidate
+        Candidate edge in a single canonical dedupe group.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        Sort key suitable for `max()`.
+    """
+
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    phase_raw = metadata.get("phase")
+
+    try:
+        phase = 999 if phase_raw is None else int(phase_raw)
+    except (TypeError, ValueError):
+        phase = 999
+
+    order_raw = metadata.get("candidate_order_index")
+
+    try:
+        candidate_order_index = 10**9 if order_raw is None else int(order_raw)
+    except (TypeError, ValueError):
+        candidate_order_index = 10**9
+
+    return (
+        float(candidate.confidence),
+        -phase,
+        -candidate_order_index,
+        str(candidate.inference_type),
+        str(candidate.source_sfi_uuid),
+        str(candidate.target_sfi_uuid),
+        str(metadata.get("candidate_uid") or ""),
+    )
 
 
 def _emit_relationship(
@@ -4401,6 +4737,33 @@ def _path_string(topic_path_parts: list[dict[str, Any]]) -> str:
     return " -> ".join(chunks)
 
 
+def _phase4_bucket_sort_key(bucket: dict[str, Any]) -> tuple[Any, ...]:
+    """Sort Phase 4 source buckets deterministically before dedupe/sampling.
+
+    Parameters
+    ----------
+    bucket
+        A bucket dictionary that may contain level ordinal information, thread/bucket
+        keys, and topic path context.
+
+    Returns
+    -------
+    tuple[Any, ...]
+        A tuple key for stable sorting of buckets, prioritizing level bounds, then
+        topic context, then explicit keys, then fallback to bucket content.
+    """
+
+    lo, hi = _level_bounds(bucket)
+    return (
+        lo if isinstance(lo, int) else 10**9,
+        hi if isinstance(hi, int) else 10**9,
+        _bucket_topic_context(bucket=bucket),
+        str(bucket.get("lp_thread_key") or ""),
+        str(bucket.get("lp_bucket_key") or ""),
+        str(bucket.get("bucket_key") or ""),
+    )
+
+
 def _prepare_subject_level_samples(
     *,
     by_level: dict[str, list[dict[str, Any]]],
@@ -4410,381 +4773,171 @@ def _prepare_subject_level_samples(
     """Group and sample items by subject and level range for Phase 4.
 
     Phase 4 cross-level/cross-stage `relatesTo` inference compares sampled items from
-    the same subject-like label across adjacent level ranges. This function returns
-    finalized cross-level buckets into a compact lookup keyed by subject label and
-    `(level_ordinal_low, level_ordinal_high)`. Stage-banded buckets therefore remain
-    truthful: e.g., `Standards I-II` is keyed as `(1, 2)` rather than as a single level.
+    the same subject-like label across adjacent level ranges. This function uses a
+    two-pass process so raw level-label aliases never overwrite each other:
 
-    The function is intentionally conservative about level bounds. It validates level
-    bounds using only buckets whose `subject_label` is not excluded, so noisy excluded
-    groups such as `UNSPECIFIED_SUBJECT` cannot affect otherwise valid subject-level
-    samples. If the included buckets under a single `level_label` still have
-    inconsistent ordinal bounds, the entire level label is skipped because Phase 4
-    adjacency would be unreliable.
+    1. Accumulate buckets by canonical `(subject_label, level_ordinal_low,
+       level_ordinal_high)` after excluding noisy subject labels and validating each
+       raw level label's included ordinal bounds.
+    2. Dedupe source buckets/items, then sample once per canonical subject/range group.
 
-    Examples
-    --------
-    1. Adjacent single-grade levels are grouped by subject
+    The returned shape remains:
 
-        Suppose the finalized cross-level buckets are:
+        subject_label -> (level_low, level_high) -> sample_info
 
-            by_level = {
-                "Grade 1": [
-                    {
-                        "subject_label": "Reading",
-                        "level_ordinal_low": 1,
-                        "level_ordinal_high": 1,
-                        "lp_thread_key": "strand=phonics",
-                        "lp_bucket_key": "strand=phonics",
-                        "items": [
-                            {
-                                "sfi_uuid": "11111111-1111-1111-1111-111111111111",
-                                "description": "Identify letter sounds.",
-                                "statement_type": "Standard",
-                                "topic_path": "Reading > Phonics",
-                                "topic_path_key": "strand=phonics",
-                            }
-                        ],
-                    }
-                ],
-                "Grade 2": [
-                    {
-                        "subject_label": "Reading",
-                        "level_ordinal_low": 2,
-                        "level_ordinal_high": 2,
-                        "lp_thread_key": "strand=fluency",
-                        "lp_bucket_key": "strand=fluency",
-                        "items": [
-                            {
-                                "sfi_uuid": "22222222-2222-2222-2222-222222222222",
-                                "description": "Read grade-level text fluently.",
-                                "statement_type": "Standard",
-                                "topic_path": "Reading > Fluency",
-                                "topic_path_key": "strand=fluency",
-                            }
-                        ],
-                    }
-                ],
-            }
-
-        Calling:
-
-            _prepare_subject_level_samples(
-                by_level=by_level,
-                excluded_subject_labels={"UNSPECIFIED_SUBJECT"},
-                max_items=10,
-            )
-
-        returns a nested shape like:
-
-            {
-                "Reading": {
-                    (1, 1): {
-                        "level_label": "Grade 1",
-                        "level_low": 1,
-                        "level_high": 1,
-                        "items": [
-                            {
-                                "sfi_uuid": "11111111-1111-1111-1111-111111111111",
-                                "description": "Identify letter sounds.",
-                                "statement_type": "Standard",
-                                "topic_path": "Reading > Phonics",
-                                "topic_path_key": "strand=phonics",
-                                "thread_key": "strand=phonics",
-                                ...
-                            }
-                        ],
-                        "sampled_count": 1,
-                        "source_item_count": 1,
-                        "source_bucket_count": 1,
-                        "source_thread_keys": ["strand=phonics"],
-                        "source_bucket_keys": ["strand=phonics"],
-                        "sampled_sfi_uuids": [
-                            "11111111-1111-1111-1111-111111111111"
-                        ],
-                        "max_items": 10,
-                    },
-                    (2, 2): {
-                        "level_label": "Grade 2",
-                        "level_low": 2,
-                        "level_high": 2,
-                        "items": [...],
-                        "sampled_count": 1,
-                        "source_item_count": 1,
-                        "source_bucket_count": 1,
-                        "source_thread_keys": ["strand=fluency"],
-                        "source_bucket_keys": ["strand=fluency"],
-                        "sampled_sfi_uuids": [
-                            "22222222-2222-2222-2222-222222222222"
-                        ],
-                        "max_items": 10,
-                    },
-                }
-            }
-
-        `_collect_relates_to_work_items()` can then compare Reading `(1, 1)`
-        against Reading `(2, 2)` because the ranges are adjacent.
-
-    2. Stage-banded levels are preserved as ranges
-
-        Banded curricula may provide one bucket for Standards I-II and another for
-        Standards III-VI:
-
-            by_level = {
-                "Standards I-II": [
-                    {
-                        "subject_label": "Mathematics",
-                        "level_ordinal_low": 1,
-                        "level_ordinal_high": 2,
-                        "lp_thread_key": "learning_area=number",
-                        "items": [...],
-                    }
-                ],
-                "Standards III-VI": [
-                    {
-                        "subject_label": "Mathematics",
-                        "level_ordinal_low": 3,
-                        "level_ordinal_high": 6,
-                        "lp_thread_key": "learning_area=number",
-                        "items": [...],
-                    }
-                ],
-            }
-
-        The returned keys are:
-
-            {
-                "Mathematics": {
-                    (1, 2): {"level_label": "Standards I-II", ...},
-                    (3, 6): {"level_label": "Standards III-VI", ...},
-                }
-            }
-
-        `_collect_relates_to_work_items()` treats these as adjacent because
-        `2 + 1 == 3`. Since at least one side is banded, the later inference phase
-        uses the cross-stage relatesTo prompt when `lp_cross_stage_relates_to=True`.
-
-    3. Excluded subject labels do not affect level-bound validation
-
-        Given:
-
-            by_level = {
-                "CE1": [
-                    {
-                        "subject_label": "UNSPECIFIED_SUBJECT",
-                        "level_ordinal_low": 99,
-                        "level_ordinal_high": 99,
-                        "items": [...],
-                    },
-                    {
-                        "subject_label": "Lecture",
-                        "level_ordinal_low": 1,
-                        "level_ordinal_high": 1,
-                        "items": [...],
-                    },
-                ]
-            }
-
-        Calling with:
-
-            excluded_subject_labels={"UNSPECIFIED_SUBJECT"}
-
-        omits the `UNSPECIFIED_SUBJECT` bucket before checking bounds. The `Lecture`
-        sample for level range `(1, 1)` is still returned. Without this ordering, the
-        excluded `(99, 99)` bucket would make the level label look inconsistent and
-        incorrectly skip the valid `Lecture` sample.
-
-    4. Multiple buckets for the same subject and level are sampled together
-
-        A subject may have several thread buckets at the same level:
-
-            by_level = {
-                "Grade 2": [
-                    {
-                        "subject_label": "Reading",
-                        "level_ordinal_low": 2,
-                        "level_ordinal_high": 2,
-                        "lp_thread_key": "strand=phonics",
-                        "items": [<many phonics items>],
-                    },
-                    {
-                        "subject_label": "Reading",
-                        "level_ordinal_low": 2,
-                        "level_ordinal_high": 2,
-                        "lp_thread_key": "strand=fluency",
-                        "items": [<many fluency items>],
-                    },
-                ]
-            }
-
-        `_sample_items_across_threads()` samples across both Reading thread buckets,
-        capped by `max_items`. This prevents one large thread from completely
-        dominating the Phase 4 prompt.
-
-    5. Duplicate subject/range aliases are warned about
-
-        If two different level labels map to the same subject and ordinal range:
-
-            by_level = {
-                "CE1 planification": [
-                    {
-                        "subject_label": "Lecture",
-                        "level_ordinal_low": 1,
-                        "level_ordinal_high": 1,
-                        "items": [...],
-                    }
-                ],
-                "CE1 paliers": [
-                    {
-                        "subject_label": "Lecture",
-                        "level_ordinal_low": 1,
-                        "level_ordinal_high": 1,
-                        "items": [...],
-                    }
-                ],
-            }
-
-        both map to `("Lecture", (1, 1))`. For now, this function logs a warning and
-        replaces the previous sample. A future implementation should merge aliases or
-        accumulate buckets before sampling.
-
-    6. Inconsistent included bounds under one level label are skipped
-
-        If included buckets under one level label have different bounds:
-
-            by_level = {
-                "CE1": [
-                    {
-                        "subject_label": "Lecture",
-                        "level_ordinal_low": 1,
-                        "level_ordinal_high": 1,
-                        "items": [...],
-                    },
-                    {
-                        "subject_label": "Production d'écrits",
-                        "level_ordinal_low": 2,
-                        "level_ordinal_high": 2,
-                        "items": [...],
-                    },
-                ]
-            }
-
-        the function skips "CE1" entirely and logs a warning. This is intentional since
-        Phase 4 depends on clean adjacent level ranges, and mixed included bounds under
-        one label could create invalid cross-level relationships.
+    `sample_info` keeps the existing fields consumed by
+    `_collect_relates_to_work_items` (`level_label`, `level_low`, `level_high`, etc.)
+    and adds alias/dedupe provenance such as `raw_level_labels`, `level_aliases`,
+    `merged_duplicate_subject_range_aliases`, and `sample_coverage_ratio`.
 
     Parameters
     ----------
     by_level
-        Dictionary mapping level labels to lists of bucket dictionaries. Each bucket is
-        expected to contain `subject_label`, level ordinal fields, and an `items` list.
-        Buckets may also include `lp_thread_key`/`lp_bucket_key` for sampling and
-        provenance.
+        Dictionary mapping raw level labels to finalized cross-level buckets.
     excluded_subject_labels
-        Optional set of subject labels to skip during sampling. Buckets whose
-        `subject_label` is in this set are excluded before level-bound validation.
-        Typically, `{"UNSPECIFIED_SUBJECT"}` to avoid noise from unmapped items.
+        Optional subject labels to skip before bound validation. Phase 4 always also
+        excludes sentinel labels: `UNSPECIFIED_SUBJECT`, `UNKNOWN`, and the empty label.
     max_items
-        Maximum number of items to sample across threads for each subject and level
-        range. If the total source items exceed this limit,
-        `_sample_items_across_threads()` selects a representative subset for the LLM
-        prompt.
+        Maximum number of items to sample across threads for each subject/range group.
 
     Returns
     -------
     dict[str, dict[tuple[int, int], dict[str, Any]]]
-        Nested dictionary of sampled items and sampling provenance:
-
-        subject_label -> (level_low, level_high) -> sample_info
-
-        Each `sample_info` dictionary contains at least:
-            - `level_label`: Human-readable source level/stage label
-            - `level_low`/`level_high`: Integer ordinal range
-            - `items`: Prompt-ready sampled item payloads
-            - `sampled_count`: Number of sampled prompt items
-            - `source_item_count`: Number of source items available before sampling
-            - `source_bucket_count`: Number of source buckets sampled across
-            - `source_thread_keys`: Thread keys represented by the source buckets
-            - `source_bucket_keys`: Bucket keys represented by the source buckets
-            - `sampled_sfi_uuids`: Sampled SFI UUIDs included in the prompt payload
-            - `max_items`: Sampling cap used for this subject/level sample
+        Nested dictionary of sampled prompt items and sampling/alias provenance.
     """
 
+    excluded = {str(label or "").strip() for label in excluded_subject_labels or set()}
+    excluded.update({"", "UNKNOWN", "UNSPECIFIED_SUBJECT"})
+    accumulator = _accumulate_subject_level_buckets(
+        by_level=by_level, excluded_subject_labels=excluded
+    )
     subject_level_samples: dict[str, dict[tuple[int, int], dict[str, Any]]] = (
         defaultdict(dict)
     )
-    excluded_subject_labels = set(excluded_subject_labels or [])
 
-    for raw_level_label, level_buckets in by_level.items():
-        bounds: list[tuple[int, int]] = []
-        buckets_by_subject: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        excluded_bucket_count = 0
-        excluded_labels_seen: set[str] = set()
-        exemplar_bucket: Optional[dict[str, Any]] = None
+    for subject_label, levels in sorted(accumulator.items()):
+        for level_key, entry in sorted(levels.items()):
+            level_low = int(entry["level_low"])
+            level_high = int(entry["level_high"])
+            level_labels = _unique_non_empty_strings(entry.get("level_labels") or [])
+            raw_level_labels = _unique_non_empty_strings(
+                entry.get("raw_level_labels") or []
+            )
+            source_buckets = list(entry.get("source_buckets") or [])
+            source_bucket_count_before_dedupe = len(source_buckets)
+            source_item_count_before_bucket_dedupe = sum(
+                len(bucket.get("items") or []) for bucket in source_buckets
+            )
 
-        for bucket in level_buckets:
-            subject_label = str(bucket.get("subject_label") or "UNSPECIFIED_SUBJECT")
+            deduped_source_buckets = _dedupe_phase4_source_buckets(
+                level_key=level_key,
+                source_buckets=source_buckets,
+                subject_label=subject_label,
+            )
 
-            if excluded_subject_labels and subject_label in excluded_subject_labels:
-                excluded_bucket_count += 1
-                excluded_labels_seen.add(subject_label)
+            (
+                deduped_item_buckets,
+                source_item_count_before_item_dedupe,
+                deduped_sfi_count,
+            ) = _dedupe_phase4_bucket_items_by_sfi_uuid(deduped_source_buckets)
+
+            if not deduped_item_buckets:
                 continue
 
-            lo, hi = _level_bounds(bucket)
-
-            if isinstance(lo, int) and isinstance(hi, int):
-                bounds.append((lo, hi))
-                exemplar_bucket = exemplar_bucket or bucket
-
-            buckets_by_subject[subject_label].append(bucket)
-
-        if excluded_bucket_count > 0:
-            logger.info(
-                f"Phase 4 subject sampling: excluded {excluded_bucket_count} "
-                f"bucket(s) in level '{raw_level_label}' across "
-                f"{len(excluded_labels_seen)} subject label(s): "
-                f"{sorted(excluded_labels_seen)}"
+            sampled = _sample_items_across_threads(
+                max_items=max_items, thread_buckets=deduped_item_buckets
             )
 
-        if not bounds:
-            continue
+            if not sampled:
+                continue
 
-        level_low = min(lo for lo, _ in bounds)
-        level_high = max(hi for _, hi in bounds)
-        level_key = (level_low, level_high)
+            prompt_items = [
+                _build_item_payload(item=item, thread_key_field="_thread_key")
+                for item in sampled
+            ]
 
-        if any((lo, hi) != level_key for lo, hi in bounds):
-            distinct_bounds = sorted(set(bounds))
-            logger.warning(
-                f"Phase 4 subject sampling: SKIPPING level '{raw_level_label}' due to "
-                f"inconsistent level bounds across its {len(bounds)} included bucket(s). "
-                f"Distinct included (low, high) values found: {distinct_bounds}. "
-                f"Aggregated level_key would be {level_key}, which could create "
-                f"invalid adjacency relationships. Excluded subject labels were already "
-                f"removed before this check. Fix the upstream Academic Standards export "
-                f"so all included buckets within a level_label share identical ordinal "
-                f"bounds."
+            source_thread_keys = sorted(
+                {
+                    key
+                    for bucket in deduped_item_buckets
+                    if (
+                        key := str(
+                            bucket.get("lp_thread_key")
+                            or bucket.get("lp_bucket_key")
+                            or ""
+                        ).strip()
+                    )
+                }
             )
-            continue
+            source_bucket_keys = sorted(
+                {
+                    key
+                    for bucket in deduped_item_buckets
+                    if (
+                        key := str(
+                            bucket.get("lp_bucket_key")
+                            or bucket.get("bucket_key")
+                            or ""
+                        ).strip()
+                    )
+                }
+            )
 
-        level_label = _level_label(
-            exemplar_bucket
-            or {
-                "level_label": raw_level_label,
-                "level_ordinal_low": level_low,
-                "level_ordinal_high": level_high,
+            sampled_sfi_uuids = [str(item.get("sfi_uuid")) for item in prompt_items]
+            sampling_strategy_counts = dict(
+                sorted(
+                    Counter(
+                        str(item.get("_sampling_strategy") or "unknown")
+                        for item in sampled
+                    ).items()
+                )
+            )
+
+            source_item_count = deduped_sfi_count
+            sample_coverage_ratio = (
+                len(prompt_items) / source_item_count if source_item_count else 0.0
+            )
+            merged_aliases = len(raw_level_labels) > 1 or len(level_labels) > 1
+
+            if merged_aliases:
+                logger.info(
+                    f"Phase 4 subject sampling: merged {len(raw_level_labels)} raw "
+                    f"level-label alias(es) for subject={subject_label!r}, "
+                    f"range={level_key}: {sorted(raw_level_labels)}"
+                )
+
+            subject_level_samples[subject_label][level_key] = {
+                "deduped_bucket_count": len(deduped_item_buckets),
+                "deduped_bucket_count_removed": source_bucket_count_before_dedupe
+                - len(deduped_source_buckets),
+                "deduped_sfi_count": deduped_sfi_count,
+                "deduped_sfi_count_removed": source_item_count_before_item_dedupe
+                - deduped_sfi_count,
+                "items": prompt_items,
+                "level_alias_count": len(raw_level_labels),
+                "level_aliases": sorted(level_labels),
+                "level_high": level_high,
+                "level_label": _choose_merged_level_label(
+                    level_high=level_high,
+                    level_labels=level_labels or raw_level_labels,
+                    level_low=level_low,
+                ),
+                "level_low": level_low,
+                "max_items": max_items,
+                "merged_duplicate_subject_range_aliases": merged_aliases,
+                "raw_level_labels": sorted(raw_level_labels),
+                "sample_coverage_ratio": sample_coverage_ratio,
+                "sampled_count": len(prompt_items),
+                "sampled_sfi_uuids": sampled_sfi_uuids,
+                "sampling_strategy_counts": sampling_strategy_counts,
+                "source_bucket_count": len(deduped_item_buckets),
+                "source_bucket_count_before_dedupe": source_bucket_count_before_dedupe,
+                "source_bucket_keys": source_bucket_keys,
+                "source_item_count": source_item_count,
+                "source_item_count_before_bucket_dedupe": source_item_count_before_bucket_dedupe,
+                "source_item_count_before_item_dedupe": source_item_count_before_item_dedupe,
+                "source_thread_keys": source_thread_keys,
             }
-        )
-
-        _process_subject_buckets(
-            buckets_by_subject=buckets_by_subject,
-            level_high=level_high,
-            level_key=level_key,
-            level_label=level_label,
-            level_low=level_low,
-            max_items=max_items,
-            subject_level_samples=subject_level_samples,
-        )
 
     return subject_level_samples
 
@@ -5328,106 +5481,6 @@ def _process_single_standard(
     cross_payload = dict(payload)
     within_bucket["items"].append(within_payload)
     cross_bucket["items"].append(cross_payload)
-
-
-def _process_subject_buckets(
-    *,
-    buckets_by_subject: dict[str, list[dict[str, Any]]],
-    level_high: int,
-    level_key: tuple[int, int],
-    level_label: str,
-    level_low: int,
-    max_items: int,
-    subject_level_samples: dict[str, dict[tuple[int, int], dict[str, Any]]],
-) -> None:
-    """Process and sample items across threads for a specific level range.
-
-    Iterates over buckets grouped by subject, sorts them to ensure deterministic
-    sampling, and samples items across threads. Mutates `subject_level_samples` in
-    place with the newly constructed prompt payload and provenance metadata. If a
-    duplicate subject and level range alias is found, it replaces the existing
-    entry and logs a warning.
-
-    Parameters
-    ----------
-    buckets_by_subject
-        Dictionary mapping subject labels to their lists of buckets.
-    level_high
-        The highest ordinal bound for the current level range.
-    level_key
-        A tuple of `(level_low, level_high)` representing the ordinal range.
-    level_label
-        The human-readable label for the current level or stage.
-    level_low
-        The lowest ordinal bound for the current level range.
-    max_items
-        Maximum number of items to sample across threads for each subject.
-    subject_level_samples
-        The nested dictionary to populate with the finalized samples.
-    """
-
-    for subject_label, thread_buckets in buckets_by_subject.items():
-        thread_buckets_sorted = sorted(
-            thread_buckets,
-            key=lambda b: (
-                _bucket_topic_context(bucket=b),
-                str(b.get("lp_thread_key") or b.get("lp_bucket_key") or ""),
-            ),
-        )
-        sampled = _sample_items_across_threads(
-            max_items=max_items, thread_buckets=thread_buckets_sorted
-        )
-
-        if not sampled:
-            continue
-
-        prompt_items = [
-            _build_item_payload(item=item, thread_key_field="_thread_key")
-            for item in sampled
-        ]
-        source_thread_keys = sorted(
-            {
-                str(b.get("lp_thread_key") or b.get("lp_bucket_key") or "").strip()
-                for b in thread_buckets_sorted
-                if str(b.get("lp_thread_key") or b.get("lp_bucket_key") or "").strip()
-            }
-        )
-        source_bucket_keys = sorted(
-            {
-                str(b.get("lp_bucket_key") or b.get("bucket_key") or "").strip()
-                for b in thread_buckets_sorted
-                if str(b.get("lp_bucket_key") or b.get("bucket_key") or "").strip()
-            }
-        )
-        source_item_count = sum(
-            len(b.get("items") or []) for b in thread_buckets_sorted
-        )
-        sampled_sfi_uuids = [str(it.get("sfi_uuid")) for it in prompt_items]
-
-        existing_sample = subject_level_samples[subject_label].get(level_key)
-
-        if existing_sample is not None:
-            logger.warning(
-                f"Phase 4 subject sampling: duplicate sample for subject "
-                f"'{subject_label}' and level range {level_key}. Existing "
-                f"level_label={existing_sample.get('level_label')}; new "
-                f"level_label={level_label}. Replacing the existing sample for "
-                f"now. Consider merging level-label aliases before sampling."
-            )
-
-        subject_level_samples[subject_label][level_key] = {
-            "level_label": level_label,
-            "level_low": level_low,
-            "level_high": level_high,
-            "items": prompt_items,
-            "max_items": max_items,
-            "sampled_count": len(prompt_items),
-            "sampled_sfi_uuids": sampled_sfi_uuids,
-            "source_bucket_count": len(thread_buckets_sorted),
-            "source_bucket_keys": source_bucket_keys,
-            "source_item_count": source_item_count,
-            "source_thread_keys": source_thread_keys,
-        }
 
 
 def _replace_candidate_metadata(
@@ -6645,6 +6698,38 @@ def _topic_path_signature(topic_path_parts: list[dict[str, Any]]) -> str:
             segments.append(f"{role}={value}")
 
     return "|".join(segments)
+
+
+def _unique_non_empty_strings(values: list[Any]) -> list[str]:
+    """Return unique non-empty strings preserving first-seen order.
+
+    Parameters
+    ----------
+    values
+        A list of values to process, which may be of any type.
+
+    Returns
+    -------
+    list[str]
+        A list of unique, non-empty strings obtained by converting each input value to
+        a string, stripping whitespace, and preserving the order of first occurrence.
+        Blank or whitespace-only strings are excluded, and duplicates are removed while
+        keeping the first occurrence.
+    """
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for value in values or []:
+        s = str(value or "").strip()
+
+        if not s or s in seen:
+            continue
+
+        out.append(s)
+        seen.add(s)
+
+    return out
 
 
 def _update_existing_bucket(
