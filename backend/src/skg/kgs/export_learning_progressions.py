@@ -2673,14 +2673,25 @@ def _dedupe_edges(
             winning CandidateEdge.
         3. The number of edges dropped during deduplication.
         4. A mapping from canonical key to candidate-source audit records.
+
+    Raises
+    ------
+    ValueError
+        If an edge has an unsupported relationship type that is not `buildsTowards` or
+        `relatesTo`.
     """
 
     groups: dict[tuple[str, str, str], list[CandidateEdge]] = defaultdict(list)
 
     for edge in edges:
+        if edge.rel_type not in {BUILDS_TOWARDS, RELATES_TO}:
+            raise ValueError(
+                f"Unsupported LP candidate relationship type: {edge.rel_type!r}"
+            )
+
+        canonical_edge = edge
         source_uuid = edge.source_sfi_uuid
         target_uuid = edge.target_sfi_uuid
-        canonical_edge = edge
 
         if edge.rel_type == RELATES_TO:
             str_source = str(source_uuid)
@@ -2698,7 +2709,6 @@ def _dedupe_edges(
                 )
                 source_uuid = UUID(canonical_source)
                 target_uuid = UUID(canonical_target)
-
                 canonical_edge = CandidateEdge(
                     confidence=edge.confidence,
                     evidence=edge.evidence,
@@ -2718,18 +2728,17 @@ def _dedupe_edges(
     best: dict[tuple[str, str, str], CandidateEdge] = {}
 
     for key, group in groups.items():
+        audit_records: list[dict[str, Any]] = []
         winner_index, _ = max(
             enumerate(group),
             key=lambda pair: _dedupe_winner_sort_key(candidate=pair[1]),
         )
-        audit_records: list[dict[str, Any]] = []
 
         for idx, candidate in enumerate(group):
-            disposition = "dedupe_winner" if idx == winner_index else "dropped_dedupe"
             candidate_metadata = (
                 candidate.metadata if isinstance(candidate.metadata, dict) else {}
             )
-
+            disposition = "dedupe_winner" if idx == winner_index else "dropped_dedupe"
             audit_records.append(
                 {
                     "candidate_order_index": candidate_metadata.get(
