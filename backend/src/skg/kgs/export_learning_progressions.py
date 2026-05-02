@@ -6078,23 +6078,25 @@ def _process_and_filter_candidates(
         5. A mapping of dedupe winners keyed by (rel_type, source_uuid, target_uuid).
     """
 
+    # Dedupe candidates, keeping the single highest-confidence edge for each unique
+    # (rel_type, source_sfi_uuid, target_sfi_uuid) combination.
     candidate_edges_total_pre_dedupe = len(candidates)
     candidates, dedupe_winners, dedupe_dropped, dedupe_audit_by_key = _dedupe_edges(
         candidates
     )
 
-    builds_candidates = [e for e in candidates if e.rel_type == BUILDS_TOWARDS]
-    relates_candidates = [e for e in candidates if e.rel_type == RELATES_TO]
+    builds_towards_candidates = [e for e in candidates if e.rel_type == BUILDS_TOWARDS]
+    relates_to_candidates = [e for e in candidates if e.rel_type == RELATES_TO]
 
-    # Confidence thresholds.
+    # Filter by confidence thresholds.
     builds_kept = [
         e
-        for e in builds_candidates
+        for e in builds_towards_candidates
         if e.confidence >= config.lp_builds_towards_min_confidence
     ]
     builds_dropped_low = [
         e
-        for e in builds_candidates
+        for e in relates_to_candidates
         if e.confidence < config.lp_builds_towards_min_confidence
     ]
 
@@ -6110,7 +6112,6 @@ def _process_and_filter_candidates(
     if within_sfi_index:
         phase_1 = [e for e in builds_kept if int(e.metadata.get("phase") or 0) == 1]
         non_phase_1 = [e for e in builds_kept if int(e.metadata.get("phase") or 0) != 1]
-
         phase_1_kept, builds_dropped_doc_order = (
             _filter_builds_towards_within_level_order(
                 edges=phase_1, within_sfi_index=within_sfi_index
@@ -6120,12 +6121,12 @@ def _process_and_filter_candidates(
 
     relates_kept_thr = [
         e
-        for e in relates_candidates
+        for e in relates_to_candidates
         if e.confidence >= config.lp_relates_to_min_confidence
     ]
     relates_dropped_low = [
         e
-        for e in relates_candidates
+        for e in relates_to_candidates
         if e.confidence < config.lp_relates_to_min_confidence
     ]
 
@@ -6163,8 +6164,8 @@ def _process_and_filter_candidates(
         ),
         "candidate_edges_dedupe_groups": len(dedupe_audit_by_key),
         "candidate_edges_dropped_dedupe": int(dedupe_dropped),
-        "candidate_builds_towards": len(builds_candidates),
-        "candidate_relates_to": len(relates_candidates),
+        "candidate_builds_towards": len(builds_towards_candidates),
+        "candidate_relates_to": len(relates_to_candidates),
         "builds_kept": len(builds_kept),
         "builds_kept_before_doc_order": int(builds_kept_before_doc_order),
         "builds_dropped_doc_order": len(builds_dropped_doc_order),
