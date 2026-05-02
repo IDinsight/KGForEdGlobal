@@ -2264,6 +2264,82 @@ def _collect_relates_to_work_items(
     return work_items
 
 
+def _compare_within_level_order(
+    *, source_context: dict[str, Any], target_context: dict[str, Any]
+) -> Optional[int]:
+    """Compare two scoped SFI contexts by within-level curriculum order.
+
+    Parameters
+    ----------
+    source_context
+        Source SFI context entry containing `item_context` and
+        `within_level_context`.
+    target_context
+        Target SFI context entry containing `item_context` and
+        `within_level_context`.
+
+    Returns
+    -------
+    Optional[int]
+        -1 if source is before target, 0 if equal, 1 if source is after target, or
+        None if the order cannot be determined safely.
+    """
+
+    source_item = source_context.get("item_context") or {}
+    source_within = source_context.get("within_level_context") or {}
+    target_item = target_context.get("item_context") or {}
+    target_within = target_context.get("within_level_context") or {}
+
+    if source_item.get("level_label") != target_item.get("level_label"):
+        return None
+
+    source_domain = (
+        source_within.get("within_level_ordering_domain_key")
+        or source_within.get("topic_path_key")
+        or source_item.get("item_topic_path_key")
+    )
+    target_domain = (
+        target_within.get("within_level_ordering_domain_key")
+        or target_within.get("topic_path_key")
+        or target_item.get("item_topic_path_key")
+    )
+
+    if source_domain != target_domain:
+        return None
+
+    src_missing = int(source_within.get("numeric_order_missing_count") or 0)
+    tgt_missing = int(target_within.get("numeric_order_missing_count") or 0)
+    src_path = source_within.get("numeric_order_path") or []
+    tgt_path = target_within.get("numeric_order_path") or []
+
+    if src_missing == 0 and tgt_missing == 0 and src_path and tgt_path:
+        return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
+
+    src_page = source_item.get("doc_pos_page_index")
+    src_page = source_item.get("page_index") if src_page is None else src_page
+
+    tgt_page = target_item.get("doc_pos_page_index")
+    tgt_page = target_item.get("page_index") if tgt_page is None else tgt_page
+
+    if not isinstance(src_page, int) or not isinstance(tgt_page, int):
+        return None
+
+    src_y0 = source_item.get("doc_pos_y0")
+    tgt_y0 = target_item.get("doc_pos_y0")
+
+    if src_page == tgt_page:
+        if not isinstance(src_y0, (int, float)) or not isinstance(tgt_y0, (int, float)):
+            return None
+
+        src_key = (src_page, float(src_y0))
+        tgt_key = (tgt_page, float(tgt_y0))
+    else:
+        src_key = (src_page, 0.0)
+        tgt_key = (tgt_page, 0.0)
+
+    return -1 if src_key < tgt_key else (1 if src_key > tgt_key else 0)
+
+
 def _compute_bucket_keys(
     *,
     default_thread_key: str | None,
@@ -3545,13 +3621,20 @@ def _evenly_spaced_indexes(*, max_items: int, total_items: int) -> list[int]:
 def _filter_builds_towards_within_level_order(
     *, edges: list[CandidateEdge], within_sfi_index: dict[str, dict[str, Any]]
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
-    """Drop Phase-1 buildsTowards edges that contradict within-level document order.
+    """Drop Phase-1 buildsTowards edges that contradict within-level order.
 
     Phase 1 inference is scoped by the within-level bucket. Therefore order comparisons
     use `within_level_ordering_domain_key`, not item-level `topic_path_key`, as the
     comparable-domain gate. This lets broad but intentional buckets such as
     `strand=lecture` compare items across finer paliers/weeks while still avoiding
     comparisons between unrelated ordering domains.
+
+    The primary ordering signal is exporter-derived curriculum order via
+    `numeric_order_path`. When numeric order is incomplete, the function falls back to
+    document position (`page_index`, then `doc_pos_y0`) only when that comparison can
+    be made safely. If order cannot be determined safely, the edge is kept; this
+    function drops only edges with affirmative evidence that the source is not before
+    the target.
 
     Parameters
     ----------
@@ -3565,73 +3648,6 @@ def _filter_builds_towards_within_level_order(
     tuple[list[CandidateEdge], list[CandidateEdge]]
         `(kept_edges, dropped_edges)`.
     """
-
-    def _compare_within_level_order(
-        *, source_context: dict[str, Any], target_context: dict[str, Any]
-    ) -> Optional[int]:
-        """Compare two scoped SFI contexts by within-level curriculum order.
-
-        Parameters
-        ----------
-        source_context
-            Source SFI context entry containing `item_context` and
-            `within_level_context`.
-        target_context
-            Target SFI context entry containing `item_context` and
-            `within_level_context`.
-
-        Returns
-        -------
-        Optional[int]
-            -1 if source is before target, 0 if equal, 1 if source is after target, or
-            None if the order cannot be determined safely.
-        """
-
-        source_item = source_context.get("item_context") or {}
-        source_within = source_context.get("within_level_context") or {}
-        target_item = target_context.get("item_context") or {}
-        target_within = target_context.get("within_level_context") or {}
-
-        if source_item.get("level_label") != target_item.get("level_label"):
-            return None
-
-        source_domain = (
-            source_within.get("within_level_ordering_domain_key")
-            or source_within.get("topic_path_key")
-            or source_item.get("item_topic_path_key")
-        )
-        target_domain = (
-            target_within.get("within_level_ordering_domain_key")
-            or target_within.get("topic_path_key")
-            or target_item.get("item_topic_path_key")
-        )
-
-        if source_domain != target_domain:
-            return None
-
-        src_missing = int(source_within.get("numeric_order_missing_count") or 0)
-        tgt_missing = int(target_within.get("numeric_order_missing_count") or 0)
-        src_path = source_within.get("numeric_order_path") or []
-        tgt_path = target_within.get("numeric_order_path") or []
-
-        if src_missing == 0 and tgt_missing == 0 and src_path and tgt_path:
-            return -1 if src_path < tgt_path else (1 if src_path > tgt_path else 0)
-
-        src_page = source_item.get("doc_pos_page_index")
-        src_page = source_item.get("page_index") if src_page is None else src_page
-
-        tgt_page = target_item.get("doc_pos_page_index")
-        tgt_page = target_item.get("page_index") if tgt_page is None else tgt_page
-
-        if not isinstance(src_page, int) or not isinstance(tgt_page, int):
-            return None
-
-        src_y0 = source_item.get("doc_pos_y0")
-        tgt_y0 = target_item.get("doc_pos_y0")
-        src_key = (src_page, float(src_y0) if isinstance(src_y0, (int, float)) else 0.0)
-        tgt_key = (tgt_page, float(tgt_y0) if isinstance(tgt_y0, (int, float)) else 0.0)
-
-        return -1 if src_key < tgt_key else (1 if src_key > tgt_key else 0)
 
     kept: list[CandidateEdge] = []
     dropped: list[CandidateEdge] = []
@@ -5363,7 +5379,12 @@ def _level_label(b: dict[str, Any]) -> str:
 def _limit_relates_to_edges_per_sfi(
     *, edges: list[CandidateEdge], max_edges_per_sfi: int
 ) -> tuple[list[CandidateEdge], list[CandidateEdge]]:
-    """Greedy limit for undirected relatesTo edges per node.
+    """Apply a deterministic greedy per-SFI cap to relatesTo candidates.
+
+    Candidates are evaluated in descending confidence order, then by endpoint UUIDs for
+    stable tie-breaking. An edge is kept only if both endpoints still have remaining
+    capacity under `max_edges_per_sfi`; otherwise it is dropped. This is a greedy
+    heuristic.
 
     Parameters
     ----------
@@ -5385,6 +5406,12 @@ def _limit_relates_to_edges_per_sfi(
         per SFI.
     """
 
+    if max_edges_per_sfi < 1:
+        raise ValueError(
+            f"max_edges_per_sfi must be >= 1, got {max_edges_per_sfi}. "
+            f"Disable relatesTo inference with phase toggles instead."
+        )
+
     counts: dict[UUID, int] = defaultdict(int)
     kept: list[CandidateEdge] = []
     dropped: list[CandidateEdge] = []
@@ -5392,7 +5419,12 @@ def _limit_relates_to_edges_per_sfi(
     # Sort deterministically: highest confidence first, then UUID pair.
     edges_sorted = sorted(
         edges,
-        key=lambda e: (-e.confidence, str(e.source_sfi_uuid), str(e.target_sfi_uuid)),
+        key=lambda e: (
+            -float(e.confidence),
+            str(e.source_sfi_uuid),
+            str(e.target_sfi_uuid),
+            str((e.metadata or {}).get("candidate_uid") or ""),
+        ),
     )
 
     for e in edges_sorted:
@@ -6096,7 +6128,7 @@ def _process_and_filter_candidates(
     ]
     builds_dropped_low = [
         e
-        for e in relates_to_candidates
+        for e in builds_towards_candidates
         if e.confidence < config.lp_builds_towards_min_confidence
     ]
 
