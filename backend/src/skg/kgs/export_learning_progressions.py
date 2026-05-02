@@ -74,7 +74,6 @@ SFIContextScope = Literal["cross_level", "within_level"]
 WITHIN_LEVEL_INFERENCE_TYPES: set[str] = {
     "within_level_builds_towards",
     "within_level_cross_thread_relates_to",
-    "within_level_relates_to",
 }
 
 
@@ -2855,7 +2854,7 @@ def _finalize_lp_export(
             "cross_stage_builds_towards": config.lp_cross_stage_builds_towards,
             "cross_stage_relates_to": config.lp_cross_stage_relates_to,
             "within_level_builds_towards": config.lp_within_level_builds_towards,
-            "within_level_relates_to": config.lp_within_level_relates_to,
+            "within_level_cross_thread_relates_to": config.lp_within_level_relates_to,
         },
         "thresholds": {
             "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
