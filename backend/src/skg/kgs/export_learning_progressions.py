@@ -929,12 +929,14 @@ def _build_scoped_sfi_index(
             for item in bucket.get("items") or []:
                 sfi_uuid = str(item.get("sfi_uuid") or "").strip()
 
-                if not sfi_uuid:
+                try:
+                    UUID(sfi_uuid)
+                except Exception as exc:
                     raise ValueError(
-                        f"Missing sfi_uuid while building LP SFI context index. "
+                        f"Invalid sfi_uuid while building LP SFI context index. "
                         f"scope={scope!r}; level={level_label!r}; "
-                        f"bucket={bucket.get('lp_bucket_key')!r}."
-                    )
+                        f"bucket={bucket.get('lp_bucket_key')!r}; sfi_uuid={sfi_uuid!r}."
+                    ) from exc
 
                 item_topic_path = str(item.get("topic_path") or "").strip()
                 item_topic_path_key = str(item.get("topic_path_key") or "").strip()
