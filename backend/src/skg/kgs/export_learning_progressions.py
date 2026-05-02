@@ -3322,24 +3322,26 @@ def _infer_cross_level_builds_towards(
         lo_lo, lo_hi = _level_bounds(b_lo)
         hi_lo, hi_hi = _level_bounds(b_hi)
         lower_payload = [
-            _build_item_payload(include_order_index=True, item=it)
-            for it in (b_lo.get("items") or [])
+            _build_item_payload(item=it) for it in (b_lo.get("items") or [])
         ]
         upper_payload = [
-            _build_item_payload(include_order_index=True, item=it)
-            for it in (b_hi.get("items") or [])
+            _build_item_payload(item=it) for it in (b_hi.get("items") or [])
         ]
         lower_topic_context = _bucket_topic_context(bucket=b_lo)
         upper_topic_context = _bucket_topic_context(bucket=b_hi)
 
         prompt = prompt_builder(
+            lower_bucket_key=b_lo.get("lp_bucket_key"),
             lower_items=lower_payload,
             lower_level_label=lo_label,
+            lower_subject_label=b_lo.get("subject_label"),
             lower_topic_context=lower_topic_context,
             min_confidence=min_confidence,
             thread_key=thread_key,
+            upper_bucket_key=b_hi.get("lp_bucket_key"),
             upper_items=upper_payload,
             upper_level_label=hi_label,
+            upper_subject_label=b_hi.get("subject_label"),
             upper_topic_context=upper_topic_context,
         )
 

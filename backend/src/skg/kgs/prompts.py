@@ -37,26 +37,34 @@ def _builds_towards_confidence_guidance(min_confidence: float) -> str:
 
 def _builds_towards_cross_level(
     *,
+    lower_bucket_key: str | None = None,
     lower_items: list[dict[str, Any]],
     lower_level_label: str,
+    lower_subject_label: str | None = None,
+    lower_topic_context: str,
     min_confidence: float,
     note_suffix: str = "",
     task_description: str,
     task_label: str,
     thread_key: str,
-    lower_topic_context: str,
+    upper_bucket_key: str | None = None,
     upper_items: list[dict[str, Any]],
     upper_level_label: str,
+    upper_subject_label: str | None = None,
     upper_topic_context: str,
 ) -> PromptPair:
     """Shared implementation for cross-level and cross-stage buildsTowards prompts.
 
     Parameters
     ----------
+    lower_bucket_key
+        Optional lower-level LP bucket key for audit/debug context.
     lower_items
         The list of items from the lower level.
     lower_level_label
         The label of the lower level (e.g., "Grade 3").
+    lower_subject_label
+        Optional lower-level subject-like label for audit/debug context.
     min_confidence
         The minimum confidence threshold from the config; edges below this should be
         omitted.
@@ -70,12 +78,16 @@ def _builds_towards_cross_level(
         The normalized thread key for context (e.g., "math_geometry_shapes").
     lower_topic_context
         The human-readable topic/path context for the lower-level items.
-    upper_topic_context
-        The human-readable topic/path context for the upper-level items.
+    upper_bucket_key
+        Optional upper-level LP bucket key for audit/debug context.
     upper_items
         The list of items from the upper level.
     upper_level_label
         The label of the upper level (e.g., "Grade 4").
+    upper_subject_label
+        Optional upper-level subject-like label for audit/debug context.
+    upper_topic_context
+        The human-readable topic/path context for the upper-level items.
 
     Returns
     -------
@@ -114,6 +126,10 @@ HARD RULES:
             "lower_level_label": lower_level_label,
             "upper_level_label": upper_level_label,
             "thread_key": thread_key,
+            "lower_bucket_key": lower_bucket_key,
+            "upper_bucket_key": upper_bucket_key,
+            "lower_subject_label": lower_subject_label,
+            "upper_subject_label": upper_subject_label,
             "lower_topic_context": lower_topic_context,
             "upper_topic_context": upper_topic_context,
             "lower_level_items": lower_items,
@@ -250,23 +266,31 @@ Note: relatesTo is conceptually UNDIRECTED; you may choose either direction in t
 
 def cross_level_builds_towards(
     *,
+    lower_bucket_key: str | None = None,
     lower_items: list[dict[str, Any]],
     lower_level_label: str,
+    lower_subject_label: str | None = None,
     lower_topic_context: str,
     min_confidence: float,
     thread_key: str,
+    upper_bucket_key: str | None = None,
     upper_items: list[dict[str, Any]],
     upper_level_label: str,
+    upper_subject_label: str | None = None,
     upper_topic_context: str,
 ) -> PromptPair:
     """Cross-level buildsTowards between adjacent levels within a normalized thread.
 
     Parameters
     ----------
+    lower_bucket_key
+        Optional lower-level LP bucket key for audit/debug context.
     lower_items
         The list of items from the lower level.
     lower_level_label
         The label of the lower level (e.g., "Grade 3").
+    lower_subject_label
+        Optional lower-level subject-like label for audit/debug context.
     lower_topic_context
         The human-readable topic/path context for the lower-level items.
     min_confidence
@@ -274,10 +298,14 @@ def cross_level_builds_towards(
         omitted.
     thread_key
         The normalized thread key for context (e.g., "math_geometry_shapes").
+    upper_bucket_key
+        Optional upper-level LP bucket key for audit/debug context.
     upper_items
         The list of items from the upper level.
     upper_level_label
         The label of the upper level (e.g., "Grade 4").
+    upper_subject_label
+        Optional upper-level subject-like label for audit/debug context.
     upper_topic_context
         The human-readable topic/path context for the upper-level items.
 
@@ -288,8 +316,10 @@ def cross_level_builds_towards(
     """
 
     return _builds_towards_cross_level(
+        lower_bucket_key=lower_bucket_key,
         lower_items=lower_items,
         lower_level_label=lower_level_label,
+        lower_subject_label=lower_subject_label,
         lower_topic_context=lower_topic_context,
         min_confidence=min_confidence,
         task_description=(
@@ -297,8 +327,10 @@ def cross_level_builds_towards(
         ),
         task_label="Cross-Level",
         thread_key=thread_key,
+        upper_bucket_key=upper_bucket_key,
         upper_items=upper_items,
         upper_level_label=upper_level_label,
+        upper_subject_label=upper_subject_label,
         upper_topic_context=upper_topic_context,
     )
 
@@ -362,13 +394,17 @@ def cross_level_relates_to(
 
 def cross_stage_builds_towards(
     *,
+    lower_bucket_key: str | None = None,
     lower_items: list[dict[str, Any]],
     lower_level_label: str,
+    lower_subject_label: str | None = None,
     lower_topic_context: str,
     min_confidence: float,
     thread_key: str,
+    upper_bucket_key: str | None = None,
     upper_items: list[dict[str, Any]],
     upper_level_label: str,
+    upper_subject_label: str | None = None,
     upper_topic_context: str,
 ) -> PromptPair:
     """Cross-stage buildsTowards between adjacent *level ranges* within a normalized
@@ -380,23 +416,31 @@ def cross_stage_builds_towards(
 
     Parameters
     ----------
+    lower_bucket_key
+        Optional lower-level LP bucket key for audit/debug context.
     lower_items
         The list of items from the lower grade.
     lower_level_label
         The label of the lower level (e.g., "Grade 3").
+    lower_subject_label
+        Optional lower-level subject-like label for audit/debug context.
+    lower_topic_context
+        The human-readable topic/path context for the lower-level items.
     min_confidence
         The minimum confidence threshold from the config; passed through to the
         underlying cross-level prompt.
     thread_key
         The normalized thread key for context (e.g., "math_geometry_shapes").
-    lower_topic_context
-        The human-readable topic/path context for the lower-level items.
-    upper_topic_context
-        The human-readable topic/path context for the upper-level items.
+    upper_bucket_key
+        Optional upper-level LP bucket key for audit/debug context.
     upper_items
         The list of items from the upper level.
     upper_level_label
         The label of the upper level (e.g., "Grade 5").
+    upper_subject_label
+        Optional upper-level subject-like label for audit/debug context.
+    upper_topic_context
+        The human-readable topic/path context for the upper-level items.
 
     Returns
     -------
@@ -405,8 +449,10 @@ def cross_stage_builds_towards(
     """
 
     return _builds_towards_cross_level(
+        lower_bucket_key=lower_bucket_key,
         lower_items=lower_items,
         lower_level_label=lower_level_label,
+        lower_subject_label=lower_subject_label,
         lower_topic_context=lower_topic_context,
         min_confidence=min_confidence,
         note_suffix=(
@@ -421,8 +467,10 @@ def cross_stage_builds_towards(
         ),
         task_label="Cross-Stage",
         thread_key=thread_key,
+        upper_bucket_key=upper_bucket_key,
         upper_items=upper_items,
         upper_level_label=upper_level_label,
+        upper_subject_label=upper_subject_label,
         upper_topic_context=upper_topic_context,
     )
 
