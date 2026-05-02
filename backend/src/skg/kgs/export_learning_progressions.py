@@ -619,18 +619,29 @@ def _allow_within_level_inference(
 def _assign_candidate_uids(
     *, candidates: list[CandidateEdge], provenance_rows: list[dict[str, Any]]
 ) -> list[CandidateEdge]:
-    """Build a deterministic identifier for this ordered raw-candidate occurrence
-    within the current export run.
+    """Assign trace UIDs to ordered raw-candidate occurrences.
 
-    Candidate inference functions append exactly one provenance row for each raw
-    candidate edge, in the same order. This function validates that invariant, assigns
-    a deterministic UID and order index to every candidate, mirrors the UID into the
-    matching provenance row, and returns updated immutable CandidateEdge instances.
+    Candidate inference functions must append exactly one provenance row for each raw
+    candidate edge, in the same order. This function validates that invariant by
+    checking both list cardinality and row-by-row alignment on relationship type,
+    source UUID, target UUID, and inference type.
+
+    The assigned `candidate_uid` is always recomputed here from the raw candidate
+    payload and occurrence index; any preexisting `candidate_uid` in candidate metadata
+    is ignored. The UID is deterministic for the exact raw candidate payload at that
+    exact ordered occurrence in this export run. It is intended only as a
+    provenance/dedupe audit identifier, not as a stable semantic relationship
+    identifier. Final emitted Relationship identifiers are minted later from canonical
+    relationship fields.
+
+    The function also writes `candidate_order_index` and `candidate_uid` into the
+    matching provenance row in place, and returns copied immutable CandidateEdge
+    instances whose metadata contains the same fields.
 
     Parameters
     ----------
     candidates
-        Full raw candidate list before deduplication.
+        Full raw candidate list before deduplication and confidence filtering.
     provenance_rows
         Full raw provenance-row list before post-filter disposition enrichment. This
         list is updated in place with `candidate_uid` and `candidate_order_index`.
@@ -638,13 +649,15 @@ def _assign_candidate_uids(
     Returns
     -------
     list[CandidateEdge]
-        Candidate list with `candidate_uid` and `candidate_order_index` stored in each
-        candidate metadata dictionary.
+        Candidate list with freshly recomputed `candidate_uid` and
+        `candidate_order_index` stored in each candidate metadata dictionary.
 
     Raises
     ------
     ValueError
-        If the candidate and provenance-row counts differ.
+        If the candidate and provenance-row counts differ; if a candidate/provenance
+        row pair is misaligned; or if two raw candidate occurrences receive the same
+        `candidate_uid`.
     """
 
     if len(candidates) != len(provenance_rows):
@@ -655,45 +668,77 @@ def _assign_candidate_uids(
             f"dedupe audit disposition can be joined unambiguously."
         )
 
+    seen_uids: set[str] = set()
     updated_candidates: list[CandidateEdge] = []
 
     for occurrence_index, candidate in enumerate(candidates):
+        provenance_row = provenance_rows[occurrence_index]
+        expected_alignment = {
+            "inference_type": str(candidate.inference_type),
+            "rel_type": str(candidate.rel_type),
+            "source": str(candidate.source_sfi_uuid),
+            "target": str(candidate.target_sfi_uuid),
+        }
+        actual_alignment = {
+            "inference_type": str(provenance_row.get("inference_type") or ""),
+            "rel_type": str(provenance_row.get("rel_type") or ""),
+            "source": str(provenance_row.get("source") or ""),
+            "target": str(provenance_row.get("target") or ""),
+        }
+
+        if actual_alignment != expected_alignment:
+            raise ValueError(
+                f"Candidate/provenance alignment mismatch before LP candidate "
+                f"processing at index {occurrence_index}: "
+                f"expected={expected_alignment}; actual={actual_alignment}. "
+                f"Candidate inference functions must append exactly one provenance "
+                f"row per raw candidate, in the same order."
+            )
+
         metadata = (
             dict(candidate.metadata) if isinstance(candidate.metadata, dict) else {}
         )
-        uid = str(metadata.get("candidate_uid") or "").strip()
 
-        if not uid:
-            # Build a deterministic per-run identifier for the raw candidate edge.
-            stable_metadata = {
-                str(key): value
-                for key, value in metadata.items()
-                if key not in {"candidate_order_index", "candidate_uid", "dedupe"}
-            }
-            payload = {
-                "confidence": float(candidate.confidence),
-                "evidence": candidate.evidence,
-                "inference_source": candidate.inference_source,
-                "inference_type": candidate.inference_type,
-                "llm_confidence": candidate.llm_confidence,
-                "metadata": stable_metadata,
-                "occurrence_index": int(occurrence_index),
-                "rel_type": candidate.rel_type,
-                "source_sfi_uuid": str(candidate.source_sfi_uuid),
-                "target_sfi_uuid": str(candidate.target_sfi_uuid),
-            }
-            encoded = json.dumps(
-                payload, default=str, ensure_ascii=False, sort_keys=True
-            ).encode("utf-8")
-            uid = hashlib.sha256(encoded).hexdigest()[:24]
+        # Always recompute the UID in this single source of truth. Exclude any stale
+        # preexisting candidate UID/order fields, plus later-stage dedupe metadata,
+        # from the stable hash payload.
+        stable_metadata = {
+            str(key): value
+            for key, value in metadata.items()
+            if key not in {"candidate_order_index", "candidate_uid", "dedupe"}
+        }
+        payload = {
+            "confidence": float(candidate.confidence),
+            "evidence": candidate.evidence,
+            "inference_source": candidate.inference_source,
+            "inference_type": candidate.inference_type,
+            "llm_confidence": candidate.llm_confidence,
+            "metadata": stable_metadata,
+            "occurrence_index": int(occurrence_index),
+            "rel_type": candidate.rel_type,
+            "source_sfi_uuid": str(candidate.source_sfi_uuid),
+            "target_sfi_uuid": str(candidate.target_sfi_uuid),
+        }
+        encoded = json.dumps(
+            payload, default=str, ensure_ascii=False, sort_keys=True
+        ).encode("utf-8")
+        uid = hashlib.sha256(encoded).hexdigest()[:24]
 
+        if uid in seen_uids:
+            raise ValueError(
+                f"Duplicate LP candidate_uid generated before dedupe/filtering: {uid}. "
+                f"This should be impossible for distinct raw candidate occurrences; "
+                f"check candidate payload construction and UID inputs."
+            )
+
+        seen_uids.add(uid)
         metadata["candidate_order_index"] = occurrence_index
         metadata["candidate_uid"] = uid
         updated_candidate = _replace_candidate_metadata(
             candidate=candidate, metadata=metadata
         )
-        provenance_rows[occurrence_index]["candidate_order_index"] = occurrence_index
-        provenance_rows[occurrence_index]["candidate_uid"] = uid
+        provenance_row["candidate_order_index"] = occurrence_index
+        provenance_row["candidate_uid"] = uid
         updated_candidates.append(updated_candidate)
 
     return updated_candidates
@@ -1736,60 +1781,6 @@ def _canon_disposition_key(
     return rel_type, source, target
 
 
-def _canonicalize_candidate_for_dedupe(
-    candidate: CandidateEdge,
-) -> tuple[tuple[str, str, str], CandidateEdge]:
-    """Canonicalize a candidate edge into the key used for deduplication.
-
-    `buildsTowards` is directional, so endpoint order is preserved. `relatesTo` is
-    associative, so endpoints are sorted using `canon_str_pair`. When a `relatesTo`
-    candidate is reordered, the returned candidate preserves the original endpoint
-    order in metadata for auditability.
-
-    Parameters
-    ----------
-    candidate
-        Raw candidate edge emitted by an LP inference phase.
-
-    Returns
-    -------
-    tuple[tuple[str, str, str], CandidateEdge]
-        The canonical dedupe key and a candidate whose endpoints match that key.
-    """
-
-    source = candidate.source_sfi_uuid
-    target = candidate.target_sfi_uuid
-
-    if candidate.rel_type == RELATES_TO:
-        canonical_source, canonical_target = canon_str_pair(str(source), str(target))
-
-        if canonical_source != str(source):
-            metadata = dict(candidate.metadata)
-            metadata.update(
-                {
-                    "dedupe_canonicalized_endpoints": True,
-                    "dedupe_original_source_sfi_uuid": str(source),
-                    "dedupe_original_target_sfi_uuid": str(target),
-                }
-            )
-            source = UUID(canonical_source)
-            target = UUID(canonical_target)
-            candidate = CandidateEdge(
-                confidence=candidate.confidence,
-                evidence=candidate.evidence,
-                inference_source=candidate.inference_source,
-                inference_type=candidate.inference_type,
-                llm_confidence=candidate.llm_confidence,
-                metadata=metadata,
-                rel_type=candidate.rel_type,
-                source_sfi_uuid=source,
-                target_sfi_uuid=target,
-            )
-
-    key = (candidate.rel_type, str(source), str(target))
-    return key, candidate
-
-
 def _choose_merged_level_label(
     *, level_high: int, level_labels: list[Any], level_low: int
 ) -> str:
@@ -2687,7 +2678,40 @@ def _dedupe_edges(
     groups: dict[tuple[str, str, str], list[CandidateEdge]] = defaultdict(list)
 
     for edge in edges:
-        key, canonical_edge = _canonicalize_candidate_for_dedupe(edge)
+        source_uuid = edge.source_sfi_uuid
+        target_uuid = edge.target_sfi_uuid
+        canonical_edge = edge
+
+        if edge.rel_type == RELATES_TO:
+            str_source = str(source_uuid)
+            str_target = str(target_uuid)
+            canonical_source, canonical_target = canon_str_pair(str_source, str_target)
+
+            if canonical_source != str_source:
+                metadata = dict(edge.metadata)
+                metadata.update(
+                    {
+                        "dedupe_canonicalized_endpoints": True,
+                        "dedupe_original_source_sfi_uuid": str_source,
+                        "dedupe_original_target_sfi_uuid": str_target,
+                    }
+                )
+                source_uuid = UUID(canonical_source)
+                target_uuid = UUID(canonical_target)
+
+                canonical_edge = CandidateEdge(
+                    confidence=edge.confidence,
+                    evidence=edge.evidence,
+                    inference_source=edge.inference_source,
+                    inference_type=edge.inference_type,
+                    llm_confidence=edge.llm_confidence,
+                    metadata=metadata,
+                    rel_type=edge.rel_type,
+                    source_sfi_uuid=source_uuid,
+                    target_sfi_uuid=target_uuid,
+                )
+
+        key = (edge.rel_type, str(source_uuid), str(target_uuid))
         groups[key].append(canonical_edge)
 
     audit_by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
@@ -6545,7 +6569,10 @@ def _process_single_standard(
 def _replace_candidate_metadata(
     *, candidate: CandidateEdge, metadata: dict[str, Any]
 ) -> CandidateEdge:
-    """Return a CandidateEdge copy with updated metadata.
+    """Return a CandidateEdge copy with replacement metadata.
+
+    This function preserves all candidate fields except `metadata`, which is replaced.
+    It does not merge the new metadata with the existing metadata.
 
     Parameters
     ----------
@@ -6558,7 +6585,18 @@ def _replace_candidate_metadata(
     -------
     CandidateEdge
         Candidate copy with all original fields preserved except metadata.
+
+    Raises
+    ------
+    TypeError
+        If the provided metadata is not a dictionary.
     """
+
+    if not isinstance(metadata, dict):
+        raise TypeError(
+            f"CandidateEdge metadata replacement must be a dict, "
+            f"got {type(metadata).__name__}."
+        )
 
     return CandidateEdge(
         confidence=candidate.confidence,
@@ -6566,7 +6604,7 @@ def _replace_candidate_metadata(
         inference_source=candidate.inference_source,
         inference_type=candidate.inference_type,
         llm_confidence=candidate.llm_confidence,
-        metadata=metadata,
+        metadata=dict(metadata),
         rel_type=candidate.rel_type,
         source_sfi_uuid=candidate.source_sfi_uuid,
         target_sfi_uuid=candidate.target_sfi_uuid,
