@@ -3404,7 +3404,7 @@ def _enrich_provenance_dispositions(
         deduplication.
     disposition_map
         Mapping of canonical edge keys to the final disposition string assigned to the
-        dedupe winner (e.g., "kept", "dropped_low_confidence", etc.).
+        dedupe winner (e.g., "kept", "dropped_low_conf", etc.).
     provenance_rows
         List of provenance records for raw candidates, expected to include all
         candidates considered during deduplication, not just the winners.
