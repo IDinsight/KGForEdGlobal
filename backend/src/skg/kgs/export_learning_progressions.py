@@ -3903,7 +3903,7 @@ def _finalize_lp_export(
     provenance_rows: list[dict[str, Any]],
     relates_rels: list[Relationship],
 ) -> LearningProgressionsExport:
-    """Verify, persist, and wrap LearningProgressions export artifacts.
+    """Persist, and wrap LearningProgressions export artifacts.
 
     Parameters
     ----------
