@@ -148,7 +148,8 @@
 		"lp_subject_role": "strand",
 		"lp_within_level_allow_banded_levels": false,
 		"lp_within_level_bucket_roles": [
-			"strand"
+			"strand",
+			"subtopic"
 		],
 		"lp_within_level_builds_towards": true,
 		"lp_within_level_fallback_fields": [
