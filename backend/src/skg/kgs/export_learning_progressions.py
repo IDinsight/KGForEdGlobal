@@ -3955,7 +3955,9 @@ def _finalize_lp_export(
         json_info=provenance_rows,
     )
 
-    # Include nodes for standalone use in graph bundle.
+    # Include framework + SFI endpoint nodes so the LP bundle can be inspected alone.
+    # The standards hierarchy itself remains in `academic_standards_kg.json` and in the
+    # combined bundle.
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nodes: list[dict[str, Any]] = []
 
@@ -4007,6 +4009,7 @@ def _finalize_lp_export(
 
     report = {
         "doc_key": ctx.doc_key,
+        "drops": drops,
         "counts": lp_stats,
         "final_relationship_counts": {
             "buildsTowards": len(builds_rels),
@@ -4014,6 +4017,30 @@ def _finalize_lp_export(
             "total": len(builds_rels) + len(relates_rels),
         },
         "generated_at": generated_at,
+        "grouping_policy": {
+            "lp_cross_level_thread_roles": [
+                role.value for role in (config.lp_cross_level_thread_roles or [])
+            ],
+            "lp_excluded_subject_labels": sorted(config.lp_excluded_subject_labels),
+            "lp_source_statement_types_exclude": sorted(
+                config.lp_source_statement_types_exclude
+            ),
+            "lp_source_statement_types_include": sorted(
+                config.lp_source_statement_types_include
+            ),
+            "lp_subject_role": (
+                config.lp_subject_role.value
+                if config.lp_subject_role is not None
+                else None
+            ),
+            "lp_within_level_allow_banded_levels": config.lp_within_level_allow_banded_levels,
+            "lp_within_level_bucket_roles": [
+                role.value for role in (config.lp_within_level_bucket_roles or [])
+            ],
+            "lp_within_level_fallback_fields": list(
+                config.lp_within_level_fallback_fields or []
+            ),
+        },
         "phase_toggles": {
             "cross_level_builds_towards": config.lp_cross_level_builds_towards,
             "cross_level_relates_to": config.lp_cross_level_relates_to,
@@ -4029,7 +4056,6 @@ def _finalize_lp_export(
             "relates_to_min_confidence": config.lp_relates_to_min_confidence,
             "within_level_relates_to_max_items_per_subject": config.lp_within_level_relates_to_max_items_per_subject,
         },
-        "drops": drops,
     }
     write_to_json(
         fp=kg_dirs.learning_progressions / "learning_progressions_report.json",
