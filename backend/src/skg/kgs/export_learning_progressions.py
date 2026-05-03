@@ -4057,7 +4057,7 @@ def _finalize_lp_export(
     report = {
         "doc_key": ctx.doc_key,
         "counts": lp_stats,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": generated_at,
         "phase_toggles": {
             "cross_level_builds_towards": config.lp_cross_level_builds_towards,
             "cross_level_relates_to": config.lp_cross_level_relates_to,
