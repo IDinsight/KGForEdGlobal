@@ -606,10 +606,11 @@ def _allow_within_level_inference(
         configuration and whether it represents a single level or a banded level.
     """
 
-    if config.lp_within_level_allow_banded_levels:
-        return True
-
-    return _is_single_level_bucket(bucket)
+    return (
+        True
+        if config.lp_within_level_allow_banded_levels
+        else _is_single_level_bucket(bucket)
+    )
 
 
 def _assign_candidate_uids(
@@ -1145,72 +1146,6 @@ def _build_item_payload(
         payload["thread_key"] = item.get(thread_key_field)
 
     return payload
-
-
-def _build_order_index_lookup(
-    academic_standards: AcademicStandardsExport,
-) -> dict[str, int]:
-    """Build canonical-node-id to sibling-order-index lookup.
-
-    `progression_context.canon_order_path` stores canonical IR node IDs. Academic
-    Standards `hasChild` relationship metadata is therefore the best source for
-    resolving numeric order paths because it includes `canonical_child_id` plus
-    export/canonical order metadata for grouping ancestors as well as leaf SFIs. SFI
-    progression metadata is used only as a supplement so the relationship-derived
-    ordering wins when both sources are available.
-
-    Parameters
-    ----------
-    academic_standards
-        The exported Academic Standards KG artifacts.
-
-    Returns
-    -------
-    dict[str, int]
-        A mapping from canonical IR node ID strings to sibling order indices.
-    """
-
-    order_index_lookup: dict[str, int] = {}
-
-    for rel in academic_standards.relationships:
-        if rel.relationship_type != "hasChild":
-            continue
-
-        metadata = rel.metadata if isinstance(rel.metadata, dict) else {}
-        canonical_child_id = str(metadata.get("canonical_child_id") or "").strip()
-
-        if not canonical_child_id:
-            continue
-
-        order_index = metadata.get("export_order_index")
-
-        if not isinstance(order_index, int):
-            order_index = metadata.get("canonical_order_index")
-
-        if not isinstance(order_index, int):
-            continue
-
-        order_index_lookup[canonical_child_id] = order_index
-
-    for sfi in academic_standards.items:
-        metadata = sfi.metadata if isinstance(sfi.metadata, dict) else {}
-        canonical_node_id = str(metadata.get("canonical_node_id") or "").strip()
-        progression_context = metadata.get("progression_context")
-
-        if not isinstance(progression_context, dict) or not canonical_node_id:
-            continue
-
-        order_index = progression_context.get("order_index_within_parent")
-
-        if not isinstance(order_index, int):
-            order_index = progression_context.get("canonical_order_index_within_parent")
-
-        if not isinstance(order_index, int):
-            continue
-
-        order_index_lookup.setdefault(canonical_node_id, order_index)
-
-    return order_index_lookup
 
 
 def _build_relates_to_work_items(
@@ -2958,73 +2893,6 @@ def _dedupe_phase4_bucket_items_by_sfi_uuid(
         len(seen_sfi_uuids),
         empty_after_item_dedupe_bucket_count,
     )
-
-
-def _merge_phase4_source_bucket_duplicate(
-    *, existing_bucket: dict[str, Any], incoming_bucket: dict[str, Any]
-) -> dict[str, Any]:
-    """Merge a duplicate Phase 4 source bucket into an existing bucket copy.
-
-    Buckets can share a deterministic dedupe key while carrying different
-    non-overlapping item evidence. In that case, merging preserves the evidence instead
-    of letting a later alias silently overwrite or disappear. Exact duplicate items are
-    collapsed by SFI UUID; final global item dedupe still runs after bucket-level
-    merging.
-
-    Parameters
-    ----------
-    existing_bucket
-        The existing bucket dictionary that has already been processed and is being
-        merged into.
-    incoming_bucket
-        The new bucket dictionary that has the same dedupe key as the existing bucket
-        and is being merged in. This bucket's items and list-valued provenance fields
-        will be combined with those of the existing bucket.
-
-    Returns
-    -------
-    dict[str, Any]
-        A merged bucket dictionary containing the combined unique items and list-valued
-        provenance from both input buckets, along with updated metadata tracking the
-        number of merged duplicates and added items.
-    """
-
-    added_item_count = 0
-    merged = dict(existing_bucket)
-    existing_items = list(merged.get("items") or [])
-    seen_item_uuids = {
-        sfi_uuid
-        for item in existing_items
-        if (sfi_uuid := str(item.get("sfi_uuid") or "").strip())
-    }
-
-    for item in incoming_bucket.get("items") or []:
-        sfi_uuid = str(item.get("sfi_uuid") or "").strip()
-
-        if sfi_uuid and sfi_uuid in seen_item_uuids:
-            continue
-
-        if sfi_uuid:
-            seen_item_uuids.add(sfi_uuid)
-
-        existing_items.append(item)
-        added_item_count += 1
-
-    merged["items"] = existing_items
-
-    for list_key in ("source_decision_ids", "topic_path_examples", "topic_path_keys"):
-        merged[list_key] = _unique_non_empty_strings(
-            list(merged.get(list_key) or []) + list(incoming_bucket.get(list_key) or [])
-        )
-
-    merged["phase4_merged_source_bucket_duplicate_count"] = (
-        int(merged.get("phase4_merged_source_bucket_duplicate_count") or 0) + 1
-    )
-    merged["phase4_merged_source_bucket_added_item_count"] = (
-        int(merged.get("phase4_merged_source_bucket_added_item_count") or 0)
-        + added_item_count
-    )
-    return merged
 
 
 def _dedupe_phase4_source_buckets(
@@ -8562,18 +8430,50 @@ def group_standards_for_learning_progressions(
     # Precompute level-label fallback mappings once per run instead of rebuilding them
     # for every SFI. Keys are normalized with the same helper used in
     # `_resolve_level_ordinals()`.
-    normalized_level_label_map: dict[str, int] = {}
-
-    for map_key, map_value in (config.lp_level_label_map or {}).items():
-        normalized_map_key = _normalize_level_label_key(map_key)
-
-        if normalized_map_key:
-            normalized_level_label_map[normalized_map_key] = map_value
+    normalized_level_label_map: dict[str, int] = {
+        norm_k: v
+        for k, v in (config.lp_level_label_map or {}).items()
+        if (norm_k := _normalize_level_label_key(k))
+    }
 
     # Build canonical-node-id -> sibling order index. Prefer Academic Standards
     # hasChild relationship metadata because it covers grouping ancestors as well as
     # leaf SFIs; supplement from SFI progression metadata when needed.
-    order_index_lookup = _build_order_index_lookup(academic_standards)
+    order_index_lookup: dict[str, int] = {}
+
+    # Populate from hasChild relationships.
+    for rel in academic_standards.relationships:
+        metadata = rel.metadata if isinstance(rel.metadata, dict) else {}
+        child_id = str(metadata.get("canonical_child_id") or "").strip()
+
+        if rel.relationship_type != "hasChild" or not child_id:
+            continue
+
+        order_idx = metadata.get("export_order_index")
+
+        if not isinstance(order_idx, int):
+            order_idx = metadata.get("canonical_order_index")
+
+        if isinstance(order_idx, int):
+            order_index_lookup[child_id] = order_idx
+
+    # Supplement from item progression context (using setdefault to respect
+    # relationships).
+    for sfi in academic_standards.items:
+        metadata = sfi.metadata if isinstance(sfi.metadata, dict) else {}
+        node_id = str(metadata.get("canonical_node_id") or "").strip()
+        prog_ctx = metadata.get("progression_context")
+
+        if not node_id or not isinstance(prog_ctx, dict):
+            continue
+
+        order_idx = prog_ctx.get("order_index_within_parent")
+
+        if not isinstance(order_idx, int):
+            order_idx = prog_ctx.get("canonical_order_index_within_parent")
+
+        if isinstance(order_idx, int):
+            order_index_lookup.setdefault(node_id, order_idx)
 
     for sfi in academic_standards.items:
         _process_single_standard(
