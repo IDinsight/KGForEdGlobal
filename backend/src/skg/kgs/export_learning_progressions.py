@@ -3471,6 +3471,12 @@ def _emit_relationship(
     if sfi_context_index is not None:
         source_context = sfi_context_index.get(str(candidate.source_sfi_uuid))
         target_context = sfi_context_index.get(str(candidate.target_sfi_uuid))
+        source_inference_context = _select_sfi_inference_context(
+            context=source_context, scope=inference_context_scope
+        )
+        target_inference_context = _select_sfi_inference_context(
+            context=target_context, scope=inference_context_scope
+        )
 
         if source_context is None or target_context is None:
             raise ValueError(
@@ -3479,14 +3485,18 @@ def _emit_relationship(
                 f"target={candidate.target_sfi_uuid} found={target_context is not None}"
             )
 
+        if source_inference_context is None or target_inference_context is None:
+            raise ValueError(
+                f"Missing scoped SFI inference context during LP relationship emission: "
+                f"scope={inference_context_scope!r}; "
+                f"source={candidate.source_sfi_uuid} found={source_inference_context is not None}; "
+                f"target={candidate.target_sfi_uuid} found={target_inference_context is not None}"
+            )
+
         metadata["source_sfi_context"] = source_context
         metadata["target_sfi_context"] = target_context
-        metadata["source_sfi_inference_context"] = _select_sfi_inference_context(
-            context=source_context, scope=inference_context_scope
-        )
-        metadata["target_sfi_inference_context"] = _select_sfi_inference_context(
-            context=target_context, scope=inference_context_scope
-        )
+        metadata["source_sfi_inference_context"] = source_inference_context
+        metadata["target_sfi_inference_context"] = target_inference_context
 
     return Relationship(
         attribution_statement=config.as_attribution_statement,
@@ -6342,7 +6352,9 @@ def _process_and_filter_candidates(
         2. List of final relatesTo relationships.
         3. A dictionary of counts/statistics for the report.
         4. A disposition map keyed by (rel_type, source_uuid, target_uuid) ->
-            disposition string (kept, dropped_low_conf, dropped_cap).
+            disposition string for dedupe winners: kept, dropped_low_conf, dropped_cap,
+            or dropped_doc_order. Non-winning raw duplicate candidates are labeled
+            `dropped_dedupe` later during provenance enrichment.
         5. A mapping of dedupe winners keyed by (rel_type, source_uuid, target_uuid).
     """
 
@@ -7949,10 +7961,10 @@ def _set_disposition(
     disposition_map
         The dictionary tracking edge dispositions, to be updated in-place.
     value
-        The disposition value to set for this edge, which should be one of the
-        following strings: "kept", "dropped_low_conf", "dropped_cap", or
-        "dropped_dedupe". This value indicates the final disposition of the edge after
-        processing and filtering.
+        Final disposition for a dedupe-winning candidate: "kept", "dropped_low_conf",
+        "dropped_cap", or "dropped_doc_order". Non-winning raw duplicate candidates are
+        assigned "dropped_dedupe" later during provenance enrichment and are not
+        inserted into this map.
 
     Raises
     ------
