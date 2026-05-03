@@ -3963,7 +3963,8 @@ def _finalize_lp_export(
     builds_rels
         The list of emitted buildsTowards relationships after processing and filtering.
     config
-        KG export configuration.
+        KG export configuration, used here to record export dialect, phase toggles, and
+        thresholds in the final bundle/report artifacts.
     ctx
         ExportContext (doc_key).
     drops
@@ -4057,6 +4058,11 @@ def _finalize_lp_export(
     report = {
         "doc_key": ctx.doc_key,
         "counts": lp_stats,
+        "final_relationship_counts": {
+            "buildsTowards": len(builds_rels),
+            "relatesTo": len(relates_rels),
+            "total": len(builds_rels) + len(relates_rels),
+        },
         "generated_at": generated_at,
         "phase_toggles": {
             "cross_level_builds_towards": config.lp_cross_level_builds_towards,
@@ -4064,7 +4070,7 @@ def _finalize_lp_export(
             "cross_stage_builds_towards": config.lp_cross_stage_builds_towards,
             "cross_stage_relates_to": config.lp_cross_stage_relates_to,
             "within_level_builds_towards": config.lp_within_level_builds_towards,
-            "within_level_cross_thread_relates_to": config.lp_within_level_relates_to,
+            "within_level_relates_to": config.lp_within_level_relates_to,
         },
         "thresholds": {
             "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
