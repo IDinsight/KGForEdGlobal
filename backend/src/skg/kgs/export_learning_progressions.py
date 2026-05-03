@@ -46,11 +46,7 @@ from skg.kgs.prompts import (
     within_level_builds_towards,
     within_level_relates_to,
 )
-from skg.kgs.schemas import (
-    ProgressionEdgesResponse,
-    Relationship,
-    StandardsFrameworkItem,
-)
+from skg.kgs.schemas import Relationship, StandardsFrameworkItem
 from skg.kgs.utils import ExportContext, KGDirs, canon_str_pair, normalize_key_token
 from skg.kgs.validators import (
     validate_cross_level_builds_towards,
@@ -744,114 +740,32 @@ def _assign_candidate_uids(
     return updated_candidates
 
 
-def _best_map(
-    resp: ProgressionEdgesResponse,
-) -> dict[tuple[str, str], tuple[float, str]]:
-    """Extract the best confidence and rationale for each canonicalized pair of UUIDs
-    regardless of edge direction, to facilitate bidirectional confirmation of relatesTo
-    edges between the two levels.
-
-    Examples
-    --------
-    1. Direction-insensitive pair canonicalization for relatesTo
-
-        `relatesTo` is conceptually undirected, but the LLM response schema still uses
-        `source_sfi_uuid` and `target_sfi_uuid`. The model may therefore return either
-        direction for the same conceptual pair.
-
-        Given edges:
-
-            A -> B, confidence=0.91, rationale="Shared decoding skill..."
-            B -> A, confidence=0.88, rationale="Both involve decoding..."
-
-        `_best_map()` canonicalizes both with `canon_str_pair(A, B)`, so both edges map
-        to the same key:
-
-            (A, B)  # sorted canonical pair
-
-        The returned map keeps the highest-confidence version:
-
-            {
-                (A, B): (0.91, "Shared decoding skill...")
-            }
-
-    2. Keeping the best duplicate pair
-
-        If the LLM returns the same conceptual pair more than once, only the highest
-        confidence/rationale is retained.
-
-        Given edges:
-
-            C -> D, confidence=0.86, rationale="Both require sentence construction..."
-            C -> D, confidence=0.93, rationale="Both involve constructing coherent sentences..."
-
-        `_best_map()` returns:
-
-            {
-                (C, D): (0.93, "Both involve constructing coherent sentences...")
-            }
-
-    3. Supporting bidirectional confirmation
-
-        Phase 3 within-level relatesTo asks the model twice:
-          - once with thread A as List A and thread B as List B
-          - once with the lists swapped
-
-        `_best_map()` converts both responses into canonical pair maps so they can be
-        intersected reliably.
-
-        First pass:
-
-            A -> B, confidence=0.92
-
-            best_ab = {
-                (A, B): (0.92, "...")
-            }
-
-        Swapped pass:
-
-            B -> A, confidence=0.89
-
-            best_ba = {
-                (A, B): (0.89, "...")
-            }
-
-        Because `(A, B)` appears in both maps, the pair is bidirectionally confirmed.
-        Downstream code can then use `min(0.92, 0.89)` as the conservative confirmed
-        confidence.
-
-    4. Not preserving direction
-
-        `_best_map()` should be used only where direction does not matter, such as
-        `relatesTo` confirmation. It is not appropriate for directed `buildsTowards`
-        edge logic, where A -> B and B -> A have different meanings.
+def _bucket_sort_key(bucket: dict[str, Any]) -> tuple[int, int, str, str, str]:
+    """Return a stable sort key for candidate Phase 2 source buckets.
 
     Parameters
     ----------
-    resp
-        The response from the infer_progression_edges call, containing a list of edges
-        with source and target UUIDs, confidence scores, and rationales.
+    bucket
+        The bucket dictionary containing information about a thread of standards within
+        a level, which may include level bounds and other contextual information.
 
     Returns
     -------
-    dict[tuple[str, str], tuple[float, str]]
-        A dictionary mapping canonicalized UUID-string pairs to their best confidence
-        score and rationale, regardless of edge direction. Canonicalization uses
-        `canon_str_pair` (lexicographic ordering)--the single source of truth for
-        undirected pair ordering throughout the pipeline.
+    tuple[int, int, str, str, str]
+        A tuple that can be used as a sort key to order buckets first by level bounds
+        (with missing bounds sorted last), then by topic context, then by bucket keys.
     """
 
-    best: dict[tuple[str, str], tuple[float, str]] = {}
-
-    for ee in resp.edges:
-        a, b = canon_str_pair(ee.source_sfi_uuid, ee.target_sfi_uuid)
-        c = float(ee.confidence)
-        r = str(ee.rationale or "")
-
-        if (a, b) not in best or c > best[(a, b)][0]:
-            best[(a, b)] = (c, r)
-
-    return best
+    level_low, level_high = _level_bounds(bucket)
+    low_key = level_low if isinstance(level_low, int) else 10**9
+    high_key = level_high if isinstance(level_high, int) else 10**9
+    return (
+        low_key,
+        high_key,
+        _bucket_topic_context(bucket=bucket),
+        str(bucket.get("lp_bucket_key") or ""),
+        str(bucket.get("bucket_key") or ""),
+    )
 
 
 def _bucket_topic_context(*, bucket: dict[str, Any], max_examples: int = 3) -> str:
@@ -1187,7 +1101,6 @@ def _build_fallback_segments(
 
 def _build_item_payload(
     *,
-    include_order_index: bool = False,
     item: dict[str, Any],
     sequence_index: Optional[int] = None,
     thread_key_field: Optional[str] = None,
@@ -1201,9 +1114,6 @@ def _build_item_payload(
     ----------
     item
         A bucket item dictionary containing SFI fields.
-    include_order_index
-        Whether to include `order_index_within_parent` in the payload. Used by
-        buildsTowards phases where sequence ordering matters.
     sequence_index
         Optional zero-based position of the item within the ordered prompt list. Used
         by within-level buildsTowards prompts to make sequence direction explicit.
@@ -1230,9 +1140,6 @@ def _build_item_payload(
 
     if sequence_index is not None:
         payload["sequence_index"] = sequence_index
-
-    if include_order_index:
-        payload["order_index_within_parent"] = item.get("order_index_within_parent")
 
     if thread_key_field:
         payload["thread_key"] = item.get(thread_key_field)
@@ -1837,8 +1744,11 @@ def _collect_builds_towards_work_items(
     """Collect and configure eligible adjacent pairs of buckets for inference.
 
     This function receives the thread-grouped output of `_build_thread_map()` and turns
-    adjacent bucket pairs into concrete LLM work items. It does not call the LLM; it
-    only decides which prompt type should be used for each adjacent pair.
+    adjacent bucket pairs into concrete LLM work items. Before adjacent pairing, it
+    merges duplicate buckets that share the same level range within a thread so aliases
+    cannot cause `zip()` to skip valid lower-range -> upper-range comparisons. It does
+    not call the LLM; it only decides which prompt type should be used for each
+    adjacent pair.
 
     Examples
     --------
@@ -1856,7 +1766,13 @@ def _collect_builds_towards_work_items(
         `cross_stage_builds_towards` work item when
         `config.lp_cross_stage_builds_towards` is enabled.
 
-    3. Non-adjacent levels are skipped
+    3. Duplicate level-range aliases are merged before pairing
+
+        If a thread contains two Grade 1 buckets and one Grade 2 bucket, the two Grade
+        1 buckets are merged first. The merged Grade 1 bucket is then compared with the
+        Grade 2 bucket, so neither Grade 1 alias is skipped by pairwise `zip()` order.
+
+    4. Non-adjacent levels are skipped
 
         If the lower bucket ends at ordinal 1 and the next bucket starts at ordinal 3,
         the pair is skipped because the function only accepts
@@ -1916,24 +1832,11 @@ def _collect_builds_towards_work_items(
     ] = []
 
     for thread_key, buckets in thread_map.items():
-        seen_level_ranges: set[tuple[int, int]] = set()
+        merged_buckets = _merge_duplicate_level_range_buckets_per_thread(
+            buckets=buckets, thread_key=thread_key
+        )
 
-        for bucket in buckets:
-            low, high = _level_bounds(bucket)
-
-            if isinstance(low, int) and isinstance(high, int):
-                level_range = (low, high)
-
-                if level_range in seen_level_ranges:
-                    logger.warning(
-                        f"Duplicate level bounds in cross-level buildsTowards thread "
-                        f"{thread_key}: {level_range}. Only adjacent sorted pairs "
-                        f"will be considered. bucket_key={bucket.get('lp_bucket_key')!r}"
-                    )
-
-                seen_level_ranges.add(level_range)
-
-        for b_lo, b_hi in zip(buckets, buckets[1:]):
+        for b_lo, b_hi in zip(merged_buckets, merged_buckets[1:]):
             lower_items = b_lo.get("items") or []
             upper_items = b_hi.get("items") or []
 
@@ -3939,6 +3842,95 @@ def _finalize_bucket_store(
     return by_level, dict(by_bucket_key)
 
 
+def _finalize_merged_bucket(
+    *,
+    bucket: dict[str, Any],
+    level_high: int,
+    level_low: int,
+    source_level_labels: list[str],
+    source_subject_labels: list[str],
+    thread_key: str,
+) -> dict[str, Any]:
+    """Finalize the metadata and deduplicate the items of a merged bucket.
+
+    Parameters
+    ----------
+    bucket
+        The merged bucket dictionary being finalized.
+    level_high
+        The upper bound ordinal of the level range.
+    level_low
+        The lower bound ordinal of the level range.
+    source_level_labels
+        List of all level labels collected for this range.
+    source_subject_labels
+        List of all subject labels collected for this range.
+    thread_key
+        The cross-level thread key.
+
+    Returns
+    -------
+    dict[str, Any]
+        The finalized, deduplicated bucket dictionary.
+    """
+
+    deduped_items: list[dict[str, Any]] = []
+    seen_item_keys = set()
+    source_bucket_keys = _unique_non_empty_strings(
+        list(bucket.get("phase2_merged_level_range_source_bucket_keys") or [])
+    )
+    subject_labels = _unique_non_empty_strings(source_subject_labels)
+
+    for item in bucket.get("items") or []:
+        item_key = _item_merge_key(item)
+
+        if item_key in seen_item_keys:
+            continue
+
+        deduped_items.append(item)
+        seen_item_keys.add(item_key)
+
+    bucket["items"] = sorted(deduped_items, key=_sort_key_for_bucket_sfi)
+    bucket["level_label"] = _choose_merged_level_label(
+        level_high=level_high, level_labels=source_level_labels, level_low=level_low
+    )
+
+    if len(source_bucket_keys) == 1:
+        merged_bucket_key = source_bucket_keys[0]
+    else:
+        payload = json.dumps(
+            {
+                "bucket_keys": source_bucket_keys,
+                "level_high": level_high,
+                "level_low": level_low,
+                "thread_key": thread_key,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+        merged_bucket_key = (
+            f"{thread_key}|level_range={level_low}-{level_high}|merged={digest}"
+        )
+
+    bucket["bucket_key"] = merged_bucket_key
+    bucket["effective_bucket_key"] = merged_bucket_key
+    bucket["lp_bucket_key"] = merged_bucket_key
+    bucket["phase2_merged_level_range_level_labels"] = _unique_non_empty_strings(
+        source_level_labels
+    )
+    bucket["phase2_merged_level_range_subject_labels"] = subject_labels
+
+    if len(subject_labels) > 1:
+        shown = subject_labels[:3]
+        suffix = " / …" if len(subject_labels) > len(shown) else ""
+        bucket["subject_label"] = " / ".join(shown) + suffix
+    elif subject_labels:
+        bucket["subject_label"] = subject_labels[0]
+
+    return bucket
+
+
 def _finalize_lp_export(
     *,
     academic_standards: AcademicStandardsExport,
@@ -4666,9 +4658,9 @@ def _infer_cross_level_relates_to(
         validate with `validate_cross_level_relates_to()`.
     7. Run the same prompt builder in the upper -> lower presentation order, swapping
         both item lists and level labels so the prompt remains self-consistent.
-    8. Canonicalize both outputs with `_best_map()` and keep only pairs that appear in
-        both orientations. The confirmed candidate confidence is the lower of the two
-        orientation-specific confidence scores.
+    8. Canonicalize both outputs by undirected UUID pair and keep only pairs that
+        appear in both orientations. The confirmed candidate confidence is the lower of
+        the two orientation-specific confidence scores.
     9. Emit one undirected `relatesTo` `CandidateEdge` plus one raw provenance row for
         each bidirectionally confirmed pair, preserving lower/upper level metadata,
         sampling provenance, confidence/rationale from both orientations, and the Phase
@@ -4836,8 +4828,20 @@ def _infer_cross_level_relates_to(
             ),
         )
 
-        map_lo_hi = _best_map(resp_lo_hi)
-        map_hi_lo = _best_map(resp_hi_lo)
+        map_lo_hi = {
+            canon_str_pair(edge.source_sfi_uuid, edge.target_sfi_uuid): (
+                float(edge.confidence),
+                str(edge.rationale or ""),
+            )
+            for edge in resp_lo_hi.edges
+        }
+        map_hi_lo = {
+            canon_str_pair(edge.source_sfi_uuid, edge.target_sfi_uuid): (
+                float(edge.confidence),
+                str(edge.rationale or ""),
+            )
+            for edge in resp_hi_lo.edges
+        }
         common_pairs = sorted(set(map_lo_hi.keys()) & set(map_hi_lo.keys()))
 
         for a, b in common_pairs:
@@ -5078,7 +5082,7 @@ def _infer_within_level_relates_to(
     9. For each work item, build prompt payloads with `_build_item_payload()`.
     10. Run `within_level_relates_to()` in the A -> B orientation and validate.
     11. Run the same prompt in the B -> A orientation, then canonicalize both outputs
-        with `_best_map()`.
+        by undirected UUID pair.
     12. Keep only bidirectionally confirmed canonical pairs, using the lower of the two
         confidence scores, and emit one `CandidateEdge` plus one provenance row for
         each confirmed pair.
@@ -5236,7 +5240,20 @@ def _infer_within_level_relates_to(
             ),
         )
 
-        map_ab, map_ba = _best_map(resp_ab), _best_map(resp_ba)
+        map_ab = {
+            canon_str_pair(edge.source_sfi_uuid, edge.target_sfi_uuid): (
+                float(edge.confidence),
+                str(edge.rationale or ""),
+            )
+            for edge in resp_ab.edges
+        }
+        map_ba = {
+            canon_str_pair(edge.source_sfi_uuid, edge.target_sfi_uuid): (
+                float(edge.confidence),
+                str(edge.rationale or ""),
+            )
+            for edge in resp_ba.edges
+        }
         common_pairs = sorted(set(map_ab.keys()) & set(map_ba.keys()))
 
         for u_a, u_b in common_pairs:
@@ -5348,6 +5365,32 @@ def _item_doc_position_key(item: dict[str, Any]) -> tuple[int, float]:
     y0 = item.get("doc_pos_y0")
     y0_f = float(y0) if isinstance(y0, (int, float)) else float(10**9)
     return page_i, y0_f
+
+
+def _item_merge_key(item: dict[str, Any]) -> str:
+    """Return a deterministic key for deduplicating merged bucket items.
+
+    Parameters
+    ----------
+    item
+        A bucket item dictionary, which may contain an "sfi_uuid" key and other content.
+
+    Returns
+    -------
+    str
+        A string key for deduplication. If "sfi_uuid" is present and non-empty, the key
+        is "sfi_uuid:{sfi_uuid}". Otherwise, the key is "item_hash:{hash}", where
+        {hash} is the first 24 characters of the SHA-256 hash of the JSON-serialized
+        item dictionary (with sorted keys and non-ASCII characters preserved).
+    """
+
+    sfi_uuid = str(item.get("sfi_uuid") or "").strip()
+
+    if sfi_uuid:
+        return f"sfi_uuid:{sfi_uuid}"
+
+    payload = json.dumps(item, default=str, ensure_ascii=False, sort_keys=True)
+    return f"item_hash:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24]}"
 
 
 def _level_bounds(bucket: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
@@ -5570,6 +5613,157 @@ def _make_provenance_row(
     }
     row.update(extra)
     return row
+
+
+def _merge_duplicate_level_range_buckets_per_thread(
+    *, buckets: list[dict[str, Any]], thread_key: str
+) -> list[dict[str, Any]]:
+    """Merge duplicate Phase 2 buckets that share the same level range in a thread.
+
+    Phase 2 cross-level/cross-stage `buildsTowards` inference compares adjacent level
+    ranges within a single conceptual thread. If a thread contains more than one bucket
+    for the same `(level_ordinal_low, level_ordinal_high)` range, plain `zip()` over
+    sorted buckets can skip valid adjacent comparisons. This function canonicalizes
+    each thread to at most one bucket per level range before pair collection.
+
+    Merging is deterministic: source buckets are processed in the same stable order
+    used elsewhere for LP buckets, source items are deduplicated by SFI UUID, and
+    merged list-valued provenance fields preserve first-seen order.
+
+    Parameters
+    ----------
+    buckets
+        Bucket dictionaries for one cross-level thread, sorted or unsorted. Buckets
+        without integer level bounds are ignored; `_build_thread_map()` normally
+        filters those before this helper is called.
+    thread_key
+        Cross-level thread key whose buckets are being merged. The merged buckets keep
+        this value as their `lp_thread_key`.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of merged bucket dictionaries sorted by `(level_low, level_high, topic
+        context, bucket key)`, with at most one bucket per level range.
+    """
+
+    merged_by_range: dict[tuple[int, int], dict[str, Any]] = {}
+    source_labels_by_range: dict[tuple[int, int], list[str]] = defaultdict(list)
+    source_subjects_by_range: dict[tuple[int, int], list[str]] = defaultdict(list)
+
+    sorted_buckets = sorted(buckets or [], key=lambda b: _bucket_sort_key(bucket=b))
+
+    for bucket in sorted_buckets:
+        level_low, level_high = _level_bounds(bucket)
+
+        if not isinstance(level_low, int) or not isinstance(level_high, int):
+            continue
+
+        level_range = (level_low, level_high)
+        source_bucket_key = str(
+            bucket.get("lp_bucket_key") or bucket.get("bucket_key") or ""
+        ).strip()
+
+        source_labels_by_range[level_range].append(_level_label(bucket))
+        source_subjects_by_range[level_range].append(
+            str(bucket.get("subject_label") or "").strip()
+        )
+
+        if level_range not in merged_by_range:
+            bucket_copy = dict(bucket)
+            bucket_copy["items"] = list(bucket.get("items") or [])
+            bucket_copy["level_ordinal_low"] = level_low
+            bucket_copy["level_ordinal_high"] = level_high
+            bucket_copy["lp_thread_key"] = thread_key
+            bucket_copy["phase2_merged_level_range_source_bucket_keys"] = (
+                [source_bucket_key] if source_bucket_key else []
+            )
+            bucket_copy["phase2_merged_level_range_source_bucket_count"] = 1
+            bucket_copy["phase2_merged_level_range_duplicate_bucket_count"] = 0
+            merged_by_range[level_range] = bucket_copy
+        else:
+            merged_bucket = merged_by_range[level_range]
+
+            existing_items = merged_bucket.setdefault("items", [])
+            seen_item_keys = {_item_merge_key(item=item) for item in existing_items}
+
+            for item in bucket.get("items") or []:
+                item_key = _item_merge_key(item=item)
+
+                if item_key in seen_item_keys:
+                    continue
+
+                existing_items.append(item)
+                seen_item_keys.add(item_key)
+
+            for list_key in (
+                "source_decision_ids",
+                "source_segment_ids",
+                "topic_path_examples",
+                "topic_path_keys",
+            ):
+                merged_bucket[list_key] = _unique_non_empty_strings(
+                    list(merged_bucket.get(list_key) or [])
+                    + list(bucket.get(list_key) or [])
+                )
+
+            if source_bucket_key:
+                merged_bucket["phase2_merged_level_range_source_bucket_keys"] = (
+                    _unique_non_empty_strings(
+                        list(
+                            merged_bucket.get(
+                                "phase2_merged_level_range_source_bucket_keys"
+                            )
+                            or []
+                        )
+                        + [source_bucket_key]
+                    )
+                )
+
+            merged_bucket["phase2_merged_level_range_source_bucket_count"] = (
+                int(
+                    merged_bucket.get("phase2_merged_level_range_source_bucket_count")
+                    or 1
+                )
+                + 1
+            )
+            merged_bucket["phase2_merged_level_range_duplicate_bucket_count"] = (
+                int(
+                    merged_bucket.get(
+                        "phase2_merged_level_range_duplicate_bucket_count"
+                    )
+                    or 0
+                )
+                + 1
+            )
+
+    merged_buckets: list[dict[str, Any]] = []
+
+    for (level_low, level_high), merged_bucket in merged_by_range.items():
+        finalized_bucket = _finalize_merged_bucket(
+            bucket=merged_bucket,
+            level_high=level_high,
+            level_low=level_low,
+            source_level_labels=source_labels_by_range.get((level_low, level_high), []),
+            source_subject_labels=source_subjects_by_range.get(
+                (level_low, level_high), []
+            ),
+            thread_key=thread_key,
+        )
+        merged_buckets.append(finalized_bucket)
+
+    duplicate_bucket_count = sum(
+        int(bucket.get("phase2_merged_level_range_duplicate_bucket_count") or 0)
+        for bucket in merged_buckets
+    )
+
+    if duplicate_bucket_count > 0:
+        logger.info(
+            f"Merged {duplicate_bucket_count} duplicate level-range bucket(s) in "
+            f"cross-level buildsTowards thread {thread_key!r} before adjacent pairing."
+        )
+
+    return sorted(merged_buckets, key=lambda b: _bucket_sort_key(bucket=b))
 
 
 def _normalize_level_label_key(value: Any) -> str:
