@@ -3895,11 +3895,13 @@ def _finalize_lp_export(
     *,
     academic_standards: AcademicStandardsExport,
     builds_rels: list[Relationship],
+    by_within_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     drops: dict[str, Any],
     kg_dirs: KGDirs,
     lp_stats: dict[str, int],
+    num_phase3_candidates: int,
     provenance_rows: list[dict[str, Any]],
     relates_rels: list[Relationship],
 ) -> LearningProgressionsExport:
@@ -3912,6 +3914,9 @@ def _finalize_lp_export(
         bundle with nodes.
     builds_rels
         The list of emitted buildsTowards relationships after processing and filtering.
+    by_within_level
+        The dictionary of within-level buckets by `(subject_label, level_key)`, used
+        here to summarize Phase 3 audit statistics.
     config
         KG export configuration, used here to record export dialect, phase toggles, and
         thresholds in the final bundle/report artifacts.
@@ -3925,6 +3930,9 @@ def _finalize_lp_export(
     lp_stats
         The dictionary of statistics about the emitted relationships and filtering
         outcomes, included in the final report.
+    num_phase3_candidates
+        The total number of candidate edges considered during Phase 3, included in the
+        final report for context on the scale of Phase 3 filtering.
     provenance_rows
         The list of provenance dictionaries for all candidate edges, enriched with
         final disposition after filtering and deduplication. This is included in the
@@ -4008,9 +4016,9 @@ def _finalize_lp_export(
     )
 
     report = {
-        "doc_key": ctx.doc_key,
-        "drops": drops,
         "counts": lp_stats,
+        "doc_key": ctx.doc_key,
+        "drops": _summarize_drops_for_report(drops),
         "final_relationship_counts": {
             "buildsTowards": len(builds_rels),
             "relatesTo": len(relates_rels),
@@ -4049,6 +4057,19 @@ def _finalize_lp_export(
             "within_level_builds_towards": config.lp_within_level_builds_towards,
             "within_level_relates_to": config.lp_within_level_relates_to,
         },
+        "phase3_within_level_relates_to": _summarize_phase3_within_level_relates_to(
+            by_level=by_within_level,
+            candidate_edges_count=num_phase3_candidates,
+            config=config,
+            kept_edges_count=sum(
+                1
+                for rel in relates_rels
+                if isinstance(rel.metadata, dict)
+                and rel.metadata.get("phase") == 3
+                and rel.metadata.get("inference_type")
+                == "within_level_cross_thread_relates_to"
+            ),
+        ),
         "thresholds": {
             "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
             "cross_level_relates_to_max_items_per_subject": config.lp_cross_level_relates_to_max_items_per_subject,
@@ -8048,6 +8069,217 @@ def _sort_key_for_bucket_sfi(
     return order_index, missing_code_tuple, code_tuple_key, code, uuid_key
 
 
+def _summarize_drops_for_report(drops: dict[str, Any]) -> dict[str, Any]:
+    """Return report-friendly drop summaries while preserving non-noisy lists.
+
+    `non_standard_item` can be extremely verbose because grouping nodes may carry long
+    table-derived labels. Summarize that key in the report while leaving the detailed
+    records in `learning_progressions_buckets.json`. Other drop keys remain unchanged
+    because they are generally short and directly actionable.
+
+    Parameters
+    ----------
+    drops
+        The raw drops dictionary containing lists of dropped items for various reasons.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary summarizing the drops for inclusion in the report artifact, with
+        potentially truncated summaries for verbose keys like `non_standard_item`.
+    """
+
+    def _truncate_report_key(*, max_chars: int = 120, value: Any) -> str:
+        """Return a compact string key for human-readable report summaries.
+
+        Parameters
+        ----------
+        max_chars
+            Maximum number of characters to include in the summary string. Longer
+            strings will be truncated with an ellipsis.
+        value
+            The raw value to summarize, which can be of any type. The function will
+            convert it to a string, strip whitespace, and truncate it if necessary.
+
+        Returns
+        -------
+        str
+            A human-readable string summary of the input value, truncated to
+            `max_chars` characters if necessary, with an ellipsis appended to indicate
+            truncation.
+        """
+
+        s = str(value if value is not None else "").strip() or "<empty>"
+        return s if len(s) <= max_chars else f"{s[: max_chars - 1]}…"
+
+    report_drops: dict[str, Any] = {}
+
+    for key, value in (drops or {}).items():
+        if key == "non_standard_item" and isinstance(value, list):
+            normalized_counts = Counter(
+                _truncate_report_key(value=record.get("normalized_statement_type"))
+                for record in value
+            )
+            statement_counts = Counter(
+                _truncate_report_key(value=record.get("statement_type"))
+                for record in value
+            )
+
+            report_drops[key] = {
+                "count": len(value),
+                "by_normalized_statement_type": dict(sorted(normalized_counts.items())),
+                "by_statement_type_top": dict(statement_counts.most_common(20)),
+            }
+        else:
+            report_drops[key] = value
+
+    return report_drops
+
+
+def _summarize_phase3_within_level_relates_to(
+    *,
+    by_level: dict[str, list[dict[str, Any]]],
+    candidate_edges_count: int,
+    config: CreateKGConfig,
+    kept_edges_count: int,
+) -> dict[str, Any]:
+    """Build report-only audit stats for Phase 3 within-level `relatesTo`.
+
+    The Phase 3 inference path intentionally excludes subject-like groups such as
+    `UNSPECIFIED_SUBJECT` before creating cross-subject comparisons. This summary makes
+    that behavior explicit in `learning_progressions_report.json` so reviewers do not
+    need to infer the effect from buckets, candidate edges, or source standards.
+
+    Parameters
+    ----------
+    by_level
+        Finalized within-level LP bucket store, keyed by level label.
+    candidate_edges_count
+        Number of candidate `relatesTo` edges produced by Phase 3 before final
+        dedupe/filter/cap processing.
+    config
+        KG export configuration controlling Phase 3 eligibility, subject grouping,
+        exclusions, and sampling.
+    kept_edges_count
+        Number of final emitted `relatesTo` edges attributable to Phase 3 after final
+        processing.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact audit summary for the report artifact.
+    """
+
+    enabled = bool(config.lp_within_level_relates_to)
+    max_items = config.lp_within_level_relates_to_max_items_per_subject
+    excluded = set(config.lp_excluded_subject_labels or []) | {
+        "UNSPECIFIED_SUBJECT",
+        "UNKNOWN",
+        "",
+    }
+    level_subject_threads = _group_threads_by_level_and_subject(
+        by_level=by_level, config=config
+    )
+
+    items_after_subject_exclusion = 0
+    items_before_subject_exclusion = 0
+    items_excluded_by_subject_label: Counter[str] = Counter()
+    levels: dict[str, Any] = {}
+    subject_labels: Counter[str] = Counter()
+    subject_pairs_possible = 0
+    subject_pairs_attempted = 0
+    subject_pairs_skipped = 0
+
+    for level_label in sorted(level_subject_threads):
+        by_subject = level_subject_threads[level_label]
+        level_after = 0
+        level_before = 0
+        level_excluded: Counter[str] = Counter()
+        level_subject_labels: Counter[str] = Counter()
+        sampled_per_subject: dict[str, int] = {}
+
+        for subject_label in sorted(by_subject):
+            buckets = by_subject[subject_label]
+            item_count = len(
+                {
+                    str(item.get("sfi_uuid") or "").strip()
+                    for bucket in buckets or []
+                    for item in (bucket.get("items") or [])
+                    if str(item.get("sfi_uuid") or "").strip()
+                }
+            )
+            level_before += item_count
+            items_before_subject_exclusion += item_count
+
+            if subject_label in excluded:
+                level_excluded[subject_label] += item_count
+                items_excluded_by_subject_label[subject_label] += item_count
+                continue
+
+            sampled = _sample_items_across_threads(
+                max_items=max_items,
+                thread_buckets=sorted(buckets, key=_thread_sort_key),
+            )
+            sampled_count = len(sampled)
+            sampled_per_subject[subject_label] = sampled_count
+            level_after += item_count
+            items_after_subject_exclusion += item_count
+            level_subject_labels[subject_label] += item_count
+            subject_labels[subject_label] += item_count
+
+        included_subjects = sorted(level_subject_labels)
+        possible_pairs = (len(included_subjects) * (len(included_subjects) - 1)) // 2
+        attempted_pairs = 0
+
+        for i, subject_a in enumerate(included_subjects):
+            for subject_b in included_subjects[i + 1 :]:
+                if (
+                    sampled_per_subject.get(subject_a, 0) > 0
+                    and sampled_per_subject.get(subject_b, 0) > 0
+                ):
+                    attempted_pairs += 1
+
+        skipped_pairs = possible_pairs - attempted_pairs
+        subject_pairs_possible += possible_pairs
+        subject_pairs_attempted += attempted_pairs
+        subject_pairs_skipped += skipped_pairs
+
+        levels[level_label] = {
+            "items_before_subject_exclusion": level_before,
+            "items_excluded_by_subject_label": dict(sorted(level_excluded.items())),
+            "items_after_subject_exclusion": level_after,
+            "subject_labels": dict(sorted(level_subject_labels.items())),
+            "sampled_items_per_subject": dict(sorted(sampled_per_subject.items())),
+            "subject_pairs_possible": possible_pairs,
+            "subject_pairs_attempted": attempted_pairs,
+            "subject_pairs_skipped": skipped_pairs,
+        }
+
+    return {
+        "candidate_edges": int(candidate_edges_count),
+        "enabled": enabled,
+        "items_after_subject_exclusion": items_after_subject_exclusion,
+        "items_before_subject_exclusion": items_before_subject_exclusion,
+        "items_excluded_by_subject_label": dict(
+            sorted(items_excluded_by_subject_label.items())
+        ),
+        "kept_edges": int(kept_edges_count),
+        "levels": levels,
+        "levels_seen": len(level_subject_threads),
+        "sampled_items_per_subject": {
+            subject_label: sum(
+                level_info["sampled_items_per_subject"].get(subject_label, 0)
+                for level_info in levels.values()
+            )
+            for subject_label in sorted(subject_labels)
+        },
+        "subject_labels": dict(sorted(subject_labels.items())),
+        "subject_pairs_attempted": subject_pairs_attempted,
+        "subject_pairs_possible": subject_pairs_possible,
+        "subject_pairs_skipped": subject_pairs_skipped,
+    }
+
+
 def _thread_sort_key(b: dict[str, Any]) -> tuple[str, str]:
     """Return a deterministic sort key for LP thread buckets.
 
@@ -8419,11 +8651,13 @@ def export_learning_progressions(
     return _finalize_lp_export(
         academic_standards=academic_standards,
         builds_rels=builds_rels,
+        by_within_level=by_within_level,
         config=config,
         ctx=ctx,
         drops=lp_buckets.get("drops") or {},
         kg_dirs=kg_dirs,
         lp_stats=lp_stats,
+        num_phase3_candidates=len(p3_candidates),
         provenance_rows=provenance_rows,
         relates_rels=relates_rels,
     )
