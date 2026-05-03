@@ -3389,6 +3389,88 @@ def _emit_relationship(
     )
 
 
+def _enrich_provenance_dispositions(
+    *,
+    dedupe_winners: dict[tuple[str, str, str], CandidateEdge],
+    disposition_map: dict[tuple[str, str, str], str],
+    provenance_rows: list[dict[str, Any]],
+) -> None:
+    """Enrich provenance rows with post-filtering disposition.
+
+    Parameters
+    ----------
+    dedupe_winners
+        Mapping of canonical edge keys to the winning candidate edge selected during
+        deduplication.
+    disposition_map
+        Mapping of canonical edge keys to the final disposition string assigned to the
+        dedupe winner (e.g., "kept", "dropped_low_confidence", etc.).
+    provenance_rows
+        List of provenance records for raw candidates, expected to include all
+        candidates considered during deduplication, not just the winners.
+
+    Raises
+    ------
+    ValueError
+        If a provenance row's candidate UID is missing or if a dedupe winner or final
+        disposition is missing for a provenance row's canonical edge key.
+    """
+
+    # NB: relatesTo edges are canonicalized during dedupe (lexicographic UUID string
+    # order), so the disposition map keys for relatesTo are already canonical.
+    # Provenance rows, however, carry the *original* (pre-dedup) source/target which
+    # may be in either order. `_canon_disposition_key()` normalises the lookup key so
+    # that the match succeeds regardless of the original edge direction.
+    for row in provenance_rows:
+        key = _canon_disposition_key(
+            rel_type=row.get("rel_type", ""),
+            source=row.get("source", ""),
+            target=row.get("target", ""),
+        )
+
+        # Provenance rows include *all* raw candidates, including those dropped during
+        # deduplication. The disposition_map only records the final outcome for the
+        # single dedupe winner per canonical edge key. To avoid mislabeling duplicates
+        # as "kept"/"dropped_low_conf"/etc., mark non-winners explicitly as
+        # `dropped_dedupe`.
+        winner = dedupe_winners.get(key)
+
+        if winner is None:
+            raise ValueError(
+                f"Missing dedupe winner while enriching LP provenance row. "
+                f"key={key}; candidate_uid={row.get('candidate_uid')}; "
+                f"rel_type={row.get('rel_type')}; "
+                f"source={row.get('source')}; target={row.get('target')}"
+            )
+
+        winner_metadata = winner.metadata if isinstance(winner.metadata, dict) else {}
+        row_candidate_uid = str(row.get("candidate_uid") or "").strip()
+        winner_candidate_uid = str(winner_metadata.get("candidate_uid") or "").strip()
+
+        if not row_candidate_uid:
+            raise ValueError(f"LP provenance row missing `candidate_uid`: {row}")
+
+        is_winner = row_candidate_uid == winner_candidate_uid
+
+        if not is_winner:
+            row["disposition"] = "dropped_dedupe"
+            row["dedupe_winner_candidate_uid"] = winner_candidate_uid
+            row["dedupe_winner_disposition"] = disposition_map.get(key)
+            continue
+
+        disposition = disposition_map.get(key)
+
+        if disposition is None:
+            raise ValueError(
+                "Missing final disposition for LP dedupe-winning candidate. "
+                f"key={key}; candidate_uid={row_candidate_uid}"
+            )
+
+        row["dedupe_winner_candidate_uid"] = winner_candidate_uid
+        row["dedupe_winner_disposition"] = disposition_map.get(key)
+        row["disposition"] = disposition
+
+
 def _evenly_spaced_indexes(*, max_items: int, total_items: int) -> list[int]:
     """Return deterministic, order-preserving indexes spread across a sequence.
 
@@ -6365,6 +6447,19 @@ def _process_and_filter_candidates(
             candidate=e, disposition_map=disposition_map, value="dropped_cap"
         )
 
+    # Verify that all emitted relationship IDs are unique. The UUIDv5 derivation from
+    # (source, target, rel_type) combined with dedup guarantees this, but an explicit
+    # check guards against future regressions.
+    all_rels = builds_relationships + relates_relationships
+    all_ids = [r.identifier for r in all_rels]
+
+    if len(set(all_ids)) != len(all_ids):
+        dupes = {uid: c for uid, c in Counter(all_ids).items() if c > 1}
+        raise ValueError(
+            f"Duplicate relationship identifiers in Learning Progressions export: "
+            f"{dupes}"
+        )
+
     return (
         builds_relationships,
         relates_relationships,
@@ -8203,13 +8298,10 @@ def export_learning_progressions(
     # candidate generation. This step also enriches each SFI with metadata used for
     # inference and provenance, such as resolved level ordinals and subject labels.
     lp_buckets = group_standards_for_learning_progressions(
-        academic_standards=academic_standards, config=config, include_provenance=True
-    )
-
-    # Write the buckets artifact for debugging.
-    write_to_json(
-        fp=kg_dirs.learning_progressions / "learning_progressions_buckets.json",
-        json_info=lp_buckets,
+        academic_standards=academic_standards,
+        config=config,
+        include_provenance=True,
+        kg_dirs=kg_dirs,
     )
 
     # Extract the within-level and cross-level buckets.
@@ -8285,74 +8377,12 @@ def export_learning_progressions(
         )
     )
 
-    # Verify that all emitted relationship IDs are unique. The UUIDv5 derivation from
-    # (source, target, rel_type) combined with dedup guarantees this, but an explicit
-    # check guards against future regressions.
-    all_rels = builds_rels + relates_rels
-    all_ids = [r.identifier for r in all_rels]
-
-    if len(set(all_ids)) != len(all_ids):
-        dupes = {uid: c for uid, c in Counter(all_ids).items() if c > 1}
-        raise ValueError(
-            f"Duplicate relationship identifiers in Learning Progressions export: "
-            f"{dupes}"
-        )
-
     # Enrich provenance rows with post-filtering disposition.
-    #
-    # NB: relatesTo edges are canonicalized during dedupe (lexicographic UUID string
-    # order), so the disposition map keys for relatesTo are already canonical.
-    # Provenance rows, however, carry the *original* (pre-dedup) source/target which
-    # may be in either order. `_canon_disposition_key()` normalises the lookup key so
-    # that the match succeeds regardless of the original edge direction.
-    for row in provenance_rows:
-        key = _canon_disposition_key(
-            rel_type=row.get("rel_type", ""),
-            source=row.get("source", ""),
-            target=row.get("target", ""),
-        )
-
-        # Provenance rows include *all* raw candidates, including those dropped during
-        # deduplication. The disposition_map only records the final outcome for the
-        # single dedupe winner per canonical edge key. To avoid mislabeling duplicates
-        # as "kept"/"dropped_low_conf"/etc., mark non-winners explicitly as
-        # `dropped_dedupe`.
-        winner = dedupe_winners.get(key)
-
-        if winner is None:
-            raise ValueError(
-                f"Missing dedupe winner while enriching LP provenance row. "
-                f"key={key}; candidate_uid={row.get('candidate_uid')}; "
-                f"rel_type={row.get('rel_type')}; "
-                f"source={row.get('source')}; target={row.get('target')}"
-            )
-
-        winner_metadata = winner.metadata if isinstance(winner.metadata, dict) else {}
-        row_candidate_uid = str(row.get("candidate_uid") or "").strip()
-        winner_candidate_uid = str(winner_metadata.get("candidate_uid") or "").strip()
-
-        if not row_candidate_uid:
-            raise ValueError(f"LP provenance row missing `candidate_uid`: {row}")
-
-        is_winner = row_candidate_uid == winner_candidate_uid
-
-        if not is_winner:
-            row["disposition"] = "dropped_dedupe"
-            row["dedupe_winner_candidate_uid"] = winner_candidate_uid
-            row["dedupe_winner_disposition"] = disposition_map.get(key)
-            continue
-
-        disposition = disposition_map.get(key)
-
-        if disposition is None:
-            raise ValueError(
-                "Missing final disposition for LP dedupe-winning candidate. "
-                f"key={key}; candidate_uid={row_candidate_uid}"
-            )
-
-        row["dedupe_winner_candidate_uid"] = winner_candidate_uid
-        row["dedupe_winner_disposition"] = disposition_map.get(key)
-        row["disposition"] = disposition
+    _enrich_provenance_dispositions(
+        dedupe_winners=dedupe_winners,
+        disposition_map=disposition_map,
+        provenance_rows=provenance_rows,
+    )
 
     return _finalize_lp_export(
         academic_standards=academic_standards,
@@ -8372,6 +8402,7 @@ def group_standards_for_learning_progressions(
     academic_standards: AcademicStandardsExport,
     config: CreateKGConfig,
     include_provenance: bool = True,
+    kg_dirs: KGDirs,
 ) -> dict[str, Any]:
     """Build learning progression buckets for the LLM.
 
@@ -8398,6 +8429,8 @@ def group_standards_for_learning_progressions(
     include_provenance
         Whether to include provenance metadata in the payload for each standard item,
         which the LLM can use as signals when deciding buildsTowards relationships.
+    kg_dirs
+        The knowledge graph run directories.
 
     Returns
     -------
@@ -8489,13 +8522,21 @@ def group_standards_for_learning_progressions(
 
     by_within_level, by_within_bucket_key = _finalize_bucket_store(within_level_buckets)
     by_cross_level, by_cross_thread_key = _finalize_bucket_store(cross_level_buckets)
-    return {
+    lp_buckets = {
         "by_cross_thread_key": by_cross_thread_key,
         "by_cross_level": by_cross_level,
         "by_within_bucket_key": by_within_bucket_key,
         "by_within_level": by_within_level,
         "drops": drops,
     }
+
+    # Write the buckets artifact for debugging.
+    write_to_json(
+        fp=kg_dirs.learning_progressions / "learning_progressions_buckets.json",
+        json_info=lp_buckets,
+    )
+
+    return lp_buckets
 
 
 def load_learning_progressions_export(kg_dirs: KGDirs) -> LearningProgressionsExport:
