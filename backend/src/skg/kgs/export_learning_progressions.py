@@ -6396,7 +6396,7 @@ def _process_single_standard(
         filters. This lets broad structural competency statements remain in the
         Academic Standards KG while being excluded from LP inference.
     2. **Level bounds** are resolved primarily from ordinals in `progression_context`
-        (`level_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
+        (`grade_ordinal_low/high` or `stage_ordinal_low/high`). If ordinals are absent,
         we fall back to `config.lp_level_label_map` using `level_key` or `stage_key`.
     3. **Subject label** is resolved via `config.lp_subject_role`. Items without a
         matching role get `UNSPECIFIED_SUBJECT`.
