@@ -6847,7 +6847,7 @@ def _process_single_standard(
 def _replace_candidate_metadata(
     *, candidate: CandidateEdge, metadata: dict[str, Any]
 ) -> CandidateEdge:
-    """Return a CandidateEdge copy with replacement metadata.
+    """Return a new CandidateEdge instance with replacement metadata.
 
     This function preserves all candidate fields except `metadata`, which is replaced.
     It does not merge the new metadata with the existing metadata.
