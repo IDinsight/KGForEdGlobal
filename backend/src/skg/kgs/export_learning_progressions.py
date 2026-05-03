@@ -4941,6 +4941,12 @@ def _infer_within_level_builds_towards(
     for current_call, (level_label, bucket) in enumerate(eligible, 1):
         items = bucket["items"]  # Should have at least 2 items due to the filter above
 
+        if len(items) > 40:
+            logger.warning(
+                f"Large Phase 1 bucket: {level_label} {bucket.get('lp_bucket_key')} "
+                f"has {len(items)} items; consider chunking."
+            )
+
         logger.info(
             f"Phase 1 Progress: {current_call}/{total_calls} "
             f"({level_label}: {bucket.get('lp_bucket_key')})"
