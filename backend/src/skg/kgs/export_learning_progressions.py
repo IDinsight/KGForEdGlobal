@@ -4420,7 +4420,9 @@ def _group_threads_by_level_and_subject(
             ):
                 continue
 
-            subject = str(bucket.get("subject_label") or "UNSPECIFIED_SUBJECT")
+            subject = (
+                str(bucket.get("subject_label") or "").strip() or "UNSPECIFIED_SUBJECT"
+            )
             level_subject_threads[level_label][subject].append(bucket)
 
     return level_subject_threads
