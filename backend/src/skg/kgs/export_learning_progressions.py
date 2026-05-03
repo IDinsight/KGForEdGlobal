@@ -8322,8 +8322,7 @@ def export_learning_progressions(
     ------
     ValueError
         If duplicate relationship identifiers are found in the final emitted
-        relationships, which should be unique. This check guards against regressions in
-        the UUID generation logic that could lead to non-unique identifiers.
+        relationships.
     """
 
     # Group standards into learning progression buckets, which are the basis for
@@ -8427,11 +8426,11 @@ def export_learning_progressions(
 
     # Enrich provenance rows with post-filtering disposition.
     #
-    # NB: relatesTo edges are canonicalized during dedup (lexicographic UUID string
+    # NB: relatesTo edges are canonicalized during dedupe (lexicographic UUID string
     # order), so the disposition map keys for relatesTo are already canonical.
     # Provenance rows, however, carry the *original* (pre-dedup) source/target which
-    # may be in either order. _canon_disposition_key normalises the lookup key so that
-    # the match succeeds regardless of the original edge direction.
+    # may be in either order. `_canon_disposition_key()` normalises the lookup key so
+    # that the match succeeds regardless of the original edge direction.
     for row in provenance_rows:
         key = _canon_disposition_key(
             rel_type=row.get("rel_type", ""),
@@ -8444,25 +8443,42 @@ def export_learning_progressions(
         # single dedupe winner per canonical edge key. To avoid mislabeling duplicates
         # as "kept"/"dropped_low_conf"/etc., mark non-winners explicitly as
         # `dropped_dedupe`.
-        winner, is_winner = dedupe_winners.get(key), False
+        winner = dedupe_winners.get(key)
 
-        if winner is not None:
-            winner_metadata = (
-                winner.metadata if isinstance(winner.metadata, dict) else {}
-            )
-            row_candidate_uid = str(row.get("candidate_uid") or "").strip()
-            winner_candidate_uid = str(
-                winner_metadata.get("candidate_uid") or ""
-            ).strip()
-            is_winner = bool(
-                row_candidate_uid and row_candidate_uid == winner_candidate_uid
+        if winner is None:
+            raise ValueError(
+                f"Missing dedupe winner while enriching LP provenance row. "
+                f"key={key}; candidate_uid={row.get('candidate_uid')}; "
+                f"rel_type={row.get('rel_type')}; "
+                f"source={row.get('source')}; target={row.get('target')}"
             )
 
-        row["disposition"] = (
-            "dropped_dedupe"
-            if winner is not None and not is_winner
-            else disposition_map.get(key, "dropped_dedupe")
-        )
+        winner_metadata = winner.metadata if isinstance(winner.metadata, dict) else {}
+        row_candidate_uid = str(row.get("candidate_uid") or "").strip()
+        winner_candidate_uid = str(winner_metadata.get("candidate_uid") or "").strip()
+
+        if not row_candidate_uid:
+            raise ValueError(f"LP provenance row missing `candidate_uid`: {row}")
+
+        is_winner = row_candidate_uid == winner_candidate_uid
+
+        if not is_winner:
+            row["disposition"] = "dropped_dedupe"
+            row["dedupe_winner_candidate_uid"] = winner_candidate_uid
+            row["dedupe_winner_disposition"] = disposition_map.get(key)
+            continue
+
+        disposition = disposition_map.get(key)
+
+        if disposition is None:
+            raise ValueError(
+                "Missing final disposition for LP dedupe-winning candidate. "
+                f"key={key}; candidate_uid={row_candidate_uid}"
+            )
+
+        row["dedupe_winner_candidate_uid"] = winner_candidate_uid
+        row["dedupe_winner_disposition"] = disposition_map.get(key)
+        row["disposition"] = disposition
 
     return _finalize_lp_export(
         academic_standards=academic_standards,
