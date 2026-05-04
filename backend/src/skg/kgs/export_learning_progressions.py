@@ -8317,9 +8317,8 @@ def _summarize_phase1_within_level_builds_towards(
             level_counts[skip_key] += 1
 
             bucket_dispositions = row_counts_by_bucket[bucket_key_tuple]
-            candidate_edges = sum(bucket_dispositions.values())
 
-            if candidate_edges > 0:
+            if (candidate_edges := sum(bucket_dispositions.values())) > 0:
                 global_counts["buckets_with_candidate_edges"] += 1
                 level_counts["buckets_with_candidate_edges"] += 1
 
@@ -8341,9 +8340,7 @@ def _summarize_phase1_within_level_builds_towards(
             level_candidate_subtypes.update(bucket_subtypes)
             level_kept_subtypes.update(bucket_kept_subtypes)
 
-            is_large_bucket = item_count > large_bucket_threshold
-
-            if is_large_bucket:
+            if is_large_bucket := item_count > large_bucket_threshold:
                 global_counts["large_buckets_count"] += 1
 
             bucket_summary = {
