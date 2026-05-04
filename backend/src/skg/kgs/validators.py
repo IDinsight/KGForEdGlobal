@@ -96,6 +96,40 @@ def _normalize_quality_text(text: str) -> str:
     return s.strip()
 
 
+def _reject_progression_subtype_for_non_phase1_builds(
+    *, response: ProgressionEdgesResponse, task_label: str
+) -> None:
+    """Reject Phase-1-only progression_subtype values on non-Phase-1 buildsTowards.
+
+    `progression_subtype` is currently meaningful only for Phase 1 within-level
+    buildsTowards. Cross-level and cross-stage buildsTowards prompts describe
+    prerequisite relationships across levels/stages, so accepting subtype values there
+    would make the shared ProgressionEdge schema look more general than the current
+    export policy intends.
+
+    Parameters
+    ----------
+    response
+        The response containing the edges to validate.
+    task_label
+        A label for the task being validated, used in error messages to clarify which
+        validator is raising the error (e.g., "cross-level buildsTowards" or
+        "cross-stage buildsTowards").
+
+    Raises
+    ------
+    QualityError
+        If any edge in the response includes a non-null `progression_subtype` field.
+    """
+
+    for edge in response.edges:
+        if getattr(edge, "progression_subtype", None) is not None:
+            raise QualityError(
+                f"{task_label} edges must not include progression_subtype. "
+                f"This field is only valid for within_level_builds_towards."
+            )
+
+
 def _reject_progression_subtype_for_relates_to(
     *, response: ProgressionEdgesResponse, task_label: str
 ) -> None:
@@ -351,7 +385,7 @@ def validate_cross_level_builds_towards(
     ------
     QualityError
         If any edge violates validation rules (unknown UUIDs, self-edges, low
-        confidence, etc).
+        confidence, unexpected Phase-1-only subtype values, etc).
     """
 
     overlap = allowed_lo & allowed_hi
@@ -363,6 +397,9 @@ def validate_cross_level_builds_towards(
         )
 
     _check_common_edge_invariants(directed=True, response=response)
+    _reject_progression_subtype_for_non_phase1_builds(
+        response=response, task_label="cross-level buildsTowards"
+    )
 
     for e in response.edges:
         if e.source_sfi_uuid not in allowed_lo:
