@@ -96,6 +96,39 @@ def _normalize_quality_text(text: str) -> str:
     return s.strip()
 
 
+def _reject_progression_subtype_for_relates_to(
+    *, response: ProgressionEdgesResponse, task_label: str
+) -> None:
+    """Reject Phase-1-only progression_subtype values on relatesTo outputs.
+
+    `progression_subtype` is currently meaningful only for Phase 1 within-level
+    buildsTowards. relatesTo prompts describe associative connections, so accepting
+    subtype values there would blur relationship semantics and could leak prompt/schema
+    behavior across inference phases.
+
+    Parameters
+    ----------
+    response
+        The response containing the edges to validate.
+    task_label
+        A label for the task being validated, used in error messages to clarify which
+        validator is raising the error (e.g., "cross-level relatesTo" or "within-level
+        relatesTo").
+
+    Raises
+    ------
+    QualityError
+        If any edge in the response includes a non-null `progression_subtype` field.
+    """
+
+    for edge in response.edges:
+        if getattr(edge, "progression_subtype", None) is not None:
+            raise QualityError(
+                f"{task_label} edges must not include progression_subtype. "
+                f"This field is only valid for within_level_builds_towards."
+            )
+
+
 def _validate_batch_coverage(
     *, allowed_sfi_uuids: set[UUID], returned_sfi_uuids: set[UUID]
 ) -> None:
@@ -396,6 +429,9 @@ def validate_cross_level_relates_to(
         )
 
     _check_common_edge_invariants(directed=False, response=response)
+    _reject_progression_subtype_for_relates_to(
+        response=response, task_label="cross-level relatesTo"
+    )
 
     for e in response.edges:
         if e.source_sfi_uuid == e.target_sfi_uuid:
@@ -450,13 +486,23 @@ def validate_within_level_builds_towards(
     Raises
     ------
     QualityError
-        If edges reference unknown UUIDs, are self-referential, violate list ordering,
-        or fall below the configured minimum confidence threshold.
+        If edges reference unknown UUIDs, omit the required Phase-1 progression
+        subtype, are self-referential, violate list ordering, or fall below the
+        configured minimum confidence threshold.
     """
 
     _check_common_edge_invariants(directed=True, response=response)
+    allowed_subtypes = {"developmental_prerequisite", "recurring_practice"}
 
     for e in response.edges:
+        progression_subtype = getattr(e, "progression_subtype", None)
+
+        if progression_subtype not in allowed_subtypes:
+            raise QualityError(
+                "within_level_builds_towards edges must include progression_subtype "
+                "as 'developmental_prerequisite' or 'recurring_practice'."
+            )
+
         if (
             e.source_sfi_uuid not in allowed_uuids
             or e.target_sfi_uuid not in allowed_uuids
@@ -516,6 +562,9 @@ def validate_within_level_relates_to(
         )
 
     _check_common_edge_invariants(directed=False, response=response)
+    _reject_progression_subtype_for_relates_to(
+        response=response, task_label="within-level relatesTo"
+    )
 
     all_allowed = allowed_uuids_a | allowed_uuids_b
 

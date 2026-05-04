@@ -98,6 +98,61 @@ class LearningProgressionsExport:
     report: dict[str, Any]
 
 
+def _accumulate_phase1_row_metrics(
+    *,
+    candidate_by_progression_subtype: Counter[str],
+    global_counts: Counter[str],
+    kept_by_progression_subtype: Counter[str],
+    phase1_rows: list[dict[str, Any]],
+    row_counts_by_bucket: dict[tuple[str, str], Counter[str]],
+    row_kept_subtype_counts: dict[tuple[str, str], Counter[str]],
+    row_subtype_counts: dict[tuple[str, str], Counter[str]],
+) -> None:
+    """Mutate and populate tracking counters for Phase 1 provenance rows.
+
+    Parameters
+    ----------
+    candidate_by_progression_subtype
+        Global counter tracking occurrences of each allowed progression subtype.
+    global_counts
+        Global counter tracking missing or unexpected subtypes.
+    kept_by_progression_subtype
+        Global counter tracking kept edges by their progression subtype.
+    phase1_rows
+        List of raw provenance rows emitted by Phase 1 inference functions before
+        enrichment with post-filter dispositions.
+    row_counts_by_bucket
+        Nested counter mapping (level_label, bucket_key) to disposition frequencies.
+    row_kept_subtype_counts
+        Nested counter mapping (level_label, bucket_key) to kept subtype frequencies.
+    row_subtype_counts
+        Nested counter mapping (level_label, bucket_key) to allowed subtype frequencies.
+    """
+
+    allowed_progression_subtypes = {"developmental_prerequisite", "recurring_practice"}
+
+    for row in phase1_rows:
+        level_label = str(row.get("level_label", "UNSPECIFIED_LEVEL"))
+        bucket_key = str(
+            row.get("lp_bucket_key") or row.get("bucket_key") or "UNSPECIFIED_BUCKET"
+        )
+        disposition = str(row.get("disposition", "unknown"))
+        subtype = str(row.get("progression_subtype") or "").strip()
+        row_counts_by_bucket[(level_label, bucket_key)][disposition] += 1
+
+        if not subtype:
+            global_counts["missing_progression_subtype"] += 1
+        elif subtype in allowed_progression_subtypes:
+            candidate_by_progression_subtype[subtype] += 1
+            row_subtype_counts[(level_label, bucket_key)][subtype] += 1
+
+            if disposition == "kept":
+                kept_by_progression_subtype[subtype] += 1
+                row_kept_subtype_counts[(level_label, bucket_key)][subtype] += 1
+        else:
+            global_counts["unexpected_progression_subtype"] += 1
+
+
 def _accumulate_subject_level_buckets(
     *, by_level: dict[str, list[dict[str, Any]]], excluded_subject_labels: set[str]
 ) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
@@ -5035,9 +5090,15 @@ def _infer_within_level_builds_towards(
         )
 
         for edge in response.edges:
+            progression_subtype = (
+                str(getattr(edge, "progression_subtype", "") or "").strip() or None
+            )
             candidate_edge = CandidateEdge(
                 confidence=float(edge.confidence),
-                evidence={"rationale": edge.rationale},
+                evidence={
+                    "progression_subtype": progression_subtype,
+                    "rationale": edge.rationale,
+                },
                 inference_source="llm",
                 inference_type=inference_type,
                 llm_confidence=float(edge.confidence),
@@ -5046,6 +5107,8 @@ def _infer_within_level_builds_towards(
                     "level_label": level_label,
                     "lp_bucket_key": bucket.get("lp_bucket_key"),
                     "lp_thread_key": bucket.get("lp_thread_key"),
+                    "progression_subtype": progression_subtype,
+                    "progression_subtype_source": "llm",
                     "subject_label": bucket.get("subject_label"),
                     "topic_path_examples": bucket.get("topic_path_examples"),
                     "topic_path_keys": bucket.get("topic_path_keys"),
@@ -5065,6 +5128,8 @@ def _infer_within_level_builds_towards(
                     llm_confidence=float(edge.confidence),
                     lp_bucket_key=bucket.get("lp_bucket_key"),
                     lp_thread_key=bucket.get("lp_thread_key"),
+                    progression_subtype=progression_subtype,
+                    progression_subtype_source="llm",
                     rationale=edge.rationale,
                     source_sequence_index=pos.get(edge.source_sfi_uuid),
                     subject_label=bucket.get("subject_label"),
@@ -8149,9 +8214,10 @@ def _summarize_phase1_within_level_builds_towards(
 ) -> dict[str, Any]:
     """Build report-only audit stats for Phase 1 within-level `buildsTowards`.
 
-    Phase 1 is the progression-inference path for (primarily) single-grade curricula.
-    This summary makes bucket coverage, skipped buckets, candidate volume, and final
-    post-filter dispositions visible in `learning_progressions_report.json`.
+    Phase 1 is the dominant progression-inference path for single-grade curricula. This
+    summary makes bucket coverage, skipped buckets, candidate volume, and final
+    post-filter dispositions visible in `learning_progressions_report.json` without
+    changing inference behavior or emitted relationships.
 
     Parameters
     ----------
@@ -8172,111 +8238,136 @@ def _summarize_phase1_within_level_builds_towards(
     enabled = bool(config.lp_within_level_builds_towards)
     large_bucket_threshold = 40
 
-    # Filter rows and build lookup structures.
+    candidate_by_progression_subtype: Counter[str] = Counter()
+    global_counts: Counter[str] = Counter()
+    kept_by_progression_subtype: Counter[str] = Counter()
+
+    row_counts_by_bucket: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    row_kept_subtype_counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    row_subtype_counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+
     phase1_rows = [
         row
-        for row in (provenance_rows or [])
+        for row in provenance_rows or []
         if int(row.get("phase") or 0) == 1
         and row.get("inference_type") == "within_level_builds_towards"
         and row.get("rel_type") == BUILDS_TOWARDS
     ]
     disposition_counts = Counter(
-        str(r.get("disposition", "unknown")) for r in phase1_rows
+        str(row.get("disposition", "unknown")) for row in phase1_rows
     )
-    row_counts_by_bucket: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
 
-    for row in phase1_rows:
-        level_label = str(row.get("level_label", "UNSPECIFIED_LEVEL"))
-        bucket_key = str(
-            row.get("lp_bucket_key") or row.get("bucket_key") or "UNSPECIFIED_BUCKET"
-        )
-        row_counts_by_bucket[(level_label, bucket_key)][
-            str(row.get("disposition", "unknown"))
-        ] += 1
+    _accumulate_phase1_row_metrics(
+        candidate_by_progression_subtype=candidate_by_progression_subtype,
+        global_counts=global_counts,
+        kept_by_progression_subtype=kept_by_progression_subtype,
+        phase1_rows=phase1_rows,
+        row_counts_by_bucket=row_counts_by_bucket,
+        row_kept_subtype_counts=row_kept_subtype_counts,
+        row_subtype_counts=row_subtype_counts,
+    )
 
-    # Consolidate tracking variables into Counters.
-    global_counts: dict[str, int] = Counter()
     largest_buckets: list[dict[str, Any]] = []
     levels: dict[str, Any] = {}
 
-    # Iterate through levels and buckets.
-    for level_label, buckets in sorted((by_level or {}).items()):
-        level_counts: dict[str, int] = Counter()
+    for level_label in sorted(by_level or {}):
         level_bucket_summaries: list[dict[str, Any]] = []
+        level_candidate_subtypes: Counter[str] = Counter()
+        level_counts: Counter[str] = Counter()
+        level_kept_subtypes: Counter[str] = Counter()
 
         for bucket in sorted(
-            buckets,
+            by_level[level_label],
             key=lambda b: str(b.get("lp_bucket_key") or b.get("bucket_key") or ""),
         ):
+            global_counts["buckets_total"] += 1
+            level_counts["buckets_total"] += 1
+            item_count = len(
+                {
+                    str(i.get("sfi_uuid") or "").strip()
+                    for i in bucket.get("items") or []
+                    if str(i.get("sfi_uuid") or "").strip()
+                }
+            )
             bucket_key = str(
                 bucket.get("lp_bucket_key")
                 or bucket.get("bucket_key")
                 or "UNSPECIFIED_BUCKET"
             )
-            item_count = len(
-                {
-                    sfi
-                    for item in bucket.get("items", [])
-                    if (sfi := str(item.get("sfi_uuid", "")).strip())
-                }
-            )
-
-            skipped_reason = None
+            bucket_key_tuple = (level_label, bucket_key)
 
             if not enabled:
-                skipped_reason, count_key = "phase_disabled", "buckets_skipped_disabled"
+                skip_reason, skip_key = "phase_disabled", "buckets_skipped_disabled"
             elif not _allow_within_level_inference(bucket=bucket, config=config):
-                skipped_reason, count_key = (
+                skip_reason, skip_key = (
                     "banded_level_disallowed",
                     "buckets_skipped_banded_level",
                 )
             elif item_count < 2:
-                skipped_reason, count_key = (
+                skip_reason, skip_key = (
                     "fewer_than_2_items",
                     "buckets_skipped_fewer_than_2_items",
                 )
             else:
-                count_key = "buckets_eligible"
+                skip_reason, skip_key = None, "buckets_eligible"
+                global_counts["items_in_eligible_buckets"] += item_count
                 level_counts["items_in_eligible_buckets"] += item_count
 
-            level_counts["buckets_total"] += 1
-            level_counts[count_key] += 1
+            global_counts[skip_key] += 1
+            level_counts[skip_key] += 1
 
-            disp = row_counts_by_bucket.get((level_label, bucket_key), Counter())
-            candidate_edges = sum(disp.values())
+            bucket_dispositions = row_counts_by_bucket[bucket_key_tuple]
+            candidate_edges = sum(bucket_dispositions.values())
 
             if candidate_edges > 0:
+                global_counts["buckets_with_candidate_edges"] += 1
                 level_counts["buckets_with_candidate_edges"] += 1
-            if item_count > large_bucket_threshold:
+
+            level_counts.update(
+                {
+                    "candidate_edges": candidate_edges,
+                    "dropped_dedupe": bucket_dispositions.get("dropped_dedupe", 0),
+                    "dropped_doc_order": bucket_dispositions.get(
+                        "dropped_doc_order", 0
+                    ),
+                    "dropped_low_conf": bucket_dispositions.get("dropped_low_conf", 0),
+                    "kept_edges": bucket_dispositions.get("kept", 0),
+                }
+            )
+
+            bucket_kept_subtypes = row_kept_subtype_counts[bucket_key_tuple]
+            bucket_subtypes = row_subtype_counts[bucket_key_tuple]
+
+            level_candidate_subtypes.update(bucket_subtypes)
+            level_kept_subtypes.update(bucket_kept_subtypes)
+
+            is_large_bucket = item_count > large_bucket_threshold
+
+            if is_large_bucket:
                 global_counts["large_buckets_count"] += 1
 
-            # Accumulate dispositions.
-            level_counts["candidate_edges"] += candidate_edges
-
-            for k in [
-                "kept",
-                "dropped_dedupe",
-                "dropped_doc_order",
-                "dropped_low_conf",
-            ]:
-                level_counts[f"{k}_edges" if k == "kept" else k] += disp.get(k, 0)
-
             bucket_summary = {
+                "candidate_by_progression_subtype": dict(
+                    sorted(bucket_subtypes.items())
+                ),
                 "candidate_edges": candidate_edges,
-                "disposition_counts": dict(sorted(disp.items())),
-                "dropped_dedupe": disp.get("dropped_dedupe", 0),
-                "dropped_doc_order": disp.get("dropped_doc_order", 0),
-                "dropped_low_conf": disp.get("dropped_low_conf", 0),
-                "is_eligible_for_inference": skipped_reason is None,
-                "is_large_bucket": item_count > large_bucket_threshold,
+                "disposition_counts": dict(sorted(bucket_dispositions.items())),
+                "dropped_dedupe": bucket_dispositions.get("dropped_dedupe", 0),
+                "dropped_doc_order": bucket_dispositions.get("dropped_doc_order", 0),
+                "dropped_low_conf": bucket_dispositions.get("dropped_low_conf", 0),
+                "is_eligible_for_inference": skip_reason is None,
+                "is_large_bucket": is_large_bucket,
                 "is_single_level_bucket": _is_single_level_bucket(bucket),
                 "item_count": item_count,
-                "kept_edges": disp.get("kept", 0),
+                "kept_by_progression_subtype": dict(
+                    sorted(bucket_kept_subtypes.items())
+                ),
+                "kept_edges": bucket_dispositions.get("kept", 0),
                 "level_ordinal_high": bucket.get("level_ordinal_high"),
                 "level_ordinal_low": bucket.get("level_ordinal_low"),
                 "lp_bucket_key": bucket_key,
                 "lp_thread_key": bucket.get("lp_thread_key"),
-                "skipped_reason": skipped_reason,
+                "skipped_reason": skip_reason,
                 "subject_label": bucket.get("subject_label"),
                 "topic_path_examples": (bucket.get("topic_path_examples") or [])[:3],
                 "topic_path_keys": bucket.get("topic_path_keys") or [],
@@ -8288,60 +8379,73 @@ def _summarize_phase1_within_level_builds_towards(
                 )
                 or [],
             }
-
-            level_bucket_summaries.append(bucket_summary)
             largest_buckets.append(bucket_summary | {"level_label": level_label})
+            level_bucket_summaries.append(bucket_summary)
 
-        # Aggregate level metrics into global metrics.
-        global_counts.update(level_counts)
         levels[level_label] = {
             **level_counts,
+            "buckets": level_bucket_summaries,
             "buckets_without_candidate_edges": max(
                 0,
                 level_counts["buckets_eligible"]
                 - level_counts["buckets_with_candidate_edges"],
             ),
-            "buckets": level_bucket_summaries,
+            "candidate_by_progression_subtype": dict(
+                sorted(level_candidate_subtypes.items())
+            ),
+            "candidate_edges": level_counts.get("candidate_edges", 0),
+            "dropped_dedupe": level_counts.get("dropped_dedupe", 0),
+            "dropped_doc_order": level_counts.get("dropped_doc_order", 0),
+            "dropped_low_conf": level_counts.get("dropped_low_conf", 0),
+            "kept_by_progression_subtype": dict(sorted(level_kept_subtypes.items())),
+            "kept_edges": level_counts.get("kept_edges", 0),
         }
 
-    largest_buckets.sort(
-        key=lambda b: (
-            b["item_count"],
-            str(b.get("level_label", "")),
-            b["lp_bucket_key"],
-        ),
-        reverse=True,
-    )
     return {
         "bucket_large_threshold": large_bucket_threshold,
-        "enabled": enabled,
-        "candidate_edges": len(phase1_rows),
-        "disposition_counts": dict(sorted(disposition_counts.items())),
-        "dropped_dedupe": disposition_counts.get("dropped_dedupe", 0),
-        "dropped_doc_order": disposition_counts.get("dropped_doc_order", 0),
-        "dropped_low_conf": disposition_counts.get("dropped_low_conf", 0),
-        "kept_edges": disposition_counts.get("kept", 0),
-        "large_buckets_count": global_counts["large_buckets_count"],
-        "largest_buckets": largest_buckets[:20],
-        "levels": levels,
-        "levels_seen": len(by_level or {}),
+        "buckets_eligible": global_counts["buckets_eligible"],
+        "buckets_skipped_banded_level": global_counts["buckets_skipped_banded_level"],
+        "buckets_skipped_disabled": global_counts["buckets_skipped_disabled"],
+        "buckets_skipped_fewer_than_2_items": global_counts[
+            "buckets_skipped_fewer_than_2_items"
+        ],
+        "buckets_total": global_counts["buckets_total"],
+        "buckets_with_candidate_edges": global_counts["buckets_with_candidate_edges"],
         "buckets_without_candidate_edges": max(
             0,
             global_counts["buckets_eligible"]
             - global_counts["buckets_with_candidate_edges"],
         ),
-        **{
-            k: global_counts[k]
-            for k in [
-                "buckets_eligible",
-                "buckets_skipped_banded_level",
-                "buckets_skipped_disabled",
-                "buckets_skipped_fewer_than_2_items",
-                "buckets_total",
-                "buckets_with_candidate_edges",
-                "items_in_eligible_buckets",
-            ]
-        },
+        "candidate_by_progression_subtype": dict(
+            sorted(candidate_by_progression_subtype.items())
+        ),
+        "candidate_edges": len(phase1_rows),
+        "disposition_counts": dict(sorted(disposition_counts.items())),
+        "dropped_dedupe": disposition_counts.get("dropped_dedupe", 0),
+        "dropped_doc_order": disposition_counts.get("dropped_doc_order", 0),
+        "dropped_low_conf": disposition_counts.get("dropped_low_conf", 0),
+        "enabled": enabled,
+        "items_in_eligible_buckets": global_counts["items_in_eligible_buckets"],
+        "kept_by_progression_subtype": dict(
+            sorted(kept_by_progression_subtype.items())
+        ),
+        "kept_edges": disposition_counts.get("kept", 0),
+        "large_buckets_count": global_counts["large_buckets_count"],
+        "largest_buckets": sorted(
+            largest_buckets,
+            key=lambda b: (
+                int(b.get("item_count") or 0),
+                str(b.get("level_label") or ""),
+                str(b.get("lp_bucket_key") or ""),
+            ),
+            reverse=True,
+        )[:20],
+        "levels": levels,
+        "levels_seen": len(by_level or {}),
+        "missing_progression_subtype": global_counts["missing_progression_subtype"],
+        "unexpected_progression_subtype": global_counts[
+            "unexpected_progression_subtype"
+        ],
     }
 
 

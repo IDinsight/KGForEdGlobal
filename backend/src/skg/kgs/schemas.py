@@ -29,6 +29,7 @@ AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"
 AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 MetadataT = dict[str, Any]
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
+ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
 ValidationLevel = Literal["error", "info"]
 
 
@@ -276,6 +277,16 @@ class ProgressionEdge(BaseSchema):
         description="0..1 calibrated confidence (higher = more certain).",
         ge=0.0,
         le=1.0,
+    )
+    progression_subtype: Optional[ProgressionSubtype] = Field(
+        default=None,
+        description=(
+            "For Phase 1 within-level buildsTowards only: "
+            "'developmental_prerequisite' means the source is a meaningful prerequisite "
+            "for a more complex or dependent target; 'recurring_practice' means the "
+            "target is a later curriculum occurrence continuing practice of the same "
+            "or substantially similar skill."
+        ),
     )
     rationale: str = Field(
         description="Brief rationale for the edge (>= 50 chars).",
