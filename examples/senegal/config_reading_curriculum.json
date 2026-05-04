@@ -156,6 +156,6 @@
 			"statement_type"
 		],
 		"lp_within_level_relates_to": true,
-		"lp_within_level_relates_to_max_items_per_subject": 12
+		"lp_within_level_relates_to_max_items_per_subject": 20
 	}
 }

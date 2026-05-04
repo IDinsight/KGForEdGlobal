@@ -3915,8 +3915,8 @@ def _finalize_lp_export(
     builds_rels
         The list of emitted buildsTowards relationships after processing and filtering.
     by_within_level
-        The dictionary of within-level buckets by `(subject_label, level_key)`, used
-        here to summarize Phase 3 audit statistics.
+        The finalized within-level LP bucket store, keyed by level label. Used here to
+        summarize Phase 1 and Phase 3 audit statistics.
     config
         KG export configuration, used here to record export dialect, phase toggles, and
         thresholds in the final bundle/report artifacts.
@@ -4057,6 +4057,11 @@ def _finalize_lp_export(
             "within_level_builds_towards": config.lp_within_level_builds_towards,
             "within_level_relates_to": config.lp_within_level_relates_to,
         },
+        "phase1_within_level_builds_towards": (
+            _summarize_phase1_within_level_builds_towards(
+                by_level=by_within_level, config=config, provenance_rows=provenance_rows
+            )
+        ),
         "phase3_within_level_relates_to": _summarize_phase3_within_level_relates_to(
             by_level=by_within_level,
             candidate_edges_count=num_phase3_candidates,
@@ -8134,6 +8139,210 @@ def _summarize_drops_for_report(drops: dict[str, Any]) -> dict[str, Any]:
             report_drops[key] = value
 
     return report_drops
+
+
+def _summarize_phase1_within_level_builds_towards(
+    *,
+    by_level: dict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    provenance_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build report-only audit stats for Phase 1 within-level `buildsTowards`.
+
+    Phase 1 is the progression-inference path for (primarily) single-grade curricula.
+    This summary makes bucket coverage, skipped buckets, candidate volume, and final
+    post-filter dispositions visible in `learning_progressions_report.json`.
+
+    Parameters
+    ----------
+    by_level
+        Finalized within-level LP bucket store, keyed by level label.
+    config
+        KG export configuration controlling Phase 1 enablement and bucket eligibility.
+    provenance_rows
+        Candidate-edge provenance rows after `_enrich_provenance_dispositions()` has
+        populated each row's final `disposition`.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact audit summary for the report artifact.
+    """
+
+    enabled = bool(config.lp_within_level_builds_towards)
+    large_bucket_threshold = 40
+
+    # Filter rows and build lookup structures.
+    phase1_rows = [
+        row
+        for row in (provenance_rows or [])
+        if int(row.get("phase") or 0) == 1
+        and row.get("inference_type") == "within_level_builds_towards"
+        and row.get("rel_type") == BUILDS_TOWARDS
+    ]
+    disposition_counts = Counter(
+        str(r.get("disposition", "unknown")) for r in phase1_rows
+    )
+    row_counts_by_bucket: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+
+    for row in phase1_rows:
+        level_label = str(row.get("level_label", "UNSPECIFIED_LEVEL"))
+        bucket_key = str(
+            row.get("lp_bucket_key") or row.get("bucket_key") or "UNSPECIFIED_BUCKET"
+        )
+        row_counts_by_bucket[(level_label, bucket_key)][
+            str(row.get("disposition", "unknown"))
+        ] += 1
+
+    # Consolidate tracking variables into Counters.
+    global_counts: dict[str, int] = Counter()
+    largest_buckets: list[dict[str, Any]] = []
+    levels: dict[str, Any] = {}
+
+    # Iterate through levels and buckets.
+    for level_label, buckets in sorted((by_level or {}).items()):
+        level_counts: dict[str, int] = Counter()
+        level_bucket_summaries: list[dict[str, Any]] = []
+
+        for bucket in sorted(
+            buckets,
+            key=lambda b: str(b.get("lp_bucket_key") or b.get("bucket_key") or ""),
+        ):
+            bucket_key = str(
+                bucket.get("lp_bucket_key")
+                or bucket.get("bucket_key")
+                or "UNSPECIFIED_BUCKET"
+            )
+            item_count = len(
+                {
+                    sfi
+                    for item in bucket.get("items", [])
+                    if (sfi := str(item.get("sfi_uuid", "")).strip())
+                }
+            )
+
+            skipped_reason = None
+
+            if not enabled:
+                skipped_reason, count_key = "phase_disabled", "buckets_skipped_disabled"
+            elif not _allow_within_level_inference(bucket=bucket, config=config):
+                skipped_reason, count_key = (
+                    "banded_level_disallowed",
+                    "buckets_skipped_banded_level",
+                )
+            elif item_count < 2:
+                skipped_reason, count_key = (
+                    "fewer_than_2_items",
+                    "buckets_skipped_fewer_than_2_items",
+                )
+            else:
+                count_key = "buckets_eligible"
+                level_counts["items_in_eligible_buckets"] += item_count
+
+            level_counts["buckets_total"] += 1
+            level_counts[count_key] += 1
+
+            disp = row_counts_by_bucket.get((level_label, bucket_key), Counter())
+            candidate_edges = sum(disp.values())
+
+            if candidate_edges > 0:
+                level_counts["buckets_with_candidate_edges"] += 1
+            if item_count > large_bucket_threshold:
+                global_counts["large_buckets_count"] += 1
+
+            # Accumulate dispositions.
+            level_counts["candidate_edges"] += candidate_edges
+
+            for k in [
+                "kept",
+                "dropped_dedupe",
+                "dropped_doc_order",
+                "dropped_low_conf",
+            ]:
+                level_counts[f"{k}_edges" if k == "kept" else k] += disp.get(k, 0)
+
+            bucket_summary = {
+                "candidate_edges": candidate_edges,
+                "disposition_counts": dict(sorted(disp.items())),
+                "dropped_dedupe": disp.get("dropped_dedupe", 0),
+                "dropped_doc_order": disp.get("dropped_doc_order", 0),
+                "dropped_low_conf": disp.get("dropped_low_conf", 0),
+                "is_eligible_for_inference": skipped_reason is None,
+                "is_large_bucket": item_count > large_bucket_threshold,
+                "is_single_level_bucket": _is_single_level_bucket(bucket),
+                "item_count": item_count,
+                "kept_edges": disp.get("kept", 0),
+                "level_ordinal_high": bucket.get("level_ordinal_high"),
+                "level_ordinal_low": bucket.get("level_ordinal_low"),
+                "lp_bucket_key": bucket_key,
+                "lp_thread_key": bucket.get("lp_thread_key"),
+                "skipped_reason": skipped_reason,
+                "subject_label": bucket.get("subject_label"),
+                "topic_path_examples": (bucket.get("topic_path_examples") or [])[:3],
+                "topic_path_keys": bucket.get("topic_path_keys") or [],
+                "within_level_bucket_used_fallback": bool(
+                    bucket.get("within_level_bucket_used_fallback")
+                ),
+                "within_level_fallback_segments": bucket.get(
+                    "within_level_fallback_segments"
+                )
+                or [],
+            }
+
+            level_bucket_summaries.append(bucket_summary)
+            largest_buckets.append(bucket_summary | {"level_label": level_label})
+
+        # Aggregate level metrics into global metrics.
+        global_counts.update(level_counts)
+        levels[level_label] = {
+            **level_counts,
+            "buckets_without_candidate_edges": max(
+                0,
+                level_counts["buckets_eligible"]
+                - level_counts["buckets_with_candidate_edges"],
+            ),
+            "buckets": level_bucket_summaries,
+        }
+
+    largest_buckets.sort(
+        key=lambda b: (
+            b["item_count"],
+            str(b.get("level_label", "")),
+            b["lp_bucket_key"],
+        ),
+        reverse=True,
+    )
+    return {
+        "bucket_large_threshold": large_bucket_threshold,
+        "enabled": enabled,
+        "candidate_edges": len(phase1_rows),
+        "disposition_counts": dict(sorted(disposition_counts.items())),
+        "dropped_dedupe": disposition_counts.get("dropped_dedupe", 0),
+        "dropped_doc_order": disposition_counts.get("dropped_doc_order", 0),
+        "dropped_low_conf": disposition_counts.get("dropped_low_conf", 0),
+        "kept_edges": disposition_counts.get("kept", 0),
+        "large_buckets_count": global_counts["large_buckets_count"],
+        "largest_buckets": largest_buckets[:20],
+        "levels": levels,
+        "levels_seen": len(by_level or {}),
+        "buckets_without_candidate_edges": max(
+            0,
+            global_counts["buckets_eligible"]
+            - global_counts["buckets_with_candidate_edges"],
+        ),
+        **{
+            k: global_counts[k]
+            for k in [
+                "buckets_eligible",
+                "buckets_skipped_banded_level",
+                "buckets_skipped_disabled",
+                "buckets_skipped_fewer_than_2_items",
+                "buckets_total",
+                "buckets_with_candidate_edges",
+                "items_in_eligible_buckets",
+            ]
+        },
+    }
 
 
 def _summarize_phase3_within_level_relates_to(
