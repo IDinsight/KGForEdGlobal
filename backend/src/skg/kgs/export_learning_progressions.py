@@ -153,6 +153,159 @@ def _accumulate_phase1_row_metrics(
             global_counts["unexpected_progression_subtype"] += 1
 
 
+def _accumulate_phase2_base_metrics_and_buckets(
+    *, by_level: dict[str, list[dict[str, Any]]], provenance_rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Extract base Phase 2 inference metrics and bucket coverage counts.
+
+    This function processes provenance rows to generate foundational counts for
+    dispositions and inference types. It also scans the level buckets to compute
+    bounded/unbounded bucket counts and builds the initial thread map.
+
+    Parameters
+    ----------
+    by_level
+        Finalized within-level LP bucket store, keyed by level label.
+    provenance_rows
+        Candidate-edge provenance rows.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the extracted phase 2 rows, metric counters, level pair
+        summaries, bucket counts, and the thread map.
+    """
+
+    phase2_rows = [
+        row
+        for row in provenance_rows or []
+        if int(row.get("phase") or 0) == 2 and row.get("rel_type") == BUILDS_TOWARDS
+    ]
+    disposition_counts = Counter(
+        str(row.get("disposition", "unknown")) for row in phase2_rows
+    )
+    candidate_by_inference_type = Counter(
+        str(row.get("inference_type") or "unknown") for row in phase2_rows
+    )
+    kept_by_inference_type = Counter(
+        str(row.get("inference_type") or "unknown")
+        for row in phase2_rows
+        if row.get("disposition") == "kept"
+    )
+    rows_by_pair: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
+
+    for row in phase2_rows:
+        inference_type = str(row.get("inference_type") or "unknown")
+        lower_level = str(row.get("lower_level") or "UNSPECIFIED_LOWER_LEVEL")
+        upper_level = str(row.get("upper_level") or "UNSPECIFIED_UPPER_LEVEL")
+        rows_by_pair[(inference_type, lower_level, upper_level)][
+            str(row.get("disposition", "unknown"))
+        ] += 1
+
+    level_pair_summaries = [
+        {
+            "disposition_counts": dict(sorted(counts.items())),
+            "inference_type": inference_type,
+            "lower_level": lower_level,
+            "upper_level": upper_level,
+        }
+        for (inference_type, lower_level, upper_level), counts in sorted(
+            rows_by_pair.items()
+        )
+    ]
+
+    bounded_bucket_count = 0
+    bucket_count = 0
+    unbounded_bucket_count = 0
+
+    for level_buckets in by_level.values():
+        for bucket in level_buckets or []:
+            bucket_count += 1
+            lo, hi = _level_bounds(bucket)
+
+            if isinstance(lo, int) and isinstance(hi, int):
+                bounded_bucket_count += 1
+            else:
+                unbounded_bucket_count += 1
+
+    thread_map = _build_thread_map(by_level)
+
+    return {
+        "bounded_bucket_count": bounded_bucket_count,
+        "bucket_count": bucket_count,
+        "candidate_by_inference_type": candidate_by_inference_type,
+        "disposition_counts": disposition_counts,
+        "kept_by_inference_type": kept_by_inference_type,
+        "level_pair_summaries": level_pair_summaries,
+        "phase2_rows": phase2_rows,
+        "thread_map": thread_map,
+        "unbounded_bucket_count": unbounded_bucket_count,
+    }
+
+
+def _accumulate_phase4_provenance_stats(
+    *, config: "CreateKGConfig", provenance_rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Calculate Phase 4 candidate edge statistics and configuration limits.
+
+    Parameters
+    ----------
+    config
+        KG export configuration containing max item thresholds and exclusion lists.
+    provenance_rows
+        List of provenance rows to process for edge dispositions and inference types.
+
+    Returns
+    -------
+    dict[str, Any]
+        Aggregated counts, filtered subjects, and configuration limits required for
+        Phase 4 audit summaries.
+    """
+
+    candidate_by_inference_type: Counter[str] = Counter()
+    candidate_edges = 0
+    disposition_counts: Counter[str] = Counter()
+    kept_by_inference_type: Counter[str] = Counter()
+    rows_by_subject: dict[str, Counter[str]] = defaultdict(Counter)
+
+    for row in provenance_rows or []:
+        if int(row.get("phase") or 0) == 4 and row.get("rel_type") == RELATES_TO:
+            candidate_edges += 1
+            disposition = str(row.get("disposition", "unknown"))
+            inf_type = str(row.get("inference_type") or "unknown")
+            subj_label = str(row.get("subject_label") or "UNSPECIFIED_SUBJECT")
+
+            disposition_counts[disposition] += 1
+            candidate_by_inference_type[inf_type] += 1
+
+            if disposition == "kept":
+                kept_by_inference_type[inf_type] += 1
+
+            rows_by_subject[subj_label][disposition] += 1
+
+    subject_candidate_dispositions = {
+        subject_label: dict(sorted(counts.items()))
+        for subject_label, counts in sorted(rows_by_subject.items())
+    }
+
+    max_items = config.lp_cross_level_relates_to_max_items_per_subject
+    excluded_subject_labels = set(config.lp_excluded_subject_labels or []) | {
+        "UNSPECIFIED_SUBJECT",
+        "UNKNOWN",
+        "",
+    }
+
+    return {
+        "candidate_by_inference_type": candidate_by_inference_type,
+        "candidate_edges": candidate_edges,
+        "disposition_counts": disposition_counts,
+        "excluded_subject_labels": excluded_subject_labels,
+        "kept_by_inference_type": kept_by_inference_type,
+        "max_items": max_items,
+        "subject_candidate_dispositions": subject_candidate_dispositions,
+    }
+
+
 def _accumulate_subject_level_buckets(
     *, by_level: dict[str, list[dict[str, Any]]], excluded_subject_labels: set[str]
 ) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
@@ -3950,6 +4103,7 @@ def _finalize_lp_export(
     *,
     academic_standards: AcademicStandardsExport,
     builds_rels: list[Relationship],
+    by_cross_level: dict[str, list[dict[str, Any]]],
     by_within_level: dict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
@@ -3969,6 +4123,9 @@ def _finalize_lp_export(
         bundle with nodes.
     builds_rels
         The list of emitted buildsTowards relationships after processing and filtering.
+    by_cross_level
+        The finalized cross-level LP bucket store, keyed by level label. Used here to
+        summarize Phase 2 and Phase 4 audit statistics.
     by_within_level
         The finalized within-level LP bucket store, keyed by level label. Used here to
         summarize Phase 1 and Phase 3 audit statistics.
@@ -4117,6 +4274,11 @@ def _finalize_lp_export(
                 by_level=by_within_level, config=config, provenance_rows=provenance_rows
             )
         ),
+        "phase2_cross_level_builds_towards": (
+            _summarize_phase2_cross_level_builds_towards(
+                by_level=by_cross_level, config=config, provenance_rows=provenance_rows
+            )
+        ),
         "phase3_within_level_relates_to": _summarize_phase3_within_level_relates_to(
             by_level=by_within_level,
             candidate_edges_count=num_phase3_candidates,
@@ -4129,6 +4291,9 @@ def _finalize_lp_export(
                 and rel.metadata.get("inference_type")
                 == "within_level_cross_thread_relates_to"
             ),
+        ),
+        "phase4_cross_level_relates_to": _summarize_phase4_cross_level_relates_to(
+            by_level=by_cross_level, config=config, provenance_rows=provenance_rows
         ),
         "thresholds": {
             "builds_towards_min_confidence": config.lp_builds_towards_min_confidence,
@@ -8446,6 +8611,170 @@ def _summarize_phase1_within_level_builds_towards(
     }
 
 
+def _summarize_phase2_cross_level_builds_towards(
+    *,
+    by_level: dict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    provenance_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build report-only audit stats for Phase 2 cross-level/cross-stage buildsTowards.
+
+    Parameters
+    ----------
+    by_level
+        Finalized within-level LP bucket store, keyed by level label. This is used to
+        understand the level range coverage of Phase 2 candidate edges.
+    config
+        KG export configuration controlling Phase 2 enablement and bucket eligibility.
+    provenance_rows
+        Candidate-edge provenance rows after `_enrich_provenance_dispositions()` has
+        populated each row's final `disposition`. This is the primary source for Phase
+        2 metrics, as it links candidate edges to their final dispositions and
+        inference types.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact audit summary for the report artifact, including disposition counts,
+        inference type breakdowns, and level range coverage for Phase 2 candidate edges.
+    """
+
+    base_metrics = _accumulate_phase2_base_metrics_and_buckets(
+        by_level=by_level, provenance_rows=provenance_rows
+    )
+    disposition_counts = base_metrics["disposition_counts"]
+    thread_map = base_metrics["thread_map"]
+
+    global_counts: Counter[str] = Counter()
+    thread_summaries: dict[str, Any] = {}
+    work_item_examples: list[dict[str, Any]] = []
+
+    for thread_key, buckets in sorted(thread_map.items()):
+        merged_buckets = _merge_duplicate_level_range_buckets_per_thread(
+            buckets=buckets, thread_key=thread_key
+        )
+        level_ranges = [list(_level_bounds(bucket)) for bucket in merged_buckets]
+        thread_counts: Counter[str] = Counter()
+        thread_work_examples: list[dict[str, Any]] = []
+
+        duplicate_merged_count = sum(
+            int(bucket.get("phase2_merged_level_range_duplicate_bucket_count") or 0)
+            for bucket in merged_buckets
+        )
+        source_bucket_count = sum(
+            int(bucket.get("phase2_merged_level_range_source_bucket_count") or 1)
+            for bucket in merged_buckets
+        )
+
+        thread_counts["duplicate_level_range_buckets_merged"] = duplicate_merged_count
+        thread_counts["level_range_buckets"] = len(merged_buckets)
+        thread_counts["source_buckets_after_thread_grouping"] = source_bucket_count
+
+        for lower, upper in zip(merged_buckets, merged_buckets[1:]):
+            lo_low, lo_high = _level_bounds(lower)
+            hi_low, hi_high = _level_bounds(upper)
+            lower_items = lower.get("items") or []
+            upper_items = upper.get("items") or []
+
+            pair_summary = {
+                "inference_type": None,
+                "lower_item_count": len(lower_items),
+                "lower_level_high": lo_high,
+                "lower_level_label": _level_label(lower),
+                "lower_level_low": lo_low,
+                "lower_lp_bucket_key": lower.get("lp_bucket_key"),
+                "skipped_reason": None,
+                "upper_item_count": len(upper_items),
+                "upper_level_high": hi_high,
+                "upper_level_label": _level_label(upper),
+                "upper_level_low": hi_low,
+                "upper_lp_bucket_key": upper.get("lp_bucket_key"),
+            }
+            thread_counts["consecutive_level_range_pairs"] += 1
+
+            adjacent = (
+                isinstance(lo_high, int)
+                and isinstance(hi_low, int)
+                and lo_high + 1 == hi_low
+            )
+
+            if not adjacent:
+                pair_summary["skipped_reason"] = "non_adjacent_level_ranges"
+                thread_counts["pairs_skipped_non_adjacent"] += 1
+            elif not lower_items or not upper_items:
+                pair_summary["skipped_reason"] = "empty_side"
+                thread_counts["pairs_skipped_empty_side"] += 1
+            else:
+                both_single = _is_single_level_bucket(
+                    lower
+                ) and _is_single_level_bucket(upper)
+
+                if both_single and config.lp_cross_level_builds_towards:
+                    pair_summary["inference_type"] = "cross_level_builds_towards"
+                    thread_counts["work_items_cross_level"] += 1
+                elif not both_single and config.lp_cross_stage_builds_towards:
+                    pair_summary["inference_type"] = "cross_stage_builds_towards"
+                    thread_counts["work_items_cross_stage"] += 1
+                else:
+                    pair_summary["skipped_reason"] = (
+                        "cross_level_toggle_disabled"
+                        if both_single
+                        else "cross_stage_toggle_disabled"
+                    )
+                    thread_counts["pairs_skipped_disabled"] += 1
+
+            if pair_summary["inference_type"]:
+                thread_counts["work_items_total"] += 1
+
+                if len(work_item_examples) < 20:
+                    work_item_examples.append(
+                        {"thread_key": thread_key, **pair_summary}
+                    )
+
+                if len(thread_work_examples) < 10:
+                    thread_work_examples.append(pair_summary)
+
+        global_counts.update(thread_counts)
+        thread_summaries[thread_key] = {
+            **thread_counts,
+            "level_ranges": level_ranges,
+            "source_bucket_count": source_bucket_count,
+            "work_item_examples": thread_work_examples,
+        }
+
+    return {
+        "candidate_by_inference_type": dict(
+            sorted(base_metrics["candidate_by_inference_type"].items())
+        ),
+        "candidate_edges": len(base_metrics["phase2_rows"]),
+        "cross_level_enabled": bool(config.lp_cross_level_builds_towards),
+        "cross_stage_enabled": bool(config.lp_cross_stage_builds_towards),
+        "disposition_counts": dict(sorted(disposition_counts.items())),
+        "enabled": bool(
+            config.lp_cross_level_builds_towards or config.lp_cross_stage_builds_towards
+        ),
+        "kept_by_inference_type": dict(
+            sorted(base_metrics["kept_by_inference_type"].items())
+        ),
+        "kept_edges": disposition_counts.get("kept", 0),
+        "level_pair_dispositions": base_metrics["level_pair_summaries"],
+        "work_item_audit": {
+            "bucket_count": base_metrics["bucket_count"],
+            "bounded_bucket_count": base_metrics["bounded_bucket_count"],
+            "unbounded_bucket_count": base_metrics["unbounded_bucket_count"],
+            "thread_count": len(thread_map),
+            "threads_with_work_items": sum(
+                1
+                for thread_info in thread_summaries.values()
+                if int(thread_info.get("work_items_total") or 0) > 0
+            ),
+            "work_item_examples": work_item_examples,
+            "threads": thread_summaries,
+            **global_counts,
+        },
+    }
+
+
 def _summarize_phase3_within_level_relates_to(
     *,
     by_level: dict[str, list[dict[str, Any]]],
@@ -8587,6 +8916,164 @@ def _summarize_phase3_within_level_relates_to(
         "subject_pairs_attempted": subject_pairs_attempted,
         "subject_pairs_possible": subject_pairs_possible,
         "subject_pairs_skipped": subject_pairs_skipped,
+    }
+
+
+def _summarize_phase4_cross_level_relates_to(
+    *,
+    by_level: dict[str, list[dict[str, Any]]],
+    config: CreateKGConfig,
+    provenance_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build report-only audit stats for Phase 4 cross-level/cross-stage relatesTo.
+
+    Parameters
+    ----------
+    by_level
+        Finalized within-level LP bucket store, keyed by level label. This is used to
+        understand the level range coverage of Phase 4 candidate edges.
+    config
+        KG export configuration controlling Phase 4 enablement, subject grouping,
+        exclusions, and sampling.
+    provenance_rows
+        Candidate-edge provenance rows after `_enrich_provenance_dispositions()` has
+        populated each row's final `disposition`. This is the primary source for Phase
+        4 metrics, as it links candidate edges to their final dispositions and
+        inference types.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact audit summary for the report artifact, including disposition counts,
+        inference type breakdowns, and level range coverage for Phase 4 candidate edges.
+    """
+
+    stats = _accumulate_phase4_provenance_stats(
+        config=config, provenance_rows=provenance_rows
+    )
+    disposition_counts = stats["disposition_counts"]
+    excluded_subject_labels = stats["excluded_subject_labels"]
+    max_items = stats["max_items"]
+
+    subject_level_samples = _prepare_subject_level_samples(
+        by_level=by_level,
+        excluded_subject_labels=excluded_subject_labels,
+        max_items=max_items,
+    )
+
+    global_counts: Counter[str] = Counter()
+    subject_summaries: dict[str, Any] = {}
+    work_item_examples: list[dict[str, Any]] = []
+
+    for subject_label, by_range in sorted(subject_level_samples.items()):
+        subject_counts: Counter[str] = Counter()
+        range_summaries: dict[str, Any] = {}
+        level_keys = sorted(by_range.keys())
+
+        for level_key in level_keys:
+            sample = by_range[level_key]
+            range_key = f"{level_key[0]}-{level_key[1]}"
+            range_summaries[range_key] = {
+                "level_label": sample.get("level_label"),
+                "raw_level_labels": sample.get("raw_level_labels") or [],
+                "sample_coverage_ratio": sample.get("sample_coverage_ratio"),
+                "sampled_count": sample.get("sampled_count"),
+                "sampling_strategy_counts": sample.get("sampling_strategy_counts")
+                or {},
+                "source_bucket_count": sample.get("source_bucket_count"),
+                "source_item_count": sample.get("source_item_count"),
+                "source_thread_keys": sample.get("source_thread_keys") or [],
+            }
+            subject_counts["level_range_groups"] += 1
+            subject_counts["sampled_items"] += int(sample.get("sampled_count") or 0)
+            subject_counts["source_items"] += int(sample.get("source_item_count") or 0)
+            subject_counts["source_buckets"] += int(
+                sample.get("source_bucket_count") or 0
+            )
+            subject_counts["bucket_dedupe_removed_count"] += int(
+                sample.get("bucket_dedupe_removed_count") or 0
+            )
+            subject_counts["sfi_dedupe_removed_count"] += int(
+                sample.get("sfi_dedupe_removed_count") or 0
+            )
+
+        for lower_key, upper_key in zip(level_keys, level_keys[1:]):
+            lo_low, lo_high = lower_key
+            hi_low, hi_high = upper_key
+            lower = by_range[lower_key]
+            upper = by_range[upper_key]
+            pair_summary = {
+                "inference_type": None,
+                "lower_level": lower.get("level_label"),
+                "lower_level_high": lo_high,
+                "lower_level_low": lo_low,
+                "lower_sampled_count": lower.get("sampled_count"),
+                "skipped_reason": None,
+                "subject_label": subject_label,
+                "upper_level": upper.get("level_label"),
+                "upper_level_high": hi_high,
+                "upper_level_low": hi_low,
+                "upper_sampled_count": upper.get("sampled_count"),
+            }
+            subject_counts["consecutive_level_range_pairs"] += 1
+
+            if lo_high + 1 != hi_low:
+                pair_summary["skipped_reason"] = "non_adjacent_level_ranges"
+                subject_counts["pairs_skipped_non_adjacent"] += 1
+            elif not lower.get("items") or not upper.get("items"):
+                pair_summary["skipped_reason"] = "empty_sampled_side"
+                subject_counts["pairs_skipped_empty_side"] += 1
+            else:
+                both_single = (lo_low == lo_high) and (hi_low == hi_high)
+
+                if both_single and config.lp_cross_level_relates_to:
+                    pair_summary["inference_type"] = "cross_level_relates_to"
+                    subject_counts["work_items_cross_level"] += 1
+                elif not both_single and config.lp_cross_stage_relates_to:
+                    pair_summary["inference_type"] = "cross_stage_relates_to"
+                    subject_counts["work_items_cross_stage"] += 1
+                else:
+                    pair_summary["skipped_reason"] = (
+                        "cross_level_toggle_disabled"
+                        if both_single
+                        else "cross_stage_toggle_disabled"
+                    )
+                    subject_counts["pairs_skipped_disabled"] += 1
+
+            if pair_summary["inference_type"]:
+                subject_counts["work_items_total"] += 1
+
+                if len(work_item_examples) < 20:
+                    work_item_examples.append(pair_summary)
+
+        global_counts.update(subject_counts)
+        subject_summaries[subject_label] = {
+            **subject_counts,
+            "level_ranges": range_summaries,
+        }
+
+    return {
+        "candidate_by_inference_type": dict(
+            sorted(stats["candidate_by_inference_type"].items())
+        ),
+        "candidate_edges": stats["candidate_edges"],
+        "cross_level_enabled": bool(config.lp_cross_level_relates_to),
+        "cross_stage_enabled": bool(config.lp_cross_stage_relates_to),
+        "disposition_counts": dict(sorted(disposition_counts.items())),
+        "enabled": bool(
+            config.lp_cross_level_relates_to or config.lp_cross_stage_relates_to
+        ),
+        "kept_by_inference_type": dict(sorted(stats["kept_by_inference_type"].items())),
+        "kept_edges": disposition_counts.get("kept", 0),
+        "subject_candidate_dispositions": stats["subject_candidate_dispositions"],
+        "work_item_audit": {
+            "excluded_subject_labels": sorted(excluded_subject_labels),
+            "max_items_per_subject_level_range": max_items,
+            "subject_count": len(subject_level_samples),
+            "subjects": subject_summaries,
+            "work_item_examples": work_item_examples,
+            **global_counts,
+        },
     }
 
 
@@ -8961,6 +9448,7 @@ def export_learning_progressions(
     return _finalize_lp_export(
         academic_standards=academic_standards,
         builds_rels=builds_rels,
+        by_cross_level=by_cross_level,
         by_within_level=by_within_level,
         config=config,
         ctx=ctx,
