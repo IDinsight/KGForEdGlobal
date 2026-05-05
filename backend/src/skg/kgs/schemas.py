@@ -1561,6 +1561,101 @@ class PolicyCoverageReport(BaseSchema):
     total_canonical_nodes: int = 0
     total_emitted_sfis: int = 0
 
+    # Canonical-node accounting completeness.
+    coverage_accounted_canonical_nodes: int = Field(
+        default=0,
+        description=(
+            "Number of non-root canonical node IDs covered by the union of emitted "
+            "SFI source nodes and dropped canonical nodes."
+        ),
+    )
+    coverage_accounting_ok: bool = Field(
+        default=True,
+        description=(
+            "True when every non-root canonical node is accounted for exactly once as "
+            "either emitted as an SFI or intentionally dropped by Academic Standards "
+            "policy, with no emitted/dropped overlap and no non-canonical node IDs "
+            "appearing in either set."
+        ),
+    )
+    coverage_details_limit: int = Field(
+        default=200,
+        description="Maximum number of node IDs included per coverage-details list.",
+    )
+    coverage_details_truncated: bool = Field(
+        default=False,
+        description=(
+            "Whether any coverage-details list was truncated because it exceeded "
+            "coverage_details_limit."
+        ),
+    )
+    coverage_emitted_and_dropped_overlap_count: int = Field(
+        default=0,
+        description=(
+            "Canonical node IDs that appear both as emitted SFI source nodes and as "
+            "dropped nodes."
+        ),
+    )
+    coverage_emitted_and_dropped_overlap_node_ids: list[str] = Field(
+        default_factory=list,
+        description="Example canonical node IDs both emitted and dropped.",
+    )
+    coverage_emitted_sfis_missing_canonical_node_id_count: int = Field(
+        default=0,
+        description=(
+            "Emitted SFI rows whose metadata lacks canonical_node_id and therefore "
+            "cannot be tied back to a Canonical IR node for coverage accounting."
+        ),
+    )
+    coverage_emitted_sfis_missing_canonical_node_id_examples: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Example emitted SFI UUIDs whose metadata lacks canonical_node_id."
+        ),
+    )
+    coverage_noncanonical_dropped_node_count: int = Field(
+        default=0,
+        description=(
+            "Academic Standards drop_reasons node IDs that are not non-root Canonical "
+            "IR node IDs."
+        ),
+    )
+    coverage_noncanonical_dropped_node_ids: list[str] = Field(
+        default_factory=list,
+        description="Example dropped node IDs not present in Canonical IR.",
+    )
+    coverage_noncanonical_emitted_node_count: int = Field(
+        default=0,
+        description=(
+            "Emitted SFI metadata canonical_node_id values that are not non-root "
+            "Canonical IR node IDs."
+        ),
+    )
+    coverage_noncanonical_emitted_node_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Example emitted canonical_node_id values not present in Canonical IR."
+        ),
+    )
+    coverage_over_accounted_canonical_nodes: int = Field(
+        default=0,
+        description=(
+            "Canonical-node accounting anomalies caused by emitted/dropped overlap or "
+            "node IDs in emitted/drop accounting that do not exist in the Canonical IR."
+        ),
+    )
+    coverage_unaccounted_canonical_nodes: int = Field(
+        default=0,
+        description=(
+            "Canonical nodes that are neither emitted as SFIs nor present in Academic "
+            "Standards drop_reasons."
+        ),
+    )
+    coverage_unaccounted_node_ids: list[str] = Field(
+        default_factory=list,
+        description="Example canonical node IDs not emitted and not dropped.",
+    )
+
     # Aux reparenting/attachment and hierarchy-hoisting stats.
     attach_only_newly_attached_aux_node_count: int = Field(
         default=0,
@@ -1705,15 +1800,42 @@ class PolicyCoverageReport(BaseSchema):
             "report."
         ),
     )
-    lp_candidate_builds_towards: int = 0
-    lp_candidate_edges_after_dedupe: int = 0
-    lp_candidate_edges_pre_dedupe: int = 0
-    lp_candidate_relates_to: int = 0
-    lp_dropped_cap_relates: int = 0
-    lp_dropped_dedupe: int = 0
-    lp_dropped_doc_order_builds: int = 0
-    lp_dropped_low_conf_builds: int = 0
-    lp_dropped_low_conf_relates: int = 0
+    lp_candidate_builds_towards: int = Field(
+        default=0,
+        description="Candidate buildsTowards edges before filtering.",
+    )
+    lp_candidate_edges_after_dedupe: int = Field(
+        default=0,
+        description="Total candidate edges remaining after deduplication.",
+    )
+    lp_candidate_edges_pre_dedupe: int = Field(
+        default=0,
+        description="Total candidate edges before deduplication.",
+    )
+    lp_candidate_relates_to: int = Field(
+        default=0,
+        description="Candidate relatesTo edges before filtering.",
+    )
+    lp_dropped_cap_relates: int = Field(
+        default=0,
+        description="relatesTo edges dropped due to per-node cap.",
+    )
+    lp_dropped_dedupe: int = Field(
+        default=0,
+        description="Edges dropped during deduplication.",
+    )
+    lp_dropped_doc_order_builds: int = Field(
+        default=0,
+        description="buildsTowards edges dropped by document-order filter.",
+    )
+    lp_dropped_low_conf_builds: int = Field(
+        default=0,
+        description="buildsTowards edges dropped due to low confidence.",
+    )
+    lp_dropped_low_conf_relates: int = Field(
+        default=0,
+        description="relatesTo edges dropped due to low confidence.",
+    )
     lp_final_relationship_counts: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -1721,10 +1843,22 @@ class PolicyCoverageReport(BaseSchema):
             "learning_progressions.report['final_relationship_counts']."
         ),
     )
-    lp_kept_builds_towards: int = 0
-    lp_kept_builds_towards_before_doc_order: int = 0
-    lp_kept_relates_to: int = 0
-    lp_kept_relates_to_after_threshold: int = 0
+    lp_kept_builds_towards: int = Field(
+        default=0,
+        description="Final kept buildsTowards edges after all filters.",
+    )
+    lp_kept_builds_towards_before_doc_order: int = Field(
+        default=0,
+        description="Kept buildsTowards edges before document-order filter.",
+    )
+    lp_kept_relates_to: int = Field(
+        default=0,
+        description="Final kept relatesTo edges after all filters.",
+    )
+    lp_kept_relates_to_after_threshold: int = Field(
+        default=0,
+        description="Kept relatesTo edges after confidence threshold filter.",
+    )
     lp_phase_toggles: dict[str, Any] = Field(default_factory=dict)
     lp_thresholds: dict[str, Any] = Field(default_factory=dict)
 

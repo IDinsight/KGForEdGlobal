@@ -1081,6 +1081,50 @@ def _collect_columns_signatures(
     return sorted(sigs)
 
 
+def _count_exact_reasons(
+    *, reason_counter: dict[str, int], reasons: tuple[str, ...]
+) -> int:
+    """Count one or more exact drop-reason strings.
+
+    Parameters
+    ----------
+    reason_counter
+        A dictionary or Counter mapping drop reasons to their totals.
+    reasons
+        One or more exact drop reason strings to count in the report.
+
+    Returns
+    -------
+    int
+        The total count of drop reasons matching any of the supplied strings.
+    """
+
+    return sum(reason_counter.get(reason, 0) for reason in reasons)
+
+
+def _coverage_examples(
+    *, ids: set[str] | list[str], max_coverage_details: int = 200
+) -> list[str]:
+    """Return a deterministic, capped example list for coverage diagnostics.
+
+    Parameters
+    ----------
+    ids
+        A set or list of string IDs to sample examples from.
+    max_coverage_details
+        Maximum number of example IDs to return for reporting. This is a safeguard to
+        prevent excessively long error messages in cases of large coverage gaps.
+
+    Returns
+    -------
+    list[str]
+        A sorted list of example IDs, capped at max_coverage_details, to include in
+        error report contexts for coverage-related diagnostics.
+    """
+
+    return sorted(ids)[:max_coverage_details]
+
+
 def _duplicate_counts(values: list[str]) -> dict[str, int]:
     """Return only the values that appear more than once, with their occurrence counts.
 
@@ -1259,6 +1303,32 @@ def _node_display_label(*, ctx: ExportContext, node_id: str) -> str:
             return value
 
     return node_id
+
+
+def _prefixed_reason_counts(
+    *, prefix: str, reason_counter: dict[str, int]
+) -> dict[str, int]:
+    """Build a grouped count map by stripping one current-taxonomy prefix.
+
+    Parameters
+    ----------
+    prefix
+        The prefix to strip from drop reasons for grouping.
+    reason_counter
+        A dictionary or Counter mapping drop reasons to their totals.
+
+    Returns
+    -------
+    dict[str, int]
+        A mapping from reason suffix (the part after the prefix) to count, for all
+        reasons that start with the given prefix.
+    """
+
+    return {
+        reason_[len(prefix) :]: count_
+        for reason_, count_ in sorted(reason_counter.items())
+        if reason_.startswith(prefix)
+    }
 
 
 def _rel_endpoint_fields(rel: Relationship) -> tuple[str, str, str, str]:
@@ -1810,7 +1880,7 @@ def build_entity_provenance_export(
     )
 
 
-def build_policy_coverage_report(
+def build_policy_coverage_report(  # pylint: disable=R0915
     *,
     academic_standards: AcademicStandardsExport,
     ctx: ExportContext,
@@ -1836,63 +1906,6 @@ def build_policy_coverage_report(
         The aggregate report explaining what was emitted, dropped, and why.
     """
 
-    def _count_exact_reasons(*reasons: str) -> int:
-        """Count one or more exact drop-reason strings.
-
-        Parameters
-        ----------
-        *reasons
-            One or more exact drop reason strings to count in the report.
-
-        Returns
-        -------
-        int
-            The total count of drop reasons matching any of the supplied strings.
-        """
-
-        return sum(reason_counter.get(reason, 0) for reason in reasons)
-
-    def _count_prefixed_reasons(*prefixes: str) -> int:
-        """Count all drop reasons matching any supplied current-taxonomy prefix.
-
-        Parameters
-        ----------
-        *prefixes
-            One or more drop reason prefixes to match against the report's drop reasons.
-
-        Returns
-        -------
-        int
-            The total count of drop reasons that start with any of the supplied prefixes.
-        """
-
-        return sum(
-            count
-            for reason, count in reason_counter.items()
-            if any(reason.startswith(prefix) for prefix in prefixes)
-        )
-
-    def _prefixed_reason_counts(prefix: str) -> dict[str, int]:
-        """Build a grouped count map by stripping one current-taxonomy prefix.
-
-        Parameters
-        ----------
-        prefix
-            The prefix to strip from drop reasons for grouping.
-
-        Returns
-        -------
-        dict[str, int]
-            A mapping from reason suffix (the part after the prefix) to count, for all
-            reasons that start with the given prefix.
-        """
-
-        return {
-            reason_[len(prefix) :]: count_
-            for reason_, count_ in sorted(reason_counter.items())
-            if reason_.startswith(prefix)
-        }
-
     drop_reasons = academic_standards.drop_reasons
     reason_counter: Counter[str] = Counter(drop_reasons.values())
     reparent_stats = academic_standards.reparent_stats or {}
@@ -1900,24 +1913,33 @@ def build_policy_coverage_report(
     # These strings intentionally match the current Academic Standards exporter, whose
     # `_drop_reason()` helper emits `drop:<category>:<detail>` values.
     dropped_aux_attached_to_expectation = _count_exact_reasons(
-        "drop:guidance_attached_to_expectation:attach_to_expectation_metadata",
-        "drop:descriptor_attached_to_expectation:attach_to_expectation_metadata",
+        reason_counter=reason_counter,
+        reasons=(
+            "drop:guidance_attached_to_expectation:attach_to_expectation_metadata",
+            "drop:descriptor_attached_to_expectation:attach_to_expectation_metadata",
+        ),
     )
     dropped_aux_descendants_suppressed = _count_exact_reasons(
-        "drop:ancestor_attached_to_expectation_metadata"
+        reason_counter=reason_counter,
+        reasons=("drop:ancestor_attached_to_expectation_metadata",),
     )
     dropped_due_to_expectation_metadata_attachment = (
         dropped_aux_attached_to_expectation + dropped_aux_descendants_suppressed
     )
 
-    dropped_descriptor = _count_exact_reasons("drop:descriptor_handling:drop")
-    dropped_guidance = _count_exact_reasons("drop:guidance_handling:drop")
+    dropped_descriptor = _count_exact_reasons(
+        reason_counter=reason_counter, reasons=("drop:descriptor_handling:drop",)
+    )
+    dropped_guidance = _count_exact_reasons(
+        reason_counter=reason_counter, reasons=("drop:guidance_handling:drop",)
+    )
     dropped_non_grouping_role_counts = _prefixed_reason_counts(
-        "drop:non_grouping_role:"
+        prefix="drop:non_grouping_role:", reason_counter=reason_counter
     )
     dropped_non_grouping_role = sum(dropped_non_grouping_role_counts.values())
     pruned_empty_groupings_from_drop_reasons = _count_exact_reasons(
-        "drop:pruned_empty_grouping"
+        reason_counter=reason_counter,
+        reasons=("drop:pruned_empty_grouping",),
     )
     pruned_empty_groupings = len(academic_standards.pruned_node_ids or set())
 
@@ -1930,8 +1952,12 @@ def build_policy_coverage_report(
             f"Using pruned_node_ids as the authoritative pruned grouping count."
         )
 
-    dropped_by_decision_type = _prefixed_reason_counts("drop:segment_decision:")
-    dropped_by_columns_signature = _prefixed_reason_counts("drop:columns_signature:")
+    dropped_by_decision_type = _prefixed_reason_counts(
+        prefix="drop:segment_decision:", reason_counter=reason_counter
+    )
+    dropped_by_columns_signature = _prefixed_reason_counts(
+        prefix="drop:columns_signature:", reason_counter=reason_counter
+    )
     drop_reason_counts = dict(sorted(reason_counter.items()))
 
     known_exacts = {
@@ -1973,6 +1999,73 @@ def build_policy_coverage_report(
         logger.info(
             f"Drop details truncated: showing {max_drop_details} of {total_drops} "
             f"dropped nodes in policy_coverage_report.json."
+        )
+
+    # Canonical-node accounting completeness.
+    #
+    # The Academic Standards exporter is responsible for making a policy decision for
+    # every non-root canonical node: either emit it as an SFI or record a drop reason.
+    # Graph validation later proves the emitted graph is structurally sound, but it
+    # does not prove that every canonical node was covered by exactly one Academic
+    # Standards policy outcome. These fields make that coverage contract explicit in
+    # the policy report.
+    max_coverage_details = 200
+    canonical_node_ids = {str(node_id) for node_id in ctx.nodes_by_id} - {
+        str(ctx.root_id)
+    }
+    emitted_node_ids: set[str] = set()
+    emitted_sfis_missing_canonical_node_id: list[str] = []
+
+    for sfi in academic_standards.items:
+        sfi_meta = sfi.metadata or {}
+        emitted_node_id = str(sfi_meta.get("canonical_node_id") or "").strip()
+
+        if emitted_node_id:
+            emitted_node_ids.add(emitted_node_id)
+        else:
+            emitted_sfis_missing_canonical_node_id.append(str(sfi.case_identifier_uuid))
+
+    dropped_node_ids = {str(node_id) for node_id in drop_reasons}
+    accounted_canonical_node_ids = (
+        emitted_node_ids | dropped_node_ids
+    ) & canonical_node_ids
+    unaccounted_node_ids = canonical_node_ids - accounted_canonical_node_ids
+    emitted_and_dropped_overlap_node_ids = (emitted_node_ids & dropped_node_ids) & (
+        canonical_node_ids
+    )
+    noncanonical_emitted_node_ids = emitted_node_ids - canonical_node_ids
+    noncanonical_dropped_node_ids = dropped_node_ids - canonical_node_ids
+    over_accounted_node_ids = (
+        emitted_and_dropped_overlap_node_ids
+        | noncanonical_emitted_node_ids
+        | noncanonical_dropped_node_ids
+    )
+    coverage_accounting_ok = (
+        not unaccounted_node_ids
+        and not over_accounted_node_ids
+        and not emitted_sfis_missing_canonical_node_id
+    )
+    coverage_details_truncated = any(
+        len(ids) > max_coverage_details
+        for ids in (
+            unaccounted_node_ids,
+            emitted_and_dropped_overlap_node_ids,
+            noncanonical_emitted_node_ids,
+            noncanonical_dropped_node_ids,
+            emitted_sfis_missing_canonical_node_id,
+        )
+    )
+
+    if not coverage_accounting_ok:
+        logger.warning(
+            f"Canonical-node policy coverage accounting mismatch: "
+            f"unaccounted={len(unaccounted_node_ids)}, "
+            f"emitted_and_dropped_overlap={len(emitted_and_dropped_overlap_node_ids)}, "
+            f"noncanonical_emitted={len(noncanonical_emitted_node_ids)}, "
+            f"noncanonical_dropped={len(noncanonical_dropped_node_ids)}, "
+            f"emitted_sfis_missing_canonical_node_id="
+            f"{len(emitted_sfis_missing_canonical_node_id)}. "
+            f"See policy_coverage_report.json coverage_* fields for examples."
         )
 
     lc_stats = learning_components.lc_stats or {}
@@ -2036,11 +2129,36 @@ def build_policy_coverage_report(
         dropped_non_grouping_role=dropped_non_grouping_role,
         dropped_non_grouping_role_counts=dropped_non_grouping_role_counts,
         pruned_empty_groupings=pruned_empty_groupings,
-        # Subtract 1 for the canonical root node, which becomes a StandardsFramework
-        # entity rather than an SFI. This assumes a single root per canonical IR
-        # (framework_scope == "per_pdf").
-        total_canonical_nodes=len(ctx.nodes_by_id) - 1,
+        total_canonical_nodes=len(canonical_node_ids),
         total_emitted_sfis=len(academic_standards.items),
+        # Canonical-node accounting completeness.
+        coverage_accounted_canonical_nodes=len(accounted_canonical_node_ids),
+        coverage_accounting_ok=coverage_accounting_ok,
+        coverage_details_limit=max_coverage_details,
+        coverage_details_truncated=coverage_details_truncated,
+        coverage_emitted_and_dropped_overlap_count=len(
+            emitted_and_dropped_overlap_node_ids
+        ),
+        coverage_emitted_and_dropped_overlap_node_ids=_coverage_examples(
+            ids=emitted_and_dropped_overlap_node_ids
+        ),
+        coverage_emitted_sfis_missing_canonical_node_id_count=len(
+            emitted_sfis_missing_canonical_node_id
+        ),
+        coverage_emitted_sfis_missing_canonical_node_id_examples=_coverage_examples(
+            ids=emitted_sfis_missing_canonical_node_id
+        ),
+        coverage_noncanonical_dropped_node_count=len(noncanonical_dropped_node_ids),
+        coverage_noncanonical_dropped_node_ids=_coverage_examples(
+            ids=noncanonical_dropped_node_ids
+        ),
+        coverage_noncanonical_emitted_node_count=len(noncanonical_emitted_node_ids),
+        coverage_noncanonical_emitted_node_ids=_coverage_examples(
+            ids=noncanonical_emitted_node_ids
+        ),
+        coverage_over_accounted_canonical_nodes=len(over_accounted_node_ids),
+        coverage_unaccounted_canonical_nodes=len(unaccounted_node_ids),
+        coverage_unaccounted_node_ids=_coverage_examples(ids=unaccounted_node_ids),
         # Aux reparenting/attachment.
         attach_only_newly_attached_aux_node_count=(
             reparent_stats.get("attach_only_newly_attached_aux_node_count", 0)
@@ -2151,6 +2269,19 @@ def log_console_summary(  # pylint: disable=R0912, R0915, R1260
         f"Canonical nodes: {policy_report.total_canonical_nodes} | "
         f"Emitted SFIs: {policy_report.total_emitted_sfis}"
     )
+
+    if not policy_report.coverage_accounting_ok:
+        logger.warning(
+            f"Canonical-node policy coverage mismatch: "
+            f"accounted={policy_report.coverage_accounted_canonical_nodes}/"
+            f"{policy_report.total_canonical_nodes}, "
+            f"unaccounted="
+            f"{policy_report.coverage_unaccounted_canonical_nodes}, "
+            f"over-accounted="
+            f"{policy_report.coverage_over_accounted_canonical_nodes}, "
+            f"missing SFI canonical_node_id="
+            f"{policy_report.coverage_emitted_sfis_missing_canonical_node_id_count}."
+        )
 
     if policy_report.drop_details_total_count > 0:
         logger.info(
