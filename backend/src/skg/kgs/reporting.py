@@ -56,6 +56,210 @@ def _build_has_child_adjacency(all_rels: list[Relationship]) -> dict[str, list[s
     return adj
 
 
+def _check_duplicate_relationship_pairs(
+    *,
+    all_rels: list[Relationship],
+    relationship_type: str,
+    report: GraphValidationReport,
+) -> None:
+    """Detect exact duplicate directed source→target pairs for a single relationship
+    type.
+
+    Filters `all_rels` down to edges matching `relationship_type`, serializes each as a
+    "source->target" string, and reports any pair that appears more than once.
+
+    The error/info codes emitted are type-aware (e.g., `HAS_CHILD_DUPLICATE_PAIR` for
+    hasChild, `SUPPORTS_DUPLICATE_PAIR` for supports) with a generic uppercase fallback
+    for any other relationship type.
+
+    Parameters
+    ----------
+    all_rels
+        List of all relationships across exports.
+    relationship_type
+        The relationship type to filter on (e.g., "hasChild", "supports").
+    report
+        The GraphValidationReport to append errors or info findings to.
+    """
+
+    pairs = [
+        (_rel_src_id(r), _rel_tgt_id(r))
+        for r in all_rels
+        if r.relationship_type == relationship_type
+    ]
+    duplicate_pairs = _duplicate_counts([f"{src}->{tgt}" for src, tgt in pairs])
+
+    if duplicate_pairs:
+        code_by_type = {
+            "hasChild": "HAS_CHILD_DUPLICATE_PAIR",
+            "supports": "SUPPORTS_DUPLICATE_PAIR",
+        }
+        report.error(
+            code=code_by_type.get(
+                relationship_type, f"{relationship_type.upper()}_DUPLICATE_PAIR"
+            ),
+            context={"examples": dict(list(duplicate_pairs.items())[:10])},
+            message=(
+                f"{len(duplicate_pairs)} duplicate {relationship_type} source-target "
+                f"pair(s) detected."
+            ),
+        )
+    else:
+        code_by_type = {
+            "hasChild": "HAS_CHILD_NO_DUPLICATE_PAIRS",
+            "supports": "SUPPORTS_NO_DUPLICATE_PAIRS",
+        }
+        report.info(
+            code=code_by_type.get(
+                relationship_type, f"{relationship_type.upper()}_NO_DUPLICATE_PAIRS"
+            ),
+            message=f"No duplicate {relationship_type} source-target pairs detected.",
+        )
+
+
+def _check_entity_id_uniqueness(
+    *,
+    fw_id: str,
+    lc_id_list: list[str],
+    report: GraphValidationReport,
+    sfi_id_list: list[str],
+) -> set[str]:
+    """Check entity UUID uniqueness within and across entity types.
+
+    Validates two layers of uniqueness for exported entity identifiers:
+
+    1. **Intra-type uniqueness**: no duplicate UUIDs within the SFI list or the LC list
+        individually. Duplicates here indicate a bug in the upstream exporter that
+        emitted the same entity row more than once.
+    2. **Cross-type uniqueness**: no UUID collisions between the framework, SFI, and LC
+        namespaces. Collisions indicate an ID-generation or namespace-routing bug.
+
+    Raw ID lists are intentionally accepted instead of pre-deduplicated sets so the
+    validator can detect duplicate IDs within the same entity type.
+
+    Parameters
+    ----------
+    fw_id
+        The framework entity's case identifier UUID (string).
+    lc_id_list
+        Raw list of LearningComponent identifier UUIDs, possibly containing duplicates.
+    report
+        The GraphValidationReport to append errors or info findings to.
+    sfi_id_list
+        Raw list of StandardsFrameworkItem case identifier UUIDs, possibly containing
+        duplicates.
+
+    Returns
+    -------
+    set[str]
+        The unified, deduplicated set of all entity IDs (framework + SFIs + LCs), used
+        by downstream referential-integrity checks.
+    """
+
+    duplicate_sfi_ids = _duplicate_counts(sfi_id_list)
+    duplicate_lc_ids = _duplicate_counts(lc_id_list)
+
+    if duplicate_sfi_ids:
+        report.error(
+            code="DUPLICATE_SFI_IDS",
+            context={"examples": dict(list(duplicate_sfi_ids.items())[:10])},
+            message=(
+                f"{len(duplicate_sfi_ids)} duplicate StandardsFrameworkItem ID(s) "
+                f"detected within the Academic Standards export."
+            ),
+        )
+
+    if duplicate_lc_ids:
+        report.error(
+            code="DUPLICATE_LC_IDS",
+            context={"examples": dict(list(duplicate_lc_ids.items())[:10])},
+            message=(
+                f"{len(duplicate_lc_ids)} duplicate LearningComponent ID(s) "
+                f"detected within the Learning Components export."
+            ),
+        )
+
+    sfi_ids = set(sfi_id_list)
+    lc_ids = set(lc_id_list)
+    cross_type_collisions: dict[str, list[str]] = {}
+
+    if fw_id in sfi_ids:
+        cross_type_collisions.setdefault(fw_id, []).extend(
+            ["StandardsFramework", "StandardsFrameworkItem"]
+        )
+
+    if fw_id in lc_ids:
+        cross_type_collisions.setdefault(fw_id, []).extend(
+            ["StandardsFramework", "LearningComponent"]
+        )
+
+    for collision_id in sorted(sfi_ids & lc_ids):
+        cross_type_collisions.setdefault(collision_id, []).extend(
+            ["StandardsFrameworkItem", "LearningComponent"]
+        )
+
+    if cross_type_collisions:
+        report.error(
+            code="ENTITY_ID_CROSS_TYPE_COLLISION",
+            context={"examples": dict(list(cross_type_collisions.items())[:10])},
+            message=(
+                f"{len(cross_type_collisions)} entity ID(s) are reused across "
+                f"different entity types. This indicates a namespace or ID generation bug."
+            ),
+        )
+
+    if not duplicate_sfi_ids and not duplicate_lc_ids and not cross_type_collisions:
+        expected_count = 1 + len(sfi_id_list) + len(lc_id_list)
+        report.info(
+            code="ENTITY_IDS_UNIQUE",
+            message=(
+                f"All {expected_count} entity IDs are unique within and across types "
+                f"(1 framework, {len(sfi_id_list)} SFIs, {len(lc_id_list)} LCs)."
+            ),
+        )
+
+    return {fw_id} | sfi_ids | lc_ids
+
+
+def _check_has_child_count(
+    *, has_child_rels_count: int, report: GraphValidationReport, sfi_entity_count: int
+) -> None:
+    """Verify that the number of hasChild edges equals the number of exported SFI rows.
+
+    In a well-formed rooted standards tree every StandardsFrameworkItem has exactly one
+    incoming hasChild edge (from either the framework root or another SFI). Thus, the
+    total hasChild count should equal the total SFI entity count. A mismatch indicates
+    orphaned SFIs (too few edges) or duplicate parent assignments (too many).
+
+    Parameters
+    ----------
+    has_child_rels_count
+        Total number of hasChild relationships across all exports.
+    report
+        The GraphValidationReport to append errors or info findings to.
+    sfi_entity_count
+        Total number of exported SFI entity rows (before deduplication).
+    """
+
+    if has_child_rels_count != sfi_entity_count:
+        report.error(
+            code="HAS_CHILD_COUNT_MISMATCH",
+            message=(
+                f"Expected {sfi_entity_count} hasChild relationship(s) for "
+                f"{sfi_entity_count} exported SFI entity row(s); found "
+                f"{has_child_rels_count}."
+            ),
+        )
+    else:
+        report.info(
+            code="HAS_CHILD_COUNT_OK",
+            message=(
+                f"hasChild relationship count matches exported SFI count "
+                f"({has_child_rels_count})."
+            ),
+        )
+
+
 def _check_has_child_cycles(
     *,
     adj: dict[str, list[str]],
@@ -134,6 +338,55 @@ def _check_has_child_cycles(
     )
 
 
+def _check_has_child_reachability(
+    *,
+    adj: dict[str, list[str]],
+    fw_id: str,
+    report: GraphValidationReport,
+    sfi_ids: set[str],
+) -> None:
+    """Check that all SFIs are reachable from the framework root.
+
+    Parameters
+    ----------
+    adj
+        Adjacency list mapping source IDs to target IDs.
+    fw_id
+        The framework case identifier UUID.
+    report
+        The GraphValidationReport to append findings to.
+    sfi_ids
+        Set of all SFI case identifier UUIDs.
+    """
+
+    visited: set[str] = set()
+    stack = [fw_id]
+
+    while stack:
+        cur = stack.pop()
+
+        if cur not in visited:
+            visited.add(cur)
+            stack.extend(n for n in adj.get(cur, []) if n not in visited)
+
+    reachable_sfis = visited - {fw_id}
+    unreachable = sfi_ids - reachable_sfis
+
+    if unreachable:
+        report.error(
+            code="SFI_UNREACHABLE",
+            message=(
+                f"{len(unreachable)} SFIs unreachable from framework root. "
+                f"Examples: {sorted(unreachable)[:10]}"
+            ),
+        )
+    else:
+        report.info(
+            code="SFI_REACHABILITY_OK",
+            message=f"All {len(sfi_ids)} SFIs reachable from framework root.",
+        )
+
+
 def _check_has_child_single_parent(
     *,
     all_rels: list[Relationship],
@@ -207,52 +460,127 @@ def _check_has_child_single_parent(
         )
 
 
-def _check_has_child_reachability(
+def _check_hierarchy_order_consistency(
     *,
-    adj: dict[str, list[str]],
+    academic_standards: AcademicStandardsExport,
+    all_rels: list[Relationship],
     fw_id: str,
     report: GraphValidationReport,
     sfi_ids: set[str],
 ) -> None:
-    """Check that all SFIs are reachable from the framework root.
+    """Validate the hierarchy-order artifact against exported hasChild relationships.
+
+    The Academic Standards exporter emits both hasChild relationship edges and a
+    separate hierarchy-order artifact (`academic_standards.order`) that records the
+    ordered child list for each parent. This check ensures the two representations are
+    mutually consistent by verifying five invariants:
+
+    1. **No duplicate children**: Each parent's ordered child list contains no repeated
+        IDs.
+    2. **Known parents**: Every parent ID in the order map is either the framework root
+        or an exported SFI.
+    3. **Known children**: Every child ID in the order map corresponds to an exported
+        SFI.
+    4. **hasChild ⊆ order**: Every exported hasChild `(source, target)` pair has a
+        matching entry in the order map.
+    5. **order ⊆ hasChild**: Every `(parent, child)` pair in the order map has a
+        corresponding exported hasChild relationship.
 
     Parameters
     ----------
-    adj
-        Adjacency list mapping source IDs to target IDs.
+    academic_standards
+        The exported Academic Standards KG artifacts, including the hierarchy-order
+        artifact at `academic_standards.order`.
+    all_rels
+        List of all relationships across exports.
     fw_id
-        The framework case identifier UUID.
+        The framework entity's case identifier UUID (string).
     report
-        The GraphValidationReport to append findings to.
+        The GraphValidationReport to append errors or info findings to.
     sfi_ids
-        Set of all SFI case identifier UUIDs.
+        Set of all exported SFI case identifier UUIDs (strings).
     """
 
-    visited: set[str] = set()
-    stack = [fw_id]
+    has_child_pairs = {
+        (_rel_src_id(r), _rel_tgt_id(r))
+        for r in all_rels
+        if r.relationship_type == "hasChild"
+    }
 
-    while stack:
-        cur = stack.pop()
+    (
+        ordered_pairs,
+        duplicate_order_children,
+        unknown_order_parents,
+        unknown_order_children,
+    ) = _scan_hierarchy_order(
+        order_map=academic_standards.order.order or {},
+        sfi_ids=sfi_ids,
+        valid_parent_ids={fw_id} | sfi_ids,
+    )
 
-        if cur not in visited:
-            visited.add(cur)
-            stack.extend(n for n in adj.get(cur, []) if n not in visited)
+    missing_from_order = sorted(has_child_pairs - ordered_pairs)
+    missing_from_relationships = sorted(ordered_pairs - has_child_pairs)
 
-    reachable_sfis = visited - {fw_id}
-    unreachable = sfi_ids - reachable_sfis
-
-    if unreachable:
-        report.error(
-            code="SFI_UNREACHABLE",
-            message=(
-                f"{len(unreachable)} SFIs unreachable from framework root. "
-                f"Examples: {sorted(unreachable)[:10]}"
+    # Each error descriptor: (items, code, context_builder, message_builder). Only
+    # non-empty items trigger an error.
+    error_descriptors: list[tuple[Any, str, dict[str, Any], str]] = [
+        (
+            duplicate_order_children,
+            "HIERARCHY_ORDER_DUPLICATE_CHILD",
+            {"examples": dict(list(duplicate_order_children.items())[:10])},
+            (
+                f"{len(duplicate_order_children)} hierarchy-order parent(s) contain "
+                f"duplicate ordered child IDs."
             ),
-        )
-    else:
+        ),
+        (
+            unknown_order_parents,
+            "HIERARCHY_ORDER_UNKNOWN_PARENT",
+            {"examples": sorted(set(unknown_order_parents))[:10]},
+            (
+                f"{len(set(unknown_order_parents))} hierarchy-order parent ID(s) "
+                f"do not correspond to the framework or an exported SFI."
+            ),
+        ),
+        (
+            unknown_order_children,
+            "HIERARCHY_ORDER_UNKNOWN_CHILD",
+            {"examples": sorted(set(unknown_order_children))[:10]},
+            (
+                f"{len(set(unknown_order_children))} hierarchy-order child ID(s) "
+                f"do not correspond to exported SFIs."
+            ),
+        ),
+        (
+            missing_from_order,
+            "HAS_CHILD_MISSING_FROM_HIERARCHY_ORDER",
+            {"examples": missing_from_order[:10]},
+            (
+                f"{len(missing_from_order)} hasChild relationship pair(s) are missing "
+                f"from academic_standards.order."
+            ),
+        ),
+        (
+            missing_from_relationships,
+            "HIERARCHY_ORDER_MISSING_HAS_CHILD",
+            {"examples": missing_from_relationships[:10]},
+            (
+                f"{len(missing_from_relationships)} hierarchy-order pair(s) have no "
+                f"corresponding exported hasChild relationship."
+            ),
+        ),
+    ]
+    has_errors = False
+
+    for items, code, context, message in error_descriptors:
+        if items:
+            has_errors = True
+            report.error(code=code, context=context, message=message)
+
+    if not has_errors:
         report.info(
-            code="SFI_REACHABILITY_OK",
-            message=f"All {len(sfi_ids)} SFIs reachable from framework root.",
+            code="HIERARCHY_ORDER_CONSISTENT",
+            message="Hierarchy order artifact matches exported hasChild relationships.",
         )
 
 
@@ -750,6 +1078,28 @@ def _collect_columns_signatures(
     return sorted(sigs)
 
 
+def _duplicate_counts(values: list[str]) -> dict[str, int]:
+    """Return only the values that appear more than once, with their occurrence counts.
+
+    This function is used by validation checks that need to detect and report duplicate
+    identifiers (e.g., entity IDs or serialized relationship pairs).
+
+    Parameters
+    ----------
+    values
+        A list of string values to scan for duplicates.
+
+    Returns
+    -------
+    dict[str, int]
+        A sorted mapping of each duplicated value to its total occurrence count. Values
+        that appear exactly once are excluded.
+    """
+
+    counts = Counter(values)
+    return {value: count for value, count in sorted(counts.items()) if count > 1}
+
+
 def _ensure_int_list(value: Any) -> list[int]:
     """Coerce a possibly-missing/ill-typed field into a list[int].
 
@@ -971,6 +1321,68 @@ def _rel_tgt_id(r: Relationship) -> str:
     """
 
     return str(r.target_entity_value)
+
+
+def _scan_hierarchy_order(
+    *, order_map: dict[str, list[str]], sfi_ids: set[str], valid_parent_ids: set[str]
+) -> tuple[set[tuple[str, str]], dict[str, dict[str, int]], list[str], list[str]]:
+    """Traverse the hierarchy-order map and collect anomalies.
+
+    Walks every `(parent, children)` entry in the order map once, detecting duplicate
+    child IDs per parent, unknown parent IDs, and unknown child IDs. Also builds the
+    complete set of `(parent, child)` pairs for downstream set-difference checks.
+
+    Parameters
+    ----------
+    order_map
+        The hierarchy-order mapping of parent IDs to ordered child-ID lists,
+        sourced from `academic_standards.order.order`.
+    sfi_ids
+        Set of all exported SFI case identifier UUIDs (strings).
+    valid_parent_ids
+        Set of IDs that are allowed as parents (framework root + all SFI IDs).
+
+    Returns
+    -------
+    tuple[set[tuple[str, str]], dict[str, dict[str, int]], list[str], list[str]]
+        A 4-tuple of:
+            - **ordered_pairs**: All `(parent, child)` string pairs found in the order
+                map.
+            - **duplicate_order_children**: Mapping of parent IDs to their duplicate
+                child counts (only parents with duplicates).
+            - **unknown_order_parents**: Parent IDs not present in `valid_parent_ids`.
+            - **unknown_order_children**: Child IDs not present in `sfi_ids`.
+    """
+
+    duplicate_order_children: dict[str, dict[str, int]] = {}
+    ordered_pairs: set[tuple[str, str]] = set()
+    unknown_order_children: list[str] = []
+    unknown_order_parents: list[str] = []
+
+    for parent_id, child_ids in order_map.items():
+        parent_s = str(parent_id)
+
+        if parent_s not in valid_parent_ids:
+            unknown_order_parents.append(parent_s)
+
+        child_id_strings = [str(child_id) for child_id in child_ids or []]
+        dupes = _duplicate_counts(child_id_strings)
+
+        if dupes:
+            duplicate_order_children[parent_s] = dupes
+
+        for child_s in child_id_strings:
+            if child_s not in sfi_ids:
+                unknown_order_children.append(child_s)
+
+            ordered_pairs.add((parent_s, child_s))
+
+    return (
+        ordered_pairs,
+        duplicate_order_children,
+        unknown_order_parents,
+        unknown_order_children,
+    )
 
 
 def _section_path_text(*, ctx: ExportContext, node_id: str | None) -> list[str]:
@@ -1757,270 +2169,6 @@ def log_console_summary(  # pylint: disable=R0912, R1260
             logger.error(f"  [{issue.code}] {issue.message}")
 
     logger.info("=" * 60)
-
-
-def _duplicate_counts(values: list[str]) -> dict[str, int]:
-    """Return duplicated values with their occurrence counts."""
-
-    counts = Counter(values)
-    return {value: count for value, count in sorted(counts.items()) if count > 1}
-
-
-def _check_entity_id_uniqueness(
-    *,
-    fw_id: str,
-    lc_id_list: list[str],
-    report: GraphValidationReport,
-    sfi_id_list: list[str],
-) -> set[str]:
-    """Check entity UUID uniqueness within and across entity types.
-
-    Returns the unified entity ID set used by downstream referential-integrity checks.
-    Raw ID lists are intentionally accepted instead of pre-deduplicated sets so the
-    validator can detect duplicate IDs within the same entity type.
-    """
-
-    duplicate_sfi_ids = _duplicate_counts(sfi_id_list)
-    duplicate_lc_ids = _duplicate_counts(lc_id_list)
-
-    if duplicate_sfi_ids:
-        report.error(
-            code="DUPLICATE_SFI_IDS",
-            context={"examples": dict(list(duplicate_sfi_ids.items())[:10])},
-            message=(
-                f"{len(duplicate_sfi_ids)} duplicate StandardsFrameworkItem ID(s) "
-                f"detected within the Academic Standards export."
-            ),
-        )
-
-    if duplicate_lc_ids:
-        report.error(
-            code="DUPLICATE_LC_IDS",
-            context={"examples": dict(list(duplicate_lc_ids.items())[:10])},
-            message=(
-                f"{len(duplicate_lc_ids)} duplicate LearningComponent ID(s) "
-                f"detected within the Learning Components export."
-            ),
-        )
-
-    sfi_ids = set(sfi_id_list)
-    lc_ids = set(lc_id_list)
-    cross_type_collisions: dict[str, list[str]] = {}
-
-    if fw_id in sfi_ids:
-        cross_type_collisions.setdefault(fw_id, []).extend(
-            ["StandardsFramework", "StandardsFrameworkItem"]
-        )
-
-    if fw_id in lc_ids:
-        cross_type_collisions.setdefault(fw_id, []).extend(
-            ["StandardsFramework", "LearningComponent"]
-        )
-
-    for collision_id in sorted(sfi_ids & lc_ids):
-        cross_type_collisions.setdefault(collision_id, []).extend(
-            ["StandardsFrameworkItem", "LearningComponent"]
-        )
-
-    if cross_type_collisions:
-        report.error(
-            code="ENTITY_ID_CROSS_TYPE_COLLISION",
-            context={"examples": dict(list(cross_type_collisions.items())[:10])},
-            message=(
-                f"{len(cross_type_collisions)} entity ID(s) are reused across "
-                f"different entity types. This indicates a namespace or ID generation bug."
-            ),
-        )
-
-    if not duplicate_sfi_ids and not duplicate_lc_ids and not cross_type_collisions:
-        expected_count = 1 + len(sfi_id_list) + len(lc_id_list)
-        report.info(
-            code="ENTITY_IDS_UNIQUE",
-            message=(
-                f"All {expected_count} entity IDs are unique within and across types "
-                f"(1 framework, {len(sfi_id_list)} SFIs, {len(lc_id_list)} LCs)."
-            ),
-        )
-
-    return {fw_id} | sfi_ids | lc_ids
-
-
-def _check_duplicate_relationship_pairs(
-    *,
-    all_rels: list[Relationship],
-    relationship_type: str,
-    report: GraphValidationReport,
-) -> None:
-    """Check exact duplicate source-target pairs for one relationship type."""
-
-    pairs = [
-        (_rel_src_id(r), _rel_tgt_id(r))
-        for r in all_rels
-        if r.relationship_type == relationship_type
-    ]
-    duplicate_pairs = _duplicate_counts([f"{src}->{tgt}" for src, tgt in pairs])
-
-    if duplicate_pairs:
-        code_by_type = {
-            "hasChild": "HAS_CHILD_DUPLICATE_PAIR",
-            "supports": "SUPPORTS_DUPLICATE_PAIR",
-        }
-        report.error(
-            code=code_by_type.get(
-                relationship_type, f"{relationship_type.upper()}_DUPLICATE_PAIR"
-            ),
-            context={"examples": dict(list(duplicate_pairs.items())[:10])},
-            message=(
-                f"{len(duplicate_pairs)} duplicate {relationship_type} source-target "
-                f"pair(s) detected."
-            ),
-        )
-    else:
-        code_by_type = {
-            "hasChild": "HAS_CHILD_NO_DUPLICATE_PAIRS",
-            "supports": "SUPPORTS_NO_DUPLICATE_PAIRS",
-        }
-        report.info(
-            code=code_by_type.get(
-                relationship_type, f"{relationship_type.upper()}_NO_DUPLICATE_PAIRS"
-            ),
-            message=f"No duplicate {relationship_type} source-target pairs detected.",
-        )
-
-
-def _check_has_child_count(
-    *, has_child_rels_count: int, report: GraphValidationReport, sfi_entity_count: int
-) -> None:
-    """A rooted standards tree should have exactly one hasChild edge per SFI."""
-
-    if has_child_rels_count != sfi_entity_count:
-        report.error(
-            code="HAS_CHILD_COUNT_MISMATCH",
-            message=(
-                f"Expected {sfi_entity_count} hasChild relationship(s) for "
-                f"{sfi_entity_count} exported SFI entity row(s); found "
-                f"{has_child_rels_count}."
-            ),
-        )
-    else:
-        report.info(
-            code="HAS_CHILD_COUNT_OK",
-            message=(
-                f"hasChild relationship count matches exported SFI count "
-                f"({has_child_rels_count})."
-            ),
-        )
-
-
-def _check_hierarchy_order_consistency(
-    *,
-    academic_standards: AcademicStandardsExport,
-    all_rels: list[Relationship],
-    fw_id: str,
-    report: GraphValidationReport,
-    sfi_ids: set[str],
-) -> None:
-    """Validate hierarchy-order artifact against exported hasChild relationships.
-
-    The Academic Standards exporter emits both hasChild edges and a hierarchy-order
-    artifact. They should describe the same parent-child pairs, and each parent's
-    ordered child list should be duplicate-free.
-    """
-
-    has_child_pairs = {
-        (_rel_src_id(r), _rel_tgt_id(r))
-        for r in all_rels
-        if r.relationship_type == "hasChild"
-    }
-    order_map = academic_standards.order.order or {}
-    ordered_pairs: set[tuple[str, str]] = set()
-    duplicate_order_children: dict[str, dict[str, int]] = {}
-    unknown_order_parents: list[str] = []
-    unknown_order_children: list[str] = []
-    valid_parent_ids = {fw_id} | sfi_ids
-
-    for parent_id, child_ids in order_map.items():
-        parent_s = str(parent_id)
-
-        if parent_s not in valid_parent_ids:
-            unknown_order_parents.append(parent_s)
-
-        child_id_strings = [str(child_id) for child_id in child_ids or []]
-        dupes = _duplicate_counts(child_id_strings)
-
-        if dupes:
-            duplicate_order_children[parent_s] = dupes
-
-        for child_s in child_id_strings:
-            if child_s not in sfi_ids:
-                unknown_order_children.append(child_s)
-
-            ordered_pairs.add((parent_s, child_s))
-
-    missing_from_order = sorted(has_child_pairs - ordered_pairs)
-    missing_from_relationships = sorted(ordered_pairs - has_child_pairs)
-
-    if duplicate_order_children:
-        report.error(
-            code="HIERARCHY_ORDER_DUPLICATE_CHILD",
-            context={"examples": dict(list(duplicate_order_children.items())[:10])},
-            message=(
-                f"{len(duplicate_order_children)} hierarchy-order parent(s) contain "
-                f"duplicate ordered child IDs."
-            ),
-        )
-
-    if unknown_order_parents:
-        report.error(
-            code="HIERARCHY_ORDER_UNKNOWN_PARENT",
-            context={"examples": sorted(set(unknown_order_parents))[:10]},
-            message=(
-                f"{len(set(unknown_order_parents))} hierarchy-order parent ID(s) "
-                f"do not correspond to the framework or an exported SFI."
-            ),
-        )
-
-    if unknown_order_children:
-        report.error(
-            code="HIERARCHY_ORDER_UNKNOWN_CHILD",
-            context={"examples": sorted(set(unknown_order_children))[:10]},
-            message=(
-                f"{len(set(unknown_order_children))} hierarchy-order child ID(s) "
-                f"do not correspond to exported SFIs."
-            ),
-        )
-
-    if missing_from_order:
-        report.error(
-            code="HAS_CHILD_MISSING_FROM_HIERARCHY_ORDER",
-            context={"examples": missing_from_order[:10]},
-            message=(
-                f"{len(missing_from_order)} hasChild relationship pair(s) are missing "
-                f"from academic_standards.order."
-            ),
-        )
-
-    if missing_from_relationships:
-        report.error(
-            code="HIERARCHY_ORDER_MISSING_HAS_CHILD",
-            context={"examples": missing_from_relationships[:10]},
-            message=(
-                f"{len(missing_from_relationships)} hierarchy-order pair(s) have no "
-                f"corresponding exported hasChild relationship."
-            ),
-        )
-
-    if not (
-        duplicate_order_children
-        or unknown_order_parents
-        or unknown_order_children
-        or missing_from_order
-        or missing_from_relationships
-    ):
-        report.info(
-            code="HIERARCHY_ORDER_CONSISTENT",
-            message="Hierarchy order artifact matches exported hasChild relationships.",
-        )
 
 
 def validate_graph(
