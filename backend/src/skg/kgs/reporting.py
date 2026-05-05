@@ -2060,16 +2060,18 @@ def log_console_summary(  # pylint: disable=R0912, R1260
         f"Emitted SFIs: {policy_report.total_emitted_sfis}"
     )
 
-    # NB: total_dropped is approximate: it includes the framework root node (which
-    # becomes a StandardsFramework, not an SFI), pruned empty groupings, and nodes
-    # reclassified as expectation metadata. The per-category breakdown below is the
-    # authoritative accounting.
-    total_dropped = (
-        policy_report.total_canonical_nodes - policy_report.total_emitted_sfis
-    )
+    if policy_report.drop_details_total_count > 0:
+        logger.info(
+            f"Dropped canonical nodes tracked by policy: "
+            f"{policy_report.drop_details_total_count}"
+        )
 
-    if total_dropped > 0:
-        logger.info(f"Total dropped (approx): {total_dropped}")
+        if policy_report.drop_details_truncated:
+            logger.info(
+                f"  Drop details truncated in JSON report: showing "
+                f"{policy_report.drop_details_limit} of "
+                f"{policy_report.drop_details_total_count}"
+            )
 
         # Consolidate dictionary-based dropped stats.
         dict_stats = [
@@ -2100,6 +2102,31 @@ def log_console_summary(  # pylint: disable=R0912, R1260
         for label, count in filter(lambda stat: stat[1] > 0, scalar_stats):
             logger.info(f"  - {label}: {count}")
 
+    # Helpful hierarchy/reparenting diagnostics.
+    hierarchy_stats = [
+        ("attached aux nodes", policy_report.total_attached_aux_node_count),
+        ("orphan aux nodes", policy_report.orphan_aux_count),
+        ("dropped parents processed", policy_report.dropped_parents_processed),
+        ("reattached children", policy_report.reattached_children_count),
+        (
+            "suppressed attached-aux nodes",
+            policy_report.suppressed_attached_aux_node_count,
+        ),
+        (
+            "suppressed attached-aux descendants",
+            policy_report.suppressed_attached_aux_descendant_count,
+        ),
+    ]
+    nonzero_hierarchy_stats = [
+        (label, count) for label, count in hierarchy_stats if count > 0
+    ]
+
+    if nonzero_hierarchy_stats:
+        logger.info("Academic Standards hierarchy adjustments:")
+
+        for label, count in nonzero_hierarchy_stats:
+            logger.info(f"  - {label}: {count}")
+
     # LC stats.
     logger.info(
         f"LCs: {policy_report.total_lcs} from "
@@ -2113,6 +2140,11 @@ def log_console_summary(  # pylint: disable=R0912, R1260
             f"eligible/{policy_report.total_lc_source_sfis_considered} considered "
             f"({policy_report.total_lc_source_sfis_excluded} excluded)"
         )
+
+        for reason, count in sorted(
+            policy_report.lc_source_exclusion_reason_counts.items()
+        ):
+            logger.info(f"    - LC exclusion ({reason}): {count}")
 
     if policy_report.total_lc_source_sfis_empty_text > 0:
         logger.info(
@@ -2129,35 +2161,52 @@ def log_console_summary(  # pylint: disable=R0912, R1260
         )
 
     # LP stats.
-    if policy_report.progression_candidate_edges_after_dedupe > 0:
+    if policy_report.lp_candidate_edges_after_dedupe > 0:
         logger.info(
-            f"Progressions: {policy_report.progression_candidate_edges_pre_dedupe} raw candidates "
-            f"({policy_report.progression_candidate_edges_after_dedupe} after dedupe) → "
-            f"{policy_report.progression_kept_builds_towards} buildsTowards + "
-            f"{policy_report.progression_kept_relates_to} relatesTo kept"
+            f"Progressions: {policy_report.lp_candidate_edges_pre_dedupe} raw "
+            f"candidates ({policy_report.lp_candidate_edges_after_dedupe} after "
+            f"dedupe) → {policy_report.lp_kept_builds_towards} buildsTowards + "
+            f"{policy_report.lp_kept_relates_to} relatesTo kept"
         )
 
-        total_dropped = (
-            policy_report.progression_dropped_dedupe
-            + policy_report.progression_dropped_doc_order_builds
-            + policy_report.progression_dropped_low_conf_builds
-            + policy_report.progression_dropped_low_conf_relates
-            + policy_report.progression_dropped_cap_relates
+        total_lp_dropped = (
+            policy_report.lp_dropped_dedupe
+            + policy_report.lp_dropped_doc_order_builds
+            + policy_report.lp_dropped_low_conf_builds
+            + policy_report.lp_dropped_low_conf_relates
+            + policy_report.lp_dropped_cap_relates
         )
 
-        if total_dropped > 0:
+        if total_lp_dropped > 0:
             logger.info(
-                f"  Dropped: {policy_report.progression_dropped_dedupe} dedupe + "
-                f"{policy_report.progression_dropped_doc_order_builds} buildsTowards "
-                f"(doc order) + {policy_report.progression_dropped_low_conf_builds} "
+                f"  Dropped: {policy_report.lp_dropped_dedupe} dedupe + "
+                f"{policy_report.lp_dropped_doc_order_builds} buildsTowards "
+                f"(doc order) + {policy_report.lp_dropped_low_conf_builds} "
                 f"buildsTowards (low conf) + "
-                f"{policy_report.progression_dropped_low_conf_relates} "
-                f"relatesTo (low conf) + "
-                f"{policy_report.progression_dropped_cap_relates} "
-                f"relatesTo (per-SFI cap)"
+                f"{policy_report.lp_dropped_low_conf_relates} relatesTo "
+                f"(low conf) + {policy_report.lp_dropped_cap_relates} relatesTo "
+                f"(per-SFI cap)"
             )
+    elif policy_report.lp_phase_toggles:
+        logger.info(
+            "Progressions: LP export ran or was configured, but produced no "
+            "candidate edges after dedupe."
+        )
+    else:
+        logger.info("Progressions: no LP export summary present.")
 
     # Validation.
+    stats = validation_report.stats or {}
+    logger.info(
+        f"Graph: {stats.get('total_entities', 0)} unique entities"
+        + (
+            f" ({stats.get('total_entity_rows')} entity rows)"
+            if stats.get("total_entity_rows") is not None
+            else ""
+        )
+        + f", {stats.get('total_relationships', 0)} relationships"
+    )
+
     errors = validation_report.errors()
 
     if not errors:
@@ -2167,6 +2216,9 @@ def log_console_summary(  # pylint: disable=R0912, R1260
 
         for issue in errors[:10]:
             logger.error(f"  [{issue.code}] {issue.message}")
+
+        if len(errors) > 10:
+            logger.error(f"  ... plus {len(errors) - 10} more error(s)")
 
     logger.info("=" * 60)
 
@@ -2366,11 +2418,25 @@ def write_reports(
         fp=kg_dirs.root / "policy_coverage_report.json",
         json_info=policy_report.model_dump(mode="json"),
     )
+
+    logger.success(
+        f"Policy coverage report written to: {kg_dirs.root / 'policy_coverage_report.json'}"
+    )
+
     write_to_json(
         fp=kg_dirs.root / "entity_provenance.json",
         json_info=entity_provenance.model_dump(mode="json"),
     )
+
+    logger.success(
+        f"Entity provenance export written to: {kg_dirs.root / 'entity_provenance.json'}"
+    )
+
     write_to_json(
         fp=kg_dirs.root / "graph_validation_report.json",
         json_info=validation_report.model_dump(mode="json"),
+    )
+
+    logger.success(
+        f"Graph validation report written to: {kg_dirs.root / 'graph_validation_report.json'}"
     )
