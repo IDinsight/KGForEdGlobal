@@ -2105,12 +2105,6 @@ def build_policy_coverage_report(  # pylint: disable=R0915
     else:
         total_lc_source_sfis_empty_text = empty_text_sfis_from_splits
 
-    lp_final_relationship_counts = (
-        (lp_report.get("final_relationship_counts") or {})
-        if learning_progressions
-        else {}
-    )
-
     return PolicyCoverageReport(
         doc_key=ctx.doc_key,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -2228,7 +2222,11 @@ def build_policy_coverage_report(  # pylint: disable=R0915
         lp_dropped_doc_order_builds=p_stats.get("builds_dropped_doc_order", 0),
         lp_dropped_low_conf_builds=p_stats.get("builds_dropped_low_conf", 0),
         lp_dropped_low_conf_relates=p_stats.get("relates_dropped_low_conf", 0),
-        lp_final_relationship_counts=lp_final_relationship_counts,
+        lp_final_relationship_counts=(
+            (lp_report.get("final_relationship_counts") or {})
+            if learning_progressions
+            else {}
+        ),
         lp_kept_builds_towards=p_stats.get("builds_kept", 0),
         lp_kept_builds_towards_before_doc_order=p_stats.get(
             "builds_kept_before_doc_order", 0
