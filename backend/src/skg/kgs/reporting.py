@@ -1408,7 +1408,7 @@ def log_console_summary(  # pylint: disable=R0912, R1260
         f"Emitted SFIs: {policy_report.total_emitted_sfis}"
     )
 
-    # NB: total_dropped is approximate — it includes the framework root node (which
+    # NB: total_dropped is approximate: it includes the framework root node (which
     # becomes a StandardsFramework, not an SFI), pruned empty groupings, and nodes
     # reclassified as expectation metadata. The per-category breakdown below is the
     # authoritative accounting.
