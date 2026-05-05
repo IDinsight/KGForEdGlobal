@@ -1912,8 +1912,23 @@ def build_policy_coverage_report(
 
     dropped_descriptor = _count_exact_reasons("drop:descriptor_handling:drop")
     dropped_guidance = _count_exact_reasons("drop:guidance_handling:drop")
-    dropped_non_grouping_role = _count_prefixed_reasons("drop:non_grouping_role:")
-    pruned_empty_groupings = _count_exact_reasons("drop:pruned_empty_grouping")
+    dropped_non_grouping_role_counts = _prefixed_reason_counts(
+        "drop:non_grouping_role:"
+    )
+    dropped_non_grouping_role = sum(dropped_non_grouping_role_counts.values())
+    pruned_empty_groupings_from_drop_reasons = _count_exact_reasons(
+        "drop:pruned_empty_grouping"
+    )
+    pruned_empty_groupings = len(academic_standards.pruned_node_ids or set())
+
+    if pruned_empty_groupings != pruned_empty_groupings_from_drop_reasons:
+        logger.warning(
+            f"Mismatch between Academic Standards pruned_node_ids and "
+            f"drop:pruned_empty_grouping reasons: "
+            f"pruned_node_ids={pruned_empty_groupings}, "
+            f"drop_reasons={pruned_empty_groupings_from_drop_reasons}. "
+            f"Using pruned_node_ids as the authoritative pruned grouping count."
+        )
 
     dropped_by_decision_type = _prefixed_reason_counts("drop:segment_decision:")
     dropped_by_columns_signature = _prefixed_reason_counts("drop:columns_signature:")
@@ -1988,6 +2003,20 @@ def build_policy_coverage_report(
         str(split_count): count
         for split_count, count in (lc_stats.get("splits_distribution") or {}).items()
     }
+    empty_text_sfis_from_splits = int(lc_splits_distribution.get("0", 0) or 0)
+
+    if "total_lc_source_sfis_empty_text" in lc_stats:
+        total_lc_source_sfis_empty_text = int(
+            lc_stats.get("total_lc_source_sfis_empty_text") or 0
+        )
+    else:
+        total_lc_source_sfis_empty_text = empty_text_sfis_from_splits
+
+    lp_final_relationship_counts = (
+        (lp_report.get("final_relationship_counts") or {})
+        if learning_progressions
+        else {}
+    )
 
     return PolicyCoverageReport(
         doc_key=ctx.doc_key,
@@ -2005,6 +2034,7 @@ def build_policy_coverage_report(
         dropped_descriptor=dropped_descriptor,
         dropped_guidance=dropped_guidance,
         dropped_non_grouping_role=dropped_non_grouping_role,
+        dropped_non_grouping_role_counts=dropped_non_grouping_role_counts,
         pruned_empty_groupings=pruned_empty_groupings,
         # Subtract 1 for the canonical root node, which becomes a StandardsFramework
         # entity rather than an SFI. This assumes a single root per canonical IR
@@ -2059,9 +2089,7 @@ def build_policy_coverage_report(
             source_eligibility_summary.get("total_sfis_considered", 0),
         ),
         total_lc_source_sfis_eligible=total_lc_source_sfis_eligible,
-        total_lc_source_sfis_empty_text=(
-            lc_stats.get("total_lc_source_sfis_empty_text", 0)
-        ),
+        total_lc_source_sfis_empty_text=total_lc_source_sfis_empty_text,
         total_lc_source_sfis_excluded=lc_stats.get(
             "total_lc_source_sfis_excluded",
             source_eligibility_summary.get("excluded_sfis", 0),
@@ -2082,6 +2110,7 @@ def build_policy_coverage_report(
         lp_dropped_doc_order_builds=p_stats.get("builds_dropped_doc_order", 0),
         lp_dropped_low_conf_builds=p_stats.get("builds_dropped_low_conf", 0),
         lp_dropped_low_conf_relates=p_stats.get("relates_dropped_low_conf", 0),
+        lp_final_relationship_counts=lp_final_relationship_counts,
         lp_kept_builds_towards=p_stats.get("builds_kept", 0),
         lp_kept_builds_towards_before_doc_order=p_stats.get(
             "builds_kept_before_doc_order", 0
@@ -2164,6 +2193,11 @@ def log_console_summary(  # pylint: disable=R0912, R1260
 
         for label, count in filter(lambda stat: stat[1] > 0, scalar_stats):
             logger.info(f"  - {label}: {count}")
+
+        for reason, count in sorted(
+            policy_report.dropped_non_grouping_role_counts.items()
+        ):
+            logger.info(f"  - non-grouping role ({reason}): {count}")
 
     # Helpful hierarchy/reparenting diagnostics.
     hierarchy_stats = [

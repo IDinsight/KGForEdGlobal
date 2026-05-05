@@ -1542,7 +1542,17 @@ class PolicyCoverageReport(BaseSchema):
     )
     dropped_non_grouping_role: int = Field(
         default=0,
-        description="Nodes dropped because as_non_grouping_role_handling == 'drop'.",
+        description=(
+            "Total nodes dropped with a drop:non_grouping_role:* reason. See "
+            "dropped_non_grouping_role_counts for the suffix-level breakdown."
+        ),
+    )
+    dropped_non_grouping_role_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Count of nodes dropped per drop:non_grouping_role:* suffix, such as "
+            "'drop' or 'structural_parent'."
+        ),
     )
     pruned_empty_groupings: int = Field(
         default=0,
@@ -1704,6 +1714,13 @@ class PolicyCoverageReport(BaseSchema):
     lp_dropped_doc_order_builds: int = 0
     lp_dropped_low_conf_builds: int = 0
     lp_dropped_low_conf_relates: int = 0
+    lp_final_relationship_counts: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Final Learning Progressions relationship counts copied from "
+            "learning_progressions.report['final_relationship_counts']."
+        ),
+    )
     lp_kept_builds_towards: int = 0
     lp_kept_builds_towards_before_doc_order: int = 0
     lp_kept_relates_to: int = 0
