@@ -1675,7 +1675,7 @@ def build_entity_provenance_export(
     needing relationship-level provenance should consult those artifacts or the graph
     bundle directly.
 
-    The export is deliberately self-contained for review:
+    The export is self-contained for review:
         - SFIs and LCs include table `columns_signature` values when recoverable from
             source decision IDs.
         - All rows include display text when available.
