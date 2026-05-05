@@ -1121,33 +1121,95 @@ def build_policy_coverage_report(
         The aggregate report explaining what was emitted, dropped, and why.
     """
 
+    def _count_exact_reasons(*reasons: str) -> int:
+        """Count one or more exact drop-reason strings.
+
+        Parameters
+        ----------
+        *reasons
+            One or more exact drop reason strings to count in the report.
+
+        Returns
+        -------
+        int
+            The total count of drop reasons matching any of the supplied strings.
+        """
+
+        return sum(reason_counter.get(reason, 0) for reason in reasons)
+
+    def _count_prefixed_reasons(*prefixes: str) -> int:
+        """Count all drop reasons matching any supplied current-taxonomy prefix.
+
+        Parameters
+        ----------
+        *prefixes
+            One or more drop reason prefixes to match against the report's drop reasons.
+
+        Returns
+        -------
+        int
+            The total count of drop reasons that start with any of the supplied prefixes.
+        """
+
+        return sum(
+            count
+            for reason, count in reason_counter.items()
+            if any(reason.startswith(prefix) for prefix in prefixes)
+        )
+
+    def _prefixed_reason_counts(prefix: str) -> dict[str, int]:
+        """Build a grouped count map by stripping one current-taxonomy prefix.
+
+        Parameters
+        ----------
+        prefix
+            The prefix to strip from drop reasons for grouping.
+
+        Returns
+        -------
+        dict[str, int]
+            A mapping from reason suffix (the part after the prefix) to count, for all
+            reasons that start with the given prefix.
+        """
+
+        return {
+            reason[len(prefix) :]: count
+            for reason, count in sorted(reason_counter.items())
+            if reason.startswith(prefix)
+        }
+
     drop_reasons = academic_standards.drop_reasons
-    reparent_stats = academic_standards.reparent_stats
     reason_counter: Counter[str] = Counter(drop_reasons.values())
+    reparent_stats = academic_standards.reparent_stats
 
-    dropped_guidance = reason_counter.get("dropped:as_guidance_handling:drop", 0)
-    dropped_descriptor = reason_counter.get("dropped:as_descriptor_handling:drop", 0)
-    dropped_non_grouping_role = reason_counter.get("dropped:non_grouping_role:drop", 0)
+    # These strings intentionally match the current Academic Standards exporter, whose
+    # `_drop_reason()` helper emits `drop:<category>:<detail>` values.
+    dropped_attach_to_expectation = _count_exact_reasons(
+        "drop:guidance_attached_to_expectation:attach_to_expectation_metadata",
+        "drop:descriptor_attached_to_expectation:attach_to_expectation_metadata",
+        "drop:ancestor_attached_to_expectation_metadata",
+    )
+    dropped_descriptor = _count_exact_reasons("drop:descriptor_handling:drop")
+    dropped_guidance = _count_exact_reasons("drop:guidance_handling:drop")
+    dropped_non_grouping_role = _count_prefixed_reasons("drop:non_grouping_role:")
+    pruned_empty_groupings = _count_exact_reasons("drop:pruned_empty_grouping")
 
-    dropped_by_decision_type = {
-        r.split(":", 2)[2]: c
-        for r, c in reason_counter.items()
-        if r.startswith("dropped:segment_decision:")
-    }
-    dropped_by_columns_signature = {
-        r.split(":", 2)[2]: c
-        for r, c in reason_counter.items()
-        if r.startswith("dropped:columns_signature:")
-    }
+    dropped_by_decision_type = _prefixed_reason_counts("drop:segment_decision:")
+    dropped_by_columns_signature = _prefixed_reason_counts("drop:columns_signature:")
 
     known_exacts = {
-        "dropped:as_guidance_handling:drop",
-        "dropped:as_descriptor_handling:drop",
-        "dropped:non_grouping_role:drop",
-        "dropped:pruned_empty_grouping",
-        "dropped:attach_to_expectation_metadata",
+        "drop:ancestor_attached_to_expectation_metadata",
+        "drop:descriptor_attached_to_expectation:attach_to_expectation_metadata",
+        "drop:guidance_attached_to_expectation:attach_to_expectation_metadata",
+        "drop:guidance_handling:drop",
+        "drop:descriptor_handling:drop",
+        "drop:pruned_empty_grouping",
     }
-    known_prefixes = ("dropped:segment_decision:", "dropped:columns_signature:")
+    known_prefixes = (
+        "drop:columns_signature:",
+        "drop:non_grouping_role:",
+        "drop:segment_decision:",
+    )
 
     for reason, count in reason_counter.items():
         if reason not in known_exacts and not reason.startswith(known_prefixes):
@@ -1158,15 +1220,15 @@ def build_policy_coverage_report(
             )
 
     max_drop_details = 200
-    total_drops = len(drop_reasons)
     drop_details = [
         {
+            "drop_reason": reason,
             "canonical_node_id": node_id,
             "role": str(ctx.nodes_by_id.get(node_id, {}).get("role") or ""),
-            "drop_reason": reason,
         }
         for node_id, reason in sorted(drop_reasons.items())[:max_drop_details]
     ]
+    total_drops = len(drop_reasons)
 
     if total_drops > max_drop_details:
         logger.info(
@@ -1180,33 +1242,45 @@ def build_policy_coverage_report(
         if learning_progressions
         else {}
     )
-
+    lc_splits_distribution = {
+        str(split_count): int(count)
+        for split_count, count in (lc_stats.get("splits_distribution") or {}).items()
+    }
     return PolicyCoverageReport(
         doc_key=ctx.doc_key,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         pdf_name=str((ctx.get_framework_metadata() or {}).get("pdf_name") or ""),
         # Node-level drop accounting.
-        dropped_attach_to_expectation=reason_counter.get(
-            "dropped:attach_to_expectation_metadata", 0
-        ),
+        dropped_attach_to_expectation=dropped_attach_to_expectation,
         dropped_by_columns_signature=dropped_by_columns_signature,
         dropped_by_decision_type=dropped_by_decision_type,
         dropped_descriptor=dropped_descriptor,
         dropped_guidance=dropped_guidance,
         dropped_non_grouping_role=dropped_non_grouping_role,
-        pruned_empty_groupings=reason_counter.get("dropped:pruned_empty_grouping", 0),
+        pruned_empty_groupings=pruned_empty_groupings,
         # Subtract 1 for the canonical root node, which becomes a StandardsFramework
         # entity rather than an SFI. This assumes a single root per canonical IR
         # (framework_scope == "per_pdf").
         total_canonical_nodes=len(ctx.nodes_by_id) - 1,
         total_emitted_sfis=len(academic_standards.items),
-        # Aux reparenting.
-        aux_reparented_count=reparent_stats.get("aux_reparented_count", 0),
-        orphan_aux_count=reparent_stats.get("orphan_aux_count", 0),
+        # Aux reparenting/attachment.
+        attach_only_newly_attached_aux_node_count=int(
+            reparent_stats.get("attach_only_newly_attached_aux_node_count", 0)
+        ),
+        child_layout_aux_attached_count=int(
+            reparent_stats.get("child_layout_aux_attached_count", 0)
+        ),
+        orphan_aux_count=int(reparent_stats.get("orphan_aux_node_count", 0)),
+        sibling_aux_reparented_count=int(
+            reparent_stats.get("sibling_aux_reparented_count", 0)
+        ),
+        total_attached_aux_node_count=int(
+            reparent_stats.get("attached_aux_node_count", 0)
+        ),
         # LC stats.
         lc_max_splits_observed=int(lc_stats.get("max_splits_observed", 0)),
         lc_split_policy=str(lc_stats.get("split_policy", "")),
-        lc_splits_distribution=lc_stats.get("splits_distribution", {}),
+        lc_splits_distribution=lc_splits_distribution,
         total_expectations=int(lc_stats.get("total_expectations", 0)),
         total_lcs=int(lc_stats.get("total_lcs", 0)),
         # Progression stats.
