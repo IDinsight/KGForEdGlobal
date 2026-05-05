@@ -1173,22 +1173,28 @@ def build_policy_coverage_report(
         """
 
         return {
-            reason[len(prefix) :]: count
-            for reason, count in sorted(reason_counter.items())
-            if reason.startswith(prefix)
+            reason_[len(prefix) :]: count_
+            for reason_, count_ in sorted(reason_counter.items())
+            if reason_.startswith(prefix)
         }
 
     drop_reasons = academic_standards.drop_reasons
     reason_counter: Counter[str] = Counter(drop_reasons.values())
-    reparent_stats = academic_standards.reparent_stats
+    reparent_stats = academic_standards.reparent_stats or {}
 
     # These strings intentionally match the current Academic Standards exporter, whose
     # `_drop_reason()` helper emits `drop:<category>:<detail>` values.
-    dropped_attach_to_expectation = _count_exact_reasons(
+    dropped_aux_attached_to_expectation = _count_exact_reasons(
         "drop:guidance_attached_to_expectation:attach_to_expectation_metadata",
         "drop:descriptor_attached_to_expectation:attach_to_expectation_metadata",
-        "drop:ancestor_attached_to_expectation_metadata",
     )
+    dropped_aux_descendants_suppressed = _count_exact_reasons(
+        "drop:ancestor_attached_to_expectation_metadata"
+    )
+    dropped_due_to_expectation_metadata_attachment = (
+        dropped_aux_attached_to_expectation + dropped_aux_descendants_suppressed
+    )
+
     dropped_descriptor = _count_exact_reasons("drop:descriptor_handling:drop")
     dropped_guidance = _count_exact_reasons("drop:guidance_handling:drop")
     dropped_non_grouping_role = _count_prefixed_reasons("drop:non_grouping_role:")
@@ -1196,6 +1202,7 @@ def build_policy_coverage_report(
 
     dropped_by_decision_type = _prefixed_reason_counts("drop:segment_decision:")
     dropped_by_columns_signature = _prefixed_reason_counts("drop:columns_signature:")
+    drop_reason_counts = dict(sorted(reason_counter.items()))
 
     known_exacts = {
         "drop:ancestor_attached_to_expectation_metadata",
@@ -1216,10 +1223,12 @@ def build_policy_coverage_report(
             logger.warning(
                 f"Unrecognized drop reason in policy report: {reason!r} "
                 f"({count} node(s)). This may indicate a new drop category was added "
-                f"upstream without a corresponding reporting handler."
+                f"upstream without a corresponding reporting handler. The reason is "
+                f"still included in `drop_reason_counts`."
             )
 
     max_drop_details = 200
+    total_drops = len(drop_reasons)
     drop_details = [
         {
             "drop_reason": reason,
@@ -1228,30 +1237,54 @@ def build_policy_coverage_report(
         }
         for node_id, reason in sorted(drop_reasons.items())[:max_drop_details]
     ]
-    total_drops = len(drop_reasons)
+    drop_details_truncated = total_drops > max_drop_details
 
-    if total_drops > max_drop_details:
+    if drop_details_truncated:
         logger.info(
             f"Drop details truncated: showing {max_drop_details} of {total_drops} "
             f"dropped nodes in policy_coverage_report.json."
         )
 
-    lc_stats = learning_components.lc_stats
-    p_stats = (
-        (learning_progressions.report.get("counts") or {})
-        if learning_progressions
+    lc_stats = learning_components.lc_stats or {}
+    source_eligibility_summary = lc_stats.get("source_eligibility_summary") or {}
+    _val = source_eligibility_summary.get("reason_counts")
+    source_reason_counts = (
+        dict(sorted((str(k), v) for k, v in _val.items() if str(k) != "eligible"))
+        if isinstance(_val, dict)
         else {}
     )
+    total_lc_source_sfis_eligible = lc_stats.get(
+        "total_lc_source_sfis_eligible",
+        source_eligibility_summary.get("eligible_sfis", 0),
+    )
+
+    # `learning_progressions.report` is already the detailed LP reporting artifact. The
+    # policy coverage report keeps compact summary fields plus the highest-value
+    # policy/config summaries so users do not need to open a second file for first-pass
+    # diagnosis.
+    lp_report = learning_progressions.report if learning_progressions else {}
+    p_stats = (lp_report.get("counts") or {}) if learning_progressions else {}
+    lp_drops = (lp_report.get("drops") or {}) if learning_progressions else {}
+    lp_phase_toggles = (
+        (lp_report.get("phase_toggles") or {}) if learning_progressions else {}
+    )
+    lp_thresholds = (lp_report.get("thresholds") or {}) if learning_progressions else {}
     lc_splits_distribution = {
-        str(split_count): int(count)
+        str(split_count): count
         for split_count, count in (lc_stats.get("splits_distribution") or {}).items()
     }
+
     return PolicyCoverageReport(
         doc_key=ctx.doc_key,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         pdf_name=str((ctx.get_framework_metadata() or {}).get("pdf_name") or ""),
         # Node-level drop accounting.
-        dropped_attach_to_expectation=dropped_attach_to_expectation,
+        drop_reason_counts=drop_reason_counts,
+        dropped_aux_attached_to_expectation=dropped_aux_attached_to_expectation,
+        dropped_aux_descendants_suppressed=dropped_aux_descendants_suppressed,
+        dropped_due_to_expectation_metadata_attachment=(
+            dropped_due_to_expectation_metadata_attachment
+        ),
         dropped_by_columns_signature=dropped_by_columns_signature,
         dropped_by_decision_type=dropped_by_decision_type,
         dropped_descriptor=dropped_descriptor,
@@ -1264,44 +1297,95 @@ def build_policy_coverage_report(
         total_canonical_nodes=len(ctx.nodes_by_id) - 1,
         total_emitted_sfis=len(academic_standards.items),
         # Aux reparenting/attachment.
-        attach_only_newly_attached_aux_node_count=int(
+        attach_only_newly_attached_aux_node_count=(
             reparent_stats.get("attach_only_newly_attached_aux_node_count", 0)
         ),
-        child_layout_aux_attached_count=int(
+        child_layout_aux_attached_count=(
             reparent_stats.get("child_layout_aux_attached_count", 0)
         ),
-        orphan_aux_count=int(reparent_stats.get("orphan_aux_node_count", 0)),
-        sibling_aux_reparented_count=int(
+        orphan_aux_count=reparent_stats.get("orphan_aux_node_count", 0),
+        sibling_aux_reparented_count=(
             reparent_stats.get("sibling_aux_reparented_count", 0)
         ),
-        total_attached_aux_node_count=int(
+        total_attached_aux_node_count=(
             reparent_stats.get("attached_aux_node_count", 0)
         ),
+        attached_aux_subtree_root_count=(
+            reparent_stats.get("attached_aux_subtree_root_count", 0)
+        ),
+        dropped_parents_processed=(reparent_stats.get("dropped_parents_processed", 0)),
+        dropped_parents_removed_from_parent_lists_count=(
+            reparent_stats.get("dropped_parents_removed_from_parent_lists_count", 0)
+        ),
+        reattach_appended_without_anchor_order_count=(
+            reparent_stats.get("reattach_appended_without_anchor_order_count", 0)
+        ),
+        reattach_original_sibling_fallback_count=(
+            reparent_stats.get("reattach_original_sibling_fallback_count", 0)
+        ),
+        reattached_children_count=(reparent_stats.get("reattached_children_count", 0)),
+        removed_dropped_parent_reference_list_count=(
+            reparent_stats.get("removed_dropped_parent_reference_list_count", 0)
+        ),
+        suppressed_attached_aux_descendant_count=(
+            reparent_stats.get("suppressed_attached_aux_descendant_count", 0)
+        ),
+        suppressed_attached_aux_node_count=(
+            reparent_stats.get("suppressed_attached_aux_node_count", 0)
+        ),
         # LC stats.
-        lc_max_splits_observed=int(lc_stats.get("max_splits_observed", 0)),
+        lc_fallback_sfis_count=lc_stats.get("fallback_sfis_count", 0),
+        lc_max_splits_observed=lc_stats.get("max_splits_observed", 0),
+        lc_source_exclusion_reason_counts=source_reason_counts,
         lc_split_policy=str(lc_stats.get("split_policy", "")),
         lc_splits_distribution=lc_splits_distribution,
-        total_expectations=int(lc_stats.get("total_expectations", 0)),
-        total_lcs=int(lc_stats.get("total_lcs", 0)),
+        total_lc_source_sfis_considered=lc_stats.get(
+            "total_lc_source_sfis_considered",
+            source_eligibility_summary.get("total_sfis_considered", 0),
+        ),
+        total_lc_source_sfis_eligible=total_lc_source_sfis_eligible,
+        total_lc_source_sfis_empty_text=(
+            lc_stats.get("total_lc_source_sfis_empty_text", 0)
+        ),
+        total_lc_source_sfis_excluded=lc_stats.get(
+            "total_lc_source_sfis_excluded",
+            source_eligibility_summary.get("excluded_sfis", 0),
+        ),
+        total_lcs=lc_stats.get("total_lcs", 0),
         # Progression stats.
-        progression_candidate_edges=int(
-            p_stats.get("candidate_edges_total_after_dedupe", 0)
+        lp_bucket_drop_counts=lp_drops,
+        lp_candidate_builds_towards=p_stats.get("candidate_builds_towards", 0),
+        lp_candidate_edges_after_dedupe=p_stats.get(
+            "candidate_edges_total_after_dedupe", 0
         ),
-        progression_dropped_cap_relates=int(p_stats.get("relates_dropped_cap", 0)),
-        progression_dropped_low_conf_builds=int(
-            p_stats.get("builds_dropped_low_conf", 0)
+        lp_candidate_edges_pre_dedupe=p_stats.get(
+            "candidate_edges_total_pre_dedupe", 0
         ),
-        progression_dropped_low_conf_relates=int(
-            p_stats.get("relates_dropped_low_conf", 0)
+        lp_candidate_relates_to=p_stats.get("candidate_relates_to", 0),
+        lp_dropped_cap_relates=p_stats.get("relates_dropped_cap", 0),
+        lp_dropped_dedupe=p_stats.get("candidate_edges_dropped_dedupe", 0),
+        lp_dropped_doc_order_builds=p_stats.get("builds_dropped_doc_order", 0),
+        lp_dropped_low_conf_builds=p_stats.get("builds_dropped_low_conf", 0),
+        lp_dropped_low_conf_relates=p_stats.get("relates_dropped_low_conf", 0),
+        lp_kept_builds_towards=p_stats.get("builds_kept", 0),
+        lp_kept_builds_towards_before_doc_order=p_stats.get(
+            "builds_kept_before_doc_order", 0
         ),
-        progression_kept_builds_towards=int(p_stats.get("builds_kept", 0)),
-        progression_kept_relates_to=int(p_stats.get("relates_kept_after_cap", 0)),
+        lp_kept_relates_to=p_stats.get("relates_kept_after_cap", 0),
+        lp_kept_relates_to_after_threshold=p_stats.get(
+            "relates_kept_after_threshold", 0
+        ),
+        lp_phase_toggles=lp_phase_toggles,
+        lp_thresholds=lp_thresholds,
         # Drop details.
         drop_details=drop_details,
+        drop_details_limit=max_drop_details,
+        drop_details_total_count=total_drops,
+        drop_details_truncated=drop_details_truncated,
     )
 
 
-def log_console_summary(
+def log_console_summary(  # pylint: disable=R0912, R1260
     *, policy_report: PolicyCoverageReport, validation_report: GraphValidationReport
 ) -> None:
     """Log a concise console summary of the reports.
@@ -1351,8 +1435,12 @@ def log_console_summary(
             ("descriptor (drop)", policy_report.dropped_descriptor),
             ("non-grouping role (drop)", policy_report.dropped_non_grouping_role),
             (
-                "attach to expectation metadata",
-                policy_report.dropped_attach_to_expectation,
+                "attached aux dropped into expectation metadata",
+                policy_report.dropped_aux_attached_to_expectation,
+            ),
+            (
+                "descendants suppressed below attached aux",
+                policy_report.dropped_aux_descendants_suppressed,
             ),
             ("pruned empty groupings", policy_report.pruned_empty_groupings),
         ]
@@ -1362,9 +1450,25 @@ def log_console_summary(
 
     # LC stats.
     logger.info(
-        f"LCs: {policy_report.total_lcs} from {policy_report.total_expectations} "
-        f"expectations (policy: {policy_report.lc_split_policy})"
+        f"LCs: {policy_report.total_lcs} from "
+        f"{policy_report.total_lc_source_sfis_eligible} eligible LC-source SFI(s) "
+        f"(policy: {policy_report.lc_split_policy})"
     )
+
+    if policy_report.total_lc_source_sfis_excluded > 0:
+        logger.info(
+            f"  LC source filtering: {policy_report.total_lc_source_sfis_eligible} "
+            f"eligible/{policy_report.total_lc_source_sfis_considered} considered "
+            f"({policy_report.total_lc_source_sfis_excluded} excluded)"
+        )
+
+    if policy_report.total_lc_source_sfis_empty_text > 0:
+        logger.info(
+            f"  Empty-text LC sources: {policy_report.total_lc_source_sfis_empty_text}"
+        )
+
+    if policy_report.lc_fallback_sfis_count > 0:
+        logger.info(f"  LC fallback SFIs: {policy_report.lc_fallback_sfis_count}")
 
     if policy_report.lc_max_splits_observed > 1:
         logger.info(
@@ -1372,23 +1476,28 @@ def log_console_summary(
             f"Distribution: {policy_report.lc_splits_distribution}"
         )
 
-    # Progression stats.
-    if policy_report.progression_candidate_edges > 0:
+    # LP stats.
+    if policy_report.progression_candidate_edges_after_dedupe > 0:
         logger.info(
-            f"Progressions: {policy_report.progression_candidate_edges} candidates → "
+            f"Progressions: {policy_report.progression_candidate_edges_pre_dedupe} raw candidates "
+            f"({policy_report.progression_candidate_edges_after_dedupe} after dedupe) → "
             f"{policy_report.progression_kept_builds_towards} buildsTowards + "
             f"{policy_report.progression_kept_relates_to} relatesTo kept"
         )
 
         total_dropped = (
-            policy_report.progression_dropped_low_conf_builds
+            policy_report.progression_dropped_dedupe
+            + policy_report.progression_dropped_doc_order_builds
+            + policy_report.progression_dropped_low_conf_builds
             + policy_report.progression_dropped_low_conf_relates
             + policy_report.progression_dropped_cap_relates
         )
 
         if total_dropped > 0:
             logger.info(
-                f"  Dropped: {policy_report.progression_dropped_low_conf_builds} "
+                f"  Dropped: {policy_report.progression_dropped_dedupe} dedupe + "
+                f"{policy_report.progression_dropped_doc_order_builds} buildsTowards "
+                f"(doc order) + {policy_report.progression_dropped_low_conf_builds} "
                 f"buildsTowards (low conf) + "
                 f"{policy_report.progression_dropped_low_conf_relates} "
                 f"relatesTo (low conf) + "

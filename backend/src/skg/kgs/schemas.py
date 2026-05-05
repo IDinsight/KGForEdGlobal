@@ -1497,9 +1497,34 @@ class PolicyCoverageReport(BaseSchema):
     pdf_name: Optional[str] = None
 
     # Node-level drop accounting (academic standards).
-    dropped_attach_to_expectation: int = Field(
+    drop_reason_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Complete count of Academic Standards drop reasons, keyed by the raw "
+            "drop-reason taxonomy string. This preserves new upstream drop reasons "
+            "even before curated report fields are added."
+        ),
+    )
+    dropped_aux_attached_to_expectation: int = Field(
         default=0,
-        description="Aux nodes converted to metadata attachments (not emitted as SFIs).",
+        description=(
+            "Aux guidance/descriptor nodes converted to expectation metadata "
+            "attachments and therefore not emitted as standalone SFIs."
+        ),
+    )
+    dropped_aux_descendants_suppressed: int = Field(
+        default=0,
+        description=(
+            "Descendant nodes suppressed because they lived under an aux node that was "
+            "converted into expectation metadata."
+        ),
+    )
+    dropped_due_to_expectation_metadata_attachment: int = Field(
+        default=0,
+        description=(
+            "Total nodes dropped because of expectation-metadata attachment handling: "
+            "attached aux nodes plus descendants suppressed below attached aux nodes."
+        ),
     )
     dropped_by_columns_signature: dict[str, int] = Field(
         default_factory=dict,
@@ -1526,12 +1551,19 @@ class PolicyCoverageReport(BaseSchema):
     total_canonical_nodes: int = 0
     total_emitted_sfis: int = 0
 
-    # Aux reparenting/attachment.
+    # Aux reparenting/attachment and hierarchy-hoisting stats.
     attach_only_newly_attached_aux_node_count: int = Field(
         default=0,
         description=(
             "Unique aux node IDs newly discovered and attached during the step-4 "
             "attach-only discovery pass."
+        ),
+    )
+    attached_aux_subtree_root_count: int = Field(
+        default=0,
+        description=(
+            "Attached aux nodes that still had exported child subtrees when subtree "
+            "suppression ran."
         ),
     )
     child_layout_aux_attached_count: int = Field(
@@ -1541,6 +1573,20 @@ class PolicyCoverageReport(BaseSchema):
             "attached during step 3 export-tree construction."
         ),
     )
+    dropped_parents_processed: int = Field(
+        default=0,
+        description=(
+            "Dropped parents with emitted children that were processed during hierarchy "
+            "hoisting."
+        ),
+    )
+    dropped_parents_removed_from_parent_lists_count: int = Field(
+        default=0,
+        description=(
+            "Dropped parents whose stale references were removed from at least one "
+            "export parent child-list."
+        ),
+    )
     orphan_aux_count: int = Field(
         default=0,
         description=(
@@ -1548,11 +1594,50 @@ class PolicyCoverageReport(BaseSchema):
             "expectation (for example, no preceding expectation in sibling order)."
         ),
     )
+    reattach_appended_without_anchor_order_count: int = Field(
+        default=0,
+        description=(
+            "Hoist operations that appended children because no anchor-based ordering "
+            "signal was available."
+        ),
+    )
+    reattach_original_sibling_fallback_count: int = Field(
+        default=0,
+        description=(
+            "Hoist operations that used original sibling-position fallback because "
+            "canonical edge ordering was unavailable."
+        ),
+    )
+    reattached_children_count: int = Field(
+        default=0,
+        description="Emitted children newly inserted under surviving ancestors.",
+    )
+    removed_dropped_parent_reference_list_count: int = Field(
+        default=0,
+        description=(
+            "Total number of export parent child-lists modified while removing stale "
+            "dropped-parent references."
+        ),
+    )
     sibling_aux_reparented_count: int = Field(
         default=0,
         description=(
             "Aux sibling statements reparented to the most recent preceding "
             "expectation during step 3 export-tree construction."
+        ),
+    )
+    suppressed_attached_aux_descendant_count: int = Field(
+        default=0,
+        description=(
+            "Descendant nodes suppressed below attached aux nodes so they cannot be "
+            "hoisted back into the exported hierarchy."
+        ),
+    )
+    suppressed_attached_aux_node_count: int = Field(
+        default=0,
+        description=(
+            "Attached aux nodes newly suppressed as standalone SFIs by the "
+            "attach-to-expectation policy enforcement step."
         ),
     )
     total_attached_aux_node_count: int = Field(
@@ -1564,28 +1649,85 @@ class PolicyCoverageReport(BaseSchema):
     )
 
     # LC stats.
+    lc_fallback_sfis_count: int = Field(
+        default=0,
+        description="LC-source SFIs that fell back to deterministic 1_to_1 generation.",
+    )
     lc_max_splits_observed: int = 0
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Counts of LC-source eligibility exclusion reasons. The eligible reason is "
+            "omitted so this field focuses on exclusions."
+        ),
+    )
     lc_split_policy: str = ""
     lc_splits_distribution: dict[str, int] = Field(
         default_factory=dict,
         description="Distribution of split counts: how many SFIs produced N LCs. Keys are stringified integers (e.g., '1': 500, '2': 50).",
     )
-    total_expectations: int = 0
+    total_lc_source_sfis_considered: int = Field(
+        default=0,
+        description="Total SFIs considered by LC-source eligibility filtering.",
+    )
+    total_lc_source_sfis_eligible: int = Field(
+        default=0,
+        description="Total SFIs eligible to generate LearningComponents.",
+    )
+    total_lc_source_sfis_empty_text: int = Field(
+        default=0,
+        description=(
+            "Eligible LC-source SFIs skipped or producing zero LCs because usable text "
+            "was empty."
+        ),
+    )
+    total_lc_source_sfis_excluded: int = Field(
+        default=0,
+        description="Total SFIs excluded by LC-source eligibility filtering.",
+    )
     total_lcs: int = 0
 
     # LP stats (populated only when `generate_learning_progressions` is True).
-    progression_candidate_edges: int = 0
-    progression_dropped_cap_relates: int = 0
-    progression_dropped_low_conf_builds: int = 0
-    progression_dropped_low_conf_relates: int = 0
-    progression_kept_builds_towards: int = 0
-    progression_kept_relates_to: int = 0
+    lp_bucket_drop_counts: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Summarized Learning Progressions bucket/source drops copied from the LP "
+            "report."
+        ),
+    )
+    lp_candidate_builds_towards: int = 0
+    lp_candidate_edges_after_dedupe: int = 0
+    lp_candidate_edges_pre_dedupe: int = 0
+    lp_candidate_relates_to: int = 0
+    lp_dropped_cap_relates: int = 0
+    lp_dropped_dedupe: int = 0
+    lp_dropped_doc_order_builds: int = 0
+    lp_dropped_low_conf_builds: int = 0
+    lp_dropped_low_conf_relates: int = 0
+    lp_kept_builds_towards: int = 0
+    lp_kept_builds_towards_before_doc_order: int = 0
+    lp_kept_relates_to: int = 0
+    lp_kept_relates_to_after_threshold: int = 0
+    lp_phase_toggles: dict[str, Any] = Field(default_factory=dict)
+    lp_thresholds: dict[str, Any] = Field(default_factory=dict)
 
     # Detailed per-node drop log (first N for debuggability).
     drop_details: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
-            "Per-node drop log (capped at ~200 entries). Each entry includes "
-            "canonical_node_id, role, and drop_reason."
+            "Per-node drop log (capped at drop_details_limit entries). Each entry "
+            "includes canonical_node_id, role, and drop_reason."
         ),
+    )
+    drop_details_limit: int = Field(
+        default=200,
+        description="Maximum number of drop_details entries included in this report.",
+    )
+    drop_details_total_count: int = Field(
+        default=0,
+        description="Total number of dropped nodes before drop_details truncation.",
+    )
+    drop_details_truncated: bool = Field(
+        default=False,
+        description="Whether drop_details was truncated because it exceeded the limit.",
     )
