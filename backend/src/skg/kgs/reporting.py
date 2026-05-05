@@ -2129,7 +2129,7 @@ def build_policy_coverage_report(
     )
 
 
-def log_console_summary(  # pylint: disable=R0912, R1260
+def log_console_summary(  # pylint: disable=R0912, R0915, R1260
     *, policy_report: PolicyCoverageReport, validation_report: GraphValidationReport
 ) -> None:
     """Log a concise console summary of the reports.
@@ -2179,7 +2179,10 @@ def log_console_summary(  # pylint: disable=R0912, R1260
         scalar_stats = [
             ("guidance (drop)", policy_report.dropped_guidance),
             ("descriptor (drop)", policy_report.dropped_descriptor),
-            ("non-grouping role (drop)", policy_report.dropped_non_grouping_role),
+            (
+                "non-grouping role (all reasons)",
+                policy_report.dropped_non_grouping_role,
+            ),
             (
                 "attached aux dropped into expectation metadata",
                 policy_report.dropped_aux_attached_to_expectation,
@@ -2197,7 +2200,7 @@ def log_console_summary(  # pylint: disable=R0912, R1260
         for reason, count in sorted(
             policy_report.dropped_non_grouping_role_counts.items()
         ):
-            logger.info(f"  - non-grouping role ({reason}): {count}")
+            logger.info(f"    - non-grouping role reason ({reason}): {count}")
 
     # Helpful hierarchy/reparenting diagnostics.
     hierarchy_stats = [
@@ -2251,19 +2254,37 @@ def log_console_summary(  # pylint: disable=R0912, R1260
     if policy_report.lc_fallback_sfis_count > 0:
         logger.info(f"  LC fallback SFIs: {policy_report.lc_fallback_sfis_count}")
 
-    if policy_report.lc_max_splits_observed > 1:
+    lc_zero_split_count = int(policy_report.lc_splits_distribution.get("0", 0) or 0)
+
+    if policy_report.lc_max_splits_observed > 1 or lc_zero_split_count > 0:
         logger.info(
             f"  Max splits observed: {policy_report.lc_max_splits_observed} | "
             f"Distribution: {policy_report.lc_splits_distribution}"
         )
 
     # LP stats.
+    lp_final_counts = policy_report.lp_final_relationship_counts or {}
+    final_builds_towards = int(
+        lp_final_counts.get(
+            "buildsTowards",
+            lp_final_counts.get("builds_towards", policy_report.lp_kept_builds_towards),
+        )
+        or 0
+    )
+    final_relates_to = int(
+        lp_final_counts.get(
+            "relatesTo",
+            lp_final_counts.get("relates_to", policy_report.lp_kept_relates_to),
+        )
+        or 0
+    )
+
     if policy_report.lp_candidate_edges_after_dedupe > 0:
         logger.info(
             f"Progressions: {policy_report.lp_candidate_edges_pre_dedupe} raw "
             f"candidates ({policy_report.lp_candidate_edges_after_dedupe} after "
-            f"dedupe) → {policy_report.lp_kept_builds_towards} buildsTowards + "
-            f"{policy_report.lp_kept_relates_to} relatesTo kept"
+            f"dedupe) → {final_builds_towards} buildsTowards + "
+            f"{final_relates_to} relatesTo final relationships"
         )
 
         total_lp_dropped = (
@@ -2285,10 +2306,17 @@ def log_console_summary(  # pylint: disable=R0912, R1260
                 f"(per-SFI cap)"
             )
     elif policy_report.lp_phase_toggles:
-        logger.info(
-            "Progressions: LP export ran or was configured, but produced no "
-            "candidate edges after dedupe."
-        )
+        if policy_report.lp_candidate_edges_pre_dedupe > 0:
+            logger.info(
+                f"Progressions: {policy_report.lp_candidate_edges_pre_dedupe} raw "
+                f"candidate(s) were generated, but 0 remained after dedupe/filtering "
+                f"({policy_report.lp_dropped_dedupe} dropped during dedupe)."
+            )
+        else:
+            logger.info(
+                "Progressions: LP export ran or was configured, but generated no raw "
+                "candidate edges."
+            )
     else:
         logger.info("Progressions: no LP export summary present.")
 
@@ -2305,11 +2333,15 @@ def log_console_summary(  # pylint: disable=R0912, R1260
     )
 
     errors = validation_report.errors()
+    info_count = sum(1 for issue in validation_report.issues if issue.level == "info")
 
     if not errors:
-        logger.info("Validation: PASSED")
+        logger.info(f"Validation: PASSED ({info_count} info finding(s))")
     else:
-        logger.error(f"Validation: FAILED ({len(errors)} error(s))")
+        logger.error(
+            f"Validation: FAILED ({len(errors)} error(s), "
+            f"{info_count} info finding(s))"
+        )
 
         for issue in errors[:10]:
             logger.error(f"  [{issue.code}] {issue.message}")
