@@ -785,6 +785,129 @@ def _ensure_str_list(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _entity_text_unit(*, language: Any, text: Any) -> dict[str, str] | None:
+    """Build the minimal TextUnit-shaped payload used by EntityProvenance.text.
+
+    The pipeline's canonical text units use dictionaries shaped like
+    {"language": "...", "text": "...", "text_en": "..."}. For provenance rows, the
+    display text is enough; translations/originals remain on the exported entity
+    metadata.
+
+    Parameters
+    ----------
+    language
+        The language code for the text unit, which will be coerced to a string and
+        default to "und" (undetermined) if missing or falsy.
+    text
+        The display text for the entity, which will be coerced to a string and default
+        to None if missing or falsy after stripping whitespace.
+
+    Returns
+    -------
+    dict[str, str] | None
+        A minimal TextUnit-shaped dictionary with "language" and "text" keys, or None
+        if the text is missing/empty. The "language" value defaults to "und" if not
+        provided.
+    """
+
+    text_s = " ".join(str(text or "").split())
+
+    if not text_s:
+        return None
+
+    language_s = str(language or "und").strip() or "und"
+    return {"language": language_s, "text": text_s}
+
+
+def _extract_dialect_fallbacks(*dicts: dict[str, Any] | None) -> dict[str, str]:
+    """Extract dialect fallback metadata from one or more metadata dictionaries.
+
+    Exporters may store this under `dialect_fallbacks` directly; this function is
+    intentionally conservative and only copies explicit fallback dictionaries. Later
+    dictionaries override earlier dictionaries for the same key.
+
+    Parameters
+    ----------
+    *dicts
+        One or more dictionaries to search for `dialect_fallbacks` metadata.
+
+    Returns
+    -------
+    dict[str, str]
+        A consolidated mapping of dialect fallback keys to values, with later
+        dictionaries taking precedence over earlier ones. Only includes entries where
+        both key and value are non-empty strings after coercion.
+    """
+
+    out: dict[str, str] = {}
+
+    for dict_ in dicts:
+        if not isinstance(dict_, dict):
+            continue
+
+        fallbacks = dict_.get("dialect_fallbacks")
+
+        # Only process the fallbacks if it's explicitly a dictionary.
+        if isinstance(fallbacks, dict):
+            for key, val in fallbacks.items():
+                key_s = str(key or "").strip()
+                val_s = str(val or "").strip()
+
+                # Only keep truthy (non-empty) keys and values.
+                if key_s and val_s:
+                    out[key_s] = val_s
+
+    return out
+
+
+def _node_display_label(*, ctx: ExportContext, node_id: str) -> str:
+    """Return a compact display label for a canonical node.
+
+    Parameters
+    ----------
+    ctx
+        The KG export context providing access to nodes_by_id and kg_config.
+    node_id
+        The node ID to generate a display label for.
+
+    Returns
+    -------
+    str
+        A human-readable label for the node, derived from available text fields or
+        falling back to the node ID if no suitable text is found. The label is
+        compacted to a single line with normalized whitespace.
+    """
+
+    node = ctx.nodes_by_id.get(node_id) or {}
+    prefer_text_en = ctx.kg_config.as_description_text_policy == "prefer_text_en"
+
+    for field_name in ("title", "body"):
+        unit = node.get(field_name)
+
+        if not isinstance(unit, dict):
+            continue
+
+        text_en = str(unit.get("text_en") or "").strip()
+        text = str(unit.get("text") or "").strip()
+
+        if prefer_text_en and text_en:
+            return " ".join(text_en.split())
+
+        if text:
+            return " ".join(text.split())
+
+        if text_en:
+            return " ".join(text_en.split())
+
+    for key in ("normalized_text", "source_label", "role"):
+        value = " ".join(str(node.get(key) or "").split())
+
+        if value:
+            return value
+
+    return node_id
+
+
 def _rel_src_id(r: Relationship) -> str:
     """Return a normalized string ID for the relationship source endpoint.
 
@@ -817,6 +940,57 @@ def _rel_tgt_id(r: Relationship) -> str:
     """
 
     return str(r.target_entity_value)
+
+
+def _section_path_text(*, ctx: ExportContext, node_id: str | None) -> list[str]:
+    """Build root-to-node human-readable section path text from canonical ancestry.
+
+    The returned path includes the node itself. Missing or unknown node IDs simply
+    return an empty list so provenance export remains best-effort.
+
+    Parameters
+    ----------
+    ctx
+        The KG export context providing access to `nodes_by_id`, `parent_by_child`, and
+        `root_id`.
+    node_id
+        The node ID to build a section path for.
+
+    Returns
+    -------
+    list[str]
+        A list of human-readable labels for the node and its ancestors up to the root,
+        derived from available text fields or falling back to node IDs when necessary.
+    """
+
+    if not node_id or node_id not in ctx.nodes_by_id:
+        return []
+
+    chain: list[str] = []
+    cur: str | None = node_id
+    seen: set[str] = set()
+
+    while cur and cur not in seen:
+        seen.add(cur)
+        chain.append(cur)
+
+        if cur == ctx.root_id:
+            break
+
+        cur = ctx.parent_by_child.get(cur)
+
+    chain.reverse()
+    labels: list[str] = []
+    seen_labels: set[str] = set()
+
+    for nid in chain:
+        label = _node_display_label(ctx=ctx, node_id=nid)
+
+        if label and label not in seen_labels:
+            labels.append(label)
+            seen_labels.add(label)
+
+    return labels
 
 
 def _validate_has_child(
@@ -1000,12 +1174,21 @@ def build_entity_provenance_export(
     """Build a flat entity provenance lookup from all exported entities.
 
     This export covers *entity* provenance only: StandardsFramework, SFI, and LC nodes.
-    Relationship provenance (e.g., buildsTowards/relatesTo confidence, rationale,
-    phase metadata) is intentionally excluded since it lives on each Relationship's
+    Relationship provenance (e.g., buildsTowards/relatesTo confidence, rationale, phase
+    metadata) is intentionally excluded since it lives on each Relationship's
     `metadata` dict and in the per-phase provenance artifacts
     (`learning_progressions_candidate_edges_provenance.json`). Downstream consumers
     needing relationship-level provenance should consult those artifacts or the graph
     bundle directly.
+
+    The export is deliberately self-contained for review:
+        - SFIs and LCs include table `columns_signature` values when recoverable from
+            source decision IDs.
+        - All rows include display text when available.
+        - SFIs and LCs include root-to-source section path labels derived from
+            canonical ancestry.
+        - Explicit `dialect_fallbacks` metadata is preserved when exporters provide it.
+        - LC rows preserve the supporting SFI code and source role/split policy context.
 
     Parameters
     ----------
@@ -1027,26 +1210,33 @@ def build_entity_provenance_export(
     # Framework.
     fw = academic_standards.framework
     fw_meta = fw.metadata or {}
+    fw_canonical_node_id = str(fw_meta.get("canonical_node_id") or ctx.root_id)
 
     entities.append(
         EntityProvenance(
             bbox=None,
-            canonical_node_id=str(fw_meta.get("canonical_node_id") or ctx.root_id),
+            canonical_node_id=fw_canonical_node_id,
             columns_signatures=[],
-            entity_identifier=str(fw.case_identifier_uuid),
+            dialect_fallbacks=_extract_dialect_fallbacks(fw_meta),
+            entity_identifier=fw.case_identifier_uuid,
             entity_type="StandardsFramework",
             local_code=None,
             page_indices=[],
             role="framework",
+            section_path_text=_section_path_text(ctx=ctx, node_id=fw_canonical_node_id)
+            or [str(fw.name)],
             source_decision_ids=[],
             source_segment_ids=[],
+            text=_entity_text_unit(language=fw.in_language, text=fw.name),
         )
     )
 
     # SFIs.
     for sfi in academic_standards.items:
         meta = sfi.metadata or {}
+        canonical_node_id = str(meta.get("canonical_node_id") or "")
         decision_ids = _ensure_str_list(meta.get("source_decision_ids"))
+        segment_ids = _ensure_str_list(meta.get("source_segment_ids"))
 
         # Collect columns_signatures from all source decisions for this node.
         col_sigs = _collect_columns_signatures(ctx=ctx, decision_ids=decision_ids)
@@ -1054,15 +1244,20 @@ def build_entity_provenance_export(
         entities.append(
             EntityProvenance(
                 bbox=meta.get("bbox"),
-                canonical_node_id=str(meta.get("canonical_node_id") or ""),
+                canonical_node_id=canonical_node_id,
                 columns_signatures=col_sigs,
+                dialect_fallbacks=_extract_dialect_fallbacks(meta),
                 entity_identifier=str(sfi.case_identifier_uuid),
                 entity_type="StandardsFrameworkItem",
                 local_code=meta.get("local_code"),
                 page_indices=_ensure_int_list(meta.get("page_indices")),
                 role=meta.get("role") or "unknown",
+                section_path_text=_section_path_text(
+                    ctx=ctx, node_id=canonical_node_id
+                ),
                 source_decision_ids=decision_ids,
-                source_segment_ids=_ensure_str_list(meta.get("source_segment_ids")),
+                source_segment_ids=segment_ids,
+                text=_entity_text_unit(language=sfi.in_language, text=sfi.description),
             )
         )
 
@@ -1070,19 +1265,33 @@ def build_entity_provenance_export(
     for lc in learning_components.learning_components:
         meta = lc.metadata or {}
         prov = meta.get("provenance") or {}
+        canonical_node_id = str(meta.get("canonical_node_id") or "")
+        decision_ids = _ensure_str_list(prov.get("source_decision_ids"))
+        segment_ids = _ensure_str_list(prov.get("source_segment_ids"))
+        split_policy = str(meta.get("split_policy") or "unknown").strip() or "unknown"
+        supporting_role = (
+            str(meta.get("supporting_sfi_role") or "unknown").strip() or "unknown"
+        )
 
         entities.append(
             EntityProvenance(
                 bbox=prov.get("bbox"),
-                canonical_node_id=str(meta.get("canonical_node_id") or ""),
-                columns_signatures=[],
+                canonical_node_id=canonical_node_id,
+                columns_signatures=_collect_columns_signatures(
+                    ctx=ctx, decision_ids=decision_ids
+                ),
+                dialect_fallbacks=_extract_dialect_fallbacks(meta, prov),
                 entity_identifier=str(lc.identifier),
                 entity_type="LearningComponent",
-                local_code=None,
+                local_code=meta.get("supporting_sfi_statement_code"),
                 page_indices=_ensure_int_list(prov.get("page_indices")),
-                role="learning_component",
-                source_decision_ids=_ensure_str_list(prov.get("source_decision_ids")),
-                source_segment_ids=_ensure_str_list(prov.get("source_segment_ids")),
+                role=(f"learning_component:{split_policy}:supports:{supporting_role}"),
+                section_path_text=_section_path_text(
+                    ctx=ctx, node_id=canonical_node_id
+                ),
+                source_decision_ids=decision_ids,
+                source_segment_ids=segment_ids,
+                text=_entity_text_unit(language=lc.in_language, text=lc.description),
             )
         )
 
