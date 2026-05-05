@@ -89,15 +89,12 @@ def _check_duplicate_relationship_pairs(
     ]
     duplicate_pairs = _duplicate_counts([f"{src}->{tgt}" for src, tgt in pairs])
 
+    code_base_by_type = {"hasChild": "HAS_CHILD", "supports": "SUPPORTS"}
+    code_base = code_base_by_type.get(relationship_type, relationship_type.upper())
+
     if duplicate_pairs:
-        code_by_type = {
-            "hasChild": "HAS_CHILD_DUPLICATE_PAIR",
-            "supports": "SUPPORTS_DUPLICATE_PAIR",
-        }
         report.error(
-            code=code_by_type.get(
-                relationship_type, f"{relationship_type.upper()}_DUPLICATE_PAIR"
-            ),
+            code=f"{code_base}_DUPLICATE_PAIR",
             context={"examples": dict(list(duplicate_pairs.items())[:10])},
             message=(
                 f"{len(duplicate_pairs)} duplicate {relationship_type} source-target "
@@ -105,14 +102,8 @@ def _check_duplicate_relationship_pairs(
             ),
         )
     else:
-        code_by_type = {
-            "hasChild": "HAS_CHILD_NO_DUPLICATE_PAIRS",
-            "supports": "SUPPORTS_NO_DUPLICATE_PAIRS",
-        }
         report.info(
-            code=code_by_type.get(
-                relationship_type, f"{relationship_type.upper()}_NO_DUPLICATE_PAIRS"
-            ),
+            code=f"{code_base}_NO_DUPLICATE_PAIRS",
             message=f"No duplicate {relationship_type} source-target pairs detected.",
         )
 
@@ -724,69 +715,19 @@ def _check_progression_invariants(
 
     # No duplicate directed buildsTowards pairs (exact (source, target) repeats) and no
     # duplicate relationship identifiers within type.
-    builds_pairs = [
-        (_rel_src_id(r), _rel_tgt_id(r))
-        for r in learning_progressions.builds_towards_relationships
-    ]
-    builds_ids = [
-        str(r.identifier) for r in learning_progressions.builds_towards_relationships
-    ]
-    duplicate_builds_pairs = len(builds_pairs) - len(set(builds_pairs))
-    duplicate_builds_ids = len(builds_ids) - len(set(builds_ids))
-
-    if duplicate_builds_pairs:
-        report.error(
-            code="BUILDS_TOWARDS_DUPLICATE_PAIR",
-            message=(
-                f"{duplicate_builds_pairs} duplicate buildsTowards pair(s) detected "
-                f"(identical directed edges)."
-            ),
-        )
-    if duplicate_builds_ids:
-        report.error(
-            code="BUILDS_TOWARDS_DUPLICATE_IDS",
-            message=(
-                f"{duplicate_builds_ids} duplicate buildsTowards identifier(s) "
-                f"detected (different pairs sharing the same relationship UUID)."
-            ),
-        )
-    if not duplicate_builds_pairs and not duplicate_builds_ids:
-        report.info(
-            code="BUILDS_TOWARDS_NO_DUPLICATES",
-            message="No duplicate buildsTowards pairs.",
-        )
+    builds_pairs = _check_rel_pair_and_id_duplicates(
+        label="buildsTowards",
+        rels=list(learning_progressions.builds_towards_relationships),
+        report=report,
+    )
 
     # No duplicate relatesTo pairs (A, B) and (B, A) after canonicalization.
-    relates_pairs = [
-        canon_str_pair(_rel_src_id(r), _rel_tgt_id(r))
-        for r in learning_progressions.relates_to_relationships
-    ]
-    relates_ids = [
-        str(r.identifier) for r in learning_progressions.relates_to_relationships
-    ]
-    duplicate_relates_pairs = len(relates_pairs) - len(set(relates_pairs))
-    duplicate_relates_ids = len(relates_ids) - len(set(relates_ids))
-
-    if duplicate_relates_pairs:
-        report.error(
-            code="RELATES_TO_DUPLICATE_PAIR",
-            message=(
-                f"{duplicate_relates_pairs} duplicate relatesTo pair(s) detected "
-                f"(same endpoints in different directions)."
-            ),
-        )
-    if duplicate_relates_ids:
-        report.error(
-            code="RELATES_TO_DUPLICATE_IDS",
-            message=(
-                f"{duplicate_relates_ids} duplicate relatesTo identifier(s) "
-                f"detected (different pairs sharing the same relationship UUID)."
-            ),
-        )
-    if not duplicate_relates_pairs and not duplicate_relates_ids:
-        report.info(
-            code="RELATES_TO_NO_DUPLICATES", message="No duplicate relatesTo pairs."
-        )
+    relates_pairs = _check_rel_pair_and_id_duplicates(
+        canonicalize=True,
+        label="relatesTo",
+        rels=list(learning_progressions.relates_to_relationships),
+        report=report,
+    )
 
     # No overlap between buildsTowards and relatesTo pairs. Phase 4 uses
     # forbidden_builds_pairs to prevent this, but an exclusion bug could silently
@@ -869,6 +810,74 @@ def _check_referential_integrity(
             code="DANGLING_ENDPOINT_OVERFLOW",
             message=f"{dangling_count} total dangling endpoints (showing first 10).",
         )
+
+
+def _check_rel_pair_and_id_duplicates(
+    *,
+    canonicalize: bool = False,
+    label: str,
+    rels: list[Relationship],
+    report: GraphValidationReport,
+) -> list[tuple[str, str]]:
+    """Check for duplicate directed pairs and duplicate identifiers within a
+    relationship list.
+
+    Parameters
+    ----------
+    canonicalize
+        If True, canonicalize pairs to undirected form via `canon_str_pair` before
+        deduplication (used for symmetric relationship types like relatesTo).
+    label
+        Human-readable relationship label used in error codes and messages (e.g.,
+        `"buildsTowards"`). Error codes are derived as `<UPPER_LABEL>_DUPLICATE_PAIR`,
+        `<UPPER_LABEL>_DUPLICATE_IDS`, and `<UPPER_LABEL>_NO_DUPLICATES`.
+    rels
+        The relationships to check.
+    report
+        The GraphValidationReport to append findings to.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        The (possibly canonicalized) pairs, for downstream use (e.g., overlap checks).
+    """
+
+    upper = label.upper()
+
+    if canonicalize:
+        pairs = [canon_str_pair(_rel_src_id(r), _rel_tgt_id(r)) for r in rels]
+    else:
+        pairs = [(_rel_src_id(r), _rel_tgt_id(r)) for r in rels]
+
+    ids = [str(r.identifier) for r in rels]
+    dup_pairs = len(pairs) - len(set(pairs))
+    dup_ids = len(ids) - len(set(ids))
+
+    if dup_pairs:
+        report.error(
+            code=f"{upper}_DUPLICATE_PAIR",
+            message=(
+                f"{dup_pairs} duplicate {label} pair(s) detected "
+                f"({'same endpoints in different directions' if canonicalize else 'identical directed edges'})."
+            ),
+        )
+
+    if dup_ids:
+        report.error(
+            code=f"{upper}_DUPLICATE_IDS",
+            message=(
+                f"{dup_ids} duplicate {label} identifier(s) "
+                f"detected (different pairs sharing the same relationship UUID)."
+            ),
+        )
+
+    if not dup_pairs and not dup_ids:
+        report.info(
+            code=f"{upper}_NO_DUPLICATES",
+            message=f"No duplicate {label} pairs.",
+        )
+
+    return pairs
 
 
 def _check_relationship_endpoint_types(
@@ -993,9 +1002,9 @@ def _check_standards_presence(
 
 def _check_supports_targets_are_standards(
     *,
-    academic_standards: AcademicStandardsExport,
     learning_components: LearningComponentsExport,
     report: GraphValidationReport,
+    standard_sfi_ids: set[str],
 ) -> None:
     """Check that every supports relationship targets a Standard-type SFI.
 
@@ -1005,19 +1014,13 @@ def _check_supports_targets_are_standards(
 
     Parameters
     ----------
-    academic_standards
-        The exported Academic Standards KG artifacts.
     learning_components
         The exported Learning Components KG artifacts.
     report
         The GraphValidationReport to append findings to.
+    standard_sfi_ids
+        Set of Standard-type SFI case identifier UUIDs.
     """
-
-    standard_sfi_ids: set[str] = {
-        str(sfi.case_identifier_uuid)
-        for sfi in academic_standards.items
-        if sfi.normalized_statement_type == "Standard"
-    }
 
     non_standard_targets = 0
     examples: list[str] = []
@@ -1100,70 +1103,39 @@ def _duplicate_counts(values: list[str]) -> dict[str, int]:
     return {value: count for value, count in sorted(counts.items()) if count > 1}
 
 
-def _ensure_int_list(value: Any) -> list[int]:
-    """Coerce a possibly-missing/ill-typed field into a list[int].
+def _ensure_typed_list(*, coerce: type, value: Any) -> list:
+    """Coerce a possibly-missing/ill-typed field into a typed list.
 
     Parameters
     ----------
+    coerce
+        The target type constructor (e.g., `int`, `str`).
     value
         The value to coerce, which may be None, a scalar, or a list/tuple/set.
 
     Returns
     -------
-    list[int]
-        A list of integers parsed from the input, with non-coercible values ignored.
+    list
+        A list of values coerced via `coerce`, with None values and non-coercible
+        values silently ignored.
     """
 
     if value is None:
         return []
 
-    if isinstance(value, list):
-        values = value
-    elif isinstance(value, (tuple, set)):
-        values = list(value)
-    else:
-        values = [value]
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    out: list = []
 
-    out: list[int] = []
-
-    for x in values:
+    for x in items:
         if x is None:
             continue
         try:
-            out.append(int(x))
+            out.append(coerce(x))
         except Exception:  # pylint: disable=broad-except
             # Ignore non-coercible values rather than failing reporting.
             continue
 
     return out
-
-
-def _ensure_str_list(value: Any) -> list[str]:
-    """Coerce a possibly-missing/ill-typed field into a list[str].
-
-    Parameters
-    ----------
-    value
-        The value to coerce, which may be None, a scalar, or a list/tuple/set.
-
-    Returns
-    -------
-    list[str]
-        A list of strings parsed from the input, with non-string values coerced to
-        strings and None values ignored.
-    """
-
-    if value is None:
-        return []
-
-    if isinstance(value, list):
-        return [str(x) for x in value if x is not None]
-
-    if isinstance(value, (tuple, set)):
-        return [str(x) for x in value if x is not None]
-
-    # A single scalar (including str).
-    return [str(value)]
 
 
 def _entity_text_unit(*, language: Any, text: Any) -> dict[str, str] | None:
@@ -1289,6 +1261,28 @@ def _node_display_label(*, ctx: ExportContext, node_id: str) -> str:
     return node_id
 
 
+def _rel_endpoint_fields(rel: Relationship) -> tuple[str, str, str, str]:
+    """Unpack the four key endpoint fields from a relationship.
+
+    Parameters
+    ----------
+    rel
+        The relationship to extract fields from.
+
+    Returns
+    -------
+    tuple[str, str, str, str]
+        `(source_entity, target_entity, source_value, target_value)` as strings.
+    """
+
+    return (
+        rel.source_entity,
+        rel.target_entity,
+        str(rel.source_entity_value),
+        str(rel.target_entity_value),
+    )
+
+
 def _rel_src_id(r: Relationship) -> str:
     """Return a normalized string ID for the relationship source endpoint.
 
@@ -1321,6 +1315,33 @@ def _rel_tgt_id(r: Relationship) -> str:
     """
 
     return str(r.target_entity_value)
+
+
+def _report_endpoint_error(
+    *, code: str, message: str, report: GraphValidationReport
+) -> bool:
+    """Report an endpoint validation error and return False for inline use.
+
+    Allows callers to write `ok = _report_endpoint_error(...) and ok` patterns
+    concisely. Always returns False.
+
+    Parameters
+    ----------
+    code
+        The error code to report.
+    message
+        The error message to report.
+    report
+        The GraphValidationReport to append findings to.
+
+    Returns
+    -------
+    bool
+        Always False, indicating the endpoint check failed.
+    """
+
+    report.error(code=code, message=message)
+    return False
 
 
 def _scan_hierarchy_order(
@@ -1459,45 +1480,69 @@ def _validate_has_child(
     """
 
     ok = True
-    src_t = r.source_entity
-    tgt_t = r.target_entity
-    src = str(r.source_entity_value)
-    tgt = str(r.target_entity_value)
+    src_t, tgt_t, src, tgt = _rel_endpoint_fields(r)
+
+    def _err(msg: str) -> bool:
+        """Helper to report a type mismatch error and return False for inline use.
+
+        Parameters
+        ----------
+        msg
+            The error message to report.
+
+        Returns
+        -------
+        bool
+            Always False, indicating the endpoint check failed.
+        """
+
+        return _report_endpoint_error(
+            code="REL_ENDPOINT_TYPE_MISMATCH", message=msg, report=report
+        )
+
+    def _val(msg: str) -> bool:
+        """Helper to report a value mismatch error and return False for inline use.
+
+        Parameters
+        ----------
+        msg
+            The error message to report.
+
+        Returns
+        -------
+        bool
+            Always False, indicating the endpoint check failed.
+        """
+
+        return _report_endpoint_error(
+            code="REL_ENDPOINT_VALUE_MISMATCH", message=msg, report=report
+        )
 
     if src_t not in {"StandardsFramework", "StandardsFrameworkItem"}:
-        ok = False
-        report.error(
-            code="REL_ENDPOINT_TYPE_MISMATCH",
-            message=f"hasChild source_entity must be StandardsFramework or StandardsFrameworkItem (got {src_t}).",
+        ok = _err(
+            f"hasChild source_entity must be StandardsFramework or "
+            f"StandardsFrameworkItem (got {src_t})."
         )
 
     if tgt_t != "StandardsFrameworkItem":
-        ok = False
-        report.error(
-            code="REL_ENDPOINT_TYPE_MISMATCH",
-            message=f"hasChild target_entity must be StandardsFrameworkItem (got {tgt_t}).",
+        ok = _err(
+            f"hasChild target_entity must be StandardsFrameworkItem (got {tgt_t})."
         )
 
     if src_t == "StandardsFramework" and src != fw_id:
-        ok = False
-        report.error(
-            code="REL_ENDPOINT_VALUE_MISMATCH",
-            message="hasChild source_entity is StandardsFramework but source_entity_value is not the framework ID.",
+        ok = _val(
+            "hasChild source_entity is StandardsFramework but source_entity_value "
+            "is not the framework ID."
         )
 
     if src_t == "StandardsFrameworkItem" and src not in sfi_ids:
-        ok = False
-        report.error(
-            code="REL_ENDPOINT_VALUE_MISMATCH",
-            message="hasChild source_entity is StandardsFrameworkItem but source_entity_value is not an exported SFI ID.",
+        ok = _val(
+            "hasChild source_entity is StandardsFrameworkItem but source_entity_value "
+            "is not an exported SFI ID."
         )
 
     if tgt not in sfi_ids:
-        ok = False
-        report.error(
-            code="REL_ENDPOINT_VALUE_MISMATCH",
-            message="hasChild target_entity_value is not an exported SFI ID.",
-        )
+        ok = _val("hasChild target_entity_value is not an exported SFI ID.")
 
     return ok
 
@@ -1524,26 +1569,23 @@ def _validate_sfi_to_sfi(
 
     ok = True
     rt = r.relationship_type
-    src_t = r.source_entity
-    tgt_t = r.target_entity
-    src = str(r.source_entity_value)
-    tgt = str(r.target_entity_value)
+    src_t, tgt_t, src, tgt = _rel_endpoint_fields(r)
 
     if src_t != "StandardsFrameworkItem" or tgt_t != "StandardsFrameworkItem":
-        ok = False
-        report.error(
+        ok = _report_endpoint_error(
             code="REL_ENDPOINT_TYPE_MISMATCH",
             message=(
                 f"{rt} must connect StandardsFrameworkItem -> StandardsFrameworkItem "
                 f"(got {src_t} -> {tgt_t})."
             ),
+            report=report,
         )
 
     if src not in sfi_ids or tgt not in sfi_ids:
-        ok = False
-        report.error(
+        ok = _report_endpoint_error(
             code="REL_ENDPOINT_VALUE_MISMATCH",
             message=f"{rt} endpoints must be exported SFI IDs.",
+            report=report,
         )
 
     return ok
@@ -1576,34 +1618,43 @@ def _validate_supports(
     """
 
     ok = True
-    src_t = r.source_entity
-    tgt_t = r.target_entity
-    src = str(r.source_entity_value)
-    tgt = str(r.target_entity_value)
+    src_t, tgt_t, src, tgt = _rel_endpoint_fields(r)
+
+    def _val(msg: str) -> bool:
+        """Helper to report a value mismatch error and return False for inline use.
+
+        Parameters
+        ----------
+        msg
+            The error message to report.
+
+        Returns
+        -------
+        bool
+            Always False, indicating the endpoint check failed.
+        """
+
+        return _report_endpoint_error(
+            code="REL_ENDPOINT_VALUE_MISMATCH", message=msg, report=report
+        )
 
     if src_t != "LearningComponent" or tgt_t != "StandardsFrameworkItem":
-        ok = False
-        report.error(
+        ok = _report_endpoint_error(
             code="REL_ENDPOINT_TYPE_MISMATCH",
             message=(
                 "supports must connect LearningComponent -> StandardsFrameworkItem "
                 f"(got {src_t} -> {tgt_t})."
             ),
+            report=report,
         )
 
     if src not in lc_ids:
-        ok = False
-        report.error(
-            code="REL_ENDPOINT_VALUE_MISMATCH",
-            message="supports source_entity_value is not an exported LearningComponent ID.",
+        ok = _val(
+            "supports source_entity_value is not an exported LearningComponent ID."
         )
 
     if tgt not in sfi_ids:
-        ok = False
-        report.error(
-            code="REL_ENDPOINT_VALUE_MISMATCH",
-            message="supports target_entity_value is not an exported SFI ID.",
-        )
+        ok = _val("supports target_entity_value is not an exported SFI ID.")
 
     return ok
 
@@ -1678,8 +1729,12 @@ def build_entity_provenance_export(
     for sfi in academic_standards.items:
         meta = sfi.metadata or {}
         canonical_node_id = str(meta.get("canonical_node_id") or "")
-        decision_ids = _ensure_str_list(meta.get("source_decision_ids"))
-        segment_ids = _ensure_str_list(meta.get("source_segment_ids"))
+        decision_ids = _ensure_typed_list(
+            coerce=str, value=meta.get("source_decision_ids")
+        )
+        segment_ids = _ensure_typed_list(
+            coerce=str, value=meta.get("source_segment_ids")
+        )
 
         # Collect columns_signatures from all source decisions for this node.
         col_sigs = _collect_columns_signatures(ctx=ctx, decision_ids=decision_ids)
@@ -1690,10 +1745,12 @@ def build_entity_provenance_export(
                 canonical_node_id=canonical_node_id,
                 columns_signatures=col_sigs,
                 dialect_fallbacks=_extract_dialect_fallbacks(meta),
-                entity_identifier=str(sfi.case_identifier_uuid),
+                entity_identifier=sfi.case_identifier_uuid,
                 entity_type="StandardsFrameworkItem",
                 local_code=meta.get("local_code"),
-                page_indices=_ensure_int_list(meta.get("page_indices")),
+                page_indices=_ensure_typed_list(
+                    coerce=int, value=meta.get("page_indices")
+                ),
                 role=meta.get("role") or "unknown",
                 section_path_text=_section_path_text(
                     ctx=ctx, node_id=canonical_node_id
@@ -1709,8 +1766,12 @@ def build_entity_provenance_export(
         meta = lc.metadata or {}
         prov = meta.get("provenance") or {}
         canonical_node_id = str(meta.get("canonical_node_id") or "")
-        decision_ids = _ensure_str_list(prov.get("source_decision_ids"))
-        segment_ids = _ensure_str_list(prov.get("source_segment_ids"))
+        decision_ids = _ensure_typed_list(
+            coerce=str, value=prov.get("source_decision_ids")
+        )
+        segment_ids = _ensure_typed_list(
+            coerce=str, value=prov.get("source_segment_ids")
+        )
         split_policy = str(meta.get("split_policy") or "unknown").strip() or "unknown"
         supporting_role = (
             str(meta.get("supporting_sfi_role") or "unknown").strip() or "unknown"
@@ -1724,10 +1785,12 @@ def build_entity_provenance_export(
                     ctx=ctx, decision_ids=decision_ids
                 ),
                 dialect_fallbacks=_extract_dialect_fallbacks(meta, prov),
-                entity_identifier=str(lc.identifier),
+                entity_identifier=lc.identifier,
                 entity_type="LearningComponent",
                 local_code=meta.get("supporting_sfi_statement_code"),
-                page_indices=_ensure_int_list(prov.get("page_indices")),
+                page_indices=_ensure_typed_list(
+                    coerce=int, value=prov.get("page_indices")
+                ),
                 role=(f"learning_component:{split_policy}:supports:{supporting_role}"),
                 section_path_text=_section_path_text(
                     ctx=ctx, node_id=canonical_node_id
@@ -2309,19 +2372,18 @@ def validate_graph(
         lc_ids=lc_ids, learning_components=learning_components, report=report
     )
     _check_supports_targets_are_standards(
-        academic_standards=academic_standards,
         learning_components=learning_components,
         report=report,
+        standard_sfi_ids=standard_sfi_ids,
     )
     adj = _build_has_child_adjacency(all_rels=all_rels)
     _check_has_child_cycles(adj=adj, fw_id=fw_id, report=report, sfi_ids=sfi_ids)
 
     _check_has_child_reachability(adj=adj, fw_id=fw_id, report=report, sfi_ids=sfi_ids)
 
+    has_child_rels_count = sum(1 for r in all_rels if r.relationship_type == "hasChild")
     _check_has_child_count(
-        has_child_rels_count=sum(
-            1 for r in all_rels if r.relationship_type == "hasChild"
-        ),
+        has_child_rels_count=has_child_rels_count,
         report=report,
         sfi_entity_count=len(sfi_id_list),
     )
@@ -2365,7 +2427,6 @@ def validate_graph(
         )
 
     # Finalize summary statistics.
-    has_child_rels_count = sum(1 for r in all_rels if r.relationship_type == "hasChild")
     report.stats = {
         "builds_towards_count": (
             len(learning_progressions.builds_towards_relationships)
@@ -2414,29 +2475,14 @@ def write_reports(
         The graph validation report.
     """
 
-    write_to_json(
-        fp=kg_dirs.root / "policy_coverage_report.json",
-        json_info=policy_report.model_dump(mode="json"),
-    )
+    artifacts = [
+        ("policy_coverage_report.json", policy_report, "Policy coverage report"),
+        ("entity_provenance.json", entity_provenance, "Entity provenance export"),
+        ("graph_validation_report.json", validation_report, "Graph validation report"),
+    ]
 
-    logger.success(
-        f"Policy coverage report written to: {kg_dirs.root / 'policy_coverage_report.json'}"
-    )
+    for filename, model, label in artifacts:
+        fp = kg_dirs.root / filename
+        write_to_json(fp=fp, json_info=model.model_dump(mode="json"))
 
-    write_to_json(
-        fp=kg_dirs.root / "entity_provenance.json",
-        json_info=entity_provenance.model_dump(mode="json"),
-    )
-
-    logger.success(
-        f"Entity provenance export written to: {kg_dirs.root / 'entity_provenance.json'}"
-    )
-
-    write_to_json(
-        fp=kg_dirs.root / "graph_validation_report.json",
-        json_info=validation_report.model_dump(mode="json"),
-    )
-
-    logger.success(
-        f"Graph validation report written to: {kg_dirs.root / 'graph_validation_report.json'}"
-    )
+        logger.success(f"{label} written to: {fp}")
