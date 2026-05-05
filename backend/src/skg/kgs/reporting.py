@@ -324,6 +324,7 @@ def _check_progression_invariants(
     learning_progressions: LearningProgressionsExport,
     report: GraphValidationReport,
     sfi_ids: set[str],
+    standard_sfi_ids: set[str],
 ) -> None:
     """Check progression-specific semantic invariants.
 
@@ -335,6 +336,9 @@ def _check_progression_invariants(
         The GraphValidationReport to append findings to.
     sfi_ids
         Set of all SFI case identifier UUIDs.
+    standard_sfi_ids
+        Set of Standard-type SFI case identifier UUIDs. Progression edges are expected
+        to connect normative standards, not grouping or auxiliary SFIs.
     """
 
     all_prog_rels = list(learning_progressions.builds_towards_relationships) + list(
@@ -361,6 +365,33 @@ def _check_progression_invariants(
         report.info(
             code="PROGRESSION_ENDPOINTS_OK",
             message="All progression endpoints are SFIs.",
+        )
+
+    # Progression endpoints should be normative Standard SFIs, not grouping or
+    # auxiliary SFIs. This mirrors the LP exporter source-selection policy and catches
+    # accidental progression edges against hierarchy/grouping nodes.
+    non_standard_endpoints = sum(
+        map(
+            lambda r: (
+                _rel_src_id(r) not in standard_sfi_ids
+                or _rel_tgt_id(r) not in standard_sfi_ids
+            ),
+            all_prog_rels,
+        )
+    )
+
+    if non_standard_endpoints:
+        report.error(
+            code="PROGRESSION_ENDPOINT_NOT_STANDARD",
+            message=(
+                f"{non_standard_endpoints} progression relationship(s) reference "
+                f"non-Standard SFI endpoints."
+            ),
+        )
+    else:
+        report.info(
+            code="PROGRESSION_STANDARD_ENDPOINTS_OK",
+            message="All progression endpoints are Standard-type SFIs.",
         )
 
     # No duplicate directed buildsTowards pairs (exact (source, target) repeats) and no
@@ -1728,6 +1759,270 @@ def log_console_summary(  # pylint: disable=R0912, R1260
     logger.info("=" * 60)
 
 
+def _duplicate_counts(values: list[str]) -> dict[str, int]:
+    """Return duplicated values with their occurrence counts."""
+
+    counts = Counter(values)
+    return {value: count for value, count in sorted(counts.items()) if count > 1}
+
+
+def _check_entity_id_uniqueness(
+    *,
+    fw_id: str,
+    lc_id_list: list[str],
+    report: GraphValidationReport,
+    sfi_id_list: list[str],
+) -> set[str]:
+    """Check entity UUID uniqueness within and across entity types.
+
+    Returns the unified entity ID set used by downstream referential-integrity checks.
+    Raw ID lists are intentionally accepted instead of pre-deduplicated sets so the
+    validator can detect duplicate IDs within the same entity type.
+    """
+
+    duplicate_sfi_ids = _duplicate_counts(sfi_id_list)
+    duplicate_lc_ids = _duplicate_counts(lc_id_list)
+
+    if duplicate_sfi_ids:
+        report.error(
+            code="DUPLICATE_SFI_IDS",
+            context={"examples": dict(list(duplicate_sfi_ids.items())[:10])},
+            message=(
+                f"{len(duplicate_sfi_ids)} duplicate StandardsFrameworkItem ID(s) "
+                f"detected within the Academic Standards export."
+            ),
+        )
+
+    if duplicate_lc_ids:
+        report.error(
+            code="DUPLICATE_LC_IDS",
+            context={"examples": dict(list(duplicate_lc_ids.items())[:10])},
+            message=(
+                f"{len(duplicate_lc_ids)} duplicate LearningComponent ID(s) "
+                f"detected within the Learning Components export."
+            ),
+        )
+
+    sfi_ids = set(sfi_id_list)
+    lc_ids = set(lc_id_list)
+    cross_type_collisions: dict[str, list[str]] = {}
+
+    if fw_id in sfi_ids:
+        cross_type_collisions.setdefault(fw_id, []).extend(
+            ["StandardsFramework", "StandardsFrameworkItem"]
+        )
+
+    if fw_id in lc_ids:
+        cross_type_collisions.setdefault(fw_id, []).extend(
+            ["StandardsFramework", "LearningComponent"]
+        )
+
+    for collision_id in sorted(sfi_ids & lc_ids):
+        cross_type_collisions.setdefault(collision_id, []).extend(
+            ["StandardsFrameworkItem", "LearningComponent"]
+        )
+
+    if cross_type_collisions:
+        report.error(
+            code="ENTITY_ID_CROSS_TYPE_COLLISION",
+            context={"examples": dict(list(cross_type_collisions.items())[:10])},
+            message=(
+                f"{len(cross_type_collisions)} entity ID(s) are reused across "
+                f"different entity types. This indicates a namespace or ID generation bug."
+            ),
+        )
+
+    if not duplicate_sfi_ids and not duplicate_lc_ids and not cross_type_collisions:
+        expected_count = 1 + len(sfi_id_list) + len(lc_id_list)
+        report.info(
+            code="ENTITY_IDS_UNIQUE",
+            message=(
+                f"All {expected_count} entity IDs are unique within and across types "
+                f"(1 framework, {len(sfi_id_list)} SFIs, {len(lc_id_list)} LCs)."
+            ),
+        )
+
+    return {fw_id} | sfi_ids | lc_ids
+
+
+def _check_duplicate_relationship_pairs(
+    *,
+    all_rels: list[Relationship],
+    relationship_type: str,
+    report: GraphValidationReport,
+) -> None:
+    """Check exact duplicate source-target pairs for one relationship type."""
+
+    pairs = [
+        (_rel_src_id(r), _rel_tgt_id(r))
+        for r in all_rels
+        if r.relationship_type == relationship_type
+    ]
+    duplicate_pairs = _duplicate_counts([f"{src}->{tgt}" for src, tgt in pairs])
+
+    if duplicate_pairs:
+        code_by_type = {
+            "hasChild": "HAS_CHILD_DUPLICATE_PAIR",
+            "supports": "SUPPORTS_DUPLICATE_PAIR",
+        }
+        report.error(
+            code=code_by_type.get(
+                relationship_type, f"{relationship_type.upper()}_DUPLICATE_PAIR"
+            ),
+            context={"examples": dict(list(duplicate_pairs.items())[:10])},
+            message=(
+                f"{len(duplicate_pairs)} duplicate {relationship_type} source-target "
+                f"pair(s) detected."
+            ),
+        )
+    else:
+        code_by_type = {
+            "hasChild": "HAS_CHILD_NO_DUPLICATE_PAIRS",
+            "supports": "SUPPORTS_NO_DUPLICATE_PAIRS",
+        }
+        report.info(
+            code=code_by_type.get(
+                relationship_type, f"{relationship_type.upper()}_NO_DUPLICATE_PAIRS"
+            ),
+            message=f"No duplicate {relationship_type} source-target pairs detected.",
+        )
+
+
+def _check_has_child_count(
+    *, has_child_rels_count: int, report: GraphValidationReport, sfi_entity_count: int
+) -> None:
+    """A rooted standards tree should have exactly one hasChild edge per SFI."""
+
+    if has_child_rels_count != sfi_entity_count:
+        report.error(
+            code="HAS_CHILD_COUNT_MISMATCH",
+            message=(
+                f"Expected {sfi_entity_count} hasChild relationship(s) for "
+                f"{sfi_entity_count} exported SFI entity row(s); found "
+                f"{has_child_rels_count}."
+            ),
+        )
+    else:
+        report.info(
+            code="HAS_CHILD_COUNT_OK",
+            message=(
+                f"hasChild relationship count matches exported SFI count "
+                f"({has_child_rels_count})."
+            ),
+        )
+
+
+def _check_hierarchy_order_consistency(
+    *,
+    academic_standards: AcademicStandardsExport,
+    all_rels: list[Relationship],
+    fw_id: str,
+    report: GraphValidationReport,
+    sfi_ids: set[str],
+) -> None:
+    """Validate hierarchy-order artifact against exported hasChild relationships.
+
+    The Academic Standards exporter emits both hasChild edges and a hierarchy-order
+    artifact. They should describe the same parent-child pairs, and each parent's
+    ordered child list should be duplicate-free.
+    """
+
+    has_child_pairs = {
+        (_rel_src_id(r), _rel_tgt_id(r))
+        for r in all_rels
+        if r.relationship_type == "hasChild"
+    }
+    order_map = academic_standards.order.order or {}
+    ordered_pairs: set[tuple[str, str]] = set()
+    duplicate_order_children: dict[str, dict[str, int]] = {}
+    unknown_order_parents: list[str] = []
+    unknown_order_children: list[str] = []
+    valid_parent_ids = {fw_id} | sfi_ids
+
+    for parent_id, child_ids in order_map.items():
+        parent_s = str(parent_id)
+
+        if parent_s not in valid_parent_ids:
+            unknown_order_parents.append(parent_s)
+
+        child_id_strings = [str(child_id) for child_id in child_ids or []]
+        dupes = _duplicate_counts(child_id_strings)
+
+        if dupes:
+            duplicate_order_children[parent_s] = dupes
+
+        for child_s in child_id_strings:
+            if child_s not in sfi_ids:
+                unknown_order_children.append(child_s)
+
+            ordered_pairs.add((parent_s, child_s))
+
+    missing_from_order = sorted(has_child_pairs - ordered_pairs)
+    missing_from_relationships = sorted(ordered_pairs - has_child_pairs)
+
+    if duplicate_order_children:
+        report.error(
+            code="HIERARCHY_ORDER_DUPLICATE_CHILD",
+            context={"examples": dict(list(duplicate_order_children.items())[:10])},
+            message=(
+                f"{len(duplicate_order_children)} hierarchy-order parent(s) contain "
+                f"duplicate ordered child IDs."
+            ),
+        )
+
+    if unknown_order_parents:
+        report.error(
+            code="HIERARCHY_ORDER_UNKNOWN_PARENT",
+            context={"examples": sorted(set(unknown_order_parents))[:10]},
+            message=(
+                f"{len(set(unknown_order_parents))} hierarchy-order parent ID(s) "
+                f"do not correspond to the framework or an exported SFI."
+            ),
+        )
+
+    if unknown_order_children:
+        report.error(
+            code="HIERARCHY_ORDER_UNKNOWN_CHILD",
+            context={"examples": sorted(set(unknown_order_children))[:10]},
+            message=(
+                f"{len(set(unknown_order_children))} hierarchy-order child ID(s) "
+                f"do not correspond to exported SFIs."
+            ),
+        )
+
+    if missing_from_order:
+        report.error(
+            code="HAS_CHILD_MISSING_FROM_HIERARCHY_ORDER",
+            context={"examples": missing_from_order[:10]},
+            message=(
+                f"{len(missing_from_order)} hasChild relationship pair(s) are missing "
+                f"from academic_standards.order."
+            ),
+        )
+
+    if missing_from_relationships:
+        report.error(
+            code="HIERARCHY_ORDER_MISSING_HAS_CHILD",
+            context={"examples": missing_from_relationships[:10]},
+            message=(
+                f"{len(missing_from_relationships)} hierarchy-order pair(s) have no "
+                f"corresponding exported hasChild relationship."
+            ),
+        )
+
+    if not (
+        duplicate_order_children
+        or unknown_order_parents
+        or unknown_order_children
+        or missing_from_order
+        or missing_from_relationships
+    ):
+        report.info(
+            code="HIERARCHY_ORDER_CONSISTENT",
+            message="Hierarchy order artifact matches exported hasChild relationships.",
+        )
+
+
 def validate_graph(
     *,
     academic_standards: AcademicStandardsExport,
@@ -1739,10 +2034,17 @@ def validate_graph(
 
     Checks performed:
 
-    1. Referential integrity: all relationship endpoints reference existing entities.
-    2. Every LC has exactly one supports relationship.
-    3. hasChild: no cycles in the exported graph; framework is root; all SFIs reachable.
-    4. Self-loop check on all relationships.
+    1. Entity ID uniqueness within and across framework/SFI/LC entity types.
+    2. Referential integrity: all relationship endpoints reference existing entities.
+    3. Relationship endpoint ontology shape by relationship type.
+    4. hasChild hierarchy constraints: single parent, no cycles, reachability, count,
+        duplicate pair detection, and hierarchy-order consistency.
+    5. LearningComponent constraints: every LC has exactly one supports edge, supports
+        targets are Standard-type SFIs, and duplicate supports pairs are detected.
+    6. Standards presence: at least one Standard SFI is emitted.
+    7. Self-loop and duplicate relationship identifier checks.
+    8. Learning Progression invariants when progressions are generated: endpoints are
+        Standard SFIs, buildsTowards/relatesTo duplicate checks, and disjointness.
 
     Parameters
     ----------
@@ -1763,35 +2065,21 @@ def validate_graph(
 
     report = GraphValidationReport(doc_key=ctx.doc_key)
 
-    # Build unified entity ID sets.
+    # Build raw entity ID lists first so validation can detect duplicates within a
+    # single entity type before constructing lookup sets for referential integrity.
     fw_id = str(academic_standards.framework.case_identifier_uuid)
-    sfi_ids = {str(sfi.case_identifier_uuid) for sfi in academic_standards.items}
-    lc_ids = {str(lc.identifier) for lc in learning_components.learning_components}
-
-    all_entity_ids = {fw_id} | sfi_ids | lc_ids
-
-    # Verify no UUID collisions across entity types. UUIDv5 generation uses
-    # type-specific prefixes so collisions should be impossible, but a namespace bug
-    # could silently break referential integrity checks downstream.
-    expected_count = 1 + len(sfi_ids) + len(lc_ids)
-
-    if len(all_entity_ids) != expected_count:
-        overlap_count = expected_count - len(all_entity_ids)
-        report.error(
-            code="ENTITY_ID_COLLISION",
-            message=(
-                f"{overlap_count} UUID collision(s) detected across entity types "
-                f"(framework/SFI/LC). This indicates a namespace or ID generation bug."
-            ),
-        )
-    else:
-        report.info(
-            code="ENTITY_IDS_DISJOINT",
-            message=(
-                f"All {expected_count} entity IDs are unique across types "
-                f"(1 framework, {len(sfi_ids)} SFIs, {len(lc_ids)} LCs)."
-            ),
-        )
+    sfi_id_list = [str(sfi.case_identifier_uuid) for sfi in academic_standards.items]
+    lc_id_list = [str(lc.identifier) for lc in learning_components.learning_components]
+    sfi_ids = set(sfi_id_list)
+    lc_ids = set(lc_id_list)
+    standard_sfi_ids = {
+        str(sfi.case_identifier_uuid)
+        for sfi in academic_standards.items
+        if sfi.normalized_statement_type == "Standard"
+    }
+    all_entity_ids = _check_entity_id_uniqueness(
+        fw_id=fw_id, lc_id_list=lc_id_list, report=report, sfi_id_list=sfi_id_list
+    )
 
     # Collect all relationships across exports.
     all_rels = list(academic_standards.relationships)
@@ -1808,6 +2096,12 @@ def validate_graph(
     _check_relationship_endpoint_types(
         all_rels=all_rels, fw_id=fw_id, lc_ids=lc_ids, report=report, sfi_ids=sfi_ids
     )
+    _check_duplicate_relationship_pairs(
+        all_rels=all_rels, relationship_type="hasChild", report=report
+    )
+    _check_duplicate_relationship_pairs(
+        all_rels=all_rels, relationship_type="supports", report=report
+    )
     _check_has_child_single_parent(
         all_rels=all_rels, fw_id=fw_id, report=report, sfi_ids=sfi_ids
     )
@@ -1823,6 +2117,21 @@ def validate_graph(
     _check_has_child_cycles(adj=adj, fw_id=fw_id, report=report, sfi_ids=sfi_ids)
 
     _check_has_child_reachability(adj=adj, fw_id=fw_id, report=report, sfi_ids=sfi_ids)
+
+    _check_has_child_count(
+        has_child_rels_count=sum(
+            1 for r in all_rels if r.relationship_type == "hasChild"
+        ),
+        report=report,
+        sfi_entity_count=len(sfi_id_list),
+    )
+    _check_hierarchy_order_consistency(
+        academic_standards=academic_standards,
+        all_rels=all_rels,
+        fw_id=fw_id,
+        report=report,
+        sfi_ids=sfi_ids,
+    )
 
     _check_standards_presence(academic_standards=academic_standards, report=report)
 
@@ -1849,29 +2158,36 @@ def validate_graph(
 
     if learning_progressions:
         _check_progression_invariants(
-            learning_progressions=learning_progressions, report=report, sfi_ids=sfi_ids
+            learning_progressions=learning_progressions,
+            report=report,
+            sfi_ids=sfi_ids,
+            standard_sfi_ids=standard_sfi_ids,
         )
 
     # Finalize summary statistics.
     has_child_rels_count = sum(1 for r in all_rels if r.relationship_type == "hasChild")
     report.stats = {
-        "total_entities": len(all_entity_ids),
-        "total_sfis": len(sfi_ids),
-        "total_lcs": len(lc_ids),
-        "total_relationships": len(all_rels),
-        "has_child_count": has_child_rels_count,
-        "supports_count": sum(1 for r in all_rels if r.relationship_type == "supports"),
         "builds_towards_count": (
             len(learning_progressions.builds_towards_relationships)
             if learning_progressions
             else 0
         ),
+        "errors": len(report.errors()),
+        "has_child_count": has_child_rels_count,
         "relates_to_count": (
             len(learning_progressions.relates_to_relationships)
             if learning_progressions
             else 0
         ),
-        "errors": len(report.errors()),
+        "supports_count": sum(1 for r in all_rels if r.relationship_type == "supports"),
+        "total_entities": len(all_entity_ids),
+        "total_entity_rows": 1 + len(sfi_id_list) + len(lc_id_list),
+        "total_lc_rows": len(lc_id_list),
+        "total_lcs": len(lc_ids),
+        "total_relationships": len(all_rels),
+        "total_sfi_rows": len(sfi_id_list),
+        "total_sfis": len(sfi_ids),
+        "total_standard_sfis": len(standard_sfi_ids),
     }
 
     return report
