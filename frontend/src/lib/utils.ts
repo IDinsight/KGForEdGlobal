@@ -96,6 +96,46 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
     };
 }
 
+/**
+ * Create a set of query helpers that operate over a loaded Knowledge Graph and its
+ * pre-built indexes.
+ *
+ * This is the main "query layer" for the MCP server. It accepts a
+ * {@link KnowledgeGraphContext} (the raw graph plus the index maps produced by
+ * {@link buildKnowledgeGraphIndexes}) and returns an object of pure functions that the
+ * MCP tool handlers call to answer requests.
+ *
+ * The returned helpers fall into several categories:
+ *
+ * - **Lookup** (`findStandardItem`, `findLearningComponent`, `findAnyNode`) — resolve
+ *  a user-supplied identifier (graph node ID, CASE UUID, or `properties.identifier`)
+ *  to a concrete {@link GraphNode}.
+ *
+ * - **Hierarchy traversal** (`getAncestors`, `getDescendants`, `getChildrenAny`,
+ *  `getSiblingItems`, `getPathForNode`) — walk the `hasChild` tree in either direction.
+ *
+ * - **Cross-reference** (`getLearningComponentsForStandard`,
+ *  `getStandardsSupportedByLearningComponent`,
+ *  `getSupportRelationshipsForLearningComponent`, `getRelatesTo`) — follow `supports`
+ *  and `relatesTo` edges between SFIs and LearningComponents.
+ *
+ * - **Progression** (`buildProgressionTraversal`) — traverse
+ *  `buildsTowards`/`relatesTo` edges to map learning progressions.
+ *
+ * - **Search and browse** (`searchItems`, `buildHierarchyForSubject`, `getFacetValues`) —
+ *  full-text-ish search with facet filters and hierarchical subject browsing.
+ *
+ * - **Serialization** (`compactNode`, `detailedNode`, `provenanceForNode`) — shape a
+ *  {@link GraphNode} into the JSON payload returned by MCP tools.
+ *
+ * All functions are read-only; nothing mutates the underlying graph or indexes.
+ *
+ * @param context - A {@link KnowledgeGraphContext} containing the parsed KG and its
+ *  index maps.
+ *
+ * @returns An object of query functions consumed by the MCP tool handlers in
+ *  `index.ts`.
+ */
 export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
     const {
         frameworks,
@@ -109,444 +149,25 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
         sfisByIdentifier,
     } = context;
 
-    function getChildren(parentNodeId: string): GraphNode[] {
-        const rels = relsByStart.get(parentNodeId) || [];
-        const children: GraphNode[] = [];
-
-        for (const rel of rels) {
-            if (rel.type === "hasChild") {
-                const child = nodesById.get(rel.end);
-                if (child && child.labels.includes("StandardsFrameworkItem")) {
-                    children.push(child);
-                }
-            }
-        }
-
-        return children;
-    }
-
-    function getLearningComponentsForStandard(
-        standardNodeId: string
-    ): GraphNode[] {
-        // supports relationships: LC (start) -> Standard (end)
-        const rels = relsByEnd.get(standardNodeId) || [];
-        const components: GraphNode[] = [];
-
-        for (const rel of rels) {
-            if (rel.type === "supports") {
-                const lc = nodesById.get(rel.start);
-                if (lc && lc.labels.includes("LearningComponent")) {
-                    components.push(lc);
-                }
-            }
-        }
-
-        return components;
-    }
-
-    function getParent(childNodeId: string): GraphNode | undefined {
-        const rels = relsByEnd.get(childNodeId) || [];
-
-        for (const rel of rels) {
-            if (rel.type === "hasChild") {
-                const parent = nodesById.get(rel.start);
-                if (parent && parent.labels.includes("StandardsFrameworkItem")) {
-                    return parent;
-                }
-            }
-        }
-
-        return undefined;
-    }
-
-    function getRelatesTo(standardNodeId: string): GraphNode[] {
-        const related: GraphNode[] = [];
-
-        const outRels = relsByStart.get(standardNodeId) || [];
-        for (const rel of outRels) {
-            if (rel.type === "relatesTo") {
-                const target = nodesById.get(rel.end);
-                if (target && target.labels.includes("StandardsFrameworkItem")) {
-                    related.push(target);
-                }
-            }
-        }
-
-        const inRels = relsByEnd.get(standardNodeId) || [];
-        for (const rel of inRels) {
-            if (rel.type === "relatesTo") {
-                const source = nodesById.get(rel.start);
-                if (source && source.labels.includes("StandardsFrameworkItem")) {
-                    related.push(source);
-                }
-            }
-        }
-
-        return related;
-    }
-
-    function getUniqueGradeLevels(): string[] {
-        const grades = new Set<string>();
-        for (const node of sfis) {
-            const gl = node.properties.grade_level;
-            if (gl && Array.isArray(gl)) {
-                for (const g of gl) {
-                    grades.add(g);
-                }
-            }
-        }
-        return Array.from(grades).sort();
-    }
-
-    function getUniqueSubjects(): string[] {
-        const subjects = new Set<string>();
-        for (const node of sfis) {
-            const subj = node.properties.academic_subject;
-            if (subj) {
-                subjects.add(subj.replace(/\n/g, " ").trim());
-            }
-        }
-        return Array.from(subjects).sort();
-    }
-
-    function compactNode(node: GraphNode, maxDescription = 220): Record<string, unknown> {
-        const metadata = node.properties.metadata ?? {};
-        return {
-            nodeType: getNodeKind(node),
-            labels: node.labels,
-            identifier: node.properties.identifier,
-            uuid: node.id,
-            name: node.properties.name,
-            description: truncateText(node.properties.description, maxDescription),
-            subject: node.properties.academic_subject?.replace(/\n/g, " "),
-            gradeLevel: node.properties.grade_level,
-            statementCode: node.properties.statement_code,
-            statementType: node.properties.statement_type,
-            normalizedStatementType: node.properties.normalized_statement_type,
-            sourceLabel: metadata.source_label ?? metadata.supporting_sfi_source_label,
-            canonicalPathKey: metadata.canonical_path_key ?? metadata.supporting_sfi_canonical_path_key,
-        };
-    }
-
-    function detailedNode(node: GraphNode): Record<string, unknown> {
-        return {
-            ...compactNode(node, 1000),
-            properties: {
-                ...node.properties,
-                academic_subject: node.properties.academic_subject?.replace(/\n/g, " "),
-            },
-        };
-    }
-
-    function findStandardItem(identifier: string): GraphNode | undefined {
-        const byIdentifier = sfisByIdentifier.get(identifier);
-        if (byIdentifier) return byIdentifier;
-
-        const byId = nodesById.get(identifier);
-        if (byId && byId.labels.includes("StandardsFrameworkItem")) return byId;
-
-        return sfis.find(
-            (node) =>
-                node.properties.case_identifier_uuid === identifier ||
-                node.properties.case_identifier_uri === identifier ||
-                node.properties.metadata?.canonical_node_id === identifier
-        );
-    }
-
-    function findLearningComponent(identifier: string): GraphNode | undefined {
-        const byIdentifier = lcByIdentifier.get(identifier);
-        if (byIdentifier) return byIdentifier;
-
-        const byId = nodesById.get(identifier);
-        if (byId && byId.labels.includes("LearningComponent")) return byId;
-
-        return learningComponents.find(
-            (node) => node.properties.metadata?.canonical_node_id === identifier
-        );
-    }
-
-    function findAnyNode(identifier: string): { type: string; item: GraphNode } | null {
-        const standard = findStandardItem(identifier);
-        if (standard) return {type: "standard_item", item: standard};
-
-        const learningComponent = findLearningComponent(identifier);
-        if (learningComponent) return {
-            type: "learning_component",
-            item: learningComponent
-        };
-
-        const framework = nodesById.get(identifier);
-        if (framework && framework.labels.includes("StandardsFramework")) {
-            return {type: "framework", item: framework};
-        }
-
-        return null;
-    }
-
-    function getParentAny(childNodeId: string): GraphNode | undefined {
-        const rels = relsByEnd.get(childNodeId) || [];
-        const parentRel = rels
-            .filter((rel) => rel.type === "hasChild")
-            .sort(
-                (a, b) =>
-                    (a.properties.order_index ?? a.properties.metadata?.canonical_order_index ?? 0) -
-                    (b.properties.order_index ?? b.properties.metadata?.canonical_order_index ?? 0)
-            )[0];
-
-        return parentRel ? nodesById.get(parentRel.start) : undefined;
-    }
-
-    function getChildrenAny(parentNodeId: string): GraphNode[] {
-        const rels = relsByStart.get(parentNodeId) || [];
-        return rels
-            .filter((rel) => rel.type === "hasChild")
-            .sort(
-                (a, b) =>
-                    (a.properties.order_index ?? a.properties.metadata?.canonical_order_index ?? 0) -
-                    (b.properties.order_index ?? b.properties.metadata?.canonical_order_index ?? 0)
-            )
-            .map((rel) => nodesById.get(rel.end))
-            .filter((node): node is GraphNode => Boolean(node));
-    }
-
-    function getAncestors(nodeId: string): GraphNode[] {
-        const ancestors: GraphNode[] = [];
-        const seen = new Set<string>();
-        let currentParent = getParentAny(nodeId);
-
-        while (currentParent && !seen.has(currentParent.id)) {
-            seen.add(currentParent.id);
-            ancestors.unshift(currentParent);
-            currentParent = getParentAny(currentParent.id);
-        }
-
-        return ancestors;
-    }
-
-    function getDescendants(nodeId: string, depth: number): GraphNode[] {
-        const descendants: GraphNode[] = [];
-        const seen = new Set<string>();
-
-        function visit(currentNodeId: string, remainingDepth: number) {
-            if (remainingDepth <= 0) return;
-            for (const child of getChildrenAny(currentNodeId)) {
-                if (seen.has(child.id)) continue;
-                seen.add(child.id);
-                descendants.push(child);
-                visit(child.id, remainingDepth - 1);
-            }
-        }
-
-        visit(nodeId, depth);
-        return descendants;
-    }
-
-    function getSiblingItems(nodeId: string): GraphNode[] {
-        const parent = getParentAny(nodeId);
-        if (!parent) return [];
-        return getChildrenAny(parent.id).filter((node) => node.id !== nodeId);
-    }
-
-    function getStandardsSupportedByLearningComponent(
-      learningComponentNodeId: string
-    ): GraphNode[] {
-      const rels = relsByStart.get(learningComponentNodeId) || [];
-
-      return rels
-        .filter((rel) => rel.type === "supports")
-        .map((rel) => nodesById.get(rel.end))
-        .filter((node): node is GraphNode => {
-          if (!node) return false;
-          return node.labels.includes("StandardsFrameworkItem");
-        });
-    }
-
-    function getSupportRelationshipsForLearningComponent(learningComponentNodeId: string): GraphRelationship[] {
-        return (relsByStart.get(learningComponentNodeId) || []).filter(
-            (rel) => rel.type === "supports"
-        );
-    }
-
-    function getPathForNode(node: GraphNode): Record<string, unknown> {
-        if (node.labels.includes("LearningComponent")) {
-            const supportedStandards = getStandardsSupportedByLearningComponent(node.id);
-            const primaryStandard = supportedStandards[0];
-            return {
-                target: compactNode(node),
-                supportedStandardCount: supportedStandards.length,
-                supportedStandards: supportedStandards.map((standard) => compactNode(standard)),
-                path: primaryStandard
-                    ? [...getAncestors(primaryStandard.id), primaryStandard, node].map((pathNode) =>
-                        compactNode(pathNode)
-                    )
-                    : [compactNode(node)],
-            };
-        }
-
-        return {
-            target: compactNode(node),
-            path: [...getAncestors(node.id), node].map((pathNode) => compactNode(pathNode)),
-        };
-    }
-
-    function getFacetValues(): Record<string, unknown> {
-        return {
-            subjects: getUniqueSubjects(),
-            gradeLevels: getUniqueGradeLevels(),
-            nodeTypes: ["framework", "standard_item", "learning_component"],
-            relationshipTypes: uniqueSorted(kg.relationships.map((rel) => rel.type)),
-            statementTypes: uniqueSorted(sfis.map((node) => node.properties.statement_type)),
-            normalizedStatementTypes: uniqueSorted(
-                sfis.map((node) => node.properties.normalized_statement_type)
-            ),
-            sourceLabels: uniqueSorted(
-                sfis.map((node) => node.properties.metadata?.source_label as string | undefined)
-            ),
-            learningComponentSourceLabels: uniqueSorted(
-                learningComponents.map(
-                    (node) => node.properties.metadata?.supporting_sfi_source_label as string | undefined
-                )
-            ),
-            counts: {
-                frameworks: frameworks.length,
-                standardItems: sfis.length,
-                learningComponents: learningComponents.length,
-                relationships: kg.relationships.length,
-                byRelationshipType: countBy(kg.relationships.map((rel) => rel.type)),
-                byStatementType: countBy(sfis.map((node) => node.properties.statement_type)),
-                bySourceLabel: countBy(
-                    sfis.map((node) => node.properties.metadata?.source_label as string | undefined)
-                ),
-            },
-        };
-    }
-
-    function nodeMatchesSubject(node: GraphNode, subject?: string): boolean {
-        if (!subject) return true;
-        const expected = normalizeOptionalText(subject);
-        const actual = normalizeOptionalText(node.properties.academic_subject?.replace(/\n/g, " "));
-        return actual === expected;
-    }
-
-    function nodeMatchesGrade(node: GraphNode, grade?: string): boolean {
-        if (!grade) return true;
-        const expected = normalizeOptionalText(grade);
-        const gradeLevels = node.properties.grade_level ?? node.properties.metadata?.supporting_sfi_grade_level;
-        return Array.isArray(gradeLevels)
-            ? gradeLevels.some((g) => normalizeOptionalText(String(g)) === expected)
-            : false;
-    }
-
-    function nodeMatchesStatementType(node: GraphNode, statementType?: string): boolean {
-        if (!statementType) return true;
-        const expected = normalizeOptionalText(statementType);
-        const candidates = [
-            node.properties.statement_type,
-            node.properties.normalized_statement_type,
-            node.properties.metadata?.supporting_sfi_statement_type as string | undefined,
-            node.properties.metadata?.supporting_sfi_normalized_statement_type as string | undefined,
-        ];
-        return candidates.some((candidate) => normalizeOptionalText(candidate) === expected);
-    }
-
-    function nodeMatchesSourceLabel(node: GraphNode, sourceLabel?: string): boolean {
-        if (!sourceLabel) return true;
-        const expected = normalizeOptionalText(sourceLabel);
-        const candidates = [
-            node.properties.metadata?.source_label as string | undefined,
-            node.properties.metadata?.supporting_sfi_source_label as string | undefined,
-        ];
-        return candidates.some((candidate) => normalizeOptionalText(candidate) === expected);
-    }
-
-    function getSearchText(node: GraphNode): string {
-        const metadata = node.properties.metadata ?? {};
-        const fields = [
-            node.id,
-            node.properties.identifier,
-            node.properties.description,
-            node.properties.name,
-            node.properties.statement_code,
-            node.properties.statement_type,
-            node.properties.normalized_statement_type,
-            node.properties.academic_subject,
-            metadata.source_label,
-            metadata.normalized_text,
-            metadata.canonical_path_key,
-            metadata.supporting_sfi_source_label,
-            metadata.supporting_sfi_statement_type,
-            metadata.supporting_sfi_canonical_path_key,
-            metadata.split_display_text,
-            metadata.split_id_text,
-            metadata.llm_rationale,
-        ];
-
-        return fields
-            .filter((value): value is string => typeof value === "string")
-            .join(" ")
-            .replace(/\n/g, " ")
-            .toLowerCase();
-    }
-
-    function searchItems(options: {
-        grade?: string;
-        limit?: number;
-        nodeType?: SearchNodeType;
-        query?: string;
-        sourceLabel?: string;
-        statementType?: string;
-        subject?: string;
-    }): Array<{ type: string; item: GraphNode }> {
-        const q = normalizeOptionalText(options.query) ?? "";
-        const nodeType = options.nodeType ?? "all";
-        const limit = options.limit ?? 20;
-        const results: Array<{ type: string; item: GraphNode }> = [];
-
-        const candidateGroups: Array<{ type: string; nodes: GraphNode[] }> = [];
-        if (nodeType === "all" || nodeType === "standard_item") {
-            candidateGroups.push({type: "standard_item", nodes: sfis});
-        }
-        if (nodeType === "all" || nodeType === "learning_component") {
-            candidateGroups.push({
-                type: "learning_component",
-                nodes: learningComponents
-            });
-        }
-
-        for (const group of candidateGroups) {
-            for (const node of group.nodes) {
-                if (results.length >= limit) return results;
-                if (!nodeMatchesSubject(node, options.subject)) continue;
-                if (!nodeMatchesGrade(node, options.grade)) continue;
-                if (!nodeMatchesStatementType(node, options.statementType)) continue;
-                if (!nodeMatchesSourceLabel(node, options.sourceLabel)) continue;
-                if (q && !getSearchText(node).includes(q)) continue;
-                results.push({type: group.type, item: node});
-            }
-        }
-
-        return results.slice(0, limit);
-    }
-
     function buildHierarchyForSubject(
         subject: string,
         gradeFilter?: string
     ): object[] {
-        const normalizedSubject = subject.toLowerCase().replace(/\s+/g, " ");
-
+        const normalizedSubject = normalizeOptionalText(subject);
         const topLevelItems: GraphNode[] = [];
 
         for (const node of sfis) {
-            const itemSubject = node.properties.academic_subject
-                ?.replace(/\n/g, " ")
-                .toLowerCase()
-                .trim();
+            const itemSubject = normalizeOptionalText(
+                node.properties.academic_subject?.replace(/\n/g, " ")
+            );
+
             if (itemSubject === normalizedSubject) {
                 const parent = getParent(node.id);
-                if (
-                    !parent ||
-                    parent.properties.academic_subject?.toLowerCase() !== normalizedSubject
-                ) {
+                const parentSubject = normalizeOptionalText(
+                    parent?.properties.academic_subject?.replace(/\n/g, " ")
+                );
+
+                if (!parent || parentSubject !== normalizedSubject) {
                     topLevelItems.push(node);
                 }
             }
@@ -559,11 +180,9 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
                     ? children.filter(
                         (c) =>
                             c.properties.grade_level?.includes(gradeFilter) ||
-                            c.properties.statement_code?.includes(gradeFilter) ||
-                            children.length === 0
+                            c.properties.statement_code?.includes(gradeFilter)
                     )
                     : children;
-
             return {
                 identifier: node.properties.identifier,
                 uuid: node.id,
@@ -616,7 +235,6 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
                     seenFrom.add(node.id);
                     return true;
                 });
-
             return [
                 ...direct,
                 ...direct.flatMap((node) => collectBuildsFrom(node.id, remainingDepth - 1)),
@@ -625,6 +243,7 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
 
         function collectBuildsTowards(nodeId: string, remainingDepth: number): GraphNode[] {
             if (remainingDepth <= 0) return [];
+
             const direct = (relsByStart.get(nodeId) || [])
                 .filter((rel) => rel.type === "buildsTowards")
                 .map((rel) => nodesById.get(rel.end))
@@ -645,10 +264,10 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
 
         const related = getRelatesTo(standardNode.id).filter((node) => {
             if (seenRelated.has(node.id)) return false;
+
             seenRelated.add(node.id);
             return true;
         });
-
         return {
             target: compactNode(standardNode),
             depth,
@@ -668,12 +287,411 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
         };
     }
 
+    function compactNode(node: GraphNode, maxDescription = 220): Record<string, unknown> {
+        const metadata = node.properties.metadata ?? {};
+        return {
+            nodeType: getNodeKind(node),
+            labels: node.labels,
+            identifier: node.properties.identifier,
+            uuid: node.id,
+            name: node.properties.name,
+            description: truncateText(node.properties.description, maxDescription),
+            subject: node.properties.academic_subject?.replace(/\n/g, " "),
+            gradeLevel: node.properties.grade_level,
+            statementCode: node.properties.statement_code,
+            statementType: node.properties.statement_type,
+            normalizedStatementType: node.properties.normalized_statement_type,
+            sourceLabel: metadata.source_label ?? metadata.supporting_sfi_source_label,
+            canonicalPathKey: metadata.canonical_path_key ?? metadata.supporting_sfi_canonical_path_key,
+        };
+    }
+
+    function detailedNode(node: GraphNode): Record<string, unknown> {
+        return {
+            ...compactNode(node, 1000),
+            properties: {
+                ...node.properties,
+                academic_subject: node.properties.academic_subject?.replace(/\n/g, " "),
+            },
+        };
+    }
+
+    function findAnyNode(identifier: string): { type: string; item: GraphNode } | null {
+        const standard = findStandardItem(identifier);
+
+        if (standard) return {type: "standard_item", item: standard};
+
+        const learningComponent = findLearningComponent(identifier);
+
+        if (learningComponent) return {
+            type: "learning_component",
+            item: learningComponent
+        };
+
+        const framework = nodesById.get(identifier);
+
+        if (framework && framework.labels.includes("StandardsFramework")) {
+            return {type: "framework", item: framework};
+        }
+
+        return null;
+    }
+
+    function findLearningComponent(identifier: string): GraphNode | undefined {
+        const byIdentifier = lcByIdentifier.get(identifier);
+
+        if (byIdentifier) return byIdentifier;
+
+        const byId = nodesById.get(identifier);
+
+        if (byId && byId.labels.includes("LearningComponent")) return byId;
+
+        return learningComponents.find(
+            (node) => node.properties.metadata?.canonical_node_id === identifier
+        );
+    }
+
+    function findStandardItem(identifier: string): GraphNode | undefined {
+        const byIdentifier = sfisByIdentifier.get(identifier);
+
+        if (byIdentifier) return byIdentifier;
+
+        const byId = nodesById.get(identifier);
+
+        if (byId && byId.labels.includes("StandardsFrameworkItem")) return byId;
+
+        return sfis.find(
+            (node) =>
+                node.properties.case_identifier_uuid === identifier ||
+                node.properties.case_identifier_uri === identifier ||
+                node.properties.metadata?.canonical_node_id === identifier
+        );
+    }
+
+    function getAncestors(nodeId: string): GraphNode[] {
+        const ancestors: GraphNode[] = [];
+        const seen = new Set<string>();
+        let currentParent = getParentAny(nodeId);
+
+        while (currentParent && !seen.has(currentParent.id)) {
+            seen.add(currentParent.id);
+            ancestors.unshift(currentParent);
+            currentParent = getParentAny(currentParent.id);
+        }
+
+        return ancestors;
+    }
+
+    function getChildren(parentNodeId: string): GraphNode[] {
+        const rels = relsByStart.get(parentNodeId) || [];
+        const children: GraphNode[] = [];
+
+        for (const rel of rels) {
+            if (rel.type === "hasChild") {
+                const child = nodesById.get(rel.end);
+
+                if (child && child.labels.includes("StandardsFrameworkItem")) {
+                    children.push(child);
+                }
+            }
+        }
+
+        return children;
+    }
+
+    function getChildrenAny(parentNodeId: string): GraphNode[] {
+        const rels = relsByStart.get(parentNodeId) || [];
+        return rels
+            .filter((rel) => rel.type === "hasChild")
+            .sort(
+                (a, b) =>
+                    (a.properties.order_index ?? a.properties.metadata?.canonical_order_index ?? 0) -
+                    (b.properties.order_index ?? b.properties.metadata?.canonical_order_index ?? 0)
+            )
+            .map((rel) => nodesById.get(rel.end))
+            .filter((node): node is GraphNode => Boolean(node));
+    }
+
+    function getDescendants(nodeId: string, depth: number): GraphNode[] {
+        const descendants: GraphNode[] = [];
+        const seen = new Set<string>();
+
+        function visit(currentNodeId: string, remainingDepth: number) {
+            if (remainingDepth <= 0) return;
+            for (const child of getChildrenAny(currentNodeId)) {
+                if (seen.has(child.id)) continue;
+                seen.add(child.id);
+                descendants.push(child);
+                visit(child.id, remainingDepth - 1);
+            }
+        }
+
+        visit(nodeId, depth);
+        return descendants;
+    }
+
+    function getFacetValues(): Record<string, unknown> {
+        return {
+            subjects: getUniqueSubjects(),
+            gradeLevels: getUniqueGradeLevels(),
+            nodeTypes: ["framework", "standard_item", "learning_component"],
+            relationshipTypes: uniqueSorted(kg.relationships.map((rel) => rel.type)),
+            statementTypes: uniqueSorted(sfis.map((node) => node.properties.statement_type)),
+            normalizedStatementTypes: uniqueSorted(
+                sfis.map((node) => node.properties.normalized_statement_type)
+            ),
+            sourceLabels: uniqueSorted(
+                sfis.map((node) => node.properties.metadata?.source_label as string | undefined)
+            ),
+            learningComponentSourceLabels: uniqueSorted(
+                learningComponents.map(
+                    (node) => node.properties.metadata?.supporting_sfi_source_label as string | undefined
+                )
+            ),
+            counts: {
+                frameworks: frameworks.length,
+                standardItems: sfis.length,
+                learningComponents: learningComponents.length,
+                relationships: kg.relationships.length,
+                byRelationshipType: countBy(kg.relationships.map((rel) => rel.type)),
+                byStatementType: countBy(sfis.map((node) => node.properties.statement_type)),
+                bySourceLabel: countBy(
+                    sfis.map((node) => node.properties.metadata?.source_label as string | undefined)
+                ),
+            },
+        };
+    }
+
+    function getLearningComponentsForStandard(
+        standardNodeId: string
+    ): GraphNode[] {
+        // supports relationships: LC (start) -> Standard (end).
+        const rels = relsByEnd.get(standardNodeId) || [];
+        const components: GraphNode[] = [];
+
+        for (const rel of rels) {
+            if (rel.type === "supports") {
+                const lc = nodesById.get(rel.start);
+
+                if (lc && lc.labels.includes("LearningComponent")) {
+                    components.push(lc);
+                }
+            }
+        }
+
+        return components;
+    }
+
+    function getParent(childNodeId: string): GraphNode | undefined {
+        const rels = relsByEnd.get(childNodeId) || [];
+
+        for (const rel of rels) {
+            if (rel.type === "hasChild") {
+                const parent = nodesById.get(rel.start);
+
+                if (parent && parent.labels.includes("StandardsFrameworkItem")) {
+                    return parent;
+                }
+            }
+        }
+
+        return undefined;
+    }
+
+    function getParentAny(childNodeId: string): GraphNode | undefined {
+        const rels = relsByEnd.get(childNodeId) || [];
+        const parentRel = rels
+            .filter((rel) => rel.type === "hasChild")
+            .sort(
+                (a, b) =>
+                    (a.properties.order_index ?? a.properties.metadata?.canonical_order_index ?? 0) -
+                    (b.properties.order_index ?? b.properties.metadata?.canonical_order_index ?? 0)
+            )[0];
+
+        return parentRel ? nodesById.get(parentRel.start) : undefined;
+    }
+
+    function getPathForNode(node: GraphNode): Record<string, unknown> {
+        if (node.labels.includes("LearningComponent")) {
+            const supportedStandards = getStandardsSupportedByLearningComponent(node.id);
+            const primaryStandard = supportedStandards[0];
+            return {
+                target: compactNode(node),
+                supportedStandardCount: supportedStandards.length,
+                supportedStandards: supportedStandards.map((standard) => compactNode(standard)),
+                path: primaryStandard
+                    ? [...getAncestors(primaryStandard.id), primaryStandard, node].map((pathNode) =>
+                        compactNode(pathNode)
+                    )
+                    : [compactNode(node)],
+            };
+        }
+
+        return {
+            target: compactNode(node),
+            path: [...getAncestors(node.id), node].map((pathNode) => compactNode(pathNode)),
+        };
+    }
+
+    function getRelatesTo(standardNodeId: string): GraphNode[] {
+        const related: GraphNode[] = [];
+        const outRels = relsByStart.get(standardNodeId) || [];
+
+        for (const rel of outRels) {
+            if (rel.type === "relatesTo") {
+                const target = nodesById.get(rel.end);
+
+                if (target && target.labels.includes("StandardsFrameworkItem")) {
+                    related.push(target);
+                }
+            }
+        }
+
+        const inRels = relsByEnd.get(standardNodeId) || [];
+
+        for (const rel of inRels) {
+            if (rel.type === "relatesTo") {
+                const source = nodesById.get(rel.start);
+
+                if (source && source.labels.includes("StandardsFrameworkItem")) {
+                    related.push(source);
+                }
+            }
+        }
+
+        return related;
+    }
+
+    function getSearchText(node: GraphNode): string {
+        const metadata = node.properties.metadata ?? {};
+        const fields = [
+            node.id,
+            node.properties.identifier,
+            node.properties.description,
+            node.properties.name,
+            node.properties.statement_code,
+            node.properties.statement_type,
+            node.properties.normalized_statement_type,
+            node.properties.academic_subject,
+            metadata.source_label,
+            metadata.normalized_text,
+            metadata.canonical_path_key,
+            metadata.supporting_sfi_source_label,
+            metadata.supporting_sfi_statement_type,
+            metadata.supporting_sfi_canonical_path_key,
+            metadata.split_display_text,
+            metadata.split_id_text,
+            metadata.llm_rationale,
+        ];
+        return fields
+            .filter((value): value is string => typeof value === "string")
+            .join(" ")
+            .replace(/\n/g, " ")
+            .toLowerCase();
+    }
+
+    function getSiblingItems(nodeId: string): GraphNode[] {
+        const parent = getParentAny(nodeId);
+
+        if (!parent) return [];
+
+        return getChildrenAny(parent.id).filter((node) => node.id !== nodeId);
+    }
+
+    function getStandardsSupportedByLearningComponent(
+      learningComponentNodeId: string
+    ): GraphNode[] {
+      const rels = relsByStart.get(learningComponentNodeId) || [];
+      return rels
+        .filter((rel) => rel.type === "supports")
+        .map((rel) => nodesById.get(rel.end))
+        .filter((node): node is GraphNode => {
+          if (!node) return false;
+          return node.labels.includes("StandardsFrameworkItem");
+        });
+    }
+
+    function getSupportRelationshipsForLearningComponent(learningComponentNodeId: string): GraphRelationship[] {
+        return (relsByStart.get(learningComponentNodeId) || []).filter(
+            (rel) => rel.type === "supports"
+        );
+    }
+
+    function getUniqueGradeLevels(): string[] {
+        const grades = new Set<string>();
+
+        for (const node of sfis) {
+            const gl = node.properties.grade_level;
+
+            if (gl && Array.isArray(gl)) {
+                for (const g of gl) {
+                    grades.add(g);
+                }
+            }
+        }
+        return Array.from(grades).sort();
+    }
+
+    function getUniqueSubjects(): string[] {
+        const subjects = new Set<string>();
+
+        for (const node of sfis) {
+            const subj = node.properties.academic_subject;
+
+            if (subj) {
+                subjects.add(subj.replace(/\n/g, " ").trim());
+            }
+        }
+        return Array.from(subjects).sort();
+    }
+
+    function nodeMatchesGrade(node: GraphNode, grade?: string): boolean {
+        if (!grade) return true;
+
+        const expected = normalizeOptionalText(grade);
+        const gradeLevels = node.properties.grade_level ?? node.properties.metadata?.supporting_sfi_grade_level;
+        return Array.isArray(gradeLevels)
+            ? gradeLevels.some((g) => normalizeOptionalText(String(g)) === expected)
+            : false;
+    }
+
+    function nodeMatchesSourceLabel(node: GraphNode, sourceLabel?: string): boolean {
+        if (!sourceLabel) return true;
+
+        const expected = normalizeOptionalText(sourceLabel);
+        const candidates = [
+            node.properties.metadata?.source_label as string | undefined,
+            node.properties.metadata?.supporting_sfi_source_label as string | undefined,
+        ];
+        return candidates.some((candidate) => normalizeOptionalText(candidate) === expected);
+    }
+
+    function nodeMatchesStatementType(node: GraphNode, statementType?: string): boolean {
+        if (!statementType) return true;
+
+        const expected = normalizeOptionalText(statementType);
+        const candidates = [
+            node.properties.statement_type,
+            node.properties.normalized_statement_type,
+            node.properties.metadata?.supporting_sfi_statement_type as string | undefined,
+            node.properties.metadata?.supporting_sfi_normalized_statement_type as string | undefined,
+        ];
+        return candidates.some((candidate) => normalizeOptionalText(candidate) === expected);
+    }
+
+    function nodeMatchesSubject(node: GraphNode, subject?: string): boolean {
+        if (!subject) return true;
+
+        const expected = normalizeOptionalText(subject);
+        const actual = normalizeOptionalText(node.properties.academic_subject?.replace(/\n/g, " "));
+        return actual === expected;
+    }
+
     function provenanceForNode(node: GraphNode): Record<string, unknown> {
         const metadata = node.properties.metadata ?? {};
         const supportedStandards = node.labels.includes("LearningComponent")
             ? getStandardsSupportedByLearningComponent(node.id)
             : [];
-
         return {
             target: compactNode(node),
             attributionStatement: node.properties.attribution_statement,
@@ -695,6 +713,53 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
             supportingSfiAuxStatements: metadata.supporting_sfi_aux_statements,
             llmRationale: metadata.llm_rationale,
         };
+    }
+
+    function searchItems(options: {
+        grade?: string;
+        limit?: number;
+        nodeType?: SearchNodeType;
+        query?: string;
+        sourceLabel?: string;
+        statementType?: string;
+        subject?: string;
+    }): Array<{ type: string; item: GraphNode }> {
+        const q = normalizeOptionalText(options.query) ?? "";
+        const nodeType = options.nodeType ?? "all";
+        const limit = options.limit ?? 20;
+        const results: Array<{ type: string; item: GraphNode }> = [];
+        const candidateGroups: Array<{ type: string; nodes: GraphNode[] }> = [];
+
+        if (nodeType === "all" || nodeType === "standard_item") {
+            candidateGroups.push({type: "standard_item", nodes: sfis});
+        }
+
+        if (nodeType === "all" || nodeType === "learning_component") {
+            candidateGroups.push({
+                type: "learning_component",
+                nodes: learningComponents
+            });
+        }
+
+        for (const group of candidateGroups) {
+            for (const node of group.nodes) {
+                if (results.length >= limit) return results;
+
+                if (!nodeMatchesSubject(node, options.subject)) continue;
+
+                if (!nodeMatchesGrade(node, options.grade)) continue;
+
+                if (!nodeMatchesStatementType(node, options.statementType)) continue;
+
+                if (!nodeMatchesSourceLabel(node, options.sourceLabel)) continue;
+
+                if (q && !getSearchText(node).includes(q)) continue;
+
+                results.push({type: group.type, item: node});
+            }
+        }
+
+        return results.slice(0, limit);
     }
 
     return {
