@@ -5,7 +5,11 @@ import {readFileSync} from "fs";
 import {join} from "path";
 
 // Package Library
-import type {ProgressionDirection, SearchNodeType} from "./schemas.js";
+import {
+    KnowledgeGraphSchema,
+    type ProgressionDirection,
+    type SearchNodeType
+} from "./schemas.js";
 
 /**
  * Build fast-lookup indexes over a parsed Knowledge Graph.
@@ -74,13 +78,23 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
     const relsByEnd = new Map<string, GraphRelationship[]>();
 
     for (const rel of kg.relationships) {
-        const existingStartRels = relsByStart.get(rel.start) || [];
-        existingStartRels.push(rel);
-        relsByStart.set(rel.start, existingStartRels);
+        let existingStartRels = relsByStart.get(rel.start);
 
-        const existingEndRels = relsByEnd.get(rel.end) || [];
+        if (!existingStartRels) {
+            existingStartRels = [];
+            relsByStart.set(rel.start, existingStartRels);
+        }
+
+        existingStartRels.push(rel);
+
+        let existingEndRels = relsByEnd.get(rel.end);
+
+        if (!existingEndRels) {
+            existingEndRels = [];
+            relsByEnd.set(rel.end, existingEndRels);
+        }
+
         existingEndRels.push(rel);
-        relsByEnd.set(rel.end, existingEndRels);
     }
 
     return {
@@ -599,16 +613,16 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
     }
 
     function getStandardsSupportedByLearningComponent(
-      learningComponentNodeId: string
+        learningComponentNodeId: string
     ): GraphNode[] {
-      const rels = relsByStart.get(learningComponentNodeId) || [];
-      return rels
-        .filter((rel) => rel.type === "supports")
-        .map((rel) => nodesById.get(rel.end))
-        .filter((node): node is GraphNode => {
-          if (!node) return false;
-          return node.labels.includes("StandardsFrameworkItem");
-        });
+        const rels = relsByStart.get(learningComponentNodeId) || [];
+        return rels
+            .filter((rel) => rel.type === "supports")
+            .map((rel) => nodesById.get(rel.end))
+            .filter((node): node is GraphNode => {
+                if (!node) return false;
+                return node.labels.includes("StandardsFrameworkItem");
+            });
     }
 
     function getSupportRelationshipsForLearningComponent(learningComponentNodeId: string): GraphRelationship[] {
@@ -791,65 +805,32 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
  * Load and validate a Knowledge Graph JSON file from the bundled examples directory.
  *
  * Resolves the file path relative to `runtimeDir` (expected to be the compiled source
- * directory) via `../../examples/kgs/<kgFn>`. Parses the JSON and performs minimal
- * structural validation (presence of `nodes` and `relationships` arrays). Also logs a
- * summary of loaded node/relationship counts to stderr.
+ * directory) via `../../examples/kgs/<kgFn>`. Loads in three stages (file read, JSON
+ * parse, schema validation) each of which surfaces a distinct, kgFp-tagged error
+ * message so connector setup failures are easy to diagnose from Claude Desktop's log
+ * output. Schema validation is enforced via {@link KnowledgeGraphSchema} (Zod) and
+ * checks that every node has `id`, `labels`, and `properties.identifier`, and every
+ * relationship has `id`, `start`, `end`, and `type`. Extra fields are passed through.
+ * Logs a summary of loaded node/relationship counts to stderr.
  *
  * @param kgFn - Filename of the KG JSON file (e.g. "senegal_reading.json").
  * @param runtimeDir - Directory of the calling module, typically
  *  `dirname(fileURLToPath(import.meta.url))`.
  *
- * @returns The parsed {@link KnowledgeGraph} object.
+ * @returns The parsed and validated {@link KnowledgeGraph} object.
  *
- *  @throws If the file is not found or the JSON structure is invalid.
+ * @throws If the file is not found, unreadable, malformed JSON, or fails schema
+ *  validation. All thrown errors include the resolved filepath in the message.
  */
 export function loadKnowledgeGraph(kgFn: string, runtimeDir: string): KnowledgeGraph {
     const kgFp = join(runtimeDir, "..", "..", "examples", "kgs", kgFn);
 
     console.error("Resolved KG filepath:", kgFp);
 
+    let rawData: string;
+
     try {
-        const rawData = readFileSync(kgFp, "utf8");
-        const kg = JSON.parse(rawData) as KnowledgeGraph;
-
-        if (!Array.isArray(kg.nodes)) {
-            throw new Error("Invalid KG file: expected `nodes` to be an array");
-        }
-
-        if (!Array.isArray(kg.relationships)) {
-            throw new Error(
-                "Invalid KG file: expected `relationships` to be an array"
-            );
-        }
-
-        const sfCount = kg.nodes.filter((n) =>
-            n.labels.includes("StandardsFramework")
-        ).length;
-
-        const sfiCount = kg.nodes.filter((n) =>
-            n.labels.includes("StandardsFrameworkItem")
-        ).length;
-
-        const lcCount = kg.nodes.filter((n) =>
-            n.labels.includes("LearningComponent")
-        ).length;
-
-        const relTypeCounts = kg.relationships.reduce<Record<string, number>>(
-            (acc, rel) => {
-                acc[rel.type] = (acc[rel.type] ?? 0) + 1;
-                return acc;
-            },
-            {}
-        );
-
-        console.error(`Loaded KG from ${kgFp}:
-  - ${sfCount} Standards Framework(s)
-  - ${sfiCount} Standards Framework Items
-  - ${lcCount} Learning Components
-  - ${kg.relationships.length} Total Relationships
-  - Relationship types: ${JSON.stringify(relTypeCounts)}`);
-
-        return kg;
+        rawData = readFileSync(kgFp, "utf8");
     } catch (error: unknown) {
         if (
             typeof error === "object" &&
@@ -857,11 +838,61 @@ export function loadKnowledgeGraph(kgFn: string, runtimeDir: string): KnowledgeG
             "code" in error &&
             error.code === "ENOENT"
         ) {
-            throw new Error(`Failed to load knowledge graph: File not found: ${kgFp}`);
+            throw new Error(
+                `Failed to load knowledge graph: file not found at ${kgFp}`
+            );
         }
 
-        throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to read knowledge graph at ${kgFp}: ${message}`);
     }
+
+    let parsed: unknown;
+
+    try {
+        parsed = JSON.parse(rawData);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to parse knowledge graph JSON at ${kgFp}: ${message}`);
+    }
+
+    const validation = KnowledgeGraphSchema.safeParse(parsed);
+
+    if (!validation.success) {
+        const issues = validation.error.issues
+            .map((issue) => `  - ${issue.path.join(".") || "<root>"}: ${issue.message}`)
+            .join("\n");
+        throw new Error(
+            `Failed to validate knowledge graph at ${kgFp}:\n${issues}`
+        );
+    }
+
+    const kg = validation.data as unknown as KnowledgeGraph;
+    const sfCount = kg.nodes.filter((n) =>
+        n.labels.includes("StandardsFramework")
+    ).length;
+    const sfiCount = kg.nodes.filter((n) =>
+        n.labels.includes("StandardsFrameworkItem")
+    ).length;
+    const lcCount = kg.nodes.filter((n) =>
+        n.labels.includes("LearningComponent")
+    ).length;
+    const relTypeCounts = kg.relationships.reduce<Record<string, number>>(
+        (acc, rel) => {
+            acc[rel.type] = (acc[rel.type] ?? 0) + 1;
+            return acc;
+        },
+        {}
+    );
+
+    console.error(`Loaded KG from ${kgFp}:
+  - ${sfCount} Standards Framework(s)
+  - ${sfiCount} Standards Framework Items
+  - ${lcCount} Learning Components
+  - ${kg.relationships.length} Total Relationships
+  - Relationship types: ${JSON.stringify(relTypeCounts)}`);
+
+    return kg;
 }
 
 export function toolResult(data: Record<string, unknown>) {

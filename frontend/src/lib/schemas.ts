@@ -154,6 +154,40 @@ export const GetRelatedItemsSchema = z.object({
     identifier: z.string().describe("StandardsFrameworkItem identifier, graph node UUID, or CASE UUID."),
 }).strict();
 
+/**
+ * Minimal runtime schema for a Knowledge Graph file.
+ *
+ * Validates only the structural skeleton that downstream index construction relies on:
+ * every node must have an `id`, a `labels` array, and `properties.identifier`; every
+ * relationship must have `id`, `start`, `end`, and `type`. Extra fields on nodes,
+ * relationships, and the top-level KG (e.g. `doc_key`, metadata blobs, provenance
+ * context) are passed through unchanged so the loader stays forward-compatible with
+ * new schema additions. `relationship.type` is left as an open string rather than
+ * constrained to the current `RelationshipType` union so that loading does not fail
+ * when new relationship kinds are introduced (unrecognized types are simply ignored by
+ * traversal helpers).
+ */
+export const KnowledgeGraphSchema = z.object({
+    nodes: z.array(
+        z.object({
+            id: z.string().min(1),
+            labels: z.array(z.string()),
+            properties: z.object({
+                identifier: z.string().min(1),
+            }).passthrough(),
+        }).passthrough()
+    ),
+    relationships: z.array(
+        z.object({
+            id: z.string().min(1),
+            start: z.string().min(1),
+            end: z.string().min(1),
+            type: z.string().min(1),
+            properties: z.object({}).passthrough().optional(),
+        }).passthrough()
+    ),
+}).passthrough();
+
 export const NavigateInputSchema = {
     type: "object",
     properties: {
