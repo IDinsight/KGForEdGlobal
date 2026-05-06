@@ -40,11 +40,28 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
     const unknownNodes: GraphNode[] = [];
 
     for (const node of kg.nodes) {
-        if (node.labels.includes("StandardsFramework")) {
+        const isFramework = node.labels.includes("StandardsFramework");
+        const isSfi = node.labels.includes("StandardsFrameworkItem");
+        const isLc = node.labels.includes("LearningComponent");
+
+        // The three known KG label types are expected to be mutually exclusive. If a
+        // node ever carries more than one, the partitioning below would silently drop
+        // it from one of the indexes; surface the malformed node loudly at load so it
+        // can be fixed at the source rather than chased through downstream queries.
+        const matchedKnownLabels = Number(isFramework) + Number(isSfi) + Number(isLc);
+
+        if (matchedKnownLabels > 1) {
+            throw new Error(
+                `Node ${node.id} has multiple known KG labels (${node.labels.join(", ")}); ` +
+                `StandardsFramework, StandardsFrameworkItem, and LearningComponent are expected to be mutually exclusive.`
+            );
+        }
+
+        if (isFramework) {
             frameworks.push(node);
-        } else if (node.labels.includes("StandardsFrameworkItem")) {
+        } else if (isSfi) {
             sfis.push(node);
-        } else if (node.labels.includes("LearningComponent")) {
+        } else if (isLc) {
             learningComponents.push(node);
         } else {
             unknownNodes.push(node);
@@ -57,8 +74,17 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
     }
 
     if (unknownNodes.length > 0) {
+        // Surface the distinct label combinations and a handful of node IDs so the KG
+        // author can search the source JSON and decide whether to extend the
+        // partitioner or correct a typo.
+        const uniqueLabelSets = Array.from(
+            new Set(unknownNodes.map((n) => JSON.stringify(n.labels)))
+        );
+        const sampleIds = unknownNodes.slice(0, 3).map((n) => n.id);
         console.error(
-            `Ignored ${unknownNodes.length} node(s) with unrecognized labels.`
+            `Ignored ${unknownNodes.length} node(s) with unrecognized labels. ` +
+            `Unique label sets: ${uniqueLabelSets.join(", ")}. ` +
+            `Sample node IDs: ${sampleIds.join(", ")}.`
         );
     }
 
