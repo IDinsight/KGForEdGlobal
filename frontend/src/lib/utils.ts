@@ -96,149 +96,6 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
     };
 }
 
-/**
- * Load and validate a Knowledge Graph JSON file from the bundled examples directory.
- *
- * Resolves the file path relative to `runtimeDir` (expected to be the compiled source
- * directory) via `../../examples/kgs/<kgFn>`. Parses the JSON and performs minimal
- * structural validation (presence of `nodes` and `relationships` arrays). Also logs a
- * summary of loaded node/relationship counts to stderr.
- *
- * @param kgFn - Filename of the KG JSON file (e.g. "senegal_reading.json").
- * @param runtimeDir - Directory of the calling module, typically
- *  `dirname(fileURLToPath(import.meta.url))`.
- *
- * @returns The parsed {@link KnowledgeGraph} object.
- *
- *  @throws If the file is not found or the JSON structure is invalid.
- */
-export function loadKnowledgeGraph(kgFn: string, runtimeDir: string): KnowledgeGraph {
-    const kgFp = join(runtimeDir, "..", "..", "examples", "kgs", kgFn);
-
-    console.error("Resolved KG filepath:", kgFp);
-
-    try {
-        const rawData = readFileSync(kgFp, "utf8");
-        const kg = JSON.parse(rawData) as KnowledgeGraph;
-
-        if (!Array.isArray(kg.nodes)) {
-            throw new Error("Invalid KG file: expected `nodes` to be an array");
-        }
-
-        if (!Array.isArray(kg.relationships)) {
-            throw new Error(
-                "Invalid KG file: expected `relationships` to be an array"
-            );
-        }
-
-        const sfCount = kg.nodes.filter((n) =>
-            n.labels.includes("StandardsFramework")
-        ).length;
-
-        const sfiCount = kg.nodes.filter((n) =>
-            n.labels.includes("StandardsFrameworkItem")
-        ).length;
-
-        const lcCount = kg.nodes.filter((n) =>
-            n.labels.includes("LearningComponent")
-        ).length;
-
-        const relTypeCounts = kg.relationships.reduce<Record<string, number>>(
-            (acc, rel) => {
-                acc[rel.type] = (acc[rel.type] ?? 0) + 1;
-                return acc;
-            },
-            {}
-        );
-
-        console.error(`Loaded KG from ${kgFp}:
-  - ${sfCount} Standards Framework(s)
-  - ${sfiCount} Standards Framework Items
-  - ${lcCount} Learning Components
-  - ${kg.relationships.length} Total Relationships
-  - Relationship types: ${JSON.stringify(relTypeCounts)}`);
-
-        return kg;
-    } catch (error: unknown) {
-        if (
-            typeof error === "object" &&
-            error !== null &&
-            "code" in error &&
-            error.code === "ENOENT"
-        ) {
-            throw new Error(`Failed to load knowledge graph: File not found: ${kgFp}`);
-        }
-
-        throw error;
-    }
-}
-
-export function toolResult(data: Record<string, unknown>) {
-    return {
-        content: [
-            {
-                type: "text",
-                text: JSON.stringify(data, null, 2),
-            },
-        ],
-        structuredContent: data,
-    };
-}
-
-export function toolError(message: string, details?: Record<string, unknown>) {
-    return {
-        content: [
-            {
-                type: "text",
-                text: JSON.stringify({error: message, ...(details ?? {})}, null, 2),
-            },
-        ],
-        structuredContent: {error: message, ...(details ?? {})},
-        isError: true,
-    };
-}
-
-function normalizeWhitespace(value: string): string {
-    return value.replace(/\s+/g, " ").trim();
-}
-
-function normalizeOptionalText(value: string | null | undefined): string | undefined {
-    return value ? normalizeWhitespace(value).toLowerCase() : undefined;
-}
-
-function truncateText(value: string | null | undefined, maxLength = 200): string | null | undefined {
-    if (!value) return value;
-    return value.length > maxLength ? `${value.substring(0, maxLength)}...` : value;
-}
-
-function uniqueSorted(values: Array<string | null | undefined>): string[] {
-    return Array.from(
-        new Set(
-            values
-                .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-                .map((v) => normalizeWhitespace(v))
-        )
-    ).sort((a, b) => a.localeCompare(b));
-}
-
-function countBy(values: Array<string | null | undefined>): Record<string, number> {
-    const counts: Record<string, number> = {};
-    for (const value of values) {
-        const key = value && value.trim().length > 0 ? normalizeWhitespace(value) : "Unspecified";
-        counts[key] = (counts[key] ?? 0) + 1;
-    }
-    return Object.fromEntries(
-        Object.entries(counts).sort(([a], [b]) => a.localeCompare(b))
-    );
-}
-
-function getNodeKind(node: GraphNode): KgNodeKind {
-    if (node.labels.includes("StandardsFramework")) return "framework";
-    if (node.labels.includes("StandardsFrameworkItem")) return "standard_item";
-    if (node.labels.includes("LearningComponent")) return "learning_component";
-    return "unknown";
-}
-
 export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
     const {
         frameworks,
@@ -863,4 +720,147 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
         provenanceForNode,
         searchItems,
     };
+}
+
+/**
+ * Load and validate a Knowledge Graph JSON file from the bundled examples directory.
+ *
+ * Resolves the file path relative to `runtimeDir` (expected to be the compiled source
+ * directory) via `../../examples/kgs/<kgFn>`. Parses the JSON and performs minimal
+ * structural validation (presence of `nodes` and `relationships` arrays). Also logs a
+ * summary of loaded node/relationship counts to stderr.
+ *
+ * @param kgFn - Filename of the KG JSON file (e.g. "senegal_reading.json").
+ * @param runtimeDir - Directory of the calling module, typically
+ *  `dirname(fileURLToPath(import.meta.url))`.
+ *
+ * @returns The parsed {@link KnowledgeGraph} object.
+ *
+ *  @throws If the file is not found or the JSON structure is invalid.
+ */
+export function loadKnowledgeGraph(kgFn: string, runtimeDir: string): KnowledgeGraph {
+    const kgFp = join(runtimeDir, "..", "..", "examples", "kgs", kgFn);
+
+    console.error("Resolved KG filepath:", kgFp);
+
+    try {
+        const rawData = readFileSync(kgFp, "utf8");
+        const kg = JSON.parse(rawData) as KnowledgeGraph;
+
+        if (!Array.isArray(kg.nodes)) {
+            throw new Error("Invalid KG file: expected `nodes` to be an array");
+        }
+
+        if (!Array.isArray(kg.relationships)) {
+            throw new Error(
+                "Invalid KG file: expected `relationships` to be an array"
+            );
+        }
+
+        const sfCount = kg.nodes.filter((n) =>
+            n.labels.includes("StandardsFramework")
+        ).length;
+
+        const sfiCount = kg.nodes.filter((n) =>
+            n.labels.includes("StandardsFrameworkItem")
+        ).length;
+
+        const lcCount = kg.nodes.filter((n) =>
+            n.labels.includes("LearningComponent")
+        ).length;
+
+        const relTypeCounts = kg.relationships.reduce<Record<string, number>>(
+            (acc, rel) => {
+                acc[rel.type] = (acc[rel.type] ?? 0) + 1;
+                return acc;
+            },
+            {}
+        );
+
+        console.error(`Loaded KG from ${kgFp}:
+  - ${sfCount} Standards Framework(s)
+  - ${sfiCount} Standards Framework Items
+  - ${lcCount} Learning Components
+  - ${kg.relationships.length} Total Relationships
+  - Relationship types: ${JSON.stringify(relTypeCounts)}`);
+
+        return kg;
+    } catch (error: unknown) {
+        if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ENOENT"
+        ) {
+            throw new Error(`Failed to load knowledge graph: File not found: ${kgFp}`);
+        }
+
+        throw error;
+    }
+}
+
+export function toolResult(data: Record<string, unknown>) {
+    return {
+        content: [
+            {
+                type: "text",
+                text: JSON.stringify(data, null, 2),
+            },
+        ],
+        structuredContent: data,
+    };
+}
+
+export function toolError(message: string, details?: Record<string, unknown>) {
+    return {
+        content: [
+            {
+                type: "text",
+                text: JSON.stringify({error: message, ...(details ?? {})}, null, 2),
+            },
+        ],
+        structuredContent: {error: message, ...(details ?? {})},
+        isError: true,
+    };
+}
+
+function normalizeWhitespace(value: string): string {
+    return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeOptionalText(value: string | null | undefined): string | undefined {
+    return value ? normalizeWhitespace(value).toLowerCase() : undefined;
+}
+
+function truncateText(value: string | null | undefined, maxLength = 200): string | null | undefined {
+    if (!value) return value;
+    return value.length > maxLength ? `${value.substring(0, maxLength)}...` : value;
+}
+
+function uniqueSorted(values: Array<string | null | undefined>): string[] {
+    return Array.from(
+        new Set(
+            values
+                .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+                .map((v) => normalizeWhitespace(v))
+        )
+    ).sort((a, b) => a.localeCompare(b));
+}
+
+function countBy(values: Array<string | null | undefined>): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const value of values) {
+        const key = value && value.trim().length > 0 ? normalizeWhitespace(value) : "Unspecified";
+        counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return Object.fromEntries(
+        Object.entries(counts).sort(([a], [b]) => a.localeCompare(b))
+    );
+}
+
+function getNodeKind(node: GraphNode): KgNodeKind {
+    if (node.labels.includes("StandardsFramework")) return "framework";
+    if (node.labels.includes("StandardsFrameworkItem")) return "standard_item";
+    if (node.labels.includes("LearningComponent")) return "learning_component";
+    return "unknown";
 }
