@@ -260,19 +260,6 @@ const SearchSchema = z.object({
         .describe("Filter by item type: all, standard, or objective"),
 });
 
-// Load knowledge graph.
-const kg = loadKnowledgeGraph("senegal_reading.json");
-const {
-    frameworks,
-    lcByIdentifier,
-    learningComponents,
-    nodesById,
-    relsByEnd,
-    relsByStart,
-    sfis,
-    sfisByIdentifier,
-} = buildKnowledgeGraphIndexes(kg);
-
 // Helper functions.
 function buildHierarchyForSubject(
     subject: string,
@@ -735,6 +722,22 @@ const server = new Server(
         },
     }
 );
+
+// Load KG.
+const kg = loadKnowledgeGraph("senegal_reading.json");
+
+// Building KG indexes and partitions.
+const {
+    frameworks,
+    lcByIdentifier,
+    learningComponents,
+    nodesById,
+    relsByEnd,
+    relsByStart,
+    sfis,
+    sfisByIdentifier,
+} = buildKnowledgeGraphIndexes(kg);
+
 
 // Register tools.
 server.setRequestHandler(ListToolsRequestSchema, async () => {
