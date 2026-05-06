@@ -241,131 +241,6 @@ async function main() {
 
         try {
             switch (name) {
-                case "overview": {
-                    OverviewSchema.parse(args ?? {});
-
-                    const relTypeCounts: Record<string, number> = {};
-                    for (const rel of kg.relationships) {
-                        relTypeCounts[rel.type] = (relTypeCounts[rel.type] || 0) + 1;
-                    }
-
-                    return toolResult({
-                        summary: {
-                            jurisdiction: frameworks[0]?.properties.jurisdiction || "Unknown",
-                            frameworkName: frameworks[0]?.properties.name || "Unknown",
-                            graphType: kg.graph_type,
-                            includedGraphTypes: kg.included_graph_types,
-                            generatedAt: kg.generated_at,
-                            totalFrameworks: frameworks.length,
-                            totalStandardItems: sfis.length,
-                            totalLearningComponents: learningComponents.length,
-                            totalRelationships: kg.relationships.length,
-                            relationshipTypes: relTypeCounts,
-                        },
-                        subjects: getUniqueSubjects(),
-                        gradeLevels: getUniqueGradeLevels(),
-                        sampleStructure: {
-                            standardItem: sfis[0] ? compactNode(sfis[0]) : null,
-                            learningComponent: learningComponents[0]
-                                ? compactNode(learningComponents[0])
-                                : null,
-                        },
-                    });
-                }
-
-                case "list_facets": {
-                    ListFacetsSchema.parse(args ?? {});
-                    return toolResult(getFacetValues());
-                }
-
-                case "search_items": {
-                    const parsed = SearchItemsSchema.parse(args ?? {});
-                    const nodeType = parsed.node_type ?? "all";
-                    const results = searchItems({
-                        grade: parsed.grade,
-                        limit: parsed.limit,
-                        nodeType,
-                        query: parsed.query,
-                        sourceLabel: parsed.source_label,
-                        statementType: parsed.statement_type,
-                        subject: parsed.subject,
-                    });
-
-                    return toolResult({
-                        query: parsed.query ?? "",
-                        filters: {
-                            nodeType,
-                            subject: parsed.subject,
-                            grade: parsed.grade,
-                            statementType: parsed.statement_type,
-                            sourceLabel: parsed.source_label,
-                            limit: parsed.limit,
-                        },
-                        count: results.length,
-                        results: results.map((result) => compactNode(result.item)),
-                    });
-                }
-
-                case "get_item": {
-                    const {identifier} = GetItemSchema.parse(args ?? {});
-                    const result = findAnyNode(identifier);
-
-                    if (!result) {
-                        return toolError(`Item '${identifier}' not found.`, {
-                            hint: "Use search_items or list_facets to find valid identifiers.",
-                        });
-                    }
-
-                    const {type: itemType, item} = result;
-
-                    if (itemType === "standard_item") {
-                        const parent = getAncestors(item.id).at(-1) ?? null;
-                        const children = getChildrenAny(item.id).filter((node) =>
-                            node.labels.includes("StandardsFrameworkItem")
-                        );
-                        const learningComponentsForStandard = getLearningComponentsForStandard(item.id);
-                        const progressions = buildProgressionTraversal(item, "both", 1);
-                        const related = getRelatesTo(item.id);
-
-                        return toolResult({
-                            type: "standard_item",
-                            item: detailedNode(item),
-                            path: getPathForNode(item),
-                            parent: parent ? compactNode(parent) : null,
-                            children: children.map((child) => compactNode(child)),
-                            learningComponents: learningComponentsForStandard.map((lc) => compactNode(lc)),
-                            learningComponentCount: learningComponentsForStandard.length,
-                            learningProgressions: progressions,
-                            relatedStandards: related.map((node) => compactNode(node)),
-                        });
-                    }
-
-                    if (itemType === "learning_component") {
-                        const supportedStandards = getStandardsSupportedByLearningComponent(item.id);
-                        const supportRelationships = getSupportRelationshipsForLearningComponent(item.id);
-
-                        return toolResult({
-                            type: "learning_component",
-                            item: detailedNode(item),
-                            path: getPathForNode(item),
-                            supportedStandards: supportedStandards.map((standard) => compactNode(standard)),
-                            supportRelationships: supportRelationships.map((rel) => ({
-                                id: rel.id,
-                                type: rel.type,
-                                start: rel.start,
-                                end: rel.end,
-                                properties: rel.properties,
-                            })),
-                        });
-                    }
-
-                    return toolResult({
-                        type: "framework",
-                        item: detailedNode(item),
-                        children: getChildrenAny(item.id).map((child) => compactNode(child)),
-                    });
-                }
-
                 case "browse_subject": {
                     const {subject, grade} = BrowseSubjectSchema.parse(args ?? {});
                     const hierarchy = buildHierarchyForSubject(subject, grade);
@@ -384,7 +259,6 @@ async function main() {
                         hierarchy,
                     });
                 }
-
                 case "get_framework": {
                     GetFrameworkSchema.parse(args ?? {});
                     return toolResult({
@@ -409,79 +283,63 @@ async function main() {
                         })),
                     });
                 }
-
-                case "get_path": {
-                    const {identifier} = GetPathSchema.parse(args ?? {});
+                case "get_item": {
+                    const {identifier} = GetItemSchema.parse(args ?? {});
                     const result = findAnyNode(identifier);
+
                     if (!result) {
                         return toolError(`Item '${identifier}' not found.`, {
-                            hint: "Use search_items to find a valid identifier.",
-                        });
-                    }
-                    return toolResult(getPathForNode(result.item));
-                }
-
-                case "navigate": {
-                    const {
-                        identifier,
-                        direction,
-                        depth
-                    } = NavigateSchema.parse(args ?? {});
-                    const result = findAnyNode(identifier);
-                    if (!result) {
-                        return toolError(`Item '${identifier}' not found.`, {
-                            hint: "Use search_items to find a valid identifier.",
+                            hint: "Use search_items or list_facets to find valid identifiers.",
                         });
                     }
 
-                    const item = result.item;
+                    const {type: itemType, item} = result;
 
-                    if (item.labels.includes("LearningComponent")) {
-                        const supportedStandards = getStandardsSupportedByLearningComponent(item.id);
+                    if (itemType === "standard_item") {
+                        const parent = getAncestors(item.id).at(-1) ?? null;
+                        const children = getChildrenAny(item.id).filter((node) =>
+                            node.labels.includes("StandardsFrameworkItem")
+                        );
+                        const learningComponentsForStandard = getLearningComponentsForStandard(item.id);
+                        const progressions = buildProgressionTraversal(item, "both", 1);
+                        const related = getRelatesTo(item.id);
                         return toolResult({
-                            target: compactNode(item),
-                            direction,
-                            note:
-                                direction === "parent" || direction === "ancestors"
-                                    ? "LearningComponents are attached to curriculum items through supports relationships, not hasChild hierarchy."
-                                    : "LearningComponents do not have hasChild hierarchy in this KG.",
-                            results:
-                                direction === "parent"
-                                    ? supportedStandards.map((standard) => compactNode(standard))
-                                    : direction === "ancestors"
-                                        ? supportedStandards.flatMap((standard) =>
-                                            [...getAncestors(standard.id), standard].map((node) =>
-                                                compactNode(node)
-                                            )
-                                        )
-                                        : [],
+                            type: "standard_item",
+                            item: detailedNode(item),
+                            path: getPathForNode(item),
+                            parent: parent ? compactNode(parent) : null,
+                            children: children.map((child) => compactNode(child)),
+                            learningComponents: learningComponentsForStandard.map((lc) => compactNode(lc)),
+                            learningComponentCount: learningComponentsForStandard.length,
+                            learningProgressions: progressions,
+                            relatedStandards: related.map((node) => compactNode(node)),
                         });
                     }
 
-                    let results: GraphNode[] = [];
-                    if (direction === "parent") {
-                        const ancestors = getAncestors(item.id);
-                        const parent = ancestors.at(-1);
-                        results = parent ? [parent] : [];
-                    } else if (direction === "children") {
-                        results = getChildrenAny(item.id);
-                    } else if (direction === "siblings") {
-                        results = getSiblingItems(item.id);
-                    } else if (direction === "ancestors") {
-                        results = getAncestors(item.id);
-                    } else if (direction === "descendants") {
-                        results = getDescendants(item.id, depth);
+                    if (itemType === "learning_component") {
+                        const supportedStandards = getStandardsSupportedByLearningComponent(item.id);
+                        const supportRelationships = getSupportRelationshipsForLearningComponent(item.id);
+                        return toolResult({
+                            type: "learning_component",
+                            item: detailedNode(item),
+                            path: getPathForNode(item),
+                            supportedStandards: supportedStandards.map((standard) => compactNode(standard)),
+                            supportRelationships: supportRelationships.map((rel) => ({
+                                id: rel.id,
+                                type: rel.type,
+                                start: rel.start,
+                                end: rel.end,
+                                properties: rel.properties,
+                            })),
+                        });
                     }
 
                     return toolResult({
-                        target: compactNode(item),
-                        direction,
-                        depth,
-                        count: results.length,
-                        results: results.map((node) => compactNode(node)),
+                        type: "framework",
+                        item: detailedNode(item),
+                        children: getChildrenAny(item.id).map((child) => compactNode(child)),
                     });
                 }
-
                 case "get_learning_components_for_standard": {
                     const {standard_id} = GetLearningComponentsForStandardSchema.parse(args ?? {});
                     const standardNode = findStandardItem(standard_id);
@@ -499,7 +357,18 @@ async function main() {
                         learningComponents: components.map((component) => compactNode(component, 500)),
                     });
                 }
+                case "get_path": {
+                    const {identifier} = GetPathSchema.parse(args ?? {});
+                    const result = findAnyNode(identifier);
 
+                    if (!result) {
+                        return toolError(`Item '${identifier}' not found.`, {
+                            hint: "Use search_items to find a valid identifier.",
+                        });
+                    }
+
+                    return toolResult(getPathForNode(result.item));
+                }
                 case "get_progression": {
                     const {
                         identifier,
@@ -534,10 +403,10 @@ async function main() {
                         ...buildProgressionTraversal(standardNode, direction, depth),
                     });
                 }
-
                 case "get_related_items": {
                     const {identifier} = GetRelatedItemsSchema.parse(args ?? {});
                     const standardNode = findStandardItem(identifier);
+
                     if (!standardNode) {
                         return toolError(`Standard item '${identifier}' not found.`, {
                             hint: "Use search_items with node_type='standard_item' to find a valid identifier.",
@@ -551,18 +420,141 @@ async function main() {
                         relatedItems: related.map((node) => compactNode(node)),
                     });
                 }
-
                 case "get_provenance": {
                     const {identifier} = GetProvenanceSchema.parse(args ?? {});
                     const result = findAnyNode(identifier);
+
                     if (!result) {
                         return toolError(`Item '${identifier}' not found.`, {
                             hint: "Use search_items to find a valid identifier.",
                         });
                     }
+
                     return toolResult(provenanceForNode(result.item));
                 }
+                case "list_facets": {
+                    ListFacetsSchema.parse(args ?? {});
+                    return toolResult(getFacetValues());
+                }
+                case "navigate": {
+                    const {
+                        identifier,
+                        direction,
+                        depth
+                    } = NavigateSchema.parse(args ?? {});
+                    const result = findAnyNode(identifier);
 
+                    if (!result) {
+                        return toolError(`Item '${identifier}' not found.`, {
+                            hint: "Use search_items to find a valid identifier.",
+                        });
+                    }
+
+                    const item = result.item;
+
+                    if (item.labels.includes("LearningComponent")) {
+                        const supportedStandards = getStandardsSupportedByLearningComponent(item.id);
+                        return toolResult({
+                            target: compactNode(item),
+                            direction,
+                            note:
+                                direction === "parent" || direction === "ancestors"
+                                    ? "LearningComponents are attached to curriculum items through supports relationships, not hasChild hierarchy."
+                                    : "LearningComponents do not have hasChild hierarchy in this KG.",
+                            results:
+                                direction === "parent"
+                                    ? supportedStandards.map((standard) => compactNode(standard))
+                                    : direction === "ancestors"
+                                        ? supportedStandards.flatMap((standard) =>
+                                            [...getAncestors(standard.id), standard].map((node) =>
+                                                compactNode(node)
+                                            )
+                                        )
+                                        : [],
+                        });
+                    }
+
+                    let results: GraphNode[] = [];
+
+                    if (direction === "parent") {
+                        const ancestors = getAncestors(item.id);
+                        const parent = ancestors.at(-1);
+                        results = parent ? [parent] : [];
+                    } else if (direction === "children") {
+                        results = getChildrenAny(item.id);
+                    } else if (direction === "siblings") {
+                        results = getSiblingItems(item.id);
+                    } else if (direction === "ancestors") {
+                        results = getAncestors(item.id);
+                    } else if (direction === "descendants") {
+                        results = getDescendants(item.id, depth);
+                    }
+
+                    return toolResult({
+                        target: compactNode(item),
+                        direction,
+                        depth,
+                        count: results.length,
+                        results: results.map((node) => compactNode(node)),
+                    });
+                }
+                case "overview": {
+                    OverviewSchema.parse(args ?? {});
+                    const relTypeCounts: Record<string, number> = {};
+
+                    for (const rel of kg.relationships) {
+                        relTypeCounts[rel.type] = (relTypeCounts[rel.type] || 0) + 1;
+                    }
+
+                    return toolResult({
+                        summary: {
+                            jurisdiction: frameworks[0]?.properties.jurisdiction || "Unknown",
+                            frameworkName: frameworks[0]?.properties.name || "Unknown",
+                            graphType: kg.graph_type,
+                            includedGraphTypes: kg.included_graph_types,
+                            generatedAt: kg.generated_at,
+                            totalFrameworks: frameworks.length,
+                            totalStandardItems: sfis.length,
+                            totalLearningComponents: learningComponents.length,
+                            totalRelationships: kg.relationships.length,
+                            relationshipTypes: relTypeCounts,
+                        },
+                        subjects: getUniqueSubjects(),
+                        gradeLevels: getUniqueGradeLevels(),
+                        sampleStructure: {
+                            standardItem: sfis[0] ? compactNode(sfis[0]) : null,
+                            learningComponent: learningComponents[0]
+                                ? compactNode(learningComponents[0])
+                                : null,
+                        },
+                    });
+                }
+                case "search_items": {
+                    const parsed = SearchItemsSchema.parse(args ?? {});
+                    const nodeType = parsed.node_type ?? "all";
+                    const results = searchItems({
+                        grade: parsed.grade,
+                        limit: parsed.limit,
+                        nodeType,
+                        query: parsed.query,
+                        sourceLabel: parsed.source_label,
+                        statementType: parsed.statement_type,
+                        subject: parsed.subject,
+                    });
+                    return toolResult({
+                        query: parsed.query ?? "",
+                        filters: {
+                            nodeType,
+                            subject: parsed.subject,
+                            grade: parsed.grade,
+                            statementType: parsed.statement_type,
+                            sourceLabel: parsed.source_label,
+                            limit: parsed.limit,
+                        },
+                        count: results.length,
+                        results: results.map((result) => compactNode(result.item)),
+                    });
+                }
                 default:
                     return toolError(`Unknown tool: ${name}`);
             }
