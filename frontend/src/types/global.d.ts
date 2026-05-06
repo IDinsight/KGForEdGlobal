@@ -60,17 +60,18 @@ interface NodeMetadata {
   bbox_ref?: string;
   canonical_node_id?: UUIDString;
   canonical_path_key?: string;
+
   // Framework metadata.
   decision_set_id?: string;
   doc_key?: string;
   export_dialect?: string;
+
   // Common LearningComponent metadata.
   id_source_kind?: string;
   identity_basis?: string;
   llm_rationale?: string;
   local_code?: string | null;
   normalized_text?: string;
-
   page_indices?: number[];
   pdf_name?: string;
   progression_context?: Record<string, unknown>;
@@ -90,13 +91,11 @@ interface NodeMetadata {
   supporting_sfi_canonical_path_key?: string;
   supporting_sfi_case_uuid?: UUIDString;
   supporting_sfi_grade_level?: string[];
-
   supporting_sfi_in_language?: string;
   supporting_sfi_normalized_statement_type?: string;
   supporting_sfi_progression_context?: Record<string, unknown>;
   supporting_sfi_role?: string;
   supporting_sfi_source_label?: string;
-
   supporting_sfi_statement_type?: string;
 }
 
@@ -126,7 +125,6 @@ interface NodeProperties {
   notes?: string | null;
   provider?: string;
   statement_code?: string | null;
-
   statement_type?: string | null;
 }
 
@@ -141,11 +139,10 @@ interface RelationshipMetadata {
   canonical_child_id?: UUIDString;
   canonical_edge_source_decision_ids?: string[];
   canonical_edge_source_segment_ids?: string[];
+
   // hasChild metadata.
   canonical_order_index?: number;
-
   canonical_parent_id?: UUIDString;
-
   confidence?: number;
   dedupe?: Record<string, unknown>;
   evidence?: string | Record<string, unknown>;
@@ -155,14 +152,15 @@ interface RelationshipMetadata {
   inference_source?: string;
   inference_type?: string;
   level_label?: string;
+
   // buildsTowards metadata.
   lp_bucket_key?: string;
   lp_thread_key?: string;
+
   // Learning progression metadata: buildsTowards/relatesTo.
   phase?: string;
   progression_subtype?: string;
   progression_subtype_source?: string;
-
   sampled_a_count?: number;
   sampled_a_sfi_uuids?: UUIDString[];
   sampled_b_count?: number;
@@ -170,10 +168,10 @@ interface RelationshipMetadata {
   source_kg?: string;
   source_sfi_context?: Record<string, unknown>;
   source_sfi_inference_context?: Record<string, unknown>;
-
   subject_a?: string;
   subject_b?: string;
   subject_label?: string;
+
   // supports metadata.
   supporting_sfi_case_uuid?: UUIDString;
   target_sfi_context?: Record<string, unknown>;
@@ -181,7 +179,6 @@ interface RelationshipMetadata {
   thread_a_path?: string;
   thread_b_path?: string;
   topic_path_examples?: unknown[];
-
   topic_path_keys?: string[];
 }
 
@@ -203,6 +200,5 @@ interface RelationshipProperties {
   source_entity_value?: UUIDString;
   target_entity?: RelationshipEntity;
   target_entity_key?: RelationshipEntityKey;
-
   target_entity_value?: UUIDString;
 }

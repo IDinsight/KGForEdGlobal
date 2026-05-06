@@ -114,8 +114,8 @@ async function main(): Promise<void> {
   } = kgUtils;
 
   /*
-   * Initialize MCP server with basic info and empty capabilities (tools are defined
-   * in the request handler).
+   * Initialize MCP server with basic info and empty capabilities (tools are defined in
+   * the request handler).
    */
   const server = new Server(
     {
@@ -661,6 +661,7 @@ try {
   await main();
 } catch (error) {
   console.error("Fatal error:", error);
+
   // eslint-disable-next-line unicorn/no-process-exit -- this file is the MCP server CLI entrypoint
   process.exit(1);
 }

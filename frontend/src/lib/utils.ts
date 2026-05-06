@@ -2,7 +2,7 @@
 
 // Standard Library
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import path from "node:path";
 
 // Third Party Library
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -29,11 +29,15 @@ import {
  * Nodes with unrecognized labels are collected in `unknownNodes` and a warning
  * is logged to stderr.
  *
- * @param kg - A validated {@link KnowledgeGraph} object (typically from
- *   {@link loadKnowledgeGraph}).
+ * @param kg - A validated `KnowledgeGraph` object (typically from
+ *   `loadKnowledgeGraph`).
  *
- * @returns A {@link KnowledgeGraphIndexes} containing all partitioned arrays and
+ * @returns A `KnowledgeGraphIndexes` containing all partitioned arrays and
  *   lookup maps.
+ *
+ * @throws {Error} If a node carries more than one of the known KG labels
+ *   (`StandardsFramework`, `StandardsFrameworkItem`, `LearningComponent`),
+ *   which are expected to be mutually exclusive.
  */
 export function buildKnowledgeGraphIndexes(
   kg: KnowledgeGraph,
@@ -50,10 +54,10 @@ export function buildKnowledgeGraphIndexes(
     const isLc = node.labels.includes("LearningComponent");
 
     /*
-     * The three known KG label types are expected to be mutually exclusive. If a
-     * node ever carries more than one, the partitioning below would silently drop
-     * it from one of the indexes; surface the malformed node loudly at load so it
-     * can be fixed at the source rather than chased through downstream queries.
+     * The three known KG label types are expected to be mutually exclusive. If a node
+     * ever carries more than one, the partitioning below would silently drop it from
+     * one of the indexes; surface the malformed node loudly at load so it can be fixed
+     * at the source rather than chased through downstream queries.
      */
     const matchedKnownLabels =
       Number(isFramework) + Number(isSfi) + Number(isLc);
@@ -76,9 +80,9 @@ export function buildKnowledgeGraphIndexes(
     }
 
     /*
-     * Index all nodes by their graph node ID. For StandardsFramework/SFI nodes
-     * this is usually `case_identifier_uuid`; for LearningComponent nodes this is
-     * usually `identifier`.
+     * Index all nodes by their graph node ID. For StandardsFramework/SFI nodes this is
+     * usually `case_identifier_uuid`; for LearningComponent nodes this is usually
+     * `identifier`.
      */
     nodesById.set(node.id, node);
   }
@@ -86,8 +90,8 @@ export function buildKnowledgeGraphIndexes(
   if (unknownNodes.length > 0) {
     /*
      * Surface the distinct label combinations and a handful of node IDs so the KG
-     * author can search the source JSON and decide whether to extend the
-     * partitioner or correct a typo.
+     * author can search the source JSON and decide whether to extend the partitioner
+     * or correct a typo.
      */
     const uniqueLabelSets = [
       ...new Set(unknownNodes.map((n) => JSON.stringify(n.labels))),
@@ -156,10 +160,10 @@ export function buildKnowledgeGraphIndexes(
  *
  * - `null`, `undefined`, empty strings, and whitespace-only strings are bucketed
  *   together under the key `"Unspecified"`.
- * - All other strings are passed through {@link normalizeWhitespace} (internal
- *   runs of whitespace collapsed to a single space, ends trimmed) before being
- *   used as the bucket key. So " Objectif spécifique " and "Objectif
- *   spécifique" count to the same bucket.
+ * - All other strings are passed through `normalizeWhitespace` (internal runs of
+ *   whitespace collapsed to a single space, ends trimmed) before being used as
+ *   the bucket key. So " Objectif spécifique " and "Objectif spécifique" count
+ *   to the same bucket.
  *
  * Counting is case-sensitive: "Foo" and "foo" are distinct buckets. The
  * returned object's keys are ordered alphabetically via `localeCompare`.
@@ -198,6 +202,10 @@ export function buildKnowledgeGraphIndexes(
  *
  * @returns A plain object mapping each normalized key to its count, with
  *   entries ordered alphabetically by key.
+ *
+ * @throws {Error} If the file is not found, unreadable, malformed JSON, or
+ *   fails schema validation. All thrown errors include the resolved filepath in
+ *   the message.
  */
 function countBy(
   values: Array<string | null | undefined>,
@@ -222,15 +230,15 @@ function countBy(
  * its pre-built indexes.
  *
  * This is the main "query layer" for the MCP server. It accepts a
- * {@link KnowledgeGraphContext} (the raw graph plus the index maps produced by
- * {@link buildKnowledgeGraphIndexes}) and returns an object of pure functions
- * that the MCP tool handlers call to answer requests.
+ * `KnowledgeGraphContext` (the raw graph plus the index maps produced by
+ * `buildKnowledgeGraphIndexes`) and returns an object of pure functions that
+ * the MCP tool handlers call to answer requests.
  *
  * The returned helpers fall into several categories:
  *
  * - **Lookup** (`findStandardItem`, `findLearningComponent`, `findAnyNode`) —
  *   resolve a user-supplied identifier (graph node ID, CASE UUID, or
- *   `properties.identifier`) to a concrete {@link GraphNode}.
+ *   `properties.identifier`) to a concrete `GraphNode`.
  * - **Hierarchy traversal** (`getAncestors`, `getDescendants`, `getChildrenAny`,
  *   `getSiblingItems`, `getPathForNode`) — walk the `hasChild` tree in either
  *   direction.
@@ -244,12 +252,12 @@ function countBy(
  *   `getFacetValues`) — full-text-ish search with facet filters and
  *   hierarchical subject browsing.
  * - **Serialization** (`compactNode`, `detailedNode`, `provenanceForNode`) —
- *   shape a {@link GraphNode} into the JSON payload returned by MCP tools.
+ *   shape a `GraphNode` into the JSON payload returned by MCP tools.
  *
  * All functions are read-only; nothing mutates the underlying graph or indexes.
  *
- * @param context - A {@link KnowledgeGraphContext} containing the parsed KG and
- *   its index maps.
+ * @param context - A `KnowledgeGraphContext` containing the parsed KG and its
+ *   index maps.
  *
  * @returns An object of query functions consumed by the MCP tool handlers in
  *   `index.ts`.
@@ -268,8 +276,43 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
   } = context;
 
   /**
-   * @param subject
-   * @param gradeFilter
+   * Build a tree-shaped view of all standards within a given academic subject
+   * by walking `hasChild` relationships among the closure-captured SFIs.
+   *
+   * Roots are discovered by scanning every SFI for a matching
+   * `academic_subject`, then keeping those whose `hasChild` parent is either
+   * absent or sits under a different subject. This makes the function robust to
+   * frameworks that mix multiple subjects under a shared ancestor: the returned
+   * roots are always the shallowest in-subject nodes, not necessarily the
+   * framework's outermost items.
+   *
+   * Subject comparison is whitespace-normalized, lowercased, and tolerant of
+   * embedded newlines in `academic_subject` (which the source data occasionally
+   * carries), so "Mathematics", " mathematics ", and "Mathe-\nmatics" all match
+   * the same bucket.
+   *
+   * Each node in the returned tree is a plain object with `childCount`,
+   * `children`, `code`, `description`, `identifier`, `type`, and `uuid`.
+   * Descriptions are truncated at 150 characters at recursed levels and at 100
+   * characters in the flat leaf representation. Recursion is capped at four
+   * levels (`depth` 0–3); nodes below that are emitted as a flat summary
+   * (`childCount`, `code`, `description`, `identifier`) rather than recursed
+   * into, which keeps the response size bounded for deep frameworks.
+   *
+   * `gradeFilter`, when provided, is applied only below the roots — top-level
+   * items are never pruned by it. Descendants are kept if their `grade_level`
+   * or `statement_code` contains the filter substring. This lets a caller scope
+   * the tree to a single grade band ("Grade 4", "G4") while still surfacing the
+   * full set of subject roots for orientation.
+   *
+   * @param subject - Academic subject name to filter by (e.g. "Mathematics",
+   *   "Science"). Compared case-insensitively after whitespace and newline
+   *   normalization.
+   * @param gradeFilter - Optional grade-band substring (e.g. "Grade 4", "G4").
+   *   Applied only to descendants of the roots, not to the roots themselves.
+   *
+   * @returns An array of plain hierarchy objects, one per top-level SFI in the
+   *   subject. Empty if no SFI matches.
    */
   function buildHierarchyForSubject(
     subject: string,
@@ -296,8 +339,48 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
     }
 
     /**
-     * @param node
-     * @param depth
+     * Recursive helper that materializes one node of the subject hierarchy into
+     * the plain-object shape consumed by callers of
+     * `buildHierarchyForSubject`.
+     *
+     * Children are presented one of two ways depending on `depth`:
+     *
+     * - At `depth < 3`, children are recursed via `buildNode(child, depth + 1)`,
+     *   yielding the same full shape (`childCount`, `children`, `code`,
+     *   `description`, `identifier`, `type`, `uuid`).
+     * - At `depth >= 3`, children are emitted as a flat summary (`childCount`,
+     *   `code`, `description`, `identifier`) with no further `children` field.
+     *   This caps the tree at four full levels (0–3) regardless of the
+     *   underlying graph depth and keeps response size bounded.
+     *
+     * Descriptions are truncated with an ellipsis at 150 characters on the
+     * recursed node and at 100 characters on the flat leaf summary — the
+     * shorter leaf limit is intentional, since leaves are emitted in bulk and
+     * would otherwise dominate the response.
+     *
+     * `childCount` always reflects the unfiltered count returned by
+     * `getChildren`, even when `gradeFilter` removes some children from the
+     * `children` array. So `node.childCount !== node.children.length` is a
+     * normal, meaningful condition once a filter is in play — it tells the
+     * caller "there are 12 standards under this node, 3 of which match the
+     * filter" without a separate query.
+     *
+     * `gradeFilter` is captured from the enclosing `buildHierarchyForSubject`
+     * closure (not a parameter) and is applied only when `depth > 0`.
+     * Concretely, this means the root call (`buildNode(node)` with `depth`
+     * defaulting to 0) does not filter its own children — only deeper recursive
+     * calls do. As a consequence, the immediate children of a returned root
+     * always appear in full, while everything below them is grade-filtered. See
+     * the parent function's docstring for the rationale.
+     *
+     * @param node - The SFI node to render at this position in the tree.
+     * @param depth - Zero-indexed distance from the hierarchy root. Drives both
+     *   the four-level recursion cap and whether `gradeFilter` applies.
+     *   Defaults to `0`, which is the value the top-level `.map(buildNode)`
+     *   call relies on.
+     *
+     * @returns A plain JSON-serializable hierarchy-node object, suitable for
+     *   inclusion in the array returned by `buildHierarchyForSubject`.
      */
     function buildNode(node: GraphNode, depth: number = 0): object {
       const children = getChildren(node.id);
@@ -338,9 +421,51 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
   }
 
   /**
-   * @param standardNode
-   * @param direction
-   * @param depth
+   * Walk the prerequisite/successor/related graph around an SFI to a bounded
+   * depth, returning a single-call snapshot of its position in the
+   * progression.
+   *
+   * Three independent traversals are run, each gated by `direction`:
+   *
+   * - `buildsFrom` — predecessors. Walks `buildsTowards` relationships in reverse
+   *   (via `relsByEnd`), since a relationship `X --buildsTowards--> Y` means X
+   *   is a prerequisite of Y. Recursive up to `depth` hops.
+   * - `buildsTowards` — successors. Walks `buildsTowards` relationships forward
+   *   (via `relsByStart`). Recursive up to `depth` hops.
+   * - `related` — sibling/peer connections via `getRelatesTo`. **One hop only**,
+   *   regardless of `depth`. This asymmetry is intentional: relatedness carries
+   *   no transitive meaning the way prerequisites do.
+   *
+   * Each axis carries its own dedup set (`seenFrom`/`seenTo`/`seenRelated`).
+   * That means a node reachable along multiple axes — e.g. both a prerequisite
+   * and a peer — will appear in both arrays. Within a single axis, every node
+   * appears at most once, so cycles in the `buildsTowards` graph are safe.
+   *
+   * Both recursive arms filter to `StandardsFrameworkItem` nodes only;
+   * `LearningComponent` and unknown-label nodes are excluded even if they
+   * participate in the relationships.
+   *
+   * The returned `depth` and `direction` fields echo the input parameters as
+   * given — they describe the traversal that was _requested_, not the depth
+   * actually reached. A traversal that bottoms out after one hop still reports
+   * the original `depth`. Result nodes are passed through `compactNode` for a
+   * trimmed shape suitable for inclusion in MCP tool responses.
+   *
+   * Used by the MCP `get_progression` tool to answer "what comes before/after
+   * this standard, and what's adjacent to it" in a single call.
+   *
+   * @param standardNode - The SFI to anchor the traversal on. Returned under
+   *   the `target` field, compacted.
+   * @param direction - Which axes to populate. `"both"` returns all three;
+   *   `"builds_from"`/`"builds_towards"`/`"related"` populate only the matching
+   *   axis and leave the others as empty arrays.
+   * @param depth - Maximum hop count for the `buildsFrom` and `buildsTowards`
+   *   traversals. Has no effect on `related`, which is always one hop.
+   *
+   * @returns An object `{ target, buildsFrom, buildsTowards, related, depth,
+   *   direction }`. Axes not selected by `direction` are present as empty
+   *   arrays rather than omitted, so consumers can index into them
+   *   unconditionally.
    */
   function buildProgressionTraversal(
     standardNode: GraphNode,
@@ -352,8 +477,46 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
     const seenRelated = new Set<string>();
 
     /**
-     * @param nodeId
-     * @param remainingDepth
+     * Recursive helper that collects the prerequisite chain (the "builds from"
+     * direction) for a node, up to a bounded number of hops.
+     *
+     * One hop is taken by reading `relsByEnd.get(nodeId)` and keeping the
+     * `buildsTowards` edges that _end_ at this node — the `start` of each such
+     * edge is a node that builds towards us, i.e. a prerequisite. The
+     * relationship type literal (`"buildsTowards"`) reads inverted relative to
+     * the function name; the inversion is correct because we're indexing on the
+     * edge's destination rather than its source.
+     *
+     * Discovered nodes are filtered to `StandardsFrameworkItem` only — orphaned
+     * edges (where `nodesById` has no entry for `rel.start`) and edges into
+     * non-SFI nodes (e.g. `LearningComponent`) are silently dropped.
+     *
+     * Dedup is performed against the closure-captured `seenFrom` set shared
+     * with the rest of the traversal. A node is added to `seenFrom` the first
+     * time it is encountered and skipped on subsequent visits, so each
+     * prerequisite appears in the result at most once and cycles in the
+     * `buildsTowards` graph terminate safely. Note that this dedup is _eager_:
+     * a node first reached on a long path will block the same node from being
+     * re-emitted on a shorter path discovered later, so the returned set is
+     * "all reachable prerequisites within `remainingDepth`" rather than a
+     * particular layer-by-layer ordering.
+     *
+     * The result interleaves direct predecessors with their own predecessors
+     * via a depth-first flat-map, so callers receive a flattened list of all
+     * prerequisites within range, not a tree. If layered structure is needed,
+     * the caller must reconstruct it from the relationships themselves.
+     *
+     * @param nodeId - Graph node ID to collect predecessors for. The node
+     *   itself is never included in the output.
+     * @param remainingDepth - Maximum hop count remaining for this branch of
+     *   the recursion. Decremented on each recursive call; values `<= 0` return
+     *   an empty array, which is the recursion's base case.
+     *
+     * @returns A flat, deduplicated list of `StandardsFrameworkItem` nodes that
+     *   transitively build towards `nodeId` within `remainingDepth` hops. Empty
+     *   if `remainingDepth <= 0`, if no `buildsTowards` edges land on the node,
+     *   or if every reachable predecessor has already been visited via the
+     *   shared `seenFrom` set.
      */
     function collectBuildsFrom(
       nodeId: string,
@@ -382,8 +545,45 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
     }
 
     /**
-     * @param nodeId
-     * @param remainingDepth
+     * Recursive helper that collects the successor chain (the "builds towards"
+     * direction) for a node, up to a bounded number of hops.
+     *
+     * One hop is taken by reading `relsByStart.get(nodeId)` and keeping the
+     * `buildsTowards` edges that _start_ at this node — the `end` of each such
+     * edge is a node we build towards, i.e. a successor. Unlike the
+     * `collectBuildsFrom` mirror, the function name and edge direction line up
+     * here: we're walking `buildsTowards` forward.
+     *
+     * Discovered nodes are filtered to `StandardsFrameworkItem` only — orphaned
+     * edges (where `nodesById` has no entry for `rel.end`) and edges into
+     * non-SFI nodes (e.g. `LearningComponent`) are silently dropped.
+     *
+     * Dedup is performed against the closure-captured `seenTo` set shared with
+     * the rest of the traversal. A node is added to `seenTo` the first time it
+     * is encountered and skipped on subsequent visits, so each successor
+     * appears in the result at most once and cycles in the `buildsTowards`
+     * graph terminate safely. Note that this dedup is _eager_: a node first
+     * reached on a long path will block the same node from being re-emitted on
+     * a shorter path discovered later, so the returned set is "all reachable
+     * successors within `remainingDepth`" rather than a particular
+     * layer-by-layer ordering.
+     *
+     * The result interleaves direct successors with their own successors via a
+     * depth-first flat-map, so callers receive a flattened list of all
+     * successors within range, not a tree. If layered structure is needed, the
+     * caller must reconstruct it from the relationships themselves.
+     *
+     * @param nodeId - Graph node ID to collect successors for. The node itself
+     *   is never included in the output.
+     * @param remainingDepth - Maximum hop count remaining for this branch of
+     *   the recursion. Decremented on each recursive call; values `<= 0` return
+     *   an empty array, which is the recursion's base case.
+     *
+     * @returns A flat, deduplicated list of `StandardsFrameworkItem` nodes that
+     *   `nodeId` transitively builds towards within `remainingDepth` hops.
+     *   Empty if `remainingDepth <= 0`, if no `buildsTowards` edges originate
+     *   at the node, or if every reachable successor has already been visited
+     *   via the shared `seenTo` set.
      */
     function collectBuildsTowards(
       nodeId: string,
@@ -441,8 +641,58 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
   }
 
   /**
-   * @param node
-   * @param maxDescription
+   * Reduce a `GraphNode` to a flat, camelCase summary suitable for inclusion in
+   * MCP tool responses.
+   *
+   * This is the canonical "node summary" shape used across the progression,
+   * search, and lookup tool outputs — anywhere a node needs to be returned to
+   * the model with enough context to identify and describe it, but without the
+   * full nested `properties` object the underlying graph carries. Doubles as
+   * the snake_case → camelCase boundary for the MCP API surface, so source
+   * properties like `statement_code` are renamed to `statementCode` here and
+   * never leak through downstream.
+   *
+   * Two field families fall back to "supporting SFI" variants in `metadata`:
+   *
+   * - `canonicalPathKey` — `metadata.canonical_path_key`, falling back to
+   *   `metadata.supporting_sfi_canonical_path_key`.
+   * - `sourceLabel` — `metadata.source_label`, falling back to
+   *   `metadata.supporting_sfi_source_label`.
+   *
+   * Both fallbacks exist because Learning Components don't carry these fields
+   * directly; instead they reference the SFI they support. The fallback lets
+   * the same compact shape describe both kinds of node without the caller
+   * having to branch on `nodeType`.
+   *
+   * `nodeType` is derived from the node's labels with an implicit priority:
+   * `StandardsFramework` > `StandardsFrameworkItem` > `LearningComponent` >
+   * `"unknown"`. In practice the priority is not observable, because
+   * `buildKnowledgeGraphIndexes` throws on any node carrying more than one of
+   * those labels — but if that invariant is ever relaxed, this function will
+   * silently pick the first-listed kind rather than reporting the conflict.
+   *
+   * Description truncation takes `[0, maxDescription)` of the original string
+   * with `"..."` appended. So the output is at most `maxDescription + 3`
+   * characters, not `maxDescription`. Falsy descriptions (`undefined`, `null`,
+   * `""`) pass through unchanged — there's nothing to truncate, and preserving
+   * the original falsy value lets callers distinguish "missing" from "empty
+   * after truncation". The `Math.max(0, maxDescription)` guard clamps negative
+   * inputs so that `.slice(0, -n)` doesn't accidentally chop from the end.
+   *
+   * `subject` carries the same newline-to-space normalization as the rest of
+   * the codebase, since `academic_subject` occasionally contains embedded
+   * newlines in the source data.
+   *
+   * @param node - The graph node to compact. May be any kind: framework, SFI,
+   *   LC, or unlabeled.
+   * @param maxDescription - Maximum description length before the `"..."`
+   *   suffix is appended, in characters. Defaults to `220`. Negative values are
+   *   clamped to `0`.
+   *
+   * @returns A flat, camelCase, JSON-serializable summary of the node. Fields
+   *   that don't apply to the node's kind (e.g. `statementCode` on a framework)
+   *   come through as `undefined` rather than being omitted, so consumers can
+   *   index into them unconditionally.
    */
   function compactNode(
     node: GraphNode,
@@ -1076,16 +1326,16 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
  * (file read, JSON parse, schema validation) each of which surfaces a distinct,
  * kgFp-tagged error message so connector setup failures are easy to diagnose
  * from Claude Desktop's log output. Schema validation is enforced via
- * {@link KnowledgeGraphSchema} (Zod) and checks that every node has `id`,
- * `labels`, and `properties.identifier`, and every relationship has `id`,
- * `start`, `end`, and `type`. Extra fields are passed through. Logs a summary
- * of loaded node/relationship counts to stderr.
+ * `KnowledgeGraphSchema` and checks that every node has `id`, `labels`, and
+ * `properties.identifier`, and every relationship has `id`, `start`, `end`, and
+ * `type`. Extra fields are passed through. Logs a summary of loaded
+ * node/relationship counts to stderr.
  *
  * @param kgFn - Filename of the KG JSON file (e.g. "senegal_reading.json").
  * @param runtimeDir - Directory of the calling module, typically
  *   `dirname(fileURLToPath(import.meta.url))`.
  *
- * @returns The parsed and validated {@link KnowledgeGraph} object.
+ * @returns The parsed and validated `KnowledgeGraph` object.
  *
  * @throws If the file is not found, unreadable, malformed JSON, or fails schema
  *   validation. All thrown errors include the resolved filepath in the
@@ -1095,7 +1345,7 @@ export function loadKnowledgeGraph(
   kgFn: string,
   runtimeDir: string,
 ): KnowledgeGraph {
-  const kgFp = join(runtimeDir, "..", "..", "examples", "kgs", kgFn);
+  const kgFp = path.join(runtimeDir, "..", "..", "examples", "kgs", kgFn);
 
   console.error("Resolved KG filepath:", kgFp);
 
@@ -1327,16 +1577,16 @@ export function toolResult(data: Record<string, unknown>) {
  *
  * - `null`, `undefined`, empty strings, and whitespace-only strings are
  *   **dropped**.
- * - All other strings are passed through {@link normalizeWhitespace} (internal
- *   runs of whitespace collapsed to a single space, ends trimmed) before
- *   deduplication. So " Objectif spécifique " and "Objectif spécifique"
- *   collapse to one entry.
+ * - All other strings are passed through `normalizeWhitespace` (internal runs of
+ *   whitespace collapsed to a single space, ends trimmed) before deduplication.
+ *   So " Objectif spécifique " and "Objectif spécifique" collapse to one
+ *   entry.
  *
  * Deduplication is case-sensitive: "Foo" and "foo" remain distinct entries. The
  * returned array is sorted alphabetically via `localeCompare`.
  *
- * Used by {@link createKnowledgeGraphUtils}'s `getFacetValues` helper to build
- * the lists of valid filter values (`relationshipTypes`, `statementTypes`,
+ * Used by `createKnowledgeGraphUtils`'s `getFacetValues` helper to build the
+ * lists of valid filter values (`relationshipTypes`, `statementTypes`,
  * `sourceLabels`, etc.) surfaced through the MCP `list_facets`/`overview` tool
  * responses.
  *
