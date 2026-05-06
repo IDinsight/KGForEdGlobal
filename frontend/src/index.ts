@@ -138,100 +138,100 @@ async function main() {
         return {
             tools: [
                 {
-                    name: "overview",
-                    title: "Knowledge Graph Overview",
-                    description:
-                        "Get summary statistics and sample structure for the Senegal CE1 Langue et Communication knowledge graph.",
-                    inputSchema: OverviewInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
-                },
-                {
-                    name: "list_facets",
-                    title: "List KG Facets",
-                    description:
-                        "List available filter values in the KG, including subjects, grades, statement types, source labels, node types, and relationship types.",
-                    inputSchema: ListFacetsInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
-                },
-                {
-                    name: "search_items",
-                    title: "Search Curriculum Items",
-                    description:
-                        "Search StandardsFrameworkItem and LearningComponent nodes. Supports filters for subject, grade, statement type, source label, and node category.",
-                    inputSchema: SearchItemsInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
-                },
-                {
-                    name: "get_item",
-                    title: "Get KG Item",
-                    description:
-                        "Get detailed information about a StandardsFrameworkItem, LearningComponent, or framework node by identifier. Includes hierarchy, learning components, progressions, related items, and path summary when available.",
-                    inputSchema: GetItemInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
-                },
-                {
                     name: "browse_subject",
                     title: "Browse Subject Hierarchy",
                     description:
-                        "Browse the hierarchical curriculum structure for a subject. For the bundled Senegal KG, the available subject is 'Langue et Communication'.",
-                    inputSchema: BrowseSubjectInputSchema,
+                        "Alternative discovery tool. Browse the hierarchical curriculum tree for a subject, optionally filtered by grade. For the bundled Senegal KG, the available subject is 'Langue et Communication'. Returns a nested tree of items with identifiers that can be passed to get_item, navigate, or other tools. Prefer this over search_items when exploring curriculum structure top-down.",
                     annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: BrowseSubjectInputSchema,
                 },
                 {
                     name: "get_framework",
                     title: "Get Framework Metadata",
                     description:
-                        "Return framework-level metadata such as name, jurisdiction, author, provider, license, graph type, included graph types, and source PDF name.",
+                        "Return framework-level metadata: name, jurisdiction, author, provider, license, graph type, included graph types, and source PDF name. Use this to answer questions about the curriculum document itself rather than individual items.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
                     inputSchema: GetFrameworkInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
                 },
                 {
-                    name: "get_path",
-                    title: "Get Curriculum Path",
+                    name: "get_item",
+                    title: "Get KG Item",
                     description:
-                        "Return the curriculum path for a StandardsFrameworkItem or LearningComponent. LearningComponents are first mapped to their supported standard item.",
-                    inputSchema: GetPathInputSchema,
+                        "Get detailed information about a single node by identifier. Use an identifier returned by search_items or browse_subject. Returns full properties plus contextual summaries: hierarchy path, child count, learning components, progression links, and related items when available.",
                     annotations: {readOnlyHint: true, idempotentHint: true},
-                },
-                {
-                    name: "navigate",
-                    title: "Navigate Curriculum Hierarchy",
-                    description:
-                        "Navigate parent, children, siblings, ancestors, or descendants for a curriculum item. For LearningComponents, parent/ancestor navigation returns the supported StandardsFrameworkItem path.",
-                    inputSchema: NavigateInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: GetItemInputSchema,
                 },
                 {
                     name: "get_learning_components_for_standard",
                     title: "Get Learning Components for Standard",
                     description:
-                        "Get LearningComponent nodes that support a StandardsFrameworkItem via supports relationships.",
-                    inputSchema: GetLearningComponentsForStandardInputSchema,
+                        "List the atomic LearningComponent skills extracted from a StandardsFrameworkItem. Requires a standard item identifier from search_items or browse_subject (node_type='standard_item'). Use this to break a curriculum standard down into its constituent teachable skills.",
                     annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: GetLearningComponentsForStandardInputSchema,
+                },
+                {
+                    name: "get_path",
+                    title: "Get Curriculum Path",
+                    description:
+                        "Return the full path from the curriculum root down to a specific item. Requires an identifier from search_items or browse_subject. For LearningComponents, the path goes through the supported StandardsFrameworkItem. Use this to understand where an item sits in the overall curriculum hierarchy.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: GetPathInputSchema,
                 },
                 {
                     name: "get_progression",
                     title: "Get Learning Progression Links",
                     description:
-                        "Return buildsFrom, buildsTowards, and related standards for a StandardsFrameworkItem using buildsTowards and relatesTo relationships.",
+                        "Trace learning progressions for a StandardsFrameworkItem: what it builds from (prerequisites), what it builds towards (next steps), and cross-curricular related standards. Requires an identifier from search_items or browse_subject. Accepts an optional direction filter ('builds_from', 'builds_towards', 'related', or 'both') and depth (1–3). If given a LearningComponent identifier, it maps to the supported standard first.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
                     inputSchema: GetProgressionInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
-                },
-                {
-                    name: "get_related_items",
-                    title: "Get Related Standards",
-                    description:
-                        "Return StandardsFrameworkItem nodes connected to the target item via relatesTo relationships.",
-                    inputSchema: GetRelatedItemsInputSchema,
-                    annotations: {readOnlyHint: true, idempotentHint: true},
                 },
                 {
                     name: "get_provenance",
                     title: "Get Source Provenance",
                     description:
-                        "Return source traceability for a StandardsFrameworkItem or LearningComponent, including source labels, page indices, bounding boxes, source segment IDs, attribution, license, and supporting statements when available.",
-                    inputSchema: GetProvenanceInputSchema,
+                        "Return source traceability for any item: attribution, author, license, source labels, page indices, bounding boxes, source segment/decision IDs, and LLM rationale when available. Requires an identifier from search_items or browse_subject. Use this to answer questions about where a curriculum item or learning component originally came from in the source PDF.",
                     annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: GetProvenanceInputSchema,
+                },
+                {
+                    name: "get_related_items",
+                    title: "Get Related Standards",
+                    description:
+                        "Return StandardsFrameworkItem nodes connected to the target via relatesTo relationships. Requires an identifier from search_items or browse_subject. This is a focused subset of get_progression—use it when you only need cross-curricular connections without the full builds-from/builds-towards chains.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: GetRelatedItemsInputSchema,
+                },
+                {
+                    name: "list_facets",
+                    title: "List KG Facets",
+                    description:
+                        "List available filter values in the KG, including subjects, grades, statement types, source labels, node types, and relationship types with counts. Use this before search_items to discover valid filter values.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: ListFacetsInputSchema,
+                },
+                {
+                    name: "navigate",
+                    title: "Navigate Curriculum Hierarchy",
+                    description:
+                        "Move through the curriculum hierarchy from a known item. Requires an identifier from search_items or browse_subject plus a direction: parent, children, siblings, ancestors, or descendants. For LearningComponents, parent/ancestor navigation follows the supports relationship to the linked StandardsFrameworkItem. Use this to explore neighbors of an item you already have.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: NavigateInputSchema,
+                },
+                {
+                    name: "overview",
+                    title: "Knowledge Graph Overview",
+                    description:
+                        "Start here. Get summary statistics and sample structure for the Senegal CE1 Langue et Communication knowledge graph. Returns subjects, grade levels, node/relationship counts, and a sample item. Use this to orient before drilling in with search_items or browse_subject.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: OverviewInputSchema,
+                },
+                {
+                    name: "search_items",
+                    title: "Search Curriculum Items",
+                    description:
+                        "Primary discovery tool. Search StandardsFrameworkItem and LearningComponent nodes by text query and/or filters for subject, grade, statement type, source label, and node category. Returns identifiers that can be passed to get_item, navigate, get_path, get_progression, get_learning_components_for_standard, get_related_items, or get_provenance.",
+                    annotations: {readOnlyHint: true, idempotentHint: true},
+                    inputSchema: SearchItemsInputSchema,
                 },
             ],
         };
