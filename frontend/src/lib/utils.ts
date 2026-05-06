@@ -136,6 +136,17 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
     };
 }
 
+function countBy(values: Array<string | null | undefined>): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const value of values) {
+        const key = value && value.trim().length > 0 ? normalizeWhitespace(value) : "Unspecified";
+        counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return Object.fromEntries(
+        Object.entries(counts).sort(([a], [b]) => a.localeCompare(b))
+    );
+}
+
 /**
  * Create a set of query helpers that operate over a loaded Knowledge Graph and its
  * pre-built indexes.
@@ -329,13 +340,17 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
 
     function compactNode(node: GraphNode, maxDescription = 220): Record<string, unknown> {
         const metadata = node.properties.metadata ?? {};
+        const desc = node.properties.description;
         return {
-            nodeType: getNodeKind(node),
+            nodeType: node.labels.includes("StandardsFramework") ? "framework"
+                : node.labels.includes("StandardsFrameworkItem") ? "standard_item"
+                : node.labels.includes("LearningComponent") ? "learning_component"
+                : "unknown",
             labels: node.labels,
             identifier: node.properties.identifier,
             uuid: node.id,
             name: node.properties.name,
-            description: truncateText(node.properties.description, maxDescription),
+            description: !desc ? desc : (desc.length > maxDescription ? `${desc.substring(0, maxDescription)}...` : desc),
             subject: node.properties.academic_subject?.replace(/\n/g, " "),
             gradeLevel: node.properties.grade_level,
             statementCode: node.properties.statement_code,
@@ -921,16 +936,12 @@ export function loadKnowledgeGraph(kgFn: string, runtimeDir: string): KnowledgeG
     return kg;
 }
 
-export function toolResult(data: Record<string, unknown>) {
-    return {
-        content: [
-            {
-                type: "text",
-                text: JSON.stringify(data, null, 2),
-            },
-        ],
-        structuredContent: data,
-    };
+function normalizeOptionalText(value: string | null | undefined): string | undefined {
+    return value ? normalizeWhitespace(value).toLowerCase() : undefined;
+}
+
+function normalizeWhitespace(value: string): string {
+    return value.replace(/\s+/g, " ").trim();
 }
 
 export function toolError(message: string, details?: Record<string, unknown>) {
@@ -946,18 +957,18 @@ export function toolError(message: string, details?: Record<string, unknown>) {
     };
 }
 
-function normalizeWhitespace(value: string): string {
-    return value.replace(/\s+/g, " ").trim();
+export function toolResult(data: Record<string, unknown>) {
+    return {
+        content: [
+            {
+                type: "text",
+                text: JSON.stringify(data, null, 2),
+            },
+        ],
+        structuredContent: data,
+    };
 }
 
-function normalizeOptionalText(value: string | null | undefined): string | undefined {
-    return value ? normalizeWhitespace(value).toLowerCase() : undefined;
-}
-
-function truncateText(value: string | null | undefined, maxLength = 200): string | null | undefined {
-    if (!value) return value;
-    return value.length > maxLength ? `${value.substring(0, maxLength)}...` : value;
-}
 
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
     return Array.from(
@@ -967,22 +978,4 @@ function uniqueSorted(values: Array<string | null | undefined>): string[] {
                 .map((v) => normalizeWhitespace(v))
         )
     ).sort((a, b) => a.localeCompare(b));
-}
-
-function countBy(values: Array<string | null | undefined>): Record<string, number> {
-    const counts: Record<string, number> = {};
-    for (const value of values) {
-        const key = value && value.trim().length > 0 ? normalizeWhitespace(value) : "Unspecified";
-        counts[key] = (counts[key] ?? 0) + 1;
-    }
-    return Object.fromEntries(
-        Object.entries(counts).sort(([a], [b]) => a.localeCompare(b))
-    );
-}
-
-function getNodeKind(node: GraphNode): KgNodeKind {
-    if (node.labels.includes("StandardsFramework")) return "framework";
-    if (node.labels.includes("StandardsFrameworkItem")) return "standard_item";
-    if (node.labels.includes("LearningComponent")) return "learning_component";
-    return "unknown";
 }
