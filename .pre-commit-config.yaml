@@ -79,9 +79,23 @@ repos:
       files: ^backend/(src|tests)/.*\.py$
 
     # Frontend formatters/linters/type checks
-    - id: frontend-lint-fix
-      name: prettier + eslint + typecheck
-      entry: pnpm --dir frontend lint-fix
+    - id: prettier
+      name: frontend prettier
+      entry: pnpm --dir frontend prettier --write "{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}"
       language: system
       pass_filenames: false
-      files: ^frontend/.*\.(js|ts|jsx|tsx|mjs|cjs|json)$
+      files: ^frontend/(src|tests)/.*\.(js|ts|jsx|tsx|mjs|cjs)$
+
+    - id: eslint
+      name: frontend eslint
+      entry: pnpm --dir frontend eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern "{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}"
+      language: system
+      pass_filenames: false
+      files: ^frontend/(src|tests)/.*\.(js|ts|jsx|tsx|mjs|cjs)$
+
+    - id: typecheck
+      name: frontend tsc --noEmit
+      entry: pnpm --dir frontend tsc --noEmit
+      language: system
+      pass_filenames: false
+      files: ^frontend/((src|tests)/.*\.(ts|tsx|mts|cts)|package\.json|pnpm-lock\.yaml|tsconfig\.json)$
