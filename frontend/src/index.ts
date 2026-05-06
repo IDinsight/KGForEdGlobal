@@ -456,9 +456,9 @@ async function main() {
 
                 let results: GraphNode[] = [];
                 if (direction === "parent") {
-                    results = getAncestors(item.id).at(-1)
-                        ? [getAncestors(item.id).at(-1)!]
-                        : [];
+                    const ancestors = getAncestors(item.id);
+                    const parent = ancestors.at(-1);
+                    results = parent ? [parent] : [];
                 } else if (direction === "children") {
                     results = getChildrenAny(item.id);
                 } else if (direction === "siblings") {
