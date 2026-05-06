@@ -272,15 +272,18 @@ const eslintConfig = [
   {
     settings: {
       "import/resolver": {
-        node: true, // Fall back to Node’s resolver for bare packages
+        node: {
+          extensions: [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".d.ts"],
+        },
         typescript: {
-          alwaysTryTypes: true, // Follow `exports` maps to .d.ts (needed for @modelcontextprotocol/sdk subpaths)
+          alwaysTryTypes: true,
+          conditionNames: ["import", "node", "default"],
           project: [tsconfigPath],
         },
       },
-      "jsdoc": { mode: "typescript" }, // Use TSDoc for TypeScript files
-      "react": {
-        version: "detect", // Automatically detect the version of React
+      jsdoc: { mode: "typescript" },
+      react: {
+        version: "detect",
       },
     },
   },
