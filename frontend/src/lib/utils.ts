@@ -138,10 +138,12 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
 
 function countBy(values: Array<string | null | undefined>): Record<string, number> {
     const counts: Record<string, number> = {};
+
     for (const value of values) {
         const key = value && value.trim().length > 0 ? normalizeWhitespace(value) : "Unspecified";
         counts[key] = (counts[key] ?? 0) + 1;
     }
+
     return Object.fromEntries(
         Object.entries(counts).sort(([a], [b]) => a.localeCompare(b))
     );
