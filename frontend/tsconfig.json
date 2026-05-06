@@ -1,0 +1,62 @@
+{
+	"compilerOptions": {
+		"allowImportingTsExtensions": true,
+		"allowJs": true,
+		"allowSyntheticDefaultImports": true,
+		"allowUnreachableCode": false,
+		"allowUnusedLabels": false,
+		"baseUrl": ".",
+		"checkJs": true,
+		"esModuleInterop": true,
+		"incremental": true,
+		"isolatedModules": true,
+		"jsx": "react-jsx",
+		"lib": [
+			"dom",
+			"dom.iterable",
+			"esnext"
+		],
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"noEmit": true,
+		"noImplicitAny": true,
+		"noImplicitOverride": true,
+		"noUncheckedIndexedAccess": true,
+		"paths": {
+			"@/*": [
+				"src/*"
+			],
+			"@tests/*": [
+				"tests/*"
+			]
+		},
+		"plugins": [
+			{
+				"name": "next"
+			}
+		],
+		"preserveConstEnums": true,
+		"removeComments": true,
+		"resolveJsonModule": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"strictPropertyInitialization": true,
+		"strictNullChecks": true,
+		"target": "ES2017",
+		"types": [
+			"@testing-library/jest-dom"
+		],
+		"verbatimModuleSyntax": false,
+		"useUnknownInCatchVariables": true
+	},
+	"exclude": [
+		"node_modules"
+	],
+	"include": [
+		"next-env.d.ts",
+		"**/*.ts",
+		"**/*.tsx",
+		".next/types/**/*.ts",
+		".next/dev/types/**/*.ts"
+	]
+}
