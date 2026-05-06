@@ -274,6 +274,7 @@ const eslintConfig = [
       "import/resolver": {
         node: true, // Fall back to Node’s resolver for bare packages
         typescript: {
+          alwaysTryTypes: true, // Follow `exports` maps to .d.ts (needed for @modelcontextprotocol/sdk subpaths)
           project: [tsconfigPath],
         },
       },

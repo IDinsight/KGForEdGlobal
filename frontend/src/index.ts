@@ -1,24 +1,24 @@
 /**
- * Educational Knowledge Graph MCP Server
+ * @file Educational Knowledge Graph MCP Server.
  *
- * Provides tools for navigating educational curriculum data in Learning Commons
- * format. Supports curriculum standards with learning components, hierarchical
- * navigation, and learning progression relationships.
+ *   Provides tools for navigating educational curriculum data in Learning Commons
+ *   format. Supports curriculum standards with learning components,
+ *   hierarchical navigation, and learning progression relationships.
  *
- * Architecture:
+ *   Architecture:
  *
- * 1. Claude Desktop = MCP Host
- * 2. Claude Desktop creates one MCP client connection via stdio/JSON-RPC
- * 3. The Node MCP server is this file
- * 4. The KG JSON file is parsed into arrays/maps
- * 5. Available MCP tools: 5a. overview 5b. list_facets 5c. search_items 5d.
- *    get_item 5e. browse_subject 5f. get_framework 5g. get_path 5h. navigate
- *    5i. get_learning_components_for_standard 5j. get_progression 5k.
- *    get_related_items 5l. get_provenance
+ *   1. Claude Desktop = MCP Host
+ *   2. Claude Desktop creates one MCP client connection via stdio/JSON-RPC
+ *   3. The Node MCP server is this file
+ *   4. The KG JSON file is parsed into arrays/maps
+ *   5. Available MCP tools: 5a. overview 5b. list_facets 5c. search_items 5d.
+ *        get_item 5e. browse_subject 5f. get_framework 5g. get_path 5h.
+ *        navigate 5i. get_learning_components_for_standard 5j. get_progression
+ *        5k. get_related_items 5l. get_provenance
  */
 
 // Standard Library
-import { dirname } from "node:path";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Third Party Library
@@ -76,11 +76,11 @@ import {
  * 4. Connect transport: Bind to stdio (JSON-RPC) so Claude Desktop can spawn this
  *    process as a child and communicate over stdin/stdout.
  */
-async function main() {
+async function main(): Promise<void> {
   // Load KG.
   const kg = loadKnowledgeGraph(
     "senegal_reading.json",
-    dirname(fileURLToPath(import.meta.url)),
+    path.dirname(fileURLToPath(import.meta.url)),
   );
 
   // Build indexes for efficient lookup.
@@ -657,7 +657,10 @@ async function main() {
 }
 
 // Start the server and catch any unhandled errors to prevent silent failures.
-main().catch((error) => {
+try {
+  await main();
+} catch (error) {
   console.error("Fatal error:", error);
+  // eslint-disable-next-line unicorn/no-process-exit -- this file is the MCP server CLI entrypoint
   process.exit(1);
-});
+}
