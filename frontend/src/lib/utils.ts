@@ -4,6 +4,9 @@
 import {readFileSync} from "fs";
 import {join} from "path";
 
+// Third Party Library
+import type {CallToolResult} from "@modelcontextprotocol/sdk/types.js";
+
 // Package Library
 import {
     KnowledgeGraphSchema,
@@ -136,6 +139,48 @@ export function buildKnowledgeGraphIndexes(kg: KnowledgeGraph): KnowledgeGraphIn
     };
 }
 
+/**
+ * Tally string occurrences in an array, returning a frequency map sorted
+ * alphabetically by key.
+ *
+ * Each value is normalized before counting:
+ * - `null`, `undefined`, empty strings, and whitespace-only strings are bucketed
+ *  together under the key `"Unspecified"`.
+ * - All other strings are passed through {@link normalizeWhitespace} (internal runs of
+ *   whitespace collapsed to a single space, ends trimmed) before being used as the
+ *   bucket key. So "  Objectif  spécifique " and "Objectif spécifique" count to the
+ *   same bucket.
+ *
+ * Counting is case-sensitive: "Foo" and "foo" are distinct buckets. The returned
+ * object's keys are ordered alphabetically via `localeCompare`.
+ *
+ * @param values - Array of strings to tally. `null` and `undefined` entries are
+ * allowed and are routed to the `"Unspecified"` bucket alongside empty/whitespace-only
+ * strings.
+ *
+ * @returns A plain object mapping each normalized key to its count, with entries
+ * ordered alphabetically by key.
+ *
+ * @example
+ * // Basic tally over a homogeneous string array.
+ * countBy(["hasChild", "supports", "hasChild", "buildsTowards"]);
+ * // -> { buildsTowards: 1, hasChild: 2, supports: 1 }
+ *
+ * @example
+ * // null, undefined, "", and whitespace-only strings all collapse into "Unspecified".
+ * countBy(["Conjugaison", null, "Conjugaison", undefined, "", "   ", "Orthographe"]);
+ * // -> { Conjugaison: 2, Orthographe: 1, Unspecified: 4 }
+ *
+ * @example
+ * // Internal whitespace is collapsed and ends are trimmed before bucketing.
+ * countBy(["  Objectif  spécifique ", "Objectif spécifique"]);
+ * // -> { "Objectif spécifique": 2 }
+ *
+ * @example
+ * // Counting is case-sensitive.
+ * countBy(["Foo", "foo", "Foo"]);
+ * // -> { foo: 1, Foo: 2 }
+ */
 function countBy(values: Array<string | null | undefined>): Record<string, number> {
     const counts: Record<string, number> = {};
 
@@ -938,14 +983,80 @@ export function loadKnowledgeGraph(kgFn: string, runtimeDir: string): KnowledgeG
     return kg;
 }
 
+/**
+ * Normalize a string for case-insensitive comparison and bucketing by trimming,
+ * collapsing internal whitespace, and lowercasing. Returns `undefined` for nullish or
+ * whitespace-only inputs to simplify optional field handling in filters.
+ *
+ * @param value - The string to normalize, or null/undefined.
+ *
+ * @return The normalized string, or `undefined` if the input was nullish or
+ *  whitespace-only.
+ */
 function normalizeOptionalText(value: string | null | undefined): string | undefined {
     return value ? normalizeWhitespace(value).toLowerCase() : undefined;
 }
 
+/**
+ * Normalize a string by trimming and collapsing internal whitespace to a single space.
+ *
+ * @param value - The string to normalize.
+ *
+ * @returns The normalized string with trimmed and collapsed whitespace.
+ */
 function normalizeWhitespace(value: string): string {
     return value.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Wrap a tool failure into the MCP `CallToolResult` envelope expected by Claude
+ * Desktop.
+ *
+ * Builds the dual representation the MCP protocol requires: the JSON-pretty-printed
+ * text placed in `content[0].text` is what the LLM literally reads as the tool's
+ * reply, while the same payload as a structured object is placed in
+ * `structuredContent` for SDK clients that consume tool output programmatically. Both
+ * views are kept in sync because they are built from the same
+ * `{error: message, ...details}` object. The `isError: true` flag is the protocol's
+ * signal that this call failed, distinct from a successful call whose payload happens
+ * to describe a problem.
+ *
+ * Used by every tool handler in `index.ts` for explicit failure paths (item not found,
+ * unknown tool name, invalid arguments) and by the catch-all `try/catch` wrapping the
+ * `CallTool` switch, which funnels any thrown exception into a properly-shaped error
+ * response so the JSON-RPC response cycle is never broken.
+ *
+ * NB: Because the error payload is built as `{error: message, ...details}`, a
+ * `details` object that itself contains an `error` key would shadow the message. None
+ * of the current call sites do this; just be aware if you start passing richer error
+ * context.
+ *
+ * @param message - Human-readable error text. Becomes the `error` field of the payload
+ *  and is what the model sees first when narrating the failure.
+ * @param details - Optional supplementary fields merged into the payload alongside
+ *  `error`. Use for hints, valid alternatives, attempted identifiers, etc.
+ *
+ * @returns A `CallToolResult` with `isError: true`, the error payload pretty-printed
+ *  into `content[0].text`, and the same payload as `structuredContent`.
+ *
+ * @example
+ * // Minimal error — just a message.
+ * toolError("Item 'xyz' not found.");
+ * // -> {
+ * //     content: [{type: "text", text: '{\n  "error": "Item \'xyz\' not found."\n}'}],
+ * //     structuredContent: {error: "Item 'xyz' not found."},
+ * //     isError: true,
+ * //   }
+ *
+ * @example
+ * // Error with diagnostic details for the model to act on.
+ * toolError("Item 'xyz' not found.", {hint: "Use search_items or list_facets."});
+ * // -> {
+ * //     content: [{type: "text", text: '{\n  "error": "Item \'xyz\' not found.",\n  "hint": "Use search_items or list_facets."\n}'}],
+ * //     structuredContent: {error: "Item 'xyz' not found.", hint: "Use search_items or list_facets."},
+ * //     isError: true,
+ * //   }
+ */
 export function toolError(message: string, details?: Record<string, unknown>) {
     return {
         content: [
@@ -959,6 +1070,44 @@ export function toolError(message: string, details?: Record<string, unknown>) {
     };
 }
 
+/**
+ * Wrap a successful tool payload into the MCP `CallToolResult` envelope expected by
+ * Claude Desktop.
+ *
+ * Builds the dual representation the MCP protocol requires: the JSON-pretty-printed
+ * text placed in `content[0].text` is what the LLM literally reads as the tool's
+ * reply, while the same `data` object is placed in `structuredContent` for SDK clients
+ * that consume tool output programmatically. Both views are guaranteed in sync because
+ * they derive from the same input. No `isError` flag is set, signalling a successful
+ * call.
+ *
+ * Used by every tool handler in `index.ts` to return its payload: node lookups,
+ * navigation results, search hits, facet values, progressions, etc.
+ *
+ * @param data - The tool's payload. Whatever shape the tool wants to surface to the
+ *  caller; serialized with `JSON.stringify(_, null, 2)` for the text view and passed
+ *  through unchanged for the structured view. Must be JSON-serializable.
+ *
+ * @returns A `CallToolResult` with the data pretty-printed into `content[0].text` and
+ *  the same data as `structuredContent`. `isError` is omitted.
+ *
+ * @example
+ * // Single-item lookup result.
+ * toolResult({type: "standard_item", id: "abc-123"});
+ * // -> {
+ * //     content: [{type: "text", text: '{\n  "type": "standard_item",\n  "id": "abc-123"\n}'}],
+ * //     structuredContent: {type: "standard_item", id: "abc-123"},
+ * //   }
+ *
+ * @example
+ * // List-of-items result; the same array is stringified into content and exposed as
+ * // structuredContent.
+ * toolResult({results: [{id: "a"}, {id: "b"}], total: 2});
+ * // -> {
+ * //     content: [{type: "text", text: '{\n  "results": [\n    {\n      "id": "a"\n    },\n    {\n      "id": "b"\n    }\n  ],\n  "total": 2\n}'}],
+ * //     structuredContent: {results: [{id: "a"}, {id: "b"}], total: 2},
+ * //   }
+ */
 export function toolResult(data: Record<string, unknown>) {
     return {
         content: [
@@ -972,6 +1121,54 @@ export function toolResult(data: Record<string, unknown>) {
 }
 
 
+/**
+ * Return the unique, alphabetically sorted set of meaningful string values from an
+ * array.
+ *
+ * Each value is processed before deduplication:
+ * - `null`, `undefined`, empty strings, and whitespace-only strings are **dropped**.
+ * - All other strings are passed through {@link normalizeWhitespace} (internal runs of
+ *   whitespace collapsed to a single space, ends trimmed) before deduplication. So
+ *   "  Objectif  spécifique " and "Objectif spécifique" collapse to one entry.
+ *
+ * Deduplication is case-sensitive: "Foo" and "foo" remain distinct entries. The
+ * returned array is sorted alphabetically via `localeCompare`.
+ *
+ * Used by {@link createKnowledgeGraphUtils}'s `getFacetValues` helper to build the
+ * lists of valid filter values (`relationshipTypes`, `statementTypes`, `sourceLabels`,
+ * etc.) surfaced through the MCP `list_facets`/`overview` tool responses.
+ *
+ * @param values - Array of strings to dedupe and sort. `null` and `undefined` entries
+ *  are allowed and silently dropped, alongside empty/whitespace-only strings.
+ *
+ * @returns A new array containing each meaningful, whitespace-normalized value exactly
+ *  once, sorted alphabetically.
+ *
+ * @example
+ * // Basic dedupe and sort.
+ * uniqueSorted(["hasChild", "supports", "hasChild", "buildsTowards"]);
+ * // -> ["buildsTowards", "hasChild", "supports"]
+ *
+ * @example
+ * // null, undefined, "", and whitespace-only strings are dropped (NOT bucketed).
+ * uniqueSorted(["Conjugaison", null, "Conjugaison", undefined, "", "   ", "Orthographe"]);
+ * // -> ["Conjugaison", "Orthographe"]
+ *
+ * @example
+ * // Internal whitespace is collapsed and ends are trimmed before deduplication.
+ * uniqueSorted(["  Objectif  spécifique ", "Objectif spécifique", "Vocabulaire"]);
+ * // -> ["Objectif spécifique", "Vocabulaire"]
+ *
+ * @example
+ * // Deduplication is case-sensitive.
+ * uniqueSorted(["Foo", "foo", "Foo"]);
+ * // -> ["foo", "Foo"]
+ *
+ * @example
+ * // Returns an empty array if no meaningful values are present.
+ * uniqueSorted([null, undefined, "", "   "]);
+ * // -> []
+ */
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
     return Array.from(
         new Set(
