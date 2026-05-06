@@ -26,9 +26,9 @@ import {
     ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {z} from "zod";
-import {readFileSync} from "fs";
-import {fileURLToPath} from "url";
-import {dirname, join} from "path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 // Define root paths.
 const __filename = fileURLToPath(import.meta.url);
