@@ -33,7 +33,7 @@ repos:
       language: system
       pass_filenames: false
 
-    # Formatters (auto-fix)
+    # Backend Formatters (auto-fix)
     - id: black
       name: black
       entry: uv run --project backend black
@@ -48,7 +48,7 @@ repos:
       types: [python]
       files: ^backend/(src|tests)/.*\.py$
 
-    # Linters
+    # Backend Linters
     - id: ruff
       name: ruff
       entry: uv run --project backend ruff check --fix --exit-non-zero-on-fix
@@ -77,3 +77,11 @@ repos:
       language: system
       types: [python]
       files: ^backend/(src|tests)/.*\.py$
+
+    # Frontend formatters/linters/type checks
+    - id: frontend-lint-fix
+      name: prettier + eslint + typecheck
+      entry: pnpm --dir frontend lint-fix
+      language: system
+      pass_filenames: false
+      files: ^frontend/.*\.(js|ts|jsx|tsx|mjs|cjs|json)$
