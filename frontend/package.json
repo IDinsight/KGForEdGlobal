@@ -3,6 +3,7 @@
   "description": "MCP server for educational knowledge graph navigation",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "tsc-alias": "^1.8.17",
     "zod": "^4.1.12"
   },
   "devDependencies": {
@@ -52,7 +53,7 @@
   "name": "edu-kg-mcp",
   "private": true,
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --project tsconfig.json && tsc-alias -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "lint-fix": "prettier --write \"src/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern \"src/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && tsc --noEmit",
     "start": "node build/index.js",

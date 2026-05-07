@@ -1,11 +1,6 @@
 /** @file This file contains global type definitions for the application. */
 
 type ISODateString = string;
-type KgNodeKind =
-  | "framework"
-  | "standard_item"
-  | "learning_component"
-  | "unknown";
 type RelationshipEntity = string;
 type RelationshipEntityKey = string;
 type RelationshipType = "hasChild" | "supports" | "buildsTowards" | "relatesTo";
