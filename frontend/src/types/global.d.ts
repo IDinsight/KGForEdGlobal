@@ -1,6 +1,62 @@
 /** @file This file contains global type definitions for the application. */
 
 type ISODateString = string;
+type KnowledgeGraphToolDefinition = {
+  annotations: {
+    idempotentHint: boolean;
+    openWorldHint: boolean;
+    readOnlyHint: boolean;
+  };
+  description: string;
+  inputSchema: import("zod").ZodRawShape;
+  name: string;
+  title: string;
+};
+
+// Return shape of `createKnowledgeGraphUtils`.
+type KnowledgeGraphUtils = {
+  buildHierarchyForSubject: (subject: string, gradeFilter?: string) => object[];
+  buildProgressionTraversal: (
+    standardNode: GraphNode,
+    direction: ProgressionDirection,
+    depth: number,
+  ) => Record<string, unknown>;
+  compactNode: (
+    node: GraphNode,
+    maxDescription?: number,
+  ) => Record<string, unknown>;
+  detailedNode: (node: GraphNode) => Record<string, unknown>;
+  findAnyNode: (identifier: string) => { item: GraphNode; type: string } | null;
+  findLearningComponent: (identifier: string) => GraphNode | undefined;
+  findStandardItem: (identifier: string) => GraphNode | undefined;
+  getAncestors: (nodeId: string) => GraphNode[];
+  getChildrenAny: (parentNodeId: string) => GraphNode[];
+  getDescendants: (nodeId: string, depth: number) => GraphNode[];
+  getFacetValues: () => Record<string, unknown>;
+  getLearningComponentsForStandard: (standardNodeId: string) => GraphNode[];
+  getPathForNode: (node: GraphNode) => Record<string, unknown>;
+  getRelatesTo: (standardNodeId: string) => GraphNode[];
+  getSiblingItems: (nodeId: string) => GraphNode[];
+  getStandardsSupportedByLearningComponent: (
+    learningComponentNodeId: string,
+  ) => GraphNode[];
+  getSupportRelationshipsForLearningComponent: (
+    learningComponentNodeId: string,
+  ) => GraphRelationship[];
+  getUniqueGradeLevels: () => string[];
+  getUniqueSubjects: () => string[];
+  provenanceForNode: (node: GraphNode) => Record<string, unknown>;
+  searchItems: (options: {
+    grade?: string;
+    limit?: number;
+    nodeType?: SearchNodeType;
+    query?: string;
+    sourceLabel?: string;
+    statementType?: string;
+    subject?: string;
+  }) => Array<{ item: GraphNode; type: string }>;
+};
+
 type RelationshipEntity = string;
 type RelationshipEntityKey = string;
 type RelationshipType = "hasChild" | "supports" | "buildsTowards" | "relatesTo";

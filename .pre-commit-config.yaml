@@ -81,21 +81,21 @@ repos:
     # Frontend formatters/linters/type checks
     - id: prettier
       name: prettier
-      entry: pnpm --dir=frontend exec prettier --write "{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}"
+      entry: pnpm --dir=frontend exec prettier --write "src/**/*.{js,ts,jsx,tsx,mjs,cjs}"
       language: system
       pass_filenames: false
-      files: ^frontend/(src|tests)/.*\.(js|ts|jsx|tsx|mjs|cjs)$
+      files: ^frontend/src/.*\.(js|ts|jsx|tsx|mjs|cjs)$
 
     - id: eslint
       name: eslint
-      entry: pnpm --dir=frontend exec eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern "{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}"
+      entry: pnpm --dir=frontend exec eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern "src/**/*.{js,ts,jsx,tsx,mjs,cjs}"
       language: system
       pass_filenames: false
-      files: ^frontend/(src|tests)/.*\.(js|ts|jsx|tsx|mjs|cjs)$
+      files: ^frontend/src/.*\.(js|ts|jsx|tsx|mjs|cjs)$
 
     - id: typecheck
       name: tsc --noEmit
       entry: pnpm --dir=frontend exec tsc --noEmit
       language: system
       pass_filenames: false
-      files: ^frontend/((src|tests)/.*\.(ts|tsx|mts|cts)|package\.json|pnpm-lock\.yaml|tsconfig\.json)$
+      files: ^frontend/(src/.*\.(ts|tsx|mts|cts)|package\.json|pnpm-lock\.yaml|tsconfig\.json)$

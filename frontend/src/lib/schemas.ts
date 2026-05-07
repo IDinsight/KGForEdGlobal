@@ -4,23 +4,6 @@
 import { z } from "zod";
 
 // Schemas.
-export const BrowseSubjectInputSchema = {
-  additionalProperties: false,
-  properties: {
-    grade: {
-      description: "Optional grade level filter, e.g. 'CE1'.",
-      type: "string",
-    },
-    subject: {
-      description:
-        "Academic subject name. For this KG, use 'Langue et Communication'.",
-      type: "string",
-    },
-  },
-  required: ["subject"],
-  type: "object",
-} as const;
-
 export const BrowseSubjectSchema = z
   .object({
     grade: z
@@ -42,19 +25,6 @@ export const GetItemSchema = z
       .describe("Item identifier, graph node UUID, or CASE UUID."),
   })
   .strict();
-
-export const GetLearningComponentsForStandardInputSchema = {
-  additionalProperties: false,
-  properties: {
-    standard_id: {
-      description:
-        "StandardsFrameworkItem identifier, graph node UUID, or CASE UUID.",
-      type: "string",
-    },
-  },
-  required: ["standard_id"],
-  type: "object",
-} as const;
 
 export const GetLearningComponentsForStandardSchema = z
   .object({
@@ -81,54 +51,6 @@ export const ProgressionDirectionSchema = z.enum([
   "related",
 ]);
 
-export const GetItemInputSchema = {
-  additionalProperties: false,
-  properties: {
-    identifier: {
-      description: "Item identifier, graph node UUID, or CASE UUID.",
-      type: "string",
-    },
-  },
-  required: ["identifier"],
-  type: "object",
-} as const;
-
-export const GetPathInputSchema = {
-  additionalProperties: false,
-  properties: {
-    identifier: {
-      description: "StandardsFrameworkItem or LearningComponent identifier.",
-      type: "string",
-    },
-  },
-  required: ["identifier"],
-  type: "object",
-} as const;
-
-export const GetProgressionInputSchema = {
-  additionalProperties: false,
-  properties: {
-    depth: {
-      description: "Traversal depth. Defaults to 1; maximum is 3.",
-      maximum: 3,
-      minimum: 1,
-      type: "integer",
-    },
-    direction: {
-      description: "Progression direction to return. Defaults to 'both'.",
-      enum: ["both", "builds_from", "builds_towards", "related"],
-      type: "string",
-    },
-    identifier: {
-      description:
-        "StandardsFrameworkItem identifier, graph node UUID, or CASE UUID.",
-      type: "string",
-    },
-  },
-  required: ["identifier"],
-  type: "object",
-} as const;
-
 export const GetProgressionSchema = z
   .object({
     depth: z
@@ -152,18 +74,6 @@ export const GetProgressionSchema = z
   })
   .strict();
 
-export const GetProvenanceInputSchema = {
-  additionalProperties: false,
-  properties: {
-    identifier: {
-      description: "StandardsFrameworkItem or LearningComponent identifier.",
-      type: "string",
-    },
-  },
-  required: ["identifier"],
-  type: "object",
-} as const;
-
 export const GetProvenanceSchema = z
   .object({
     identifier: z
@@ -171,19 +81,6 @@ export const GetProvenanceSchema = z
       .describe("StandardsFrameworkItem or LearningComponent identifier."),
   })
   .strict();
-
-export const GetRelatedItemsInputSchema = {
-  additionalProperties: false,
-  properties: {
-    identifier: {
-      description:
-        "StandardsFrameworkItem identifier, graph node UUID, or CASE UUID.",
-      type: "string",
-    },
-  },
-  required: ["identifier"],
-  type: "object",
-} as const;
 
 export const GetRelatedItemsSchema = z
   .object({
@@ -239,29 +136,6 @@ export const KnowledgeGraphSchema = z
   })
   .passthrough();
 
-export const NavigateInputSchema = {
-  additionalProperties: false,
-  properties: {
-    depth: {
-      description: "Traversal depth for descendants. Defaults to 1.",
-      maximum: 5,
-      minimum: 1,
-      type: "integer",
-    },
-    direction: {
-      description: "Hierarchy direction to traverse.",
-      enum: ["parent", "children", "siblings", "ancestors", "descendants"],
-      type: "string",
-    },
-    identifier: {
-      description: "StandardsFrameworkItem or LearningComponent identifier.",
-      type: "string",
-    },
-  },
-  required: ["identifier", "direction"],
-  type: "object",
-} as const;
-
 export const NavigateSchema = z
   .object({
     depth: z
@@ -283,23 +157,11 @@ export const NavigateSchema = z
   })
   .strict();
 
-export const NoArgsInputSchema = {
-  additionalProperties: false,
-  properties: {},
-  type: "object",
-} as const;
-
 export const NoArgsSchema = z.object({}).strict();
-
-export const GetFrameworkInputSchema = NoArgsInputSchema;
 
 export const GetFrameworkSchema = NoArgsSchema;
 
-export const ListFacetsInputSchema = NoArgsInputSchema;
-
 export const ListFacetsSchema = NoArgsSchema;
-
-export const OverviewInputSchema = NoArgsInputSchema;
 
 export const OverviewSchema = NoArgsSchema;
 
@@ -349,48 +211,6 @@ export const SearchItemsSchema = z
       .describe("Optional subject filter, e.g. 'Langue et Communication'."),
   })
   .strict();
-
-export const SearchItemsInputSchema = {
-  additionalProperties: false,
-  properties: {
-    grade: {
-      description: "Optional grade level filter. For this KG, use 'CE1'.",
-      type: "string",
-    },
-    limit: {
-      description: "Maximum number of results. Defaults to 20.",
-      maximum: 100,
-      minimum: 1,
-      type: "integer",
-    },
-    node_type: {
-      description:
-        "Filter by KG node category. Use 'standard_item' for curriculum nodes and 'learning_component' for atomic extracted skills.",
-      enum: ["all", "standard_item", "learning_component"],
-      type: "string",
-    },
-    query: {
-      description: "Search text. Leave empty when using only filters.",
-      type: "string",
-    },
-    source_label: {
-      description:
-        "Optional source label filter, e.g. 'Conjugaison', 'Grammaire', or 'Vocabulaire'.",
-      type: "string",
-    },
-    statement_type: {
-      description:
-        "Optional statement type filter, e.g. 'Conjugaison', 'Orthographe', or 'Objectif spécifique'.",
-      type: "string",
-    },
-    subject: {
-      description:
-        "Optional academic subject filter. For this KG, use 'Langue et Communication'.",
-      type: "string",
-    },
-  },
-  type: "object",
-} as const;
 
 // Types.
 export type ProgressionDirection =
