@@ -104,8 +104,8 @@ export function buildKnowledgeGraphIndexes(
     /*
      * The three known KG label types are expected to be mutually exclusive. If a node
      * ever carries more than one, the partitioning below would silently drop it from
-     * one of the indexes; surface the malformed node loudly at load so it can be fixed
-     * at the source rather than chased through downstream queries.
+     * one of the indexes; throw the malformed node at load time so it can be fixed at
+     * the source rather than chased through downstream queries.
      */
     const matchedKnownLabels =
       Number(isFramework) + Number(isSfi) + Number(isLc);
