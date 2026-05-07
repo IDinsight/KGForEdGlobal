@@ -57,7 +57,55 @@ All tools are read-only.
 
 ### Configure for Claude Code
 
-Add to your `~/.claude.json` file under the project's `mcpServers` section:
+Claude Code is the terminal-based agent. If you don't already have it installed, the native installer is the recommended path:
+
+```bash
+# macOS / Linux
+curl -fsSL https://claude.ai/install.sh | bash
+
+# Windows (PowerShell)
+irm https://claude.ai/install.ps1 | iex
+```
+
+Or via npm (requires Node.js 18+; do **not** use `sudo`):
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+Verify with `claude --version` and `claude doctor`. Authenticate by running `claude` once — it opens a browser for OAuth login. Full install docs: https://code.claude.com/docs/en/setup
+
+Once installed, register the MCP server using one of the three options below.
+
+#### Option 1: CLI (recommended)
+
+```bash
+claude mcp add edu-kg --scope user -- node /absolute/path/to/edu-kg-mcp/build/index.js
+```
+
+All flags must come **before** the server name; the `--` separates the server name from the command and arguments. Pick a scope based on how you want the server loaded:
+
+| Scope | Loads in | Shared with team | Stored in |
+|---|---|---|---|
+| `local` (default) | Current project only | No | `~/.claude.json` |
+| `project` | Current project only | Yes — committed to git | `.mcp.json` at project root |
+| `user` | All your projects | No | `~/.claude.json` |
+
+For team workflows, `--scope project` writes a `.mcp.json` at the repo root that you can commit. Anyone who clones the repo and runs Claude Code in it gets the server (after a one-time approval prompt).
+
+#### Option 2: Import from Claude Desktop
+
+If you've already configured the server in Claude Desktop and you're on macOS or WSL:
+
+```bash
+claude mcp add-from-claude-desktop
+```
+
+You'll get an interactive picker. Select `edu-kg` and confirm. Use `--scope user` to make it available across all projects.
+
+#### Option 3: Edit the config file directly
+
+Add to your `~/.claude.json` file under the project's `mcpServers` section (equivalent to `--scope local`):
 
 ```json
 {
@@ -65,6 +113,7 @@ Add to your `~/.claude.json` file under the project's `mcpServers` section:
     "/path/to/your/project": {
       "mcpServers": {
         "edu-kg": {
+          "type": "stdio",
           "command": "node",
           "args": [
             "/absolute/path/to/edu-kg-mcp/build/index.js"
@@ -76,12 +125,13 @@ Add to your `~/.claude.json` file under the project's `mcpServers` section:
 }
 ```
 
-Or add it globally under the top-level `mcpServers`:
+Or add it globally under the top-level `mcpServers` (equivalent to `--scope user`):
 
 ```json
 {
   "mcpServers": {
     "edu-kg": {
+      "type": "stdio",
       "command": "node",
       "args": [
         "/absolute/path/to/edu-kg-mcp/build/index.js"
@@ -91,7 +141,16 @@ Or add it globally under the top-level `mcpServers`:
 }
 ```
 
-**Important**: Replace `/absolute/path/to/edu-kg-mcp` with the actual path where you extracted the zip.
+**Important**: Replace `/absolute/path/to/edu-kg-mcp` with the actual path where you extracted the zip. If `node` isn't on the PATH that Claude Code's subprocess sees (common with nvm), replace `"node"` with the absolute path from `which node`.
+
+#### Verify
+
+```bash
+claude mcp list           # confirm edu-kg shows up
+claude mcp get edu-kg     # show the resolved config
+```
+
+Then start a session with `claude` and run `/mcp` inside it to see server status. You should see `edu-kg` connected with 12 tools.
 
 ### Configure for Claude Desktop
 
@@ -156,7 +215,9 @@ To use a different Learning Commons-format dataset:
 ## Troubleshooting
 
 - **Server not starting**: Check that Node.js 18+ is installed and that the path in your config points at the compiled `build/index.js`.
-- **Tools not appearing**: Ensure you've restarted Claude after config changes.
+- **Tools not appearing**: Ensure you've restarted Claude after config changes. In Claude Code, run `/mcp` to inspect server status and reconnect.
+- **Claude Code: server shows up in `claude mcp list` but fails to connect**: Usually a `PATH` issue — Claude Code's subprocess has a different shell environment than your interactive terminal. Either edit the config to use the absolute path to `node` (run `which node` to find it), or ensure nvm initializes in non-interactive shells.
+- **Claude Code: "MCP tool output exceeds 10,000 tokens" warning**: The default cap is 25,000 tokens. For broad `browse_subject` calls on large hierarchies, raise it via `MAX_MCP_OUTPUT_TOKENS=50000 claude` when starting your session.
 - **`Failed to load knowledge graph: file not found`**: The KG file is resolved relative to the compiled entrypoint as `../../examples/kgs/<filename>`. Verify the file exists at that location and that you've run `npm run build`.
 - **`Failed to parse knowledge graph JSON`**: The KG file is not valid JSON. The error message includes the resolved filepath.
 - **`Failed to validate knowledge graph`**: The dataset is missing required fields. The error lists the offending paths (e.g. `nodes.3.properties.identifier`). Fix the source data and reload.
