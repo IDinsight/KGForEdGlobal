@@ -1510,9 +1510,10 @@ export function createKnowledgeGraphUtils(
    *   `progression_context`, `source_decision_ids`, `source_label`,
    *   `source_segment_ids`, `supporting_sfi_aux_statements`).
    * - The `metadata.provenance` sub-object as a fallback for `bbox`, `bbox_ref`,
-   *   and `page_indices` — these fields appear under `metadata` directly on
-   *   some nodes and nested under `metadata.provenance` on others, depending on
-   *   the upstream extraction pipeline.
+   *   `page_indices`, `source_decision_ids`, and `source_segment_ids` — these
+   *   fields appear under `metadata` directly on some nodes and nested under
+   *   `metadata.provenance` on others, depending on the upstream extraction
+   *   pipeline.
    *
    * Several fields fall back to `supporting_sfi_*` variants in metadata
    * (`canonicalPathKey`, `progressionContext`, `sourceLabel`) so the same shape
@@ -1558,10 +1559,13 @@ export function createKnowledgeGraphUtils(
         metadata.progression_context ??
         metadata.supporting_sfi_progression_context,
       provider: node.properties.provider,
-      sourceDecisionIds: metadata.source_decision_ids,
+      sourceDecisionIds:
+        metadata.source_decision_ids ??
+        metadata.provenance?.source_decision_ids,
       sourceLabel:
         metadata.source_label ?? metadata.supporting_sfi_source_label,
-      sourceSegmentIds: metadata.source_segment_ids,
+      sourceSegmentIds:
+        metadata.source_segment_ids ?? metadata.provenance?.source_segment_ids,
       supportingSfi: supportedStandards.map((standard) =>
         compactNode(standard),
       ),
@@ -1960,11 +1964,10 @@ export function registerKnowledgeGraphTools({
      * with the node's immediate neighbors.
      *
      * The response shape varies by node kind. Standard items include parent,
-     * sibling-aware children, related standards, supporting learning
-     * components, and a one-step learning progression in both directions.
-     * Learning components include the standards they support plus the
-     * underlying support-relationship records. Frameworks include only their
-     * immediate children.
+     * ordered children, related standards, supporting learning components, and
+     * one-step learning progression links. Learning components include the
+     * standards they support plus the underlying support-relationship records.
+     * Frameworks include only their immediate children.
      *
      * @param args - Raw tool arguments forwarded by `McpServer`. Validated
      *   against `GetItemSchema`: an `identifier` accepted in any of the shapes
@@ -2246,7 +2249,7 @@ export function registerKnowledgeGraphTools({
      * MCP entry point for the `get_related_items` tool: return every node
      * connected to the focal SFI via a `relatesTo` edge.
      *
-     * SFI-only — accepts just `findStandardItem`-resolvable identifiers. Unlike
+     * SFI-only: accepts just `findStandardItem`-resolvable identifiers. Unlike
      * `get_progression`, this tool does not fall back to LCs; the `relatesTo`
      * edge is meaningful only between curriculum items, so an LC identifier
      * yields a not-found error.
@@ -2263,8 +2266,9 @@ export function registerKnowledgeGraphTools({
       runToolHandler({
         /**
          * Parse `args`, resolve the SFI via `findStandardItem`, and pass its ID
-         * to `getRelatesTo`. Results are compacted at the default description
-         * budget because they are list-shaped.
+         * to `getRelatesTo`. Related nodes are deduped by graph node ID before
+         * being compacted at the default description budget because they are
+         * list-shaped.
          *
          * @returns A `CallToolResult` with the related items, or a `toolError`
          *   for unresolved SFIs.
@@ -2279,7 +2283,15 @@ export function registerKnowledgeGraphTools({
             });
           }
 
-          const related = getRelatesTo(standardNode.id);
+          const relatedById = new Map<string, GraphNode>();
+
+          for (const node of getRelatesTo(standardNode.id)) {
+            if (!relatedById.has(node.id)) {
+              relatedById.set(node.id, node);
+            }
+          }
+
+          const related = [...relatedById.values()];
           return toolResult({
             relatedCount: related.length,
             relatedItems: related.map((node) => compactNode(node)),
@@ -2426,22 +2438,22 @@ export function registerKnowledgeGraphTools({
             const supportedStandards = getStandardsSupportedByLearningComponent(
               item.id,
             );
+            const results =
+              direction === "parent"
+                ? supportedStandards
+                : direction === "ancestors"
+                  ? supportedStandards.flatMap((standard) => [
+                      ...getAncestors(standard.id),
+                      standard,
+                    ])
+                  : [];
             return toolResult({
               direction,
               note:
                 direction === "parent" || direction === "ancestors"
                   ? "LearningComponents are attached to curriculum items through supports relationships, not hasChild hierarchy."
                   : "LearningComponents do not have hasChild hierarchy in this KG.",
-              results:
-                direction === "parent"
-                  ? supportedStandards.map((standard) => compactNode(standard))
-                  : direction === "ancestors"
-                    ? supportedStandards.flatMap((standard) =>
-                        [...getAncestors(standard.id), standard].map((node) =>
-                          compactNode(node),
-                        ),
-                      )
-                    : [],
+              results: results.map((node) => compactNode(node)),
               target: compactNode(item),
             });
           }
@@ -2584,7 +2596,7 @@ export function registerKnowledgeGraphTools({
          * `searchItems`. Filters are passed through verbatim — the handler does
          * no normalization of its own; case folding and whitespace collapse
          * happen inside `searchItems` and the underlying `getSearchText`
-         * helper. The applied filters are echoed back in the payload so the
+         * function. The applied filters are echoed back in the payload so the
          * caller can verify which constraints were actually used.
          *
          * @returns A `CallToolResult` with the search results, filters, and

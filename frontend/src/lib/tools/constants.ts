@@ -114,7 +114,7 @@ export const KNOWLEDGE_GRAPH_TOOL_DEFINITIONS = [
   {
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     description:
-      "Start here. Get summary statistics and sample structure for the Senegal CE1 Langue et Communication knowledge graph. Returns subjects, grade levels, node/relationship counts, and a sample item. Use this to orient before drilling in with search_items or browse_subject.",
+      "Start here. Get summary statistics and sample compact-node structure for the Senegal CE1 Langue et Communication knowledge graph. Returns subjects, grade levels, node/relationship counts, graph metadata, and sample standard/LearningComponent items. Use this to orient before drilling in with search_items or browse_subject.",
     inputSchema: OverviewSchema.shape,
     name: "overview",
     title: "Knowledge Graph Overview",
@@ -122,7 +122,7 @@ export const KNOWLEDGE_GRAPH_TOOL_DEFINITIONS = [
   {
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     description:
-      "Primary discovery tool. Search StandardsFrameworkItem and LearningComponent nodes by text query and/or filters for subject, grade, statement type, source label, and node category. Returns identifiers that can be passed to get_item, navigate, get_path, get_progression, get_learning_components_for_standard, get_related_items, or get_provenance.",
+      "Primary discovery tool. Search StandardsFrameworkItem and LearningComponent nodes by text query and/or filters for subject, grade, statement type, source label, and node category. Use node_type='standard_item' when looking for standards, node_type='learning_component' when looking for teachable skills, and node_type='all' for broad discovery. Results are compact nodes with identifiers that can be passed to get_item, navigate, get_path, get_progression, get_learning_components_for_standard, get_related_items, or get_provenance as appropriate for the returned node type.",
     inputSchema: SearchItemsSchema.shape,
     name: "search_items",
     title: "Search Curriculum Items",

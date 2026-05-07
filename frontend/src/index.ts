@@ -62,17 +62,9 @@ async function main(): Promise<void> {
   const kgUtils = createKnowledgeGraphUtils({ kg, ...indexes });
 
   // Initialize high-level MCP server; registered tools define capabilities.
-  const server = new McpServer({
-    name: "edu-kg-mcp",
-    version: "0.1.0",
-  });
+  const server = new McpServer({ name: "edu-kg-mcp", version: "0.1.0" });
 
-  registerKnowledgeGraphTools({
-    indexes,
-    kg,
-    kgUtils,
-    server,
-  });
+  registerKnowledgeGraphTools({ indexes, kg, kgUtils, server });
 
   /*
    * Connect the server to the transport (stdio in this case) to start listening for
