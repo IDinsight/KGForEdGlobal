@@ -1840,13 +1840,37 @@ export function registerKnowledgeGraphTools({
     searchItems,
   } = kgUtils;
 
-  /* eslint-disable jsdoc/require-description, jsdoc/require-returns, jsdoc/require-param-description */
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `browse_subject` tool: build a tree-shaped view
+     * of standards filed under a single academic subject, optionally scoped to
+     * a grade band.
+     *
+     * Delegates to `buildHierarchyForSubject` after schema validation. If the
+     * subject does not match any SFI in the loaded KG, the response is still a
+     * normal (non-error) result that surfaces the list of `availableSubjects`
+     * alongside an `error` field, so the caller has an immediate recovery hint
+     * without a separate facet round-trip.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `BrowseSubjectSchema`: a `subject` name (case-insensitive,
+     *   newline-tolerant) and an optional `grade` substring applied to
+     *   descendants only.
+     *
+     * @returns A `CallToolResult` with the subject hierarchy, the applied grade
+     *   filter, the subject name, and the count of top-level items; or a result
+     *   describing the missing subject and listing available alternatives.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args` with `BrowseSubjectSchema` and resolve them through
+         * `buildHierarchyForSubject`. The "subject not found" branch returns
+         * `toolResult` with an `error` key (not `toolError`) so the response
+         * carries `availableSubjects` for the caller to retry against.
          *
+         * @returns A `CallToolResult` carrying the hierarchy or the not-found
+         *   recovery payload.
          */
         handler: () => {
           const { grade, subject } = BrowseSubjectSchema.parse(args ?? {});
@@ -1872,11 +1896,33 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `get_framework` tool: return metadata for every
+     * `StandardsFramework` registered in the loaded KG, alongside graph-level
+     * provenance.
+     *
+     * `GetFrameworkSchema` carries no fields today; the parse call is kept for
+     * forward compatibility and to surface a structured Zod error if a future
+     * argument is added but malformed.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetFrameworkSchema`.
+     *
+     * @returns A `CallToolResult` whose payload lists each framework with its
+     *   adoption status, attribution, jurisdiction, license, language, and
+     *   source-PDF metadata, plus a `graph` block carrying the parent KG's doc
+     *   key, export dialect, generation timestamp, and graph-type info.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args` (effectively a no-op today), then project each framework
+         * node into a flat shape that hoists common metadata fields out of
+         * `properties` and appends the surrounding KG-level provenance from
+         * `kg`.
          *
+         * @returns A `CallToolResult` carrying the framework list and graph
+         *   provenance.
          */
         handler: () => {
           GetFrameworkSchema.parse(args ?? {});
@@ -1908,11 +1954,38 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `get_item` tool: resolve a free-form identifier
+     * to whichever node kind it refers to and return a detailed view together
+     * with the node's immediate neighbors.
+     *
+     * The response shape varies by node kind. Standard items include parent,
+     * sibling-aware children, related standards, supporting learning
+     * components, and a one-step learning progression in both directions.
+     * Learning components include the standards they support plus the
+     * underlying support-relationship records. Frameworks include only their
+     * immediate children.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetItemSchema`: an `identifier` accepted in any of the shapes
+     *   `findAnyNode` understands (graph node UUID, CASE UUID/URI, or
+     *   `properties.identifier`).
+     *
+     * @returns A `CallToolResult` carrying the resolved node in its
+     *   kind-appropriate shape, or an error result with a hint pointing to
+     *   `search_items` and `list_facets` when the identifier matches nothing.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args` with `GetItemSchema`, resolve via `findAnyNode`, then
+         * branch on the discriminator to assemble the kind-specific neighbor
+         * payload. The three branches differ only in which traversal helpers
+         * are called and which fields are surfaced; all return through
+         * `toolResult` so the envelope is uniform.
          *
+         * @returns A `CallToolResult` carrying the detailed node and its
+         *   neighbors, or a `toolError` for unresolved identifiers.
          */
         handler: () => {
           const { identifier } = GetItemSchema.parse(args ?? {});
@@ -1987,11 +2060,35 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `get_learning_components_for_standard` tool:
+     * return every `LearningComponent` that supports the requested SFI.
+     *
+     * Resolves `standard_id` against SFI-only indexes via `findStandardItem`,
+     * so passing an LC identifier or framework ID yields a not-found error
+     * rather than a coerced result.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetLearningComponentsForStandardSchema`: a `standard_id` in
+     *   any shape accepted by `findStandardItem`.
+     *
+     * @returns A `CallToolResult` with the supporting LCs as compact nodes, the
+     *   matched standard as a longer-description compact node, and the total
+     *   count; or an error result with a hint to use `search_items` if the
+     *   standard isn't found.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args` with `GetLearningComponentsForStandardSchema`, resolve
+         * the standard via `findStandardItem`, then call
+         * `getLearningComponentsForStandard` for the supporting LCs. LCs are
+         * compacted at a 500-char description ceiling because they are
+         * list-shaped; the standard itself is compacted at a 1000-char ceiling
+         * because it is the focal item.
          *
+         * @returns A `CallToolResult` with the LC list and standard, or a
+         *   `toolError` when the SFI lookup misses.
          */
         handler: () => {
           const { standard_id } = GetLearningComponentsForStandardSchema.parse(
@@ -2020,11 +2117,32 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `get_path` tool: return the root-to-node
+     * hierarchical path for any KG node.
+     *
+     * Accepts SFIs, LCs, and frameworks via `findAnyNode`, deferring path
+     * construction to `getPathForNode`, which knows the right edge type to walk
+     * for each node kind.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetPathSchema`: a single `identifier` string in any shape
+     *   accepted by `findAnyNode`.
+     *
+     * @returns A `CallToolResult` carrying the path payload produced by
+     *   `getPathForNode`, or an error result with a hint to use `search_items`
+     *   when the identifier resolves to no node.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args`, resolve the identifier through `findAnyNode`, and pass
+         * the resolved node into `getPathForNode`. Node-kind dispatch lives
+         * inside `getPathForNode`; this handler is just an
+         * identifier-to-payload pipe.
          *
+         * @returns A `CallToolResult` with the path, or a `toolError` for
+         *   unresolved identifiers.
          */
         handler: () => {
           const { identifier } = GetPathSchema.parse(args ?? {});
@@ -2044,11 +2162,44 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `get_progression` tool: traverse
+     * `buildsTowards`/`buildsFrom`/`relatesTo` edges from a focal SFI to map a
+     * learning progression.
+     *
+     * Accepts an LC identifier as a fallback: when the identifier resolves to
+     * an LC rather than an SFI, the handler picks the first SFI the LC supports
+     * as the focal node and reports the redirection via
+     * `mappedFromLearningComponent` so the caller can see how the indirection
+     * happened.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetProgressionSchema`: an `identifier`, a `direction`
+     *   (`builds_towards` | `builds_from` | `related` | `both`), and a `depth`
+     *   cap.
+     *
+     * @returns A `CallToolResult` carrying the progression traversal payload
+     *   plus the optional `mappedFromLearningComponent` block, or an error
+     *   result if neither the identifier nor any LC fallback yields an SFI.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args`, then resolve the focal SFI in two passes:
          *
+         * 1. Try `findStandardItem` directly.
+         * 2. If that misses, try `findLearningComponent`. If an LC is found,
+         *    follow its `supports` edges and pick the first supported standard
+         *    as the focal node, recording the mapping for the caller via
+         *    `mappedFromLearningComponent`.
+         *
+         * The traversal itself is delegated to `buildProgressionTraversal`. The
+         * returned payload spreads the traversal fields alongside
+         * `mappedFromLearningComponent`, which is `null` when the focal node
+         * was resolved directly.
+         *
+         * @returns A `CallToolResult` with the progression and mapping, or a
+         *   `toolError` if both resolution passes miss.
          */
         handler: () => {
           const { depth, direction, identifier } = GetProgressionSchema.parse(
@@ -2091,11 +2242,32 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `get_related_items` tool: return every node
+     * connected to the focal SFI via a `relatesTo` edge.
+     *
+     * SFI-only — accepts just `findStandardItem`-resolvable identifiers. Unlike
+     * `get_progression`, this tool does not fall back to LCs; the `relatesTo`
+     * edge is meaningful only between curriculum items, so an LC identifier
+     * yields a not-found error.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetRelatedItemsSchema`: a single `identifier` accepted by
+     *   `findStandardItem`.
+     *
+     * @returns A `CallToolResult` with the focal item, the related-items array
+     *   as compact nodes, and a count; or an error result with a hint to use
+     *   `search_items` when the SFI isn't found.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args`, resolve the SFI via `findStandardItem`, and pass its ID
+         * to `getRelatesTo`. Results are compacted at the default description
+         * budget because they are list-shaped.
          *
+         * @returns A `CallToolResult` with the related items, or a `toolError`
+         *   for unresolved SFIs.
          */
         handler: () => {
           const { identifier } = GetRelatedItemsSchema.parse(args ?? {});
@@ -2120,11 +2292,33 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `get_provenance` tool: return the provenance
+     * metadata for any KG node.
+     *
+     * Accepts SFIs, LCs, and frameworks via `findAnyNode`. The actual
+     * provenance shape is decided by `provenanceForNode`, which surfaces
+     * source-document, framework, and ingestion-pipeline fields appropriate to
+     * the node kind.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetProvenanceSchema`: a single `identifier` accepted by
+     *   `findAnyNode`.
+     *
+     * @returns A `CallToolResult` carrying the provenance payload, or an error
+     *   result with a hint to use `search_items` when the identifier resolves
+     *   to no node.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args`, resolve the identifier through `findAnyNode`, and feed
+         * the resolved node into `provenanceForNode`. Node-kind dispatch lives
+         * inside `provenanceForNode`; this handler is a thin
+         * identifier-to-provenance pipe.
          *
+         * @returns A `CallToolResult` with the provenance, or a `toolError` for
+         *   unresolved identifiers.
          */
         handler: () => {
           const { identifier } = GetProvenanceSchema.parse(args ?? {});
@@ -2144,11 +2338,31 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `list_facets` tool: return the cached facet
+     * payload built once during `createKnowledgeGraphUtils` setup.
+     *
+     * The payload includes the full set of filterable facet values (subjects,
+     * grade levels, source labels, statement types, normalized statement types,
+     * relationship types, node types) and aggregate counts across the loaded
+     * KG. Because the graph is read-only after loading, the entire response is
+     * precomputed and returned by reference; no scanning happens at request
+     * time.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `ListFacetsSchema`, which carries no fields today.
+     *
+     * @returns A `CallToolResult` with the precomputed facet values and
+     *   aggregate counts.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args` (effectively a no-op today), then return the cached
+         * facet payload via `getFacetValues`. No graph scanning happens at
+         * request time.
          *
+         * @returns A `CallToolResult` carrying the cached facet values.
          */
         handler: () => {
           ListFacetsSchema.parse(args ?? {});
@@ -2160,11 +2374,39 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `navigate` tool: walk the `hasChild` hierarchy
+     * outward from a focal node in a chosen direction.
+     *
+     * `direction` selects one of `parent`, `children`, `siblings`, `ancestors`,
+     * or `descendants` (the only direction that respects `depth`). LCs are
+     * special-cased because they don't participate in `hasChild`:
+     * `parent`/`ancestors` instead surface the standards they support (and, for
+     * `ancestors`, those standards' SFI ancestors). Other directions on an LC
+     * return an empty result with a `note` explaining the absence of LC
+     * hierarchy.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `NavigateSchema`: an `identifier`, a `direction`, and a `depth`
+     *   cap (only consulted for `descendants`).
+     *
+     * @returns A `CallToolResult` with the focal item, the traversal results as
+     *   compact nodes, the direction, depth, and result count; or an error
+     *   result with a hint when the identifier resolves to no node.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args`, resolve the focal node via `findAnyNode`, then branch
+         * on whether the node is an LC. LCs route to
+         * `getStandardsSupportedByLearningComponent` (with an `ancestors` pass
+         * through `getAncestors` per supported standard); SFIs and frameworks
+         * go through a switch on `direction` calling the matching
+         * `getAncestors`/`getChildrenAny`/`getSiblingItems`/ `getDescendants`
+         * helper.
          *
+         * @returns A `CallToolResult` with the traversal results, or a
+         *   `toolError` for unresolved identifiers.
          */
         handler: () => {
           const { depth, direction, identifier } = NavigateSchema.parse(
@@ -2251,11 +2493,33 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `overview` tool: return a high-level summary of
+     * the loaded KG suitable for orienting a fresh client.
+     *
+     * The payload includes per-relationship-type counts, total node and
+     * relationship counts by kind, the framework name and jurisdiction,
+     * generation metadata, and a single-sample SFI/LC pair so the caller sees
+     * the canonical compact-node shape without a separate query.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `OverviewSchema`, which carries no fields today.
+     *
+     * @returns A `CallToolResult` carrying the summary block, the unique
+     *   subject and grade-level lists, and one sample of each searchable node
+     *   kind.
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args` (effectively a no-op today), build a fresh
+         * per-relationship-type count by scanning `kg.relationships` (cheap
+         * because the array is already in memory), then assemble the overview
+         * by combining cached facet helpers (`getUniqueGradeLevels`,
+         * `getUniqueSubjects`) with single-element sample lookups against the
+         * SFI/LC index slices.
          *
+         * @returns A `CallToolResult` with the assembled overview payload.
          */
         handler: () => {
           OverviewSchema.parse(args ?? {});
@@ -2294,11 +2558,37 @@ export function registerKnowledgeGraphTools({
   });
 
   registerReadOnlyTool({
-    /** @param args */
+    /**
+     * MCP entry point for the `search_items` tool: substring text search across
+     * SFIs and LCs with optional facet filters.
+     *
+     * Searches the precomputed lowercase blob built by
+     * `buildSearchTextByNodeId` for the requested `query`, narrows by any
+     * combination of `node_type`, `grade`, `subject`, `source_label`, and
+     * `statement_type`, and caps the result at `limit`. `node_type` defaults to
+     * `"all"` when not provided so callers can search across both kinds without
+     * specifying it.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `SearchItemsSchema`: optional `query`, optional facet filters,
+     *   optional `node_type`, and optional `limit`.
+     *
+     * @returns A `CallToolResult` with the matching nodes as compact nodes, the
+     *   applied filters echoed for visibility, the count, and the original
+     *   query string (or empty string when omitted).
+     */
     handler: (args) =>
       runToolHandler({
         /**
+         * Parse `args`, default `node_type` to `"all"`, and dispatch to
+         * `searchItems`. Filters are passed through verbatim — the handler does
+         * no normalization of its own; case folding and whitespace collapse
+         * happen inside `searchItems` and the underlying `getSearchText`
+         * helper. The applied filters are echoed back in the payload so the
+         * caller can verify which constraints were actually used.
          *
+         * @returns A `CallToolResult` with the search results, filters, and
+         *   query echo.
          */
         handler: () => {
           const parsed = SearchItemsSchema.parse(args ?? {});
@@ -2330,7 +2620,6 @@ export function registerKnowledgeGraphTools({
     name: "search_items",
     server,
   });
-  /* eslint-enable jsdoc/require-description, jsdoc/require-returns, jsdoc/require-param-description */
 }
 
 /**
