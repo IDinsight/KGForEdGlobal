@@ -12,6 +12,7 @@
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
     "eslint": "^9",
+    "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.4",
     "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-jsdoc": "^61.5.0",
@@ -34,11 +35,15 @@
   "engines": {
     "node": ">=20.10.0 <24"
   },
-  "keywords": ["mcp", "knowledge-graph", "education"],
+  "keywords": [
+    "mcp",
+    "knowledge-graph",
+    "education"
+  ],
   "license": "MIT",
   "lint-staged": {
-    "{src,tests}/**/*.css": "stylelint --config .stylelintrc.js --ignore-path .gitignore --fix",
-    "{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}": [
+    "src/**/*.css": "stylelint --config .stylelintrc.js --ignore-path .gitignore --fix",
+    "src/**/*.{js,ts,jsx,tsx,mjs,cjs}": [
       "prettier --write",
       "eslint --config eslint.config.mjs --fix --format stylish"
     ]
@@ -49,7 +54,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "lint-fix": "prettier --write \"{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern \"{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && tsc --noEmit",
+    "lint-fix": "prettier --write \"src/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern \"src/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && tsc --noEmit",
     "start": "node build/index.js",
     "typecheck": "tsc --noEmit"
   },

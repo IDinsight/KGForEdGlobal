@@ -15,6 +15,54 @@ import {
 } from "@/lib/schemas.js";
 
 /**
+ * Return shape of `createKnowledgeGraphUtils` — the public query API used by
+ * the MCP tool handlers in `index.ts`. Declared explicitly so the function's
+ * return type is verifiable by
+ */
+type KnowledgeGraphUtils = {
+  buildHierarchyForSubject: (subject: string, gradeFilter?: string) => object[];
+  buildProgressionTraversal: (
+    standardNode: GraphNode,
+    direction: ProgressionDirection,
+    depth: number,
+  ) => Record<string, unknown>;
+  compactNode: (
+    node: GraphNode,
+    maxDescription?: number,
+  ) => Record<string, unknown>;
+  detailedNode: (node: GraphNode) => Record<string, unknown>;
+  findAnyNode: (identifier: string) => { item: GraphNode; type: string } | null;
+  findLearningComponent: (identifier: string) => GraphNode | undefined;
+  findStandardItem: (identifier: string) => GraphNode | undefined;
+  getAncestors: (nodeId: string) => GraphNode[];
+  getChildrenAny: (parentNodeId: string) => GraphNode[];
+  getDescendants: (nodeId: string, depth: number) => GraphNode[];
+  getFacetValues: () => Record<string, unknown>;
+  getLearningComponentsForStandard: (standardNodeId: string) => GraphNode[];
+  getPathForNode: (node: GraphNode) => Record<string, unknown>;
+  getRelatesTo: (standardNodeId: string) => GraphNode[];
+  getSiblingItems: (nodeId: string) => GraphNode[];
+  getStandardsSupportedByLearningComponent: (
+    learningComponentNodeId: string,
+  ) => GraphNode[];
+  getSupportRelationshipsForLearningComponent: (
+    learningComponentNodeId: string,
+  ) => GraphRelationship[];
+  getUniqueGradeLevels: () => string[];
+  getUniqueSubjects: () => string[];
+  provenanceForNode: (node: GraphNode) => Record<string, unknown>;
+  searchItems: (options: {
+    grade?: string;
+    limit?: number;
+    nodeType?: SearchNodeType;
+    query?: string;
+    sourceLabel?: string;
+    statementType?: string;
+    subject?: string;
+  }) => Array<{ item: GraphNode; type: string }>;
+};
+
+/**
  * Build fast-lookup indexes over a parsed Knowledge Graph.
  *
  * Partitions nodes by label into frameworks, standard items (SFIs), learning
@@ -153,6 +201,83 @@ export function buildKnowledgeGraphIndexes(
 }
 
 /**
+ * Reduce a `GraphNode` to a flat, camelCase summary suitable for inclusion in
+ * MCP tool responses.
+ *
+ * This is the canonical "node summary" shape used across the progression,
+ * search, and lookup tool outputs — anywhere a node needs to be returned to the
+ * model with enough context to identify and describe it, but without the full
+ * nested `properties` object the underlying graph carries. Doubles as the
+ * snake_case → camelCase boundary for the MCP API surface, so source properties
+ * like `statement_code` are renamed to `statementCode` here and never leak
+ * through downstream.
+ *
+ * Two field families fall back to "supporting SFI" variants in `metadata`:
+ *
+ * - `canonicalPathKey` — `metadata.canonical_path_key`, falling back to
+ *   `metadata.supporting_sfi_canonical_path_key`.
+ * - `sourceLabel` — `metadata.source_label`, falling back to
+ *   `metadata.supporting_sfi_source_label`.
+ *
+ * Both fallbacks exist because Learning Components don't carry these fields
+ * directly; instead they reference the SFI they support. The fallback lets the
+ * same compact shape describe both kinds of node without the caller having to
+ * branch on `nodeType`.
+ *
+ * `nodeType` is derived from the node's labels via `nodeTypeFromLabels`.
+ *
+ * Description truncation takes `[0, maxDescription)` of the original string
+ * with `"..."` appended. So the output is at most `maxDescription + 3`
+ * characters, not `maxDescription`. Falsy descriptions (`undefined`, `null`,
+ * `""`) pass through unchanged — there's nothing to truncate, and preserving
+ * the original falsy value lets callers distinguish "missing" from "empty after
+ * truncation". The `Math.max(0, maxDescription)` guard clamps negative inputs
+ * so that `.slice(0, -n)` doesn't accidentally chop from the end.
+ *
+ * `subject` carries the same newline-to-space normalization as the rest of the
+ * codebase, since `academic_subject` occasionally contains embedded newlines in
+ * the source data.
+ *
+ * @param node - The graph node to compact. May be any kind: framework, SFI, LC,
+ *   or unlabeled.
+ * @param maxDescription - Maximum description length before the `"..."` suffix
+ *   is appended, in characters. Defaults to `220`. Negative values are clamped
+ *   to `0`.
+ *
+ * @returns A flat, camelCase, JSON-serializable summary of the node. Fields
+ *   that don't apply to the node's kind (e.g. `statementCode` on a framework)
+ *   come through as `undefined` rather than being omitted, so consumers can
+ *   index into them unconditionally.
+ */
+function compactNode(
+  node: GraphNode,
+  maxDescription = 220,
+): Record<string, unknown> {
+  const metadata = node.properties.metadata ?? {};
+  const desc = node.properties.description;
+  return {
+    canonicalPathKey:
+      metadata.canonical_path_key ?? metadata.supporting_sfi_canonical_path_key,
+    description: !desc
+      ? desc
+      : desc.length > maxDescription
+        ? `${desc.slice(0, Math.max(0, maxDescription))}...`
+        : desc,
+    gradeLevel: node.properties.grade_level,
+    identifier: node.properties.identifier,
+    labels: node.labels,
+    name: node.properties.name,
+    nodeType: nodeTypeFromLabels(node.labels),
+    normalizedStatementType: node.properties.normalized_statement_type,
+    sourceLabel: metadata.source_label ?? metadata.supporting_sfi_source_label,
+    statementCode: node.properties.statement_code,
+    statementType: node.properties.statement_type,
+    subject: node.properties.academic_subject?.replaceAll("\n", " "),
+    uuid: node.id,
+  };
+}
+
+/**
  * Tally string occurrences in an array, returning a frequency map sorted
  * alphabetically by key.
  *
@@ -258,7 +383,9 @@ function countBy(
  * @returns An object of query functions consumed by the MCP tool handlers in
  *   `index.ts`.
  */
-export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
+export function createKnowledgeGraphUtils(
+  context: KnowledgeGraphContext,
+): KnowledgeGraphUtils {
   const {
     frameworks,
     kg,
@@ -637,96 +764,6 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
   }
 
   /**
-   * Reduce a `GraphNode` to a flat, camelCase summary suitable for inclusion in
-   * MCP tool responses.
-   *
-   * This is the canonical "node summary" shape used across the progression,
-   * search, and lookup tool outputs — anywhere a node needs to be returned to
-   * the model with enough context to identify and describe it, but without the
-   * full nested `properties` object the underlying graph carries. Doubles as
-   * the snake_case → camelCase boundary for the MCP API surface, so source
-   * properties like `statement_code` are renamed to `statementCode` here and
-   * never leak through downstream.
-   *
-   * Two field families fall back to "supporting SFI" variants in `metadata`:
-   *
-   * - `canonicalPathKey` — `metadata.canonical_path_key`, falling back to
-   *   `metadata.supporting_sfi_canonical_path_key`.
-   * - `sourceLabel` — `metadata.source_label`, falling back to
-   *   `metadata.supporting_sfi_source_label`.
-   *
-   * Both fallbacks exist because Learning Components don't carry these fields
-   * directly; instead they reference the SFI they support. The fallback lets
-   * the same compact shape describe both kinds of node without the caller
-   * having to branch on `nodeType`.
-   *
-   * `nodeType` is derived from the node's labels with an implicit priority:
-   * `StandardsFramework` > `StandardsFrameworkItem` > `LearningComponent` >
-   * `"unknown"`. In practice the priority is not observable, because
-   * `buildKnowledgeGraphIndexes` throws on any node carrying more than one of
-   * those labels — but if that invariant is ever relaxed, this function will
-   * silently pick the first-listed kind rather than reporting the conflict.
-   *
-   * Description truncation takes `[0, maxDescription)` of the original string
-   * with `"..."` appended. So the output is at most `maxDescription + 3`
-   * characters, not `maxDescription`. Falsy descriptions (`undefined`, `null`,
-   * `""`) pass through unchanged — there's nothing to truncate, and preserving
-   * the original falsy value lets callers distinguish "missing" from "empty
-   * after truncation". The `Math.max(0, maxDescription)` guard clamps negative
-   * inputs so that `.slice(0, -n)` doesn't accidentally chop from the end.
-   *
-   * `subject` carries the same newline-to-space normalization as the rest of
-   * the codebase, since `academic_subject` occasionally contains embedded
-   * newlines in the source data.
-   *
-   * @param node - The graph node to compact. May be any kind: framework, SFI,
-   *   LC, or unlabeled.
-   * @param maxDescription - Maximum description length before the `"..."`
-   *   suffix is appended, in characters. Defaults to `220`. Negative values are
-   *   clamped to `0`.
-   *
-   * @returns A flat, camelCase, JSON-serializable summary of the node. Fields
-   *   that don't apply to the node's kind (e.g. `statementCode` on a framework)
-   *   come through as `undefined` rather than being omitted, so consumers can
-   *   index into them unconditionally.
-   */
-  function compactNode(
-    node: GraphNode,
-    maxDescription = 220,
-  ): Record<string, unknown> {
-    const metadata = node.properties.metadata ?? {};
-    const desc = node.properties.description;
-    return {
-      canonicalPathKey:
-        metadata.canonical_path_key ??
-        metadata.supporting_sfi_canonical_path_key,
-      description: !desc
-        ? desc
-        : (desc.length > maxDescription
-          ? `${desc.slice(0, Math.max(0, maxDescription))}...`
-          : desc),
-      gradeLevel: node.properties.grade_level,
-      identifier: node.properties.identifier,
-      labels: node.labels,
-      name: node.properties.name,
-      nodeType: node.labels.includes("StandardsFramework")
-        ? "framework"
-        : node.labels.includes("StandardsFrameworkItem")
-          ? "standard_item"
-          : node.labels.includes("LearningComponent")
-            ? "learning_component"
-            : "unknown",
-      normalizedStatementType: node.properties.normalized_statement_type,
-      sourceLabel:
-        metadata.source_label ?? metadata.supporting_sfi_source_label,
-      statementCode: node.properties.statement_code,
-      statementType: node.properties.statement_type,
-      subject: node.properties.academic_subject?.replaceAll("\n", " "),
-      uuid: node.id,
-    };
-  }
-
-  /**
    * Render a `GraphNode` as a full-detail JSON payload for MCP tool responses
    * that surface a single item.
    *
@@ -1043,7 +1080,7 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
             0),
       )
       .map((rel) => nodesById.get(rel.end))
-      .filter(Boolean);
+      .filter((node): node is GraphNode => node !== undefined);
   }
 
   /**
@@ -1097,9 +1134,6 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
      * @param remainingDepth - Hop count remaining for this branch of the
      *   recursion. Decremented on each recursive call; values `<= 0` return
      *   immediately, which is the recursion's base case.
-     *
-     * @returns Nothing; results are accumulated in the closure-captured
-     *   `descendants` array.
      */
     function visit(currentNodeId: string, remainingDepth: number): void {
       if (remainingDepth <= 0) return;
@@ -1449,68 +1483,6 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
   }
 
   /**
-   * Build the lowercase, whitespace-flattened search blob used by `searchItems`
-   * for substring matching against a node.
-   *
-   * Concatenates a fixed set of searchable fields drawn from `node.properties`
-   * and `node.properties.metadata` — IDs, names, descriptions, statement
-   * codes/types, subject, source labels, normalized and split text, and the LLM
-   * rationale that produced the node — joins them with spaces, replaces
-   * newlines with spaces (which the source data occasionally embeds in
-   * `description` and similar long fields), and lowercases the result.
-   * Non-string values are filtered out before the join, so a missing or
-   * non-string field contributes nothing rather than the literal string
-   * `"undefined"`.
-   *
-   * The function returns a single flat string rather than a structured
-   * tokenization. Callers (currently only `searchItems`) treat it as
-   * substring-matchable: a query like `"pluriel"` will match any field
-   * containing that substring. This is good enough for fuzzy curriculum search
-   * but does no stemming, transliteration, or accent folding — so
-   * `"specifique"` will not match `"spécifique"`. The query side is normalized
-   * through the same `normalizeOptionalText` (lowercase + trim + collapse
-   * whitespace) so accidental spacing/casing mismatches don't matter.
-   *
-   * **Field selection is an allow-list, not a reflection of the whole node.**
-   * New properties added to nodes are not searchable until added here. This is
-   * intentional: it keeps the search blob bounded and predictable.
-   *
-   * @param node - The graph node to render. Any kind (SFI, LC, framework,
-   *   unlabeled) — fields that don't apply simply contribute nothing.
-   *
-   * @returns A single lowercase, whitespace-flattened string suitable for
-   *   `.includes()` matching against a normalized query. Empty string if none
-   *   of the allow-listed fields are present as strings on the node.
-   */
-  function getSearchText(node: GraphNode): string {
-    const metadata = node.properties.metadata ?? {};
-    const fields = [
-      node.id,
-      node.properties.identifier,
-      node.properties.description,
-      node.properties.name,
-      node.properties.statement_code,
-      node.properties.statement_type,
-      node.properties.normalized_statement_type,
-      node.properties.academic_subject,
-      metadata.source_label,
-      metadata.normalized_text,
-      metadata.canonical_path_key,
-      metadata.supporting_sfi_source_label,
-      metadata.supporting_sfi_statement_type,
-      metadata.supporting_sfi_canonical_path_key,
-      metadata.split_display_text,
-      metadata.split_id_text,
-      metadata.llm_rationale,
-    ];
-    return fields
-      .filter((value): value is string => typeof value === "string")
-      .join(" ")
-      .replaceAll("\n", " ")
-      .toLowerCase();
-  }
-
-  /**
    * Return the siblings of a node — the other children of its immediate parent
    * — in canonical curriculum order.
    *
@@ -1699,177 +1671,6 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
       }
     }
     return [...subjects].sort();
-  }
-
-  /**
-   * Predicate used by `searchItems` to test whether a node matches an optional
-   * `grade` filter.
-   *
-   * The filter is **vacuously true** when `grade` is omitted or empty, so
-   * callsites can pass the user-supplied filter through unconditionally. A
-   * provided filter is compared via `normalizeOptionalText` (lowercase, trim,
-   * collapse whitespace) against each entry of the node's grade-level array.
-   *
-   * For SFIs the grade array is read from `properties.grade_level`. For LCs the
-   * `grade_level` field is absent, so the function falls back to
-   * `metadata.supporting_sfi_grade_level` — the grade levels of the SFI the LC
-   * supports. This lets a single grade filter scope both SFIs and LCs without
-   * the caller branching on node kind.
-   *
-   * Equality is whole-string after normalization, not substring — so a filter
-   * of `"CE1"` matches the entry `"CE1"` but not `"CE1-CE2"`. If the
-   * grade-level field is not an array (missing, malformed, or a scalar), the
-   * predicate returns `false` rather than coercing.
-   *
-   * @param node - The graph node to test.
-   * @param grade - Optional grade-level filter (e.g. `"CE1"`). When omitted or
-   *   empty, the predicate is vacuously true.
-   *
-   * @returns `true` if `grade` is omitted/empty, or if any entry in the node's
-   *   resolved grade-level array equals `grade` after normalization. `false`
-   *   otherwise.
-   */
-  function nodeMatchesGrade(node: GraphNode, grade?: string): boolean {
-    if (!grade) return true;
-
-    const expected = normalizeOptionalText(grade);
-    const gradeLevels =
-      node.properties.grade_level ??
-      node.properties.metadata?.supporting_sfi_grade_level;
-    return Array.isArray(gradeLevels)
-      ? gradeLevels.some((g) => normalizeOptionalText(String(g)) === expected)
-      : false;
-  }
-
-  /**
-   * Predicate used by `searchItems` to test whether a node matches an optional
-   * `sourceLabel` filter.
-   *
-   * The filter is **vacuously true** when `sourceLabel` is omitted or empty. A
-   * provided filter is compared via `normalizeOptionalText` (lowercase, trim,
-   * collapse whitespace) against two candidate fields on the node's metadata:
-   *
-   * - `metadata.source_label` — populated on SFIs.
-   * - `metadata.supporting_sfi_source_label` — populated on LCs and carries the
-   *   source label of the SFI the LC supports.
-   *
-   * The OR over both candidates lets a single filter value scope both SFIs and
-   * LCs without the caller branching on node kind, mirroring the fallback
-   * pattern used in `compactNode` and `nodeMatchesStatementType`.
-   *
-   * @param node - The graph node to test.
-   * @param sourceLabel - Optional source-label filter (e.g. `"Conjugaison"`,
-   *   `"Orthographe"`). When omitted or empty, the predicate is vacuously
-   *   true.
-   *
-   * @returns `true` if `sourceLabel` is omitted/empty, or if either of the
-   *   candidate fields equals it after normalization. `false` otherwise.
-   */
-  function nodeMatchesSourceLabel(
-    node: GraphNode,
-    sourceLabel?: string,
-  ): boolean {
-    if (!sourceLabel) return true;
-
-    const expected = normalizeOptionalText(sourceLabel);
-    const candidates = [
-      node.properties.metadata?.source_label,
-      node.properties.metadata?.supporting_sfi_source_label,
-    ];
-    return candidates.some(
-      (candidate) => normalizeOptionalText(candidate) === expected,
-    );
-  }
-
-  /**
-   * Predicate used by `searchItems` to test whether a node matches an optional
-   * `statementType` filter.
-   *
-   * The filter is **vacuously true** when `statementType` is omitted or empty.
-   * A provided filter is compared via `normalizeOptionalText` (lowercase, trim,
-   * collapse whitespace) against four candidate fields:
-   *
-   * - `properties.statement_type` — the raw statement type on SFIs (e.g.
-   *   `"Objectif spécifique"`).
-   * - `properties.normalized_statement_type` — the canonicalized form on SFIs
-   *   (one of `"Standard"`, `"Standard Grouping"`, `"Other"`, or an open
-   *   string).
-   * - `metadata.supporting_sfi_statement_type` — for LCs, the raw statement type
-   *   of the SFI the LC supports.
-   * - `metadata.supporting_sfi_normalized_statement_type` — for LCs, the
-   *   normalized form of the same.
-   *
-   * The OR over all four lets a single filter value scope SFIs and LCs and
-   * accept either the raw or normalized form, so callers can pass through
-   * whatever the user typed without rewriting it. This is the broadest fallback
-   * ladder of the `nodeMatches*` predicates; treat its accept-rate as
-   * correspondingly forgiving.
-   *
-   * @param node - The graph node to test.
-   * @param statementType - Optional statement-type filter (e.g. `"Standard"`,
-   *   `"Objectif spécifique"`). When omitted or empty, the predicate is
-   *   vacuously true.
-   *
-   * @returns `true` if `statementType` is omitted/empty, or if any of the four
-   *   candidate fields equals it after normalization. `false` otherwise.
-   */
-  function nodeMatchesStatementType(
-    node: GraphNode,
-    statementType?: string,
-  ): boolean {
-    if (!statementType) return true;
-
-    const expected = normalizeOptionalText(statementType);
-    const candidates = [
-      node.properties.statement_type,
-      node.properties.normalized_statement_type,
-      node.properties.metadata?.supporting_sfi_statement_type,
-      node.properties.metadata?.supporting_sfi_normalized_statement_type,
-    ];
-    return candidates.some(
-      (candidate) => normalizeOptionalText(candidate) === expected,
-    );
-  }
-
-  /**
-   * Predicate used by `searchItems` to test whether a node matches an optional
-   * `subject` filter.
-   *
-   * The filter is **vacuously true** when `subject` is omitted or empty. A
-   * provided filter is compared via `normalizeOptionalText` (lowercase, trim,
-   * collapse whitespace) against `properties.academic_subject`, which is first
-   * newline-flattened (the source data occasionally embeds newlines in subject
-   * strings — see `compactNode` and `buildHierarchyForSubject` for the same
-   * pattern).
-   *
-   * Equality is whole-string after normalization, not substring — so a filter
-   * of `"Mathematics"` matches the value `"Mathematics"` but not `"Mathematics
-   * and Statistics"`.
-   *
-   * Unlike `nodeMatchesStatementType` and `nodeMatchesSourceLabel`, this
-   * predicate consults a single field. There is no LC-side fallback: LCs carry
-   * their subject implicitly through their supported SFI, so a subject filter
-   * on a result set that includes both SFIs and LCs will effectively only match
-   * SFIs. If the LC subject filter ever becomes required, mirror the
-   * `metadata.supporting_sfi_*` fallback pattern.
-   *
-   * @param node - The graph node to test.
-   * @param subject - Optional academic-subject filter (e.g. `"Mathematics"`,
-   *   `"Langue et Communication"`). When omitted or empty, the predicate is
-   *   vacuously true.
-   *
-   * @returns `true` if `subject` is omitted/empty, or if the node's
-   *   newline-flattened `academic_subject` equals it after normalization.
-   *   `false` otherwise.
-   */
-  function nodeMatchesSubject(node: GraphNode, subject?: string): boolean {
-    if (!subject) return true;
-
-    const expected = normalizeOptionalText(subject);
-    const actual = normalizeOptionalText(
-      node.properties.academic_subject?.replaceAll("\n", " "),
-    );
-    return actual === expected;
   }
 
   /**
@@ -2075,6 +1876,67 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
 }
 
 /**
+ * Build the lowercase, whitespace-flattened search blob used by `searchItems`
+ * for substring matching against a node.
+ *
+ * Concatenates a fixed set of searchable fields drawn from `node.properties`
+ * and `node.properties.metadata` — IDs, names, descriptions, statement
+ * codes/types, subject, source labels, normalized and split text, and the LLM
+ * rationale that produced the node — joins them with spaces, replaces newlines
+ * with spaces (which the source data occasionally embeds in `description` and
+ * similar long fields), and lowercases the result. Non-string values are
+ * filtered out before the join, so a missing or non-string field contributes
+ * nothing rather than the literal string `"undefined"`.
+ *
+ * The function returns a single flat string rather than a structured
+ * tokenization. Callers (currently only `searchItems`) treat it as
+ * substring-matchable: a query like `"pluriel"` will match any field containing
+ * that substring. This is good enough for fuzzy curriculum search but does no
+ * stemming, transliteration, or accent folding — so `"specifique"` will not
+ * match `"spécifique"`. The query side is normalized through the same
+ * `normalizeOptionalText` (lowercase + trim + collapse whitespace) so
+ * accidental spacing/casing mismatches don't matter.
+ *
+ * **Field selection is an allow-list, not a reflection of the whole node.** New
+ * properties added to nodes are not searchable until added here. This is
+ * intentional: it keeps the search blob bounded and predictable.
+ *
+ * @param node - The graph node to render. Any kind (SFI, LC, framework,
+ *   unlabeled) — fields that don't apply simply contribute nothing.
+ *
+ * @returns A single lowercase, whitespace-flattened string suitable for
+ *   `.includes()` matching against a normalized query. Empty string if none of
+ *   the allow-listed fields are present as strings on the node.
+ */
+function getSearchText(node: GraphNode): string {
+  const metadata = node.properties.metadata ?? {};
+  const fields = [
+    node.id,
+    node.properties.identifier,
+    node.properties.description,
+    node.properties.name,
+    node.properties.statement_code,
+    node.properties.statement_type,
+    node.properties.normalized_statement_type,
+    node.properties.academic_subject,
+    metadata.source_label,
+    metadata.normalized_text,
+    metadata.canonical_path_key,
+    metadata.supporting_sfi_source_label,
+    metadata.supporting_sfi_statement_type,
+    metadata.supporting_sfi_canonical_path_key,
+    metadata.split_display_text,
+    metadata.split_id_text,
+    metadata.llm_rationale,
+  ];
+  return fields
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .replaceAll("\n", " ")
+    .toLowerCase();
+}
+
+/**
  * Load and validate a Knowledge Graph JSON file from the bundled examples
  * directory.
  *
@@ -2094,9 +1956,9 @@ export function createKnowledgeGraphUtils(context: KnowledgeGraphContext) {
  *
  * @returns The parsed and validated `KnowledgeGraph` object.
  *
- * @throws If the file is not found, unreadable, malformed JSON, or fails schema
- *   validation. All thrown errors include the resolved filepath in the
- *   message.
+ * @throws {Error} If the file is not found, unreadable, malformed JSON, or
+ *   fails schema validation. All thrown errors include the resolved filepath in
+ *   the message.
  */
 export function loadKnowledgeGraph(
   kgFn: string,
@@ -2160,13 +2022,11 @@ export function loadKnowledgeGraph(
   const lcCount = kg.nodes.filter((n) =>
     n.labels.includes("LearningComponent"),
   ).length;
-  const relTypeCounts = kg.relationships.reduce<Record<string, number>>(
-    (acc, rel) => {
-      acc[rel.type] = (acc[rel.type] ?? 0) + 1;
-      return acc;
-    },
-    {},
-  );
+  const relTypeCounts: Record<string, number> = {};
+
+  for (const rel of kg.relationships) {
+    relTypeCounts[rel.type] = (relTypeCounts[rel.type] ?? 0) + 1;
+  }
 
   console.error(`Loaded KG from ${kgFp}:
   - ${sfCount} Standards Framework(s)
@@ -2176,6 +2036,203 @@ export function loadKnowledgeGraph(
   - Relationship types: ${JSON.stringify(relTypeCounts)}`);
 
   return kg;
+}
+
+/**
+ * Predicate used by `searchItems` to test whether a node matches an optional
+ * `grade` filter.
+ *
+ * The filter is **vacuously true** when `grade` is omitted or empty, so
+ * callsites can pass the user-supplied filter through unconditionally. A
+ * provided filter is compared via `normalizeOptionalText` (lowercase, trim,
+ * collapse whitespace) against each entry of the node's grade-level array.
+ *
+ * For SFIs the grade array is read from `properties.grade_level`. For LCs the
+ * `grade_level` field is absent, so the function falls back to
+ * `metadata.supporting_sfi_grade_level` — the grade levels of the SFI the LC
+ * supports. This lets a single grade filter scope both SFIs and LCs without the
+ * caller branching on node kind.
+ *
+ * Equality is whole-string after normalization, not substring — so a filter of
+ * `"CE1"` matches the entry `"CE1"` but not `"CE1-CE2"`. If the grade-level
+ * field is not an array (missing, malformed, or a scalar), the predicate
+ * returns `false` rather than coercing.
+ *
+ * @param node - The graph node to test.
+ * @param grade - Optional grade-level filter (e.g. `"CE1"`). When omitted or
+ *   empty, the predicate is vacuously true.
+ *
+ * @returns `true` if `grade` is omitted/empty, or if any entry in the node's
+ *   resolved grade-level array equals `grade` after normalization. `false`
+ *   otherwise.
+ */
+function nodeMatchesGrade(node: GraphNode, grade?: string): boolean {
+  if (!grade) return true;
+
+  const expected = normalizeOptionalText(grade);
+  const gradeLevels =
+    node.properties.grade_level ??
+    node.properties.metadata?.supporting_sfi_grade_level;
+  return Array.isArray(gradeLevels)
+    ? gradeLevels.some((g) => normalizeOptionalText(String(g)) === expected)
+    : false;
+}
+
+/**
+ * Predicate used by `searchItems` to test whether a node matches an optional
+ * `sourceLabel` filter.
+ *
+ * The filter is **vacuously true** when `sourceLabel` is omitted or empty. A
+ * provided filter is compared via `normalizeOptionalText` (lowercase, trim,
+ * collapse whitespace) against two candidate fields on the node's metadata:
+ *
+ * - `metadata.source_label` — populated on SFIs.
+ * - `metadata.supporting_sfi_source_label` — populated on LCs and carries the
+ *   source label of the SFI the LC supports.
+ *
+ * The OR over both candidates lets a single filter value scope both SFIs and
+ * LCs without the caller branching on node kind, mirroring the fallback pattern
+ * used in `compactNode` and `nodeMatchesStatementType`.
+ *
+ * @param node - The graph node to test.
+ * @param sourceLabel - Optional source-label filter (e.g. `"Conjugaison"`,
+ *   `"Orthographe"`). When omitted or empty, the predicate is vacuously true.
+ *
+ * @returns `true` if `sourceLabel` is omitted/empty, or if either of the
+ *   candidate fields equals it after normalization. `false` otherwise.
+ */
+function nodeMatchesSourceLabel(
+  node: GraphNode,
+  sourceLabel?: string,
+): boolean {
+  if (!sourceLabel) return true;
+
+  const expected = normalizeOptionalText(sourceLabel);
+  const candidates = [
+    node.properties.metadata?.source_label,
+    node.properties.metadata?.supporting_sfi_source_label,
+  ];
+  return candidates.some(
+    (candidate) => normalizeOptionalText(candidate) === expected,
+  );
+}
+
+/**
+ * Predicate used by `searchItems` to test whether a node matches an optional
+ * `statementType` filter.
+ *
+ * The filter is **vacuously true** when `statementType` is omitted or empty. A
+ * provided filter is compared via `normalizeOptionalText` (lowercase, trim,
+ * collapse whitespace) against four candidate fields:
+ *
+ * - `properties.statement_type` — the raw statement type on SFIs (e.g. `"Objectif
+ *   spécifique"`).
+ * - `properties.normalized_statement_type` — the canonicalized form on SFIs (one
+ *   of `"Standard"`, `"Standard Grouping"`, `"Other"`, or an open string).
+ * - `metadata.supporting_sfi_statement_type` — for LCs, the raw statement type of
+ *   the SFI the LC supports.
+ * - `metadata.supporting_sfi_normalized_statement_type` — for LCs, the normalized
+ *   form of the same.
+ *
+ * The OR over all four lets a single filter value scope SFIs and LCs and accept
+ * either the raw or normalized form, so callers can pass through whatever the
+ * user typed without rewriting it. This is the broadest fallback ladder of the
+ * `nodeMatches*` predicates; treat its accept-rate as correspondingly
+ * forgiving.
+ *
+ * @param node - The graph node to test.
+ * @param statementType - Optional statement-type filter (e.g. `"Standard"`,
+ *   `"Objectif spécifique"`). When omitted or empty, the predicate is vacuously
+ *   true.
+ *
+ * @returns `true` if `statementType` is omitted/empty, or if any of the four
+ *   candidate fields equals it after normalization. `false` otherwise.
+ */
+function nodeMatchesStatementType(
+  node: GraphNode,
+  statementType?: string,
+): boolean {
+  if (!statementType) return true;
+
+  const expected = normalizeOptionalText(statementType);
+  const candidates = [
+    node.properties.statement_type,
+    node.properties.normalized_statement_type,
+    node.properties.metadata?.supporting_sfi_statement_type,
+    node.properties.metadata?.supporting_sfi_normalized_statement_type,
+  ];
+  return candidates.some(
+    (candidate) => normalizeOptionalText(candidate) === expected,
+  );
+}
+
+/**
+ * Predicate used by `searchItems` to test whether a node matches an optional
+ * `subject` filter.
+ *
+ * The filter is **vacuously true** when `subject` is omitted or empty. A
+ * provided filter is compared via `normalizeOptionalText` (lowercase, trim,
+ * collapse whitespace) against `properties.academic_subject`, which is first
+ * newline-flattened (the source data occasionally embeds newlines in subject
+ * strings — see `compactNode` and `buildHierarchyForSubject` for the same
+ * pattern).
+ *
+ * Equality is whole-string after normalization, not substring — so a filter of
+ * `"Mathematics"` matches the value `"Mathematics"` but not `"Mathematics and
+ * Statistics"`.
+ *
+ * Unlike `nodeMatchesStatementType` and `nodeMatchesSourceLabel`, this
+ * predicate consults a single field. There is no LC-side fallback: LCs carry
+ * their subject implicitly through their supported SFI, so a subject filter on
+ * a result set that includes both SFIs and LCs will effectively only match
+ * SFIs. If the LC subject filter ever becomes required, mirror the
+ * `metadata.supporting_sfi_*` fallback pattern.
+ *
+ * @param node - The graph node to test.
+ * @param subject - Optional academic-subject filter (e.g. `"Mathematics"`,
+ *   `"Langue et Communication"`). When omitted or empty, the predicate is
+ *   vacuously true.
+ *
+ * @returns `true` if `subject` is omitted/empty, or if the node's
+ *   newline-flattened `academic_subject` equals it after normalization. `false`
+ *   otherwise.
+ */
+function nodeMatchesSubject(node: GraphNode, subject?: string): boolean {
+  if (!subject) return true;
+
+  const expected = normalizeOptionalText(subject);
+  const actual = normalizeOptionalText(
+    node.properties.academic_subject?.replaceAll("\n", " "),
+  );
+  return actual === expected;
+}
+
+/**
+ * Map a node's `labels` array to the canonical `nodeType` discriminant used by
+ * `compactNode` and other compact-shape consumers.
+ *
+ * Priority is `StandardsFramework` > `StandardsFrameworkItem` >
+ * `LearningComponent` > `"unknown"`. In practice the priority is not
+ * observable, because `buildKnowledgeGraphIndexes` throws on any node carrying
+ * more than one of those labels — but if that invariant is ever relaxed, this
+ * function will silently pick the first-listed kind rather than reporting the
+ * conflict.
+ *
+ * Extracted out of `compactNode` to avoid a deeply nested ternary expression.
+ *
+ * @param labels - The `labels` array from a `GraphNode`.
+ *
+ * @returns One of `"framework"`, `"standard_item"`, `"learning_component"`, or
+ *   `"unknown"`.
+ */
+function nodeTypeFromLabels(labels: string[]): string {
+  if (labels.includes("StandardsFramework")) return "framework";
+
+  if (labels.includes("StandardsFrameworkItem")) return "standard_item";
+
+  if (labels.includes("LearningComponent")) return "learning_component";
+
+  return "unknown";
 }
 
 /**

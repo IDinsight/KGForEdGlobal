@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import js from "@eslint/js";
 import ts from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
+import eslintConfigPrettier from "eslint-config-prettier";
 import pluginImport from "eslint-plugin-import";
 import pluginJSDoc from "eslint-plugin-jsdoc";
 import noRelative from "eslint-plugin-no-relative-import-paths";
@@ -281,9 +282,9 @@ const eslintConfig = [
           project: [tsconfigPath],
         },
       },
-      jsdoc: { mode: "typescript" },
-      react: {
-        version: "detect",
+      "jsdoc": { mode: "typescript" }, // Use TSDoc for TypeScript files
+      "react": {
+        version: "detect", // Automatically detect the version of React
       },
     },
   },
@@ -379,6 +380,9 @@ const eslintConfig = [
       ],
     },
   },
+
+  // Put this LAST so it can disable conflicting stylistic rules.
+  eslintConfigPrettier,
 ];
 
 export default eslintConfig;

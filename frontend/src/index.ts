@@ -525,13 +525,13 @@ async function main(): Promise<void> {
               results:
                 direction === "parent"
                   ? supportedStandards.map((standard) => compactNode(standard))
-                  : (direction === "ancestors"
+                  : direction === "ancestors"
                     ? supportedStandards.flatMap((standard) =>
                         [...getAncestors(standard.id), standard].map((node) =>
                           compactNode(node),
                         ),
                       )
-                    : []),
+                    : [],
               target: compactNode(item),
             });
           }

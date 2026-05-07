@@ -56,12 +56,12 @@ lint: lint-prettier lint-eslint lint-typecheck lint-cloc ## Run all linter and f
 
 lint-prettier: ## Run Prettier checks
 	@echo "$(BLUE)Running prettier on frontend...$(RESET)"
-	@pnpm prettier --write "{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}"
+	@pnpm prettier --write "src/**/*.{js,ts,jsx,tsx,mjs,cjs}"
 	@echo "$(GREEN)Linting and formatting complete.$(RESET)"
 
 lint-eslint: ## Run ESLint checks
 	@echo "$(BLUE)Running eslint on frontend...$(RESET)"
-	@pnpm eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern "{src,tests}/**/*.{js,ts,jsx,tsx,mjs,cjs}"
+	@pnpm eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern "src/**/*.{js,ts,jsx,tsx,mjs,cjs}"
 	@echo "$(GREEN)Linting and formatting complete.$(RESET)"
 
 lint-typecheck: ## Run TypeScript type checks
@@ -72,4 +72,3 @@ lint-typecheck: ## Run TypeScript type checks
 lint-cloc: ## Run CLOC for code statistics
 	@echo "$(BLUE)Running cloc on frontend...$(RESET)"
 	@cloc src/
-	@cloc tests/
