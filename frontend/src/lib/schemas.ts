@@ -207,7 +207,8 @@ export const GetRelatedItemsSchema = z
  * `relationship.type` is left as an open string rather than constrained to the
  * current `RelationshipType` union so that loading does not fail when new
  * relationship kinds are introduced (unrecognized types are simply ignored by
- * traversal helpers).
+ * traversal helpers). Relationship `properties` defaults to `{}` when omitted
+ * so downstream traversal helpers can safely rely on the field being present.
  */
 export const KnowledgeGraphSchema = z
   .object({
@@ -229,7 +230,7 @@ export const KnowledgeGraphSchema = z
         .object({
           end: z.string().min(1),
           id: z.string().min(1),
-          properties: z.object({}).passthrough().optional(),
+          properties: z.object({}).passthrough().default({}),
           start: z.string().min(1),
           type: z.string().min(1),
         })
