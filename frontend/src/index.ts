@@ -660,6 +660,7 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
+  // NB: Use console.error() to avoid corrupting JSON-RPC channel.
   console.error("Fatal error:", error);
 
   // eslint-disable-next-line unicorn/no-process-exit -- this file is the MCP server CLI entrypoint
