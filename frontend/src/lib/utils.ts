@@ -63,6 +63,82 @@ type KnowledgeGraphUtils = {
 };
 
 /**
+ * Build the full set of filterable facet values and aggregate counts for a
+ * loaded Knowledge Graph.
+ *
+ * This helper is intentionally module-level and pure so
+ * `createKnowledgeGraphUtils` can compute the facet payload once during factory
+ * setup, then return the cached object from `getFacetValues` on every MCP tool
+ * call. The graph is read-only after loading, so recomputing these global
+ * counts and unique value lists per request is unnecessary work.
+ *
+ * `gradeLevels` and `subjects` are injected rather than recomputed here because
+ * those same precomputed arrays are also exposed through `getUniqueGradeLevels`
+ * and `getUniqueSubjects`. Keeping them as named arguments guarantees all three
+ * utility methods agree on the exact same cached values.
+ *
+ * @param args - Named arguments used to build the facet payload.
+ * @param args.frameworks - Standards framework nodes from the KG indexes.
+ * @param args.gradeLevels - Precomputed sorted grade-level values.
+ * @param args.kg - Parsed and validated Knowledge Graph object.
+ * @param args.learningComponents - LearningComponent nodes from the KG indexes.
+ * @param args.sfis - StandardsFrameworkItem nodes from the KG indexes.
+ * @param args.subjects - Precomputed sorted academic-subject values.
+ *
+ * @returns A JSON-serializable object with facet values and aggregate counts
+ *   for the loaded KG.
+ */
+function buildFacetValues({
+  frameworks,
+  gradeLevels,
+  kg,
+  learningComponents,
+  sfis,
+  subjects,
+}: {
+  frameworks: GraphNode[];
+  gradeLevels: string[];
+  kg: KnowledgeGraph;
+  learningComponents: GraphNode[];
+  sfis: GraphNode[];
+  subjects: string[];
+}): Record<string, unknown> {
+  return {
+    counts: {
+      byRelationshipType: countBy(kg.relationships.map((rel) => rel.type)),
+      bySourceLabel: countBy(
+        sfis.map((node) => node.properties.metadata?.source_label),
+      ),
+      byStatementType: countBy(
+        sfis.map((node) => node.properties.statement_type),
+      ),
+      frameworks: frameworks.length,
+      learningComponents: learningComponents.length,
+      relationships: kg.relationships.length,
+      standardItems: sfis.length,
+    },
+    gradeLevels,
+    learningComponentSourceLabels: uniqueSorted(
+      learningComponents.map(
+        (node) => node.properties.metadata?.supporting_sfi_source_label,
+      ),
+    ),
+    nodeTypes: ["framework", "standard_item", "learning_component"],
+    normalizedStatementTypes: uniqueSorted(
+      sfis.map((node) => node.properties.normalized_statement_type),
+    ),
+    relationshipTypes: uniqueSorted(kg.relationships.map((rel) => rel.type)),
+    sourceLabels: uniqueSorted(
+      sfis.map((node) => node.properties.metadata?.source_label),
+    ),
+    statementTypes: uniqueSorted(
+      sfis.map((node) => node.properties.statement_type),
+    ),
+    subjects,
+  };
+}
+
+/**
  * Build fast-lookup indexes over a parsed Knowledge Graph.
  *
  * Partitions nodes by label into frameworks, standard items (SFIs), learning
@@ -198,6 +274,96 @@ export function buildKnowledgeGraphIndexes(
     sfisByIdentifier,
     unknownNodes,
   };
+}
+
+/**
+ * Precompute lowercase search text for a set of graph nodes.
+ *
+ * `searchItems` uses substring matching against the same allow-listed node
+ * fields on every call. Building this map once during
+ * `createKnowledgeGraphUtils` setup avoids rebuilding the concatenated search
+ * blob for every candidate node on every search request. The returned map is
+ * keyed by graph node ID and holds exactly the same strings that
+ * `getSearchText` would have generated inline.
+ *
+ * @param args - Named arguments used to build the search-text index.
+ * @param args.nodes - Graph nodes that should participate in text search.
+ *
+ * @returns A map from graph node ID to precomputed lowercase search text.
+ */
+function buildSearchTextByNodeId({
+  nodes,
+}: {
+  nodes: GraphNode[];
+}): Map<string, string> {
+  const searchTextByNodeId = new Map<string, string>();
+
+  for (const node of nodes) {
+    searchTextByNodeId.set(node.id, getSearchText(node));
+  }
+
+  return searchTextByNodeId;
+}
+
+/**
+ * Build the sorted, deduplicated grade-level list for a set of SFIs.
+ *
+ * This is computed once during `createKnowledgeGraphUtils` setup and reused by
+ * both `getUniqueGradeLevels` and the cached facet payload. Only array-valued
+ * `properties.grade_level` fields contribute values; missing or malformed grade
+ * fields are ignored to preserve the original behavior of
+ * `getUniqueGradeLevels`.
+ *
+ * @param args - Named arguments used to build the grade-level list.
+ * @param args.sfis - StandardsFrameworkItem nodes to scan.
+ *
+ * @returns The unique grade-level strings across all SFIs, lexicographically
+ *   sorted. Empty if no SFI has a `grade_level` array.
+ */
+function buildUniqueGradeLevels({ sfis }: { sfis: GraphNode[] }): string[] {
+  const grades = new Set<string>();
+
+  for (const node of sfis) {
+    const gl = node.properties.grade_level;
+
+    if (gl && Array.isArray(gl)) {
+      for (const g of gl) {
+        grades.add(g);
+      }
+    }
+  }
+
+  return [...grades].sort();
+}
+
+/**
+ * Build the sorted, deduplicated academic-subject list for a set of SFIs.
+ *
+ * This is computed once during `createKnowledgeGraphUtils` setup and reused by
+ * both `getUniqueSubjects` and the cached facet payload. Embedded newlines are
+ * flattened to spaces and leading/trailing whitespace is trimmed before values
+ * are inserted into the set, matching the original subject-normalization
+ * behavior.
+ *
+ * @param args - Named arguments used to build the subject list.
+ * @param args.sfis - StandardsFrameworkItem nodes to scan.
+ *
+ * @returns The unique academic-subject strings across all SFIs,
+ *   newline-flattened and lexicographically sorted. Empty if no SFI has a
+ *   non-empty `academic_subject` field.
+ */
+function buildUniqueSubjects({ sfis }: { sfis: GraphNode[] }): string[] {
+  const subjects = new Set<string>();
+
+  for (const node of sfis) {
+    const subj = node.properties.academic_subject;
+
+    if (subj) {
+      subjects.add(subj.replaceAll("\n", " ").trim());
+    }
+  }
+
+  return [...subjects].sort();
 }
 
 /**
@@ -397,6 +563,20 @@ export function createKnowledgeGraphUtils(
     sfis,
     sfisByIdentifier,
   } = context;
+
+  const uniqueGradeLevels = buildUniqueGradeLevels({ sfis });
+  const uniqueSubjects = buildUniqueSubjects({ sfis });
+  const facetValues = buildFacetValues({
+    frameworks,
+    gradeLevels: uniqueGradeLevels,
+    kg,
+    learningComponents,
+    sfis,
+    subjects: uniqueSubjects,
+  });
+  const searchTextByNodeId = buildSearchTextByNodeId({
+    nodes: [...sfis, ...learningComponents],
+  });
 
   /**
    * Build a tree-shaped view of all standards within a given academic subject
@@ -1151,17 +1331,20 @@ export function createKnowledgeGraphUtils(
 
   /**
    * Build the full set of filterable facet values and aggregate counts for the
-   * loaded Knowledge Graph, in a single pass-style call.
+   * loaded Knowledge Graph from the factory-level cache.
    *
-   * The returned object has two halves:
+   * The returned object is precomputed when `createKnowledgeGraphUtils` is
+   * called and has two halves:
    *
    * - **Facet values** (`gradeLevels`, `learningComponentSourceLabels`,
    *   `nodeTypes`, `normalizedStatementTypes`, `relationshipTypes`,
    *   `sourceLabels`, `statementTypes`, `subjects`) — the unique, sorted lists
    *   of values that callers can pass back as filters to `searchItems` and
-   *   related tools. All string lists go through `uniqueSorted`, so empty,
-   *   whitespace-only, and nullish entries are dropped (not bucketed). The
-   *   exception is `nodeTypes`, which is a fixed enumeration.
+   *   related tools. Relationship, statement, source-label,
+   *   normalized-statement, and LearningComponent source-label lists go through
+   *   `uniqueSorted`, so empty, whitespace-only, and nullish entries are
+   *   dropped (not bucketed). Grade levels and subjects come from their own
+   *   cached builders, and `nodeTypes` is a fixed enumeration.
    * - **Aggregate counts** (`counts`) — frequency tallies for relationship types,
    *   source labels, and statement types via `countBy` (which buckets
    *   nullish/empty under `"Unspecified"`), plus simple cardinalities for
@@ -1183,39 +1366,7 @@ export function createKnowledgeGraphUtils(
    *   statementTypes, subjects }`.
    */
   function getFacetValues(): Record<string, unknown> {
-    return {
-      counts: {
-        byRelationshipType: countBy(kg.relationships.map((rel) => rel.type)),
-        bySourceLabel: countBy(
-          sfis.map((node) => node.properties.metadata?.source_label),
-        ),
-        byStatementType: countBy(
-          sfis.map((node) => node.properties.statement_type),
-        ),
-        frameworks: frameworks.length,
-        learningComponents: learningComponents.length,
-        relationships: kg.relationships.length,
-        standardItems: sfis.length,
-      },
-      gradeLevels: getUniqueGradeLevels(),
-      learningComponentSourceLabels: uniqueSorted(
-        learningComponents.map(
-          (node) => node.properties.metadata?.supporting_sfi_source_label,
-        ),
-      ),
-      nodeTypes: ["framework", "standard_item", "learning_component"],
-      normalizedStatementTypes: uniqueSorted(
-        sfis.map((node) => node.properties.normalized_statement_type),
-      ),
-      relationshipTypes: uniqueSorted(kg.relationships.map((rel) => rel.type)),
-      sourceLabels: uniqueSorted(
-        sfis.map((node) => node.properties.metadata?.source_label),
-      ),
-      statementTypes: uniqueSorted(
-        sfis.map((node) => node.properties.statement_type),
-      ),
-      subjects: getUniqueSubjects(),
-    };
+    return facetValues;
   }
 
   /**
@@ -1597,13 +1748,13 @@ export function createKnowledgeGraphUtils(
    * Return the sorted, deduplicated set of grade-level strings present across
    * all SFIs in the loaded KG.
    *
-   * Iterates every SFI, reads `properties.grade_level` (which the schema
-   * declares as `string[]`), and accumulates each entry into a set. Nodes with
-   * no `grade_level` field, or whose `grade_level` is not an array, contribute
-   * nothing — they're silently skipped via the `Array.isArray` guard. Strings
-   * are added verbatim with no whitespace/case normalization, so `"CE1"` and `"
-   * CE1 "` would be distinct entries (in practice the upstream data is
-   * consistent).
+   * Returns the factory-level cached result built by `buildUniqueGradeLevels`,
+   * which reads `properties.grade_level` (declared as `string[]`) and
+   * accumulates each entry into a set. Nodes with no `grade_level` field, or
+   * whose `grade_level` is not an array, contribute nothing — they're silently
+   * skipped via the `Array.isArray` guard. Strings are added verbatim with no
+   * whitespace/case normalization, so `"CE1"` and `" CE1 "` would be distinct
+   * entries (in practice the upstream data is consistent).
    *
    * The result is sorted with the default `Array.sort` lexicographic comparator
    * — _not_ `localeCompare` — which keeps ASCII grade codes like `"CE1"`,
@@ -1613,33 +1764,23 @@ export function createKnowledgeGraphUtils(
    * Used by `getFacetValues` to populate the `gradeLevels` filter list and by
    * the `overview` tool handler directly.
    *
-   * @returns The unique grade-level strings across all SFIs, lexicographically
-   *   sorted. Empty if no SFI has a `grade_level` array.
+   * @returns The cached unique grade-level strings across all SFIs,
+   *   lexicographically sorted. Empty if no SFI has a `grade_level` array.
    */
   function getUniqueGradeLevels(): string[] {
-    const grades = new Set<string>();
-
-    for (const node of sfis) {
-      const gl = node.properties.grade_level;
-
-      if (gl && Array.isArray(gl)) {
-        for (const g of gl) {
-          grades.add(g);
-        }
-      }
-    }
-    return [...grades].sort();
+    return uniqueGradeLevels;
   }
 
   /**
    * Return the sorted, deduplicated set of academic subject names present
    * across all SFIs in the loaded KG.
    *
-   * Iterates every SFI, reads `properties.academic_subject`, normalizes
-   * embedded newlines to spaces (which the source data occasionally carries —
-   * see `compactNode` and `buildHierarchyForSubject` for the same pattern),
-   * trims, and accumulates into a set. Falsy values (missing, empty string) are
-   * skipped via the `if (subj)` guard.
+   * Returns the factory-level cached result built by `buildUniqueSubjects`,
+   * which reads `properties.academic_subject`, normalizes embedded newlines to
+   * spaces (which the source data occasionally carries — see `compactNode` and
+   * `buildHierarchyForSubject` for the same pattern), trims, and accumulates
+   * into a set. Falsy values (missing, empty string) are skipped via the `if
+   * (subj)` guard.
    *
    * **Normalization is intentionally lighter than `uniqueSorted`'s** — internal
    * whitespace runs are not collapsed and casing is preserved. So `"Mathematics
@@ -1656,21 +1797,12 @@ export function createKnowledgeGraphUtils(
    * Used by `getFacetValues` to populate the `subjects` filter list and by the
    * `overview` tool handler directly.
    *
-   * @returns The unique academic-subject strings across all SFIs,
+   * @returns The cached unique academic-subject strings across all SFIs,
    *   newline-flattened and lexicographically sorted. Empty if no SFI has a
    *   non-empty `academic_subject` field.
    */
   function getUniqueSubjects(): string[] {
-    const subjects = new Set<string>();
-
-    for (const node of sfis) {
-      const subj = node.properties.academic_subject;
-
-      if (subj) {
-        subjects.add(subj.replaceAll("\n", " ").trim());
-      }
-    }
-    return [...subjects].sort();
+    return uniqueSubjects;
   }
 
   /**
@@ -1760,13 +1892,13 @@ export function createKnowledgeGraphUtils(
    *
    * Within the candidate set, each node is tested against the optional facet
    * filters (`subject`, `grade`, `statementType`, `sourceLabel`) via the
-   * `nodeMatches*` predicates, then against the free-text `query` via
-   * `getSearchText` substring matching. Filters are AND-ed: all provided facets
-   * must match _and_ the query must be a substring of the node's search blob.
-   * An omitted filter is vacuously satisfied. The query is normalized
-   * (lowercase + trim + collapse whitespace) via `normalizeOptionalText` before
-   * matching, so casual queries match the lowercased blob produced by
-   * `getSearchText`.
+   * `nodeMatches*` predicates, then against the free-text `query` via the
+   * precomputed `searchTextByNodeId` substring index. Filters are AND-ed: all
+   * provided facets must match _and_ the query must be a substring of the
+   * node's cached search blob. An omitted filter is vacuously satisfied. The
+   * query is normalized (lowercase + trim + collapse whitespace) via
+   * `normalizeOptionalText` before matching, so casual queries match the
+   * lowercased blob produced by `getSearchText` during factory setup.
    *
    * **Iteration order matters.** SFIs are scanned before LCs (when both are
    * candidates), and within each group nodes are scanned in their underlying
@@ -1841,7 +1973,7 @@ export function createKnowledgeGraphUtils(
 
         if (!nodeMatchesSourceLabel(node, options.sourceLabel)) continue;
 
-        if (q && !getSearchText(node).includes(q)) continue;
+        if (q && !(searchTextByNodeId.get(node.id) ?? "").includes(q)) continue;
 
         results.push({ item: node, type: group.type });
       }
